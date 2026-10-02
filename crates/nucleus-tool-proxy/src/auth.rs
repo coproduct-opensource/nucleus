@@ -213,6 +213,15 @@ pub enum AuthMethod {
     /// FORGE an approval. This is what lets `nucleus.approval_secret` leave
     /// the world-readable kernel command line.
     Ed25519Drand,
+    /// The request arrived on the workload door (`workload_door`): a Unix
+    /// socket whose peer the kernel identifies by `SO_PEERCRED`, admitted only
+    /// when that peer runs as the workload's uid.
+    ///
+    /// The caller is the WORKLOAD, never the host. Distinct from
+    /// [`AuthMethod::HostVsock`] on purpose, so an audit record cannot confuse
+    /// the agent's own call with the node's. No secret is involved: the
+    /// workload's environment carries none (#3031 option B).
+    WorkloadDoor,
 }
 
 /// How the request's identity was bound to its permissions.
@@ -658,6 +667,23 @@ pub fn verify_host_vsock() -> AuthContext {
     }
 }
 
+/// The authentication context of a request that came through the workload door.
+///
+/// `uid` is the kernel's report of the connected peer, admitted by
+/// `workload_door::admit` before the stream reached the router. It is never a
+/// value from the request. The actor names the workload so a verdict record
+/// says whose call it was.
+pub fn verify_workload_door(uid: u32) -> AuthContext {
+    AuthContext {
+        actor: Some(format!("workload:uid={uid}")),
+        timestamp: unix_now(),
+        drand_round: None,
+        spiffe_id: None,
+        auth_method: AuthMethod::WorkloadDoor,
+        identity_binding: IdentityBinding::PolicyOnly,
+    }
+}
+
 /// Verify a request using SPIFFE mTLS identity.
 ///
 /// This function validates that a SPIFFE identity was extracted from the
@@ -721,6 +747,42 @@ pub enum AuthTier {
     HostVsock,
     /// Shared-secret HMAC. The residual path, for transports that prove nothing.
     Hmac,
+    /// The request came through the workload door from a peer the kernel
+    /// reported as running under `uid`, the workload's. It outranks every other
+    /// tier: on the door the caller is the workload whatever else is true, so
+    /// neither an approval tier nor the host tier can be selected there.
+    WorkloadDoor { uid: u32 },
+}
+
+/// Which listener accepted a request. A property of the listener, set from
+/// what the kernel reported at accept, never from request content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ingress {
+    /// The proxy's main listener: vsock, the host-verified Unix socket, or TCP.
+    Listener,
+    /// The workload door, with the admitted peer's uid.
+    WorkloadDoor { uid: u32 },
+}
+
+/// The tier for a request, from where it came in and the facts
+/// [`select_auth_tier`] reads. The door is decided first and alone: nothing a
+/// door request carries can select a tier meant for the host or an approver.
+pub fn tier_of(
+    ingress: Ingress,
+    has_spiffe_identity: bool,
+    is_approval_path: bool,
+    has_approval_pubkeys: bool,
+    host_verified_transport: bool,
+) -> AuthTier {
+    match ingress {
+        Ingress::WorkloadDoor { uid } => AuthTier::WorkloadDoor { uid },
+        Ingress::Listener => select_auth_tier(
+            has_spiffe_identity,
+            is_approval_path,
+            has_approval_pubkeys,
+            host_verified_transport,
+        ),
+    }
 }
 
 /// Choose the tier from facts about the request and the binding.
@@ -1109,6 +1171,50 @@ mod host_vsock_auth_tests {
 #[cfg(test)]
 mod auth_tier_precedence_tests {
     use super::*;
+
+    /// On the workload door the tier is the door's, for every combination of
+    /// the facts that pick a tier on the main listener, including the approval
+    /// path with keys configured and a host-verified transport. The door's
+    /// caller is the workload; it is never authenticated as the host or as an
+    /// approver.
+    #[test]
+    fn the_workload_door_outranks_every_listener_tier() {
+        for spiffe in [false, true] {
+            for approval in [false, true] {
+                for pubkeys in [false, true] {
+                    for host in [false, true] {
+                        assert_eq!(
+                            tier_of(
+                                Ingress::WorkloadDoor { uid: 65534 },
+                                spiffe,
+                                approval,
+                                pubkeys,
+                                host
+                            ),
+                            AuthTier::WorkloadDoor { uid: 65534 },
+                            "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host={host}"
+                        );
+                        assert_eq!(
+                            tier_of(Ingress::Listener, spiffe, approval, pubkeys, host),
+                            select_auth_tier(spiffe, approval, pubkeys, host),
+                            "the main listener is still decided by select_auth_tier alone"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The door's method names the workload, not the host, and is no alias of
+    /// another method: an audit record must say whose call it was.
+    #[test]
+    fn the_workload_door_is_its_own_method_and_names_the_workload() {
+        let ctx = verify_workload_door(65534);
+        assert_eq!(ctx.auth_method, AuthMethod::WorkloadDoor);
+        assert_ne!(ctx.auth_method, AuthMethod::HostVsock);
+        assert_eq!(ctx.actor.as_deref(), Some("workload:uid=65534"));
+        assert!(ctx.spiffe_id.is_none());
+    }
 
     /// THE ORDERING PROPERTY. On a host-verified transport, a plain request
     /// must reach `HostVsock` and NOT fall through to the shared-secret HMAC.

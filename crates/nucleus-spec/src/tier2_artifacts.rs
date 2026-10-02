@@ -135,6 +135,13 @@ pub enum GuestCapability {
     /// `image.read_only: true` — the configured default, and what
     /// `verify --tier2` sends — dies creating the directory.
     SvidOnTmpfs,
+    /// The tool-proxy serves the workload on its own Unix socket, the workload
+    /// door at `guest_layout::WORKLOAD_DOOR`, and the workload's environment
+    /// carries no proxy credential (#3031 option B, #2696 P1). An older guest
+    /// points the workload at the proxy's vsock listener, which a process inside
+    /// the guest cannot connect to, so an agent run in the pod (P5) reaches no
+    /// tool and no egress at all.
+    WorkloadDoor,
 }
 
 /// Which published release first carried a [`GuestCapability`].
@@ -150,11 +157,12 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 4] = [
+    pub const ALL: [GuestCapability; 5] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::EgressAttestation,
         GuestCapability::SvidOnTmpfs,
+        GuestCapability::WorkloadDoor,
     ];
 
     /// The first release whose rootfs has this.
@@ -165,6 +173,7 @@ impl GuestCapability {
             // Both merged on 2026-09-02, after `v2.2.0` (8a452030b) was tagged.
             GuestCapability::EgressAttestation => FirstShipped::NotYet,
             GuestCapability::SvidOnTmpfs => FirstShipped::NotYet,
+            GuestCapability::WorkloadDoor => FirstShipped::NotYet,
         }
     }
 
@@ -189,6 +198,11 @@ impl GuestCapability {
             GuestCapability::SvidOnTmpfs => {
                 "#2379 moved the guest's SVID to tmpfs; an older guest-init writes it to \
                  /etc/nucleus/identity, which a read-only rootfs cannot create"
+            }
+            GuestCapability::WorkloadDoor => {
+                "#3031 gave the workload its own door, a Unix socket the tool-proxy \
+                 serves to the workload's uid alone; an older guest points the workload at \
+                 the proxy's vsock listener, which nothing inside the guest can connect to"
             }
         }
     }
@@ -306,10 +320,11 @@ fn skew_against(
 /// which is precisely the skew being closed.
 ///
 /// **2.2.0 does not serve this tree.** It predates
-/// [`GuestCapability::EgressAttestation`] and [`GuestCapability::SvidOnTmpfs`],
-/// so `setup` refuses to install it (see [`guest_skew`]) and says to build the
-/// guest locally instead. The change that bumps this constant to the next
-/// release must also turn those two entries into [`FirstShipped::Release`];
+/// [`GuestCapability::EgressAttestation`], [`GuestCapability::SvidOnTmpfs`] and
+/// [`GuestCapability::WorkloadDoor`], so `setup` refuses to install it (see
+/// [`guest_skew`]) and says to build the guest locally instead. The change that
+/// bumps this constant to the next release must also turn those entries into
+/// [`FirstShipped::Release`];
 /// `no_capability_claims_a_release_after_the_pin` stops it naming a release
 /// the pin has not reached.
 ///
@@ -445,7 +460,8 @@ mod tests {
             missing,
             &[
                 GuestCapability::EgressAttestation,
-                GuestCapability::SvidOnTmpfs
+                GuestCapability::SvidOnTmpfs,
+                GuestCapability::WorkloadDoor,
             ]
         );
         let msg = skew.to_string();
@@ -453,6 +469,7 @@ mod tests {
             "v2.2.0",
             "#2365",
             "#2379",
+            "#3031",
             "no published release yet",
             "build-rootfs.sh",
             "--artifacts local",
@@ -485,7 +502,8 @@ mod tests {
                 GuestCapability::CaBundle => GuestCapability::ApprovalByPublicKey,
                 GuestCapability::ApprovalByPublicKey => GuestCapability::EgressAttestation,
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
-                GuestCapability::SvidOnTmpfs => GuestCapability::CaBundle,
+                GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
+                GuestCapability::WorkloadDoor => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

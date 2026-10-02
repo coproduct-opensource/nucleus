@@ -642,25 +642,14 @@ pub(crate) fn resolve_vsock(
 
 /// A vsock listener that is already bound (and announced). Split from
 /// [`serve_vsock`] so `main` can start the pod's workload BETWEEN bind and
-/// serve: the workload's `NUCLEUS_TOOL_PROXY_URL` is derived from this
-/// listener's local address, which keeps "the workload starts only once its
-/// proxy's socket exists" true on the vsock path the same way the TCP path's
-/// `local_addr()` does.
+/// serve. The workload does not use this listener (nothing inside the guest
+/// can connect to it, and it admits only the host); it reaches the proxy
+/// through its own door, `workload_door`.
 #[cfg(target_os = "linux")]
 pub(crate) struct BoundVsock {
     listener: tokio_vsock::VsockListener,
     cid: u32,
     port: u32,
-}
-
-#[cfg(target_os = "linux")]
-impl BoundVsock {
-    pub(crate) fn cid(&self) -> u32 {
-        self.cid
-    }
-    pub(crate) fn port(&self) -> u32 {
-        self.port
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -698,16 +687,6 @@ pub(crate) async fn serve_vsock(app: Router, bound: BoundVsock) -> Result<(), Ap
 /// (it is unreachable there — `resolve_vsock` refuses vsock configs off Linux).
 #[cfg(not(target_os = "linux"))]
 pub(crate) struct BoundVsock;
-
-#[cfg(not(target_os = "linux"))]
-impl BoundVsock {
-    pub(crate) fn cid(&self) -> u32 {
-        0
-    }
-    pub(crate) fn port(&self) -> u32 {
-        0
-    }
-}
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) async fn bind_vsock(

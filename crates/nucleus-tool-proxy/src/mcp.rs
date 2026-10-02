@@ -1744,6 +1744,7 @@ mod tests {
             AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
             AuthMethod::Ed25519Drand,
+            AuthMethod::WorkloadDoor,
         ] {
             assert_eq!(
                 delegation_authority(&method),

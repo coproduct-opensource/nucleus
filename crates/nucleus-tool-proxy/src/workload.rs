@@ -55,7 +55,7 @@ pub(crate) enum EnvSource {
     InheritedByName,
     /// From the operator-written `spec.env`.
     SpecEnv,
-    /// Injected by the runtime (the proxy URL and the workload's own HMAC).
+    /// Injected by the runtime: the URL of the workload's door.
     RuntimeInjected,
     /// An egress forwarder name/URL from `workload_egress_env`.
     Egress,
@@ -76,12 +76,11 @@ pub(crate) struct ClassifiedEntry {
 
 /// Attribute an env key to its source, given the spec that produced the overlay.
 ///
-/// `workload_env` makes the runtime-injected pair win over `spec.env`, so a key
-/// that is one of that pair is `RuntimeInjected` regardless of whether the spec
-/// also named it — which is the correct attribution: the value that crossed is
-/// the runtime's.
+/// `workload_env` makes the runtime-injected URL win over `spec.env`, so that
+/// key is `RuntimeInjected` regardless of whether the spec also named it, which
+/// is the correct attribution: the value that crossed is the runtime's.
 fn env_source(key: &str, spec: &WorkloadSpec) -> EnvSource {
-    if key == "NUCLEUS_TOOL_PROXY_URL" || key == "NUCLEUS_TOOL_PROXY_AUTH_SECRET" {
+    if key == "NUCLEUS_TOOL_PROXY_URL" {
         EnvSource::RuntimeInjected
     } else if key.starts_with("NUCLEUS_EGRESS_") {
         EnvSource::Egress
@@ -147,22 +146,28 @@ pub(crate) fn workload_home(work_dir: &std::path::Path) -> std::path::PathBuf {
 /// override with `workload.uid`, but never to the runtime's own uid.
 pub(crate) const DEFAULT_WORKLOAD_UID: u32 = 65534;
 
+///
+/// # No proxy credential crosses
+///
+/// The workload used to receive `NUCLEUS_TOOL_PROXY_AUTH_SECRET`, the HMAC key
+/// of the proxy's shared-secret tier, as "its own credential". Any process that
+/// held it could sign requests to that tier, and nothing tied a signed request
+/// to the workload. Now the workload reaches the proxy through its own door
+/// (`workload_door`), and it authenticates by being the workload's uid on that
+/// socket, a fact the kernel reports. There is no secret to hand over, so this
+/// function takes none, and [`WorkloadLaunch::admit`] refuses one that arrives
+/// any other way (#3031 option B).
 #[must_use]
 pub(crate) fn workload_env(
     spec: &WorkloadSpec,
-    proxy_url: &str,
-    auth_secret: &str,
+    door_url: &str,
     egress: &[nucleus_spec::CredentialedEgressSpec],
 ) -> BTreeMap<String, String> {
     let mut env = spec.env.clone();
     // Local forwarder addresses for each credentialed upstream. Names and URLs
     // only — the credential stays in the runtime, which is the point.
-    env.extend(crate::egress::workload_egress_env(egress, proxy_url));
-    env.insert("NUCLEUS_TOOL_PROXY_URL".to_string(), proxy_url.to_string());
-    env.insert(
-        "NUCLEUS_TOOL_PROXY_AUTH_SECRET".to_string(),
-        auth_secret.to_string(),
-    );
+    env.extend(crate::egress::workload_egress_env(egress, door_url));
+    env.insert("NUCLEUS_TOOL_PROXY_URL".to_string(), door_url.to_string());
     env
 }
 
@@ -204,6 +209,68 @@ impl std::fmt::Debug for AdmittedWorkloadPlan {
     }
 }
 
+/// Which uid the child will actually run as. Two cases, because they are
+/// different claims: a dropped uid is a boundary, an inherited one is not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RunsAs {
+    /// The runtime is root, so `spawn_admitted` drops the child to the admitted
+    /// uid (the guest case).
+    Dropped(u32),
+    /// The runtime is not root and cannot change the child's uid, so the child
+    /// runs as the runtime's own (a test harness, or a host-side proxy). The
+    /// launch receipt reports this as not hardened.
+    Inherited(u32),
+}
+
+impl RunsAs {
+    fn uid(self) -> u32 {
+        match self {
+            Self::Dropped(uid) | Self::Inherited(uid) => uid,
+        }
+    }
+}
+
+/// The uid the workload door admits: the uid the workload child actually runs
+/// as.
+///
+/// Evidence, so its constructor is private (ADR 0007 C-1, C-2): only
+/// [`AdmittedWorkloadPlan::door_uid`] mints one, from the same
+/// [`AdmittedWorkloadPlan::runs_as`] that `spawn_admitted` drops the child to.
+/// The door therefore cannot admit a uid other than the one the workload has.
+/// That uid is `DEFAULT_WORKLOAD_UID` unless the pod's `workload.uid` names
+/// another; it is never the runtime's own when the runtime is root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WorkloadUid(u32);
+
+impl WorkloadUid {
+    pub(crate) fn get(self) -> u32 {
+        self.0
+    }
+
+    /// A door policy for a test that cannot run a real workload.
+    #[cfg(test)]
+    pub(crate) fn for_test(uid: u32) -> Self {
+        Self(uid)
+    }
+}
+
+impl AdmittedWorkloadPlan {
+    /// The one decider of the child's uid, shared by `spawn_admitted` and the
+    /// door (ADR 0007 G-1).
+    pub(crate) fn runs_as(&self) -> RunsAs {
+        let own = nix_getuid();
+        match self.uid {
+            Some(uid) if own == 0 => RunsAs::Dropped(uid),
+            _ => RunsAs::Inherited(own),
+        }
+    }
+
+    /// The uid the workload door admits for this launch.
+    pub(crate) fn door_uid(&self) -> WorkloadUid {
+        WorkloadUid(self.runs_as().uid())
+    }
+}
+
 /// A workload the runtime declined to launch, with the reason.
 #[derive(Debug)]
 pub(crate) struct Refused(pub(crate) String);
@@ -234,8 +301,7 @@ impl WorkloadLaunch {
     /// tests still describe the one env-assembly point.
     pub(crate) fn build(
         spec: &WorkloadSpec,
-        proxy_url: &str,
-        auth_secret: &str,
+        door_url: &str,
         work_dir: &std::path::Path,
         egress: &[nucleus_spec::CredentialedEgressSpec],
     ) -> Self {
@@ -256,7 +322,7 @@ impl WorkloadLaunch {
             "HOME".to_string(),
             workload_home(work_dir).to_string_lossy().into_owned(),
         );
-        env.extend(workload_env(spec, proxy_url, auth_secret, egress));
+        env.extend(workload_env(spec, door_url, egress));
         let classified = env
             .keys()
             .map(|key| {
@@ -335,6 +401,24 @@ impl WorkloadLaunch {
                      (public) and would be delivered to the workload. Classify it in \
                      `env_classifier.rs` (a secret material kind if it carries identity, or add \
                      it to PUBLIC_RESERVED if it is genuinely public runtime config).",
+                    entry.key
+                )));
+            }
+        }
+
+        // No proxy credential crosses, whoever supplied it. The FM-5 relation
+        // still licenses `ProxyAuthSecret` to the workload (it is `Internal`),
+        // because that is what the workload used to need; it needs nothing now
+        // that it authenticates by its uid on the workload door, and a spec
+        // that names the variable is either stale or trying to give the agent
+        // a key to the host's shared-secret tier. This is the tighter rule,
+        // applied on top of the relation, not instead of it.
+        for entry in &self.classified {
+            if entry.material == MaterialKind::ProxyAuthSecret {
+                return Err(Refused(format!(
+                    "environment variable `{}` is a proxy credential. The workload \
+                     authenticates by its uid on the workload door and receives no \
+                     credential for the proxy; remove it from the workload's env.",
                     entry.key
                 )));
             }
@@ -426,7 +510,10 @@ pub(crate) fn spawn_admitted(
     // is unit-tested directly. In the guest the workload therefore always runs
     // as that distinct uid and cannot read the runtime's secret-bearing environ
     // via `/proc/<pid>/environ`.
-    let drop_uid = if nix_getuid() == 0 { plan.uid } else { None };
+    let drop_uid = match plan.runs_as() {
+        RunsAs::Dropped(uid) => Some(uid),
+        RunsAs::Inherited(_) => None,
+    };
     let hardened = drop_uid.is_some();
     // The default HOME, made before the chown below so the same best-effort
     // treatment covers both. Only when the admitted env still points at it: a
@@ -783,56 +870,27 @@ impl LaunchReceipt {
             environment: nucleus_spec::workload_result::EnvironmentIdentity::of(&plan.env),
         }
     }
-
-    /// Whether the inventory carries at least one `Internal`-labelled entry.
-    ///
-    /// **Non-vacuity by construction.** A workload admitted with a wholly
-    /// `Public` environment is a broken pod, not a maximally secure one: it has
-    /// no proxy HMAC and cannot reach the one policed interface. A receipt that
-    /// cannot show its one legitimately-`Internal` entry is describing a launch
-    /// that will not work, and the caller treats an empty-of-Internal inventory
-    /// as a refusal rather than a success.
-    pub(crate) fn carries_internal_entry(&self) -> bool {
-        self.env.iter().any(|e| e.label == "Internal")
-    }
-}
-
-/// Where the proxy's bound listener actually is — the value the workload's
-/// `NUCLEUS_TOOL_PROXY_URL` is derived from.
-///
-/// An enum over the two transports the proxy serves on, because the vsock path
-/// — the in-guest case, where the phase-2b boot gate runs — has no TCP
-/// `SocketAddr` to point at. Each variant is built from a listener's LOCAL
-/// address after bind, which preserves the ordering property the old
-/// `SocketAddr` parameter carried: the workload starts only once its proxy's
-/// socket exists.
-pub(crate) enum BoundProxy {
-    /// The host/TCP path: `TcpListener::local_addr()`.
-    Tcp(std::net::SocketAddr),
-    /// The in-guest path: the vsock listener's local `(cid, port)`. An in-guest
-    /// client speaks vsock, not TCP, so the URL is `vsock://cid:port` — the
-    /// same form the announce file uses.
-    Vsock { cid: u32, port: u32 },
-    /// The container path (#2446): a peer-verified Unix socket. The URL is
-    /// `unix://<path>`, the same form the announce file uses.
-    Unix(std::path::PathBuf),
-}
-
-impl BoundProxy {
-    fn url(&self) -> String {
-        match self {
-            Self::Tcp(addr) => format!("http://{addr}"),
-            Self::Vsock { cid, port } => format!("vsock://{cid}:{port}"),
-            Self::Unix(path) => crate::host_socket::unix_url(path),
-        }
-    }
 }
 
 /// Start the pod's workload if the spec asks for one.
 ///
-/// Called AFTER the listener is bound: it takes a [`BoundProxy`], whose variants
-/// are built from a bound listener's local address — which does not exist until
-/// the server socket is up — so the ordering is a property of the signature.
+/// # The order is the value flow
+///
+/// 1. The workload door is bound at `door_path`. Its URL exists only once the
+///    socket does, and the workload's `NUCLEUS_TOOL_PROXY_URL` (and every
+///    `NUCLEUS_EGRESS_*_URL`) is derived from that URL, so the workload cannot
+///    be told about a door that is not there.
+/// 2. The launch is built and admitted. The admitted plan is the only source of
+///    the uid the door admits ([`AdmittedWorkloadPlan::door_uid`]).
+/// 3. The door is served with that uid ([`crate::workload_door::UnservedDoor::serve`]
+///    consumes the bound door), and only then is the child spawned.
+///
+/// So the door admits exactly the uid the child runs as, and it is serving
+/// before the child can call it.
+///
+/// Called after the proxy's main listener is bound, as before: a workload never
+/// starts in a pod whose host cannot yet reach its proxy.
+///
 /// The returned handle must be held for the process lifetime —
 /// `kill_on_drop` means dropping it kills the workload, which is the correct
 /// coupling between a pod and the thing it exists to run.
@@ -850,17 +908,16 @@ impl BoundProxy {
 /// If a workload is configured and cannot be admitted or started.
 pub(crate) fn start_if_configured(
     spec: &nucleus_spec::PodSpec,
-    bound: BoundProxy,
-    auth_secret: &str,
+    door_path: &std::path::Path,
+    door_app: axum::Router,
 ) -> Result<Option<(tokio::process::Child, LaunchReceipt)>, crate::ApiError> {
     let Some(w) = spec.spec.workload.as_ref() else {
         return Ok(None);
     };
-    let url = bound.url();
+    let door = crate::workload_door::UnservedDoor::bind(door_path)?;
     let plan = WorkloadLaunch::build(
         w,
-        &url,
-        auth_secret,
+        &door.url(),
         &spec.spec.work_dir,
         &spec.spec.credentialed_egress,
     )
@@ -869,22 +926,11 @@ pub(crate) fn start_if_configured(
         crate::ApiError::Spec(format!("refused to launch workload {:?}: {e}", w.command))
     })?;
 
+    door.serve(door_app, plan.door_uid());
+
     let (child, receipt) = spawn_admitted(plan).map_err(|e| {
         crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
     })?;
-
-    if !receipt.carries_internal_entry() {
-        // Non-vacuity: a workload with no Internal-labelled entry has no proxy
-        // HMAC and cannot reach the mediated interface. Refuse rather than run a
-        // pod that will fail opaquely later.
-        let _ = child; // dropped → kill_on_drop stops it
-        return Err(crate::ApiError::Spec(format!(
-            "workload {:?} was admitted with a wholly public environment — no proxy \
-             credential, so it cannot reach the mediated interface. This is a broken \
-             launch, not a secure one.",
-            w.command
-        )));
-    }
 
     tracing::info!(
         launch_receipt = %serde_json::to_string(&receipt).unwrap_or_default(),
@@ -896,6 +942,9 @@ pub(crate) fn start_if_configured(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A door URL of the form the runtime injects.
+    const DOOR: &str = "unix:///run/nucleus-door/workload.sock";
 
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {
         WorkloadSpec {
@@ -923,8 +972,7 @@ mod tests {
                 .map(|e| e.source)
         };
 
-        let launch =
-            WorkloadLaunch::build(&spec_with(&[]), "http://127.0.0.1:8080", "s", work, &[]);
+        let launch = WorkloadLaunch::build(&spec_with(&[]), "http://127.0.0.1:8080", work, &[]);
         assert_eq!(
             launch.env.get("HOME").map(String::as_str),
             Some("/work/.home")
@@ -934,7 +982,6 @@ mod tests {
         let launch = WorkloadLaunch::build(
             &spec_with(&[("HOME", "/elsewhere")]),
             "http://127.0.0.1:8080",
-            "s",
             work,
             &[],
         );
@@ -956,7 +1003,7 @@ mod tests {
             "-c".into(),
             "test -d \"$HOME\" && printf %s \"$HOME\"".into(),
         ];
-        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", "s", dir.path(), &[])
+        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit()
             .unwrap();
         let (child, _receipt) = spawn_admitted(plan).unwrap();
@@ -968,20 +1015,60 @@ mod tests {
         );
     }
 
-    /// The workload is told where its mediating proxy is. Without this it has no
-    /// way to reach the only interface that is policed.
+    /// The workload is told where its door is. Without this it has no way to
+    /// reach the only interface that is policed.
     #[test]
-    fn the_workload_is_pointed_at_the_proxy() {
-        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", "s3cret", &[]);
+    fn the_workload_is_pointed_at_its_door() {
+        let env = workload_env(&spec_with(&[]), DOOR, &[]);
         assert_eq!(
             env.get("NUCLEUS_TOOL_PROXY_URL").map(String::as_str),
-            Some("http://127.0.0.1:8080")
+            Some(DOOR)
         );
+    }
+
+    /// **The workload's environment carries no proxy credential** (#3031
+    /// option B). It authenticates by its uid on the door; a secret in its
+    /// environment would be a second, weaker way in that any process holding it
+    /// could use. Red on `main` before this change, where `workload_env`
+    /// inserted `NUCLEUS_TOOL_PROXY_AUTH_SECRET`.
+    #[test]
+    fn the_workload_env_carries_no_proxy_credential() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let launch = WorkloadLaunch::build(&spec_with(&[]), DOOR, dir.path(), &[egress_spec()]);
+        assert!(
+            !launch.env.contains_key("NUCLEUS_TOOL_PROXY_AUTH_SECRET"),
+            "the workload must not be handed the proxy's HMAC key"
+        );
+        for entry in &launch.classified {
+            assert_ne!(
+                entry.material,
+                MaterialKind::ProxyAuthSecret,
+                "`{}` is a proxy credential in the workload's environment",
+                entry.key
+            );
+        }
+        // Non-vacuity: the launch still names the door, so this is not the
+        // empty-environment case passing by accident.
         assert_eq!(
-            env.get("NUCLEUS_TOOL_PROXY_AUTH_SECRET")
-                .map(String::as_str),
-            Some("s3cret")
+            launch.env.get("NUCLEUS_TOOL_PROXY_URL").map(String::as_str),
+            Some(DOOR)
         );
+    }
+
+    /// A spec cannot put a proxy credential back. The runtime no longer
+    /// overwrites the name, so `admit` refuses it whoever supplied it.
+    #[test]
+    fn a_spec_supplied_proxy_credential_is_refused() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let refused = WorkloadLaunch::build(
+            &spec_with(&[("NUCLEUS_TOOL_PROXY_AUTH_SECRET", "not-the-real-one")]),
+            DOOR,
+            dir.path(),
+            &[],
+        )
+        .admit();
+        let err = refused.expect_err("a proxy credential must not cross");
+        assert!(err.to_string().contains("workload door"), "{err}");
     }
 
     /// **A spec cannot redirect its workload away from mediation.** Setting the
@@ -989,21 +1076,31 @@ mod tests {
     /// polices nothing, while every dashboard still says "mediated".
     #[test]
     fn a_spec_cannot_override_the_proxy_url() {
-        let hostile = spec_with(&[
-            ("NUCLEUS_TOOL_PROXY_URL", "http://attacker.invalid"),
-            ("NUCLEUS_TOOL_PROXY_AUTH_SECRET", "not-the-real-one"),
-        ]);
-        let env = workload_env(&hostile, "http://127.0.0.1:8080", "s3cret", &[]);
+        let hostile = spec_with(&[("NUCLEUS_TOOL_PROXY_URL", "http://attacker.invalid")]);
+        let env = workload_env(&hostile, DOOR, &[]);
         assert_eq!(
             env.get("NUCLEUS_TOOL_PROXY_URL").map(String::as_str),
-            Some("http://127.0.0.1:8080"),
-            "the runtime's proxy URL must win over anything the spec asks for"
+            Some(DOOR),
+            "the runtime's door URL must win over anything the spec asks for"
         );
-        assert_eq!(
-            env.get("NUCLEUS_TOOL_PROXY_AUTH_SECRET")
-                .map(String::as_str),
-            Some("s3cret")
-        );
+    }
+
+    /// The door uid is the uid the child runs as: the admitted uid when the
+    /// runtime can drop to it, the runtime's own when it cannot. One decider,
+    /// so the door cannot admit a uid the workload does not have.
+    #[test]
+    fn the_door_admits_the_uid_the_child_runs_as() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let plan = WorkloadLaunch::build(&spec_with(&[]), DOOR, dir.path(), &[])
+            .admit()
+            .expect("a clean spec admits");
+        let expected = if nix_getuid() == 0 {
+            RunsAs::Dropped(DEFAULT_WORKLOAD_UID)
+        } else {
+            RunsAs::Inherited(nix_getuid())
+        };
+        assert_eq!(plan.runs_as(), expected);
+        assert_eq!(plan.door_uid().get(), expected.uid());
     }
 
     /// **The reserved-namespace fail-safe.** An unrecognised `NUCLEUS_*`
@@ -1021,7 +1118,6 @@ mod tests {
         let refused = WorkloadLaunch::build(
             &spec_with(&[("NUCLEUS_FUTURE_SECRET", "sensitive")]),
             url,
-            "s3cret",
             dir.path(),
             &[],
         )
@@ -1034,7 +1130,7 @@ mod tests {
         // Control 1: the one public reserved name the runtime injects
         // (NUCLEUS_TOOL_PROXY_URL) is allowlisted and must still admit.
         assert!(
-            WorkloadLaunch::build(&spec_with(&[]), url, "s3cret", dir.path(), &[])
+            WorkloadLaunch::build(&spec_with(&[]), url, dir.path(), &[])
                 .admit()
                 .is_ok(),
             "NUCLEUS_TOOL_PROXY_URL is public runtime config and must still admit"
@@ -1045,7 +1141,6 @@ mod tests {
             WorkloadLaunch::build(
                 &spec_with(&[("MY_APP_SETTING", "value")]),
                 url,
-                "s3cret",
                 dir.path(),
                 &[],
             )
@@ -1064,7 +1159,7 @@ mod tests {
     #[test]
     fn admit_assigns_a_distinct_default_uid_when_none_is_set() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let plan = WorkloadLaunch::build(&spec_with(&[]), "u", "s3cret", dir.path(), &[])
+        let plan = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
             .admit()
             .expect("a clean spec admits");
         assert_eq!(plan.uid, Some(DEFAULT_WORKLOAD_UID));
@@ -1083,7 +1178,7 @@ mod tests {
         let mut spec = spec_with(&[]);
         spec.uid = Some(nix_getuid());
         assert!(
-            WorkloadLaunch::build(&spec, "u", "s3cret", dir.path(), &[])
+            WorkloadLaunch::build(&spec, "u", dir.path(), &[])
                 .admit()
                 .is_err(),
             "a workload sharing the runtime uid must be refused"
@@ -1097,7 +1192,7 @@ mod tests {
         let mut spec = spec_with(&[]);
         let distinct = nix_getuid().wrapping_add(4242);
         spec.uid = Some(distinct);
-        let plan = WorkloadLaunch::build(&spec, "u", "s3cret", dir.path(), &[])
+        let plan = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
             .admit()
             .expect("a distinct uid admits");
         assert_eq!(plan.uid, Some(distinct));
@@ -1159,7 +1254,7 @@ mod tests {
         };
         // Through the real path: build → admit → spawn_admitted. A plan that did
         // not classify-and-admit every entry could not be constructed.
-        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", "s3cret", dir.path(), &[])
+        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit()
             .expect("a clean spec must admit");
         let (mut child, receipt) = spawn_admitted(plan).expect("sh must be spawnable");
@@ -1213,13 +1308,13 @@ mod tests {
              command:\n{observed}"
         );
 
-        // The receipt reports the same inventory the admission checked, and it
-        // carries the one legitimately-Internal entry (the proxy HMAC), so it is
-        // not the empty-environment vacuous case.
+        // The receipt reports the same inventory the admission checked: the
+        // door URL is in it, so it is not the empty-environment vacuous case.
         assert!(
-            receipt.carries_internal_entry(),
-            "the receipt must show the workload's own proxy credential, or the \
-             launch is the broken empty-env case: {receipt:?}"
+            receipt.env.iter().any(
+                |e| e.key == "NUCLEUS_TOOL_PROXY_URL" && e.source == EnvSource::RuntimeInjected
+            ),
+            "the receipt must show the door URL the runtime injected: {receipt:?}"
         );
         assert_eq!(receipt.stdio, ["null", "piped", "piped"]);
 
@@ -1266,7 +1361,7 @@ mod tests {
     #[test]
     fn workload_env_does_not_source_the_capability_from_the_runtime() {
         let hostile = spec_with(&[("NUCLEUS_TOOL_PROXY_BROKER_SECRET", "stolen")]);
-        let env = workload_env(&hostile, "http://127.0.0.1:8080", "s3cret", &[]);
+        let env = workload_env(&hostile, "http://127.0.0.1:8080", &[]);
         // A spec that names it gets it back — that value is the SPEC's, not the
         // runtime's, and the runtime never puts its own there. The property is
         // that nothing in `workload_env` SOURCES it from the runtime.
@@ -1278,7 +1373,7 @@ mod tests {
         );
 
         // With a clean spec, the key must be absent entirely.
-        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", "s3cret", &[]);
+        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", &[]);
         assert!(
             !env.contains_key("NUCLEUS_TOOL_PROXY_BROKER_SECRET"),
             "the runtime must never place its broker capability in the workload's environment"
@@ -1292,7 +1387,6 @@ mod tests {
         let env = workload_env(
             &spec_with(&[("MODEL_ENDPOINT", "https://example.invalid")]),
             "u",
-            "s",
             &[],
         );
         assert_eq!(
@@ -1443,15 +1537,15 @@ mod tests {
     }
 
     /// Every variable the overlay injects is one the model says the workload
-    /// may receive. The non-vacuity control is the auth secret: the map must
-    /// contain at least one *Internal*-labelled key, because a Public-only
-    /// overlay would pass this test without exercising the ceiling at all.
+    /// may receive. The overlay used to carry one *Internal* key, the proxy's
+    /// HMAC secret; since the workload door it carries none, and everything it
+    /// injects is Public. The non-vacuity controls are the door URL and the
+    /// egress channel, which must both be present.
     #[test]
     fn every_env_var_the_overlay_injects_is_model_deliverable_to_the_workload() {
         let env = workload_env(
             &spec_with(&[("ORDINARY", "1")]),
             "http://127.0.0.1:8080",
-            "s3cret",
             &[egress_spec()],
         );
         for key in env.keys() {
@@ -1462,8 +1556,8 @@ mod tests {
             );
         }
         assert!(
-            env.contains_key("NUCLEUS_TOOL_PROXY_AUTH_SECRET"),
-            "non-vacuity: the overlay must carry the one Internal-labelled key"
+            env.contains_key("NUCLEUS_TOOL_PROXY_URL"),
+            "non-vacuity: the overlay must name the workload's door"
         );
         assert!(
             env.keys().any(|k| k.starts_with("NUCLEUS_EGRESS_")),
@@ -1491,12 +1585,7 @@ mod tests {
             "NUCLEUS_DLC_TRUSTED_KEYS",
             "NUCLEUS_DLC_ISSUER",
         ];
-        let env = workload_env(
-            &spec_with(&[]),
-            "http://127.0.0.1:8080",
-            "s3cret",
-            &[egress_spec()],
-        );
+        let env = workload_env(&spec_with(&[]), "http://127.0.0.1:8080", &[egress_spec()]);
         for var in IDENTITY_VARS {
             assert!(
                 !ident_may_deliver(material_for_env_key(var), Principal::Workload),
@@ -1528,15 +1617,9 @@ mod tests {
         let mut spec = spec_with(&[("PATH", "/usr/bin:/bin"), ("BUILD_INPUT", "pinned")]);
         spec.command = "/usr/bin/env".into();
         spec.args.clear();
-        let plan = WorkloadLaunch::build(
-            &spec,
-            "http://127.0.0.1:8080",
-            "test-attempt-secret",
-            dir.path(),
-            &[],
-        )
-        .admit()
-        .unwrap();
+        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
+            .admit()
+            .unwrap();
         let (child, receipt) = spawn_admitted(plan).unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success());

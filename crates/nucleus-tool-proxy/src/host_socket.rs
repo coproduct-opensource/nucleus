@@ -57,7 +57,6 @@ use tracing::{info, warn};
 use crate::ApiError;
 use crate::pod_mgmt::{self, BoundVsock, VsockConfig};
 use crate::startup_trace::Startup;
-use crate::workload::BoundProxy;
 
 /// Where to bind and whom to admit; resolved from the CLI before the state is
 /// built, like `pod_mgmt::resolve_vsock`.
@@ -255,17 +254,6 @@ pub(crate) enum HostBound {
 }
 
 impl HostBound {
-    /// What the workload's `NUCLEUS_TOOL_PROXY_URL` should name.
-    pub(crate) fn proxy(&self) -> BoundProxy {
-        match self {
-            Self::Vsock(b) => BoundProxy::Vsock {
-                cid: b.cid(),
-                port: b.port(),
-            },
-            Self::Unix(b) => BoundProxy::Unix(b.path.clone()),
-        }
-    }
-
     pub(crate) async fn serve(self, app: Router) -> Result<(), ApiError> {
         match self {
             Self::Vsock(b) => pod_mgmt::serve_vsock(app, b).await,
