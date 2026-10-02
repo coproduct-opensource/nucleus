@@ -400,6 +400,20 @@ mod tests {
         }
     }
 
+    /// An agent in the pod reaches its tools through the MCP bridge, so the
+    /// guest layer must carry it at the path the runtime and the CLI expect.
+    /// Asked by package name, so it reads the same before `GuestBinary::Mcp`
+    /// existed (red) and after (green).
+    #[test]
+    fn the_guest_layer_ships_the_mcp_bridge() {
+        let mcp = GuestBinary::ALL
+            .into_iter()
+            .find(|b| b.package() == "nucleus-mcp")
+            .expect("the guest layer carries no nucleus-mcp");
+        assert_eq!(mcp.path(), "/usr/local/bin/nucleus-mcp");
+        assert!(reserved_by(mcp.path()).is_some());
+    }
+
     /// Every guest binary is reserved, and every one but `/init` sits under the
     /// binary prefix with its package's name.
     #[test]
