@@ -2265,13 +2265,13 @@ const CORPUS: &[(&str, u8, &[Op])] = &[
         Op::List { who: Who::Ci(0), via: Via::Grpc, token: false },
     ]),
     ("#3126: a CI identity cannot name the operator's pod as parent", 0, &[
-        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(0)) },
-        Op::Create { who: Who::Ci(1), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(0)) },
+        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(0)), ups: 0 },
+        Op::Create { who: Who::Ci(1), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(0)), ups: 0 },
     ]),
     ("#3126: a CI identity names its own pod as parent", 0, &[
-        Op::Create { who: Who::Ci(0), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
-        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest) },
-        Op::Create { who: Who::Ci(1), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(1)) },
+        Op::Create { who: Who::Ci(0), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
+        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest), ups: 0 },
+        Op::Create { who: Who::Ci(1), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: Some(PodRef::Nth(1)), ups: 0 },
     ]),
     ("#3105: a failed spawn hands its reservation back", 1, &[
         Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::SpawnFails, header: None, ups: 0 },
