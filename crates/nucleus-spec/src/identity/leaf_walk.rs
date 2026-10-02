@@ -44,6 +44,7 @@ const OUT: &[&str] = &[
     // Image locations: the digests are the identity.
     "/spec/image/kernel_path",
     "/spec/image/rootfs_path",
+    "/spec/image/rootfs_oci",
     "/spec/image/scratch_path",
     "/spec/image/data_path",
     // An inline lattice's label and provenance, and its validity window —
@@ -556,4 +557,38 @@ fn every_leaf_of_an_inline_lattice_is_classified_by_the_digest() {
         "/spec/policy/lattice/minimum_isolation",
     ]);
     assert_clean("inline lattice", &r, &required);
+}
+
+/// The same walk with the rootfs sourced from OCI, so every leaf of `rootfs_oci` is classified
+/// too — a reference, a manifest digest and a layer digest are all locations, and the walk
+/// proves the program digest agrees rather than taking the destructure's word for it.
+#[test]
+fn every_leaf_of_an_oci_rootfs_spec_is_classified_by_the_digest() {
+    let path = maximal(r#"{"type":"profile","name":"codegen"}"#);
+    let mut doc = serde_json::to_value(&path).expect("serializes");
+    let image = doc
+        .pointer_mut("/spec/image")
+        .and_then(Value::as_object_mut)
+        .expect("the maximal spec has an image");
+    assert!(image.remove("rootfs_path").is_some(), "the base had a path");
+    let h = "a".repeat(64);
+    image.insert(
+        "rootfs_oci".into(),
+        serde_json::json!({
+            "reference": format!("registry.example/team/app:v1@sha256:{h}"),
+            "manifest_digest": format!("sha256:{h}"),
+            "guest_layer_digest": D[0],
+        }),
+    );
+    let spec: PodSpec = serde_json::from_value(doc).expect("the OCI variant parses");
+    let mut r = walk(&spec);
+    // Forced, and worth knowing: an OCI rootfs refuses `read_only: false`, so the one other
+    // value of this bool is not a valid spec. Asserted present, so the exemption cannot go stale.
+    assert!(
+        r.unperturbable.remove("/spec/image/read_only"),
+        "read_only was expected to be unperturbable under an OCI rootfs"
+    );
+    let mut required = every_field();
+    required.push("/spec/image/rootfs_oci");
+    assert_clean("oci rootfs", &r, &required);
 }
