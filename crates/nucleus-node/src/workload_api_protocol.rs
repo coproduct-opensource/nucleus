@@ -39,7 +39,7 @@ pub const MAX_COMMAND_LEN: usize = 256;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadApiCommand {
     /// `FETCH_SVID` — request this pod's X.509 SVID: the cert chain, and the
-    /// private key on the FIRST request only (see `PodMaterial::svid_key_served`).
+    /// private key on the FIRST request only (see `OneShot::SvidKey`).
     FetchSvid,
     /// `FETCH_BUNDLE` — request the trust bundle (root CA certificates).
     FetchBundle,
@@ -69,6 +69,15 @@ pub enum WorkloadApiCommand {
     /// The token is **not a secret** (a scoped capability plus a public issuer
     /// key, with anti-replay resting on a host-pinned nonce), so this is not
     /// about confidentiality. It is about uniqueness surviving a restore.
+    ///
+    /// # Served ONCE (#2724)
+    ///
+    /// Not a secret is not the same as the workload's to hold: the tool-proxy's
+    /// environment model refuses `NUCLEUS_TASK_TOKEN` to the workload, and the
+    /// cmdline copy went partly so the workload could not read it. Served on
+    /// demand, this command handed it back to any process that asked. It is a
+    /// `OneShot` now, like everything else guest-init fetches before the
+    /// workload exists.
     FetchTaskToken,
     /// `FETCH_DLC_ADMISSION` — request this pod's DLC-D verified-admission
     /// provisioning (trusted issuer keys, issuer, per-operation credentials).
@@ -77,8 +86,9 @@ pub enum WorkloadApiCommand {
     /// material over the per-pod socket, fetched after boot so it is neither
     /// baked into a snapshot base nor subject to the kernel cmdline's capacity
     /// (which a credential set exceeds — observed live). The values are a
-    /// public keyset plus the pod's OWN capability grants; possession is
-    /// exactly the authority intended.
+    /// public keyset plus the pod's OWN capability grants — intended for the
+    /// tool-proxy that presents them, not the workload (`NUCLEUS_DLC_*` is
+    /// withheld from it), so it is served ONCE, to guest-init (#2724).
     FetchDlcAdmission,
     /// `FETCH_POD_CERTIFICATE` — request this pod's `LatticeCertificate`
     /// (base64 `AttenuationToken`) and the node's root public key.
@@ -89,7 +99,8 @@ pub enum WorkloadApiCommand {
     /// is PUBLIC (its holder key never leaves the node — `pod_authority`);
     /// the root key delivered alongside is the pinned trust anchor the
     /// tool-proxy verifies against, deliberately NOT the key embedded in the
-    /// token itself.
+    /// token itself. Served ONCE, to guest-init, like every other per-pod
+    /// value the workload is not given (#2724).
     FetchPodCertificate,
     /// `FETCH_POD_CALLER_TOKEN` — request this pod's caller-identity token for
     /// the node's management API.
@@ -102,16 +113,21 @@ pub enum WorkloadApiCommand {
     /// a caller-identity token needs. Any other delivery (a spec field, a
     /// kernel cmdline value, an environment variable set before the pod is
     /// known) would be something the guest could restate.
+    ///
+    /// Served ONCE (#2724): holding it is exercising this pod's authority at
+    /// the node, which is the tool-proxy's to do, not the workload's.
     FetchPodCallerToken,
     /// `FETCH_BROKER_SECRET` — request this pod's credential-broker capability.
     ///
     /// # Served exactly ONCE per pod, and that is the security property
     ///
-    /// Its neighbours may be fetched repeatedly: a task token and an admission
-    /// keyset are per-pod material whose possession is the authority intended,
-    /// so serving them twice changes nothing. This one is different. It exists
-    /// to distinguish the mediating tool-proxy from every OTHER process in the
-    /// guest, and a secret served twice cannot do that.
+    /// This used to say its neighbours could be fetched repeatedly because
+    /// possession was "the authority intended". It was intended for the
+    /// tool-proxy, and a socket that cannot see who asks gave it to the
+    /// workload too (#2724). Every per-pod value guest-init fetches is now a
+    /// `OneShot`. This one exists to distinguish the mediating tool-proxy from
+    /// every OTHER process in the guest, and a secret served twice cannot do
+    /// that.
     ///
     /// # What it defends against, concretely
     ///
