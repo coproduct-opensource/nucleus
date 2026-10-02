@@ -508,6 +508,8 @@ pub(crate) struct HeldPod {
     pub cert: LatticeCertificate,
     pub parent: Parent,
     pub ledger: LedgerView,
+    /// What the pod was admitted: the ceiling for its own children's.
+    pub upstreams: Vec<CredentialedEgressSpec>,
 }
 
 /// A ledger in micro-USD, the unit it keeps.
@@ -1160,6 +1162,7 @@ impl PodAuthority {
                         cert: e.cert.clone(),
                         parent: e.parent,
                         ledger: LedgerView::of(&e.ledger),
+                        upstreams: e.upstreams.clone(),
                     };
                     (*id, held)
                 })

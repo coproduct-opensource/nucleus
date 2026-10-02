@@ -34,6 +34,12 @@
 //!   model's, coordinate by coordinate: its ceiling, what retired children
 //!   consumed, what live children hold, how many there are. A create that
 //!   never ran releases its reservation exactly once.
+//! - **Upstreams.** A credentialed upstream is admitted iff the operator's
+//!   registry holds it, field for field, and — for a pod caller — the calling
+//!   pod was admitted it too: a child's upstreams are a subset of its
+//!   parent's, checked against what the AUTHORITY holds for both, not against
+//!   the model. A request beyond either ceiling is refused whole. The spec the
+//!   driver launched carries exactly the admitted set.
 //! - **A restart changes nothing.** The node can restart between any two
 //!   steps: a fresh authority over the same state directory, restored from
 //!   disk. Every ledger must come back exactly as the model kept it, including
@@ -198,6 +204,9 @@ enum Op {
         boot: Boot,
         /// The unauthenticated parent header.
         header: Option<PodRef>,
+        /// The credentialed upstreams the spec asks for, one bit per
+        /// [`upstream`]: two the registry holds, two it does not.
+        ups: u8,
     },
     Cancel {
         who: Who,
@@ -255,9 +264,10 @@ impl Case {
                     caps,
                     boot,
                     header,
+                    ups,
                 } => format!(
                     "Op::Create {{ who: {}, via: Via::{via:?}, token: {token}, budget: {budget}, \
-                     caps: {caps}, boot: Boot::{boot:?}, header: {} }}",
+                     caps: {caps}, boot: Boot::{boot:?}, header: {}, ups: {ups:#06b} }}",
                     who(w),
                     header.map_or("None".to_string(), |h| format!("Some({})", pod(h)))
                 ),
@@ -336,8 +346,12 @@ fn op() -> impl Strategy<Value = Op> {
         0u8..27,
         prop_oneof![6 => Just(Boot::Runs), 1 => Just(Boot::SpawnFails), 1 => Just(Boot::ClientGone)],
         proptest::option::weighted(0.2, pod_ref()),
+        // Mostly none, so the budget and fan-out refusals stay reachable; then
+        // the registry's own entries, which a pod caller holds only if its
+        // parent does; then anything, the registry's absentees included.
+        prop_oneof![5 => Just(0u8), 3 => 1u8..=REGISTERED, 1 => 0u8..16],
     )
-        .prop_map(|(who, via, token, budget, caps, boot, header)| Op::Create {
+        .prop_map(|(who, via, token, budget, caps, boot, header, ups)| Op::Create {
             who,
             via,
             token,
@@ -345,6 +359,7 @@ fn op() -> impl Strategy<Value = Op> {
             caps,
             boot,
             header,
+            ups,
         });
     let cancel =
         (who(), via(), any::<bool>(), target()).prop_map(|(who, via, token, target)| Op::Cancel {
@@ -441,6 +456,8 @@ struct MPod {
     /// Read from the node at creation, for checking the pod's children.
     effective: PermissionLattice,
     cert: LatticeCertificate,
+    /// The upstreams it was admitted, as [`Op::Create`]'s bits.
+    ups: u8,
 }
 
 #[derive(Debug)]
@@ -522,7 +539,7 @@ impl Model {
     }
 
     /// Would admission issue `who` a child of `budget` micro-USD, and from
-    /// which source, at what depth?
+    /// which source, at what depth — upstreams aside?
     fn admits(&self, who: Who, budget: u64) -> Option<(Source, usize)> {
         let (source, depth) = match who {
             Who::Stranger => return None,
@@ -544,6 +561,16 @@ impl Model {
         let l = self.ledger(source)?;
         let available = l.max - l.consumed - l.allocated;
         (l.live < FAN_OUT && budget <= available).then_some((source, depth))
+    }
+
+    /// The upstreams a child of `source` may be admitted: the registry's, and
+    /// for a pod caller only those its own pod was admitted. An external
+    /// caller's ceiling is the registry until caller bindings carry their own.
+    fn upstream_ceiling(&self, source: Source) -> u8 {
+        match source {
+            Source::Root | Source::External(_) => REGISTERED,
+            Source::Pod(i) => self.pods[i].ups & REGISTERED,
+        }
     }
 
     fn allocate(&mut self, source: Source, budget: u64) {
@@ -652,12 +679,86 @@ fn requested(budget: u8, caps: u8) -> PermissionLattice {
     l
 }
 
-fn spec_yaml(work: &std::path::Path, policy: PermissionLattice) -> String {
+/// The operator registry the walk's node starts with: [`upstream`]'s first two.
+const REGISTRY: &str = r#"
+[[upstream]]
+name = "model-api"
+base_url = "https://model-api.invalid/v1"
+header = "authorization"
+value_prefix = "Bearer "
+credential.env.var = "EXAMPLE_MODEL_API_TOKEN"
+
+[[upstream]]
+name = "search-api"
+base_url = "https://search-api.invalid"
+header = "x-api-key"
+credential.env.var = "EXAMPLE_SEARCH_API_TOKEN"
+"#;
+
+/// The bits of [`Op::Create`]'s `ups` that name registry entries.
+const REGISTERED: u8 = 0b0011;
+
+/// One requestable upstream per bit. The first two are the registry's entries
+/// exactly. The third is the first with its base URL moved, so it differs in
+/// one field; the fourth is an entry the registry lacks, naming a node
+/// variable nobody registered.
+fn upstream(bit: u8) -> nucleus_spec::CredentialedEgressSpec {
+    let entry = |name: &str, upstream: &str, var: &str, header: &str, prefix: &str| {
+        nucleus_spec::CredentialedEgressSpec {
+            name: name.into(),
+            upstream: upstream.into(),
+            credential_env: var.into(),
+            header: header.into(),
+            value_prefix: prefix.into(),
+        }
+    };
+    match bit {
+        0 => entry(
+            "model-api",
+            "https://model-api.invalid/v1",
+            "EXAMPLE_MODEL_API_TOKEN",
+            "authorization",
+            "Bearer ",
+        ),
+        1 => entry(
+            "search-api",
+            "https://search-api.invalid",
+            "EXAMPLE_SEARCH_API_TOKEN",
+            "x-api-key",
+            "",
+        ),
+        2 => entry(
+            "model-api",
+            "https://elsewhere.invalid/v1",
+            "EXAMPLE_MODEL_API_TOKEN",
+            "authorization",
+            "Bearer ",
+        ),
+        _ => entry(
+            "unregistered",
+            "https://elsewhere.invalid",
+            "NUCLEUS_NODE_PROXY_AUTH_SECRET",
+            "authorization",
+            "",
+        ),
+    }
+}
+
+/// The upstreams `ups` names, in bit order.
+fn upstreams(ups: u8) -> Vec<nucleus_spec::CredentialedEgressSpec> {
+    (0..4)
+        .filter(|b| ups & (1 << b) != 0)
+        .map(upstream)
+        .collect()
+}
+
+fn spec_yaml(work: &std::path::Path, policy: PermissionLattice, ups: u8) -> String {
     let mut spec: nucleus_spec::PodSpec =
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
             .expect("minimal spec");
     spec.spec.work_dir = work.to_path_buf();
     spec.spec.timeout_seconds = 600;
+    spec.spec.credentialed_egress = upstreams(ups);
     spec.spec.policy = nucleus_spec::PolicySpec::Inline {
         lattice: Box::new(policy),
     };
@@ -673,11 +774,13 @@ fn node(dir: &tempfile::TempDir) -> Node {
     let mut st = state(dir);
     let rng = ring::rand::SystemRandom::new();
     let ext_root = key();
+    let registry = dir.path().join("upstreams.toml");
+    std::fs::write(&registry, REGISTRY).expect("registry");
     let args = AuthorityArgs {
         root_minter_spiffe_id: None,
         cert_trust_anchors: vec![hex::encode(ext_root.public_key().as_ref())],
         max_children_per_pod: FAN_OUT,
-        upstreams: None,
+        upstreams: Some(registry),
         federation_issuer: None,
     };
     let authority =
@@ -847,6 +950,12 @@ struct Stats {
     refused_fan_out: usize,
     refused_depth: usize,
     refused_released: usize,
+    /// Refused only for an upstream the registry lacks.
+    refused_unregistered: usize,
+    /// Refused only for a registered upstream the calling pod lacks.
+    refused_beyond_parent: usize,
+    /// Pods admitted an upstream by a pod caller.
+    admitted_upstreams_from_a_pod: usize,
     spawn_failed: usize,
     client_gone: usize,
     cascaded: usize,
@@ -874,6 +983,9 @@ impl Stats {
         self.refused_fan_out += o.refused_fan_out;
         self.refused_depth += o.refused_depth;
         self.refused_released += o.refused_released;
+        self.refused_unregistered += o.refused_unregistered;
+        self.refused_beyond_parent += o.refused_beyond_parent;
+        self.admitted_upstreams_from_a_pod += o.admitted_upstreams_from_a_pod;
         self.spawn_failed += o.spawn_failed;
         self.client_gone += o.client_gone;
         self.cascaded += o.cascaded;
@@ -918,6 +1030,7 @@ struct Issued<'a> {
     micro: u64,
     header: Option<PodRef>,
     asked: &'a PermissionLattice,
+    ups: u8,
 }
 
 struct Walk {
@@ -961,6 +1074,7 @@ impl Walk {
             caps: 26,
             boot: Boot::Runs,
             header: None,
+            ups: REGISTERED,
         };
         self.step(&root)
             .await
@@ -1041,15 +1155,18 @@ impl Walk {
             caps,
             boot,
             header,
+            ups,
         } = *op
         else {
             return Err("not a create".into());
         };
         let micro = u64::from(budget) * MICRO;
-        let want = self.model.admits(who, micro);
+        let authorised = self.model.admits(who, micro);
+        let ceiling = authorised.map(|(source, _)| self.model.upstream_ceiling(source));
+        let want = authorised.filter(|_| ceiling.is_some_and(|c| ups & !c == 0));
         let header_id = header.map(|h| self.model.pods[self.model.resolve(h)].id);
         let asked = requested(budget, caps);
-        let yaml = spec_yaml(&self.node.st.state_dir.join("w"), asked.clone());
+        let yaml = spec_yaml(&self.node.st.state_dir.join("w"), asked.clone(), ups);
         let st = match boot {
             Boot::SpawnFails => self.node.failing.clone(),
             _ => self.node.st.clone(),
@@ -1072,7 +1189,11 @@ impl Walk {
             let Created::Refused(_) = got else {
                 return Err(format!("the model refuses this create; the node: {got}"));
             };
-            self.count_refusal(who, micro);
+            match ceiling {
+                Some(_) if ups & !REGISTERED != 0 => self.stats.refused_unregistered += 1,
+                Some(_) => self.stats.refused_beyond_parent += 1,
+                None => self.count_refusal(who, micro),
+            }
             return Ok(());
         };
         match (boot, got) {
@@ -1084,6 +1205,7 @@ impl Walk {
                     micro,
                     header,
                     asked: &asked,
+                    ups,
                 };
                 self.register(id, issued).await
             }
@@ -1236,6 +1358,7 @@ impl Walk {
             micro,
             header,
             asked,
+            ups,
         } = issued;
         let held = self.node.st.authority.held().await;
         let h = held
@@ -1339,6 +1462,28 @@ impl Walk {
         if serde_json::to_value(&launched).ok() != serde_json::to_value(&effective).ok() {
             return Err("the launched spec's policy is not the certificate's lattice".into());
         }
+        // And the upstreams admission granted, which the model says are all
+        // that were asked for: a request beyond a ceiling is refused whole.
+        if handle.spec.spec.credentialed_egress != upstreams(ups) {
+            return Err(format!(
+                "the launched spec carries upstreams {:?}, admitted {ups:#06b}",
+                handle
+                    .spec
+                    .spec
+                    .credentialed_egress
+                    .iter()
+                    .map(|u| (&u.name, &u.upstream))
+                    .collect::<Vec<_>>()
+            ));
+        }
+        if h.upstreams != upstreams(ups) {
+            return Err(format!(
+                "the authority recorded different upstreams than it launched ({ups:#06b})"
+            ));
+        }
+        if matches!(source, Source::Pod(_)) && ups != 0 {
+            self.stats.admitted_upstreams_from_a_pod += 1;
+        }
 
         let reg_parent = match who {
             Who::Pod(r) => Some(self.model.resolve(r)),
@@ -1356,6 +1501,7 @@ impl Walk {
             ledger: fresh_ledger(micro),
             effective,
             cert,
+            ups,
         });
         self.stats.admitted += 1;
         self.stats.depth = self.stats.depth.max(depth);
@@ -1688,6 +1834,26 @@ impl Walk {
                 if h.ledger.allocated + h.ledger.consumed > h.ledger.max {
                     return Err(format!("pod {j}'s ledger over-commits: {:?}", h.ledger));
                 }
+                if h.upstreams != upstreams(p.ups) {
+                    return Err(format!(
+                        "pod {j}'s upstreams are not those it was admitted ({:#06b})",
+                        p.ups
+                    ));
+                }
+            }
+        }
+        // A child's upstreams are within its parent's, read from what the
+        // authority holds for both rather than from the model: the invariant
+        // admission exists to keep, at every depth and across restarts.
+        for (id, h) in &held.pods {
+            if let Parent::Pod(parent) = h.parent
+                && let Some(p) = held.pods.get(&parent)
+                && let Some(beyond) = h.upstreams.iter().find(|u| !u.admitted_by(&p.upstreams))
+            {
+                return Err(format!(
+                    "{id} holds upstream `{}`, which its parent {parent} does not",
+                    beyond.name
+                ));
             }
         }
         for (k, want) in self.model.external.iter().enumerate() {
@@ -1755,7 +1921,7 @@ impl Walk {
                 continue;
             }
             let who = Who::Pod(PodRef::Nth(u8::try_from(j).expect("fewer than 256 pods")));
-            let yaml = spec_yaml(&self.node.st.state_dir.join("w"), requested(0, 0));
+            let yaml = spec_yaml(&self.node.st.state_dir.join("w"), requested(0, 0), 0);
             let got = self
                 .issue_create(&self.node.st.clone(), who, Via::Grpc, false, None, yaml)
                 .await;
@@ -1855,6 +2021,18 @@ fn random_delegation_chains_agree_with_the_model() {
         ("budget refusals", stats.refused_budget),
         ("fan-out refusals", stats.refused_fan_out),
         ("refusals of a released pod", stats.refused_released),
+        (
+            "refusals of an unregistered upstream",
+            stats.refused_unregistered,
+        ),
+        (
+            "refusals of an upstream beyond the parent's",
+            stats.refused_beyond_parent,
+        ),
+        (
+            "upstreams admitted to a pod caller's child",
+            stats.admitted_upstreams_from_a_pod,
+        ),
         ("failed spawns", stats.spawn_failed),
         ("dropped creates", stats.client_gone),
         ("cascaded cancels", stats.cascaded),
@@ -1883,6 +2061,7 @@ fn a_chain_is_refused_one_hop_past_the_depth_bound() {
             caps: 0,
             boot: Boot::Runs,
             header: None,
+            ups: 0,
         };
         MAX_DEPTH
     ];
@@ -1919,6 +2098,7 @@ fn a_lockdown_of_a_chains_root_reaches_the_whole_chain() {
         caps: 0,
         boot: Boot::Runs,
         header: None,
+        ups: 0,
     };
     let mut ops = vec![create; 4];
     ops.push(Op::Lockdown {
@@ -1941,6 +2121,30 @@ fn a_lockdown_of_a_chains_root_reaches_the_whole_chain() {
     assert_eq!(stats.refused_locked, 1, "{stats:?}");
 }
 
+/// The upstream corpus entry reaches every case it is there for: a pod caller
+/// refused an upstream its parent lacks (before and after a restart), refused
+/// one the registry lacks or holds differently, the same for the root minter
+/// and external callers, and a grandchild admitted what its chain holds.
+#[test]
+fn a_child_is_never_admitted_an_upstream_its_parent_lacks() {
+    let (_, root_budget, ops) = CORPUS
+        .iter()
+        .find(|(name, ..)| name.starts_with("a child holds no upstream"))
+        .expect("the upstream corpus entry");
+    let stats = runtime()
+        .block_on(run_case(
+            &Case {
+                root_budget: *root_budget,
+                ops: ops.to_vec(),
+            },
+            Rules::AS_SHIPPED,
+        ))
+        .unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(stats.refused_beyond_parent, 3, "{stats:?}");
+    assert_eq!(stats.refused_unregistered, 5, "{stats:?}");
+    assert_eq!(stats.admitted_upstreams_from_a_pod, 3, "{stats:?}");
+}
+
 // ── The regression corpus ────────────────────────────────────────────────────
 
 /// Shrunk cases that found a bug, replayed before every walk under that
@@ -1950,14 +2154,14 @@ fn a_lockdown_of_a_chains_root_reaches_the_whole_chain() {
 #[rustfmt::skip]
 const CORPUS: &[(&str, u8, &[Op])] = &[
     ("#3032: a create dropped mid-boot keeps no certificate", 0, &[
-        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::ClientGone, header: None },
+        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::ClientGone, header: None, ups: 0 },
     ]),
     ("#3032: a pod's create dropped mid-boot hands its slot back", 1, &[
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::ClientGone, header: None },
-        Op::Create { who: Who::Pod(PodRef::Nth(0)), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::ClientGone, header: None, ups: 0 },
+        Op::Create { who: Who::Pod(PodRef::Nth(0)), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
     ]),
     ("#3093: a committed reservation is not released while its pod runs", 0, &[
-        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
     ]),
     ("#3081: a lockdown is attributed to the verified peer, not its claim", 0, &[
         Op::Lockdown { who: Who::Operator, scope: Scope::All, claim: Claim::SomeoneElse, restore: false },
@@ -1966,42 +2170,57 @@ const CORPUS: &[(&str, u8, &[Op])] = &[
         Op::List { who: Who::Ci(0), via: Via::Grpc, token: false },
     ]),
     ("#3088: a CI identity reaches the pod it created", 0, &[
-        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Ci(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::List { who: Who::Ci(0), via: Via::Grpc, token: false },
     ]),
     ("#3105: a failed spawn hands its reservation back", 1, &[
-        Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::SpawnFails, header: None },
+        Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::SpawnFails, header: None, ups: 0 },
     ]),
     ("a pod's lockdown reaches the pods below it", 0, &[
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Nth(0))), claim: Claim::Empty, restore: false },
     ]),
     ("a pod below a locked pod creates nothing", 0, &[
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::Lockdown { who: Who::Orch(0), scope: Scope::Pod(Target::Pod(PodRef::Nth(0))), claim: Claim::Empty, restore: false },
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
     ]),
     ("lifting a pod's lockdown leaves the one above it in force", 0, &[
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Nth(0))), claim: Claim::Empty, restore: false },
         Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Newest)), claim: Claim::Empty, restore: false },
         Op::Lockdown { who: Who::Operator, scope: Scope::Pod(Target::Pod(PodRef::Newest)), claim: Claim::Empty, restore: true },
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
     ]),
     ("a watcher that connects under a lockdown is told it", 0, &[
         Op::Lockdown { who: Who::Operator, scope: Scope::All, claim: Claim::Empty, restore: false },
     ]),
     ("a pod below a stopped pod creates nothing", 0, &[
         Op::Cancel { who: Who::Operator, via: Via::Grpc, token: false, target: Target::Pod(PodRef::Newest) },
-        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest) },
-        Op::Create { who: Who::Pod(PodRef::Nth(1)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: Some(PodRef::Newest), ups: 0 },
+        Op::Create { who: Who::Pod(PodRef::Nth(1)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
     ]),
     ("an external chain's ledger is restored on restart", 0, &[
-        Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::Restart,
     ]),
+    ("a child holds no upstream its parent lacks, before and after a restart", 1, &[
+        Op::Create { who: Who::Pod(PodRef::Nth(0)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0001 },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0010 },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0011 },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0001 },
+        Op::Restart,
+        Op::Create { who: Who::Pod(PodRef::Nth(1)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0010 },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0001 },
+        Op::Create { who: Who::Pod(PodRef::Nth(0)), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0100 },
+        Op::Create { who: Who::Pod(PodRef::Nth(0)), via: Via::Http, token: true, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b1000 },
+        Op::Create { who: Who::Orch(0), via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b1001 },
+        Op::Create { who: Who::Ci(0), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0100 },
+        Op::Create { who: Who::Operator, via: Via::Grpc, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b1000 },
+        Op::Create { who: Who::Orch(1), via: Via::Http, token: false, budget: 0, caps: 0, boot: Boot::Runs, header: None, ups: 0b0011 },
+    ]),
     ("what a retired child consumed is restored on restart", 1, &[
-        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: None },
+        Op::Create { who: Who::Pod(PodRef::Newest), via: Via::Grpc, token: false, budget: 1, caps: 0, boot: Boot::Runs, header: None, ups: 0 },
         Op::Cancel { who: Who::Operator, via: Via::Grpc, token: false, target: Target::Pod(PodRef::Newest) },
         Op::Reap,
         Op::Restart,
