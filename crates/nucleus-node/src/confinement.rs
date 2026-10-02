@@ -153,7 +153,7 @@ pub(crate) async fn attest(pod_dir: &Path, spec: &PodSpec, pod_id: &str) -> Resu
 ///
 /// The commonest cause is not a broken probe but a guest that predates it: every
 /// published release through 2.2.0 ships a guest-init that never runs it, so a
-/// node from this tree refuses every confined pod on the pinned rootfs. The
+/// node from this tree refuses every confined pod on such a rootfs. The
 /// refusal stands — the probe is the only evidence the fence drops traffic —
 /// but the operator is told which change to look up and how to get a guest that
 /// has it, in the capability table's words rather than a second copy of them.
@@ -229,7 +229,7 @@ mod tests {
         assert_eq!(verdict("", true), Verdict::Absent);
     }
 
-    /// The pinned 2.2.0 guest booted by a node from this tree: no verdict,
+    /// The 2.2.0 guest (the pin until 2.3.0) booted by a node from this tree: no verdict,
     /// because its guest-init predates #2365. Still a refusal, and now one that
     /// says which change the guest lacks and how to build one that has it.
     #[test]
