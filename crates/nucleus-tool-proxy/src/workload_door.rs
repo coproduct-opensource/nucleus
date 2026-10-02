@@ -46,7 +46,10 @@
 use std::path::{Path, PathBuf};
 
 use axum::Router;
-use axum::extract::connect_info::Connected;
+use axum::extract::{ConnectInfo, Request, connect_info::Connected};
+use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{MethodRouter, post};
 use axum::serve::IncomingStream;
 use tokio::net::{UnixListener, UnixStream};
@@ -138,18 +141,89 @@ fn handler(route: DoorRoute) -> MethodRouter<crate::AppState> {
     }
 }
 
-/// The door's router: the door table, under the main listener's own auth
-/// middleware and fail-closed panic layer, in the same order.
+/// The door's router: the door table, each route under the main listener's
+/// own auth middleware and the door's route admission ([`entered`]), all under
+/// the main listener's fail-closed panic layer.
+///
+/// The auth middleware is layered per route rather than over the router, so it
+/// runs only on a matched door route and always after [`entered`] has bound the
+/// request to that route. That binding is what lets the attestation
+/// requirement accept the door's peer credentials on the door's routes and
+/// nowhere else.
 pub(crate) fn router(state: crate::AppState) -> Router {
-    table(handler)
-        .with_state(state.clone())
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            crate::auth_middleware,
-        ))
-        .layer(tower_http::catch_panic::CatchPanicLayer::custom(
-            crate::fail_closed_panic_response,
-        ))
+    let auth = state.clone();
+    table(move |route| {
+        entered(
+            route,
+            handler(route).layer(axum::middleware::from_fn_with_state(
+                auth.clone(),
+                crate::auth_middleware,
+            )),
+        )
+    })
+    .with_state(state)
+    .layer(tower_http::catch_panic::CatchPanicLayer::custom(
+        crate::fail_closed_panic_response,
+    ))
+}
+
+/// A request that reached one of the door's own routes through a peer the
+/// door admitted: the evidence the attestation requirement accepts in place of
+/// a client certificate ([`crate::attestation::TransportEvidence::DoorPeer`]).
+///
+/// Its fields are private and it is built in one place, [`enter`], which needs
+/// a [`DoorPeer`] (built only by the door's accept path) and a [`DoorRoute`]
+/// (supplied only by the door's route table). So a request on the main
+/// listener cannot carry one, and nor can a door request off the door's table
+/// (ADR 0007 C-1, C-2, C-3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DoorAdmission {
+    peer: DoorPeer,
+    route: DoorRoute,
+}
+
+impl DoorAdmission {
+    pub(crate) fn uid(&self) -> u32 {
+        self.peer.uid()
+    }
+
+    pub(crate) fn route(&self) -> DoorRoute {
+        self.route
+    }
+}
+
+/// Wrap a door route's handler so every request it serves carries its
+/// [`DoorAdmission`].
+fn entered<S>(route: DoorRoute, inner: MethodRouter<S>) -> MethodRouter<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    inner.layer(axum::middleware::from_fn(
+        move |request: Request, next: Next| enter(route, request, next),
+    ))
+}
+
+/// Bind a request to the door route it matched, from the peer the door's
+/// listener admitted. A request with no door peer is refused: a door route is
+/// only reachable through the door's listener, so that is not a door caller.
+async fn enter(route: DoorRoute, mut request: Request, next: Next) -> Response {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<DoorPeer>>()
+        .map(|ConnectInfo(peer)| peer.clone());
+    match peer {
+        Some(peer) => {
+            request
+                .extensions_mut()
+                .insert(DoorAdmission { peer, route });
+            next.run(request).await
+        }
+        None => (
+            StatusCode::FORBIDDEN,
+            "a workload door route was reached without the door's peer admission",
+        )
+            .into_response(),
+    }
 }
 
 /// What the kernel reported about a connected peer.
@@ -199,12 +273,12 @@ impl DoorPeer {
 
 /// The door's admission decision, over what the kernel reported.
 ///
+/// Private: it mints the [`DoorPeer`] the attestation requirement trusts, so
+/// only the door's own listener may call it (ADR 0007 C-2).
+///
 /// # Errors
 /// [`DoorRefusal`] naming why the peer is not the workload.
-pub(crate) fn admit(
-    peer: Result<PeerFacts, String>,
-    workload: WorkloadUid,
-) -> Result<DoorPeer, DoorRefusal> {
+fn admit(peer: Result<PeerFacts, String>, workload: WorkloadUid) -> Result<DoorPeer, DoorRefusal> {
     let facts = peer.map_err(DoorRefusal::PeerCredentialsUnavailable)?;
     if facts.pid == Some(0) {
         return Err(DoorRefusal::OutsideThisPidNamespace);
@@ -685,5 +759,250 @@ mod tests {
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o666);
         assert!(UnservedDoor::bind(Path::new("rel/door.sock")).is_err());
+    }
+
+    // ── the attestation requirement, by transport ──────────────────────
+
+    use crate::attestation::{AttestationConfig, AttestationVerifier, TransportEvidence};
+
+    fn attestation_required() -> AttestationVerifier {
+        AttestationVerifier::new(AttestationConfig::required())
+    }
+
+    /// The attestation step of `crate::auth_middleware`, verbatim: read the
+    /// transport evidence, decide the requirement over it. Only the rest of
+    /// the middleware (tiers, HMAC, lockdown) is left out, because it needs a
+    /// full `AppState`.
+    async fn attestation_step(
+        axum::extract::State(verifier): axum::extract::State<AttestationVerifier>,
+        request: axum::extract::Request,
+        next: Next,
+    ) -> Response {
+        let decided = TransportEvidence::of(request.extensions())
+            .and_then(|evidence| verifier.admit(&evidence, request.headers()));
+        match decided {
+            Ok(()) => next.run(request).await,
+            Err(reason) => (StatusCode::FORBIDDEN, reason).into_response(),
+        }
+    }
+
+    /// The handler reports the evidence it was reached with.
+    async fn evidence_kind(request: axum::extract::Request) -> String {
+        match TransportEvidence::of(request.extensions()) {
+            Ok(TransportEvidence::DoorPeer(admission)) => {
+                format!("door uid={} route={:?}", admission.uid(), admission.route())
+            }
+            Ok(TransportEvidence::ClientCert(_)) => "client-cert".to_string(),
+            Ok(TransportEvidence::None) => "none".to_string(),
+            Err(e) => format!("refused: {e}"),
+        }
+    }
+
+    /// The real door table and the real per-route admission ([`entered`]),
+    /// each route under the attestation step, as [`router`] builds it.
+    fn door_app(verifier: AttestationVerifier) -> Router {
+        table(move |route| {
+            entered(
+                route,
+                axum::routing::post(evidence_kind).layer(axum::middleware::from_fn_with_state(
+                    verifier.clone(),
+                    attestation_step,
+                )),
+            )
+        })
+    }
+
+    /// The main listener's shape: routes under a router-level attestation
+    /// step, on the same path a door route uses.
+    fn tcp_app(verifier: AttestationVerifier) -> Router {
+        Router::new()
+            .route("/v1/read", axum::routing::post(evidence_kind))
+            .layer(axum::middleware::from_fn_with_state(
+                verifier,
+                attestation_step,
+            ))
+    }
+
+    async fn serve_tcp(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await
+        });
+        addr
+    }
+
+    async fn post_raw<S>(mut stream: S, path: &str, extra_headers: &str) -> String
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let request =
+            format!("POST {path} HTTP/1.0\r\nHost: x\r\nContent-Length: 0\r\n{extra_headers}\r\n");
+        stream.write_all(request.as_bytes()).await.expect("write");
+        let mut reply = String::new();
+        stream.read_to_string(&mut reply).await.expect("read");
+        reply
+    }
+
+    async fn post_tcp(addr: std::net::SocketAddr, path: &str, extra_headers: &str) -> String {
+        let stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
+        post_raw(stream, path, extra_headers).await
+    }
+
+    /// **A door request to an attestation-required proxy is served.** The
+    /// workload holds no certificate; the door's peer-credential admission is
+    /// its authentication, and on a door route it meets the requirement.
+    ///
+    /// Red on 4ea594278: the attestation check read only a client certificate
+    /// or the header, so every door call was refused "attestation required but
+    /// not provided" on exactly the pods that need the door.
+    #[tokio::test]
+    async fn a_door_request_to_an_attestation_required_proxy_is_served() {
+        let me = crate::workload::nix_getuid();
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("door.sock");
+        UnservedDoor::bind(&path)
+            .expect("bind")
+            .serve(door_app(attestation_required()), WorkloadUid::for_test(me));
+
+        let stream = UnixStream::connect(&path).await.expect("connect");
+        let reply = post_raw(stream, "/v1/read", "").await;
+        assert!(
+            reply.starts_with("HTTP/1.0 200")
+                && reply.ends_with(&format!("door uid={me} route=Read")),
+            "{reply}"
+        );
+    }
+
+    /// **A TCP request without a certificate is still refused** by the same
+    /// requirement, on the same route path. Non-vacuity: the same app with the
+    /// requirement off serves it, so the refusal is the requirement's.
+    #[tokio::test]
+    async fn a_tcp_request_without_a_cert_is_refused() {
+        let required = serve_tcp(tcp_app(attestation_required())).await;
+        let reply = post_tcp(required, "/v1/read", "").await;
+        assert!(
+            reply.starts_with("HTTP/1.0 403")
+                && reply.contains("attestation required but not provided"),
+            "{reply}"
+        );
+
+        let open = serve_tcp(tcp_app(AttestationVerifier::new(
+            AttestationConfig::default(),
+        )))
+        .await;
+        let reply = post_tcp(open, "/v1/read", "").await;
+        assert!(
+            reply.starts_with("HTTP/1.0 200") && reply.ends_with("none"),
+            "{reply}"
+        );
+    }
+
+    /// **A `DoorPeer` cannot arise on the TCP listener.** Over a real TCP
+    /// connection the evidence is `None` whatever the request says about
+    /// itself, and a door route's admission layer mounted on TCP refuses
+    /// rather than mint an admission, because only the door's accept path
+    /// produces the `DoorPeer` it needs. (`DoorAdmission`'s and `DoorPeer`'s
+    /// fields and [`admit`] are private to this module, so nothing else in the
+    /// crate can build either.)
+    #[tokio::test]
+    async fn the_tcp_listener_never_carries_door_evidence() {
+        let app = Router::new()
+            .route("/v1/read", axum::routing::post(evidence_kind))
+            .route(
+                "/v1/write",
+                entered(DoorRoute::Write, axum::routing::post(evidence_kind)),
+            );
+        let addr = serve_tcp(app).await;
+        let forged = "x-nucleus-door-peer: 65534\r\nx-nucleus-workload-uid: 65534\r\n";
+
+        let reply = post_tcp(addr, "/v1/read", forged).await;
+        assert!(
+            reply.ends_with("none"),
+            "TCP evidence must be None: {reply}"
+        );
+
+        let reply = post_tcp(addr, "/v1/write", forged).await;
+        assert!(
+            reply.starts_with("HTTP/1.0 403")
+                && reply.contains("without the door's peer admission"),
+            "a door route on TCP must refuse, not admit: {reply}"
+        );
+    }
+
+    /// The impossible shapes are refusals, never a fall-through to "a main
+    /// listener caller with no certificate" (ADR 0007 A-2): a door connection
+    /// off the door's table, an admission without a door connection, and an
+    /// admission naming a different peer.
+    #[test]
+    fn evidence_refuses_every_mismatched_door_shape() {
+        use axum::http::Extensions;
+        let peer = DoorPeer { uid: WORKLOAD };
+        let admission = DoorAdmission {
+            peer: peer.clone(),
+            route: DoorRoute::Read,
+        };
+
+        let mut both = Extensions::new();
+        both.insert(ConnectInfo(peer.clone()));
+        both.insert(admission.clone());
+        assert!(matches!(
+            TransportEvidence::of(&both),
+            Ok(TransportEvidence::DoorPeer(a)) if a.uid() == WORKLOAD
+        ));
+
+        let mut connection_only = Extensions::new();
+        connection_only.insert(ConnectInfo(peer));
+        let mut admission_only = Extensions::new();
+        admission_only.insert(admission.clone());
+        let mut mismatched = Extensions::new();
+        mismatched.insert(ConnectInfo(DoorPeer { uid: WORKLOAD + 1 }));
+        mismatched.insert(admission);
+        for (name, ext) in [
+            ("connection only", connection_only),
+            ("admission only", admission_only),
+            ("mismatched", mismatched),
+        ] {
+            let got = TransportEvidence::of(&ext);
+            assert!(got.is_err(), "{name}: {got:?}");
+        }
+        assert!(matches!(
+            TransportEvidence::of(&Extensions::new()),
+            Ok(TransportEvidence::None)
+        ));
+    }
+
+    /// The requirement over each kind of evidence, directly: a door admission
+    /// meets it, `None` and a certificate without an attestation fail closed,
+    /// and with the requirement off `None` passes.
+    #[test]
+    fn the_requirement_over_each_evidence() {
+        let headers = axum::http::HeaderMap::new();
+        let admission = DoorAdmission {
+            peer: DoorPeer { uid: WORKLOAD },
+            route: DoorRoute::Egress,
+        };
+        let required = attestation_required();
+        assert_eq!(
+            required.admit(&TransportEvidence::DoorPeer(&admission), &headers),
+            Ok(())
+        );
+        let refused = required
+            .admit(&TransportEvidence::None, &headers)
+            .expect_err("no evidence on a required proxy is refused");
+        assert!(refused.contains("not provided"), "{refused}");
+        assert!(
+            required
+                .admit(&TransportEvidence::ClientCert(&[0x30, 0x00]), &headers)
+                .is_err()
+        );
+        let open = AttestationVerifier::new(AttestationConfig::default());
+        assert_eq!(open.admit(&TransportEvidence::None, &headers), Ok(()));
     }
 }

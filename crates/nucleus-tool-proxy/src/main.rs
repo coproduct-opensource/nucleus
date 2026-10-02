@@ -1967,7 +1967,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
     )
 }
 
-const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 
 async fn auth_middleware(
@@ -1998,79 +1997,17 @@ async fn auth_middleware(
         ));
     }
 
-    // Verify attestation if required
-    if state.attestation_verifier.is_required() {
-        // Try to get client certificate from mTLS connection first
-        // Check both direct ClientCertInfo and MtlsConnectInfo
-        let client_cert_der = parts
-            .extensions
-            .get::<MtlsConnectInfo>()
-            .and_then(|info| info.client_cert.as_ref())
-            .or_else(|| parts.extensions.get::<ClientCertInfo>())
-            .map(|cert| cert.der());
-
-        let attestation_result = if let Some(cert_der) = client_cert_der {
-            // mTLS mode: extract attestation from client certificate
-            let spiffe_id = parts
-                .extensions
-                .get::<MtlsConnectInfo>()
-                .and_then(|info| info.client_cert.as_ref())
-                .and_then(|cert| cert.spiffe_id.clone());
-            tracing::info!(
-                spiffe_id = ?spiffe_id,
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_mtls",
-                "verifying attestation from client certificate"
-            );
-            state.attestation_verifier.verify_certificate(cert_der)
-        } else if let Some(att_header) = parts.headers.get(HEADER_ATTESTATION) {
-            // Fallback: attestation passed via header (base64-encoded DER)
-            // This is less secure as headers can be spoofed
-            tracing::warn!(
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_header",
-                "attestation via header (not mTLS) - consider enabling mTLS for production"
-            );
-            let att_value = att_header.to_str().map_err(|_| {
-                ApiError::AttestationFailed("invalid attestation header encoding".to_string())
-            })?;
-            state.attestation_verifier.verify_header(att_value)
-        } else {
-            // No attestation provided
-            attestation::AttestationResult {
-                attestation_present: false,
-                attestation: None,
-                matches_requirements: false,
-                rejection_reason: Some("attestation required but not provided (enable mTLS or send x-nucleus-attestation header)".to_string()),
-            }
-        };
-
-        if !attestation_result.matches_requirements {
-            let reason = attestation_result
-                .rejection_reason
-                .unwrap_or_else(|| "unknown attestation failure".to_string());
-            return Err(ApiError::AttestationFailed(reason));
-        }
-
-        // North Star C9 — enforce the assurance floor on the live path (fail-closed
-        // on absent/invalid/replayed residency evidence). No-op when the floor is
-        // L0Bearer. Logic lives in `AttestationVerifier::enforce_floor` (unit-tested).
-        state
-            .attestation_verifier
-            .enforce_floor(client_cert_der, &attestation_result)
-            .map_err(ApiError::AttestationFailed)?;
-
-        // Log successful attestation verification
-        if let Some(ref info) = attestation_result.attestation {
-            tracing::debug!(
-                kernel_hash = %&info.kernel_hash[..16],
-                rootfs_hash = %&info.rootfs_hash[..16],
-                "attestation verified"
-            );
-        }
-    }
+    // What the transport proved, read once: it decides the attestation
+    // requirement here and the ingress below. Only the workload door's accept
+    // path and route layer produce `DoorPeer`, so a main-listener request can
+    // never be read as the door's, nor the reverse. The requirement and the
+    // assurance floor live in `AttestationVerifier::admit` (unit-tested).
+    let evidence = attestation::TransportEvidence::of(&parts.extensions)
+        .map_err(ApiError::AttestationFailed)?;
+    state
+        .attestation_verifier
+        .admit(&evidence, &parts.headers)
+        .map_err(ApiError::AttestationFailed)?;
 
     // Determine authentication context (unified flow — no early returns).
     // Precedence is decided by `auth::select_auth_tier` alone, which is
@@ -2080,19 +2017,8 @@ async fn auth_middleware(
     // the SPIFFE-before-approval order and so could not catch it. Now there is
     // one.
     let spiffe_id = auth::extract_spiffe_id_from_extensions(&parts.extensions);
-    // Which listener accepted the connection. Only the workload door's
-    // listener produces a `DoorPeer` (its constructor is private to that
-    // module and runs after the SO_PEERCRED admission), so the main listener's
-    // requests can never be read as the door's, nor the reverse.
-    let ingress = match parts
-        .extensions
-        .get::<axum::extract::ConnectInfo<workload_door::DoorPeer>>()
-    {
-        Some(axum::extract::ConnectInfo(peer)) => auth::Ingress::WorkloadDoor { uid: peer.uid() },
-        None => auth::Ingress::Listener,
-    };
     let tier = auth::tier_of(
-        ingress,
+        evidence.ingress(),
         spiffe_id.is_some(),
         parts.uri.path() == APPROVE_PATH,
         state.approval_verifier.is_some(),
