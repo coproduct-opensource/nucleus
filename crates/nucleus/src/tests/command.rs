@@ -724,6 +724,57 @@ fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
     }
 }
 
+/// #2696 P3b through the Executor's own spawn path (the `/v1/run` child):
+/// a `HostHardened` child carries one more seccomp filter than this process,
+/// and the declared bare tier none of ours. The mechanism's behaviour (what
+/// the filter refuses) is asserted in `tests/child_seccomp.rs`; this pins that
+/// the Executor's children get it at all. Counted relative to this process,
+/// which may already sit under a container's filter.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_run_child_carries_the_workload_syscall_filter() {
+    let filters = |status: &str| -> u32 {
+        status
+            .lines()
+            .find_map(|l| l.strip_prefix("Seccomp_filters:"))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("Seccomp_filters is readable (Linux 5.9+)")
+    };
+    let own = filters(&std::fs::read_to_string("/proc/self/status").unwrap());
+    let child = |mode: ContainmentMode| {
+        let tmp = tempdir().unwrap();
+        let policy = test_policy();
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let mut kernel = Kernel::new(policy.clone());
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let executor = Executor::new(&policy, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .with_containment(mode)
+            .with_unsandboxed_opt_in(crate::UnsandboxedOptIn::Explicit);
+        let args = vec!["cat".to_string(), "/proc/self/status".to_string()];
+        let subject = args.join(" ");
+        let dt = run_token(&mut kernel, &subject);
+        let out = executor
+            .run_args(
+                &args,
+                None,
+                None,
+                dt,
+                Authority::new(allowed_bundle(&subject)),
+            )
+            .unwrap_or_else(|e| panic!("{mode:?}: spawn refused: {e}"));
+        assert!(out.status.success(), "{mode:?}: cat ran");
+        filters(&String::from_utf8_lossy(&out.stdout))
+    };
+    assert_eq!(
+        child(ContainmentMode::HostHardened),
+        own + 1,
+        "HostHardened"
+    );
+    assert_eq!(child(ContainmentMode::Unsandboxed), own, "Unsandboxed");
+}
+
 /// #3120 item 2, on a real spawn: a MicroVM child never reads the
 /// runtime's environment, whoever the runtime is.
 ///
