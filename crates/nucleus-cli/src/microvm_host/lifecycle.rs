@@ -265,8 +265,14 @@ fn volume_names(json: &str) -> Result<Vec<String>, String> {
 
 /// A running host container that has passed preflight, the in-container
 /// probe and an mTLS health check. Only [`ensure_ready`] makes one.
+///
+/// Evidence (ADR 0007 C-1), not a one-shot right: one ready host serves every
+/// session opened on it, so callers borrow it. It is therefore deliberately
+/// NOT `must_use` -- `must_use` on a `!Clone` type declares affine intent
+/// (C-4/C-5, measured by `cargo xtask convergence`), and borrowing it would
+/// then break that claim. Dropping it unused is caught where it is made:
+/// `ensure_ready` returns a `Result`, which is itself `must_use`.
 #[derive(Debug)]
-#[must_use = "a ready host is the only way to reach its node"]
 pub struct MicroVmHost {
     owned: Owned,
     ports: HostPorts,

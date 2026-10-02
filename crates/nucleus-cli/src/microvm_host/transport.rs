@@ -79,8 +79,13 @@ impl std::fmt::Display for TransportError {
 }
 
 /// A session's way to the pod proxy. Dropping it releases the slot.
+///
+/// A lease on a relay slot, not a right: it authorizes nothing (see the module
+/// docs on local exposure), so it is deliberately NOT `must_use`. `must_use`
+/// on a `!Clone` type declares an affine right, which the `life` family then
+/// expects to carry a validity bound (ADR 0007 C-5); a slot lock has none to
+/// carry. `open` returns a `Result`, so discarding the call is still a warning.
 #[derive(Debug)]
-#[must_use = "dropping the endpoint releases its relay slot"]
 pub struct McpEndpoint {
     mac_port: u16,
     _slot: File,
