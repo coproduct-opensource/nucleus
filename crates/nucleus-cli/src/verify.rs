@@ -36,6 +36,8 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
+use nucleus_spec::dlc_admission::DlcProvisioning;
+use nucleus_spec::tier2_artifacts::{GuestCapability, REBUILD_THE_GUEST};
 use portcullis::gate_class::deny_code;
 use portcullis::kernel::DenyReason;
 use std::process::Command;
@@ -101,6 +103,18 @@ const FORBIDDEN_READ: &str = ".ssh/id_rsa";
 struct AdmissionMaterial {
     issuer_hex: String,
     credentials: String,
+}
+
+impl AdmissionMaterial {
+    /// What the pod is provisioned with. The issuer key doubles as its own
+    /// trust anchor, matching dlc-d's principal convention.
+    fn provisioning(&self) -> DlcProvisioning {
+        DlcProvisioning {
+            trusted_keys: self.issuer_hex.clone(),
+            issuer: self.issuer_hex.clone(),
+            credentials: self.credentials.clone(),
+        }
+    }
 }
 
 /// Mint the pod's admission material with a throwaway issuer key.
@@ -389,6 +403,39 @@ struct CreatePodResponse {
     proxy_addr: Option<String>,
 }
 
+/// The PodSpec `verify --tier2` creates.
+///
+/// The labels come from `DlcProvisioning::labels`, the declaration the node
+/// reads them back through — they used to be three hand-typed keys in a
+/// `format!` string, one of six copies of the label->env mapping (#2903).
+///
+/// `read_only: true` (#2784). This pod boots from the SHARED installed
+/// artifact, and a writable rootfs is hard-linked into the jail rather than
+/// copied — so `verify --tier2` was writing through to the very artifact
+/// whose digest `nucleus setup` pinned and `verify-attestation` compares
+/// against `--expect-rootfs`. The reporter measured it: the installed rootfs
+/// went from `7739f5cd…` to `b7c40744…` across tier-2 runs. Read-only boots
+/// since #2379 put the SVID on tmpfs, so verifying the node no longer
+/// invalidates the thing being verified.
+fn pod_body(dlc: &DlcProvisioning) -> serde_json::Value {
+    serde_json::json!({
+        "apiVersion": "nucleus/v1",
+        "kind": "Pod",
+        "metadata": { "name": "nucleus-verify", "labels": dlc.labels() },
+        "spec": {
+            "work_dir": "/work",
+            "timeout_seconds": 120,
+            "policy": { "type": "profile", "name": "codegen" },
+            "image": {
+                "kernel_path": format!("{HOST_ARTIFACTS_DIR}/vmlinux"),
+                "rootfs_path": format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4"),
+                "read_only": true,
+            },
+            "vsock": { "guest_cid": 3, "port": 5005 },
+        },
+    })
+}
+
 /// Create a pod on the real nucleus rootfs, authenticated the way the node
 /// requires: mTLS with the identity `nucleus setup` provisioned (Move B —
 /// the node's HMAC tier is gone, there is no secret left to sign with).
@@ -397,36 +444,14 @@ struct CreatePodResponse {
 /// forwards them to the pod's tool-proxy as `NUCLEUS_DLC_*`); the issuer key
 /// doubles as its own trust anchor, matching dlc-d's principal convention.
 async fn create_pod(admission: &AdmissionMaterial) -> Result<Pod> {
-    let issuer = &admission.issuer_hex;
-    let creds = &admission.credentials;
-    // `read_only: true` (#2784). This pod boots from the SHARED installed
-    // artifact, and a writable rootfs is hard-linked into the jail rather than
-    // copied — so `verify --tier2` was writing through to the very artifact
-    // whose digest `nucleus setup` pinned and `verify-attestation` compares
-    // against `--expect-rootfs`. The reporter measured it: the installed rootfs
-    // went from `7739f5cd…` to `b7c40744…` across tier-2 runs. Read-only boots
-    // since #2379 put the SVID on tmpfs, so verifying the node no longer
-    // invalidates the thing being verified.
-    let body = format!(
-        r#"{{"apiVersion":"nucleus/v1","kind":"Pod",
-            "metadata":{{"name":"nucleus-verify",
-              "labels":{{"dlc_trusted_keys":"{issuer}",
-                         "dlc_issuer":"{issuer}",
-                         "dlc_credentials":"{creds}"}}}},
-            "spec":{{"work_dir":"/work","timeout_seconds":120,
-              "policy":{{"type":"profile","name":"codegen"}},
-              "image":{{"kernel_path":"{HOST_ARTIFACTS_DIR}/vmlinux",
-                        "rootfs_path":"{HOST_ARTIFACTS_DIR}/rootfs.ext4",
-                        "read_only":true}},
-              "vsock":{{"guest_cid":3,"port":5005}}}}}}"#
-    );
+    let body = pod_body(&admission.provisioning());
 
     let client = mtls_client()?;
     let response = client
         .post(format!("{NODE_URL}/v1/pods"))
         .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
         .header("content-type", "application/json")
-        .body(body)
+        .body(body.to_string())
         .send()
         .await
         .map_err(|e| anyhow!("the node refused to create a pod: {e}"))?;
@@ -620,27 +645,46 @@ fn pod_created_line(elapsed_ms: u128, proxy: &str) -> String {
 
 /// What to say when admission was asked for and never armed.
 ///
+/// `armed` is the health body's `dlc_admission` field: `None` when the body has
+/// no such field at all. Those are two different findings, not one (ADR 0007
+/// A-2). Every tool-proxy since #2124 reports `provisioned` or `unprovisioned`,
+/// so `unprovisioned` means the chain exists and dropped the labels, while a
+/// missing field means the guest predates the chain — the v2.1.0 rootfs's proxy
+/// answers health with exactly `{status, sandbox_proof}`. #2903 was reported as
+/// `dlc_admission=None` and told its reader the labels had been dropped.
+///
 /// Names what still holds before what failed. The checks above this one print
 /// [OK] and establish the Tier 2 boundary; a bare `Error:` after them reads as
 /// "Tier 2 is broken", which is a different fact (ADR 0007 A-8).
 fn admission_not_armed_message(armed: Option<&str>) -> String {
-    format!(
-        "verified admission was requested but never armed: the pod's tool-proxy \
-         reports dlc_admission={armed:?}, expected \"provisioned\".\n\n\
-         What this does NOT mean: the checks that printed [OK] above still hold. \
-         The pod booted, proved its identity to its own tool-proxy, served an \
-         allowed operation from inside the sandbox and had a forbidden one \
-         denied. The Tier 2 boundary is not what failed here.\n\n\
-         What it does mean: the PodSpec's dlc_* labels did not reach the proxy \
-         as NUCLEUS_DLC_* env, so the admission gate is inert and this run \
-         cannot prove anything about it. The break is in the \
-         labels->node->guest->proxy chain, not in the gate.\n\n\
-         Next: `nucleus node pods` shows whether the labels are on the pod. If \
-         they are, the break is downstream of the registry — the node serves \
-         them over the workload API (FETCH_DLC_ADMISSION, logged at debug) and \
-         guest-init exports them, so the node's log splits those two halves in \
-         one observation."
-    )
+    const STILL_HOLDS: &str = "What this does NOT mean: the checks that printed [OK] \
+         above still hold. The pod booted, proved its identity to its own \
+         tool-proxy, served an allowed operation from inside the sandbox and had \
+         a forbidden one denied. The Tier 2 boundary is not what failed here.";
+    match armed {
+        None => format!(
+            "verified admission was requested but never armed: the pod's tool-proxy \
+             reports no dlc_admission field at all, so it is older than the chain \
+             that delivers it.\n\n{STILL_HOLDS}\n\n\
+             What it does mean: the guest rootfs PREDATES this CLI. {}. \
+             {REBUILD_THE_GUEST}.",
+            GuestCapability::DlcAdmission.change()
+        ),
+        Some(reported) => format!(
+            "verified admission was requested but never armed: the pod's tool-proxy \
+             reports dlc_admission={reported:?}, expected \"provisioned\".\n\n\
+             {STILL_HOLDS}\n\n\
+             What it does mean: the PodSpec's dlc_* labels did not reach the proxy \
+             as NUCLEUS_DLC_* env, so the admission gate is inert and this run \
+             cannot prove anything about it. The break is in the \
+             labels->node->guest->proxy chain, not in the gate.\n\n\
+             Next: `nucleus node pods` shows whether the labels are on the pod. If \
+             they are, the break is downstream of the registry — the node serves \
+             them over the workload API (FETCH_DLC_ADMISSION, logged at debug) and \
+             guest-init exports them, so the node's log splits those two halves in \
+             one observation."
+        ),
+    }
 }
 
 fn check_admission_gate(pod: &Pod) -> Result<()> {
@@ -657,7 +701,12 @@ fn check_admission_gate(pod: &Pod) -> Result<()> {
         .body_mut()
         .read_json()
         .context("health response was not JSON")?;
-    let armed = health_body.get("dlc_admission").and_then(|v| v.as_str());
+    // A field that is present but not a string is still a report, and is shown
+    // as one; only an ABSENT field means the proxy predates the chain.
+    let reported = health_body
+        .get("dlc_admission")
+        .map(|v| v.as_str().map_or_else(|| v.to_string(), str::to_string));
+    let armed = reported.as_deref();
     if armed != Some("provisioned") {
         // What still holds is as much of the diagnosis as what failed. The
         // checks above this one print [OK] and establish the Tier 2 boundary --
@@ -1292,22 +1341,64 @@ mod admission_marker_tests {
     /// top, and the message has to tell those two apart (ADR 0007 A-8).
     #[test]
     fn the_not_armed_message_says_what_still_holds() {
-        let msg = admission_not_armed_message(None);
-        assert!(
-            msg.contains("still hold"),
-            "what survived is missing: {msg}"
-        );
-        assert!(
-            msg.contains("Tier 2 boundary is not what failed"),
-            "the message lets a reader conclude the boundary broke: {msg}"
-        );
-        // And it still names the actual break, with a next step.
+        for armed in [None, Some("unprovisioned")] {
+            let msg = admission_not_armed_message(armed);
+            assert!(
+                msg.contains("still hold"),
+                "what survived is missing: {msg}"
+            );
+            assert!(
+                msg.contains("Tier 2 boundary is not what failed"),
+                "the message lets a reader conclude the boundary broke: {msg}"
+            );
+        }
+        // A proxy that knows the chain and reports it unarmed: the labels were
+        // dropped somewhere, and the message names where to look.
+        let msg = admission_not_armed_message(Some("unprovisioned"));
         assert!(msg.contains("NUCLEUS_DLC_"), "{msg}");
         assert!(msg.contains("nucleus node pods"), "no next step: {msg}");
         // The observed value is reported, not swallowed.
         assert!(
             admission_not_armed_message(Some("unprovisioned")).contains("unprovisioned"),
             "the observed dlc_admission value must appear"
+        );
+    }
+
+    /// The labels `verify --tier2` writes are read back by the node through the
+    /// same declaration, so the pod it creates is provisioned with exactly what
+    /// was minted. Parsed as a real `PodSpec`, the way the node parses it.
+    #[test]
+    fn the_verify_pod_carries_its_provisioning_in_labels_the_node_reads() {
+        let minted = super::AdmissionMaterial {
+            issuer_hex: "9a".repeat(32),
+            credentials: "glob_search=77,read_files=72".to_string(),
+        };
+        let spec: nucleus_spec::PodSpec =
+            serde_json::from_value(super::pod_body(&minted.provisioning()))
+                .expect("the verify pod body is a PodSpec");
+        let read_back =
+            nucleus_spec::dlc_admission::DlcProvisioning::from_labels(&spec.metadata.labels)
+                .expect("the node sees trust anchors");
+        assert!(read_back == minted.provisioning());
+        assert_eq!(read_back.trusted_keys, read_back.issuer);
+    }
+
+    /// #2903 as reported: `dlc_admission=None`. `None` is not "unprovisioned" --
+    /// the proxy's health has reported one of `provisioned`/`unprovisioned` since
+    /// #2124, so a body with NO such field came from a guest that predates the
+    /// whole DLC chain (the v2.1.0 rootfs's proxy answers exactly
+    /// `{status, sandbox_proof}`). Telling that reader "your labels did not
+    /// arrive" sends them down a chain that was never there (ADR 0007 A-2).
+    #[test]
+    fn an_absent_dlc_admission_field_names_the_guest_that_predates_it() {
+        let msg = admission_not_armed_message(None);
+        assert!(
+            msg.contains("PREDATES") && msg.contains("#2124"),
+            "an absent field is a guest older than the DLC chain, and must say so: {msg}"
+        );
+        assert!(
+            !msg.contains("did not reach the proxy"),
+            "an absent field is not evidence the labels were dropped: {msg}"
         );
     }
 

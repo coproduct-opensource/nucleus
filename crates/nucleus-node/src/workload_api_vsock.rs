@@ -330,35 +330,11 @@ pub struct WorkloadApiVsockBridge {
     material: std::sync::Arc<PodMaterial>,
 }
 
-/// The pod-scoped DLC-D admission provisioning served over `FETCH_DLC_ADMISSION`
-/// (values verbatim from the PodSpec labels; the in-VM tool-proxy's parser owns
-/// validation and fails closed).
-#[derive(Debug, Clone)]
-pub struct DlcAdmissionMaterial {
-    /// Comma-separated hex Ed25519 trusted issuer public keys.
-    pub trusted_keys: String,
-    /// Hex public key of the issuer whose credentials this pod presents.
-    pub issuer: String,
-    /// Comma-separated `operation=hex_signature` credentials.
-    pub credentials: String,
-}
-
-impl DlcAdmissionMaterial {
-    /// Pod-scoped DLC-D admission provisioning from the PodSpec labels.
-    ///
-    /// Partial labels still provision — the proxy's parser fails CLOSED, so
-    /// misconfiguration narrows rather than widens.
-    // The only caller is inside spawn_firecracker_pod's target_os = "linux"
-    // block; on Linux the dead-code detector stays live for it.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn from_labels(labels: &std::collections::BTreeMap<String, String>) -> Option<Self> {
-        labels.get("dlc_trusted_keys").map(|keys| Self {
-            trusted_keys: keys.clone(),
-            issuer: labels.get("dlc_issuer").cloned().unwrap_or_default(),
-            credentials: labels.get("dlc_credentials").cloned().unwrap_or_default(),
-        })
-    }
-}
+// The pod-scoped DLC-D admission provisioning served over `FETCH_DLC_ADMISSION`
+// is `nucleus_spec::dlc_admission::DlcProvisioning`: one declaration shared with
+// guest-init (which parses this reply), the other drivers, and the CLI that
+// writes the labels.
+use nucleus_spec::dlc_admission::DlcProvisioning;
 
 /// Cloud credentials for the pod's S3 audit sink, served over
 /// `FETCH_AUDIT_CREDENTIALS` exactly once per pod.
@@ -426,7 +402,7 @@ pub struct PodMaterial {
     /// authority the caller is exercising. See `pod_caller_identity`.
     pub caller_token: Option<String>,
     /// DLC-D verified-admission provisioning.
-    pub dlc_admission: Option<DlcAdmissionMaterial>,
+    pub dlc_admission: Option<DlcProvisioning>,
     /// The credential-broker capability, served exactly once.
     pub broker_secret: Option<String>,
     /// The vsock port the broker listens on, served WITH the capability.
@@ -939,21 +915,14 @@ fn receipt_collected(kept: nucleus_jsonl::Durable, log: &std::path::Path, line: 
 /// Serve the DLC-D admission provisioning ONCE (#2724): it carries the pod's
 /// per-operation credentials, which the tool-proxy presents and the FM-5 model
 /// withholds from the workload (`NUCLEUS_DLC_*`).
-fn handle_fetch_dlc_admission(
-    material: Option<&DlcAdmissionMaterial>,
-    served: &ServedLedger,
-) -> Reply {
+fn handle_fetch_dlc_admission(material: Option<&DlcProvisioning>, served: &ServedLedger) -> Reply {
     let Some(m) = material else {
         return Err(Refusal::NotProvisioned(Material::DlcAdmission));
     };
     let claimed = served.claim(OneShot::DlcAdmission)?;
-    Ok(claimed
-        .release(serde_json::json!({
-            "trusted_keys": m.trusted_keys,
-            "issuer": m.issuer,
-            "credentials": m.credentials,
-        }))
-        .to_string())
+    // Derived, never spelled out (ADR 0007 F-1): guest-init deserializes the
+    // same type, so the field names cannot drift between the two ends.
+    Ok(claimed.release(serde_json::json!(m)).to_string())
 }
 
 /// Serve the caller-identity token for the node's management API ONCE (#2724).
@@ -1631,7 +1600,7 @@ mod tests {
                 root_pubkey_hex: "22".repeat(32),
             }),
             caller_token: Some(CALLER.to_string()),
-            dlc_admission: Some(DlcAdmissionMaterial {
+            dlc_admission: Some(DlcProvisioning {
                 trusted_keys: "33".repeat(32),
                 issuer: "44".repeat(32),
                 credentials: DLC.to_string(),
@@ -1697,6 +1666,72 @@ mod tests {
             assert!(
                 !workload.contains(value),
                 "{command:?}: the refusal leaked the value: {workload}"
+            );
+        }
+    }
+
+    /// #2903, the Firecracker chain end to end on the host side: a PodSpec's
+    /// dlc_* labels, through the material `pod_boot_identity` builds, across a
+    /// real workload-API socket, parsed the way guest-init parses it, come out
+    /// as exactly the `NUCLEUS_DLC_*` env the tool-proxy reads. Every hop reads
+    /// `nucleus_spec::dlc_admission`, so a label, wire or env name that drifts
+    /// at one hop drifts at all of them or none.
+    #[tokio::test]
+    async fn a_pod_specs_dlc_labels_arrive_as_the_proxy_env() {
+        use nucleus_spec::dlc_admission::DlcField;
+
+        let asked = DlcProvisioning {
+            trusted_keys: "5a".repeat(32),
+            issuer: "6b".repeat(32),
+            credentials: "glob_search=7c7c,read_files=8d8d".to_string(),
+        };
+        let mut spec: nucleus_spec::PodSpec =
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                .expect("minimal spec");
+        spec.metadata.labels = asked.labels();
+
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let material = PodMaterial {
+            // What `pod_boot_identity` passes, from the same spec.
+            dlc_admission: DlcProvisioning::from_labels(&spec.metadata.labels),
+            ..PodMaterial::default()
+        };
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            uuid::Uuid::new_v4(),
+            manager,
+            material,
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let stream = tokio::net::UnixStream::connect(bridge.socket_path())
+            .await
+            .unwrap();
+        let (reader, mut writer) = stream.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+        writer.write_all(b"FETCH_DLC_ADMISSION\n").await.unwrap();
+        writer.flush().await.unwrap();
+        let mut reply = String::new();
+        reader.read_line(&mut reply).await.unwrap();
+        bridge.shutdown().await;
+
+        // guest-init's parse: the same type, from the reply line.
+        let served: DlcProvisioning = serde_json::from_str(&reply)
+            .unwrap_or_else(|e| panic!("guest-init could not parse the reply ({e}): {reply}"));
+        let env: std::collections::BTreeMap<_, _> = served.env().into_iter().collect();
+        for field in DlcField::ALL {
+            assert_eq!(
+                env.get(field.env()).copied(),
+                spec.metadata.labels.get(field.label()).map(String::as_str),
+                "label {} must arrive as {}",
+                field.label(),
+                field.env()
             );
         }
     }

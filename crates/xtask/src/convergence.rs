@@ -125,16 +125,51 @@ fn is_clone(all: &str, corpus: &BTreeMap<String, String>, ty: &str) -> bool {
             if struct_or_enum_name(line).as_deref() != Some(ty) {
                 continue;
             }
-            let from = i.saturating_sub(8);
-            if lines[from..i]
-                .iter()
-                .any(|l| l.contains("derive") && l.contains("Clone"))
-            {
+            // Joined, so a `#[derive(` split across lines is still read whole —
+            // a per-line match missed `Clone` on a line of its own.
+            if derives_clone(&own_attributes(&lines, i).join(" ")) {
                 return true;
             }
         }
     }
     false
+}
+
+/// Does any `derive(...)` in these attributes name `Clone`?
+fn derives_clone(attrs: &str) -> bool {
+    attrs.match_indices("derive(").any(|(i, d)| {
+        let args = &attrs[i + d.len()..];
+        let args = args.split(')').next().unwrap_or(args);
+        args.split(',').any(|a| {
+            let a = a.trim();
+            a == "Clone" || a.ends_with("::Clone")
+        })
+    })
+}
+
+/// The lines above declaration `i` that belong to it: at most 8, and never
+/// past the end of the previous item.
+///
+/// The window used to be a flat 8 lines. The corpus it reads has had its
+/// comments stripped (`production_region`), so a documented type's 8 lines
+/// reached two items up: `EgressHold` and `EgressDecision` were read as
+/// `Clone` because the `derive(Clone)` on `EgressNovelty` and
+/// `EgressSettlement` above them landed in their window, and two affine rights
+/// fell out of every census built on this one.
+///
+/// A line that is blank, or ends in `}`, `;` or `{`, closes or opens another
+/// item; an attribute line never does.
+fn own_attributes<'l>(lines: &'l [&'l str], i: usize) -> &'l [&'l str] {
+    let floor = i.saturating_sub(8);
+    let mut from = i;
+    while from > floor {
+        let t = lines[from - 1].trim();
+        if t.is_empty() || t.ends_with('}') || t.ends_with(';') || t.ends_with('{') {
+            break;
+        }
+        from -= 1;
+    }
+    &lines[from..i]
 }
 
 /// Count parameters that take an affine type BY REFERENCE.
@@ -379,6 +414,41 @@ mod tests {
             !t.contains(&"Copied".to_string()),
             "a Clone type is not affine: {t:?}"
         );
+    }
+
+    /// The derive of the item ABOVE is not this item's. With comments
+    /// stripped, a flat 8-line window reached the previous enum's
+    /// `derive(Clone)` and read two affine egress rights as `Clone`. This is
+    /// that shape, from `portcullis::egress_budget`, docs included.
+    #[test]
+    fn a_previous_items_derive_does_not_make_this_one_clone() {
+        let src = "/// Novelty.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+                   pub enum EgressNovelty {\n    First,\n    Repeat,\n}\n\n\
+                   /// A reservation.\n///\n/// Affine.\n\
+                   #[must_use = \"an unsettled hold\"]\n#[derive(Debug, PartialEq, Eq)]\n\
+                   pub struct EgressHold {\n    id: u128,\n}\n\n\
+                   /// What happened.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
+                   pub enum EgressSettlement {\n    Sent,\n    NotSent,\n}\n\n\
+                   /// The outcome.\n/// A sum type.\n\
+                   #[must_use]\n#[derive(Debug, PartialEq, Eq)]\n\
+                   pub enum EgressDecision {\n    Admitted(EgressHold),\n}\n";
+        let c = corpus(&[("crates/a/src/lib.rs", src)]);
+        let t = affine_types(&affine_corpus(&c));
+        assert_eq!(
+            t,
+            vec!["EgressDecision".to_string(), "EgressHold".to_string()],
+            "both are affine; neither inherits a neighbour's derive"
+        );
+    }
+
+    /// A multi-line derive is still this item's own attribute.
+    #[test]
+    fn a_multi_line_derive_still_counts() {
+        let c = corpus(&[(
+            "crates/a/src/lib.rs",
+            "#[must_use]\n#[derive(\n    Debug,\n    Clone,\n)]\npub struct Copied {\n    x: u8,\n}\n",
+        )]);
+        assert!(affine_types(&affine_corpus(&c)).is_empty());
     }
 
     /// Prose is not a signature. `authority.rs`'s module doc describes the very

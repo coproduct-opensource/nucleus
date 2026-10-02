@@ -16,6 +16,7 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
+use nucleus_spec::dlc_admission::DlcProvisioning;
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 #[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
@@ -71,6 +72,7 @@ mod cred_split;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
+mod egress_meter;
 mod envelope_frame;
 mod federated_credential;
 mod federation_ingress;
@@ -940,7 +942,7 @@ async fn create_pod_internal(
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
     admission.stamp_ci_principal(&state.authz_policy, &mut spec)?;
 
-    let pod_dir = state.state_dir.join("pods").join(id.to_string());
+    let pod_dir = lifecycle::pod_dir(&state.state_dir, id);
     tokio::fs::create_dir_all(&pod_dir).await?;
 
     // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
@@ -1353,20 +1355,15 @@ async fn spawn_local_pod(
     }
 
     // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
-    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads
-    // (crates/nucleus-tool-proxy/src/dlc_admission.rs). Node-global env still
-    // inherits (Command does not env_clear); labels let a single pod — e.g.
-    // `nucleus verify --tier2`'s — run under admission without touching host
-    // config. Values are NOT validated here: the proxy's parser owns that and
-    // fails CLOSED (partial/garbage config provisions deny-all).
-    for (label, env) in [
-        ("dlc_trusted_keys", "NUCLEUS_DLC_TRUSTED_KEYS"),
-        ("dlc_issuer", "NUCLEUS_DLC_ISSUER"),
-        ("dlc_credentials", "NUCLEUS_DLC_CREDENTIALS"),
-    ] {
-        if let Some(value) = spec.metadata.labels.get(label) {
-            command.env(env, value);
-        }
+    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads. The
+    // label->env mapping is `nucleus_spec::dlc_admission`'s, the same one the
+    // container driver and the Firecracker workload API use. Node-global env
+    // still inherits (Command does not env_clear); labels let a single pod —
+    // e.g. `nucleus verify --tier2`'s — run under admission without touching
+    // host config. Values are NOT validated here: the proxy's parser owns that
+    // and fails CLOSED (partial/garbage config provisions deny-all).
+    if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+        command.envs(dlc.env());
     }
 
     // Detect orchestrator pod: inject pod management env vars
@@ -1493,6 +1490,99 @@ fn container_driver_reject_unsupported_network_policy(spec: &PodSpec) -> Result<
     Ok(())
 }
 
+/// The environment a container pod is started with.
+///
+/// Split out of [`spawn_container_pod`] so what reaches the container's
+/// tool-proxy can be read by a test without a Docker daemon: every other half
+/// of that function needs one.
+async fn container_env(
+    state: &NodeState,
+    spec: &PodSpec,
+    id: Uuid,
+    proxy_mode: bool,
+    sandbox_token: &str,
+    spec_yaml: &str,
+) -> Vec<String> {
+    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+
+    if proxy_mode {
+        env.extend(container_transport::proxy_env(state));
+        env.push(format!(
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
+            state.proxy_approval_secret
+        ));
+        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
+        art12_collector::provision_container_env(&mut env);
+
+        // Pass audit sink config from PodSpec for deletion-resistant remote storage
+        if let Some(ref sink) = spec.spec.audit_sink {
+            env.push(format!(
+                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
+                sink.s3_bucket
+            ));
+            if let Some(ref prefix) = sink.s3_prefix {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
+            }
+            if let Some(ref region) = sink.s3_region {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
+            }
+            if let Some(ref endpoint) = sink.s3_endpoint {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
+            }
+            // Forward ambient AWS credentials for the S3 sink
+            for key in [
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "AWS_DEFAULT_REGION",
+            ] {
+                if let Ok(val) = std::env::var(key) {
+                    env.push(format!("{key}={val}"));
+                }
+            }
+        }
+
+        // Live-path session capability token (see spawn_local_pod). Injected in
+        // proxy mode — the only container mode that runs the tool-proxy sidecar.
+        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
+            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
+            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
+            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
+        }
+        for (key, value) in state.authority.boot_env(id).await {
+            env.push(format!("{key}={value}"));
+        }
+        // DLC-D verified admission from the PodSpec labels, through the same
+        // declaration the local driver and the Firecracker workload API use.
+        // This driver used to have no copy of the mapping at all, so a
+        // container pod's dlc_* labels were accepted, listed by `nucleus node
+        // pods`, and never reached the tool-proxy that enforces them (#2903).
+        if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+            env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
+        }
+    }
+
+    // Pass credentials from PodSpec (if any)
+    if let Some(ref creds) = spec.spec.credentials {
+        for (key, val) in &creds.env {
+            env.push(format!("{key}={val}"));
+        }
+    }
+
+    // In direct mode, extract the task from the raw YAML (task is not in the typed
+    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
+    if !proxy_mode
+        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(spec_yaml)
+        && let Some(task) = raw
+            .get("spec")
+            .and_then(|s| s.get("task"))
+            .and_then(|t| t.as_str())
+    {
+        env.push(format!("NUCLEUS_TASK={task}"));
+    }
+    env
+}
+
 async fn spawn_container_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -1560,76 +1650,7 @@ async fn spawn_container_pod(
         .cloned()
         .unwrap_or_else(|| state.container_image.clone());
 
-    // Build environment variables
-    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
-
-    if proxy_mode {
-        env.extend(container_transport::proxy_env(state));
-        env.push(format!(
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
-            state.proxy_approval_secret
-        ));
-        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
-        art12_collector::provision_container_env(&mut env);
-
-        // Pass audit sink config from PodSpec for deletion-resistant remote storage
-        if let Some(ref sink) = spec.spec.audit_sink {
-            env.push(format!(
-                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
-                sink.s3_bucket
-            ));
-            if let Some(ref prefix) = sink.s3_prefix {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
-            }
-            if let Some(ref region) = sink.s3_region {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
-            }
-            if let Some(ref endpoint) = sink.s3_endpoint {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
-            }
-            // Forward ambient AWS credentials for the S3 sink
-            for key in [
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_DEFAULT_REGION",
-            ] {
-                if let Ok(val) = std::env::var(key) {
-                    env.push(format!("{key}={val}"));
-                }
-            }
-        }
-
-        // Live-path session capability token (see spawn_local_pod). Injected in
-        // proxy mode — the only container mode that runs the tool-proxy sidecar.
-        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
-            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
-            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
-            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
-        }
-        for (key, value) in state.authority.boot_env(id).await {
-            env.push(format!("{key}={value}"));
-        }
-    }
-
-    // Pass credentials from PodSpec (if any)
-    if let Some(ref creds) = spec.spec.credentials {
-        for (key, val) in &creds.env {
-            env.push(format!("{key}={val}"));
-        }
-    }
-
-    // In direct mode, extract the task from the raw YAML (task is not in the typed
-    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
-    if !proxy_mode
-        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml)
-        && let Some(task) = raw
-            .get("spec")
-            .and_then(|s| s.get("task"))
-            .and_then(|t| t.as_str())
-    {
-        env.push(format!("NUCLEUS_TASK={task}"));
-    }
+    let env = container_env(state, spec, id, proxy_mode, &sandbox_token, &spec_yaml).await;
 
     let pod_dir_abs = pod_dir
         .canonicalize()
@@ -2448,14 +2469,7 @@ async fn spawn_firecracker_pod(
         let mut netns_pid: Option<u32> = None;
 
         if state.firecracker_netns {
-            let default_policy = NetworkSpec {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                dns_allow: Vec::new(),
-                url_allow: Vec::new(),
-                mime_allow: None,
-                max_response_bytes: None,
-            };
+            let default_policy = NetworkSpec::nothing_listed();
             let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
             let pid = match pid {
                 Some(pid) => pid,
