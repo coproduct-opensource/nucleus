@@ -644,6 +644,7 @@ fn node(dir: &tempfile::TempDir) -> Node {
         max_children_per_pod: FAN_OUT,
         upstreams: None,
         federation_issuer: None,
+        ingress: Default::default(),
     };
     let authority =
         PodAuthority::new(&args, "nucleus.local", &st.state_dir).expect("authority builds");

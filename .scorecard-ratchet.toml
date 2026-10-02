@@ -452,9 +452,14 @@ population_floor = 23
 # dead. One undischarged suppression deleted with the code it excused: 19 of
 # 142 = 13.38%. The ratio rises because the denominator shrank, so both pins
 # follow the measurement rather than reading it as progress.
-floor_bp = 1338
+#
+# 2026-10-01 (#3022, rebased onto the above): the hard-coded outside-issuer path,
+# crates/nucleus-node/src/oidc.rs, is deleted in favour of a configured [[caller]]
+# binding, and its four production #[allow(dead_code)]s go with it -- by deletion,
+# not discharge. 19 of 138 = 13.76%; both pins follow the tree.
+floor_bp = 1376
 floor_set = "measurement"
-population_floor = 142
+population_floor = 138
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

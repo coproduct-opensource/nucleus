@@ -614,6 +614,7 @@ mod tests {
                     max_children_per_pod: 8,
                     upstreams: None,
                     federation_issuer: None,
+                    ingress: Default::default(),
                 },
                 "nucleus.local",
                 dir,
@@ -704,6 +705,7 @@ mod tests {
                 })),
                 parent_pod_id: None,
                 posture_stamp: None,
+                owner: None,
             });
 
             if exit {

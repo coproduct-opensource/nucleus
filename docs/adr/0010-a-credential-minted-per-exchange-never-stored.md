@@ -185,8 +185,9 @@ token's `sub`, which may be per-invocation and would give every exchange a fresh
 
 Implementing this (P5, #3022) exposed that the rule was not true for non-pod callers before:
 `pod_api::caller_may_manage` scoped only pod callers, so any other mTLS caller could list,
-get and cancel every pod. The caller is now a `Caller` enum (`Operator | Pod | Tenant`), so
-the compiler makes every handler decide what a tenant may do. Tenants may never snapshot
+get and cancel every pod. The caller is now an `auth::CallerScope`
+(`NodeWide | Pod | CiPrincipal | Tenant`), resolved once for HTTP and gRPC, so the
+compiler makes every handler decide what a tenant may do. Tenants may never snapshot
 and are refused on gRPC.
 
 ### 8. Inbound replay is keyed on the token hash

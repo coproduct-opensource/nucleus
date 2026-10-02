@@ -209,7 +209,10 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let caller_id = model.caller_id(caller);
                     let header_text =
                         header.map(|h| model.pods[h % model.pods.len()].id.to_string());
-                    let parent = resolve_parent_pod_id(caller_id, header_text.as_deref());
+                    let parent = resolve_parent_pod_id(
+                        &crate::auth::CallerScope::from_model(caller_id),
+                        header_text.as_deref(),
+                    );
                     let want = match caller_id {
                         Some(c) => Some(c),
                         None => header_text.as_deref().and_then(|h| Uuid::parse_str(h).ok()),
