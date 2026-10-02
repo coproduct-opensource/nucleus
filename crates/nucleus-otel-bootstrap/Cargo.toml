@@ -13,16 +13,16 @@ categories = ["development-tools::profiling"]
 [dependencies]
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["registry", "env-filter", "fmt"] }
-tracing-opentelemetry = "0.33"
-opentelemetry = "0.32"
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "trace", "metrics"] }
-opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "metrics", "grpc-tonic"] }
+tracing-opentelemetry = "0.34"
+opentelemetry = "0.33"
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["trace", "metrics", "grpc-tonic"] }
 anyhow = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 
 [lints]
 workspace = true

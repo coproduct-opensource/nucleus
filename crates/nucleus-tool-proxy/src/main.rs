@@ -89,7 +89,7 @@ use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsLi
 use policy::PolicyEngine;
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-tool-proxy")]
+#[command(name = "nucleus-tool-proxy", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Tool proxy server running inside nucleus pods")]
 struct Args {
     /// Pod spec YAML path.
@@ -505,7 +505,7 @@ pub(crate) struct AppState {
     /// `authority_exchange` is.
     authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
-    sandbox_proof: sandbox_proof::SandboxProof,
+    sandbox_proof: Arc<sandbox_proof::SandboxProof>,
     /// Root authority Ed25519 public key for delegation certificate verification.
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
@@ -714,55 +714,12 @@ pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-/// Run command request using secure array-based format.
-///
-/// The array form prevents shell injection by executing commands directly
-/// without shell interpretation. Each array element is passed as a separate
-/// argument to the process.
-#[derive(Debug, Deserialize)]
-struct RunRequest {
-    /// Command as array, e.g. ["ls", "-la", "/tmp"]
-    args: Vec<String>,
-    /// Optional input to pass to command stdin
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Optional working directory (relative to sandbox)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Optional timeout in seconds (clamped to policy limit)
-    #[serde(default)]
-    #[allow(dead_code)] // Reserved for future timeout implementation
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
+// The file and command bodies are `nucleus_client::wire`'s, the single
+// declaration every client serializes: a private copy here drifted from
+// nucleus-mcp's and made every MCP `run` a 422 (2026-09-29).
+use nucleus_client::wire::{
+    ReadRequest, ReadResponse, RunRequest, RunResponse, WriteRequest, WriteResponse,
+};
 
 #[derive(Debug, Deserialize)]
 struct WebFetchRequest {
@@ -1047,6 +1004,10 @@ async fn main() -> Result<(), ApiError> {
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
     let sandbox_proof_config = sandbox_proof::SandboxProofConfig {
         identity_cert_path: args.identity_cert.clone().or_else(|| args.tls_cert.clone()),
+        trust_bundle_path: args
+            .identity_trust_bundle
+            .clone()
+            .or_else(|| args.trust_bundle.clone()),
         spire_socket: args
             .spire_socket
             .clone()
@@ -1061,14 +1022,8 @@ async fn main() -> Result<(), ApiError> {
         )
         .await
     {
-        Ok(proof) => {
-            info!(
-                "sandbox proof verified: tier={} label={}",
-                proof.tier(),
-                proof.tier_label()
-            );
-            proof
-        }
+        // `verify_sandbox` logs the tier and the containment it decides.
+        Ok(proof) => proof,
         Err(e) => {
             eprintln!("FATAL: {e}");
             std::process::exit(78); // EX_CONFIG
@@ -1118,7 +1073,7 @@ async fn main() -> Result<(), ApiError> {
         };
     }
 
-    let runtime = pod_mgmt::build_runtime(&spec)?;
+    let runtime = pod_mgmt::build_runtime(&spec, sandbox_proof.containment())?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
@@ -1607,7 +1562,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions: clearing_dimensions.clone(),
         authority_exchange,
         authority_ledger,
-        sandbox_proof,
+        sandbox_proof: Arc::new(sandbox_proof),
         cert_root_pubkey: args
             .cert_root_pubkey
             .as_deref()

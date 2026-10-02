@@ -1,5 +1,7 @@
 use super::*;
-use nucleus_spec::{ImageSpec, PodSpec, SeccompSpec, VsockSpec};
+use nucleus_spec::{ImageSpec, PodSpec, RootfsSource, SeccompSpec, VsockSpec};
+
+use crate::rootfs_source::HostImage;
 use proptest::prelude::*;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -25,7 +27,7 @@ fn base_spec() -> PodSpec {
 fn a_data_image_lowers_to_a_read_only_non_root_drive() {
     let mut img = image(true, false);
     img.data_path = Some(PathBuf::from("/var/lib/nucleus/corpus.img"));
-    let drives = lower_drives(&img, true);
+    let drives = lower_drives(&host(&img), true);
     let data = drives
         .iter()
         .find(|d| d.drive_id == "data")
@@ -35,14 +37,14 @@ fn a_data_image_lowers_to_a_read_only_non_root_drive() {
     assert_eq!(data.path_on_host, in_jail::DATA);
 
     // Unjailed it keeps the host path, like every other artifact on that path.
-    let unjailed = lower_drives(&img, false);
+    let unjailed = lower_drives(&host(&img), false);
     let data = unjailed.iter().find(|d| d.drive_id == "data").unwrap();
     assert_eq!(data.path_on_host, "/var/lib/nucleus/corpus.img");
 
     // And no data image means no drive at all — absence is a no-op, so every spec written
     // before this field is unaffected.
     assert!(
-        lower_drives(&image(true, false), true)
+        lower_drives(&host(&image(true, false)), true)
             .iter()
             .all(|d| d.drive_id != "data")
     );
@@ -68,7 +70,7 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
             kernel_image_path: String::new(),
             boot_args: None,
         },
-        drives: lower_drives(img, true),
+        drives: lower_drives(&host(img), true),
         machine_config: MachineConfig {
             vcpu_count: 1,
             mem_size_mib: 256,
@@ -96,10 +98,15 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
     );
 }
 
+/// The launch path takes a resolved image; every fixture here is a path rootfs, so this cannot fail.
+fn host(img: &ImageSpec) -> HostImage {
+    HostImage::resolve(img).expect("a path rootfs resolves")
+}
+
 fn image(read_only: bool, scratch: bool) -> ImageSpec {
     ImageSpec {
         kernel_path: PathBuf::from("/var/lib/nucleus/vmlinux"),
-        rootfs_path: PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
+        rootfs: RootfsSource::Path(PathBuf::from("/var/lib/nucleus/rootfs.ext4")),
         boot_args: None,
         read_only,
         scratch_path: scratch.then(|| PathBuf::from("/var/lib/nucleus/scratch.ext4")),
@@ -263,7 +270,7 @@ fn boot_args_with_identity(will_have_identity: bool) -> String {
         &base_spec(),
         std::path::Path::new("/unused/firecracker.log"),
         std::path::Path::new("/unused/vsock.sock"),
-        &image(true, false),
+        &host(&image(true, false)),
         None,
         "aa00bb11-approval-pubkeys",
         will_have_identity.then_some(15012),
@@ -354,7 +361,7 @@ fn boot_args_maximal() -> String {
         &spec,
         std::path::Path::new("/unused/firecracker.log"),
         std::path::Path::new("/unused/vsock.sock"),
-        &image(true, false),
+        &host(&image(true, false)),
         None,
         "aa00bb11-approval-pubkeys",
         Some(15012),
@@ -481,7 +488,7 @@ fn no_identity_outcome_reintroduces_a_cmdline_token() {
 proptest! {
     #[test]
     fn readonly_policy_lowers_to_readonly_rootfs(ro in any::<bool>(), scratch in any::<bool>()) {
-        let drives = lower_drives(&image(ro, scratch), false);
+        let drives = lower_drives(&host(&image(ro, scratch)), false);
 
         // rootfs is always present, first, and the root device.
         prop_assert_eq!(&drives[0].drive_id, "rootfs");
@@ -784,7 +791,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
 
     let img = nucleus_spec::ImageSpec {
         kernel_path: src.join("vmlinux"),
-        rootfs_path: src.join("rootfs.ext4"),
+        rootfs: RootfsSource::Path(src.join("rootfs.ext4")),
         boot_args: None,
         read_only: false,
         scratch_path: Some(src.join("scratch.ext4")),
@@ -812,7 +819,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         &spec,
         Path::new("/unused/host/firecracker.log"),
         Path::new("/unused/host/vsock.sock"),
-        &img,
+        &host(&img),
         None,
         "aa00bb11-approval-pubkeys",
         None,
@@ -820,7 +827,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
     let config_json = serde_json::to_vec_pretty(&config).expect("serialize");
 
-    prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false).expect("prepare_jail");
+    prepare_jail(&layout, &host(&img), &spec, &config_json, uid, gid, false).expect("prepare_jail");
 
     // Every path the config names, except the vsock socket, which Firecracker
     // creates itself at boot — so what must exist for it is the writable jail
@@ -852,7 +859,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
 
     // Re-running must be idempotent: pods get relaunched.
-    prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false)
+    prepare_jail(&layout, &host(&img), &spec, &config_json, uid, gid, false)
         .expect("prepare_jail must be idempotent");
 
     cleanup_jail(&layout);
@@ -862,7 +869,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
     // Cleanup unlinks hard links, so the caller's writable image survives.
     assert!(
-        img.rootfs_path.exists(),
+        host(&img).rootfs_path().exists(),
         "teardown must not destroy the caller's rootfs — those are hard links, \
              and the guest's writes live at the source path"
     );
@@ -905,8 +912,8 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
     for (read_only, scratch) in [(true, true), (true, false), (false, true), (false, false)] {
         let img = image(read_only, scratch);
         let spec = base_spec();
-        let resources = jail_resources(&img, &spec, false);
-        let drives = lower_drives(&img, true);
+        let resources = jail_resources(&host(&img), &spec, false);
+        let drives = lower_drives(&host(&img), true);
 
         for drive in &drives {
             if drive.is_read_only {
@@ -962,7 +969,7 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
         &spec,
         Path::new("/host/pod/firecracker.log"),
         Path::new("/host/pod/vsock.sock"),
-        &img,
+        &host(&img),
         None,
         "aa00bb11-approval-pubkeys",
         None,
@@ -973,7 +980,7 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
         )),
     );
 
-    let resources = jail_resources(&img, &spec, false);
+    let resources = jail_resources(&host(&img), &spec, false);
     // Produced inside the jail rather than relocated into it.
     let produced = [in_jail::CONFIG, in_jail::LOG, in_jail::VSOCK];
     let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail).collect();
@@ -1465,7 +1472,7 @@ fn enforcing_pci_off_is_idempotent() {
 /// A read-only rootfs may be copied, because nothing writes through it.
 #[test]
 fn rw_rootfs_is_hard_link_only() {
-    let rw = jail_resources(&image(false, false), &base_spec(), false);
+    let rw = jail_resources(&host(&image(false, false)), &base_spec(), false);
     let rootfs = rw
         .iter()
         .find(|r| r.in_jail == in_jail::ROOTFS)
@@ -1477,7 +1484,7 @@ fn rw_rootfs_is_hard_link_only() {
          jail is torn down"
     );
 
-    let ro = jail_resources(&image(true, false), &base_spec(), false);
+    let ro = jail_resources(&host(&image(true, false)), &base_spec(), false);
     let rootfs = ro
         .iter()
         .find(|r| r.in_jail == in_jail::ROOTFS)
@@ -1498,7 +1505,7 @@ fn rw_rootfs_is_hard_link_only() {
 /// jail entry shared the artifact's inode with `links=2`.
 #[test]
 fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
-    let rw = jail_resources(&image(false, false), &base_spec(), false);
+    let rw = jail_resources(&host(&image(false, false)), &base_spec(), false);
     let rootfs = rw
         .iter()
         .find(|r| r.in_jail == in_jail::ROOTFS)
@@ -1521,7 +1528,7 @@ fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
     let mut img = image(true, true);
     img.scratch_path = Some(PathBuf::from("/srv/jailer/.../root/scratch.ext4"));
 
-    let placed = jail_resources(&img, &base_spec(), true);
+    let placed = jail_resources(&host(&img), &base_spec(), true);
     assert!(
         !placed.iter().any(|r| r.in_jail == in_jail::SCRATCH),
         "the node already made this file inside the jail; placing it would \
@@ -1533,7 +1540,7 @@ fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
 /// hard link: a copy would discard the guest's writes at teardown.
 #[test]
 fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
-    let placed = jail_resources(&image(true, true), &base_spec(), false);
+    let placed = jail_resources(&host(&image(true, true)), &base_spec(), false);
     let scratch = placed
         .iter()
         .find(|r| r.in_jail == in_jail::SCRATCH)
@@ -1549,7 +1556,7 @@ fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
 /// block device behind `/work`, at the in-jail path resolved after `chroot`.
 #[test]
 fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
-    let drives = lower_drives(&image(true, true), true);
+    let drives = lower_drives(&host(&image(true, true)), true);
     let scratch = drives
         .iter()
         .find(|d| d.drive_id == "scratch")
@@ -1568,12 +1575,12 @@ fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
 #[test]
 fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
     let declared = image(true, true);
-    let (out, provisioned) = scratch_for_pod(&declared, None, 123, 100);
+    let (out, provisioned) = scratch_for_pod(&host(&declared), None, 123, 100);
     assert_eq!(out.scratch_path, declared.scratch_path);
     assert!(!provisioned, "the caller's file is not the node's to skip");
 
     let plain = image(true, false);
-    let (out, provisioned) = scratch_for_pod(&plain, None, 123, 100);
+    let (out, provisioned) = scratch_for_pod(&host(&plain), None, 123, 100);
     assert_eq!(out.scratch_path, None, "no jail, so nothing was made");
     assert!(!provisioned);
 }
@@ -1582,7 +1589,7 @@ fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
 /// the pod boots as before rather than dying on a drive it cannot open.
 #[test]
 fn no_scratch_means_no_drive_rather_than_a_broken_one() {
-    let drives = lower_drives(&image(true, false), true);
+    let drives = lower_drives(&host(&image(true, false)), true);
     assert!(
         !drives.iter().any(|d| d.drive_id == "scratch"),
         "a declared drive with no file behind it would fail the boot"
@@ -1645,7 +1652,7 @@ fn a_spec_asking_for_huge_pages_reaches_the_machine_config() {
             &spec,
             std::path::Path::new("/unused/firecracker.log"),
             std::path::Path::new("/unused/vsock.sock"),
-            &image(true, false),
+            &host(&image(true, false)),
             None,
             "aa00bb11-approval-pubkeys",
             None,

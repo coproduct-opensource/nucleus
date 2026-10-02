@@ -107,6 +107,11 @@ use serde::Deserialize;
 struct RegistryFile {
     #[serde(default)]
     upstream: Vec<EntryFile>,
+    /// Inbound bindings (`federation_ingress.rs`). Same file, because a binding
+    /// names the upstreams its callers may hold, and one file is one atomic
+    /// statement of what this node offers in both directions.
+    #[serde(default)]
+    caller: Vec<crate::federation_ingress::CallerFile>,
 }
 
 #[derive(Deserialize)]
@@ -226,6 +231,9 @@ pub(crate) struct UpstreamRegistry {
     entries: Vec<RegistryEntry>,
     /// Each entry's projection, in the same order: the admission ceiling.
     specs: Vec<CredentialedEgressSpec>,
+    /// The file's `[[caller]]` tables, as written. Validated (against this
+    /// registry) by `federation_ingress::CallerBindings::from_files`.
+    callers: Vec<crate::federation_ingress::CallerFile>,
 }
 
 impl UpstreamRegistry {
@@ -305,7 +313,16 @@ impl UpstreamRegistry {
             });
         }
         let specs = entries.iter().map(|e| e.spec.clone()).collect();
-        Ok(Self { entries, specs })
+        Ok(Self {
+            entries,
+            specs,
+            callers: file.caller,
+        })
+    }
+
+    /// The `[[caller]]` tables of this file, unvalidated.
+    pub fn callers(&self) -> &[crate::federation_ingress::CallerFile] {
+        &self.callers
     }
 
     /// Every entry's projection, for admission to clamp against.

@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "nucleus-code": {
-      "command": "/Users/bcrisp/coproduct/nucleus-code/target/release/nucleus-code",
-      "args": ["--mcp"]
-    }
-  }
-}

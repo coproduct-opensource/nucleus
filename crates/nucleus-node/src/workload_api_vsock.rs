@@ -88,12 +88,160 @@ pub(crate) enum Material {
     CallerToken,
 }
 
-/// The values whose possession IS the capability, and so are served once.
+/// The values served once per pod: to `nucleus-guest-init`, which asks before
+/// any workload exists, and to nobody after it.
+///
+/// # Why "once" is the whole fence
+///
+/// Any guest process can open `AF_VSOCK`, and the virtio transport clears peer
+/// credentials on connect, so the host cannot tell guest-init from a workload
+/// by asking the socket (#2724). Arriving first is the only thing that
+/// separates them. Every value here is one the workload must not hold: the
+/// tool-proxy's environment model (FM-5, `ident_may_deliver`) refuses each to
+/// the workload, and serving it again on request would hand it over anyway.
+///
+/// Nothing in the guest asks twice. guest-init fetches each once, exports it
+/// into the tool-proxy's environment and execs; the proxy is PID 1 for the
+/// pod's life and never re-fetches, and there is no rotation path over this
+/// socket (the SVID's lifetime is the pod's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum OneShot {
     BrokerSecret,
     MediationKey,
     AuditCredentials,
+    /// The SVID private key. Spent inside a success: a later `FETCH_SVID` is
+    /// answered with the public chain alone, and the standard SPIFFE listener
+    /// (which has no key-less reply) refuses.
+    SvidKey,
+    /// The pod's `LatticeCertificate` and pinned root key — what the tool-proxy
+    /// treats as this pod's policy.
+    PodCertificate,
+    /// The live-path session capability token, its nonce and issuer.
+    TaskToken,
+    /// The caller-identity token for the node's management API.
+    CallerToken,
+    /// DLC-D admission provisioning, which carries per-operation credentials.
+    DlcAdmission,
+}
+
+impl OneShot {
+    /// Every one-shot, in slot order.
+    pub(crate) const ALL: [OneShot; 8] = [
+        OneShot::BrokerSecret,
+        OneShot::MediationKey,
+        OneShot::AuditCredentials,
+        OneShot::SvidKey,
+        OneShot::PodCertificate,
+        OneShot::TaskToken,
+        OneShot::CallerToken,
+        OneShot::DlcAdmission,
+    ];
+
+    /// The ledger slot. Exhaustive, so a new one-shot is a compile error here
+    /// until it has one; `every_one_shot_has_its_own_slot` pins it to `ALL`.
+    const fn slot(self) -> usize {
+        match self {
+            OneShot::BrokerSecret => 0,
+            OneShot::MediationKey => 1,
+            OneShot::AuditCredentials => 2,
+            OneShot::SvidKey => 3,
+            OneShot::PodCertificate => 4,
+            OneShot::TaskToken => 5,
+            OneShot::CallerToken => 6,
+            OneShot::DlcAdmission => 7,
+        }
+    }
+}
+
+/// The ONE record of which once-only values this pod has been served (ADR 0007
+/// G-1). Before #2724 this was five `AtomicBool` fields, each spent by its own
+/// copy of the swap-and-warn logic, and the values with no field were served on
+/// demand. A value is now once-only by having a [`OneShot`] variant, and
+/// [`ServedLedger::claim`] is the only place a slot is spent.
+///
+/// `new` is the only constructor and there is no derived `Default`: a ledger
+/// starts with nothing served, and that is a decision stated here rather than
+/// one a derive makes (B-1). The hand-written `Default` below exists only
+/// because `PodMaterial` is built with `..Default::default()` in tests.
+pub struct ServedLedger {
+    slots: [std::sync::Arc<std::sync::atomic::AtomicBool>; OneShot::ALL.len()],
+}
+
+impl ServedLedger {
+    /// A pod that has been served nothing.
+    pub fn new() -> Self {
+        ServedLedger {
+            slots: std::array::from_fn(|_| std::sync::Arc::default()),
+        }
+    }
+
+    /// Spend `what`'s one serve, or name why not.
+    ///
+    /// `swap`, not load-then-store: two connections racing must not both see
+    /// "not yet". The caller checks provisioning FIRST, so a refusal for an
+    /// absent value never spends the slot before a real one exists.
+    pub(crate) fn claim(&self, what: OneShot) -> Result<Claimed, Refusal> {
+        if self.slots[what.slot()].swap(true, std::sync::atomic::Ordering::AcqRel) {
+            tracing::warn!(
+                "refused a repeat request for {what:?}: it is served once, to guest-init, before \
+                 the workload exists; a second request is a bug or an attempt to obtain it"
+            );
+            return Err(Refusal::AlreadyServed(what));
+        }
+        Ok(Claimed { what })
+    }
+
+    /// Whether `what` has been served — the host's own record, never the
+    /// decision to serve (that is [`claim`](Self::claim)'s alone).
+    #[cfg(test)]
+    pub(crate) fn is_served(&self, what: OneShot) -> bool {
+        self.slots[what.slot()].load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// The SVID-key slot itself, for the standard SPIFFE listener, which lives
+    /// in `nucleus-identity` and spends it there. One slot, two listeners: the
+    /// key goes out once whichever protocol asks first.
+    fn svid_key_latch(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.slots[OneShot::SvidKey.slot()])
+    }
+
+    /// Put the ledger in a state, for tests that start mid-life.
+    #[cfg(test)]
+    pub(crate) fn mark_served(&self, what: OneShot, served: bool) {
+        self.slots[what.slot()].store(served, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// A handle a test keeps on one slot after the ledger has moved into a bridge
+    /// (the pod-API cross walk, which needs the local driver).
+    #[cfg(all(test, feature = "local-driver"))]
+    pub(crate) fn watch(&self, what: OneShot) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        std::sync::Arc::clone(&self.slots[what.slot()])
+    }
+}
+
+impl Default for ServedLedger {
+    /// Nothing served — the same as [`ServedLedger::new`], and the only state a
+    /// pod's ledger may start in.
+    fn default() -> Self {
+        ServedLedger::new()
+    }
+}
+
+/// Proof that a [`OneShot`]'s slot was spent for THIS reply. Minted only by
+/// [`ServedLedger::claim`] (private field: C-1, C-2) and consumed by value by
+/// [`Claimed::release`] (C-4), so a once-only value reaches the wire through
+/// the claim that spent its slot.
+#[must_use = "a claimed slot is spent; release the value it was claimed for"]
+pub(crate) struct Claimed {
+    what: OneShot,
+}
+
+impl Claimed {
+    /// Hand over the value this claim was spent for.
+    pub(crate) fn release<T>(self, value: T) -> T {
+        tracing::debug!("served {:?} once", self.what);
+        value
+    }
 }
 
 impl std::fmt::Display for Refusal {
@@ -113,6 +261,13 @@ impl std::fmt::Display for Refusal {
                 OneShot::BrokerSecret => "broker secret already served",
                 OneShot::MediationKey => "mediation key already served",
                 OneShot::AuditCredentials => "audit credentials already served",
+                // Never on the JSON wire (a repeat `FETCH_SVID` is answered with
+                // the chain alone), but named, so the census can compare it.
+                OneShot::SvidKey => "svid key already served",
+                OneShot::PodCertificate => "pod certificate already served",
+                OneShot::TaskToken => "task token already served",
+                OneShot::CallerToken => "caller token already served",
+                OneShot::DlcAdmission => "dlc admission already served",
             }),
             Refusal::ReceiptCollectionNotConfigured => {
                 f.write_str("receipt collection not configured for this pod")
@@ -282,16 +437,14 @@ pub struct PodMaterial {
     /// to sign but not to find the socket, or the reverse. Both arrive in the
     /// same one-shot reply or neither does.
     pub broker_port: u32,
-    /// Whether the capability has been served. SHARED across every connection
-    /// this listener accepts — a per-connection flag would make "once" mean
-    /// "once per connection", which is not a restriction.
-    pub broker_secret_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Which once-only values have been served. ONE ledger for every
+    /// [`OneShot`], SHARED across every connection both listeners accept — a
+    /// per-connection record would make "once" mean "once per connection",
+    /// which is not a restriction.
+    pub served: ServedLedger,
     /// The S3 audit-sink credentials, off the kernel command line at last.
     /// `None` when the pod has no audit sink or the node holds no credentials.
     pub audit_creds: Option<AuditCredentials>,
-    /// Whether the audit credentials have been served — one flag across every
-    /// connection, for the same reason as `broker_secret_served`.
-    pub audit_creds_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The per-pod ed25519 signing seed (64 hex chars) the tool-proxy signs
     /// `MediationReceipt`s with, and the mediator SPIFFE id they carry. `None`
     /// when receipts are not provisioned for this pod. Served ONCE, before the
@@ -326,9 +479,6 @@ pub struct PodMaterial {
     /// the thing being contained; a barrier it declares is a claim, whereas this is the host's
     /// own record of what it handed over.
     pub personalized: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Whether the mediation key has been served — one flag across connections,
-    /// for the same reason as `broker_secret_served`.
-    pub mediation_key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The pod's node-side directory, where shipped `MediationReceipt`s are
     /// durably collected (`SHIP_RECEIPT`). `None` disables collection.
     pub receipt_dir: Option<std::path::PathBuf>,
@@ -520,6 +670,7 @@ impl WorkloadApiVsockBridge {
             SPIFFE_WORKLOAD_API_PORT,
             pod_id,
             &identity_manager_for_spiffe,
+            material_for_bridge.served.svid_key_latch(),
             jail_owner,
         )
         .await
@@ -560,6 +711,7 @@ impl WorkloadApiVsockBridge {
         port: u32,
         pod_id: uuid::Uuid,
         identity_manager: &IdentityManager,
+        key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
         jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<(oneshot::Sender<()>, JoinHandle<()>, PathBuf)> {
         use nucleus_identity::spiffe_workload_api::SpiffeWorkloadApiService;
@@ -593,7 +745,10 @@ impl WorkloadApiVsockBridge {
             identity_manager.secret_manager(),
             identity,
             identity_manager.trust_bundle().clone(),
-        );
+        )
+        // The SAME latch the JSON listener spends: one key, served once, whichever
+        // protocol asks first.
+        .key_served_once(key_served);
 
         let (tx, rx) = oneshot::channel();
         let path_for_log = socket_path.clone();
@@ -686,25 +841,16 @@ impl WorkloadApiVsockBridge {
 /// capability to whoever asked second and silently reduce the broker to
 /// unauthenticated.
 ///
-/// `Acquire`/`AcqRel` via `swap` rather than a load-then-store: two concurrent
-/// connections must not both observe "not yet served".
-fn handle_fetch_broker_secret(
-    secret: Option<&str>,
-    port: u32,
-    already_served: &std::sync::atomic::AtomicBool,
-) -> Reply {
-    use std::sync::atomic::Ordering;
+/// The slot is spent by [`ServedLedger::claim`], the one decider for every
+/// once-only value.
+fn handle_fetch_broker_secret(secret: Option<&str>, port: u32, served: &ServedLedger) -> Reply {
     let Some(secret) = secret else {
         return Err(Refusal::NotProvisioned(Material::BrokerSecret));
     };
-    if already_served.swap(true, Ordering::AcqRel) {
-        tracing::warn!(
-            "refused a repeat FETCH_BROKER_SECRET — the capability is served once, before the \
-             workload exists; a second request is a bug or an attempt to obtain it"
-        );
-        return Err(Refusal::AlreadyServed(OneShot::BrokerSecret));
-    }
-    Ok(serde_json::json!({ "secret": secret, "port": port }).to_string())
+    let claimed = served.claim(OneShot::BrokerSecret)?;
+    Ok(claimed
+        .release(serde_json::json!({ "secret": secret, "port": port }))
+        .to_string())
 }
 
 /// Serve the per-pod mediation signing key exactly once, before the workload
@@ -715,20 +861,15 @@ fn handle_fetch_broker_secret(
 fn handle_fetch_mediation_key(
     signing_key: Option<&str>,
     spiffe_id: Option<&str>,
-    already_served: &std::sync::atomic::AtomicBool,
+    served: &ServedLedger,
 ) -> Reply {
-    use std::sync::atomic::Ordering;
     let (Some(signing_key), Some(spiffe_id)) = (signing_key, spiffe_id) else {
         return Err(Refusal::NotProvisioned(Material::MediationKey));
     };
-    if already_served.swap(true, Ordering::AcqRel) {
-        tracing::warn!(
-            "refused a repeat FETCH_MEDIATION_KEY — the signing key is served once, before the \
-             workload exists; a second request is a bug or an attempt to obtain it"
-        );
-        return Err(Refusal::AlreadyServed(OneShot::MediationKey));
-    }
-    Ok(serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }).to_string())
+    let claimed = served.claim(OneShot::MediationKey)?;
+    Ok(claimed
+        .release(serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }))
+        .to_string())
 }
 
 /// Handle `FETCH_POD_SPEC`: the command this pod is to run.
@@ -795,16 +936,43 @@ fn receipt_collected(kept: nucleus_jsonl::Durable, log: &std::path::Path, line: 
     Ok(r#"{"status":"collected"}"#.to_string())
 }
 
-fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> Reply {
-    match material {
-        Some(m) => Ok(serde_json::json!({
+/// Serve the DLC-D admission provisioning ONCE (#2724): it carries the pod's
+/// per-operation credentials, which the tool-proxy presents and the FM-5 model
+/// withholds from the workload (`NUCLEUS_DLC_*`).
+fn handle_fetch_dlc_admission(
+    material: Option<&DlcAdmissionMaterial>,
+    served: &ServedLedger,
+) -> Reply {
+    let Some(m) = material else {
+        return Err(Refusal::NotProvisioned(Material::DlcAdmission));
+    };
+    let claimed = served.claim(OneShot::DlcAdmission)?;
+    Ok(claimed
+        .release(serde_json::json!({
             "trusted_keys": m.trusted_keys,
             "issuer": m.issuer,
             "credentials": m.credentials,
-        })
-        .to_string()),
-        None => Err(Refusal::NotProvisioned(Material::DlcAdmission)),
-    }
+        }))
+        .to_string())
+}
+
+/// Serve the caller-identity token for the node's management API ONCE (#2724).
+///
+/// Holding it IS exercising this pod's authority at the node (`identify_caller`
+/// checks the `(pod_id, token)` pair), so it is the tool-proxy's, not the
+/// workload's. The id travels with it, from the same socket-bound source.
+fn handle_fetch_pod_caller_token(
+    token: Option<&str>,
+    pod_id: uuid::Uuid,
+    served: &ServedLedger,
+) -> Reply {
+    let Some(t) = token else {
+        return Err(Refusal::NotProvisioned(Material::CallerToken));
+    };
+    let claimed = served.claim(OneShot::CallerToken)?;
+    Ok(claimed
+        .release(serde_json::json!({ "caller_token": t, "pod_id": pod_id.to_string() }))
+        .to_string())
 }
 
 /// Serve the S3 audit-sink credentials EXACTLY ONCE.
@@ -819,48 +987,63 @@ fn handle_fetch_dlc_admission(material: Option<&DlcAdmissionMaterial>) -> Reply 
 /// one-shot (a pod with no audit sink asks and is told no, harmlessly).
 fn handle_fetch_audit_credentials(
     creds: Option<&AuditCredentials>,
-    already_served: &std::sync::atomic::AtomicBool,
+    served: &ServedLedger,
 ) -> Reply {
-    use std::sync::atomic::Ordering;
     let Some(creds) = creds else {
         return Err(Refusal::NotProvisioned(Material::AuditCredentials));
     };
-    if already_served.swap(true, Ordering::AcqRel) {
-        tracing::warn!(
-            "refused a repeat FETCH_AUDIT_CREDENTIALS — the credentials are served once, before \
-             the workload exists; a second request is a bug or an attempt to obtain them"
-        );
-        return Err(Refusal::AlreadyServed(OneShot::AuditCredentials));
-    }
-    Ok(serde_json::json!({
-        "access_key_id": creds.access_key_id,
-        "secret_access_key": creds.secret_access_key,
-        "session_token": creds.session_token,
-    })
-    .to_string())
+    let claimed = served.claim(OneShot::AuditCredentials)?;
+    Ok(claimed
+        .release(serde_json::json!({
+            "access_key_id": creds.access_key_id,
+            "secret_access_key": creds.secret_access_key,
+            "session_token": creds.session_token,
+        }))
+        .to_string())
 }
 
-fn handle_fetch_pod_certificate(cert: Option<&crate::pod_authority::BootCertificate>) -> Reply {
-    match cert {
-        Some(c) => Ok(serde_json::json!({
+/// Serve the pod's certificate of authority ONCE (#2724).
+///
+/// The certificate is public in the cryptographic sense — its holder key never
+/// leaves the node — but it is what the tool-proxy enforces as this pod's
+/// policy, and the FM-5 environment model withholds identity material from the
+/// workload. guest-init fetches it before `exec_proxy`; nothing asks again.
+fn handle_fetch_pod_certificate(
+    cert: Option<&crate::pod_authority::BootCertificate>,
+    served: &ServedLedger,
+) -> Reply {
+    let Some(c) = cert else {
+        return Err(Refusal::NotProvisioned(Material::PodCertificate));
+    };
+    let claimed = served.claim(OneShot::PodCertificate)?;
+    Ok(claimed
+        .release(serde_json::json!({
             "certificate": c.token_b64,
             "root_pubkey": c.root_pubkey_hex,
-        })
-        .to_string()),
-        None => Err(Refusal::NotProvisioned(Material::PodCertificate)),
-    }
+        }))
+        .to_string())
 }
 
-fn handle_fetch_task_token(token: Option<&crate::session_mint::MintedTaskToken>) -> Reply {
-    match token {
-        Some(t) => Ok(serde_json::json!({
+/// Serve the session task token ONCE (#2724).
+///
+/// The tool-proxy verifies this token on the live path; the FM-5 model refuses
+/// `NUCLEUS_TASK_TOKEN` to the workload, and the cmdline copy was removed so the
+/// workload could not read it. Served on demand, this socket handed it back.
+fn handle_fetch_task_token(
+    token: Option<&crate::session_mint::MintedTaskToken>,
+    served: &ServedLedger,
+) -> Reply {
+    let Some(t) = token else {
+        return Err(Refusal::NotProvisioned(Material::TaskToken));
+    };
+    let claimed = served.claim(OneShot::TaskToken)?;
+    Ok(claimed
+        .release(serde_json::json!({
             "token": t.token_json,
             "nonce": t.nonce_hex,
             "issuer": t.issuer_hex,
-        })
-        .to_string()),
-        None => Err(Refusal::NotProvisioned(Material::TaskToken)),
-    }
+        }))
+        .to_string())
 }
 
 async fn handle_connection(
@@ -929,7 +1112,7 @@ where
     match parsed {
         Ok(WorkloadApiCommand::FetchSvid) => {
             debug!("workload API FETCH_SVID for pod {}", pod_id);
-            handle_fetch_svid(manager, pod_id).await
+            handle_fetch_svid(manager, pod_id, &material.served).await
         }
         Ok(WorkloadApiCommand::FetchBundle) => {
             debug!("workload API FETCH_BUNDLE for pod {}", pod_id);
@@ -944,22 +1127,23 @@ where
             // Both are needed: `identify_caller` requires the (id, token) pair,
             // and on Firecracker the guest has no other way to learn its own id
             // (it is not on the cmdline or in the spec the guest can read).
-            match &material.caller_token {
-                Some(t) => Ok(format!(r#"{{"caller_token":"{t}","pod_id":"{pod_id}"}}"#)),
-                None => Err(Refusal::NotProvisioned(Material::CallerToken)),
-            }
+            handle_fetch_pod_caller_token(
+                material.caller_token.as_deref(),
+                pod_id,
+                &material.served,
+            )
         }
         Ok(WorkloadApiCommand::FetchTaskToken) => {
             debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
-            handle_fetch_task_token(material.task_token.as_ref())
+            handle_fetch_task_token(material.task_token.as_ref(), &material.served)
         }
         Ok(WorkloadApiCommand::FetchPodCertificate) => {
             debug!("workload API FETCH_POD_CERTIFICATE for pod {}", pod_id);
-            handle_fetch_pod_certificate(material.pod_certificate.as_ref())
+            handle_fetch_pod_certificate(material.pod_certificate.as_ref(), &material.served)
         }
         Ok(WorkloadApiCommand::FetchDlcAdmission) => {
             debug!("workload API FETCH_DLC_ADMISSION for pod {}", pod_id);
-            handle_fetch_dlc_admission(material.dlc_admission.as_ref())
+            handle_fetch_dlc_admission(material.dlc_admission.as_ref(), &material.served)
         }
         Ok(WorkloadApiCommand::FetchBrokerSecret) => {
             // Value never logged, at any level: this is the one workload-API
@@ -968,16 +1152,13 @@ where
             handle_fetch_broker_secret(
                 material.broker_secret.as_deref(),
                 material.broker_port,
-                &material.broker_secret_served,
+                &material.served,
             )
         }
         Ok(WorkloadApiCommand::FetchAuditCredentials) => {
             // Like the broker secret: never log the value, at any level.
             debug!("workload API FETCH_AUDIT_CREDENTIALS for pod {}", pod_id);
-            handle_fetch_audit_credentials(
-                material.audit_creds.as_ref(),
-                &material.audit_creds_served,
-            )
+            handle_fetch_audit_credentials(material.audit_creds.as_ref(), &material.served)
         }
         Ok(WorkloadApiCommand::FetchMediationKey) => {
             // Like the broker secret: the signing key value is never logged.
@@ -985,14 +1166,15 @@ where
             handle_fetch_mediation_key(
                 material.mediation_signing_key.as_deref(),
                 material.mediation_spiffe_id.as_deref(),
-                &material.mediation_key_served,
+                &material.served,
             )
         }
         Ok(WorkloadApiCommand::FetchPodSpec) => {
             // Not a secret and not once-only: it is this pod's own command,
             // and a guest re-reading it learns nothing it did not already
-            // run. The mediation key's `*_served` latch is about a value
-            // whose POSSESSION is the capability; this is not that.
+            // run. The `OneShot`s are values whose POSSESSION the workload
+            // must not have; this is not that (credentialed-egress secrets
+            // live in the node's environment, never in the spec).
             debug!("workload API FETCH_POD_SPEC for pod {}", pod_id);
             handle_fetch_pod_spec(material.pod_spec_yaml.as_deref())
         }
@@ -1092,7 +1274,11 @@ where
 /// Each pod gets a unique SPIFFE identity based on its pod_id:
 /// `spiffe://{trust_domain}/ns/pods/sa/{pod_id}`
 #[allow(dead_code)]
-async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Reply {
+async fn handle_fetch_svid(
+    manager: &IdentityManager,
+    pod_id: uuid::Uuid,
+    served: &ServedLedger,
+) -> Reply {
     // THE pod identity — the same function the spawn path registers and caches
     // the attested certificate under. These used to be two spellings: this
     // served `ns/pods/sa/<uuid>` while the spawn path registered the
@@ -1107,14 +1293,24 @@ async fn handle_fetch_svid(manager: &IdentityManager, pod_id: uuid::Uuid) -> Rep
             struct SvidResponse {
                 spiffe_id: String,
                 certificate_chain: String,
-                private_key: String,
+                /// Present on the first serve only. See [`OneShot::SvidKey`].
+                #[serde(skip_serializing_if = "Option::is_none")]
+                private_key: Option<String>,
                 expires_at: i64,
             }
 
+            // Spent only once there is a certificate to go with it: a failed
+            // issue must not burn the one serve before the guest's init can use it.
+            // A repeat is answered with the chain alone, not refused: a relying
+            // party may still read the served certificate.
+            let private_key = served
+                .claim(OneShot::SvidKey)
+                .ok()
+                .map(|claimed| claimed.release(cert.private_key_pem().to_string()));
             let response = SvidResponse {
                 spiffe_id: identity.to_spiffe_uri(),
                 certificate_chain: cert.chain_pem(),
-                private_key: cert.private_key_pem().to_string(),
+                private_key,
                 expires_at: cert.expiry().timestamp(),
             };
 
@@ -1197,7 +1393,10 @@ mod task_token_serving_tests {
     /// tool-proxy cannot verify, which fails at startup rather than at use.
     #[test]
     fn the_served_token_carries_the_three_values_the_guest_needs() {
-        let body = wire(&handle_fetch_task_token(Some(&minted())));
+        let body = wire(&handle_fetch_task_token(
+            Some(&minted()),
+            &ServedLedger::new(),
+        ));
         let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert_eq!(v["token"], r#"{"task":"demo"}"#);
         assert_eq!(v["nonce"], "0011223344556677");
@@ -1211,7 +1410,7 @@ mod task_token_serving_tests {
     /// misconfiguration into a confusing runtime denial.
     #[test]
     fn a_pod_without_a_token_is_refused_rather_than_given_an_empty_one() {
-        let body = wire(&handle_fetch_task_token(None));
+        let body = wire(&handle_fetch_task_token(None, &ServedLedger::new()));
         let v: serde_json::Value = serde_json::from_str(&body).expect("valid JSON");
         assert!(
             v.get("token").is_none(),
@@ -1229,13 +1428,19 @@ mod task_token_serving_tests {
             token_b64: "dG9rZW4=".to_string(),
             root_pubkey_hex: "ab".repeat(32),
         };
-        let v: serde_json::Value =
-            serde_json::from_str(&wire(&handle_fetch_pod_certificate(Some(&boot)))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&wire(&handle_fetch_pod_certificate(
+            Some(&boot),
+            &ServedLedger::new(),
+        )))
+        .unwrap();
         assert_eq!(v["certificate"], "dG9rZW4=");
         assert_eq!(v["root_pubkey"], "ab".repeat(32));
 
-        let v: serde_json::Value =
-            serde_json::from_str(&wire(&handle_fetch_pod_certificate(None))).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&wire(&handle_fetch_pod_certificate(
+            None,
+            &ServedLedger::new(),
+        )))
+        .unwrap();
         assert!(v.get("certificate").is_none());
         assert!(v["error"].is_string());
         use crate::workload_api_protocol::{WorkloadApiCommand, parse_command};
@@ -1313,6 +1518,187 @@ mod tests {
         assert!(response.contains("ok"));
 
         bridge.shutdown().await;
+    }
+
+    /// The pod's SVID private key crosses the socket once. The first `FETCH_SVID`
+    /// (guest-init's, before any workload exists) carries it; a later one — on a
+    /// FRESH connection, since vsock cannot say who is asking — carries the same
+    /// public chain and no key. Remove the latch in `handle_fetch_svid` and the
+    /// second reply carries a key again: this test is what goes red.
+    #[tokio::test]
+    async fn the_svid_private_key_is_served_once_across_connections() {
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            uuid::Uuid::new_v4(),
+            manager,
+            PodMaterial::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut replies = Vec::new();
+        for _ in 0..2 {
+            let stream = tokio::net::UnixStream::connect(bridge.socket_path())
+                .await
+                .unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = tokio::io::BufReader::new(reader);
+            writer.write_all(b"FETCH_SVID\n").await.unwrap();
+            writer.flush().await.unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            replies.push(line);
+        }
+
+        // The standard API is the same key behind a different wire format: it
+        // must not serve what the JSON listener already has.
+        let spiffe_sock = format!(
+            "unix:{}_{}",
+            vsock_uds_path.display(),
+            SPIFFE_WORKLOAD_API_PORT
+        );
+        for _ in 0..100 {
+            if std::path::Path::new(&spiffe_sock["unix:".len()..]).exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let client = spiffe::WorkloadApiClient::connect_to(spiffe_sock)
+            .await
+            .expect("the standard API is up");
+        let over_grpc = client.fetch_x509_svid().await;
+        bridge.shutdown().await;
+        assert!(
+            over_grpc.is_err(),
+            "the standard API must not serve a key the JSON listener already served"
+        );
+
+        let first: serde_json::Value = serde_json::from_str(&replies[0]).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&replies[1]).unwrap();
+        assert!(
+            first["private_key"]
+                .as_str()
+                .is_some_and(|k| k.contains("PRIVATE KEY")),
+            "the first FETCH_SVID must carry the key guest-init writes: {first}"
+        );
+        assert!(
+            second.get("private_key").is_none() && !replies[1].contains("PRIVATE KEY"),
+            "a later FETCH_SVID must carry no key: {}",
+            replies[1]
+        );
+        assert_eq!(
+            first["spiffe_id"], second["spiffe_id"],
+            "the repeat still names the pod"
+        );
+        assert!(
+            second["certificate_chain"]
+                .as_str()
+                .is_some_and(|c| c.contains("BEGIN CERTIFICATE")),
+            "and still serves the public chain a relying party verifies: {second}"
+        );
+    }
+
+    /// #2724: every per-pod value guest-init fetches before the workload exists
+    /// crosses the socket ONCE. The first connection plays guest-init; the
+    /// second plays the uid-65534 workload that read the port off
+    /// `/proc/cmdline` — on a FRESH connection, because vsock cannot say who
+    /// is asking. The second must get a NAMED refusal carrying none of the
+    /// value's bytes. On a node that serves these on demand, the second reply
+    /// is the value again and this test is what goes red.
+    #[tokio::test]
+    async fn every_per_pod_value_is_served_once_across_connections() {
+        const TOKEN: &str = "once-task-token-8c1e";
+        const CERT: &str = "b25jZS1jZXJ0LTRmMDI=";
+        const CALLER: &str = "once-caller-token-d93a";
+        const DLC: &str = "op=once-dlc-credential-77b0";
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let material = PodMaterial {
+            task_token: Some(crate::session_mint::MintedTaskToken {
+                token_json: TOKEN.to_string(),
+                nonce_hex: "00".repeat(16),
+                issuer_hex: "11".repeat(32),
+            }),
+            pod_certificate: Some(crate::pod_authority::BootCertificate {
+                token_b64: CERT.to_string(),
+                root_pubkey_hex: "22".repeat(32),
+            }),
+            caller_token: Some(CALLER.to_string()),
+            dlc_admission: Some(DlcAdmissionMaterial {
+                trusted_keys: "33".repeat(32),
+                issuer: "44".repeat(32),
+                credentials: DLC.to_string(),
+            }),
+            ..PodMaterial::default()
+        };
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            15012,
+            uuid::Uuid::new_v4(),
+            manager,
+            material,
+            None,
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        async fn ask(socket: &std::path::Path, command: &str) -> String {
+            let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+            let (reader, mut writer) = stream.into_split();
+            let mut reader = tokio::io::BufReader::new(reader);
+            writer.write_all(command.as_bytes()).await.unwrap();
+            writer.flush().await.unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            line
+        }
+
+        let cases = [
+            ("FETCH_TASK_TOKEN\n", TOKEN, "task token already served"),
+            (
+                "FETCH_POD_CERTIFICATE\n",
+                CERT,
+                "pod certificate already served",
+            ),
+            (
+                "FETCH_POD_CALLER_TOKEN\n",
+                CALLER,
+                "caller token already served",
+            ),
+            ("FETCH_DLC_ADMISSION\n", DLC, "dlc admission already served"),
+        ];
+        let mut replies = Vec::new();
+        for (command, _, _) in cases {
+            let init = ask(bridge.socket_path(), command).await;
+            let workload = ask(bridge.socket_path(), command).await;
+            replies.push((init, workload));
+        }
+        bridge.shutdown().await;
+
+        for ((command, value, refusal), (init, workload)) in cases.iter().zip(&replies) {
+            assert!(
+                init.contains(value),
+                "{command:?}: guest-init, asking first, must be served: {init}"
+            );
+            let second: serde_json::Value = serde_json::from_str(workload).unwrap();
+            assert_eq!(
+                second["error"].as_str(),
+                Some(*refusal),
+                "{command:?}: a second request must be refused by name, got: {workload}"
+            );
+            assert!(
+                !workload.contains(value),
+                "{command:?}: the refusal leaked the value: {workload}"
+            );
+        }
     }
 
     /// `POD_LIST` is wired end-to-end: a guest frame reaches `PodListView` and
@@ -1570,8 +1956,6 @@ mod tests {
         response
     }
 
-    use std::sync::atomic::AtomicBool;
-
     /// **The one-shot IS the mechanism.** This secret distinguishes the
     /// mediating tool-proxy from every other process in the guest. Any guest
     /// process can open AF_VSOCK, so what the proxy has that a workload does not
@@ -1579,7 +1963,7 @@ mod tests {
     /// exists. Serving twice hands the capability to whoever asks second.
     #[test]
     fn the_broker_secret_is_served_exactly_once() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let first = wire(&handle_fetch_broker_secret(Some("cap"), 1027, &served));
         let v: serde_json::Value = serde_json::from_str(&first).unwrap();
         assert_eq!(v["secret"], "cap", "the first request must be served");
@@ -1600,7 +1984,7 @@ mod tests {
     /// after the proxy has it gets nothing.
     #[test]
     fn the_mediation_key_is_served_exactly_once() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let first = wire(&handle_fetch_mediation_key(
             Some("deadbeef"),
             Some("spiffe://td/mediator/p"),
@@ -1633,7 +2017,7 @@ mod tests {
     /// later can still be served.
     #[test]
     fn the_mediation_key_is_withheld_when_unprovisioned() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let none = wire(&handle_fetch_mediation_key(
             None,
             Some("spiffe://td/x"),
@@ -1641,7 +2025,7 @@ mod tests {
         ));
         assert!(none.contains("error"), "no key ⇒ error: {none}");
         assert!(
-            !served.load(std::sync::atomic::Ordering::Acquire),
+            !served.is_served(OneShot::MediationKey),
             "the not-provisioned path must not spend the one-shot"
         );
     }
@@ -1652,7 +2036,7 @@ mod tests {
     /// `BrokerCapability` was introduced to remove one file over.
     #[test]
     fn the_reply_carries_the_port_as_well_as_the_secret() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let reply = wire(&handle_fetch_broker_secret(Some("cap"), 4242, &served));
         let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["secret"], "cap");
@@ -1666,7 +2050,7 @@ mod tests {
     /// operator who moves the broker port must not have to move it twice.
     #[test]
     fn the_served_port_is_whatever_the_node_was_configured_with() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let reply = wire(&handle_fetch_broker_secret(Some("cap"), 9999, &served));
         let v: serde_json::Value = serde_json::from_str(&reply).unwrap();
         assert_eq!(v["port"], 9999);
@@ -1678,11 +2062,11 @@ mod tests {
     /// proxy ever asks.
     #[test]
     fn an_absent_secret_does_not_consume_the_one_shot() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let r = wire(&handle_fetch_broker_secret(None, 1027, &served));
         assert!(r.contains("error"), "got: {r}");
         assert!(
-            !served.load(std::sync::atomic::Ordering::Acquire),
+            !served.is_served(OneShot::BrokerSecret),
             "a refusal for an absent secret must not mark the capability as served"
         );
     }
@@ -1712,7 +2096,7 @@ mod tests {
     /// twice hands the trail's keys to whoever asks second.
     #[test]
     fn the_audit_credentials_are_served_exactly_once() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let first = wire(&handle_fetch_audit_credentials(
             Some(&audit_creds()),
             &served,
@@ -1741,7 +2125,7 @@ mod tests {
     /// guest client can tell "no session token" from "truncated reply".
     #[test]
     fn static_credentials_serve_a_null_session_token() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let reply = wire(&handle_fetch_audit_credentials(
             Some(&AuditCredentials {
                 session_token: None,
@@ -1759,11 +2143,11 @@ mod tests {
     /// consume its own capability before the proxy exists to want it.
     #[test]
     fn an_absent_credential_set_does_not_consume_the_one_shot() {
-        let served = AtomicBool::new(false);
+        let served = ServedLedger::new();
         let r = wire(&handle_fetch_audit_credentials(None, &served));
         assert!(r.contains("error"), "got: {r}");
         assert!(
-            !served.load(std::sync::atomic::Ordering::Acquire),
+            !served.is_served(OneShot::AuditCredentials),
             "a refusal for an absent credential set must not mark it served"
         );
     }
@@ -1911,6 +2295,29 @@ mod refusal_wire_tests {
                 Refusal::AlreadyServed(OneShot::AuditCredentials),
                 r#"{"error":"audit credentials already served"}"#,
             ),
+            // #2724. guest-init reads the shared " already served" ending as
+            // "something in this guest asked before init did", so the ending is
+            // protocol too (`identity::reply_error` on the guest side).
+            (
+                Refusal::AlreadyServed(OneShot::SvidKey),
+                r#"{"error":"svid key already served"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::PodCertificate),
+                r#"{"error":"pod certificate already served"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::TaskToken),
+                r#"{"error":"task token already served"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::CallerToken),
+                r#"{"error":"caller token already served"}"#,
+            ),
+            (
+                Refusal::AlreadyServed(OneShot::DlcAdmission),
+                r#"{"error":"dlc admission already served"}"#,
+            ),
             (
                 Refusal::ReceiptCollectionNotConfigured,
                 r#"{"error":"receipt collection not configured for this pod"}"#,
@@ -1956,8 +2363,35 @@ mod refusal_wire_tests {
             }
             assert_eq!(&wire(&Err(refusal.clone())), want);
         }
-        // 8 materials + 3 one-shots + 8 others: nothing silently skipped.
-        assert_eq!(cases.len(), 19);
+        // Every one-shot's refusal is pinned, counted from `OneShot::ALL` rather
+        // than restated (F-3).
+        for o in OneShot::ALL {
+            assert!(
+                cases.iter().any(|(r, _)| *r == Refusal::AlreadyServed(o)),
+                "{o:?} has no pinned wire text"
+            );
+        }
+        // 8 materials + every one-shot + 8 others: nothing silently skipped.
+        assert_eq!(cases.len(), 8 + OneShot::ALL.len() + 8);
+    }
+
+    /// The ledger's slots are `OneShot::ALL`, one each: spending one never
+    /// spends another, and every one can be spent exactly once.
+    #[test]
+    fn every_one_shot_has_its_own_slot() {
+        for (i, o) in OneShot::ALL.into_iter().enumerate() {
+            assert_eq!(o.slot(), i, "{o:?} is out of slot order");
+            let ledger = ServedLedger::new();
+            assert!(ledger.claim(o).is_ok(), "{o:?} not servable once");
+            for other in OneShot::ALL {
+                assert_eq!(ledger.is_served(other), other == o, "{o:?} spent {other:?}");
+            }
+            assert_eq!(
+                ledger.claim(o).err(),
+                Some(Refusal::AlreadyServed(o)),
+                "{o:?} served twice"
+            );
+        }
     }
 
     /// The defect the old identity-error path had: its message was spliced into

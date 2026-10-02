@@ -1,0 +1,18 @@
+# Kconfig fragment merged over the Apple `container` default kernel's own
+# embedded config (Kata 3.32.0, linux 6.18.35 arm64) to make the L1 kernel a
+# microVM host. See docker/Containerfile.l1-kernel and
+# docs/findings/microvm-host-apple-container.md.
+#
+# The base kernel has CONFIG_IKCONFIG=y and lacks exactly these: KVM for
+# Firecracker, and vhost-vsock for the node's host-requirements check.
+CONFIG_VIRTUALIZATION=y
+CONFIG_KVM=y
+CONFIG_VHOST_MENU=y
+CONFIG_VHOST=y
+CONFIG_VHOST_VSOCK=y
+
+# The base is a debug build with DWARF + BTF. Neither is needed to host
+# microVMs, and BTF would require pahole in the build image. Dropping them cuts
+# build time and the build cache by several GiB.
+CONFIG_DEBUG_INFO_NONE=y
+# CONFIG_DEBUG_INFO_BTF is not set

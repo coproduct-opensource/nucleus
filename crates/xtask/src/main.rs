@@ -229,6 +229,14 @@ enum Command {
     /// per family in `.scorecard-ratchet.toml`, two floors each: on the ratio,
     /// so it cannot fall, and on the population, because deleting an obligation
     /// raises the ratio without discharging anything.
+    /// Every agent-reachable entry point of the tool-proxy, by how it is
+    /// mediated: sealed (mints an `Authority`), checked (a runtime decision it
+    /// does not need to act), or unchecked. A report; the `mediate` scorecard
+    /// family gates the number, and `--badge` prints `ci/badges/mediation.json`.
+    Mediation {
+        #[arg(long)]
+        badge: bool,
+    },
     Scorecard {
         #[arg(long)]
         measure: bool,
@@ -431,6 +439,7 @@ mod lean_action_builds;
 mod life;
 mod line_ratchet;
 mod local_coverage;
+mod mediate;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -545,6 +554,10 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::Mediation { badge } => match mediate::run(badge)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Scorecard {
             measure,
             badge,
@@ -644,7 +657,6 @@ fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Resu
 /// Matched by path suffix.
 const KEEP_AS_SHELL: &[&str] = &[
     "scripts/firecracker/guest-init.sh",
-    "scripts/firecracker/guest-net.sh",
     "scripts/firecracker/build-rootfs.sh",
     "scripts/firecracker/build-scratch.sh",
     "scripts/container/smoke-test.sh",

@@ -1,0 +1,11 @@
+[book]
+title = "Nucleus"
+authors = ["Coproduct"]
+language = "en"
+# This file lives in docs/, next to SUMMARY.md; build with `mdbook build docs`.
+src = "."
+
+[build]
+# Relative to this file: the site still lands in <repo root>/book, which is
+# the directory docs.yml assembles and publishes.
+build-dir = "../book"

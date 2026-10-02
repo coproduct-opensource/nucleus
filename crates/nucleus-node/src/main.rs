@@ -7,8 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Extension, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response as AxumResponse};
+use axum::response::Response as AxumResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use clap::Parser;
@@ -42,7 +41,6 @@ mod keys;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
-mod oidc;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
@@ -50,6 +48,7 @@ mod pod_caller_identity;
 mod pod_receipt;
 mod pod_view;
 mod production_confinement;
+mod rootfs_source;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -73,12 +72,12 @@ mod driver;
 mod effect_footprint;
 mod envelope_frame;
 mod federated_credential;
+mod federation_ingress;
 mod guest_socket;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod host_requirements;
 mod lifecycle;
 mod net;
 mod posture;
+mod scratch_root;
 mod session_mint;
 mod signed_proxy;
 mod snapshot;
@@ -89,12 +88,14 @@ mod trust_gate;
 mod upstreams;
 mod vsock_bridge;
 
+#[cfg(target_os = "linux")]
+use nucleus_microvm_host::probe as host_requirements;
 pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-node")]
+#[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
@@ -108,6 +109,8 @@ struct Args {
     state_dir: PathBuf,
     #[command(flatten)]
     authority: pod_authority::AuthorityArgs,
+    #[command(flatten)]
+    scratch: scratch_root::ScratchArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -309,41 +312,13 @@ struct Args {
     /// When set, clients must present valid certificates signed by this CA.
     #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
     grpc_tls_ca: Option<PathBuf>,
-
-    // GitHub OIDC configuration
-    /// Enable GitHub OIDC token exchange for CI/CD authentication.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_ENABLED",
-        default_value_t = false
-    )]
-    oidc_github_enabled: bool,
-    /// Expected audience in GitHub OIDC tokens.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_AUDIENCE",
-        default_value = "nucleus"
-    )]
-    oidc_github_audience: String,
-    /// Comma-separated list of allowed GitHub repositories (e.g., "org/repo1,org/repo2").
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_REPOS")]
-    oidc_github_allowed_repos: Option<String>,
-    /// Comma-separated list of allowed GitHub organizations (all repos in these orgs are allowed).
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_ORGS")]
-    oidc_github_allowed_orgs: Option<String>,
-    /// Certificate TTL in seconds for GitHub OIDC-issued certificates (default: 1 hour).
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_CERT_TTL_SECS",
-        default_value_t = 3600
-    )]
-    oidc_github_cert_ttl_secs: u64,
 }
 
 #[derive(Clone)]
 struct NodeState {
     pods: pod_api::PodRegistry,
     state_dir: PathBuf,
+    scratch_root: PathBuf,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
@@ -417,8 +392,6 @@ struct NodeState {
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
-    /// GitHub OIDC validator for CI/CD authentication.
-    github_oidc: Option<Arc<oidc::GitHubOidcValidator>>,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
@@ -443,6 +416,8 @@ struct NodeState {
     http_client: reqwest::Client,
     /// Broadcast channel for streaming lockdown commands to connected tool-proxies.
     lockdown_tx: tokio::sync::broadcast::Sender<proto::LockdownCommand>,
+    /// The lockdowns in force (`lockdown::Active`).
+    lockdowns: Arc<std::sync::Mutex<lockdown::Active>>,
 }
 
 #[derive(Debug)]
@@ -461,6 +436,10 @@ struct PodHandle {
     /// the pod carried no claim. Surfaced in `PodInfo` so an operator can see the
     /// claim was checked, not merely present. See `posture.rs`.
     posture_stamp: Option<String>,
+    /// Root identity of the certificate this node issued the pod, recorded at
+    /// creation and never re-derived: its trust domain is the pod's tenant
+    /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
+    owner: Option<String>,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -689,6 +668,7 @@ async fn main() -> Result<(), ApiError> {
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
+        scratch_root: args.scratch.ensure(&args.state_dir)?,
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
@@ -735,9 +715,9 @@ async fn main() -> Result<(), ApiError> {
         broker_listen: args.broker_listen,
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
-        github_oidc: build_github_oidc(&args),
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
-            .with_operator_identity(authority.root_minter()),
+            .with_operator_identity(authority.root_minter())
+            .with_federated_trust_domains(authority.caller_bindings().trust_domains()),
         container_image: args.container_image.clone(),
         container_network: args.container_network.clone(),
         container_proxy_unix: args.container_proxy_unix,
@@ -750,6 +730,7 @@ async fn main() -> Result<(), ApiError> {
             .build()
             .unwrap_or_default(),
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
+        lockdowns: Arc::default(),
     };
 
     // Release what the previous life of this node acquired, BEFORE serving anything: a pod
@@ -792,14 +773,14 @@ async fn main() -> Result<(), ApiError> {
             auth_middleware,
         ));
 
-    // Routes that don't require auth (OIDC has its own token validation)
+    // Routes that don't require auth. The federation exchange is NOT here: it
+    // is served on its own server-auth-only listener (`federation_ingress`).
     let public_routes = Router::new()
         .route(
             "/v1/art12/{session_id}",
             post(art12_collector::art12_append),
         )
         .route("/v1/health", get(health))
-        .route("/v1/oidc/github", post(oidc_github_exchange))
         .with_state(state.clone());
 
     let app = public_routes.merge(authenticated_routes);
@@ -860,6 +841,7 @@ async fn main() -> Result<(), ApiError> {
 
     start_pod_reaper(state.clone());
 
+    federation_ingress::spawn(&state, &args.authority.ingress).await?;
     http_serve::serve(&state, &args.listen, app).await?;
 
     Ok(())
@@ -869,195 +851,9 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// GitHub OIDC token exchange endpoint.
-///
-/// Accepts a GitHub OIDC token and a client-generated CSR.
-/// Returns a signed X.509 certificate with a SPIFFE identity based on the repository.
-///
-/// # Security
-///
-/// The client generates and keeps its private key locally - it is never sent to
-/// or stored by the server. Only the CSR (containing the public key) is transmitted.
-///
-/// The workflow is:
-/// 1. Client generates a key pair
-/// 2. Client creates a CSR with the SPIFFE ID they expect to receive
-/// 3. Client sends GitHub OIDC token + CSR to this endpoint
-/// 4. Server validates token, verifies CSR's SPIFFE ID matches token claims
-/// 5. Server returns only the certificate chain (no private key)
-async fn oidc_github_exchange(
-    State(state): State<NodeState>,
-    headers: axum::http::HeaderMap,
-    Json(request): Json<oidc::OidcExchangeRequest>,
-) -> Result<Json<oidc::OidcExchangeResponse>, OidcApiError> {
-    // Check if OIDC is enabled
-    let validator = state.github_oidc.as_ref().ok_or(OidcApiError::NotEnabled)?;
-
-    // Extract token from Authorization header
-    let auth_header = headers
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .ok_or(OidcApiError::MissingToken)?;
-
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(OidcApiError::InvalidFormat)?;
-
-    // Validate the token (includes replay protection)
-    let claims = validator
-        .validate(token)
-        .await
-        .map_err(OidcApiError::Oidc)?;
-
-    // Get the SPIFFE ID for this identity based on token claims
-    let spiffe_id = validator.spiffe_id(&claims);
-
-    // Issue a certificate using the identity manager
-    let identity_mgr = state
-        .identity_manager
-        .as_ref()
-        .ok_or_else(|| OidcApiError::Internal("Identity manager not configured".to_string()))?;
-
-    // Parse SPIFFE ID into Identity
-    let identity = parse_spiffe_to_identity(&spiffe_id)?;
-
-    // Sign the client's CSR (CSR must contain matching SPIFFE ID)
-    let cert_ttl = validator.cert_ttl();
-    let certificate_pem = identity_mgr
-        .ca()
-        .sign_csr_only(&request.csr, &identity, cert_ttl)
-        .await
-        .map_err(|e| OidcApiError::Internal(format!("Certificate signing failed: {e}")))?;
-
-    // Get trust bundle
-    let trust_bundle_pem = identity_mgr
-        .ca()
-        .trust_bundle()
-        .roots()
-        .iter()
-        .map(|c| c.to_pem())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Calculate expiration
-    let expires_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        + cert_ttl.as_secs();
-
-    info!(
-        repository = %claims.repository,
-        actor = %claims.actor,
-        spiffe_id = %spiffe_id,
-        expires_at = expires_at,
-        "Issued certificate for GitHub OIDC identity (client-side key)"
-    );
-
-    Ok(Json(oidc::OidcExchangeResponse {
-        certificate: certificate_pem,
-        spiffe_id,
-        expires_at,
-        trust_bundle: trust_bundle_pem,
-    }))
-}
-
-/// Parse a SPIFFE ID into a nucleus Identity.
-fn parse_spiffe_to_identity(spiffe_id: &str) -> Result<nucleus_identity::Identity, OidcApiError> {
-    // Format: spiffe://trust-domain/ns/github/sa/{org}/{repo}
-    let rest = spiffe_id
-        .strip_prefix("spiffe://")
-        .ok_or_else(|| OidcApiError::Internal("Invalid SPIFFE URI".to_string()))?;
-
-    let parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() < 5 || parts[1] != "ns" || parts[3] != "sa" {
-        return Err(OidcApiError::Internal(
-            "Invalid SPIFFE path format".to_string(),
-        ));
-    }
-
-    let trust_domain = parts[0];
-    let namespace = parts[2];
-    // Combine org and repo for service account name (repo already sanitized)
-    let service_account = if parts.len() >= 6 {
-        format!("{}-{}", parts[4], parts[5])
-    } else {
-        parts[4].to_string()
-    };
-
-    Ok(nucleus_identity::Identity::new(
-        trust_domain,
-        namespace,
-        &service_account,
-    ))
-}
-
-/// Error type for OIDC API endpoint.
-#[derive(Debug)]
-enum OidcApiError {
-    NotEnabled,
-    MissingToken,
-    InvalidFormat,
-    Oidc(oidc::OidcError),
-    Internal(String),
-}
-
-impl IntoResponse for OidcApiError {
-    fn into_response(self) -> AxumResponse {
-        let (status, error, description) = match &self {
-            OidcApiError::NotEnabled => (
-                StatusCode::NOT_FOUND,
-                "not_enabled",
-                Some("GitHub OIDC is not enabled on this server"),
-            ),
-            OidcApiError::MissingToken => (
-                StatusCode::UNAUTHORIZED,
-                "missing_token",
-                Some("Authorization header with Bearer token required"),
-            ),
-            OidcApiError::InvalidFormat => (
-                StatusCode::UNAUTHORIZED,
-                "invalid_format",
-                Some("Authorization header must be 'Bearer <token>'"),
-            ),
-            OidcApiError::Oidc(e) => {
-                let (status, desc) = match e {
-                    oidc::OidcError::RepoNotAllowed(_) => (StatusCode::FORBIDDEN, e.to_string()),
-                    oidc::OidcError::ValidationFailed(_) => {
-                        (StatusCode::UNAUTHORIZED, e.to_string())
-                    }
-                    _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-                };
-                return (
-                    status,
-                    Json(oidc::OidcErrorResponse {
-                        error: "oidc_error".to_string(),
-                        error_description: Some(desc),
-                    }),
-                )
-                    .into_response();
-            }
-            OidcApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                Some(msg.as_str()),
-            ),
-        };
-
-        (
-            status,
-            Json(oidc::OidcErrorResponse {
-                error: error.to_string(),
-                error_description: description.map(|s| s.to_string()),
-            }),
-        )
-            .into_response()
-    }
-}
-
 async fn create_pod(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<auth::CallerScope>,
     Extension(auth_ctx): Extension<auth::AuthContext>,
     headers: axum::http::HeaderMap,
     body: Bytes,
@@ -1082,9 +878,9 @@ async fn create_pod(
     // `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on it is
     // forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
     let admission =
-        pod_authority::Admission::from_http(&state.authz_policy, caller, &auth_ctx, &headers);
+        pod_authority::Admission::from_http(&state.authz_policy, caller.pod(), &auth_ctx, &headers);
     let parent_pod_id = pod_api::resolve_parent_pod_id(
-        admission.caller_pod,
+        &caller,
         headers
             .get("x-nucleus-parent-pod-id")
             .and_then(|v| v.to_str().ok()),
@@ -1131,6 +927,8 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
+    rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
+    scratch_root::admit(&mut spec, &state.scratch_root)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1139,6 +937,7 @@ async fn create_pod_internal(
     // deleted in #2512: it wrote labels and authorised nothing, and what a pod
     // MAY do comes from the certificate below. ───────────────────────────────
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
+    admission.stamp_ci_principal(&state.authz_policy, &mut spec)?;
 
     let pod_dir = state.state_dir.join("pods").join(id.to_string());
     tokio::fs::create_dir_all(&pod_dir).await?;
@@ -1156,11 +955,14 @@ async fn create_pod_internal(
     // ── Authority Gate: proof of caller authority, budget conserved ──
     // The caller's certificate decides what this pod may do; the spec's policy
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
+    lockdown::admits(state, admission.caller_pod).await?;
     let issued = state.authority.admit(&admission, &spec, id).await?;
     tracing::Span::current().record("chain_depth", issued.chain_depth);
     // The issued lattice AND the admitted credentialed upstreams replace what
     // the spec requested, in one call so neither can be applied without the other.
-    issued.apply_to(&mut spec);
+    // The pod's owner is the issued root identity (ADR 0001: its tenant).
+    let owner = issued.root_identity.clone();
+    let reservation = issued.apply_to(&mut spec);
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
@@ -1174,8 +976,7 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
-            // Nothing runs: hand the budget reservation back to the parent.
-            state.authority.release_child(id).await;
+            reservation.release().await;
             return Err(e);
         }
     };
@@ -1199,10 +1000,11 @@ async fn create_pod_internal(
         driver_state,
         parent_pod_id,
         posture_stamp,
+        owner: Some(owner),
     });
 
     state.pods.lock().await.insert(id, handle);
-
+    reservation.commit(); // registered: the reaper releases it from here (a drop before, #3032)
     Ok((id, proxy_addr))
 }
 
@@ -2126,14 +1928,7 @@ async fn spawn_firecracker_pod(
         //
         // See `host_requirements` for the table and why the decision is split
         // from the observation.
-        let needs_network = spec.spec.network.is_some();
-        let missing = host_requirements::unmet(
-            &host_requirements::requirements(needs_network),
-            host_requirements::observe,
-        );
-        if !missing.is_empty() {
-            return Err(ApiError::Driver(host_requirements::explain(&missing)));
-        }
+        host_requirements::preflight(spec.spec.network.is_some()).map_err(ApiError::Driver)?;
 
         // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
         //
@@ -2165,11 +1960,8 @@ async fn spawn_firecracker_pod(
             None => None,
         };
 
-        let image = spec
-            .spec
-            .image
-            .as_ref()
-            .ok_or_else(|| ApiError::Driver("missing spec.image".to_string()))?;
+        // Resolved once: every consumer below takes a rootfs that is a host file by construction.
+        let image = rootfs_source::HostImage::of_spec(spec)?;
         let vsock_spec = spec
             .spec
             .vsock
@@ -2318,7 +2110,7 @@ async fn spawn_firecracker_pod(
         // declares the drive, so a disk that cannot be made means no drive
         // rather than a dead boot.
         let (effective_image, scratch_is_node_provisioned) = firecracker_config::scratch_for_pod(
-            image,
+            &image,
             jail_layout.as_ref(),
             state.jailer_uid.get(),
             state.jailer_gid,
@@ -2988,42 +2780,6 @@ fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
     Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
 }
 
-fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
-    if !args.oidc_github_enabled {
-        return None;
-    }
-
-    let mut config = oidc::GitHubOidcConfig::new(&args.identity_trust_domain)
-        .enabled()
-        .with_audience(&args.oidc_github_audience)
-        .with_cert_ttl(Duration::from_secs(args.oidc_github_cert_ttl_secs));
-
-    if let Some(ref repos) = args.oidc_github_allowed_repos {
-        config = config.with_allowed_repos(repos);
-    }
-    if let Some(ref orgs) = args.oidc_github_allowed_orgs {
-        config = config.with_allowed_orgs(orgs);
-    }
-
-    // Require at least one allowed repo or org
-    if config.allowed_repos.is_empty() && config.allowed_orgs.is_empty() {
-        error!(
-            "GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs"
-        );
-        return None;
-    }
-
-    info!(
-        repos = ?config.allowed_repos,
-        orgs = ?config.allowed_orgs,
-        audience = %config.audience,
-        cert_ttl_secs = config.cert_ttl.as_secs(),
-        "GitHub OIDC enabled"
-    );
-
-    Some(Arc::new(oidc::GitHubOidcValidator::new(config)))
-}
-
 fn start_pod_reaper(state: NodeState) {
     tokio::spawn(async move {
         let mut reaped = std::collections::HashSet::new();
@@ -3234,8 +2990,13 @@ impl NodeService for GrpcService {
             .ok_or_else(|| Status::unauthenticated("no authenticated peer"))?;
         let admission =
             pod_authority::Admission::from_grpc(&self.state.authz_policy, &auth_ctx, &request);
+        // The resolver HTTP uses, on the peer `admission` read: no token here.
+        let policy = &self.state.authz_policy;
+        let scope = policy
+            .caller_scope(None, &auth_ctx.spiffe_id)
+            .map_err(|e| Status::permission_denied(e.to_string()))?;
         let parent_pod_id = pod_api::resolve_parent_pod_id(
-            admission.caller_pod,
+            &scope,
             request
                 .metadata()
                 .get("x-nucleus-parent-pod-id")
@@ -3283,7 +3044,7 @@ impl NodeService for GrpcService {
 
         // Scoped to the calling pod exactly as the HTTP listing is (#2475).
         let caller = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())?;
-        let infos = pod_api::collect_pod_infos(&self.state, caller).await;
+        let infos = pod_api::collect_pod_infos(&self.state, &caller).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
@@ -3449,118 +3210,17 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::LockdownRequest>,
     ) -> Result<GrpcResponse<proto::LockdownResponse>, Status> {
-        // Red team finding: this was the only RPC without auth.
+        // Issuing and lifting are both operator actions: see `auth::Operation::Lockdown`.
         auth::authorize_grpc_operation(
             &request,
             &self.state.authz_policy,
-            auth::Operation::CancelPod, // Lockdown is at least as privileged as cancel
+            auth::Operation::Lockdown,
         )?;
 
-        let req = request.into_inner();
-        let reason = if req.reason.is_empty() {
-            "emergency lockdown".to_string()
-        } else {
-            req.reason.clone()
-        };
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let scope_str = match &req.scope {
-            Some(proto::lockdown_request::Scope::PodId(id)) => format!("pod:{id}"),
-            Some(proto::lockdown_request::Scope::LabelSelector(sel)) => format!("label:{sel}"),
-            None => "all".to_string(),
-        };
-
-        let cmd = proto::LockdownCommand {
-            active: !req.restore,
-            reason: reason.clone(),
-            operator_id: req.operator_id.clone(),
-            timestamp_unix: timestamp,
-            scope: scope_str.clone(),
-        };
-
-        // Broadcast to all connected tool-proxy streams
-        let broadcast_receivers = self.state.lockdown_tx.receiver_count();
-        let _send_result = self.state.lockdown_tx.send(cmd);
-
-        // Count affected pods by scope
-        let pods = self.state.pods.lock().await;
-        let affected_pods = match &req.scope {
-            Some(proto::lockdown_request::Scope::PodId(id)) => {
-                if pods.values().any(|p| p.id.to_string() == *id) {
-                    1u32
-                } else {
-                    0u32
-                }
-            }
-            Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
-                pods.values()
-                    .filter(|p| matches_label_selector(&p.spec.metadata.labels, selector))
-                    .count() as u32
-            }
-            None => pods.len() as u32,
-        };
-
-        tracing::warn!(
-            reason = %reason,
-            operator = %req.operator_id,
-            restore = req.restore,
-            scope = %scope_str,
-            affected_pods,
-            broadcast_receivers,
-            "LOCKDOWN RPC — broadcast to connected proxies"
-        );
-
-        // Write per-pod lifecycle audit events (label-scoped matching).
-        {
-            let action = if req.restore {
-                "lockdown_restored"
-            } else {
-                "lockdown_applied"
-            };
-            for pod in pods.values() {
-                let matches = match &req.scope {
-                    Some(proto::lockdown_request::Scope::PodId(target_id)) => {
-                        pod.id.to_string() == *target_id
-                    }
-                    Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
-                        matches_label_selector(&pod.spec.metadata.labels, selector)
-                    }
-                    None => true,
-                };
-                if !matches {
-                    continue;
-                }
-                tracing::info!(
-                    pod_id = %pod.id,
-                    action = action,
-                    reason = %reason,
-                    operator = %req.operator_id,
-                    "lockdown: pod affected"
-                );
-                let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
-                lifecycle::write_lifecycle_audit(
-                    pod_dir,
-                    action,
-                    &pod.id.to_string(),
-                    &format!("reason={}, operator={}", reason, req.operator_id),
-                )
-                .await;
-            }
-        }
-        // Release pods lock before response
-        drop(pods);
-
-        Ok(GrpcResponse::new(proto::LockdownResponse {
-            affected_pods,
-            // TODO: wire up actual audit entry creation when per-pod
-            // AuditEntry::ExecutionBlocked is implemented. Do not fabricate counts.
-            audit_entries_created: 0,
-            timestamp_unix: timestamp,
-        }))
+        let (operator, req) = lockdown::attributed(request)?;
+        Ok(GrpcResponse::new(
+            lockdown::issue(&self.state, operator, req).await,
+        ))
     }
 
     type WatchLockdownStream = ReceiverStream<Result<proto::LockdownCommand, Status>>;
@@ -3579,7 +3239,7 @@ impl NodeService for GrpcService {
         // pod peer is its own pod); anything unresolved still receives, fail-open.
         let watcher = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())
             .ok()
-            .flatten();
+            .and_then(|scope| scope.pod());
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes
@@ -3588,7 +3248,7 @@ impl NodeService for GrpcService {
 
         let (tx, grpc_rx) = tokio::sync::mpsc::channel(16);
 
-        lockdown::spawn_filtered_forwarder(rx, tx, watcher);
+        lockdown::spawn_filtered_forwarder(self.state.clone(), rx, tx, watcher);
 
         // ACK consumer: log acknowledgements from the tool-proxy
         tokio::spawn(async move {

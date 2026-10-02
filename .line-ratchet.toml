@@ -103,7 +103,12 @@ path = "crates/nucleus-node/src/main.rs"
 # api_error.rs while separating unavailable supervisors from refused requests.
 # Lowered 3795 -> 3791 on 2026-09-13: workload observation/log routes are
 # assembled beside their handlers instead of in main.
-ceiling = 3791
+# Lowered 3791 -> 3548 on 2026-09-24: the single-vendor OIDC exchange route —
+# its handler, error type, SPIFFE-path parser, five flags and validator field —
+# was deleted; its replacement (`federation_ingress.rs`) flattens its flags into
+# `AuthorityArgs` and costs main.rs one `mod`, one spawn call, one policy line
+# and the pod's recorded owner.
+ceiling = 3548
 target = 2000
 step = 1
 

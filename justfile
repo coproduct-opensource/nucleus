@@ -181,3 +181,66 @@ guest-rootfs *args:
 # Check the guest rootfs build prerequisites without building anything.
 guest-rootfs-check:
     bash scripts/firecracker/build-rootfs.sh --verify
+
+# ── Formerly the Makefile ────────────────────────────────────────────────────
+# `make rootfs` is `just guest-rootfs` (the script detects the host arch), and
+# `make test` is `just test`.
+
+# Build all crates (debug).
+build:
+    cargo build --workspace
+
+# Build all crates (release).
+release:
+    cargo build --workspace --release
+
+# Run clippy lints.
+clippy:
+    cargo clippy --workspace --all-targets -- -D warnings
+
+# Format code.
+fmt:
+    cargo fmt --all
+
+# Check formatting.
+fmt-check:
+    cargo fmt --all -- --check
+
+# Build the Firecracker rootfs for ARM64 (run in the Lima VM).
+rootfs-aarch64:
+    bash scripts/firecracker/build-rootfs.sh --arch aarch64
+
+# Build the Firecracker rootfs for x86_64 (run in the Lima VM).
+rootfs-x86_64:
+    bash scripts/firecracker/build-rootfs.sh --arch x86_64
+
+# Cross-compile the Linux binaries (run on macOS).
+cross-build:
+    bash scripts/cross-build.sh
+
+# Flow-algebra demo: taint → block → receipt → compartment switch.
+flow-demo:
+    bash scripts/demo.sh
+
+# Clean build artifacts.
+clean:
+    cargo clean
+    rm -rf build/firecracker
+
+# Security audit of the dependency tree.
+audit:
+    cargo audit
+
+# cargo-deny checks.
+deny:
+    cargo deny check
+
+# OIDC crate gates (#54): vendor-neutrality + algorithm pin. Run before pushing
+# a PR that touches the OIDC crates so CI matches what you see.
+ci-oidc-gates:
+    bash ci/no-vendor-strings.sh crates/nucleus-oidc-provider crates/nucleus-oidc-core
+    bash ci/alg-pin-check.sh crates/nucleus-oidc-provider crates/nucleus-oidc-core
+
+# Generate API documentation.
+docs:
+    cargo doc --workspace --no-deps

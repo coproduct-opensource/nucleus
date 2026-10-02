@@ -38,6 +38,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Verify a tool-proxy JSONL audit log (HMAC signatures + hash chain).
+    #[command(mut_args = |a| a.hide_env_values(true))]
     Verify {
         /// Audit log path to verify.
         #[arg(long, env = "NUCLEUS_AUDIT_LOG")]
@@ -53,6 +54,7 @@ enum Command {
         auth_secret: Option<String>,
     },
     /// Verify a portcullis permission audit log (hash chain only).
+    #[command(mut_args = |a| a.hide_env_values(true))]
     VerifyChain {
         /// Audit log path (JSONL, each line is a portcullis AuditEntry).
         #[arg(long)]
@@ -98,12 +100,14 @@ enum Command {
         receipts: Option<PathBuf>,
     },
     /// Print a summary of audit events grouped by identity.
+    #[command(mut_args = |a| a.hide_env_values(true))]
     Summary {
         /// Audit log path (tool-proxy JSONL format).
         #[arg(long, env = "NUCLEUS_AUDIT_LOG")]
         log: PathBuf,
     },
     /// Export audit log entries as formatted JSON.
+    #[command(mut_args = |a| a.hide_env_values(true))]
     Export {
         /// Audit log path (tool-proxy JSONL format).
         #[arg(long, env = "NUCLEUS_AUDIT_LOG")]
@@ -235,6 +239,7 @@ enum Command {
     /// over each record's canonical preimage. Prints what was established AND
     /// what was not — a chain proves no party lacking the secret altered the
     /// file, not that the log is complete or that its signer is trustworthy.
+    #[command(mut_args = |a| a.hide_env_values(true))]
     VerifyArt12 {
         /// Path to the JSONL Article 12 log.
         #[arg(long)]
@@ -2609,3 +2614,6 @@ spec:
         assert_eq!(failed, 1, "missing hash fields must fail");
     }
 }
+
+#[cfg(test)]
+mod help_env_tests;

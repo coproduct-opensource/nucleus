@@ -7,12 +7,21 @@
 [![CI](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/ci.yml)
 [![Security Audit](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml/badge.svg)](https://github.com/coproduct-opensource/nucleus/actions/workflows/audit.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/coproduct-opensource/nucleus/badge)](https://securityscorecards.dev/viewer/?uri=github.com/coproduct-opensource/nucleus)
-[![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
+[![scorecard](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fci%2Fbadges%2Fscorecard.json)](docs/adr/0007-make-the-defect-unwritable.md)
+[![sealed mediation](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcoproduct-opensource%2Fnucleus%2Fmain%2Fci%2Fbadges%2Fmediation.json)](crates/xtask/src/mediate.rs)
 
-The last badge names the **weakest** of four defect families, not an average —
+The scorecard badge names the **weakest** of its defect families, not an average —
 `cargo xtask scorecard` reports how much of what this repo declares is actually
 enforced, family by family, and an average would let a family at zero hide behind
 one at a hundred. It is deliberately uncomfortable.
+
+The sealed-mediation badge counts the tool-proxy's agent-reachable entry points —
+every HTTP route and MCP tool — whose effect is reachable only by spending an
+`Authority` minted from a preflight. The rest are *checked* (a runtime decision is
+on the path, but the effect does not need its result) or *unchecked*;
+`cargo xtask mediation` prints which is which. It measures wiring, not whether the
+decisions are right, and not the VM isolation that keeps the tool-proxy the pod's
+only way out.
 
 **Nucleus expands the frontier of safely delegatable machine agency: any agent should be able to do as much useful real-world work as its principal is willing to authorize, while being structurally incapable of exceeding that authorization.**
 
@@ -22,7 +31,7 @@ The bound it holds, and the thing everything below is built to make checkable by
     exercised authority  ≼  delegated authority
 ```
 
-Why it is stated as an objective and not only as a constraint: [ADR 0005](docs/adr/0005-delegatable-agency.md), [NORTH_STAR.md](NORTH_STAR.md). How a stated goal becomes a minimum-authority grant: [ADR 0004](docs/adr/0004-delegation-compiler.md).
+Why it is stated as an objective and not only as a constraint: [ADR 0005](docs/adr/0005-delegatable-agency.md), [NORTH_STAR.md](docs/NORTH_STAR.md). How a stated goal becomes a minimum-authority grant: [ADR 0004](docs/adr/0004-delegation-compiler.md).
 
 ### Don't trust the agent. Verify it.
 
@@ -32,7 +41,7 @@ Why it is stated as an objective and not only as a constraint: [ADR 0005](docs/a
 
 > **Assume the agent is compromised. Constrain what it can do anyway. Prove the constraints hold.**
 
-At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session **through a mediated ingest channel**, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](FORMAL_METHODS.md), not hoped.
+At its core is a small, dependency-free information-flow algebra. Two primitives — `join` and `flows_to` — enforce information-flow control under four algebraic laws. Once untrusted web content enters a session **through a mediated ingest channel**, it cannot silently reach a privileged sink like `git push`. That property is [machine-checked](docs/FORMAL_METHODS.md), not hoped.
 
 The qualifier is load-bearing, so it is stated here rather than in a footnote: the guarantee covers content the runtime *observes*. Fetches through `web_fetch`/`web_search`, file reads, and memory recalls are observed. Bytes an agent obtains by running a command — `curl` inside `run` — are observed when the command **could reach the network**, classified by the same detector the egress gate uses and fail-closed on input it cannot parse. `cargo test` does not taint; `curl`, a pipe into it, and opaque forms like `python -c` do. That classification is a heuristic over command text, so the containment behind it is the pod's default-deny egress, which stops the fetch rather than labelling it; `NUCLEUS_PARANOID_TOOL_IO=1` blanket-taints all command output for operators who want no heuristic in the path.
 
@@ -116,11 +125,13 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
-Guest artifacts come from the pinned release **v2.2.0**, the first whose rootfs
-matches a current node. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses anything
-older rather than installing a pod that cannot boot — everything up to 2.0.2
-ships a rootfs with no CA bundle, on which the guest panics as PID 1, and 2.1.0
-predates the change to how the guest is approved, which panics the same way. **Measured 48.7 s** from a deleted VM to
+Guest artifacts come from the pinned release **v2.2.0**.
+`tier2_artifacts::GuestCapability` lists what the node and CLI require of a guest
+and which release first shipped each, and `setup` refuses a release that lacks
+one rather than installing a pod that cannot boot. The v2.2.0 CLI installs its
+own matched guest. A CLI built from `main` refuses v2.2.0, which predates the
+egress attestation (#2365) and the SVID on tmpfs (#2379), and needs a guest built
+from the same checkout (`nucleus setup --artifacts local`) until the next release. **Measured 48.7 s** from a deleted VM to
 a booted pod, with Sigstore build provenance verified on every downloaded
 artifact.
 
@@ -197,7 +208,7 @@ Every tool call flows through the permission kernel. `nucleus run` tracks data p
 
 **No Verus.** Earlier docs cited "297 Verus VCs." Verus has been **removed** from the workspace; its guarantees are folded into the Lean 4 + Kani stack. A `proptest`-based conformance suite (`verus_conformance.rs`) is the surviving artifact — property tests, not SMT proofs.
 
-[Verified Claims](docs/verified-claims.md) · [Formal Methods](FORMAL_METHODS.md) · [Production Delta](docs/production-delta.md)
+[Verified Claims](docs/verified-claims.md) · [Formal Methods](docs/FORMAL_METHODS.md) · [Production Delta](docs/production-delta.md)
 
 ---
 
@@ -450,13 +461,13 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 
 </details>
 
-Python: `sdk/python/nucleus` ships a self-contained information-flow kernel (taint propagation, exposure accumulation; 168 passing tests). Native PyO3 bindings to the Rust core live in `portcullis-python` and `verifier-py`. The companion `nucleus_sdk` proxy client is self-labeled **pre-alpha / draft** (v0.0.0, "API will change").
+Python: `sdks/python/nucleus` ships a self-contained information-flow kernel (taint propagation, exposure accumulation; 168 passing tests). Native PyO3 bindings to the Rust core live in `portcullis-python` and `verifier-py`. The companion `nucleus_sdk` proxy client is self-labeled **pre-alpha / draft** (v0.0.0, "API will change").
 
 ---
 
 ## Known Gaps
 
-Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta.md`](docs/production-delta.md). Key items, stated plainly:
+Documented in [`SECURITY_TODO.md`](docs/SECURITY_TODO.md) and [`docs/production-delta.md`](docs/production-delta.md). Key items, stated plainly:
 
 - **The reference agent runner is not vendor-agnostic.** `nucleus run`/`shell` is currently hardcoded to one specific assistant CLI (binary name, default model string, and a permission-bypass flag), and some audit/MCP identifiers are named for that vendor. Only the core library and the generic `credentials.env` / `PodSpec` interface are vendor-agnostic today.
 - **The agent PreToolUse-hook path is not runnable in this repo.** `nucleus run --hook` and `nucleus guard` shell out to a `nucleus-claude-hook` binary that is **not built here** (it moved to the external private orchestrator), and the in-repo install hint (`cargo install --path crates/nucleus-claude-hook`) is stale — that crate directory does not exist.
@@ -485,7 +496,7 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 
 **Third-party MCP servers** are a separate channel with its own boundary. The runtime mediates the tools *it* serves; an agent's connections to external MCP servers are mediated by [`nucleus-mcp-guard`](crates/nucleus-mcp-guard/README.md), which vets the discovery channel (`tools/list`) as well as the call channel — tool schemas are pinned on first sight and re-checked, and metadata that isn't vouched for is treated as adversarial ingest, because MCP carries instructions and data together and a tool description influences the agent as much as the system prompt does. It blocks by default and only observes under `--observe`. Pinning is trust-on-first-use: it defends the rug-pull (benign at approval, mutated later); the metadata-tainting is what covers a server hostile from the start.
 
-> **Versioning:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](STABILITY.md)), not "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
+> **Versioning:** v1.0 means the **interface contract is stable** (see [`STABILITY.md`](docs/STABILITY.md)), not "production-secure by default." The lattice is heavily verified; the runtime is tested but not yet battle-hardened.
 
 ---
 
@@ -494,7 +505,7 @@ Documented in [`SECURITY_TODO.md`](SECURITY_TODO.md) and [`docs/production-delta
 ```bash
 cargo build --workspace
 cargo test --workspace
-make demo              # taint → block → receipt → compartment switch
+just flow-demo         # taint → block → receipt → compartment switch
 ```
 
 ---

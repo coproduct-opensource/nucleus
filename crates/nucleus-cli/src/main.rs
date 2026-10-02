@@ -32,6 +32,7 @@ mod goal;
 mod grant;
 mod guard;
 mod identity;
+mod image;
 mod keychain;
 mod lima_boot;
 mod lineage;
@@ -45,6 +46,7 @@ mod profiles;
 mod provision;
 mod replay;
 mod run;
+mod session_token;
 mod setup;
 mod shell;
 mod start;
@@ -61,7 +63,7 @@ mod verify_attestation;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
-#[command(name = "nucleus")]
+#[command(name = "nucleus", mut_args = |a| a.hide_env_values(true))]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Configuration file path
@@ -157,6 +159,9 @@ enum Commands {
     /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
     Bundle(bundle::BundleArgs),
 
+    /// Import an OCI image, pinned by digest, as a verified rootfs (import/resolve)
+    Image(image::ImageArgs),
+
     /// Verify an attested SVID against expected measurements (relying party, C9)
     VerifyAttestation(verify_attestation::VerifyAttestationArgs),
 
@@ -223,9 +228,13 @@ async fn main() -> Result<()> {
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
+        Commands::Image(args) => image::execute(args),
         Commands::VerifyAttestation(args) => verify_attestation::execute(args),
         // The hook's whole contract is its exit status; nothing else may
         // reach stdout/stderr after the decision is printed.
         Commands::MediationHook => std::process::exit(i32::from(mediation::run_hook())),
     }
 }
+
+#[cfg(test)]
+mod help_env_tests;

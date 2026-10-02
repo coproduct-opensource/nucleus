@@ -53,12 +53,6 @@ if [ -n "$NET_CONFIG" ]; then
   fi
 fi
 
-if [ -f /etc/nucleus/net.allow ] || [ -f /etc/nucleus/net.deny ]; then
-  if [ -x /usr/local/bin/guest-net.sh ]; then
-    /usr/local/bin/guest-net.sh || true
-  fi
-fi
-
 if [ -f /etc/nucleus/auth.secret ]; then
   export NUCLEUS_TOOL_PROXY_AUTH_SECRET="$(cat /etc/nucleus/auth.secret)"
 else

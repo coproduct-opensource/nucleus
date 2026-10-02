@@ -743,6 +743,13 @@ impl Sandbox {
         &self.root_path
     }
 
+    /// The capability handle on the sandbox root, for the executor's
+    /// execute-on-consume guard: it walks and restores through this, so it can
+    /// no more follow a symlink out of the workspace than the sandbox can.
+    pub(crate) fn root_dir(&self) -> &Dir {
+        &self.root
+    }
+
     /// Read a file for search/grep operations (#1273).
     ///
     /// Uses the cap-std sandbox directory for I/O, bypassing raw `std::fs`.
@@ -996,7 +1003,12 @@ impl Sandbox {
             });
         }
 
-        if self.obligations.requires(op) {
+        // A write to a file some host tool executes on reading it needs an
+        // approval whatever the capability level says (`EXECUTE_ON_CONSUME`).
+        // Keyed by the path, so approving one hook approves that hook only.
+        let executes_on_consume = matches!(op, Operation::WriteFiles | Operation::EditFiles)
+            && portcullis::executes_on_consume(&subject.to_string_lossy()).is_some();
+        if self.obligations.requires(op) || executes_on_consume {
             if let Some(token) = approval {
                 if token.matches(operation) {
                     Ok(())
@@ -1639,6 +1651,46 @@ mod tests {
             Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)),
         );
         assert!(result.is_ok());
+    }
+
+    /// A file a host tool runs on reading it needs an approval even under a
+    /// policy with no obligations, and the approval names that path. The
+    /// control is an ordinary file under the same policy, written freely.
+    #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
+    fn writing_a_file_a_host_tool_executes_needs_an_approval() {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".github/workflows")).unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let hook = ".github/workflows/ci.yml";
+        let dt = token(&mut kernel, Operation::WriteFiles, hook);
+        let refused = sandbox.write(
+            hook,
+            "on: push",
+            dt,
+            Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)),
+        );
+        match refused {
+            Err(NucleusError::ApprovalRequired { operation }) => assert_eq!(
+                operation,
+                Sandbox::approval_key(Operation::WriteFiles, std::path::Path::new(hook))
+            ),
+            other => panic!("expected ApprovalRequired naming the path, got {other:?}"),
+        }
+        assert!(!tmp.path().join(hook).exists(), "refused before the write");
+
+        let dt = token(&mut kernel, Operation::WriteFiles, "src.rs");
+        sandbox
+            .write(
+                "src.rs",
+                "fn main() {}",
+                dt,
+                Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)),
+            )
+            .expect("the control: an ordinary file needs no approval");
     }
 
     #[test]

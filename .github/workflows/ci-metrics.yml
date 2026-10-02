@@ -6,7 +6,7 @@ name: CI metrics (OpenTelemetry)
 # (crates/xtask/src/ci_otel.rs) does the pull and the export.
 #
 # The collector this pointed at — `otel-collector.ci-metrics.svc.cluster.local`
-# on the pci-k3s cluster (k8s/ci-metrics) — stopped at the Fly cutover on
+# on the pci-k3s cluster (deploy/k8s/ci-metrics) — stopped at the Fly cutover on
 # 2026-09-09T06:42Z and was then deleted. Every run since failed on
 # `curl: (6) Could not resolve host`, six of them, while the PULL half worked
 # perfectly each time (the last one collected 147 job series and read a
