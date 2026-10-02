@@ -369,7 +369,9 @@ fn create_client(args: &NodeArgs) -> Result<HttpClient> {
             // so hostname verification cannot identify it; `node_tls` checks
             // the chain against `--trust-bundle` AND that the certificate
             // names exactly the node — in the trust domain `--tls-cert`
-            // itself belongs to.
+            // itself belongs to. The same CA signs federated tenants' SVIDs;
+            // those carry `ClientAuth` only (`LeafRole::Foreign`), so the
+            // chain's server-usage check refuses one before the name check.
             let tls = nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
                 .context("failed to build the node TLS configuration from --tls-cert/--tls-key/--trust-bundle")?;
 

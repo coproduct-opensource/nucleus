@@ -64,7 +64,9 @@
 //! 1. a pod caller: by what the PARENT was admitted (kept per pod, persisted
 //!    with its certificate) AND what is still in the operator registry, so
 //!    delegation can narrow and never invent;
-//! 2. an external caller: by the operator registry (`--upstreams`);
+//! 2. an external caller: by the operator registry (`--upstreams`) — or, for a
+//!    caller admitted through a `[[caller]]` binding, by that binding's
+//!    `upstreams`, never the whole registry;
 //! 3. the root minter: by the operator registry.
 //!
 //! An entry outside its bound REFUSES the pod (ADR 0010 §1): the caller gets
@@ -74,6 +76,23 @@
 //! registry configured every entry is outside, for every case. See
 //! `upstreams.rs` for why that is fail-closed rather than "trust the root
 //! minter".
+//!
+//! # Federated callers (`federation_ingress.rs`)
+//!
+//! A caller whose mTLS identity is in a `[[caller]]` binding's trust domain got
+//! its SVID and its certificate from this node's federation exchange. It is
+//! still case 2 — there is no separate admission path — with three
+//! differences, all keyed by the binding:
+//!
+//! * **Trust anchor.** Its chain must verify against THIS node's root key. The
+//!   node's own key has always been an anchor, so federated certificates need
+//!   no `--cert-trust-anchors` entry; what is new is that for a federated
+//!   tenant it is the ONLY anchor, so an operator-added anchor cannot mint
+//!   around a binding's ceiling.
+//! * **Budget.** One ledger per binding trust domain, bounded by the binding's
+//!   ceiling — not one per presented chain, which would give every exchange a
+//!   fresh budget and make the ceiling's budget a per-token allowance.
+//! * **Upstreams.** Clamped to the binding's list.
 //!
 //! # Persistence
 //!
@@ -117,6 +136,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::federated_credential::{FederatedSource, FederationSubject};
+use crate::federation_ingress::CallerBindings;
 use crate::upstreams::UpstreamRegistry;
 use crate::{ApiError, NodeState, keys};
 
@@ -163,6 +183,9 @@ pub(crate) struct AuthorityArgs {
     /// the node refuses to start without it rather than refuse every call.
     #[arg(long = "federation-issuer", env = "NUCLEUS_FEDERATION_ISSUER")]
     pub federation_issuer: Option<String>,
+    /// The inbound exchange listener (`federation_ingress.rs`).
+    #[command(flatten)]
+    pub ingress: crate::federation_ingress::FederationArgs,
 }
 
 /// Who is asking for a pod, as established by the node — never by the spec.
@@ -208,7 +231,7 @@ impl Admission {
         headers: &axum::http::HeaderMap,
     ) -> Self {
         Self {
-            caller_pod: caller_token_pod.or_else(|| policy.pod_id_from_spiffe(&auth_ctx.spiffe_id)),
+            caller_pod: policy.proved_pod(caller_token_pod, &auth_ctx.spiffe_id),
             header_cert: headers
                 .get(HEADER_DELEGATION_CERT)
                 .and_then(|v| v.to_str().ok())
@@ -246,6 +269,9 @@ pub(crate) struct IssuedAuthority {
     /// The credentialed upstreams this pod was admitted: the requested entries
     /// that survived the per-case clamp in [`PodAuthority::admit`].
     pub upstreams: Vec<CredentialedEgressSpec>,
+    /// The certificate's root identity: whose authority this pod runs under,
+    /// and so (by its trust domain) which tenant owns it (ADR 0001).
+    pub root_identity: String,
     /// The pod's hold on its budget, released unless the pod comes to run.
     reservation: Reservation,
 }
@@ -423,7 +449,8 @@ pub(crate) enum Parent {
     Root,
     /// One hop below a registered pod.
     Pod(Uuid),
-    /// Re-rooted from an external caller's chain, identified by fingerprint.
+    /// Re-rooted from an external caller's chain, identified by fingerprint —
+    /// or, for a federated tenant, by its binding's [`federated_ledger_key`].
     External([u8; 32]),
 }
 
@@ -593,6 +620,8 @@ pub(crate) struct PodAuthority {
     /// The node's federation issuer; `None` when `--federation-issuer` is unset,
     /// which is refused at start-up if the registry has a federated entry.
     federation: Option<std::sync::Arc<FederatedSource>>,
+    /// The `[[caller]]` bindings; empty when there are none.
+    bindings: std::sync::Arc<CallerBindings>,
     /// Shared with every live [`Reservation`], which releases through it.
     inner: std::sync::Arc<tokio::sync::Mutex<Inner>>,
 }
@@ -655,6 +684,16 @@ impl PodAuthority {
             registry.as_deref(),
             state_dir,
         )?;
+        let bindings = match registry.as_deref() {
+            Some(reg) => CallerBindings::from_files(reg.callers(), reg, trust_domain)?,
+            None => CallerBindings::default(),
+        };
+        if !bindings.is_empty() {
+            tracing::info!(
+                tenants = ?bindings.trust_domains().collect::<Vec<_>>(),
+                "loaded federated caller bindings"
+            );
+        }
 
         Ok(Self {
             trust_domain: trust_domain.to_string(),
@@ -666,6 +705,7 @@ impl PodAuthority {
             state_dir: state_dir.to_path_buf(),
             registry,
             federation,
+            bindings: std::sync::Arc::new(bindings),
             inner: std::sync::Arc::new(tokio::sync::Mutex::new(Inner {
                 pods: HashMap::new(),
                 external: HashMap::new(),
@@ -789,6 +829,47 @@ impl PodAuthority {
                 )))
             }
         }
+    }
+
+    /// The `[[caller]]` bindings (possibly none).
+    pub fn caller_bindings(&self) -> &CallerBindings {
+        &self.bindings
+    }
+
+    /// Mint the node-rooted delegation a federated caller presents at
+    /// `POST /v1/pods`: root identity `principal`, permissions `ceiling`,
+    /// `provenance` = `token_hash` (sha256 of the token that vouched for it).
+    /// Base64 [`AttenuationToken`].
+    ///
+    /// The holder key is ephemeral and discarded. `mint_with_holder_key`
+    /// needs the holder's PRIVATE key to sign proof-of-possession, and the
+    /// caller's key is theirs — the CSR carries only its public half, and may
+    /// not be Ed25519 at all. Discarding it means the caller cannot extend the
+    /// chain; it does not need to, because admission requires the chain's leaf
+    /// to BE the mTLS peer, and the SVID is what binds that peer to the
+    /// caller's own key. The certificate alone is useless to anyone else.
+    ///
+    /// # Errors
+    /// Key generation or serialisation failed.
+    pub fn mint_federated_delegation(
+        &self,
+        ceiling: PermissionLattice,
+        principal: String,
+        not_after: DateTime<Utc>,
+        token_hash: [u8; 32],
+    ) -> Result<String, ApiError> {
+        let holder = ephemeral_key()?;
+        let cert = LatticeCertificate::mint_with_holder_key(
+            ceiling,
+            principal,
+            not_after,
+            Some(token_hash),
+            &self.root_key,
+            &holder,
+        );
+        AttenuationToken::seal(cert, self.root_pubkey.clone())
+            .to_base64()
+            .map_err(|e| ApiError::Authority(format!("delegation encoding: {e}")))
     }
 
     /// The one identity allowed to mint from a bare policy.
@@ -921,10 +1002,20 @@ impl PodAuthority {
             // ── Case 2: external caller proving its own chain ───────────
             let token = AttenuationToken::from_base64(header.trim())
                 .map_err(|e| ApiError::Authority(format!("malformed delegation cert: {e}")))?;
+            // A caller in a federated tenant's trust domain is held to its
+            // binding: see the module docs. Decided by the AUTHENTICATED
+            // identity, not by anything in the presented chain.
+            let binding = crate::federation_ingress::trust_domain_of(&admission.caller_spiffe_id)
+                .and_then(|td| self.bindings.by_trust_domain(td));
             // The trust decision is against OUR anchors, never the token's
-            // own embedded root key (which is self-asserted).
-            let verified = self
-                .anchors
+            // own embedded root key (which is self-asserted) — and for a
+            // federated tenant, against this node's own root key alone.
+            let anchors: &[Vec<u8>] = if binding.is_some() {
+                std::slice::from_ref(&self.root_pubkey)
+            } else {
+                &self.anchors
+            };
+            let verified = anchors
                 .iter()
                 .find_map(|anchor| {
                     verify_certificate(token.certificate(), anchor, now, DEFAULT_MAX_CHAIN_DEPTH)
@@ -943,18 +1034,28 @@ impl PodAuthority {
                 )));
             }
             let fingerprint = token.fingerprint();
-            if inner.unreadable_chains.contains(&fingerprint) {
+            // One ledger per binding for a federated tenant, bounded by the
+            // binding's ceiling; one per presented chain otherwise. A binding's
+            // ledger sits in the same persisted map as the chains', under a
+            // domain-separated key (`federated_ledger_key`), so it is restored,
+            // released and refused-when-unreadable by exactly the same code.
+            let (key, budget) = match binding {
+                Some(b) => (
+                    federated_ledger_key(b.trust_domain()),
+                    b.ceiling().budget.clone(),
+                ),
+                None => (fingerprint, verified.effective().budget.clone()),
+            };
+            let parent = Parent::External(key);
+            if inner.unreadable_chains.contains(&key) {
                 return Err(ApiError::Authority(
                     "this node could not restore the caller chain's ledger; refused".into(),
                 ));
             }
-            let chain = inner
-                .external
-                .entry(fingerprint)
-                .or_insert_with(|| ChainLedger {
-                    ledger: BudgetLedger::for_parent(&verified.effective().budget),
-                    retired: Vec::new(),
-                });
+            let chain = inner.external.entry(key).or_insert_with(|| ChainLedger {
+                ledger: BudgetLedger::for_parent(&budget),
+                retired: Vec::new(),
+            });
             let ledger = &mut chain.ledger;
             if ledger.live_children() >= self.max_children {
                 return Err(ApiError::Authority(format!(
@@ -987,10 +1088,11 @@ impl PodAuthority {
                     &child_key,
                 )
                 .map_err(|e| {
-                    unreserve(inner, Parent::External(fingerprint), child_id);
+                    unreserve(inner, parent, child_id);
                     ApiError::Authority(format!("delegation refused: {e}"))
                 })?;
-            (cert, Parent::External(fingerprint), None)
+            let ceiling = binding.map(|b| b.upstreams().to_vec());
+            (cert, parent, ceiling)
         } else if admission.caller_spiffe_id == self.root_minter {
             // ── Case 3: the bootstrap identity ──────────────────────────
             let not_after = now + ttl;
@@ -1039,6 +1141,7 @@ impl PodAuthority {
         };
         let effective = cert.effective_permissions().clone();
         let chain_depth = cert.chain_depth();
+        let root_identity = cert.root_identity().to_string();
         let entry = PodCert {
             ledger: BudgetLedger::for_parent(&effective.budget),
             retired: Vec::new(),
@@ -1088,6 +1191,7 @@ impl PodAuthority {
                     pod_id: child_id,
                 }),
             },
+            root_identity,
         })
     }
 
@@ -1310,6 +1414,18 @@ fn unreserve(inner: &mut Inner, parent: Parent, child_id: Uuid) {
     if let Some(ledger) = ledger {
         let _ = ledger.release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
     }
+}
+
+/// The key a federated tenant's ledger is kept under in `Inner::external`:
+/// one per binding trust domain, so every exchange under a binding draws on one
+/// budget. Domain-separated from chain fingerprints, so no presented chain can
+/// name a binding's ledger, nor a binding a chain's.
+fn federated_ledger_key(trust_domain: &str) -> [u8; 32] {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"nucleus/federated-ledger/v1\0");
+    h.update(trust_domain.as_bytes());
+    h.finalize().into()
 }
 
 fn authority_path(state_dir: &Path, pod_id: Uuid) -> PathBuf {
@@ -1586,880 +1702,4 @@ pub(crate) async fn mint_task_token_for_spec(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use nucleus_spec::{PodSpecInner, PolicySpec};
-    use portcullis::CapabilityLevel;
-    use rust_decimal::Decimal;
-
-    const TD: &str = "test.local";
-    const MINTER: &str = "spiffe://test.local/ns/system/sa/cli";
-
-    fn args() -> AuthorityArgs {
-        AuthorityArgs {
-            root_minter_spiffe_id: None,
-            cert_trust_anchors: Vec::new(),
-            max_children_per_pod: 8,
-            upstreams: None,
-            federation_issuer: None,
-        }
-    }
-
-    fn authority(dir: &Path, args: AuthorityArgs) -> PodAuthority {
-        PodAuthority::new(&args, TD, dir).expect("authority builds")
-    }
-
-    fn spec_with(lattice: PermissionLattice) -> PodSpec {
-        PodSpec::new(PodSpecInner {
-            work_dir: PathBuf::from("/work"),
-            timeout_seconds: 600,
-            policy: PolicySpec::Inline {
-                lattice: Box::new(lattice),
-            },
-            budget_model: None,
-            resources: None,
-            network: None,
-            credentialed_egress: Vec::new(),
-            workload: None,
-            image: None,
-            vsock: None,
-            seccomp: None,
-            cgroup: None,
-            audit_sink: None,
-            credentials: None,
-        })
-    }
-
-    fn lattice(budget_usd: u32) -> PermissionLattice {
-        let mut l = PermissionLattice::permissive();
-        l.budget.max_cost_usd = Decimal::from(budget_usd);
-        l
-    }
-
-    fn by(spiffe: &str) -> Admission {
-        Admission {
-            caller_spiffe_id: spiffe.into(),
-            caller_pod: None,
-            header_cert: None,
-        }
-    }
-
-    fn from_pod(parent: Uuid) -> Admission {
-        Admission {
-            caller_spiffe_id: format!("spiffe://{TD}/ns/pods/sa/{parent}"),
-            caller_pod: Some(parent),
-            header_cert: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn the_root_minter_creates_from_a_bare_policy_and_nobody_else_does() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let pod = Uuid::new_v4();
-
-        let issued = auth
-            .admit_kept(&by(MINTER), &spec_with(lattice(5)), pod)
-            .await
-            .expect("bootstrap identity mints a root");
-        assert_eq!(issued.chain_depth, 1);
-        assert_eq!(issued.effective.budget.max_cost_usd, Decimal::from(5));
-        let boot = auth.boot_certificate(pod).await.expect("registered");
-        let token = AttenuationToken::from_base64(&boot.token_b64).unwrap();
-        assert_eq!(token.leaf_identity(), auth.pod_spiffe_id(pod));
-        assert_eq!(token.root_identity(), MINTER);
-        assert!(verify_certificate(token.certificate(), &auth.root_pubkey, Utc::now(), 10).is_ok());
-
-        let stranger = by("spiffe://test.local/ns/default/sa/someone");
-        let denied = auth
-            .admit_kept(&stranger, &spec_with(lattice(5)), Uuid::new_v4())
-            .await;
-        assert!(
-            matches!(denied, Err(ApiError::Authority(_))),
-            "an unidentified non-minter must be refused, got {denied:?}"
-        );
-        assert!(auth.boot_certificate(Uuid::new_v4()).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_child_is_narrowed_to_its_parent_and_budget_is_conserved() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let parent = Uuid::new_v4();
-        let mut parent_policy = lattice(5);
-        parent_policy.capabilities.git_push = CapabilityLevel::Never;
-        auth.admit_kept(&by(MINTER), &spec_with(parent_policy.clone()), parent)
-            .await
-            .unwrap();
-
-        // Child asks for MORE than the parent (git_push Always, $3): capability
-        // is meet-clamped, budget is reserved.
-        let mut greedy = lattice(3);
-        greedy.capabilities.git_push = CapabilityLevel::Always;
-        let c1 = Uuid::new_v4();
-        let issued = auth
-            .admit_kept(&from_pod(parent), &spec_with(greedy.clone()), c1)
-            .await
-            .unwrap();
-        assert_eq!(issued.chain_depth, 2);
-        assert_eq!(
-            issued.effective.capabilities.git_push,
-            CapabilityLevel::Never
-        );
-        assert!(issued.effective.leq(&parent_policy));
-
-        // Second $3 child: 3 + 3 > 5 — refused. This is the defect: before the
-        // ledger, every child got the parent's full budget.
-        let c2 = Uuid::new_v4();
-        let denied = auth
-            .admit_kept(&from_pod(parent), &spec_with(lattice(3)), c2)
-            .await;
-        assert!(
-            matches!(&denied, Err(ApiError::Authority(m)) if m.contains("budget conservation")),
-            "got {denied:?}"
-        );
-        // A $2 child fits exactly.
-        auth.admit_kept(&from_pod(parent), &spec_with(lattice(2)), c2)
-            .await
-            .unwrap();
-        // Nothing left.
-        assert!(
-            auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
-                .await
-                .is_err()
-        );
-
-        // Releasing c1 folds its allocation into the parent's consumption
-        // (conservative: no refund), so the parent still cannot over-spawn.
-        auth.release_child(c1).await;
-        assert!(
-            auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
-                .await
-                .is_err()
-        );
-        assert!(auth.boot_certificate(c1).await.is_none());
-    }
-
-    #[tokio::test]
-    async fn a_request_over_the_parent_budget_is_refused_not_clamped() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let parent = Uuid::new_v4();
-        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
-            .await
-            .unwrap();
-        let denied = auth
-            .admit_kept(&from_pod(parent), &spec_with(lattice(500)), Uuid::new_v4())
-            .await;
-        assert!(
-            matches!(denied, Err(ApiError::Authority(_))),
-            "got {denied:?}"
-        );
-        // And the failed attempt reserved nothing.
-        auth.admit_kept(&from_pod(parent), &spec_with(lattice(5)), Uuid::new_v4())
-            .await
-            .expect("the full budget is still available");
-    }
-
-    #[tokio::test]
-    async fn fan_out_is_capped_per_parent() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut a = args();
-        a.max_children_per_pod = 2;
-        let auth = authority(dir.path(), a);
-        let parent = Uuid::new_v4();
-        auth.admit_kept(&by(MINTER), &spec_with(lattice(100)), parent)
-            .await
-            .unwrap();
-        auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
-            .await
-            .unwrap();
-        auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
-            .await
-            .unwrap();
-        let third = auth
-            .admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
-            .await;
-        assert!(
-            matches!(&third, Err(ApiError::Authority(m)) if m.contains("live children")),
-            "got {third:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn an_unregistered_pod_cannot_spawn() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let denied = auth
-            .admit_kept(
-                &from_pod(Uuid::new_v4()),
-                &spec_with(lattice(1)),
-                Uuid::new_v4(),
-            )
-            .await;
-        assert!(matches!(denied, Err(ApiError::Authority(_))));
-    }
-
-    #[tokio::test]
-    async fn chain_depth_bounds_recursion() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let mut current = Uuid::new_v4();
-        auth.admit_kept(&by(MINTER), &spec_with(lattice(1_000_000)), current)
-            .await
-            .unwrap();
-        let mut depth = 1;
-        loop {
-            let next = Uuid::new_v4();
-            match auth
-                .admit_kept(&from_pod(current), &spec_with(lattice(1)), next)
-                .await
-            {
-                Ok(issued) => {
-                    depth = issued.chain_depth;
-                    current = next;
-                }
-                Err(ApiError::Authority(m)) => {
-                    assert!(m.contains("depth") && m.contains("exceed"), "{m}");
-                    break;
-                }
-                Err(e) => panic!("unexpected {e:?}"),
-            }
-            assert!(depth <= DEFAULT_MAX_CHAIN_DEPTH);
-        }
-        assert_eq!(depth, DEFAULT_MAX_CHAIN_DEPTH);
-    }
-
-    /// An external caller: a chain rooted at an operator-registered anchor,
-    /// whose leaf is the authenticated identity. Re-rooted with provenance.
-    #[tokio::test]
-    async fn an_external_chain_is_verified_against_our_anchors_and_bound_to_the_caller() {
-        let dir = tempfile::tempdir().unwrap();
-        let rng = ring::rand::SystemRandom::new();
-        let ext_root = ephemeral_key().unwrap();
-        let ext_root_hex = hex::encode(ext_root.public_key().as_ref());
-
-        let mut a = args();
-        a.cert_trust_anchors = vec![ext_root_hex];
-        let auth = authority(dir.path(), a);
-
-        let caller = "spiffe://other.example/ns/agents/sa/orchestrator";
-        // One expiry for both hops: a second `Utc::now()` is already later,
-        // and a child may not outlive its parent block.
-        let expiry = Utc::now() + Duration::hours(1);
-        let (root, holder) = LatticeCertificate::mint(
-            lattice(10),
-            "spiffe://other.example/human/alice".into(),
-            expiry,
-            &ext_root,
-            &rng,
-        );
-        let (leaf, _k) = root
-            .delegate(&lattice(4), caller.into(), expiry, &holder, &rng)
-            .unwrap();
-        let token = AttenuationToken::seal(leaf.clone(), ext_root.public_key().as_ref().to_vec());
-        let header = token.to_base64().unwrap();
-
-        let pod = Uuid::new_v4();
-        let admission = Admission {
-            caller_spiffe_id: caller.into(),
-            caller_pod: None,
-            header_cert: Some(header.clone()),
-        };
-        let issued = auth
-            .admit_kept(&admission, &spec_with(lattice(3)), pod)
-            .await
-            .unwrap();
-        assert_eq!(issued.effective.budget.max_cost_usd, Decimal::from(3));
-        let boot = auth.boot_certificate(pod).await.unwrap();
-        let minted = AttenuationToken::from_base64(&boot.token_b64).unwrap();
-        assert_eq!(
-            minted.certificate().authority().provenance,
-            Some(token.fingerprint())
-        );
-        assert_eq!(minted.root_identity(), caller);
-        assert!(
-            verify_certificate(minted.certificate(), &auth.root_pubkey, Utc::now(), 10).is_ok()
-        );
-
-        // The caller's chain carried $4: a second $3 pod is refused.
-        let denied = auth
-            .admit_kept(&admission, &spec_with(lattice(3)), Uuid::new_v4())
-            .await;
-        assert!(
-            matches!(&denied, Err(ApiError::Authority(m)) if m.contains("budget conservation"))
-        );
-
-        // Leaf/caller mismatch: same valid chain, different authenticated identity.
-        let impostor = Admission {
-            caller_spiffe_id: "spiffe://other.example/ns/agents/sa/impostor".into(),
-            caller_pod: None,
-            header_cert: Some(header),
-        };
-        assert!(matches!(
-            auth.admit_kept(&impostor, &spec_with(lattice(1)), Uuid::new_v4())
-                .await,
-            Err(ApiError::Authority(_))
-        ));
-
-        // A chain rooted at a key we do NOT trust — even a self-consistent
-        // token carrying its own root key — is refused.
-        let stranger_root = ephemeral_key().unwrap();
-        let (sroot, _) = LatticeCertificate::mint(
-            lattice(10),
-            caller.into(),
-            Utc::now() + Duration::hours(1),
-            &stranger_root,
-            &rng,
-        );
-        let stoken = AttenuationToken::seal(sroot, stranger_root.public_key().as_ref().to_vec());
-        let untrusted = Admission {
-            caller_spiffe_id: caller.into(),
-            caller_pod: None,
-            header_cert: Some(stoken.to_base64().unwrap()),
-        };
-        assert!(matches!(
-            auth.admit_kept(&untrusted, &spec_with(lattice(1)), Uuid::new_v4())
-                .await,
-            Err(ApiError::Authority(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn authority_survives_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let parent = Uuid::new_v4();
-        let child = Uuid::new_v4();
-        {
-            let auth = authority(dir.path(), args());
-            auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
-                .await
-                .unwrap();
-            auth.admit_kept(&from_pod(parent), &spec_with(lattice(3)), child)
-                .await
-                .unwrap();
-        }
-        // "Restart": a new authority over the same state dir.
-        let auth = authority(dir.path(), args());
-        assert_eq!(auth.restore_from_disk().await, 2);
-        // The restored parent can still delegate (its holder key came back)...
-        auth.admit_kept(&from_pod(parent), &spec_with(lattice(2)), Uuid::new_v4())
-            .await
-            .expect("restored holder key delegates");
-        // ...and its ledger came back too: 3 + 2 = 5, nothing left.
-        assert!(
-            auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
-                .await
-                .is_err()
-        );
-        // The restored child's certificate still verifies under the same root.
-        let boot = auth.boot_certificate(child).await.unwrap();
-        let t = AttenuationToken::from_base64(&boot.token_b64).unwrap();
-        assert!(verify_certificate(t.certificate(), &auth.root_pubkey, Utc::now(), 10).is_ok());
-    }
-
-    // ── Credentialed upstreams, bounded at the NODE ──────────────────────
-    //
-    // Before these, the node passed `credentialed_egress` through verbatim and
-    // the only clamp was the in-guest tool-proxy's. Every test below calls
-    // `admit` — the node's own gate — with the Admission a direct caller of
-    // `POST /v1/pods` produces, so none of them passes through the proxy.
-
-    const REGISTRY: &str = r#"
-[[upstream]]
-name = "model-api"
-base_url = "https://model-api.invalid/v1"
-header = "authorization"
-value_prefix = "Bearer "
-credential.env.var = "LLM_API_TOKEN"
-
-[[upstream]]
-name = "search-api"
-base_url = "https://search-api.invalid"
-header = "x-api-key"
-credential.env.var = "SEARCH_API_TOKEN"
-"#;
-
-    fn with_registry(dir: &Path) -> PodAuthority {
-        let path = dir.join("upstreams.toml");
-        std::fs::write(&path, REGISTRY).unwrap();
-        let mut a = args();
-        a.upstreams = Some(path);
-        authority(dir, a)
-    }
-
-    fn registered(name: &str) -> CredentialedEgressSpec {
-        crate::upstreams::UpstreamRegistry::from_toml_str(REGISTRY)
-            .unwrap()
-            .entries()
-            .iter()
-            .find(|e| e.name == name)
-            .cloned()
-            .expect("fixture names a registry entry")
-    }
-
-    /// The exfiltration shape: a real registry name pointed at a URL the caller
-    /// chose, and an invented entry naming a node variable nobody registered.
-    fn loot() -> Vec<CredentialedEgressSpec> {
-        let mut retargeted = registered("model-api");
-        retargeted.upstream = "https://attacker.invalid".into();
-        let invented = CredentialedEgressSpec {
-            name: "loot".into(),
-            upstream: "https://attacker.invalid".into(),
-            credential_env: "NUCLEUS_NODE_PROXY_AUTH_SECRET".into(),
-            header: "authorization".into(),
-            value_prefix: String::new(),
-        };
-        vec![retargeted, invented]
-    }
-
-    fn requesting(ups: Vec<CredentialedEgressSpec>, budget: u32) -> PodSpec {
-        let mut spec = spec_with(lattice(budget));
-        spec.spec.credentialed_egress = ups;
-        spec
-    }
-
-    /// The refusal a caller gets for `name`: the entry, never the reason.
-    fn refused(name: &str) -> String {
-        ApiError::Authority(format!("credentialed upstream `{name}` is not granted")).to_string()
-    }
-
-    /// (a) **A pod calling the node directly cannot name an upstream its
-    /// parent lacks** — not an unregistered one, and not even a REGISTERED one
-    /// the parent was never admitted. Delegation narrows; it never invents. The
-    /// pod is REFUSED (ADR 0010 §1), not created without the entry, and the
-    /// refusal gives back the budget it had reserved against the parent.
-    #[tokio::test]
-    async fn a_pod_caller_is_refused_an_upstream_its_parent_lacks() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = with_registry(dir.path());
-        let parent = Uuid::new_v4();
-        let issued = auth
-            .admit_kept(
-                &by(MINTER),
-                &requesting(vec![registered("model-api")], 5),
-                parent,
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            issued.upstreams,
-            vec![registered("model-api")],
-            "the control: the root minter is admitted a registry entry"
-        );
-
-        // Registered, but the parent lacks it.
-        let err = auth
-            .admit(
-                &from_pod(parent),
-                &requesting(vec![registered("search-api")], 1),
-                Uuid::new_v4(),
-            )
-            .await
-            .expect_err("an upstream the parent lacks refuses the pod");
-        assert_eq!(err.to_string(), refused("search-api"));
-        // A registry name retargeted at the caller's URL, then an invented entry.
-        let err = auth
-            .admit(&from_pod(parent), &requesting(loot(), 1), Uuid::new_v4())
-            .await
-            .expect_err("a retargeted entry refuses the pod");
-        assert_eq!(err.to_string(), refused("model-api"));
-        assert_eq!(
-            auth.inner.lock().await.pods[&parent].ledger.live_children(),
-            0,
-            "a refused child holds no reservation against its parent"
-        );
-
-        // Delegation still works for what the parent holds.
-        let child = auth
-            .admit_kept(
-                &from_pod(parent),
-                &requesting(vec![registered("model-api")], 1),
-                Uuid::new_v4(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(child.upstreams, vec![registered("model-api")]);
-    }
-
-    /// (b) **With a registry, the root minter and an external caller are
-    /// admitted only registry entries**, field for field. A differing field is
-    /// a different entry, and an entry naming a variable the operator never
-    /// registered refuses the pod, whoever asks.
-    #[tokio::test]
-    async fn root_and_external_callers_are_refused_what_the_registry_lacks() {
-        let dir = tempfile::tempdir().unwrap();
-        let rng = ring::rand::SystemRandom::new();
-        let ext_root = ephemeral_key().unwrap();
-        let path = dir.path().join("upstreams.toml");
-        std::fs::write(&path, REGISTRY).unwrap();
-        let mut a = args();
-        a.upstreams = Some(path);
-        a.cert_trust_anchors = vec![hex::encode(ext_root.public_key().as_ref())];
-        let auth = authority(dir.path(), a);
-
-        let caller = "spiffe://other.example/ns/agents/sa/orchestrator";
-        let expiry = Utc::now() + Duration::hours(1);
-        let (leaf, _k) =
-            LatticeCertificate::mint(lattice(10), caller.into(), expiry, &ext_root, &rng);
-        let token = AttenuationToken::seal(leaf, ext_root.public_key().as_ref().to_vec());
-        let external = Admission {
-            caller_spiffe_id: caller.into(),
-            caller_pod: None,
-            header_cert: Some(token.to_base64().unwrap()),
-        };
-
-        for who in [by(MINTER), external] {
-            let mut asked = vec![registered("search-api")];
-            asked.extend(loot());
-            let err = auth
-                .admit(&who, &requesting(asked, 1), Uuid::new_v4())
-                .await
-                .expect_err("an entry outside the registry refuses the pod");
-            assert_eq!(
-                err.to_string(),
-                refused("model-api"),
-                "{}",
-                who.caller_spiffe_id
-            );
-            let ok = auth
-                .admit_kept(
-                    &who,
-                    &requesting(vec![registered("search-api")], 1),
-                    Uuid::new_v4(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(ok.upstreams, vec![registered("search-api")]);
-        }
-    }
-
-    /// The refusal is not an oracle (ADR 0004): "not in the registry" and "not
-    /// held by the parent" read the same, differing only in the name the caller
-    /// itself sent.
-    #[tokio::test]
-    async fn a_refusal_names_the_entry_not_the_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = with_registry(dir.path());
-        let parent = Uuid::new_v4();
-        auth.admit_kept(&by(MINTER), &requesting(vec![], 5), parent)
-            .await
-            .unwrap();
-        let mut invented = loot().pop().expect("the invented entry");
-        invented.name = "search-api-2".into();
-        let not_registered = auth
-            .admit(
-                &from_pod(parent),
-                &requesting(vec![invented], 1),
-                Uuid::new_v4(),
-            )
-            .await
-            .expect_err("unregistered");
-        let not_held = auth
-            .admit(
-                &from_pod(parent),
-                &requesting(vec![registered("search-api")], 1),
-                Uuid::new_v4(),
-            )
-            .await
-            .expect_err("registered, not held");
-        assert_eq!(
-            not_registered
-                .to_string()
-                .replace("search-api-2", "search-api"),
-            not_held.to_string()
-        );
-    }
-
-    /// No registry is an empty ceiling for EVERY case, the root minter
-    /// included. See `upstreams.rs` for why this is not "trust the operator CLI".
-    #[tokio::test]
-    async fn without_a_registry_a_pod_requesting_an_upstream_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let err = auth
-            .admit(
-                &by(MINTER),
-                &requesting(vec![registered("model-api")], 5),
-                Uuid::new_v4(),
-            )
-            .await
-            .expect_err("no registry grants nothing");
-        assert_eq!(err.to_string(), refused("model-api"));
-        let issued = auth
-            .admit_kept(&by(MINTER), &requesting(vec![], 5), Uuid::new_v4())
-            .await
-            .unwrap();
-        assert!(issued.upstreams.is_empty(), "asking for none still works");
-    }
-
-    /// The per-pod admitted set is persisted with the certificate, so a
-    /// restarted node still bounds a restored parent's children by it.
-    #[tokio::test]
-    async fn a_parents_admitted_upstreams_survive_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let parent = Uuid::new_v4();
-        with_registry(dir.path())
-            .admit_kept(
-                &by(MINTER),
-                &requesting(vec![registered("model-api")], 5),
-                parent,
-            )
-            .await
-            .unwrap();
-        let auth = with_registry(dir.path());
-        assert_eq!(auth.restore_from_disk().await, 1);
-        let err = auth
-            .admit(
-                &from_pod(parent),
-                &requesting(vec![registered("model-api"), registered("search-api")], 1),
-                Uuid::new_v4(),
-            )
-            .await
-            .expect_err("the restored parent never held search-api");
-        assert_eq!(err.to_string(), refused("search-api"));
-        let child = auth
-            .admit_kept(
-                &from_pod(parent),
-                &requesting(vec![registered("model-api")], 1),
-                Uuid::new_v4(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(child.upstreams, vec![registered("model-api")]);
-    }
-
-    /// #3032: a reservation dropped without `commit` hands the budget back and
-    /// retires the child's certificate on disk, so a restart cannot restore it.
-    #[tokio::test]
-    async fn a_dropped_reservation_hands_the_budget_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let parent = Uuid::new_v4();
-        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
-            .await
-            .unwrap();
-        let child = Uuid::new_v4();
-        let issued = auth
-            .admit(&from_pod(parent), &spec_with(lattice(1)), child)
-            .await
-            .unwrap();
-        assert_eq!(auth.live_children(parent).await, Some(1));
-        assert!(
-            auth.authority_path(child).exists(),
-            "the child was persisted"
-        );
-
-        drop(issued);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while auth.live_children(parent).await != Some(0) {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "a dropped reservation never handed the budget back"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        assert_eq!(
-            auth.live_children(child).await,
-            None,
-            "the child's cert is retired"
-        );
-        assert!(
-            !auth.authority_path(child).exists(),
-            "and its authority.json removed"
-        );
-    }
-
-    /// The control: a committed reservation is kept.
-    #[tokio::test]
-    async fn a_committed_reservation_is_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = authority(dir.path(), args());
-        let parent = Uuid::new_v4();
-        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
-            .await
-            .unwrap();
-        let mut spec = spec_with(lattice(1));
-        auth.admit(&from_pod(parent), &spec, Uuid::new_v4())
-            .await
-            .unwrap()
-            .apply_to(&mut spec)
-            .commit();
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        assert_eq!(auth.live_children(parent).await, Some(1));
-    }
-
-    /// Admission deciding is half of it; the spec the driver launches from
-    /// must CARRY the decision. `apply_to` replaces both fields...
-    #[test]
-    fn apply_to_replaces_the_requested_upstreams_with_the_admitted_ones() {
-        let mut spec = requesting(loot(), 5);
-        let reservation = IssuedAuthority {
-            effective: lattice(1),
-            chain_depth: 1,
-            upstreams: vec![registered("model-api")],
-            reservation: Reservation { release: None },
-        }
-        .apply_to(&mut spec);
-        reservation.commit();
-        assert_eq!(spec.spec.credentialed_egress, vec![registered("model-api")]);
-    }
-
-    /// ...and `create_pod_internal` calls it, unconditionally, right after
-    /// admission. A source check, the same shape as
-    /// `the_clamp_is_wired_before_admission_unconditionally`: the node's launch
-    /// path spawns VMs, so no unit test can drive it end to end.
-    #[test]
-    fn create_pod_internal_applies_the_issued_authority() {
-        let main = include_str!("main.rs");
-        let admit = main
-            .find("state.authority.admit(&admission, &spec, id)")
-            .expect("admission is called from main.rs");
-        let apply = main
-            .find("let reservation = issued.apply_to(&mut spec);")
-            .expect(
-                "the issued authority is applied to the spec in main.rs, and its reservation kept",
-            );
-        assert!(admit < apply, "applied after it is issued");
-        let spawn = main[admit..]
-            .find("let spawned = match state.driver")
-            .expect("the spawn follows admission");
-        assert!(
-            apply < admit + spawn,
-            "applied before the pod is spawned from the spec"
-        );
-        let indent = main[..apply].rsplit('\n').next().unwrap_or("");
-        assert_eq!(
-            indent, "    ",
-            "at function-body level, not under a condition"
-        );
-    }
-
-    // ── Federated upstreams: the issuer, and who an assertion names ──────
-
-    const FEDERATED_REGISTRY: &str = r#"
-[[upstream]]
-name = "model-api"
-base_url = "https://model-api.invalid/v1"
-header = "authorization"
-value_prefix = "Bearer "
-
-[upstream.credential.federated]
-token_endpoint = "https://auth.model-api.invalid/oauth/token"
-grant = "jwt-bearer"
-encoding = "json"
-audience = "https://auth.model-api.invalid"
-"#;
-
-    fn federated_args(dir: &Path, issuer: Option<&str>) -> AuthorityArgs {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let path = dir.join("upstreams.toml");
-        std::fs::write(&path, FEDERATED_REGISTRY).unwrap();
-        let mut a = args();
-        a.upstreams = Some(path);
-        a.federation_issuer = issuer.map(str::to_string);
-        a
-    }
-
-    /// **Fail closed at start.** A registry that needs an issuer and has none
-    /// is a node that would admit pods to an upstream and then refuse every
-    /// call — so it does not start. Nor does one with a cleartext issuer.
-    #[test]
-    fn a_federated_registry_without_an_issuer_refuses_to_start() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = PodAuthority::new(&federated_args(dir.path(), None), TD, dir.path())
-            .err()
-            .expect("no issuer: refused");
-        assert!(err.contains("--federation-issuer"), "{err}");
-        assert!(
-            PodAuthority::new(
-                &federated_args(dir.path(), Some("http://federation.example.invalid")),
-                TD,
-                dir.path()
-            )
-            .is_err(),
-            "a cleartext issuer was accepted"
-        );
-        // The control: with an issuer it starts, and no key file is written by
-        // a node that has no issuer.
-        let ok = PodAuthority::new(
-            &federated_args(dir.path(), Some("https://federation.example.invalid")),
-            TD,
-            dir.path(),
-        )
-        .expect("starts with an issuer");
-        assert!(ok.federation_source().is_some());
-        let plain = tempfile::tempdir().unwrap();
-        authority(plain.path(), args());
-        assert!(!plain.path().join("jwt_svid_p256_signing_key.der").exists());
-    }
-
-    /// **Who an assertion names, read from the certificate the node issued.**
-    /// `sub` is the pod's own identity, the root and tenant are the chain's,
-    /// and the chain claim is the certificate's fingerprint — and a broker
-    /// identity that disagrees with the certificate gets nothing.
-    #[tokio::test]
-    async fn the_federation_subject_comes_from_the_issued_certificate() {
-        let dir = tempfile::tempdir().unwrap();
-        let auth = PodAuthority::new(
-            &federated_args(dir.path(), Some("https://federation.example.invalid")),
-            TD,
-            dir.path(),
-        )
-        .unwrap();
-        let pod = Uuid::new_v4();
-        let federated = auth.upstream_registry().unwrap().entries().to_vec();
-        let issued = auth
-            .admit_kept(&by(MINTER), &requesting(federated.clone(), 5), pod)
-            .await
-            .unwrap();
-        assert_eq!(
-            issued.upstreams, federated,
-            "the federated projection is admitted"
-        );
-
-        let observed = nucleus_cred_broker::PodIdentity::observed_by_host(auth.pod_spiffe_id(pod));
-        let subject = auth
-            .federation_subject(pod, &observed)
-            .await
-            .expect("an issued pod has a subject");
-        assert_eq!(subject.pod_spiffe_id(), auth.pod_spiffe_id(pod));
-        let debug = format!("{subject:?}");
-        let fp = hex::encode(auth.certificate_fingerprint(pod).await.unwrap());
-        assert_eq!(fp.len(), 64);
-        for fact in [MINTER, TD, fp.as_str()] {
-            assert!(debug.contains(fact), "the subject lacks {fact}: {debug}");
-        }
-
-        let stranger =
-            nucleus_cred_broker::PodIdentity::observed_by_host(auth.pod_spiffe_id(Uuid::new_v4()));
-        assert!(
-            auth.federation_subject(pod, &stranger).await.is_none(),
-            "a broker identity that is not the certificate's leaf got a subject"
-        );
-        assert!(
-            auth.federation_subject(Uuid::new_v4(), &observed)
-                .await
-                .is_none(),
-            "a pod with no certificate got a subject"
-        );
-
-        // And the broker's credentials for this pod can mint; a node with no
-        // issuer's cannot.
-        let entries = auth.upstream_registry().unwrap().resolve(&issued.upstreams);
-        let creds = crate::broker_launch::pod_credentials(&auth, pod, &observed, &entries).await;
-        assert!(
-            format!("{creds:?}").contains("federated: true"),
-            "{creds:?}"
-        );
-        let plain = with_registry(tempfile::tempdir().unwrap().path());
-        let creds = crate::broker_launch::pod_credentials(&plain, pod, &observed, &entries).await;
-        assert!(
-            format!("{creds:?}").contains("federated: false"),
-            "{creds:?}"
-        );
-    }
-
-    // Ledgers across a restart.
-    mod restart;
-}
+mod tests;

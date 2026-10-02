@@ -210,7 +210,10 @@ impl NodeClient {
         // so `node_tls` replaces the hostname check with a check that the
         // certificate chains to the node's CA AND names exactly the node in
         // this pod's own trust domain. The same CA certifies pods, so the
-        // chain alone would not say which workload answered.
+        // chain alone would not say which workload answered. It also signs
+        // federated tenants' SVIDs; those carry `ClientAuth` only, so the
+        // server-usage check refuses one before it could receive this
+        // client's caller token.
         let tls = nucleus_identity::node_tls::node_client_config(identity_pem, trust_bundle_pem)
             .map_err(|e| NodeClientError {
                 message: format!("failed to build the node TLS configuration: {e}"),

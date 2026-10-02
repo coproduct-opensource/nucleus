@@ -13,6 +13,8 @@
 //! against the node's own CA and nothing else, and the hostname check is
 //! replaced by a check that the certificate names the node's SPIFFE ID, because
 //! the node's certificate names a SPIFFE URI, never a host.
+//! That CA also signs federated tenants' SVIDs, which carry `ClientAuth` only,
+//! so the server-usage check refuses one before the name check runs.
 //!
 //! Calls to a pod's tool-proxy are not here: the node's signed proxy fronts
 //! those, and `agency --local` signs its own.

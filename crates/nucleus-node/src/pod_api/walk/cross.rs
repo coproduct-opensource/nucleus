@@ -255,6 +255,7 @@ impl Run {
                 driver_state: crate::DriverState::Firecracker(Box::new(firecracker)),
                 parent_pod_id: None,
                 posture_stamp: None,
+                owner: None,
             }),
         );
         let k = register(&st, Some(p)).await;
