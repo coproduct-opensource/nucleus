@@ -193,7 +193,10 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // Served WITH the capability, not separately — the proxy
                 // needs both to reach the broker and neither is useful alone.
                 broker_port: state.broker_vsock_port,
-                broker_secret_served: std::sync::Arc::default(),
+                // Nothing served yet. Every per-pod value above that names or
+                // empowers this pod goes out ONCE, to guest-init, before the
+                // workload exists (#2724) — the SVID key included.
+                served: workload_api_vsock::ServedLedger::new(),
                 // Set the first time this pod is handed anything that names it; a snapshot
                 // of a VM past that point would give every clone this pod's identity.
                 personalized: std::sync::Arc::default(),
@@ -204,15 +207,10 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 audit_creds: workload_api_vsock::AuditCredentials::from_node_env(
                     spec.spec.audit_sink.is_some(),
                 ),
-                audit_creds_served: std::sync::Arc::default(),
                 // A per-pod ed25519 seed the guest proxy signs receipts with,
                 // served ONCE before the workload exists. See `mediation`.
                 mediation_signing_key: mediation::new_seed_hex(pod_dir),
                 mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
-                mediation_key_served: std::sync::Arc::default(),
-                // The SVID private key, like the one-shots: served to the first
-                // FETCH_SVID only (guest-init's, before the workload exists).
-                svid_key_served: std::sync::Arc::default(),
                 // Where the host durably collects SHIP_RECEIPT receipts.
                 receipt_dir: Some(pod_dir.to_path_buf()),
                 pod_registry: state.pods.clone(),

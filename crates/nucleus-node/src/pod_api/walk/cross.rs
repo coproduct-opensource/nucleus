@@ -180,7 +180,12 @@ impl Run {
             .await
             .expect("certificate");
 
-        let broker_served = Arc::new(AtomicBool::new(broker_already_served));
+        let served = crate::workload_api_vsock::ServedLedger::new();
+        served.mark_served(
+            crate::workload_api_vsock::OneShot::BrokerSecret,
+            broker_already_served,
+        );
+        let broker_served = served.watch(crate::workload_api_vsock::OneShot::BrokerSecret);
         let personalized = Arc::new(AtomicBool::new(false));
         // Every field named (E-1): a new kind of material is a decision for this
         // census, not a silent default.
@@ -191,16 +196,13 @@ impl Run {
             dlc_admission: None,
             broker_secret: Some("test-broker-secret".into()),
             broker_port: 0,
-            broker_secret_served: Arc::clone(&broker_served),
+            served,
             audit_creds: None,
-            audit_creds_served: Arc::default(),
             pod_spec_yaml: None,
             mediation_signing_key: None,
             mediation_spiffe_id: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
-            mediation_key_served: Arc::default(),
-            svid_key_served: Arc::default(),
             receipt_dir: Some(dir.path().join("p")),
             pod_registry: st.pods.clone(),
         };

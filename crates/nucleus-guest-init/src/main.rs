@@ -468,6 +468,7 @@ fn run() -> Result<(), String> {
                     identity::trust_bundle_path()
                 );
             }
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => {
                 eprintln!("failed to fetch identity: {err}");
                 // Continue without identity - not fatal for now
@@ -508,6 +509,10 @@ fn run() -> Result<(), String> {
                     cap.port
                 );
             }
+            // Every per-pod value is served once (#2724). "Already served" means
+            // something in this guest asked before init did and holds what the
+            // proxy was to hold: never boot on, whichever value it was.
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("no broker capability over vsock: {err}"),
         }
 
@@ -523,6 +528,7 @@ fn run() -> Result<(), String> {
                 eprintln!("fetched mediation signing key over vsock (receipts enabled)");
             }
             Ok(None) => eprintln!("no mediation key provisioned — receipts disabled"),
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("no mediation key over vsock (receipts disabled): {err}"),
         }
 
@@ -546,6 +552,7 @@ fn run() -> Result<(), String> {
                 eprintln!("fetched audit-sink credentials over vsock");
             }
             Ok(None) => {}
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("no audit-sink credentials over vsock: {err}"),
         }
     }
@@ -572,6 +579,7 @@ fn run() -> Result<(), String> {
                     export!("NUCLEUS_POD_ID", pod_id);
                 }
             }
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => {
                 // Not fatal: the node still accepts unidentified callers today,
                 // and a pod that cannot identify itself simply gets the older,
@@ -595,6 +603,7 @@ fn run() -> Result<(), String> {
             Ok(None) => {
                 eprintln!("no session task token was minted for this pod");
             }
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             // A real transport/protocol failure, and now FATAL: the node no
             // longer writes a cmdline copy for an identity-bearing pod (that
             // was the last per-pod secret on `/proc/cmdline`), so vsock is the
@@ -620,6 +629,7 @@ fn run() -> Result<(), String> {
                 eprintln!("fetched pod certificate over vsock");
             }
             Ok(None) => eprintln!("no pod certificate was issued for this pod"),
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("failed to fetch pod certificate over vsock: {err}"),
         }
     }
@@ -688,6 +698,7 @@ fn run() -> Result<(), String> {
                 eprintln!("fetched DLC admission provisioning over the workload API");
             }
             Ok(None) => {}
+            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("failed to fetch DLC admission provisioning: {err}"),
         }
     }
