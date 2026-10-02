@@ -124,7 +124,8 @@ pub struct PodSpecInner {
     /// Working directory for the pod.
     #[serde(default = "default_work_dir")]
     pub work_dir: PathBuf,
-    /// Timeout in seconds for pod execution.
+    /// Timeout in seconds for pod execution. It also bounds the pod's
+    /// certificate and task token, and the node refuses more than 30 days.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
     /// Permission policy.
@@ -405,9 +406,10 @@ pub struct NetworkSpec {
     /// the built-in allowlist (text + structured data) is used.
     #[serde(default)]
     pub mime_allow: Option<Vec<String>>,
-    /// Per-pod maximum response body size in bytes for web_fetch.
-    /// When `None`, the proxy's configured cap applies
-    /// (`--web-fetch-max-bytes` / `NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES`).
+    /// Per-pod maximum response body size in bytes for web_fetch. It may only
+    /// lower the proxy's configured cap (`--web-fetch-max-bytes` /
+    /// `NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES`), which applies when `None` and
+    /// whenever this asks for more.
     #[serde(default)]
     pub max_response_bytes: Option<u64>,
 }
@@ -617,7 +619,9 @@ pub struct ImageSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VsockSpec {
-    /// Guest CID for vsock.
+    /// Guest CID for vsock. The node owns it and refuses any value but `3` at
+    /// create: the guest binds only CID 3 (#2395), and a guest whose own CID
+    /// were the host's (2) would let a loopback peer pass for the host (#3120).
     pub guest_cid: u32,
     /// Guest vsock port to listen on.
     pub port: u32,
@@ -681,6 +685,8 @@ pub struct CgroupSetting {
 pub struct CredentialsSpec {
     /// Environment variables containing credentials.
     /// Keys are the variable names (e.g., `LLM_API_TOKEN`), values are the secrets.
+    /// The node refuses at create a name in the runtime's `NUCLEUS_` namespace
+    /// (bar `NUCLEUS_TASK_CMD`) or an `LD_` loader variable (#3120).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 
@@ -855,6 +861,10 @@ impl Default for IdentitySource {
 /// object with `if_none_match("*")` to enforce append-only semantics.
 ///
 /// Compatible with: any S3-compatible object store (e.g. AWS S3, MinIO).
+///
+/// The node writes these values onto the guest kernel command line, so it
+/// refuses at create any value that is not exactly one token of its grammar
+/// (#3120): a bucket name, a key prefix, a region, an http(s) URL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditSinkSpec {

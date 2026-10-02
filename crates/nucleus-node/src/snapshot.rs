@@ -537,7 +537,16 @@ mod tests {
     /// secrets.
     #[test]
     fn every_cmdline_key_is_classified() {
-        let src = include_str!("firecracker_config.rs");
+        // The audit sink's keys are rendered by `spec_posture::audit_sink_boot_args` (#3120), the
+        // parser admission runs, so that function's body is part of the builder too.
+        let posture = include_str!("spec_posture.rs");
+        let sink_fn = posture
+            .split("pub(crate) fn audit_sink_boot_args")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("spec_posture renders the audit sink tokens");
+        let src = format!("{}\n{sink_fn}", include_str!("firecracker_config.rs"));
+        let src = src.as_str();
         let mut emitted: Vec<String> = Vec::new();
         let mut rest = src;
         while let Some(i) = rest.find("nucleus.") {
