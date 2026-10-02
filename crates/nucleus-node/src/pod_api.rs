@@ -1006,6 +1006,9 @@ mod grpc_scope_tests;
 // Delegation chains through real admission, spawn, reaper and lockdown.
 #[cfg(all(test, feature = "local-driver"))]
 mod chain_walk;
+// #2702's host-side properties, measured against a compromised-guest double.
+#[cfg(all(test, feature = "local-driver"))]
+mod trust_boundary;
 
 // No subsystem is faked: this is the real `PodAuthority`, the real
 // `NetworkAllocator`, the real signing key loaded off disk.

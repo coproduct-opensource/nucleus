@@ -549,7 +549,7 @@ pub async fn serve_connection_with_timeout<S>(
 }
 
 #[cfg(test)]
-mod serving_tests {
+pub(crate) mod serving_tests {
     use super::*;
     use nucleus_cred_broker::Credential;
 
@@ -597,7 +597,7 @@ mod serving_tests {
     /// An upstream caller that records what it was asked to do and never
     /// touches a network. A broker test that reached a real host would be a
     /// test people learn to re-run rather than read.
-    pub(super) fn recording_caller() -> (UpstreamCaller, Arc<std::sync::Mutex<Vec<UpstreamCall>>>) {
+    pub(crate) fn recording_caller() -> (UpstreamCaller, Arc<std::sync::Mutex<Vec<UpstreamCall>>>) {
         let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
         let caller: UpstreamCaller = Arc::new(move |c: UpstreamCall| {
