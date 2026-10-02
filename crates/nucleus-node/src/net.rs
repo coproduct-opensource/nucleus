@@ -35,6 +35,21 @@ const POD_PREFIX: u8 = 30;
 const POD_STRIDE: u8 = 4;
 const DEFAULT_DNS: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
 
+/// Destinations no pod reaches, whatever its spec allows (#3120). Node-owned denies that
+/// [`egress_chain`] puts ahead of every spec rule, so a spec `allow` cannot reopen them:
+///
+/// - `169.254.0.0/16`, link-local. It holds the cloud instance metadata service, which hands the
+///   HOST's cloud credentials to anything that asks. A spec `allow: ["0.0.0.0/0"]`, or even
+///   `169.254.169.254/32` (non-routable, so it kept the workload identity too), reached it.
+/// - The veth link pool (`NET_BASE`/`NET_POOL_PREFIX`). The host end of every pod's link is an
+///   address in the host namespace, so reaching one reaches host services bound on it.
+///
+/// `new_assert` in a `const` is checked by the compiler, so a bad prefix is a build error.
+pub(crate) const NODE_DENY_FLOOR: [ipnet::Ipv4Net; 2] = [
+    ipnet::Ipv4Net::new_assert(Ipv4Addr::new(169, 254, 0, 0), 16),
+    ipnet::Ipv4Net::new_assert(NET_BASE, NET_POOL_PREFIX),
+];
+
 /// The addresses a guest sees. **Identical in every pod, by design.**
 ///
 /// # Why these are constants
@@ -728,8 +743,16 @@ pub fn egress_chain(
     }
 
     // Deny first, then allow — including the DNS-resolved allows, which are
-    // allows like any other and must not outrank a deny.
-    let mut chain: Vec<NetRule> = Vec::with_capacity(parsed.len() + resolved.len());
+    // allows like any other and must not outrank a deny. The node's floor leads
+    // the denies, so no spec rule precedes it.
+    let floor = NODE_DENY_FLOOR.iter().map(|net| NetRule {
+        kind: RuleKind::Deny,
+        net: IpNet::V4(*net),
+        port: None,
+    });
+    let mut chain: Vec<NetRule> =
+        Vec::with_capacity(NODE_DENY_FLOOR.len() + parsed.len() + resolved.len());
+    chain.extend(floor);
     chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Deny).cloned());
     chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Allow).cloned());
     chain.extend(resolved);

@@ -225,6 +225,37 @@ fn a_destination_no_rule_admits_is_dropped() {
     );
 }
 
+/// #3120: the node's deny floor leads the chain, so no spec `allow` reaches the cloud metadata
+/// service or the host end of a pod's veth link. On main `allow: ["0.0.0.0/0"]` reached both, and
+/// `169.254.169.254/32` reached the metadata service while keeping the workload identity.
+#[test]
+fn no_allow_reopens_the_node_deny_floor() {
+    let allows: [&[&str]; 4] = [
+        &["0.0.0.0/0"],
+        &["169.254.169.254/32"],
+        &["169.254.0.0/16:80"],
+        &["10.0.0.0/8"],
+    ];
+    for allow in allows {
+        let spec = spec_from(&[], allow);
+        let chain = egress_chain(&spec, None).expect("chain");
+        let model = model_chain(&chain).expect("ipv4 chain is inside the model");
+        for d in [
+            dest(169, 254, 169, 254, 80), // instance metadata
+            dest(10, 200, 0, 1, 8080),    // the first pod's host-side veth address
+        ] {
+            assert!(!verdict(&model, d), "{allow:?} reached {d:?}");
+        }
+    }
+    // Non-vacuity: the floor denies only what it names.
+    let open = spec_from(&[], &["0.0.0.0/0"]);
+    let model = model_chain(&egress_chain(&open, None).expect("chain")).expect("model");
+    assert!(
+        verdict(&model, dest(93, 184, 216, 34, 443)),
+        "the internet is still allowed"
+    );
+}
+
 /// DNS-resolved allowlist entries are allows like any other, and must not
 /// outrank a deny. If they were appended before the denies, a resolver handing
 /// back a denied address would re-open it.

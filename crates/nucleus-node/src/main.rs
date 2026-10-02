@@ -49,6 +49,7 @@ mod pod_receipt;
 mod pod_view;
 mod production_confinement;
 mod rootfs_source;
+mod spec_posture;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -929,6 +930,7 @@ async fn create_pod_internal(
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
     scratch_root::admit(&mut spec, &state.scratch_root)?;
+    spec_posture::admit(&spec)?; // posture fields a spec may not weaken (#3120)
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1636,13 +1638,14 @@ async fn spawn_container_pod(
         binds.push(format!("{work_dir_str}:/workspace:rw"));
     }
 
-    // Network mode: per-pod label override or node default
-    let network_mode = spec
-        .metadata
-        .labels
-        .get("nucleus.io/network")
-        .cloned()
-        .unwrap_or_else(|| state.container_network.clone());
+    // Network mode: the node's, or `none` if the pod asks for it; any other label is refused.
+    let network_mode = spec_posture::container_network(
+        spec.metadata
+            .labels
+            .get("nucleus.io/network")
+            .map(String::as_str),
+        &state.container_network,
+    )?;
 
     let host_config = bollard::models::HostConfig {
         network_mode: Some(network_mode),

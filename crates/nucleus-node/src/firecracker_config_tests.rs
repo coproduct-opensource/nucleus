@@ -354,7 +354,7 @@ fn no_pod_cmdline_carries_any_per_pod_secret() {
 #[cfg(target_os = "linux")]
 fn boot_args_maximal() -> String {
     let spec: PodSpec = serde_json::from_str(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"b","s3_prefix":"p/","s3_region":"us-west-2","s3_endpoint":"https://e.example"}}}"#,
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"bkt","s3_prefix":"p/","s3_region":"us-west-2","s3_endpoint":"https://e.example"}}}"#,
         )
         .expect("maximal spec must deserialize");
     let config = FirecrackerConfig::from_spec(
@@ -368,6 +368,43 @@ fn boot_args_maximal() -> String {
         None,
     );
     config.boot_source.boot_args.unwrap_or_default()
+}
+
+/// #3120: an audit sink value reaches the command line only through the parser admission runs.
+/// On main the bucket was appended verbatim, so this spec's line named a second `init=` — after
+/// the node's, and the kernel takes the last one — and a `nucleus.net=` the node never wrote.
+/// Admission refuses the spec (`spec_posture`); this pins that even a spec that reached the
+/// builder some other way contributes no token the node did not write.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_audit_sink_cannot_add_a_kernel_token() {
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"bkt init=/bin/sh nucleus.net=10.9.9.2/30"}}}"#,
+    )
+    .expect("spec deserializes");
+    let config = FirecrackerConfig::from_spec(
+        &spec,
+        std::path::Path::new("/unused/firecracker.log"),
+        std::path::Path::new("/unused/vsock.sock"),
+        &host(&image(true, false)),
+        None,
+        "aa00bb11-approval-pubkeys",
+        None,
+        None,
+    );
+    let args = config.boot_source.boot_args.unwrap_or_default();
+    let keyed = |key: &str| {
+        args.split_whitespace()
+            .filter(|t| t.starts_with(key))
+            .count()
+    };
+    assert_eq!(keyed("init="), 1, "only the node's init=: {args}");
+    assert_eq!(
+        keyed("nucleus.net="),
+        0,
+        "no net plan, so no nucleus.net=: {args}"
+    );
+    assert_eq!(keyed("nucleus.audit_s3_bucket="), 0, "{args}");
 }
 
 /// **Behavioral completeness — the robust replacement for the source-scrape.**

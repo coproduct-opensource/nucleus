@@ -1033,26 +1033,22 @@ impl FirecrackerConfig {
             };
         }
 
-        // Inject audit S3 sink config and AWS credentials via kernel args
+        // Inject audit S3 sink config via kernel args. Rendered by the same parser admission ran
+        // (`spec_posture::audit_sink_boot_args`), never from the raw strings: those were appended
+        // verbatim, so a bucket of `b init=/bin/sh` was a second token and the kernel takes the
+        // last `init=` (#3120). Admission refused any spec this parse rejects, so the `Err` arm is
+        // a closure over that, like `enforce_pci_off`, and emits no sink rather than a raw value.
         if let Some(ref sink) = spec.spec.audit_sink {
-            boot_args = match boot_args.take() {
-                Some(args) => Some(format!("{args} nucleus.audit_s3_bucket={}", sink.s3_bucket)),
-                None => Some(format!("nucleus.audit_s3_bucket={}", sink.s3_bucket)),
-            };
-            if let Some(ref prefix) = sink.s3_prefix {
-                if let Some(ref mut args) = boot_args {
-                    args.push_str(&format!(" nucleus.audit_s3_prefix={prefix}"));
+            match crate::spec_posture::audit_sink_boot_args(sink) {
+                Ok(tokens) => {
+                    for token in tokens {
+                        boot_args = match boot_args.take() {
+                            Some(args) => Some(format!("{args} {token}")),
+                            None => Some(token),
+                        };
+                    }
                 }
-            }
-            if let Some(ref region) = sink.s3_region {
-                if let Some(ref mut args) = boot_args {
-                    args.push_str(&format!(" nucleus.audit_s3_region={region}"));
-                }
-            }
-            if let Some(ref endpoint) = sink.s3_endpoint {
-                if let Some(ref mut args) = boot_args {
-                    args.push_str(&format!(" nucleus.audit_s3_endpoint={endpoint}"));
-                }
+                Err(refused) => tracing::error!(%refused, "audit sink not rendered"),
             }
             // The AWS credentials are NO LONGER EMITTED here.
             //
