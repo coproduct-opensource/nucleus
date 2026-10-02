@@ -1233,6 +1233,7 @@ pub(crate) mod handler_tests {
             broker_vsock_port: a.broker_vsock_port,
             authz_policy: crate::auth::AuthorizationPolicy::new(&a.identity_trust_domain),
             container_image: a.container_image.clone(),
+            container_mediation: a.container_mediation,
             container_network: a.container_network.clone(),
             container_proxy_unix: a.container_proxy_unix,
             container_pool: None,

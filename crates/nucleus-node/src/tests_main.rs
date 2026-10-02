@@ -889,7 +889,15 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
             .contains_key(DlcField::TrustedKeys.label())
     );
 
-    let proxy = container_env(&state, &spec, Uuid::new_v4(), true, "test-token-123", "").await;
+    let proxy = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        crate::container_mediation::ContainerMediation::ToolProxy,
+        "test-token-123",
+        "",
+    )
+    .await;
     for (key, value) in dlc.env() {
         let want = format!("{key}={value}");
         assert!(
@@ -904,7 +912,15 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
 
     // Direct mode runs no tool-proxy, so there is nothing to arm and the
     // credentials stay out of the workload's environment.
-    let direct = container_env(&state, &spec, Uuid::new_v4(), false, "test-token-123", "").await;
+    let direct = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        crate::container_mediation::ContainerMediation::Unmediated,
+        "test-token-123",
+        "",
+    )
+    .await;
     assert!(
         !direct.iter().any(|e| e.starts_with(ENV_PREFIX)),
         "a direct-mode container is the workload itself and must not hold DLC credentials"
