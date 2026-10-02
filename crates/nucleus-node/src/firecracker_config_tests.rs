@@ -1148,6 +1148,14 @@ fn sample_cgroup() -> nucleus_spec::CgroupSpec {
     }
 }
 
+/// The node's cgroup for a pod whose spec carries `cgroup`, as the launch path builds it.
+fn node_cg(cgroup: Option<nucleus_spec::CgroupSpec>) -> crate::pod_resources::NodeCgroup {
+    let mut spec = base_spec();
+    spec.spec.cgroup = cgroup;
+    crate::pod_resources::node_cgroup(&spec, crate::pod_resources::CgroupVersion::V2)
+        .expect("an admissible cgroup")
+}
+
 /// THE FLAG THAT WAS MISSING, and what it cost.
 ///
 /// The jailer's `--cgroup-version` is documented `[default: "1"]`, and the
@@ -1174,8 +1182,7 @@ fn the_cgroup_version_is_declared_whenever_cgroups_are_requested() {
         uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
         gid: 100,
         netns: None,
-        cgroup: Some(&spec),
-        cgroup_version: 2,
+        cgroup: &node_cg(Some(spec)),
         config_file_in_jail: Some("/config.json"),
     });
     let vpos = args.iter().position(|a| a == "--cgroup-version").expect(
@@ -1192,12 +1199,10 @@ fn the_cgroup_version_is_declared_whenever_cgroups_are_requested() {
     assert!(cpos < sep, "cgroup args belong to the JAILER, before `--`");
 }
 
-/// With no cgroup spec there is no hierarchy to find, and the jailer launches
-/// on a v2 host without the flag — verified against the real binary. So the
-/// flag is emitted only where it is needed, and its absence here is a
-/// decision rather than an oversight.
+/// #3130: a spec with no `cgroup` used to reach the jailer with no `--cgroup` at all, so its VMM
+/// ran with no memory, CPU or pids limit. It now carries the node's, before the separator.
 #[test]
-fn no_cgroup_request_means_no_version_flag() {
+fn a_spec_without_a_cgroup_still_launches_under_node_limits() {
     let args = jailer_args(&JailerPlan {
         firecracker_path: "/usr/bin/firecracker",
         pod_id: "pod-1",
@@ -1205,11 +1210,23 @@ fn no_cgroup_request_means_no_version_flag() {
         uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
         gid: 100,
         netns: None,
-        cgroup: None,
-        cgroup_version: 2,
+        cgroup: &node_cg(base_spec().spec.cgroup),
         config_file_in_jail: Some("/config.json"),
     });
-    assert!(!args.iter().any(|a| a == "--cgroup-version"));
+    let sep = args.iter().position(|a| a == "--").expect("separator");
+    let jailer = &args[..sep];
+    let pair = |flag: &str| jailer.iter().position(|a| a == flag).map(|i| &args[i + 1]);
+    assert_eq!(pair("--cgroup-version").map(String::as_str), Some("2"));
+    for limit in [
+        "memory.max=671088640",
+        "cpu.max=100000 100000",
+        "pids.max=64",
+    ] {
+        assert!(
+            jailer.iter().any(|a| a == limit),
+            "a pod with no cgroup spec must still get {limit}: {args:?}"
+        );
+    }
 }
 
 #[test]
@@ -1222,8 +1239,7 @@ fn jailer_applies_every_cgroup_limit_before_exec() {
         uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
         gid: 1000,
         netns: Some("/var/run/netns/ns-pod-1"),
-        cgroup: Some(&cg),
-        cgroup_version: 2,
+        cgroup: &node_cg(Some(cg.clone())),
         config_file_in_jail: Some("/config.json"),
     });
 
@@ -1258,8 +1274,7 @@ fn jailer_drops_privileges_and_passes_the_netns() {
         uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
         gid: 1000,
         netns: Some("/var/run/netns/ns-pod-1"),
-        cgroup: None,
-        cgroup_version: 2,
+        cgroup: &node_cg(None),
         config_file_in_jail: Some("/config.json"),
     });
     let pair = |flag: &str| -> Option<String> {
@@ -1291,8 +1306,7 @@ fn firecracker_argv_stays_behind_the_separator() {
         uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
         gid: 1000,
         netns: None,
-        cgroup: Some(&sample_cgroup()),
-        cgroup_version: 2,
+        cgroup: &node_cg(Some(sample_cgroup())),
         config_file_in_jail: Some("/config.json"),
     });
     let sep = args
@@ -1467,7 +1481,7 @@ fn jailer_argv_never_enables_the_pci_transport() {
         r#"{"path":"/sys/fs/cgroup/nucleus","settings":[{"file":"cpu.weight","value":"42"}]}"#,
     )
     .expect("cgroup spec");
-    for cgroup in [None, Some(&spec)] {
+    for cgroup in [node_cg(None), node_cg(Some(spec))] {
         for netns in [None, Some("/var/run/netns/pod-1")] {
             let args = jailer_args(&JailerPlan {
                 firecracker_path: "/usr/bin/firecracker",
@@ -1476,8 +1490,7 @@ fn jailer_argv_never_enables_the_pci_transport() {
                 uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
                 gid: 100,
                 netns,
-                cgroup,
-                cgroup_version: 2,
+                cgroup: &cgroup,
                 config_file_in_jail: Some(in_jail::CONFIG),
             });
             assert!(

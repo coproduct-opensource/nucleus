@@ -349,7 +349,8 @@ pub struct DeniedDimensionInfo {
 ///
 /// Requesting 2 MiB asks Firecracker for hugetlbfs pages instead, which are
 /// reserved from a distinct pool the operator must provision
-/// (`vm.nr_hugepages`) rather than promoted opportunistically.
+/// (`vm.nr_hugepages`) rather than promoted opportunistically. A node refuses
+/// the request unless its operator offers that pool to pods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HugePages {
     /// 2 MiB hugetlbfs pages.
@@ -369,7 +370,12 @@ impl HugePages {
     }
 }
 
-/// Resource hints for the pod.
+/// The pod's size.
+///
+/// A node holds every pod to per-pod ceilings its operator sets, and refuses at
+/// create a size above them rather than clamping it. An absent field is the
+/// node's default size, never unlimited, and the node limits the pod to its
+/// size with a cgroup whether or not the spec carries one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
@@ -682,6 +688,10 @@ pub enum SeccompSpec {
 }
 
 /// Cgroup placement and settings for the Firecracker process.
+///
+/// The node always applies its own memory, CPU and pids limits, derived from
+/// the pod's size. Settings here may lower those, or set other files of a
+/// resource controller; a node refuses one that raises or lifts its limit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CgroupSpec {

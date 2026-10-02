@@ -1198,6 +1198,7 @@ pub(crate) mod handler_tests {
             pods: Arc::new(Mutex::new(HashMap::new())),
             state_dir: a.state_dir.clone(),
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
+            pod_ceilings: a.pod_ceilings.ceilings(),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
             local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),

@@ -47,6 +47,7 @@ mod pod_authority;
 mod pod_boot_identity;
 mod pod_caller_identity;
 mod pod_receipt;
+mod pod_resources;
 mod pod_view;
 mod production_confinement;
 mod rootfs_source;
@@ -118,6 +119,8 @@ struct Args {
     authority: pod_authority::AuthorityArgs,
     #[command(flatten)]
     host_paths: host_paths::HostPathArgs,
+    #[command(flatten)]
+    pod_ceilings: pod_resources::PodCeilingArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -326,6 +329,8 @@ struct NodeState {
     pods: pod_api::PodRegistry,
     state_dir: PathBuf,
     host_roots: host_paths::Roots,
+    /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
+    pod_ceilings: pod_resources::PodCeilings,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
@@ -683,6 +688,7 @@ async fn main() -> Result<(), ApiError> {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
         host_roots: args.host_paths.ensure(&args.state_dir)?,
+        pod_ceilings: args.pod_ceilings.ceilings(),
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
@@ -944,7 +950,7 @@ async fn create_pod_internal(
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
     host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
-    spec_posture::admit(&spec)?; // posture fields a spec may not weaken (#3120)
+    spec_posture::admit(&spec, &state.pod_ceilings)?; // posture a spec may not weaken (#3120)
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1686,15 +1692,17 @@ async fn spawn_container_pod(
         &state.container_network,
     )?;
 
+    let size = pod_resources::PodSize::of(spec);
+    let container_memory = i64::try_from(size.memory_bytes()).unwrap_or(i64::MAX);
     let host_config = bollard::models::HostConfig {
         network_mode: Some(network_mode),
         binds: Some(binds),
-        memory: spec
-            .spec
-            .resources
-            .as_ref()
-            .and_then(|r| r.memory_mib)
-            .map(|m| (m as i64) * 1024 * 1024),
+        // Always the admitted size (#3130); an absent spec field is the node's default, never
+        // unlimited. Swap equal to memory means none beyond it.
+        memory: Some(container_memory),
+        memory_swap: Some(container_memory),
+        nano_cpus: Some(i64::from(size.vcpus()) * 1_000_000_000),
+        pids_limit: Some(pod_resources::CONTAINER_PIDS_MAX),
         ..Default::default()
     };
 
@@ -1971,6 +1979,10 @@ async fn spawn_firecracker_pod(
         // See `host_requirements` for the table and why the decision is split
         // from the observation.
         host_requirements::preflight(spec.spec.network.is_some()).map_err(ApiError::Driver)?;
+        // The node's limits for this pod, merged with what the spec may lower (#3130). Admitted
+        // at create by the same function, so an error here is a node fault, not a spec one.
+        let node_cgroup = pod_resources::node_cgroup(spec, pod_resources::CgroupVersion::detect())
+            .map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
 
         // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
         //
@@ -2289,8 +2301,7 @@ async fn spawn_firecracker_pod(
                 uid: state.jailer_uid,
                 gid: state.jailer_gid,
                 netns: netns_path.as_deref(),
-                cgroup: spec.spec.cgroup.as_ref(),
-                cgroup_version: firecracker_config::detect_cgroup_version(),
+                cgroup: &node_cgroup,
                 config_file_in_jail: (!state.firecracker_api_boot)
                     .then_some(firecracker_config::in_jail::CONFIG),
             };
@@ -2568,14 +2579,29 @@ async fn spawn_firecracker_pod(
         // late — the guest runs briefly before its limits exist. That is the window
         // the jailer closes, and the reason `--firecracker-jailer` defaults on.
         if jail_layout.is_none() {
-            if let Some(ref cgroup_spec) = spec.spec.cgroup {
-                if let Some(pid) = pid {
-                    cgroup::apply_cgroup(pid, cgroup_spec).await?;
-                } else {
-                    return Err(ApiError::Driver(
-                        "firecracker process id unavailable for cgroup placement".to_string(),
-                    ));
-                }
+            // Always placed (#3130): in the spec's directory if it names one, else the node's.
+            let dir = spec
+                .spec
+                .cgroup
+                .as_ref()
+                .map_or_else(|| cgroup::node_dir(&jail_id), |c| c.path.clone());
+            let placed = match pid {
+                Some(pid) => cgroup::apply_cgroup(pid, &dir, &node_cgroup).await,
+                None => Err(ApiError::Driver(
+                    "firecracker process id unavailable for cgroup placement".to_string(),
+                )),
+            };
+            if let Err(err) = placed {
+                let _ = child.kill().await;
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                    jail_layout.as_ref(),
+                )
+                .await;
+                return Err(err);
             }
         }
 
