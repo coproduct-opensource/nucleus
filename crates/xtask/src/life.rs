@@ -191,6 +191,181 @@ fn strip_visibility(line: &str) -> &str {
     }
 }
 
+/// Does right `ty` borrow the value that ISSUED it?
+///
+/// The third form of bound, and the strongest: a right that holds `&'a Issuer`
+/// cannot outlive its issuer and cannot be settled against any other one —
+/// staleness and cross-issuer use are compile errors, where a field is only a
+/// runtime check. `EgressCharge<'a>` is this shape: it holds `&'a EgressMeter`,
+/// and only `EgressMeter::admit` builds one.
+///
+/// The rule, all of which must hold:
+///
+/// 1. `ty` declares a lifetime parameter `'x` (not `'static`);
+/// 2. a field's type is exactly `&'x Issuer` or `&'x mut Issuer` — a reference
+///    at the TOP of the field type, so `PhantomData<&'x ()>`, `Option<&'x T>`
+///    or a tag of any kind does not qualify;
+/// 3. `Issuer` is a named type (not `()`, `str` or a primitive), and an `impl`
+///    block whose self type is `Issuer` constructs `ty` by struct literal.
+///
+/// The third clause is what stops a borrow of an arbitrary type from counting:
+/// the borrowed value must be the one that mints the right.
+pub fn borrows_its_issuer(corpus: &BTreeMap<String, String>, ty: &str, body: &str) -> bool {
+    let lifetimes = declared_lifetimes(body, ty);
+    if lifetimes.is_empty() {
+        return false;
+    }
+    let Some(open) = body.find('{') else {
+        return false; // a unit or tuple struct has no named field to read
+    };
+    body[open + 1..]
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//"))
+        .filter_map(|l| strip_visibility(l).split_once(':').map(|(_, t)| t))
+        .filter_map(|t| issuer_of(t.trim().trim_end_matches(','), &lifetimes))
+        .any(|issuer| mints(corpus, &issuer, ty))
+}
+
+/// The lifetime parameters `pub struct ty<...>` declares, `'static` excluded.
+fn declared_lifetimes(body: &str, ty: &str) -> Vec<String> {
+    let Some(after) = ["pub struct ", "pub enum "].iter().find_map(|k| {
+        body.find(&format!("{k}{ty}"))
+            .map(|i| &body[i + k.len() + ty.len()..])
+    }) else {
+        return Vec::new();
+    };
+    let Some(generics) = after.strip_prefix('<') else {
+        return Vec::new();
+    };
+    let generics = generics.split('>').next().unwrap_or("");
+    generics
+        .split(',')
+        .map(str::trim)
+        .filter_map(|g| g.split(':').next())
+        .map(str::trim)
+        .filter(|g| g.starts_with('\'') && *g != "'static")
+        .map(str::to_string)
+        .collect()
+}
+
+/// `Issuer` if field type `t` is `&'x Issuer` / `&'x mut Issuer` for one of
+/// `lifetimes`. Path qualification and generic arguments are dropped.
+fn issuer_of(t: &str, lifetimes: &[String]) -> Option<String> {
+    let rest = t.strip_prefix('&')?.trim_start();
+    let rest = lifetimes
+        .iter()
+        .find_map(|l| rest.strip_prefix(l.as_str()))?;
+    // The lifetime must END here: `'a` is not a prefix of `'ab`.
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let rest = rest.trim_start();
+    let rest = rest.strip_prefix("mut ").unwrap_or(rest).trim_start();
+    let name = rest
+        .split('<')
+        .next()
+        .unwrap_or(rest)
+        .rsplit("::")
+        .next()
+        .unwrap_or("")
+        .trim();
+    let named = name.chars().next().is_some_and(char::is_uppercase)
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    named.then(|| name.to_string())
+}
+
+/// Does an `impl` block whose self type is `issuer` build `ty` by struct
+/// literal (`ty {`)?
+fn mints(corpus: &BTreeMap<String, String>, issuer: &str, ty: &str) -> bool {
+    corpus
+        .values()
+        .any(|src| impl_bodies(src, issuer).iter().any(|b| constructs(b, ty)))
+}
+
+/// Bodies of every single-line-headed `impl ... Issuer ... {` block in `src`.
+fn impl_bodies<'s>(src: &'s str, issuer: &str) -> Vec<&'s str> {
+    let mut out = Vec::new();
+    let mut offset = 0;
+    for line in src.split_inclusive('\n') {
+        let start = offset;
+        offset += line.len();
+        let t = line.trim();
+        if !(t.starts_with("impl ") || t.starts_with("impl<")) || !t.ends_with('{') {
+            continue;
+        }
+        let header = t.trim_end_matches('{').trim();
+        let self_ty = header.rsplit(" for ").next().unwrap_or(header);
+        // The self type is the last path segment before its generics:
+        // `impl<'a> crate::m::Issuer<'a>` names `Issuer`.
+        let self_ty = self_ty.trim_start_matches("impl").trim();
+        let self_ty = if self_ty.starts_with('<') && !header.contains(" for ") {
+            // `impl<T> Issuer<T>`: drop the impl's own generics.
+            skip_generics(self_ty)
+        } else {
+            self_ty
+        };
+        let name = self_ty
+            .trim()
+            .split('<')
+            .next()
+            .unwrap_or("")
+            .rsplit("::")
+            .next()
+            .unwrap_or("")
+            .trim();
+        if name != issuer {
+            continue;
+        }
+        let rest = &src[start..];
+        let Some(b) = rest.find('{') else { continue };
+        let mut depth = 0usize;
+        for (i, c) in rest[b..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        out.push(&rest[b..b + i + 1]);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// `s` with a leading balanced `<...>` removed.
+fn skip_generics(s: &str) -> &str {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return &s[i + 1..];
+                }
+            }
+            _ => {}
+        }
+    }
+    s
+}
+
+/// A struct literal of `ty` — `ty {` with `ty` not the tail of a longer name.
+fn constructs(body: &str, ty: &str) -> bool {
+    let needle = format!("{ty} {{");
+    body.match_indices(&needle).any(|(i, _)| {
+        body[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_')
+    })
+}
+
 /// Per affine type, whether it carries a validity interval.
 pub fn report(corpus: &BTreeMap<String, String>) -> BTreeMap<String, bool> {
     // The SAME shaping `convergence` applies, through the same function. Passing
@@ -205,7 +380,7 @@ pub fn report(corpus: &BTreeMap<String, String>) -> BTreeMap<String, bool> {
             let carries = shaped
                 .values()
                 .filter_map(|src| declaration_body(src, &ty))
-                .any(has_validity_interval);
+                .any(|body| has_validity_interval(body) || borrows_its_issuer(&shaped, &ty, body));
             (ty, carries)
         })
         .collect()
@@ -378,6 +553,70 @@ mod tests {
             "#[must_use]\npub struct Right {\n    x: u8,\n}\n".to_string(),
         )]);
         assert_eq!(Life.census(&corpus).expect("succeeds").population, 0);
+    }
+
+    fn one_file(src: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([("crates/demo/src/lib.rs".to_string(), src.to_string())])
+    }
+
+    /// `EgressCharge`'s shape: a right holding `&'a` the value that minted it.
+    const BORROWS_ISSUER: &str = "pub struct Meter {\n    x: u8,\n}\n\
+        impl Meter {\n    pub fn admit(&self) -> Result<Charge<'_>, ()> {\n        \
+        Ok(Charge {\n            meter: self,\n            hold: None,\n        })\n    }\n}\n\
+        #[must_use = \"settle it\"]\npub struct Charge<'a> {\n    meter: &'a Meter,\n    \
+        hold: Option<u64>,\n}\n";
+
+    #[test]
+    fn a_right_that_borrows_its_issuer_is_bounded() {
+        let c = Life.census(&one_file(BORROWS_ISSUER)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 1));
+        // Qualified, `mut`, and a restricted-visibility field are the same shape.
+        let qualified = BORROWS_ISSUER.replace(
+            "meter: &'a Meter,",
+            "pub(crate) meter: &'a mut crate::m::Meter,",
+        );
+        let c = Life.census(&one_file(&qualified)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 1), "{qualified}");
+    }
+
+    /// A tag is not a bound: `PhantomData<&'a ()>` borrows nothing that could
+    /// go stale, and must not discharge the right.
+    #[test]
+    fn a_bare_phantom_lifetime_is_not_a_bound() {
+        let phantom = BORROWS_ISSUER.replace(
+            "meter: &'a Meter,",
+            "_tag: core::marker::PhantomData<&'a ()>,",
+        );
+        let c = Life.census(&one_file(&phantom)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 0), "{phantom}");
+        let unit = BORROWS_ISSUER.replace("meter: &'a Meter,", "tag: &'a (),");
+        let c = Life.census(&one_file(&unit)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 0), "{unit}");
+    }
+
+    /// Borrowing a type that does NOT mint the right is not a bound either:
+    /// the borrowed value must be the issuer.
+    #[test]
+    fn a_borrow_of_a_non_issuer_is_not_a_bound() {
+        let src = format!(
+            "{}pub struct Bystander {{\n    y: u8,\n}}\n",
+            BORROWS_ISSUER.replace("meter: &'a Meter,", "seen: &'a Bystander,")
+        );
+        let c = Life.census(&one_file(&src)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 0), "{src}");
+    }
+
+    /// A lifetime must be the struct's own and be the one the reference uses.
+    #[test]
+    fn a_static_or_foreign_lifetime_is_not_a_bound() {
+        let stat = BORROWS_ISSUER
+            .replace("pub struct Charge<'a>", "pub struct Charge")
+            .replace("&'a Meter", "&'static Meter");
+        let c = Life.census(&one_file(&stat)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 0), "{stat}");
+        let wrapped = BORROWS_ISSUER.replace("meter: &'a Meter,", "meter: Option<&'a Meter>,");
+        let c = Life.census(&one_file(&wrapped)).expect("succeeds");
+        assert_eq!((c.population, c.discharged), (1, 0), "{wrapped}");
     }
 
     #[test]

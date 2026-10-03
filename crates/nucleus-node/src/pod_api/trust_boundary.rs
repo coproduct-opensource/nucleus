@@ -696,6 +696,7 @@ impl Host for Node {
                 },
             )]),
             caller,
+            egress: crate::broker_transport::serving_tests::test_egress_arc(),
         };
         tokio::spawn(crate::broker_transport::serve_broker(
             listener,

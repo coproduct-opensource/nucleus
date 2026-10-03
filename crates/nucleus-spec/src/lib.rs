@@ -1,6 +1,8 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
 pub mod boot_budget;
+pub mod dlc_admission;
+pub mod egress_budget;
 pub mod exit_report_auth;
 pub mod guest_layout;
 pub mod identity;
@@ -17,6 +19,7 @@ use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use egress_budget::{EgressBudgetSpec, EgressRateSpec};
 use rootfs_source::ImageSpecWire;
 pub use rootfs_source::{OciDigest, OciReference, OciRootfs, RootfsSource};
 
@@ -412,9 +415,44 @@ pub struct NetworkSpec {
     /// whenever this asks for more.
     #[serde(default)]
     pub max_response_bytes: Option<u64>,
+    /// How many bytes this pod may SEND, and optionally how fast (#2905).
+    ///
+    /// Absent is NOT unbounded: [`NetworkSpec::egress_ceiling`] reads absence
+    /// as [`portcullis::DEFAULT_EGRESS_MAX_BYTES`] (1 GiB), unpaced. A pod that
+    /// needs more names the number here. Skipped when absent so a spec that
+    /// does not set it canonicalises exactly as it did before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<EgressBudgetSpec>,
 }
 
 impl NetworkSpec {
+    /// The egress volume authority of a pod whose network section is
+    /// `network` — the one place absence is decided (ADR 0007 G).
+    ///
+    /// No network section and no `egress` field both mean the finite default,
+    /// never unbounded (ADR 0007 B-2).
+    pub fn egress_ceiling(network: Option<&NetworkSpec>) -> portcullis::EgressCeiling {
+        match network.and_then(|n| n.egress.as_ref()) {
+            Some(declared) => declared.ceiling(),
+            None => portcullis::EgressCeiling::undeclared(),
+        }
+    }
+
+    /// Nothing listed: no allow, deny or DNS entries, so under the node's
+    /// default-deny chain nothing is reachable. What a pod with no network
+    /// section is held to.
+    pub fn nothing_listed() -> Self {
+        Self {
+            allow: vec![],
+            deny: vec![],
+            dns_allow: vec![],
+            url_allow: vec![],
+            mime_allow: None,
+            max_response_bytes: None,
+            egress: None,
+        }
+    }
+
     /// No egress at all — for airgapped workloads.
     ///
     /// Denies all outbound traffic. The pod can only communicate with the
@@ -428,6 +466,7 @@ impl NetworkSpec {
             url_allow: vec![],
             mime_allow: None,
             max_response_bytes: None,
+            egress: None,
         }
     }
 
@@ -460,6 +499,7 @@ impl NetworkSpec {
             url_allow: vec![],
             mime_allow: None,
             max_response_bytes: None,
+            egress: None,
         }
     }
 
@@ -475,6 +515,7 @@ impl NetworkSpec {
             url_allow: vec![],
             mime_allow: None,
             max_response_bytes: None,
+            egress: None,
         }
     }
 }

@@ -100,6 +100,7 @@ pub mod budget_ledger;
 mod capability;
 #[cfg(feature = "cedar")]
 pub mod cedar_bridge;
+pub mod egress_budget;
 // Always compiled: the certificate DATA types (LatticeCertificate, SinkScope,
 // VerifiedPermissions, …) and non-crypto logic are ring-free; only the
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
@@ -291,6 +292,11 @@ pub use command::{ArgPattern, CommandLattice, CommandPattern};
 pub use effect_catalog::{
     EffectAdmission, EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec,
     HttpMatch, LoweredAuthority,
+};
+pub use egress_budget::{
+    EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
+    EgressObservation, EgressPace, EgressRefusal, EgressSettleError, EgressSettlement,
+    DEFAULT_EGRESS_MAX_BYTES,
 };
 #[cfg(all(feature = "spec", not(kani)))]
 pub use escalation_proposal::{

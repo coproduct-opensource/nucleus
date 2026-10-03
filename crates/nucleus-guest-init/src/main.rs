@@ -696,9 +696,11 @@ fn run() -> Result<(), String> {
     if let Some(port) = workload_api_port {
         match identity::fetch_dlc_admission(port) {
             Ok(Some(m)) => {
-                export!("NUCLEUS_DLC_TRUSTED_KEYS", &m.trusted_keys);
-                export!("NUCLEUS_DLC_ISSUER", &m.issuer);
-                export!("NUCLEUS_DLC_CREDENTIALS", &m.credentials);
+                // Names from `nucleus_spec::dlc_admission`, the declaration the
+                // node served this from and the tool-proxy reads with.
+                for (key, value) in m.env() {
+                    export!(key, value);
+                }
                 eprintln!("fetched DLC admission provisioning over the workload API");
             }
             Ok(None) => {}

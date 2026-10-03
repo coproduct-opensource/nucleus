@@ -172,7 +172,7 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
                 let id = u.id(target).expect("a pod");
                 match cancel_pod(
                     State(st.clone()),
-                    Extension(crate::auth::CallerScope::from_model(u.id(caller))),
+                    Extension(super::scope_of(u.id(caller))),
                     AxumPath(id),
                 )
                 .await
@@ -184,13 +184,7 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
             }
             Letter::Get(caller, target) => {
                 let id = u.id(target).expect("a pod");
-                match get_pod_for_caller(
-                    &st,
-                    id,
-                    &crate::auth::CallerScope::from_model(u.id(caller)),
-                )
-                .await
-                {
+                match get_pod_for_caller(&st, id, &super::scope_of(u.id(caller))).await {
                     Ok(p) => Seen::Found(u.label(p.id, p.parent_pod_id)),
                     Err(ApiError::NotFound) => Seen::NotFound,
                     Err(e) => Seen::Other(e.to_string()),
@@ -198,7 +192,7 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
             }
             Letter::List(caller) => {
                 let mut listed: Vec<(String, bool)> =
-                    collect_pod_infos(&st, &crate::auth::CallerScope::from_model(u.id(caller)))
+                    collect_pod_infos(&st, &super::scope_of(u.id(caller)))
                         .await
                         .iter()
                         .map(|i| {
@@ -212,13 +206,9 @@ async fn run(cancelled: &[Role], letters: &[Letter]) -> (Vec<Seen>, Record) {
                 Seen::Listed(listed)
             }
             Letter::Create(caller) => {
-                let parent = parent_for_create(
-                    &st,
-                    &crate::auth::CallerScope::from_model(u.id(caller)),
-                    None,
-                )
-                .await
-                .expect("no header names no parent to refuse");
+                let parent = parent_for_create(&st, &super::scope_of(u.id(caller)), None)
+                    .await
+                    .expect("no header names no parent to refuse");
                 let _ = register(&st, parent).await;
                 Seen::Created
             }

@@ -861,3 +861,54 @@ fn help_never_prints_an_env_value() {
         "--help would print the value of: {shown:?}"
     );
 }
+
+/// #2903, the container half. The container driver runs the same tool-proxy as
+/// the local driver (proxy mode), and it had no copy of the dlc_* label->env
+/// mapping at all: a container pod's labels were accepted, listed by `nucleus
+/// node pods`, and never reached the gate. Driven red by deleting the
+/// `DlcProvisioning::from_labels` block from `container_env`, which is exactly
+/// what main had.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
+    use nucleus_spec::dlc_admission::{DlcField, ENV_PREFIX};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = crate::pod_api::handler_tests::state(&dir);
+    let dlc = DlcProvisioning {
+        trusted_keys: "aa".repeat(32),
+        issuer: "bb".repeat(32),
+        credentials: "read_files=cc".to_string(),
+    };
+    let mut spec: PodSpec =
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec");
+    // The labels a spec author writes, through the same declaration.
+    spec.metadata.labels = dlc.labels();
+    assert!(
+        spec.metadata
+            .labels
+            .contains_key(DlcField::TrustedKeys.label())
+    );
+
+    let proxy = container_env(&state, &spec, Uuid::new_v4(), true, "test-token-123", "").await;
+    for (key, value) in dlc.env() {
+        let want = format!("{key}={value}");
+        assert!(
+            proxy.contains(&want),
+            "a proxy-mode container must carry {key}; got {:?}",
+            proxy
+                .iter()
+                .map(|e| e.split('=').next())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Direct mode runs no tool-proxy, so there is nothing to arm and the
+    // credentials stay out of the workload's environment.
+    let direct = container_env(&state, &spec, Uuid::new_v4(), false, "test-token-123", "").await;
+    assert!(
+        !direct.iter().any(|e| e.starts_with(ENV_PREFIX)),
+        "a direct-mode container is the workload itself and must not hold DLC credentials"
+    );
+}

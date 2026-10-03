@@ -582,13 +582,18 @@ pub(crate) struct Held {
     pub external: std::collections::BTreeMap<[u8; 32], LedgerView>,
 }
 
-/// One pod's entry in a [`Held`] snapshot.
+/// One pod's entry in a [`Held`] snapshot. Every test build reads the ledger;
+/// the rest only the delegation-chain walk (`pod_api::chain_walk`) reads, and
+/// that walk needs the local driver, so those fields exist only where it does.
 #[cfg(test)]
 pub(crate) struct HeldPod {
+    #[cfg(feature = "local-driver")]
     pub cert: LatticeCertificate,
+    #[cfg(feature = "local-driver")]
     pub parent: Parent,
     pub ledger: LedgerView,
     /// What the pod was admitted: the ceiling for its own children's.
+    #[cfg(feature = "local-driver")]
     pub upstreams: Vec<CredentialedEgressSpec>,
 }
 
@@ -1316,9 +1321,12 @@ impl PodAuthority {
                 .iter()
                 .map(|(id, e)| {
                     let held = HeldPod {
+                        #[cfg(feature = "local-driver")]
                         cert: e.cert.clone(),
+                        #[cfg(feature = "local-driver")]
                         parent: e.parent,
                         ledger: LedgerView::of(&e.ledger),
+                        #[cfg(feature = "local-driver")]
                         upstreams: e.upstreams.clone(),
                     };
                     (*id, held)
