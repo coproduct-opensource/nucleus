@@ -69,6 +69,7 @@ mod broker;
 mod broker_launch;
 mod broker_perform;
 mod broker_rollout;
+mod broker_stream;
 mod broker_transport;
 mod cgroup;
 mod container_transport;
@@ -291,6 +292,22 @@ struct Args {
     /// Vsock port the guest uses to reach the credential broker.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
     broker_vsock_port: u32,
+    /// Largest request body one streamed credentialed-egress call may upload
+    /// (#2696 P4). Every byte is also charged to the pod's egress ceiling.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_EGRESS_STREAM_MAX_REQUEST_BYTES",
+        default_value_t = broker_stream::DEFAULT_MAX_STREAM_REQUEST_BYTES
+    )]
+    egress_stream_max_request_bytes: u64,
+    /// Largest reply one streamed credentialed-egress call may relay back to
+    /// the guest. A longer reply is cut and the guest told why.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_EGRESS_STREAM_MAX_RESPONSE_BYTES",
+        default_value_t = broker_stream::DEFAULT_MAX_STREAM_RESPONSE_BYTES
+    )]
+    egress_stream_max_response_bytes: u64,
     /// Enable drand anchoring for approval signatures.
     #[arg(long, env = "NUCLEUS_NODE_DRAND_ENABLED", default_value_t = true)]
     drand_enabled: bool,
@@ -406,6 +423,9 @@ struct NodeState {
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
+    /// Per-call bounds on a streamed credentialed-egress call.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    egress_stream_limits: broker_stream::StreamLimits,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
@@ -679,6 +699,14 @@ async fn main() -> Result<(), ApiError> {
 
     let authority = pod_authority::PodAuthority::from_args(&args).map_err(ApiError::Driver)?;
 
+    // A zero bound is refused at start-up, not discovered as a refusal of
+    // every streamed call later (ADR 0007 B).
+    let egress_stream_limits = broker_stream::StreamLimits::new(
+        args.egress_stream_max_request_bytes,
+        args.egress_stream_max_response_bytes,
+    )
+    .map_err(ApiError::Driver)?;
+
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -731,6 +759,7 @@ async fn main() -> Result<(), ApiError> {
         broker_listen: args.broker_listen,
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
+        egress_stream_limits,
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
             .with_operator_identity(authority.root_minter())
             .with_federated_trust_domains(authority.caller_bindings().trust_domains()),

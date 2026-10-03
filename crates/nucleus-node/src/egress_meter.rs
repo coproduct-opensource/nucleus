@@ -123,6 +123,22 @@ impl EgressMeter {
         .await;
     }
 
+    /// Record one host-performed call this meter charged, in the pod's
+    /// `lifecycle.log` (FM-3: an effect leaves a record).
+    ///
+    /// On the meter because the meter is what already owns this pod's egress
+    /// record and where it is written; a second writer naming the same pod
+    /// directory would be a second place to get that path wrong.
+    pub async fn record_call(&self, detail: &str) {
+        crate::lifecycle::write_lifecycle_audit(
+            &self.pod_dir,
+            "egress_stream_call",
+            &self.pod_id,
+            detail,
+        )
+        .await;
+    }
+
     fn settle(&self, hold: EgressHold, outcome: EgressSettlement) {
         // Poisoned: the hold cannot be settled, so its bytes stay reserved —
         // counted as sent, the fail-closed reading.

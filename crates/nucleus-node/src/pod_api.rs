@@ -1231,6 +1231,11 @@ pub(crate) mod handler_tests {
             broker_listen: a.broker_listen,
             broker_enforcing: a.broker_enforcing,
             broker_vsock_port: a.broker_vsock_port,
+            egress_stream_limits: crate::broker_stream::StreamLimits::new(
+                a.egress_stream_max_request_bytes,
+                a.egress_stream_max_response_bytes,
+            )
+            .expect("the default stream bounds are non-zero"),
             authz_policy: crate::auth::AuthorizationPolicy::new(&a.identity_trust_domain),
             container_image: a.container_image.clone(),
             container_network: a.container_network.clone(),
