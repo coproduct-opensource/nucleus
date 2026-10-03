@@ -948,46 +948,47 @@ fn effective_env(command: &Command) -> BTreeMap<String, String> {
     env
 }
 
-/// The resolved audit sink every #3160 test below uses.
-#[cfg(feature = "local-driver")]
-fn operator_audit_target() -> audit_sink::AuditTarget {
-    let sinks = audit_sink::AuditSinks::from_toml(
-        "[[sink]]\nname = \"audit\"\nbucket = \"operator-audit\"\nprefix = \"nucleus\"\n",
-    )
-    .expect("loads");
-    let spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
-    )
-    .expect("spec parses");
-    sinks
-        .resolve_for(&spec)
-        .expect("admitted")
-        .expect("resolved")
-}
-
 /// #3160, the local driver. The node's own cloud key writes anywhere the operator's account
 /// reaches, so it must never be in the local tool-proxy's environment: not forwarded, and not
 /// inherited either, because a `Command` inherits the node's whole environment by default. Red on
 /// #3155's head, which forwarded the key to every pod with an audit sink and let every other pod
 /// inherit it.
 #[cfg(feature = "local-driver")]
-#[test]
-fn the_ambient_key_never_reaches_a_local_uploader() {
+#[tokio::test]
+async fn the_ambient_key_never_reaches_a_local_uploader() {
+    use audit_sink::credentials::fake;
     audit_sink::ambient_fixture::plant();
-    let target = operator_audit_target();
-    for sink in [None, Some(&target)] {
+    let grant = fake::grant(fake::target()).await;
+    for audit in [None, Some(&grant)] {
         let mut command = Command::new("tool-proxy");
-        provision_local_audit_env(&mut command, sink);
-        let leaked: Vec<String> = effective_env(&command)
-            .into_iter()
+        provision_local_audit_env(&mut command, audit);
+        let env = effective_env(&command);
+        let leaked: Vec<&String> = env
+            .iter()
             .filter(|(_, value)| audit_sink::ambient_fixture::leaks(value))
             .map(|(key, _)| key)
             .collect();
         assert!(
             leaked.is_empty(),
             "the node's ambient key reached the local uploader (sink: {}) under {leaked:?}",
-            sink.is_some()
+            audit.is_some()
         );
+        if audit.is_some() {
+            // Non-vacuity: the uploader does hold a credential, and it is the minted one.
+            assert_eq!(
+                env.get("AWS_ACCESS_KEY_ID").map(String::as_str),
+                Some(fake::MINTED_KEY_ID)
+            );
+            assert_eq!(
+                env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str),
+                Some(fake::MINTED_SECRET)
+            );
+            assert_eq!(
+                env.get("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX")
+                    .map(String::as_str),
+                Some("nucleus/team-a")
+            );
+        }
     }
 }
 
@@ -996,13 +997,14 @@ fn the_ambient_key_never_reaches_a_local_uploader() {
 #[cfg(feature = "local-driver")]
 #[tokio::test]
 async fn the_ambient_key_never_reaches_a_container_uploader() {
+    use audit_sink::credentials::fake;
     audit_sink::ambient_fixture::plant();
     let dir = tempfile::tempdir().expect("tempdir");
     let state = crate::pod_api::handler_tests::state(&dir);
     let spec: PodSpec =
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
             .expect("minimal spec");
-    let target = operator_audit_target();
+    let grant = fake::grant(fake::target()).await;
     let env = container_env(
         &state,
         &spec,
@@ -1010,7 +1012,7 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
         true,
         "test-token-123",
         "",
-        Some(&target),
+        Some(&grant),
     )
     .await;
     let leaked: Vec<&str> = env
@@ -1021,5 +1023,51 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
     assert!(
         leaked.is_empty(),
         "the node's ambient key reached the container uploader under {leaked:?}"
+    );
+    // Non-vacuity: the uploader does hold a credential, and it is the minted one.
+    assert!(
+        env.contains(&format!("AWS_ACCESS_KEY_ID={}", fake::MINTED_KEY_ID)),
+        "the container uploader holds no minted credential"
+    );
+}
+
+/// #3160: a node with an audit sink configured but no credential minter refuses a spec that names
+/// the sink, at create, by the sink's name, before anything is spawned. It does not fall back to
+/// the node's own key.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut st = crate::pod_api::handler_tests::state(&dir);
+    st.audit_sinks = Arc::new(
+        audit_sink::AuditSinks::from_toml(
+            "[[sink]]\nname = \"audit\"\nbucket = \"operator-audit\"\nprefix = \"nucleus\"\n",
+        )
+        .expect("loads"),
+    );
+    assert!(st.audit_minter.is_none(), "the fixture has no minter");
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
+    )
+    .expect("spec parses");
+    let admission = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let refused = create_pod_internal(&st, spec, None, None, admission)
+        .await
+        .expect_err("no minter: the sink is unavailable");
+    let msg = refused.to_string();
+    assert!(
+        matches!(refused, ApiError::InvalidSpec(_)),
+        "a refusal, not a driver failure: {msg}"
+    );
+    assert!(msg.contains("audit_sink.sink `audit`"), "{msg}");
+    assert!(msg.contains("no scoped credential minter"), "{msg}");
+    assert!(msg.contains("operator-audit/nucleus/team-a/*"), "{msg}");
+    assert!(
+        st.pods.lock().await.is_empty(),
+        "nothing was registered for a refused create"
     );
 }

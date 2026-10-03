@@ -395,6 +395,9 @@ struct NodeState {
     /// The operator's audit sinks (`--audit-sinks`): the only destinations a pod's audit log is
     /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
     audit_sinks: Arc<audit_sink::AuditSinks>,
+    /// Mints each pod's uploader a credential limited to its resolved sink (#3160). `None`: every
+    /// audit sink is refused at create, by name; the node's own key is never the fallback.
+    audit_minter: Option<Arc<dyn audit_sink::credentials::ScopedCredentialMinter>>,
     /// Drand configuration for anchoring approval signatures.
     drand_config: Option<DrandConfig>,
     /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
@@ -732,6 +735,10 @@ async fn main() -> Result<(), ApiError> {
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
         audit_sinks: Arc::new(args.audit_sinks.load().map_err(ApiError::Driver)?),
+        // No minter ships in this crate: a scoped credential is a provider's protocol, and an
+        // embedding that runs audit sinks supplies one. Until then a spec that names a sink is
+        // refused at create rather than given the node's own key.
+        audit_minter: None,
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
@@ -951,8 +958,12 @@ async fn create_pod_internal(
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
     host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
-    // Posture fields a spec may not weaken (#3120), and where its audit log goes (#3131).
-    let audit_sink = spec_posture::admit(&spec, &state.audit_sinks)?;
+    // Posture fields a spec may not weaken (#3120), and where its audit log goes (#3131). A sink
+    // this node cannot mint a scoped credential for is refused here, by name (#3160).
+    let audit_mint = audit_sink::credentials::admit(
+        spec_posture::admit(&spec, &state.audit_sinks)?,
+        state.audit_minter.as_ref(),
+    )?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -988,15 +999,31 @@ async fn create_pod_internal(
     let owner = issued.root_identity.clone();
     let reservation = issued.apply_to(&mut spec);
 
+    // The uploader's credential, minted only now that the caller's authority is admitted: one
+    // limited to this pod's resolved bucket and prefix, for the pod's lifetime (#3160).
+    let audit = match audit_mint {
+        None => None,
+        Some(mint) => {
+            let ttl = audit_sink::credentials::credential_ttl(spec.spec.timeout_seconds);
+            match mint.mint(ttl).await {
+                Ok(grant) => Some(grant),
+                Err(refused) => {
+                    reservation.release().await;
+                    return Err(refused.into());
+                }
+            }
+        }
+    };
+
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
-        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id, audit_sink.as_ref()).await,
+        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id, audit.as_ref()).await,
         DriverKind::Firecracker => {
-            spawn_firecracker_pod(state, &pod_dir, &spec, id, audit_sink.as_ref()).await
+            spawn_firecracker_pod(state, &pod_dir, &spec, id, audit.as_ref()).await
         }
         DriverKind::Container => {
             let raw = raw_yaml.as_deref();
-            spawn_container_pod(state, &pod_dir, &spec, id, raw, audit_sink.as_ref()).await
+            spawn_container_pod(state, &pod_dir, &spec, id, raw, audit.as_ref()).await
         }
         DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await,
     };
@@ -1258,29 +1285,22 @@ impl ContainerPod {
     }
 }
 
+/// The local tool-proxy's audit uploader environment (#3131, #3160).
+///
+/// The tool-proxy inherits the node's environment (`Command` does not `env_clear`), so every name
+/// the uploader's credential chain reads is removed first, pod with a sink or not: the node's own
+/// key reaches no pod by inheritance. Then, for a pod with a sink, the destination admission
+/// resolved and the credential minted for exactly that destination.
 #[cfg(feature = "local-driver")]
 fn provision_local_audit_env(
     command: &mut Command,
-    audit_sink: Option<&audit_sink::AuditTarget>,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) {
-    // The audit sink admission resolved against the operator's `--audit-sinks` (#3131): the
-    // destination is the operator's, never a value read from the spec.
-    if let Some(target) = audit_sink {
-        for (key, value) in target.proxy_env() {
-            command.env(key, value);
-        }
-        // Forward ambient AWS credentials so the tool-proxy's aws_config chain works.
-        // Operators set these on nucleus-node; they flow through to the S3 sink.
-        for key in [
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-            "AWS_DEFAULT_REGION",
-        ] {
-            if let Ok(val) = std::env::var(key) {
-                command.env(key, val);
-            }
-        }
+    for key in audit_sink::credentials::UPLOADER_CREDENTIAL_ENV {
+        command.env_remove(key);
+    }
+    if let Some(grant) = audit {
+        command.envs(grant.proxy_env());
     }
 }
 
@@ -1290,7 +1310,7 @@ async fn spawn_local_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
-    audit_sink: Option<&audit_sink::AuditTarget>,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
@@ -1357,7 +1377,7 @@ async fn spawn_local_pod(
 
     art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
 
-    provision_local_audit_env(&mut command, audit_sink);
+    provision_local_audit_env(&mut command, audit);
 
     // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
     let sandbox_token = nucleus_client::generate_sandbox_token(
@@ -1530,7 +1550,7 @@ async fn container_env(
     proxy_mode: bool,
     sandbox_token: &str,
     spec_yaml: &str,
-    audit_sink: Option<&audit_sink::AuditTarget>,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Vec<String> {
     let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
 
@@ -1543,21 +1563,12 @@ async fn container_env(
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
         art12_collector::provision_container_env(&mut env);
 
-        // The audit sink admission resolved against the operator's `--audit-sinks` (#3131).
-        if let Some(target) = audit_sink {
-            for (key, value) in target.proxy_env() {
+        // The audit sink admission resolved against the operator's `--audit-sinks` (#3131), and
+        // the credential minted for exactly that destination (#3160). A container inherits
+        // nothing from the node, so this is the only credential its uploader holds.
+        if let Some(grant) = audit {
+            for (key, value) in grant.proxy_env() {
                 env.push(format!("{key}={value}"));
-            }
-            // Forward ambient AWS credentials for the S3 sink
-            for key in [
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_DEFAULT_REGION",
-            ] {
-                if let Ok(val) = std::env::var(key) {
-                    env.push(format!("{key}={val}"));
-                }
             }
         }
 
@@ -1608,7 +1619,7 @@ async fn spawn_container_pod(
     spec: &PodSpec,
     id: Uuid,
     raw_yaml: Option<&str>,
-    audit_sink: Option<&audit_sink::AuditTarget>,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Fail-closed: reject a network egress policy the container driver cannot
     // enforce (parity with spawn_local_pod / firecracker reject_unsupported_policy)
@@ -1677,7 +1688,7 @@ async fn spawn_container_pod(
         proxy_mode,
         &sandbox_token,
         &spec_yaml,
-        audit_sink,
+        audit,
     )
     .await;
 
@@ -1963,11 +1974,11 @@ async fn spawn_firecracker_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
-    audit_sink: Option<&audit_sink::AuditTarget>,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (state, pod_dir, spec, id, audit_sink);
+        let _ = (state, pod_dir, spec, id, audit);
         let why = "firecracker requires Linux; run nucleus-node inside Colima on macOS";
         Err(ApiError::Driver(why.to_string()))
     }
@@ -2189,7 +2200,7 @@ async fn spawn_firecracker_pod(
             // The PUBLIC half only — the signing half stays in this process.
             &hex::encode(state.approval_signer.verifying_key().to_bytes()),
             workload_api_port,
-            audit_sink,
+            audit.map(audit_sink::credentials::AuditGrant::target),
             jail_layout.as_ref(),
         );
         let config_json = match serde_json::to_vec_pretty(&config) {
@@ -2376,6 +2387,9 @@ async fn spawn_firecracker_pod(
             task_token: task_token.clone(),
             pod_certificate: pod_certificate.clone(),
             broker_serve,
+            // Served once over FETCH_AUDIT_CREDENTIALS: the credential minted for this pod's
+            // resolved sink, never the node's own (#3160).
+            audit_creds: audit.map(audit_sink::credentials::AuditGrant::served_credentials),
         })
         .await
         {

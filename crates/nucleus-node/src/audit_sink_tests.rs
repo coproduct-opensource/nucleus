@@ -124,6 +124,37 @@ fn a_resolved_target_sets_the_operators_destination() {
     );
 }
 
+/// #3160: the resolved prefix is the object pattern a pod's credential is minted for, where `*` is
+/// a wildcard. A narrowing of `*` would scope the credential to every sibling prefix under the
+/// operator's, so neither a spec nor the operator's file may carry one.
+#[test]
+fn a_prefix_cannot_carry_a_wildcard() {
+    let sinks = AuditSinks::from_toml(
+        "[[sink]]\nname = \"audit\"\nbucket = \"bkt\"\nprefix = \"tenants\"\n",
+    )
+    .expect("loads");
+    for narrowing in ["*", "team-*", "a/*/b"] {
+        let refused = sinks
+            .resolve_for(&spec(&format!(
+                r#"{{"sink":"audit","prefix":"{narrowing}"}}"#
+            )))
+            .expect_err("a wildcard widens the minted scope");
+        assert!(
+            matches!(
+                refused,
+                PostureRefused::AuditSink {
+                    field: "prefix",
+                    ..
+                }
+            ),
+            "{narrowing}: {refused}"
+        );
+    }
+    let err = AuditSinks::from_toml("[[sink]]\nname = \"a\"\nbucket = \"bkt\"\nprefix = \"t*\"\n")
+        .expect_err("nor may the operator's");
+    assert!(err.contains("prefix"), "{err}");
+}
+
 /// The operator's prefix plus the narrowing may not exceed the per-value ceiling.
 #[test]
 fn a_narrowing_cannot_overflow_the_prefix() {

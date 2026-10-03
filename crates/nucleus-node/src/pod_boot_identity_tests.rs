@@ -7,7 +7,7 @@ async fn prepare_for_test(
     id: uuid::Uuid,
     socket: &std::path::Path,
 ) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
-    prepare_pod_for_test(st, dir, id, socket, serde_json::json!({})).await
+    prepare_pod_for_test(st, dir, id, socket, serde_json::json!({}), None).await
 }
 
 async fn prepare_pod_for_test(
@@ -16,6 +16,7 @@ async fn prepare_pod_for_test(
     id: uuid::Uuid,
     socket: &std::path::Path,
     pod_spec: serde_json::Value,
+    audit_creds: Option<crate::workload_api_vsock::AuditCredentials>,
 ) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
     let kernel = dir.join("kernel");
     let rootfs = dir.join("rootfs");
@@ -43,6 +44,7 @@ async fn prepare_pod_for_test(
         task_token: None,
         pod_certificate: None,
         broker_serve: serve,
+        audit_creds,
         // Nothing was verified in this test, so nothing was measured. `Measured::default()`
         // is both `None`, which makes the attestation hash the files itself -- the honest
         // reading of "no pinned artifact was read".
@@ -104,30 +106,52 @@ async fn ask(st: &NodeState, dir: &std::path::Path, line: &[u8]) -> String {
 /// #3160, the microVM driver. guest-init asks for the audit-sink credentials once, before the
 /// workload exists, and exports what it gets to the tool-proxy. Red on #3155's head, which served
 /// the node's own ambient key to every pod whose spec named an audit sink.
+///
+/// Both halves: a pod with a grant is served the minted credential and nothing of the node's; a
+/// pod whose spec names a sink but that reached the bridge with no grant is served nothing.
 #[tokio::test]
 async fn the_ambient_key_is_never_served_to_a_guest() {
+    use crate::audit_sink::credentials::fake;
     crate::audit_sink::ambient_fixture::plant();
-    let dir = tempfile::tempdir_in("/tmp").unwrap();
-    let mut st = state(&dir);
-    st.identity_manager = Some(
-        crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
+    let grant = fake::grant(fake::target()).await;
+    for creds in [Some(grant.served_credentials()), None] {
+        let minted = creds.is_some();
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let mut st = state(&dir);
+        st.identity_manager = Some(
+            crate::identity::IdentityManager::new(
+                "test.local",
+                std::time::Duration::from_secs(3600),
+            )
             .unwrap(),
-    );
-    let socket = dir.path().join("vsock");
-    let _ready = prepare_pod_for_test(
-        &st,
-        dir.path(),
-        uuid::Uuid::new_v4(),
-        &socket,
-        serde_json::json!({"audit_sink": {"sink": "audit"}}),
-    )
-    .await
-    .unwrap();
-    let reply = ask(&st, dir.path(), b"FETCH_AUDIT_CREDENTIALS\n").await;
-    assert!(
-        !crate::audit_sink::ambient_fixture::leaks(&reply),
-        "the node's ambient key was served to the guest"
-    );
+        );
+        let socket = dir.path().join("vsock");
+        let _ready = prepare_pod_for_test(
+            &st,
+            dir.path(),
+            uuid::Uuid::new_v4(),
+            &socket,
+            serde_json::json!({"audit_sink": {"sink": "audit"}}),
+            creds,
+        )
+        .await
+        .unwrap();
+        let reply = ask(&st, dir.path(), b"FETCH_AUDIT_CREDENTIALS\n").await;
+        assert!(
+            !crate::audit_sink::ambient_fixture::leaks(&reply),
+            "the node's ambient key was served to the guest (minted: {minted})"
+        );
+        if minted {
+            // Non-vacuity: the reply is a credential, and it is the minted one.
+            assert!(reply.contains(fake::MINTED_KEY_ID), "{minted}: no minted key served");
+            assert!(reply.contains(fake::MINTED_SECRET), "{minted}: no minted secret served");
+        } else {
+            assert!(
+                reply.contains("no audit credentials provisioned"),
+                "a pod without a grant is told so: {reply}"
+            );
+        }
+    }
 }
 
 #[tokio::test]
