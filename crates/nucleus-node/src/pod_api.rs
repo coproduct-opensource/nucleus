@@ -1200,6 +1200,7 @@ pub(crate) mod handler_tests {
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
+            local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
             firecracker_path: a.firecracker_path.clone(),
             firecracker_pool: None,
             firecracker_api_boot: a.firecracker_api_boot,
