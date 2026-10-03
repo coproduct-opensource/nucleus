@@ -115,6 +115,10 @@ enum Command {
         #[arg(long, default_value = ".gatehouse/plan-gates.json")]
         plan: std::path::PathBuf,
     },
+    /// The cheap tree-only gates, before a push: exemplar ratchet, cargo-audit, scorecard,
+    /// line ratchet. Each gets Pass / Fail / CouldNotRun; anything but Pass exits non-zero.
+    /// See crates/xtask/src/prepush.rs.
+    Prepush,
     /// A SHA of this repo pinned by this repo must still match the working tree.
     SelfPin,
     /// One fact written in several files must have one value: the elan release and its
@@ -463,6 +467,7 @@ mod pin_parity;
 mod pipefail;
 mod plan_measurements;
 mod portability;
+mod prepush;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
@@ -535,6 +540,11 @@ fn main() -> Result<()> {
                 }
             }
         }
+        // Exit code mapped here, not inside the run, for the SelfPin arm's reason.
+        Command::Prepush => match prepush::run(&repo_root()?)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::Portability => portability::check(&std::env::current_dir()?),
         Command::ActionInputs { network } => {
