@@ -54,7 +54,7 @@ pub(crate) type PodRegistry =
 /// Reaches exactly the pods it created: those the node stamped
 /// `auth::CI_PRINCIPAL_LABEL` = its SPIFFE ID (`ci_principal`). It used to fall
 /// into the operator's arm, because "not a pod" was spelled like "every pod".
-fn caller_may_manage(
+pub(crate) fn caller_may_manage(
     caller: &CallerScope,
     pod_id: Uuid,
     parent_pod_id: Option<Uuid>,
@@ -165,7 +165,7 @@ pub(crate) async fn list_pods(
 /// registry, so the shipped set operation cannot diverge from what the test
 /// checks — the pointwise `caller_may_manage` tests never exercised the actual
 /// `.filter` as a SET (a sibling being *excluded* vs never present).
-trait Lineage {
+pub(crate) trait Lineage {
     fn lineage_id(&self) -> Uuid;
     fn lineage_parent(&self) -> Option<Uuid>;
     /// The CI/CD identity the node recorded as this pod's creator, if any.
@@ -199,7 +199,7 @@ impl Lineage for Arc<PodHandle> {
     }
 }
 
-fn in_scope<T: Lineage>(it: &T, caller: &CallerScope) -> bool {
+pub(crate) fn in_scope<T: Lineage>(it: &T, caller: &CallerScope) -> bool {
     // A federated tenant (ADR 0001): exactly the pods whose certificate root is
     // in its trust domain. Not lineage -- a tenant is not a pod.
     if let CallerScope::Tenant(td) = caller {
