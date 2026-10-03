@@ -8,6 +8,8 @@
 //!   whose bytes depend on content and a seed, not on the host or the clock.
 //! - [`workspace`]: seed a directory into an ext4 scratch image (returning the
 //!   digest a spec pins) and harvest the guest's tree back out.
+//! - [`jail_user`]: the principal a jailed VMM drops to, which a seeded image
+//!   is handed to, shared with the node that checks it.
 //! - [`scratch_readback`]: reading files out of a guest's ext4 image from the
 //!   host, unprivileged, after replaying its journal.
 //!
@@ -28,6 +30,7 @@
 )]
 
 pub mod ext4;
+pub mod jail_user;
 pub mod probe;
 pub mod scratch_readback;
 pub mod workspace;

@@ -259,3 +259,48 @@ fn a_shared_copy_is_read_only() {
     );
     assert_eq!(std::fs::read(&dest).expect("read"), b"x");
 }
+
+/// The disk `nucleus-hostctl seed` produces is exactly what a pod names as `image.scratch_path`,
+/// and the node no longer chowns a placed file (#3152). So a seeded disk must leave seed ALREADY
+/// admissible as [`Placement::GuestWritesThrough`], judged here by the node's own [`admit`]
+/// rather than by a second statement of the rule.
+///
+/// Non-vacuous only as root: an unprivileged run can hand a file only to itself, and a file the
+/// runner owns is the runner's to write whatever seed did. Root judges it as the default jail
+/// user, which owns nothing root creates.
+#[tokio::test]
+async fn a_seeded_workspace_disk_is_admitted_as_written_through() {
+    use nucleus_microvm_host::ext4::{Ext4Error, RootOwner};
+
+    let tmp = tempfile::tempdir().expect("tmp");
+    let (me, _) = foreign(tmp.path());
+    let who = if me.uid == 0 { JAIL } else { me };
+    let tree = tmp.path().join("tree");
+    std::fs::create_dir_all(tree.join("src")).expect("tree");
+    std::fs::write(tree.join("src/lib.rs"), b"pub fn f() {}\n").expect("file");
+    let image = tmp.path().join("ws.ext4");
+    let workload = RootOwner {
+        uid: 65534,
+        gid: 65534,
+    };
+    match nucleus_microvm_host::workspace::seed(&tree, &image, workload, who, 16).await {
+        Ok(_) => {}
+        Err(Ext4Error::Unsupported { .. })
+            if std::env::var_os("NUCLEUS_E2FSPROGS_REQUIRED").is_none() =>
+        {
+            eprintln!("skipping: this host's mke2fs cannot seed from a tar");
+            return;
+        }
+        Err(e) => panic!("seed: {e}"),
+    }
+    assert_eq!(
+        admit(
+            &image,
+            "image.scratch_path",
+            Placement::GuestWritesThrough,
+            who
+        ),
+        Ok(()),
+        "a freshly seeded disk must already be the jail user's to read and write"
+    );
+}

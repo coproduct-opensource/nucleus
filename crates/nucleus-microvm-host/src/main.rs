@@ -2,9 +2,11 @@
 //!
 //! - `probe` prints a JSON report of what this host provides and exits non-zero
 //!   when a microVM cannot launch here.
-//! - `seed <tree> <image> --owner UID:GID [--free-mib N]` builds a workspace
-//!   scratch image, every entry owned by the workload, and prints its
-//!   `sha-256:` digest.
+//! - `seed <tree> <image> --owner UID:GID --jailer-uid UID --jailer-gid GID
+//!   [--free-mib N]` builds a workspace scratch image, every entry owned by the
+//!   workload, hands the image file to the node's jail user, and prints its
+//!   `sha-256:` digest. The jailer flags read the node's own environment
+//!   variables (`NUCLEUS_JAILER_UID`/`_GID`).
 //! - `harvest <image> <out>` replays the image's journal and copies its tree out.
 
 #![cfg_attr(
@@ -25,6 +27,7 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use nucleus_microvm_host::ext4::RootOwner;
+use nucleus_microvm_host::jail_user::{self, JailUser, NonRootUid};
 #[cfg(target_os = "linux")]
 use nucleus_microvm_host::probe::HostRequirement;
 use nucleus_microvm_host::probe::{self, kvm::Kvm};
@@ -59,6 +62,15 @@ enum Command {
         /// that number here would drift from it.
         #[arg(long, value_parser = parse_owner)]
         owner: RootOwner,
+        /// The uid the node's jailed VMM drops to: the node's own
+        /// `--jailer-uid`, read from the same variable. The image FILE is
+        /// handed to it, because the node will not chown a disk the guest
+        /// writes through (#3152). No default, for the same reason as `owner`.
+        #[arg(long, env = jail_user::UID_ENV)]
+        jailer_uid: NonRootUid,
+        /// The gid the node's jailed VMM drops to (the node's `--jailer-gid`).
+        #[arg(long, env = jail_user::GID_ENV)]
+        jailer_gid: u32,
         /// Free space beyond the tree's own size, in MiB.
         #[arg(long, default_value_t = 1024)]
         free_mib: u32,
@@ -104,8 +116,14 @@ fn main() -> ExitCode {
             tree,
             image,
             owner,
+            jailer_uid,
+            jailer_gid,
             free_mib,
         } => {
+            let jail = JailUser {
+                uid: jailer_uid.get(),
+                gid: jailer_gid,
+            };
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -113,7 +131,7 @@ fn main() -> ExitCode {
                 Ok(rt) => rt,
                 Err(e) => return fail(&format!("starting a runtime: {e}")),
             };
-            match rt.block_on(workspace::seed(&tree, &image, owner, free_mib)) {
+            match rt.block_on(workspace::seed(&tree, &image, owner, jail, free_mib)) {
                 Ok(digest) => {
                     println!("{}", digest.as_str());
                     ExitCode::SUCCESS
@@ -188,4 +206,38 @@ fn parse_owner(s: &str) -> Result<RootOwner, String> {
 fn fail(msg: &str) -> ExitCode {
     eprintln!("nucleus-hostctl: {msg}");
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The jail user's uid is the node's `NonRootUid`: seed cannot hand a disk
+    /// to root as the "jail" user, which the node never drops to.
+    #[test]
+    fn seed_takes_the_jail_user_as_the_node_types_it() {
+        let parse = |uid: &str| {
+            Cli::try_parse_from([
+                "nucleus-hostctl",
+                "seed",
+                "tree",
+                "ws.ext4",
+                "--owner",
+                "65534:65534",
+                "--jailer-uid",
+                uid,
+                "--jailer-gid",
+                "100",
+            ])
+        };
+        assert!(parse("0").is_err());
+        match parse("123").expect("parses").command {
+            Command::Seed {
+                jailer_uid,
+                jailer_gid,
+                ..
+            } => assert_eq!((jailer_uid.get(), jailer_gid), (123, 100)),
+            other => panic!("{other:?}"),
+        }
+    }
 }

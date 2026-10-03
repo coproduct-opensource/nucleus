@@ -215,11 +215,12 @@ struct Args {
         default_value = "/srv/jailer"
     )]
     jailer_chroot_base: PathBuf,
-    /// Unprivileged uid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_UID", default_value = "123")]
+    /// Unprivileged uid the jailed VMM drops to. `nucleus-hostctl seed` reads the same variable,
+    /// so a disk it seeds is handed to this uid.
+    #[arg(long, env = nucleus_microvm_host::jail_user::UID_ENV, default_value = "123")]
     jailer_uid: production_confinement::NonRootUid,
     /// Unprivileged gid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_GID", default_value_t = 100)]
+    #[arg(long, env = nucleus_microvm_host::jail_user::GID_ENV, default_value_t = 100)]
     jailer_gid: u32,
 
     // Container driver configuration

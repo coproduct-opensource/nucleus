@@ -49,12 +49,9 @@ use std::path::{Path, PathBuf};
 
 use crate::firecracker_config::in_jail;
 
-/// The uid/gid the jailed VMM drops to: the principal every check here is about.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct JailUser {
-    pub uid: u32,
-    pub gid: u32,
-}
+/// The uid/gid the jailed VMM drops to: the principal every check here is about. One type with
+/// `nucleus-hostctl seed`, which must hand a written-through disk to the same principal.
+pub(crate) use nucleus_microvm_host::jail_user::JailUser;
 
 /// What a host file brought into the jail IS. The role decides the in-jail name and the
 /// [`Placement`], in one exhaustive match each, so a new role is a compile error in both before
