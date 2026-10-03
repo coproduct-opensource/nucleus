@@ -928,3 +928,98 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         "a direct-mode container is the workload itself and must not hold DLC credentials"
     );
 }
+
+/// What a child spawned from `command` actually starts with: this process's environment (a
+/// `Command` inherits it unless told otherwise), with the command's own sets and removals applied.
+#[cfg(feature = "local-driver")]
+fn effective_env(command: &Command) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    for (key, value) in command.as_std().get_envs() {
+        let key = key.to_string_lossy().into_owned();
+        match value {
+            Some(value) => {
+                env.insert(key, value.to_string_lossy().into_owned());
+            }
+            None => {
+                env.remove(&key);
+            }
+        }
+    }
+    env
+}
+
+/// The resolved audit sink every #3160 test below uses.
+#[cfg(feature = "local-driver")]
+fn operator_audit_target() -> audit_sink::AuditTarget {
+    let sinks = audit_sink::AuditSinks::from_toml(
+        "[[sink]]\nname = \"audit\"\nbucket = \"operator-audit\"\nprefix = \"nucleus\"\n",
+    )
+    .expect("loads");
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
+    )
+    .expect("spec parses");
+    sinks
+        .resolve_for(&spec)
+        .expect("admitted")
+        .expect("resolved")
+}
+
+/// #3160, the local driver. The node's own cloud key writes anywhere the operator's account
+/// reaches, so it must never be in the local tool-proxy's environment: not forwarded, and not
+/// inherited either, because a `Command` inherits the node's whole environment by default. Red on
+/// #3155's head, which forwarded the key to every pod with an audit sink and let every other pod
+/// inherit it.
+#[cfg(feature = "local-driver")]
+#[test]
+fn the_ambient_key_never_reaches_a_local_uploader() {
+    audit_sink::ambient_fixture::plant();
+    let target = operator_audit_target();
+    for sink in [None, Some(&target)] {
+        let mut command = Command::new("tool-proxy");
+        provision_local_audit_env(&mut command, sink);
+        let leaked: Vec<String> = effective_env(&command)
+            .into_iter()
+            .filter(|(_, value)| audit_sink::ambient_fixture::leaks(value))
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "the node's ambient key reached the local uploader (sink: {}) under {leaked:?}",
+            sink.is_some()
+        );
+    }
+}
+
+/// #3160, the container driver. Red on #3155's head, which copied the node's ambient key into
+/// the container's environment for any pod with an audit sink.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn the_ambient_key_never_reaches_a_container_uploader() {
+    audit_sink::ambient_fixture::plant();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = crate::pod_api::handler_tests::state(&dir);
+    let spec: PodSpec =
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec");
+    let target = operator_audit_target();
+    let env = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        true,
+        "test-token-123",
+        "",
+        Some(&target),
+    )
+    .await;
+    let leaked: Vec<&str> = env
+        .iter()
+        .filter(|e| audit_sink::ambient_fixture::leaks(e))
+        .filter_map(|e| e.split('=').next())
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the node's ambient key reached the container uploader under {leaked:?}"
+    );
+}

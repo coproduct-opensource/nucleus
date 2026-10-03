@@ -400,3 +400,42 @@ fn is_url_char(c: char) -> bool {
 #[cfg(test)]
 #[path = "audit_sink_tests.rs"]
 mod tests;
+
+/// The node's ambient cloud key, planted in this test process's environment so a test can prove
+/// it never reaches a pod (#3160). Each value is a unique string a test searches a pod's whole
+/// environment, or a guest reply, for.
+#[cfg(test)]
+pub(crate) mod ambient_fixture {
+    /// The planted access key id.
+    pub(crate) const KEY_ID: &str = "ambient-node-key-id-3160";
+    /// The planted secret.
+    pub(crate) const SECRET: &str = "ambient-node-secret-3160";
+    /// The planted session token.
+    pub(crate) const TOKEN: &str = "ambient-node-token-3160";
+
+    /// Plant the node's ambient key under the names the uploader's credential chain reads.
+    pub(crate) fn plant() {
+        for (key, value) in [
+            ("AWS_ACCESS_KEY_ID", KEY_ID),
+            ("AWS_SECRET_ACCESS_KEY", SECRET),
+            ("AWS_SESSION_TOKEN", TOKEN),
+        ] {
+            // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent reader.
+            // Every planting writes the same three values, and no test in this crate depends on
+            // their absence.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "ADR 0007 H-1: test-only process-global mutation; the subject under test \
+                          is that the node's ambient environment does not reach a pod"
+            )]
+            unsafe {
+                std::env::set_var(key, value)
+            };
+        }
+    }
+
+    /// Whether `text` carries any part of the planted key.
+    pub(crate) fn leaks(text: &str) -> bool {
+        [KEY_ID, SECRET, TOKEN].iter().any(|v| text.contains(v))
+    }
+}

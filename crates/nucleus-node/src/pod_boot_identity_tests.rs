@@ -7,6 +7,16 @@ async fn prepare_for_test(
     id: uuid::Uuid,
     socket: &std::path::Path,
 ) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
+    prepare_pod_for_test(st, dir, id, socket, serde_json::json!({})).await
+}
+
+async fn prepare_pod_for_test(
+    st: &NodeState,
+    dir: &std::path::Path,
+    id: uuid::Uuid,
+    socket: &std::path::Path,
+    pod_spec: serde_json::Value,
+) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
     let kernel = dir.join("kernel");
     let rootfs = dir.join("rootfs");
     std::fs::write(&kernel, b"test kernel").unwrap();
@@ -17,7 +27,7 @@ async fn prepare_for_test(
     .unwrap();
     let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
-        "metadata": {"name": "host-spec-before-vmm"}, "spec": {},
+        "metadata": {"name": "host-spec-before-vmm"}, "spec": pod_spec,
     }))
     .unwrap();
     let (serve, _verify) = crate::broker_launch::BrokerCapability::mint(id);
@@ -76,6 +86,48 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
     .await
     .unwrap();
     assert!(!manager.unregister_pod(&id.to_string()).await);
+}
+
+/// Ask a prepared pod's workload API one line, as guest-init does, and return the reply.
+async fn ask(st: &NodeState, dir: &std::path::Path, line: &[u8]) -> String {
+    let api = dir.join(format!("vsock_{}", st.identity_vsock_port));
+    let mut stream = tokio::net::UnixStream::connect(&api).await.unwrap();
+    stream.write_all(line).await.unwrap();
+    let mut response = String::new();
+    tokio::io::BufReader::new(stream)
+        .read_line(&mut response)
+        .await
+        .unwrap();
+    response
+}
+
+/// #3160, the microVM driver. guest-init asks for the audit-sink credentials once, before the
+/// workload exists, and exports what it gets to the tool-proxy. Red on #3155's head, which served
+/// the node's own ambient key to every pod whose spec named an audit sink.
+#[tokio::test]
+async fn the_ambient_key_is_never_served_to_a_guest() {
+    crate::audit_sink::ambient_fixture::plant();
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let mut st = state(&dir);
+    st.identity_manager = Some(
+        crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
+            .unwrap(),
+    );
+    let socket = dir.path().join("vsock");
+    let _ready = prepare_pod_for_test(
+        &st,
+        dir.path(),
+        uuid::Uuid::new_v4(),
+        &socket,
+        serde_json::json!({"audit_sink": {"sink": "audit"}}),
+    )
+    .await
+    .unwrap();
+    let reply = ask(&st, dir.path(), b"FETCH_AUDIT_CREDENTIALS\n").await;
+    assert!(
+        !crate::audit_sink::ambient_fixture::leaks(&reply),
+        "the node's ambient key was served to the guest"
+    );
 }
 
 #[tokio::test]

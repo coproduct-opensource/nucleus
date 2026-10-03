@@ -1259,6 +1259,32 @@ impl ContainerPod {
 }
 
 #[cfg(feature = "local-driver")]
+fn provision_local_audit_env(
+    command: &mut Command,
+    audit_sink: Option<&audit_sink::AuditTarget>,
+) {
+    // The audit sink admission resolved against the operator's `--audit-sinks` (#3131): the
+    // destination is the operator's, never a value read from the spec.
+    if let Some(target) = audit_sink {
+        for (key, value) in target.proxy_env() {
+            command.env(key, value);
+        }
+        // Forward ambient AWS credentials so the tool-proxy's aws_config chain works.
+        // Operators set these on nucleus-node; they flow through to the S3 sink.
+        for key in [
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_DEFAULT_REGION",
+        ] {
+            if let Ok(val) = std::env::var(key) {
+                command.env(key, val);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "local-driver")]
 async fn spawn_local_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -1331,25 +1357,7 @@ async fn spawn_local_pod(
 
     art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
 
-    // The audit sink admission resolved against the operator's `--audit-sinks` (#3131): the
-    // destination is the operator's, never a value read from the spec.
-    if let Some(target) = audit_sink {
-        for (key, value) in target.proxy_env() {
-            command.env(key, value);
-        }
-        // Forward ambient AWS credentials so the tool-proxy's aws_config chain works.
-        // Operators set these on nucleus-node; they flow through to the S3 sink.
-        for key in [
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-            "AWS_DEFAULT_REGION",
-        ] {
-            if let Ok(val) = std::env::var(key) {
-                command.env(key, val);
-            }
-        }
-    }
+    provision_local_audit_env(&mut command, audit_sink);
 
     // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
     let sandbox_token = nucleus_client::generate_sandbox_token(
