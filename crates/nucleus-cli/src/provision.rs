@@ -35,6 +35,15 @@ use std::process::Command;
 /// also the node's default `--artifacts-root`.
 pub use nucleus_spec::tier2_artifacts::HOST_ARTIFACTS_DIR;
 
+/// The mode every shared guest artifact (kernel, rootfs) is installed with, root-owned.
+///
+/// The node hard-links these into every pod's jail, so the installed inode IS what each jailed
+/// VMM opens. World-readable is what lets the unprivileged jail user open it; read-only and
+/// root-owned is what keeps a process that escapes one pod from rewriting what every later pod
+/// boots. The node refuses at startup, by name, an artifact that is either unreadable or
+/// writable by the jail user, rather than chowning it (#3152).
+pub const SHARED_ARTIFACT_MODE: &str = "0444";
+
 /// Where the node keeps per-pod state inside the Tier 2 host.
 pub const HOST_STATE_DIR: &str = "/var/lib/nucleus/state";
 
@@ -284,7 +293,11 @@ pub fn install_kernel(host: &Tier2Host, arch: &str, cache_dir: &Path) -> Result<
     println!("  Guest kernel...");
     let local = cache_dir.join(format!("vmlinux-{arch}"));
     download_verified(kernel.url, &local, kernel.sha256)?;
-    host.put(&local, &format!("{HOST_ARTIFACTS_DIR}/vmlinux"), "0644")?;
+    host.put(
+        &local,
+        &format!("{HOST_ARTIFACTS_DIR}/vmlinux"),
+        SHARED_ARTIFACT_MODE,
+    )?;
     println!("    installed, sha256 {}", &kernel.sha256[..16]);
     Ok(())
 }
@@ -491,21 +504,38 @@ fn install_one_local(host: &Tier2Host, artifact: Tier2Artifact, local: &Path) ->
     let name = local.file_name().unwrap_or_default().to_string_lossy();
     match artifact {
         Tier2Artifact::Rootfs => {
-            let staged = format!("{HOST_ARTIFACTS_DIR}/{name}");
-            host.put(local, &staged, "0644")?;
+            let dest = format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4");
             if name.ends_with(".gz") {
-                host.sh(&format!(
-                    "gunzip -f -c {staged} > {HOST_ARTIFACTS_DIR}/rootfs.ext4 && rm -f {staged}"
-                ))?;
-            } else if staged != format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4") {
-                host.sh(&format!("mv {staged} {HOST_ARTIFACTS_DIR}/rootfs.ext4"))?;
+                let staged = format!("{HOST_ARTIFACTS_DIR}/{name}");
+                host.put(local, &staged, SHARED_ARTIFACT_MODE)?;
+                host.sh(&land_gzipped_shared_artifact(&staged, &dest))?;
+            } else {
+                host.put(local, &dest, SHARED_ARTIFACT_MODE)?;
             }
-            host.sh(&format!("chmod 0644 {HOST_ARTIFACTS_DIR}/rootfs.ext4"))?;
         }
         Tier2Artifact::Node => install_binary(host, local, &name, "nucleus-node")?,
         Tier2Artifact::Cli => install_binary(host, local, &name, "nucleus")?,
     }
     Ok(())
+}
+
+/// The root shell that decompresses a shared artifact into place.
+///
+/// Into a sibling and renamed, never `gunzip > dest`: writing into `dest` would keep the old
+/// inode, so an artifact a previous node had chowned to the jail user (#3152) stayed the jail
+/// user's, and every live pod's hard link to it would see the bytes change under it. The new inode
+/// is root-owned (this runs as root) and [`SHARED_ARTIFACT_MODE`] before it becomes visible.
+fn land_gzipped_shared_artifact(staged_gz: &str, dest: &str) -> String {
+    let next = format!("{dest}.nucleus-new");
+    format!(
+        "set -e
+         rm -f {next}
+         gunzip -c {staged_gz} > {next}
+         chown 0:0 {next}
+         chmod {SHARED_ARTIFACT_MODE} {next}
+         mv {next} {dest}
+         rm -f {staged_gz}"
+    )
 }
 
 /// Place a binary at `/usr/local/bin/<bin>`, unpacking it first if it is a tarball.
@@ -1420,5 +1450,36 @@ mod tests {
             script.starts_with("set -e"),
             "a failed mkdir must stop the script"
         );
+    }
+
+    /// #3152: shared artifacts are installed root-owned and read-only, and a
+    /// decompressed rootfs lands as a NEW inode. Writing into the existing file
+    /// would keep whatever owner a previous node gave it, and change the bytes
+    /// under every live pod's hard link.
+    #[test]
+    fn shared_artifacts_land_root_owned_read_only_as_a_new_inode() {
+        assert_eq!(SHARED_ARTIFACT_MODE, "0444");
+        let dest = format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4");
+        let gz = format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4.gz");
+        let next = format!("{dest}.nucleus-new");
+        let script = land_gzipped_shared_artifact(&gz, &dest);
+        assert!(script.starts_with("set -e"), "{script}");
+        let lines: Vec<&str> = script.lines().map(str::trim).collect();
+        assert!(
+            !lines.iter().any(|l| l.ends_with(&format!("> {dest}"))),
+            "never decompress into the live artifact: {script}"
+        );
+        let at = |needle: String| {
+            lines
+                .iter()
+                .position(|l| *l == needle)
+                .unwrap_or_else(|| panic!("missing `{needle}` in {script}"))
+        };
+        let write = at(format!("gunzip -c {gz} > {next}"));
+        let own = at(format!("chown 0:0 {next}"));
+        let mode = at(format!("chmod 0444 {next}"));
+        let rename = at(format!("mv {next} {dest}"));
+        assert!(write < own && write < mode, "{script}");
+        assert!(own < rename && mode < rename, "{script}");
     }
 }
