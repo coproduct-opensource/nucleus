@@ -4,10 +4,11 @@
 //! segment. The leaf segment optionally carries a `/sha256:<hex>` suffix that
 //! makes the ID content-addressed.
 //!
-//! `CallSpiffeId` does NOT validate the trust-domain prefix beyond requiring
-//! `spiffe://<authority>/<path>`; it is structurally a wrapper around the
-//! standard SPIFFE URI grammar with stricter constraints on the `/call/...`
-//! suffix structure that this crate owns.
+//! `CallSpiffeId` enforces the SPIFFE ID grammar (`docs/spiffe-taxonomy.md`):
+//! a lowercase trust domain of at most 255 bytes, non-empty path segments of
+//! `[A-Za-z0-9._-]` that are never `.` or `..`, at most 2048 bytes in all —
+//! plus the `/call/...` suffix structure this crate owns. It does not decide
+//! WHICH trust domain an ID may name; that is the relying party's anchor.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -37,7 +38,7 @@ pub enum IdError {
     TooLong { len: usize },
     #[error("input contains forbidden character {0:?} at byte offset {1}")]
     ForbiddenChar(char, usize),
-    #[error("authority {0:?} contains characters outside `[a-z0-9._-]`")]
+    #[error("authority {0:?} contains characters outside `[a-z0-9.-]`")]
     InvalidAuthority(String),
     #[error(
         "path component {0:?} contains characters outside `[A-Za-z0-9._-]` (or the reserved `sha256:<hex>` form)"
@@ -47,19 +48,31 @@ pub enum IdError {
     EmptyPathSegment(String),
     #[error("`/call/` segment must be exactly lowercase, found {0:?}")]
     NonCanonicalCallSegment(String),
+    #[error("call uuid {0:?} is not in its canonical lowercase hyphenated form")]
+    NonCanonicalCallUuid(String),
+    #[error("path segment {0:?} is a dot segment; SPIFFE IDs never contain `.` or `..`")]
+    DotSegment(String),
+    #[error("trust domain is {len} bytes; SPIFFE allows at most {max}", max = MAX_TRUST_DOMAIN_LEN)]
+    TrustDomainTooLong { len: usize },
 }
 
-/// Maximum URI length we'll accept. SPIFFE IDs in practice are short; a
-/// hard cap prevents pathological-input DoS in the parser.
-pub const MAX_URI_LEN: usize = 4096;
+/// Maximum URI length: the SPIFFE ID specification's 2048 bytes. Also the
+/// parser's DoS bound.
+pub const MAX_URI_LEN: usize = 2048;
+
+/// Maximum trust-domain length: the SPIFFE ID specification's 255 bytes.
+pub const MAX_TRUST_DOMAIN_LEN: usize = 255;
 
 /// A SPIFFE-format identity for a call, artifact, or derived value.
 ///
 /// Stored as the canonical string form (`spiffe://...`) plus a parsed
 /// breakdown of the call-specific suffix when present. Equality and hashing
 /// are based on the canonical string.
+///
+/// Deserialization goes through [`CallSpiffeId::parse`]: a value of this type
+/// is always a well-formed ID, whether it was built, parsed or read back.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(try_from = "String", into = "String")]
 pub struct CallSpiffeId(String);
 
 impl CallSpiffeId {
@@ -71,14 +84,17 @@ impl CallSpiffeId {
     /// Otherwise:
     ///
     /// - Scheme must be `spiffe://`.
-    /// - URI length must be ≤ [`MAX_URI_LEN`] bytes.
     /// - Every byte must be ASCII printable (rejects NUL, control chars,
     ///   RTL/LRO Unicode overrides, and any non-ASCII).
     /// - URI components `?` (query), `#` (fragment), and `@` (userinfo) are
     ///   absent — SPIFFE forbids them.
-    /// - Authority charset: lowercase ASCII letters, digits, `-`, `.`, `_`.
+    /// - Authority charset: lowercase ASCII letters, digits, `-`, `.` (SPIFFE's
+    ///   `_` is refused: a nucleus trust domain is a DNS name), ≤ 255 bytes.
     ///   No `:` (no port), no `@` (no userinfo).
-    /// - Path segments are non-empty (rejects `//`, leading `//`, trailing `/`).
+    /// - Path segments are non-empty (rejects `//`, leading `//`, trailing `/`)
+    ///   and never `.` or `..`.
+    /// - At most [`MAX_URI_LEN`] (2048) bytes, the trust domain at most
+    ///   [`MAX_TRUST_DOMAIN_LEN`] (255).
     /// - Path segment charset: `[A-Za-z0-9._-]` per SPIFFE, or the reserved
     ///   form `sha256:<64 lowercase hex>`.
     /// - Any `/call/...` suffix must use lowercase `call` and a well-formed
@@ -125,15 +141,22 @@ impl CallSpiffeId {
         if authority.is_empty() {
             return Err(IdError::MissingAuthority(uri.clone()));
         }
+        if authority.len() > MAX_TRUST_DOMAIN_LEN {
+            return Err(IdError::TrustDomainTooLong {
+                len: authority.len(),
+            });
+        }
         if path.is_empty() {
             return Err(IdError::MissingPath(uri.clone()));
         }
 
-        // 6. Authority charset. SPIFFE: lowercase letters, digits, `-`, `.`,
-        //    `_`. No port (`:`), no userinfo (already rejected above).
+        // 6. Authority charset: lowercase letters, digits, `-`, `.`. SPIFFE
+        //    also allows `_`; this taxonomy does not, because every trust
+        //    domain nucleus issues for is a DNS name (`docs/spiffe-taxonomy.md`).
+        //    No port (`:`), no userinfo (already rejected above).
         if !authority
             .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.' | '_'))
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '.'))
         {
             return Err(IdError::InvalidAuthority(authority.to_string()));
         }
@@ -142,6 +165,11 @@ impl CallSpiffeId {
         for segment in path.split('/') {
             if segment.is_empty() {
                 return Err(IdError::EmptyPathSegment(uri.clone()));
+            }
+            // SPIFFE: "Paths MUST NOT include `.` or `..` segments." A relying
+            // party that resolves dot segments would read another ID.
+            if segment == "." || segment == ".." {
+                return Err(IdError::DotSegment(segment.to_string()));
             }
             // Special case: a `sha256:`-prefixed segment is a content-hash;
             // route its specific failure to InvalidContentHash for actionable
@@ -175,8 +203,14 @@ impl CallSpiffeId {
                 let uuid_part = path_parts.next().ok_or_else(|| {
                     IdError::InvalidCallUuid("(missing)".to_string(), uuid_error())
                 })?;
-                Uuid::parse_str(uuid_part)
+                let parsed = Uuid::parse_str(uuid_part)
                     .map_err(|e| IdError::InvalidCallUuid(uuid_part.to_string(), e))?;
+                // One spelling per call: the lowercase hyphenated form every
+                // `derive_*` writes. `Uuid::parse_str` also reads the simple
+                // and uppercase forms, which would be a second ID for one call.
+                if parsed.hyphenated().to_string() != uuid_part {
+                    return Err(IdError::NonCanonicalCallUuid(uuid_part.to_string()));
+                }
             }
         }
 
@@ -335,6 +369,19 @@ impl fmt::Display for CallSpiffeId {
 impl fmt::Debug for CallSpiffeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "CallSpiffeId({})", self.0)
+    }
+}
+
+impl TryFrom<String> for CallSpiffeId {
+    type Error = IdError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Self::parse(s)
+    }
+}
+
+impl From<CallSpiffeId> for String {
+    fn from(id: CallSpiffeId) -> Self {
+        id.0
     }
 }
 
@@ -663,16 +710,48 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_path_traversal_segment() {
-        // ".." is itself a valid SPIFFE path segment (only [A-Za-z0-9._-]),
-        // so we permit it structurally — but its presence should not enable
-        // any escape because the canonical string never collapses it. This
-        // test pins the behavior so a future "path-canonicalization" change
-        // must be deliberate.
-        let id = CallSpiffeId::parse("spiffe://prod.example.com/ns/../sa/coder").unwrap();
-        assert_eq!(id.as_str(), "spiffe://prod.example.com/ns/../sa/coder");
-        // The structural parent walker uses string prefix only — it does not
-        // resolve `..`. (The walker is hardened separately in PR-C.)
+    fn parse_rejects_dot_segments() {
+        // SPIFFE forbids `.` and `..` segments outright: a relying party that
+        // resolves them (RFC 3986 §5.2.4) would read a different ID than the
+        // one this crate accepted.
+        for bad in [
+            "spiffe://prod.example.com/ns/../sa/coder",
+            "spiffe://prod.example.com/ns/agents/sa/coder/..",
+            "spiffe://prod.example.com/./ns/agents",
+        ] {
+            let err = CallSpiffeId::parse(bad).expect_err(bad);
+            assert!(matches!(err, IdError::DotSegment(_)), "{bad}: {err:?}");
+        }
+        // A dot INSIDE a segment is ordinary.
+        CallSpiffeId::parse("spiffe://prod.example.com/ns/a..b/sa/.coder").unwrap();
+    }
+
+    #[test]
+    fn length_limits_are_the_specifications() {
+        let td = "a".repeat(MAX_TRUST_DOMAIN_LEN);
+        CallSpiffeId::parse(format!("spiffe://{td}/x")).unwrap();
+        let err = CallSpiffeId::parse(format!("spiffe://{td}a/x")).unwrap_err();
+        assert!(matches!(err, IdError::TrustDomainTooLong { .. }), "{err:?}");
+        let head = "spiffe://td/";
+        let exact = format!("{head}{}", "a".repeat(MAX_URI_LEN - head.len()));
+        assert_eq!(exact.len(), MAX_URI_LEN);
+        CallSpiffeId::parse(exact.clone()).unwrap();
+        let err = CallSpiffeId::parse(format!("{exact}a")).unwrap_err();
+        assert!(matches!(err, IdError::TooLong { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn deserialization_validates() {
+        let ok: CallSpiffeId =
+            serde_json::from_str("\"spiffe://prod.example.com/ns/a/sa/b\"").unwrap();
+        assert_eq!(ok.as_str(), "spiffe://prod.example.com/ns/a/sa/b");
+        for bad in ["\"x\"", "\"spiffe://td/ns/../sa/b\"", "\"spiffe://TD/a\""] {
+            assert!(serde_json::from_str::<CallSpiffeId>(bad).is_err(), "{bad}");
+        }
+        // And what is serialized reads back.
+        let back: CallSpiffeId =
+            serde_json::from_str(&serde_json::to_string(&ok).unwrap()).unwrap();
+        assert_eq!(back, ok);
     }
 
     #[test]

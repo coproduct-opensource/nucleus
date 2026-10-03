@@ -93,6 +93,8 @@ mod snapshot;
 mod snapshot_restore;
 mod snapshot_store;
 mod snapshot_vmm;
+#[cfg(test)]
+mod spiffe_walk;
 mod trust_gate;
 mod upstreams;
 mod vsock_bridge;
