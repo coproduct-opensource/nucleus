@@ -146,6 +146,7 @@ RUST_LOG=info,nucleus_node=debug \
     --proxy-auth-secret "${PROXY_AUTH_SECRET}" \
     --proxy-approval-secret "${APPROVAL_SECRET}" \
     --container-image "${TEST_IMAGE}" \
+    --container-mediation unmediated \
     --container-network bridge \
     --state-dir "${STATE_DIR}" \
     >"${STATE_DIR}/node.log" 2>&1 &
@@ -199,8 +200,6 @@ kind: Pod
 metadata:
   name: smoke-test
   labels:
-    nucleus.io/container-image: "nucleus-smoke:latest"
-    nucleus.io/proxy-mode: "false"
     nucleus.io/network: "bridge"
 spec:
   work_dir: /

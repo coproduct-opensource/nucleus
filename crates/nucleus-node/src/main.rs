@@ -71,6 +71,7 @@ mod broker_perform;
 mod broker_rollout;
 mod broker_transport;
 mod cgroup;
+mod container_mediation;
 mod container_transport;
 mod cred_split;
 mod driver;
@@ -222,13 +223,23 @@ struct Args {
     jailer_gid: u32,
 
     // Container driver configuration
-    /// Container image for pod execution (container driver).
+    /// Container image every container pod runs, and in mediated mode the image whose
+    /// `nucleus-tool-proxy` mediates it. Node-owned: a spec cannot choose it (#3133).
     #[arg(
         long,
         env = "NUCLEUS_CONTAINER_IMAGE",
         default_value = "nucleus-tool-proxy:latest"
     )]
     container_image: String,
+    /// Whether container pods run under the tool-proxy. `unmediated` runs the image's entrypoint
+    /// with no reference monitor; it is an operator opt-in, never a spec choice (#3133).
+    #[arg(
+        long,
+        env = "NUCLEUS_CONTAINER_MEDIATION",
+        value_enum,
+        default_value = "tool-proxy"
+    )]
+    container_mediation: container_mediation::ContainerMediation,
     /// Network mode for containers ("none", "bridge", or a custom network name).
     #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
     container_network: String,
@@ -409,8 +420,10 @@ struct NodeState {
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
-    /// Default container image for pods.
+    /// The image every container pod runs (`--container-image`).
     container_image: String,
+    /// Whether container pods run under the tool-proxy (`--container-mediation`).
+    container_mediation: container_mediation::ContainerMediation,
     /// Default network mode for containers.
     container_network: String,
     container_proxy_unix: bool,
@@ -532,16 +545,13 @@ struct FirecrackerPod {
 
 /// Container-based pod execution via Docker API (Colima, Docker Desktop, Podman).
 ///
-/// The container image can be either:
-///   - `nucleus-tool-proxy:latest` (proxy mode: audit + policy enforcement)
-///   - An LLM/agent CLI image like `gt-executor:latest` (direct mode)
-///
-/// The mode is determined by the PodSpec label `nucleus.io/proxy-mode`.
+/// The image and whether the tool-proxy mediates the pod are node configuration
+/// (`--container-image`, `--container-mediation`); see `container_mediation` (#3133).
 #[derive(Debug)]
 struct ContainerPod {
     container_id: String,
     docker: bollard::Docker,
-    /// Only present in proxy mode (when PodSpec label `nucleus.io/proxy-mode` = "true").
+    /// Only present when the node mediates its container pods.
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
     /// Semaphore permit for concurrency limiting.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
@@ -665,6 +675,11 @@ async fn main() -> Result<(), ApiError> {
                 )));
             }
         }
+        if !args.container_mediation.runs_tool_proxy() {
+            tracing::warn!(
+                "--container-mediation=unmediated: container pods run with NO reference monitor"
+            );
+        }
         Some(Arc::new(docker))
     } else {
         None
@@ -735,6 +750,7 @@ async fn main() -> Result<(), ApiError> {
             .with_operator_identity(authority.root_minter())
             .with_federated_trust_domains(authority.caller_bindings().trust_domains()),
         container_image: args.container_image.clone(),
+        container_mediation: args.container_mediation,
         container_network: args.container_network.clone(),
         container_proxy_unix: args.container_proxy_unix,
         container_pool,
@@ -1513,11 +1529,12 @@ async fn container_env(
     state: &NodeState,
     spec: &PodSpec,
     id: Uuid,
-    proxy_mode: bool,
+    mediation: container_mediation::ContainerMediation,
     sandbox_token: &str,
     spec_yaml: &str,
 ) -> Vec<String> {
     let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+    let proxy_mode = mediation.runs_tool_proxy();
 
     if proxy_mode {
         env.extend(container_transport::proxy_env(state));
@@ -1648,23 +1665,12 @@ async fn spawn_container_pod(
         &spec_yaml_hash,
     );
 
-    // Determine mode: proxy (tool-proxy entrypoint) vs direct (image-defined entrypoint)
-    let proxy_mode = spec
-        .metadata
-        .labels
-        .get("nucleus.io/proxy-mode")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-
-    // Resolve container image: per-pod label override or node default
-    let image = spec
-        .metadata
-        .labels
-        .get("nucleus.io/container-image")
-        .cloned()
-        .unwrap_or_else(|| state.container_image.clone());
-
-    let env = container_env(state, spec, id, proxy_mode, &sandbox_token, &spec_yaml).await;
+    // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
+    let mediation = state.container_mediation;
+    let proxy_mode = mediation.runs_tool_proxy();
+    let env = container_env(state, spec, id, mediation, &sandbox_token, &spec_yaml).await;
+    let launch = container_mediation::launch(mediation, &state.container_image, &env);
+    let image = launch.image.clone();
 
     let pod_dir_abs = pod_dir
         .canonicalize()
@@ -1698,54 +1704,10 @@ async fn spawn_container_pod(
         ..Default::default()
     };
 
-    // In proxy mode: override entrypoint + cmd so we control the full command,
-    // regardless of the image's ENTRYPOINT/CMD. This avoids double-binary issues
-    // when the image has ENTRYPOINT ["nucleus-tool-proxy", "--listen", "..."].
-    // In direct mode with NUCLEUS_TASK: override entrypoint to run a shell that
-    // invokes the task via the orchestrator-supplied runner command.
-    // In direct mode without NUCLEUS_TASK: use the image's default entrypoint/cmd.
-    let has_task = env.iter().any(|e| e.starts_with("NUCLEUS_TASK="));
-    let (entrypoint, cmd) = if proxy_mode {
-        (
-            Some(vec!["nucleus-tool-proxy".to_string()]),
-            Some(vec![
-                "--spec".to_string(),
-                "/data/pod/pod.yaml".to_string(),
-                "--listen".to_string(),
-                "0.0.0.0:0".to_string(),
-                "--announce-path".to_string(),
-                "/data/pod/proxy.addr".to_string(),
-            ]),
-        )
-    } else if has_task {
-        // Direct task execution. The runner command — and any vendor-specific
-        // credential bootstrap it needs — is supplied by the orchestrator via
-        // the generic NUCLEUS_TASK_CMD env var, keeping nucleus vendor-agnostic:
-        // it executes an opaque operator-supplied command rather than a specific
-        // LLM CLI (see the project vendor-neutrality guidelines, "Integration
-        // Pattern"). Nucleus only wraps it in its own task_start/task_complete
-        // artifact markers. When no runner is
-        // supplied, fall through to the image's default entrypoint/cmd with
-        // NUCLEUS_TASK left in the environment for the image to consume.
-        match env.iter().find_map(|e| e.strip_prefix("NUCLEUS_TASK_CMD=")) {
-            Some(runner) => (
-                Some(vec!["/bin/bash".to_string(), "-c".to_string()]),
-                Some(vec![format!(
-                    "echo \"NUCLEUS_ARTIFACT type=task_start\" && \
-                     {runner} 2>&1 && \
-                     echo \"NUCLEUS_ARTIFACT type=task_complete\""
-                )]),
-            ),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
-
     let config = bollard::models::ContainerCreateBody {
-        image: Some(image.clone()),
-        entrypoint,
-        cmd,
+        image: Some(launch.image),
+        entrypoint: launch.entrypoint,
+        cmd: launch.cmd,
         env: Some(env),
         host_config: Some(host_config),
         working_dir: Some("/workspace".to_string()),
@@ -1855,7 +1817,7 @@ async fn spawn_container_pod(
         cached_exit: Mutex::new(None),
     };
 
-    info!(pod_id = %id, %image, proxy_mode, "spawned container pod");
+    info!(pod_id = %id, %image, ?mediation, "spawned container pod");
     Ok((
         DriverState::Container(Box::new(handle)),
         proxy_addr,
