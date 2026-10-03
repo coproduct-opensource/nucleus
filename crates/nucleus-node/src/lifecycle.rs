@@ -5,6 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tracing::error;
 
+/// A pod's directory under the node's state directory: where its
+/// `lifecycle.log`, logs and artifacts live. One function, so the launch path
+/// and anything that records into the directory later cannot disagree on it.
+pub(crate) fn pod_dir(state_dir: &Path, id: uuid::Uuid) -> std::path::PathBuf {
+    state_dir.join("pods").join(id.to_string())
+}
+
 /// Append a node-side pod-lifecycle event to `<pod_dir>/lifecycle.log`.
 ///
 /// Ensures every pod — including direct-task pods that never run a tool-proxy —

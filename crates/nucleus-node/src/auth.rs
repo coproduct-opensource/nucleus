@@ -157,13 +157,6 @@ impl CallerScope {
             CallerScope::NodeWide | CallerScope::CiPrincipal(_) | CallerScope::Tenant(_) => None,
         }
     }
-
-    /// A walk model's caller (`None` = the operator) as a scope. Test-only: in
-    /// production "no pod" is never read as "node-wide".
-    #[cfg(test)]
-    pub fn from_model(caller: Option<uuid::Uuid>) -> Self {
-        caller.map_or(CallerScope::NodeWide, CallerScope::Pod)
-    }
 }
 
 /// Authorization policy for nucleus operations.

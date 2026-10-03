@@ -31,6 +31,7 @@ mod envelope_verify;
 mod goal;
 mod grant;
 mod guard;
+mod host_tier;
 mod identity;
 mod image;
 mod keychain;

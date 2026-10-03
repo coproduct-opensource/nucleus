@@ -312,9 +312,37 @@ population_floor = 89
 # production path (refused Expired, not burned). 7/13.
 # 2026-09-29, merging main into the declassification branch: both affine rights
 # (Refilled from #3020, VerifiedDeclassification here) on one tree, both bounded. 8/14.
-floor_bp = 5714
+# 2026-10-01 (#3112, #2905): egress_meter::EgressCharge, the host's reservation
+# for one guest send, entered as an affine right. Unbounded it reddened CI at
+# 8/15 (53.33%). Chasing it found a real gap one layer down: EgressHold ids are
+# per-ledger (every ledger numbers from zero), so a hold settled on a ledger
+# that did not decide it released THAT ledger's same-id hold -- a NotSent
+# refunded bytes in flight, and the real hold then settled against nothing and
+# was never counted. EgressHold now carries its ledger's epoch and
+# EgressLedger::settle refuses a foreign one (EgressSettleError::ForeignHold)
+# before the id is looked up.
+# Two census corrections in the same change:
+# * A THIRD FORM OF BOUND. EgressCharge<'a> holds `&'a EgressMeter`, and only
+#   EgressMeter::admit builds one, so it cannot outlive or be settled against
+#   any meter but its issuer -- a compile error, tighter than either field.
+#   life::borrows_its_issuer credits exactly that: a lifetime the struct
+#   declares, a field whose type is `&'x Issuer` at the top (so
+#   PhantomData<&'a ()> or Option<&'a T> does not count), and an impl of
+#   Issuer that constructs the right. Copying the epoch onto the charge
+#   instead would have been a second decider of one fact (ADR 0007 G).
+# * THE CLONE WINDOW. is_clone read the 8 lines above a declaration AFTER
+#   production_region stripped comments, so a documented type's window reached
+#   the previous item: EgressHold and EgressDecision read as Clone and fell out
+#   of the population. The window now stops at the previous item's boundary.
+# Neither correction moves main: re-measured on main 2fc73eda with both, life is
+# 8/14 (57.14%) and linearity 4 on 14 types, as before. This branch measures
+# 10/17: EgressHold (epoch) and EgressCharge (issuer borrow) bounded,
+# EgressDecision -- the reserve() outcome that carries a hold -- not.
+# A-19: replacing EgressCharge's `meter: &'a EgressMeter` with an Arc drops the
+# family to 9/17 (52.94%), below this floor, and the scorecard reds.
+floor_bp = 5882
 floor_set = "measurement"
-population_floor = 14
+population_floor = 17
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

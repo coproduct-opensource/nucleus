@@ -221,6 +221,20 @@ pub struct PerformContext<'a> {
     pub upstreams: &'a [RegistryEntry],
     /// This pod's idempotency memory.
     pub ledger: &'a IdempotencyLedger,
+    /// This pod's egress balance — the SAME meter every egress path of this
+    /// pod draws from (#2905).
+    pub egress: &'a crate::egress_meter::EgressMeter,
+}
+
+/// The bytes a perform request sends toward the network that the GUEST chose.
+///
+/// The body, and the path tail — a path is as good a channel as a body, and
+/// leaving it uncounted would make it the unmetered one. The method, the
+/// base URL and the credential header are the operator's and the host's, so
+/// they are not the pod's to spend.
+#[must_use]
+pub fn upload_bytes(req: &PerformRequest) -> u64 {
+    u64::try_from(req.body.len().saturating_add(req.path.len())).unwrap_or(u64::MAX)
 }
 
 /// What a settled or in-flight key is remembered as.
@@ -457,6 +471,20 @@ where
         Reservation::Full => return refused("too many outstanding requests"),
     }
 
+    // 4b. Charge the pod's egress balance for what the guest is about to send
+    //     (#2905). After the key claim, so a replay — which sends nothing — is
+    //     never charged; before the mint, so an exhausted pod costs no token
+    //     exchange. A refusal is NAMED to the guest: the counts are its own
+    //     traffic, and "not permitted" would hide the one remedy (a larger
+    //     declared ceiling) from the person who has to apply it.
+    let charge = match ctx.egress.admit(upload_bytes(req), now_unix).await {
+        Ok(charge) => charge,
+        Err(refusal) => {
+            ctx.ledger.release(&req.idempotency_key);
+            return refused(&refusal.to_string());
+        }
+    };
+
     // 5. A federated credential is minted (or found cached) now, and not
     //    before: the approval above is the only value `refill` accepts.
     //
@@ -472,10 +500,12 @@ where
                 Ok(refilled) if refilled.valid_at(now_unix) => Some(refilled),
                 Ok(_expired) => {
                     ctx.ledger.release(&req.idempotency_key);
+                    charge.not_sent();
                     return refused("upstream call failed");
                 }
                 Err(_) => {
                     ctx.ledger.release(&req.idempotency_key);
+                    charge.not_sent();
                     return refused("upstream call failed");
                 }
             }
@@ -502,6 +532,9 @@ where
 
     let reply = match header_value {
         Some(header_value) => {
+            // Charged as sent whatever the outcome: a transport failure is
+            // ambiguous about whether the upstream saw the body.
+            charge.sent();
             let outcome = call(UpstreamCall {
                 url,
                 header_name: spec.header.clone(),
@@ -538,7 +571,10 @@ where
         // Same reason a policy refusal gives, so a guest cannot probe which
         // credentials the host holds by watching which refusals differ. This is
         // the same collapse `handle_frame` makes for queries.
-        None => refused("not permitted"),
+        None => {
+            charge.not_sent();
+            refused("not permitted")
+        }
     };
 
     ctx.ledger
@@ -627,7 +663,109 @@ mod tests {
             credentials,
             upstreams,
             ledger,
+            egress: generous_egress(),
         }
+    }
+
+    /// A meter no test outside the egress ones comes near: the default
+    /// ceiling. Leaked because `PerformContext` borrows it for the test's life.
+    fn generous_egress() -> &'static crate::egress_meter::EgressMeter {
+        let meter = crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::undeclared(),
+            std::env::temp_dir(),
+            "test-pod".to_string(),
+        );
+        Box::leak(Box::new(meter))
+    }
+
+    fn with_key(key: &str) -> PerformRequest {
+        PerformRequest {
+            idempotency_key: key.into(),
+            ..request()
+        }
+    }
+
+    /// **#2905, the defect.** A pod whose ceiling covers one request sends one;
+    /// the second, under a fresh key, is refused BEFORE the upstream is called,
+    /// the refusal names the dimension and the counts, and the host leaves a
+    /// record of the exhaustion.
+    #[tokio::test]
+    async fn a_send_past_the_egress_ceiling_is_refused_named_and_recorded() {
+        let (policy, store, ups, ledger, id) = (
+            PermissionLattice::permissive(),
+            store(),
+            vec![upstream()],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let one = upload_bytes(&request());
+        let meter = crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::new(2 * one - 1, portcullis::EgressPace::Unpaced),
+            dir.path().to_path_buf(),
+            "pod-1".to_string(),
+        );
+        let ctx = PerformContext {
+            egress: &meter,
+            ..ctx(&policy, &store, &ups, &ledger, &id)
+        };
+        let net = Upstream::default();
+
+        let first = handle_perform(&with_key("k1"), &ctx, NOW, net.caller()).await;
+        assert!(first.granted, "non-vacuity: the first send fits: {first:?}");
+
+        let second = handle_perform(&with_key("k2"), &ctx, NOW, net.caller()).await;
+        assert!(!second.granted);
+        assert_eq!(
+            net.count(),
+            1,
+            "the refused send never reached the upstream"
+        );
+        assert!(
+            second.reason.contains("egress.max_bytes")
+                && second
+                    .reason
+                    .contains(&format!("{one} of {} bytes", 2 * one - 1)),
+            "the refusal names the dimension and the counts: {:?}",
+            second.reason
+        );
+        let log = std::fs::read_to_string(dir.path().join("lifecycle.log")).unwrap_or_default();
+        assert!(log.contains("egress_budget_exhausted"), "{log}");
+
+        // A refusal claims no key: the same key retried under a larger ceiling
+        // would be a fresh call, not a replay of the refusal.
+        assert_eq!(ledger.len(), 1);
+    }
+
+    /// A replay sends nothing, so it is not charged — a guest retrying a slow
+    /// reply must not spend its budget twice on one logical send.
+    #[tokio::test]
+    async fn a_replayed_key_is_not_charged_twice() {
+        let (policy, store, ups, ledger, id) = (
+            PermissionLattice::permissive(),
+            store(),
+            vec![upstream()],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let one = upload_bytes(&request());
+        let meter = crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::new(one, portcullis::EgressPace::Unpaced),
+            dir.path().to_path_buf(),
+            "pod-1".to_string(),
+        );
+        let ctx = PerformContext {
+            egress: &meter,
+            ..ctx(&policy, &store, &ups, &ledger, &id)
+        };
+        let net = Upstream::default();
+        for _ in 0..3 {
+            let reply = handle_perform(&request(), &ctx, NOW, net.caller()).await;
+            assert!(reply.granted, "{reply:?}");
+        }
+        assert_eq!(net.count(), 1);
+        assert_eq!(meter.counted(), one);
     }
 
     /// **The non-vacuity control, first.** Every other test here asserts that
