@@ -163,6 +163,15 @@ pub enum GuestCapability {
     /// `nucleus.approval_secret`, which the 2.1.0 guest-init requires, so it
     /// exits as PID 1.
     ApprovalByPublicKey,
+    /// guest-init fetches the pod's DLC-D admission provisioning over the
+    /// workload API (`FETCH_DLC_ADMISSION`) and hands it to the tool-proxy as
+    /// `NUCLEUS_DLC_*`, and the proxy reports `dlc_admission` in its health
+    /// (#2124). `verify --tier2` provisions its pod this way and checks that
+    /// field; a guest without it answers health with no `dlc_admission` at all,
+    /// which is what #2903 reported as `dlc_admission=None`. Verified present in
+    /// `nucleus-rootfs-2.2.0-aarch64.ext4` (`/init` sends `FETCH_DLC_ADMISSION`,
+    /// the proxy carries the health field); absent from v2.1.0's source.
+    DlcAdmission,
     /// guest-init runs `nucleus-egress-probe` and prints its
     /// `NUCLEUS_EGRESS_PROBE:` verdict (#2365). The node refuses a confined pod
     /// whose console has no verdict, and it must: the probe is the only evidence
@@ -201,9 +210,10 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 6] = [
+    pub const ALL: [GuestCapability; 7] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
+        GuestCapability::DlcAdmission,
         GuestCapability::EgressAttestation,
         GuestCapability::SvidOnTmpfs,
         GuestCapability::WorkloadDoor,
@@ -215,6 +225,7 @@ impl GuestCapability {
         match self {
             GuestCapability::CaBundle => FirstShipped::Release("2.1.0"),
             GuestCapability::ApprovalByPublicKey => FirstShipped::Release("2.2.0"),
+            GuestCapability::DlcAdmission => FirstShipped::Release("2.2.0"),
             // Both merged on 2026-09-02, after `v2.2.0` (8a452030b) was tagged.
             GuestCapability::EgressAttestation => FirstShipped::NotYet,
             GuestCapability::SvidOnTmpfs => FirstShipped::NotYet,
@@ -235,6 +246,12 @@ impl GuestCapability {
                  verification against the node's public key, so this node sends \
                  `nucleus.approval_pubkeys` and no longer sends `nucleus.approval_secret`, \
                  which an older guest-init still requires"
+            }
+            GuestCapability::DlcAdmission => {
+                "#2124 delivers a pod's DLC-D admission provisioning to the guest over the \
+                 workload API (FETCH_DLC_ADMISSION) and has the tool-proxy report \
+                 `dlc_admission` in its health; an older guest never fetches it, so the \
+                 admission gate stays unarmed whatever the pod's dlc_* labels say"
             }
             GuestCapability::EgressAttestation => {
                 "#2365 made the node require the guest's `NUCLEUS_EGRESS_PROBE:` verdict \
@@ -572,7 +589,8 @@ mod tests {
         for c in GuestCapability::ALL {
             let next = match c {
                 GuestCapability::CaBundle => GuestCapability::ApprovalByPublicKey,
-                GuestCapability::ApprovalByPublicKey => GuestCapability::EgressAttestation,
+                GuestCapability::ApprovalByPublicKey => GuestCapability::DlcAdmission,
+                GuestCapability::DlcAdmission => GuestCapability::EgressAttestation,
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
                 GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
                 GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
@@ -592,6 +610,7 @@ mod tests {
             ("2.0.0", GuestCapability::CaBundle),
             ("1.0.9", GuestCapability::CaBundle),
             ("2.1.0", GuestCapability::ApprovalByPublicKey),
+            ("2.1.0", GuestCapability::DlcAdmission),
         ] {
             match guest_skew(broken) {
                 Err(GuestSkew::Lacks { missing, .. }) => {

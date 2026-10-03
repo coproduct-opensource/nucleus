@@ -144,6 +144,11 @@ pub(crate) fn workload_home(work_dir: &std::path::Path) -> std::path::PathBuf {
 /// per-pod secret in its environment, so the workload MUST run as a distinct
 /// uid or it could read that environment via `/proc/<pid>/environ`. A pod may
 /// override with `workload.uid`, but never to the runtime's own uid.
+///
+/// Test-only since #3120: production code no longer names a default uid at
+/// all — `nucleus::ChildConfinement::workload` applies it, so the admission
+/// and the spawn cannot disagree about it.
+#[cfg(test)]
 pub(crate) const DEFAULT_WORKLOAD_UID: u32 = nucleus::DEFAULT_CHILD_UID;
 
 ///
@@ -191,7 +196,11 @@ pub(crate) struct AdmittedWorkloadPlan {
     command: String,
     args: Vec<String>,
     work_dir: std::path::PathBuf,
-    uid: Option<u32>,
+    /// The uid boundary the admission decided, and the ONLY one the spawn
+    /// applies (#3120): what was checked and what is enforced are this one
+    /// value, so "admitted as separated, spawned at the runtime's uid" has no
+    /// line of code that could express it.
+    confinement: nucleus::ChildConfinement,
     /// The exact env that will cross, already admitted. Paired with `classified`
     /// so the receipt reports the same set the admission checked.
     env: BTreeMap<String, String>,
@@ -204,7 +213,7 @@ impl std::fmt::Debug for AdmittedWorkloadPlan {
         f.debug_struct("AdmittedWorkloadPlan")
             .field("command", &self.command)
             .field("env_entries", &self.classified.len())
-            .field("uid", &self.uid)
+            .field("confinement", &self.confinement)
             .finish_non_exhaustive()
     }
 }
@@ -216,9 +225,11 @@ pub(crate) enum RunsAs {
     /// The runtime is root, so `spawn_admitted` drops the child to the admitted
     /// uid (the guest case).
     Dropped(u32),
-    /// The runtime is not root and cannot change the child's uid, so the child
-    /// runs as the runtime's own (a test harness, or a host-side proxy). The
-    /// launch receipt reports this as not hardened.
+    /// The declared bare host tier: a non-root runtime under
+    /// `ContainmentMode::Unsandboxed`, whose operator opted in, runs the child
+    /// as its own uid. The launch receipt reports this as `shared_unsandboxed`
+    /// and not hardened. A runtime that cannot drop reaches no other case: the
+    /// admission refuses it by name (#3120).
     Inherited(u32),
 }
 
@@ -258,17 +269,12 @@ impl AdmittedWorkloadPlan {
     /// The one decider of the child's uid, shared by `spawn_admitted` and the
     /// door (ADR 0007 G-1).
     pub(crate) fn runs_as(&self) -> RunsAs {
-        match self.confinement().drop_uid() {
-            Some(uid) => RunsAs::Dropped(uid),
-            None => RunsAs::Inherited(nix_getuid()),
+        // Read off the confinement the admission decided and the spawn
+        // applies, so the door and the child cannot disagree (#3120).
+        match self.confinement.child_uid() {
+            nucleus::ChildUid::Distinct(uid) => RunsAs::Dropped(uid),
+            nucleus::ChildUid::SharedWithRuntime => RunsAs::Inherited(nix_getuid()),
         }
-    }
-
-    /// How `spawn_admitted` confines this workload: the same
-    /// `nucleus::ChildConfinement` rule a MicroVM `/v1/run` child gets, so the
-    /// door's uid and the spawned child's uid come from one decision.
-    pub(crate) fn confinement(&self) -> nucleus::ChildConfinement {
-        nucleus::ChildConfinement::workload(self.uid.unwrap_or(DEFAULT_WORKLOAD_UID))
     }
 
     /// The uid the workload door admits for this launch.
@@ -359,28 +365,33 @@ impl WorkloadLaunch {
     /// function the FM-5 theorems are proven over. A `Secret`-labelled entry
     /// reaching this point is refused here rather than trusted to have been kept
     /// out upstream.
-    pub(crate) fn admit(self) -> Result<AdmittedWorkloadPlan, Refused> {
+    pub(crate) fn admit(
+        self,
+        containment: nucleus::ContainmentMode,
+        opt_in: nucleus::UnsandboxedOptIn,
+    ) -> Result<AdmittedWorkloadPlan, Refused> {
         // The workload must never run as the runtime's uid. The runtime holds
         // every per-pod secret in its own environment, and Linux lets a process
         // read `/proc/<pid>/environ` of any process sharing its uid — so a
         // same-uid workload reads the broker/task/approval/DLC secrets straight
         // out of the runtime. A distinct unprivileged uid is the boundary, and
         // it must hold for EVERY pod, not only when credentialed egress is
-        // configured: the runtime holds those secrets regardless of egress (this
-        // supersedes the egress-only coupling in
+        // configured (this supersedes the egress-only coupling in
         // `reject_credential_readable_workload`, kept as a node-side pre-check).
         //
-        // A pod that sets no `workload.uid` gets a distinct default unprivileged
-        // uid rather than silently running as the runtime's user; an explicit
-        // uid equal to the runtime's own is refused — it re-opens the hole.
-        let effective_uid = self.uid.unwrap_or(DEFAULT_WORKLOAD_UID);
-        if effective_uid == nix_getuid() {
-            return Err(Refused(format!(
-                "the workload's uid ({effective_uid}) is the runtime's own, so it could read the \
-                 runtime's environment — every per-pod secret — via /proc/<pid>/environ. Set \
-                 `workload.uid` to a distinct unprivileged uid."
-            )));
-        }
+        // The decision is `nucleus::ChildConfinement::workload`, and the plan
+        // carries its result to the spawn (#3120). It used to be two: this
+        // function refused `uid == runtime`, and the spawn then dropped only
+        // when the runtime was root — so on a non-root runtime a workload
+        // admitted as "distinct" ran at the runtime's uid anyway. Now a uid
+        // boundary this runtime cannot enforce is a refusal here, by name. The
+        // one same-uid outcome is the declared bare host tier
+        // (`ContainmentMode::Unsandboxed`, no `workload.uid`), which the
+        // confinement reports as such and the spawn announces -- and only
+        // with the operator's explicit `--unsandboxed` (owner decision 1,
+        // 2026-10-02); without it the bare tier refuses by name too.
+        let confinement = nucleus::ChildConfinement::workload(containment, self.uid, opt_in)
+            .map_err(|e| Refused(e.to_string()))?;
 
         // Reserved-namespace fail-safe — closes the `_ => OrdinaryData`
         // fallthrough in `env_classifier`. A `NUCLEUS_*` key the classifier does
@@ -449,7 +460,7 @@ impl WorkloadLaunch {
             command: self.command,
             args: self.args,
             work_dir: self.work_dir,
-            uid: Some(effective_uid),
+            confinement,
             env: self.env,
             classified: self.classified,
         })
@@ -508,13 +519,28 @@ pub(crate) fn spawn_admitted(
     // that marks every inherited fd above 2 close-on-exec (the runc
     // CVE-2024-21626 lesson) and, once dropped, sets no_new_privs and rlimits.
     //
-    // Only root can drop, which the guest runtime is. Under a non-root test
-    // harness the confinement cannot drop and says so (`drop_uid() == None`);
-    // the admit-time uid logic (which guarantees `plan.uid` is a distinct
-    // unprivileged uid, never the runtime's) is unit-tested directly. In the
-    // guest the workload therefore always runs as that distinct uid and cannot
-    // read the runtime's secret-bearing environ via `/proc/<pid>/environ`.
-    let confinement = plan.confinement();
+    // NOT re-decided here: the plan carries the confinement its admission
+    // decided, and this applies exactly that (#3120). A runtime that cannot
+    // drop never reaches this line with a separated plan — the admission
+    // refused it by name. The one same-uid plan is the declared bare host
+    // tier, announced below.
+    let confinement = plan.confinement;
+    if confinement.is_unsandboxed() {
+        tracing::warn!(
+            command = %plan.command,
+            runtime_uid = nix_getuid(),
+            "AUDIT: UNSANDBOXED workload — the bare host tier was declared and the operator \
+             opted in (--unsandboxed), so the workload runs as the runtime's own uid and CAN \
+             read the runtime's environment (every per-pod secret) via /proc/<pid>/environ. \
+             Only a root runtime or a microVM separates it."
+        );
+        crate::console_line(&format!(
+            "[workload] UNSANDBOXED: {:?} runs as the runtime's uid ({}) and can read its \
+             secrets; this tier is not a uid boundary",
+            plan.command,
+            nix_getuid()
+        ));
+    }
     let drop_uid = confinement.drop_uid();
     let hardened = confinement.restricts();
     // The default HOME, made before the chown below so the same best-effort
@@ -633,10 +659,11 @@ pub(crate) struct LaunchReceipt {
     pub(crate) env: Vec<ReceiptEnvEntry>,
     /// stdin/stdout/stderr dispositions as set by `spawn_admitted`.
     pub(crate) stdio: [&'static str; 3],
-    /// The uid boundary, three-valued so "no boundary" and "boundary not
-    /// required" stay distinct (the `nucleus.dlc_admission` unarmed-vs-refused
-    /// lesson): `distinct` (a uid different from the runtime's), `unset` (none).
-    pub(crate) uid_boundary: &'static str,
+    /// The uid boundary the spawn actually applied, read off the plan's
+    /// confinement — never off the requested uid. Before #3120 it read the
+    /// request, so a non-root runtime that ran the workload at its own uid
+    /// still recorded `distinct`.
+    pub(crate) uid_boundary: UidBoundary,
     /// Whether the async-signal-safe hardening hook (groups dropped, gid set,
     /// no_new_privs, rlimits) was applied.
     pub(crate) hardened: bool,
@@ -648,6 +675,32 @@ pub(crate) struct LaunchReceipt {
     /// Commit the resolved values actually passed to env_clear/env, separately
     /// from the authority inventory. Never expose those values in the receipt.
     pub(crate) environment: nucleus_spec::workload_result::EnvironmentIdentity,
+}
+
+/// Whether the workload runs under a uid other than the runtime's.
+///
+/// Two values, because there are two outcomes: the admission either decided a
+/// uid drop, or the bare host tier was declared and the workload shares the
+/// runtime's uid. "Wanted a boundary and could not have one" is a refusal at
+/// admission, not a third value here (#3120).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum UidBoundary {
+    /// The workload was dropped to a uid that is not the runtime's.
+    Distinct,
+    /// The declared bare host tier: the workload runs as the runtime's uid
+    /// and can read its environment.
+    SharedUnsandboxed,
+}
+
+impl UidBoundary {
+    /// The receipt preimage's spelling, equal to the serialized one.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Distinct => "distinct",
+            Self::SharedUnsandboxed => "shared_unsandboxed",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -673,19 +726,20 @@ impl LaunchReceipt {
             })
             .collect();
         let stdio = ["null", "piped", "piped"];
-        let uid_boundary = match plan.uid {
-            Some(_) => "distinct",
-            None => "unset",
+        let uid_boundary = match plan.confinement.child_uid() {
+            nucleus::ChildUid::Distinct(_) => UidBoundary::Distinct,
+            nucleus::ChildUid::SharedWithRuntime => UidBoundary::SharedUnsandboxed,
         };
         let argv_len = plan.args.len();
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={uid_boundary}|hardened={hardened}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
+            uid_boundary.as_str(),
         );
         for e in &env {
             preimage.push_str(&format!(
@@ -750,6 +804,8 @@ pub(crate) fn start_if_configured(
     spec: &nucleus_spec::PodSpec,
     door_path: &std::path::Path,
     door_app: axum::Router,
+    containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
 ) -> Result<Option<(tokio::process::Child, LaunchReceipt)>, crate::ApiError> {
     let Some(w) = spec.spec.workload.as_ref() else {
         return Ok(None);
@@ -761,7 +817,7 @@ pub(crate) fn start_if_configured(
         &spec.spec.work_dir,
         &spec.spec.credentialed_egress,
     )
-    .admit()
+    .admit(containment, opt_in)
     .map_err(|e| {
         crate::ApiError::Spec(format!("refused to launch workload {:?}: {e}", w.command))
     })?;
@@ -844,7 +900,7 @@ mod tests {
             "test -d \"$HOME\" && printf %s \"$HOME\"".into(),
         ];
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit()
+            .admit(HARNESS, OPTED_IN)
             .unwrap();
         let (child, _receipt) = spawn_admitted(plan).unwrap();
         let output = child.wait_with_output().await.unwrap();
@@ -906,7 +962,7 @@ mod tests {
             dir.path(),
             &[],
         )
-        .admit();
+        .admit(HARNESS, OPTED_IN);
         let err = refused.expect_err("a proxy credential must not cross");
         assert!(err.to_string().contains("workload door"), "{err}");
     }
@@ -932,7 +988,7 @@ mod tests {
     fn the_door_admits_the_uid_the_child_runs_as() {
         let dir = tempfile::tempdir().expect("tempdir");
         let plan = WorkloadLaunch::build(&spec_with(&[]), DOOR, dir.path(), &[])
-            .admit()
+            .admit(HARNESS, OPTED_IN)
             .expect("a clean spec admits");
         let expected = if nix_getuid() == 0 {
             RunsAs::Dropped(DEFAULT_WORKLOAD_UID)
@@ -961,7 +1017,7 @@ mod tests {
             dir.path(),
             &[],
         )
-        .admit();
+        .admit(HARNESS, OPTED_IN);
         assert!(
             refused.is_err(),
             "an unclassified NUCLEUS_* key must be refused, not delivered as OrdinaryData"
@@ -971,7 +1027,7 @@ mod tests {
         // (NUCLEUS_TOOL_PROXY_URL) is allowlisted and must still admit.
         assert!(
             WorkloadLaunch::build(&spec_with(&[]), url, dir.path(), &[])
-                .admit()
+                .admit(HARNESS, OPTED_IN)
                 .is_ok(),
             "NUCLEUS_TOOL_PROXY_URL is public runtime config and must still admit"
         );
@@ -984,58 +1040,218 @@ mod tests {
                 dir.path(),
                 &[],
             )
-            .admit()
+            .admit(HARNESS, OPTED_IN)
             .is_ok(),
             "a non-NUCLEUS_ operator var must be unaffected by the reserved-namespace fence"
         );
     }
 
+    /// The containment the harness tests below declare: the bare host tier,
+    /// the one posture in which a non-root harness may run a workload at all.
+    /// Under a root harness it still drops, exactly as before #3120.
+    const HARNESS: nucleus::ContainmentMode = nucleus::ContainmentMode::Unsandboxed;
+
+    /// ...and the harness opts in to it explicitly, as `--unsandboxed` does
+    /// (owner decision 1): declaring the mode alone is refused.
+    const OPTED_IN: nucleus::UnsandboxedOptIn = nucleus::UnsandboxedOptIn::Explicit;
+
     /// **The workload never runs as the runtime's uid — for EVERY pod, not only
     /// under credentialed egress.** The runtime holds every per-pod secret in
     /// its environment, and Linux lets a same-uid process read it via
     /// `/proc/<pid>/environ`. A pod that sets no `workload.uid` is assigned a
-    /// distinct default uid rather than silently inheriting the runtime's — the
-    /// case that used to be exposed whenever no credentialed egress was set.
+    /// distinct default uid rather than silently inheriting the runtime's —
+    /// when the runtime can drop. When it cannot, the admission refuses BY NAME
+    /// (#3120); it used to admit "distinct" and spawn at the runtime's uid.
+    /// Each runtime uid asserts its own exact outcome.
     #[test]
-    fn admit_assigns_a_distinct_default_uid_when_none_is_set() {
+    fn admit_assigns_a_distinct_default_uid_or_refuses_by_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let plan = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
-            .admit()
-            .expect("a clean spec admits");
-        assert_eq!(plan.uid, Some(DEFAULT_WORKLOAD_UID));
-        assert_ne!(
-            plan.uid,
-            Some(nix_getuid()),
-            "the default workload uid must never equal the runtime's own"
-        );
+        let admitted = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
+            .admit(nucleus::ContainmentMode::MicroVM, OPTED_IN);
+        match nix_getuid() {
+            0 => assert_eq!(
+                admitted
+                    .expect("a root runtime admits")
+                    .confinement
+                    .child_uid(),
+                nucleus::ChildUid::Distinct(DEFAULT_WORKLOAD_UID)
+            ),
+            _ => {
+                let refused = admitted.expect_err("a non-root runtime cannot separate");
+                assert!(
+                    refused.0.contains("child separation unavailable"),
+                    "refused by name: {refused}"
+                );
+            }
+        }
+    }
+
+    /// **Owner decision 1 (2026-10-02), at the admission.** Declaring the
+    /// bare host tier is not enough for a workload to run at a non-root
+    /// runtime's uid: without the explicit opt-in the admission refuses BY
+    /// NAME, naming `--unsandboxed`. Red before the decision: `admit` took no
+    /// opt-in and admitted it. A root runtime drops with or without one.
+    #[test]
+    fn a_bare_tier_workload_without_the_opt_in_is_refused_by_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let admitted = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
+            .admit(HARNESS, nucleus::UnsandboxedOptIn::Absent);
+        match nix_getuid() {
+            0 => assert_eq!(
+                admitted
+                    .expect("a root runtime drops")
+                    .confinement
+                    .child_uid(),
+                nucleus::ChildUid::Distinct(DEFAULT_WORKLOAD_UID)
+            ),
+            _ => {
+                let refused = admitted.expect_err("no opt-in, no same-uid workload");
+                assert!(
+                    refused.0.contains("unsandboxed execution not opted in")
+                        && refused.0.contains("--unsandboxed"),
+                    "refused by name: {refused}"
+                );
+            }
+        }
     }
 
     /// An explicit uid equal to the runtime's own re-opens the /proc/environ
-    /// hole and must be refused — the default cannot be overridden back to root.
+    /// hole and must be refused — in every mode, the bare tier included.
     #[test]
     fn admit_refuses_a_workload_sharing_the_runtime_uid() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut spec = spec_with(&[]);
         spec.uid = Some(nix_getuid());
-        assert!(
-            WorkloadLaunch::build(&spec, "u", dir.path(), &[])
-                .admit()
-                .is_err(),
-            "a workload sharing the runtime uid must be refused"
-        );
+        for mode in [
+            nucleus::ContainmentMode::Unsandboxed,
+            nucleus::ContainmentMode::HostHardened,
+            nucleus::ContainmentMode::MicroVM,
+        ] {
+            let refused = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
+                .admit(mode, OPTED_IN)
+                .expect_err("a workload sharing the runtime uid must be refused");
+            assert!(
+                refused.0.contains("shares the runtime's uid"),
+                "{mode:?}: {refused}"
+            );
+        }
     }
 
-    /// A distinct explicit uid is preserved, not overwritten by the default.
+    /// A distinct explicit uid is honoured exactly, or refused — never
+    /// silently replaced by the runtime's (the bare tier included: only the
+    /// unset default may collapse to it).
     #[test]
-    fn admit_preserves_an_explicit_distinct_uid() {
+    fn admit_honours_an_explicit_distinct_uid_or_refuses_it() {
         let dir = tempfile::tempdir().expect("tempdir");
         let mut spec = spec_with(&[]);
         let distinct = nix_getuid().wrapping_add(4242);
         spec.uid = Some(distinct);
-        let plan = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
-            .admit()
-            .expect("a distinct uid admits");
-        assert_eq!(plan.uid, Some(distinct));
+        for mode in [
+            nucleus::ContainmentMode::Unsandboxed,
+            nucleus::ContainmentMode::MicroVM,
+        ] {
+            let admitted = WorkloadLaunch::build(&spec, "u", dir.path(), &[]).admit(mode, OPTED_IN);
+            match nix_getuid() {
+                0 => assert_eq!(
+                    admitted
+                        .expect("a root runtime drops")
+                        .confinement
+                        .child_uid(),
+                    nucleus::ChildUid::Distinct(distinct)
+                ),
+                _ => assert!(
+                    admitted.is_err_and(|r| r.0.contains("child separation unavailable")),
+                    "{mode:?}: an explicit uid a non-root runtime cannot honour is refused"
+                ),
+            }
+        }
+    }
+
+    /// Spawn `/bin/sh -c 'id -u; cat /proc/<this pid>/environ | wc -c'` as a
+    /// workload admitted under `mode`; `Err` is the admission's refusal.
+    async fn spawn_uid_probe(
+        mode: nucleus::ContainmentMode,
+        opt_in: nucleus::UnsandboxedOptIn,
+    ) -> Result<(String, usize, LaunchReceipt), Refused> {
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec = spec_with(&[]);
+        spec.command = "/bin/sh".into();
+        spec.args = vec![
+            "-c".into(),
+            format!(
+                "id -u; cat /proc/{}/environ 2>/dev/null | wc -c",
+                std::process::id()
+            ),
+        ];
+        let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
+            .admit(mode, opt_in)?;
+        let (child, receipt) = spawn_admitted(plan).unwrap();
+        let out = child.wait_with_output().await.unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let mut lines = text.lines();
+        let uid = lines.next().unwrap_or_default().trim().to_string();
+        let environ_bytes = lines
+            .next()
+            .and_then(|l| l.trim().parse().ok())
+            .expect("wc printed a count");
+        Ok((uid, environ_bytes, receipt))
+    }
+
+    /// **#3120 item 2, on a real spawn.** A workload admitted for a guest
+    /// (`MicroVM`) never runs at the runtime's uid and never reads its
+    /// environment. Red on the parent commit, as uid 1001: admitted with
+    /// `uid_boundary=distinct`, `id -u` printed 1001, and the workload read
+    /// 2006 bytes of the runtime's environ. Each runtime uid asserts its own
+    /// exact outcome.
+    #[tokio::test]
+    async fn a_guest_workload_never_runs_at_the_runtimes_uid() {
+        let runtime = nix_getuid();
+        assert!(
+            std::fs::read(format!("/proc/{}/environ", std::process::id()))
+                .is_ok_and(|b| !b.is_empty()),
+            "positive control: the runtime reads its own environ"
+        );
+        match (
+            runtime,
+            spawn_uid_probe(nucleus::ContainmentMode::MicroVM, OPTED_IN).await,
+        ) {
+            (0, Ok((uid, environ_bytes, receipt))) => {
+                assert_eq!(uid, DEFAULT_WORKLOAD_UID.to_string());
+                assert_eq!(environ_bytes, 0, "the dropped workload read the environ");
+                assert_eq!(receipt.uid_boundary, UidBoundary::Distinct);
+            }
+            (0, Err(refused)) => panic!("a root runtime must drop, not refuse: {refused}"),
+            (_, Ok((uid, environ_bytes, _))) => panic!(
+                "a non-root runtime ran a guest workload as uid {uid} and it read \
+                 {environ_bytes} bytes of the runtime's environ"
+            ),
+            (_, Err(refused)) => assert!(
+                refused.0.contains("child separation unavailable"),
+                "refused by name: {refused}"
+            ),
+        }
+    }
+
+    /// The declared bare host tier is the ONE same-uid outcome, and it says
+    /// so: the receipt records `shared_unsandboxed`, not `distinct`, and the
+    /// workload really can read the runtime's environ — the posture is what it
+    /// claims, in both directions. A root runtime drops even here.
+    #[tokio::test]
+    async fn the_bare_tier_runs_at_the_runtimes_uid_and_says_so() {
+        let runtime = nix_getuid();
+        let (uid, environ_bytes, receipt) = spawn_uid_probe(HARNESS, OPTED_IN)
+            .await
+            .expect("the declared bare tier admits the default uid");
+        if runtime == 0 {
+            assert_eq!(uid, DEFAULT_WORKLOAD_UID.to_string());
+            assert_eq!(environ_bytes, 0);
+            assert_eq!(receipt.uid_boundary, UidBoundary::Distinct);
+        } else {
+            assert_eq!(uid, runtime.to_string());
+            assert!(environ_bytes > 0, "a same-uid workload reads the environ");
+            assert_eq!(receipt.uid_boundary, UidBoundary::SharedUnsandboxed);
+            assert!(!receipt.hardened);
+        }
     }
 
     /// **The capability does not reach a real child.** This is the property; the
@@ -1095,7 +1311,7 @@ mod tests {
         // Through the real path: build → admit → spawn_admitted. A plan that did
         // not classify-and-admit every entry could not be constructed.
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit()
+            .admit(HARNESS, OPTED_IN)
             .expect("a clean spec must admit");
         let (mut child, receipt) = spawn_admitted(plan).expect("sh must be spawnable");
         let status = child.wait().await.expect("child ran");
@@ -1167,20 +1383,29 @@ mod tests {
         // the noisy cargo-test harness (which itself holds high, non-CLOEXEC
         // fds), so it also proves the close_range call actually fires rather
         // than relying on the parent's fds happening to be CLOEXEC.
+        //
+        // Only where the confinement sweeps fds: a dropped workload. Since
+        // #3120 a non-root harness runs the workload on the declared,
+        // opted-in bare tier, which sweeps nothing by design (it is not a uid
+        // boundary either); the same `ChildConfinement` mechanism is asserted
+        // on a non-root runtime by
+        // `nucleus::command::tests::a_confined_child_inherits_no_fd_beyond_its_stdio`.
         #[cfg(target_os = "linux")]
         {
-            let fds = std::fs::read_to_string(&f_fd).unwrap_or_default();
-            let count = fds.split_whitespace().filter(|s| !s.is_empty()).count();
-            // Non-vacuity: stdio must be present, so the count is at least 3.
-            assert!(
-                count >= 3,
-                "the child must have its three standard fds; got:\n{fds}"
-            );
-            assert!(
-                count <= 4,
-                "the workload inherited a file descriptor beyond its own stdio — \
-                 close_range did not shut every parent fd. Open fds were:\n{fds}"
-            );
+            if receipt.hardened {
+                let fds = std::fs::read_to_string(&f_fd).unwrap_or_default();
+                let count = fds.split_whitespace().filter(|s| !s.is_empty()).count();
+                // Non-vacuity: stdio must be present, so the count is at least 3.
+                assert!(
+                    count >= 3,
+                    "the child must have its three standard fds; got:\n{fds}"
+                );
+                assert!(
+                    count <= 4,
+                    "the workload inherited a file descriptor beyond its own stdio — \
+                     close_range did not shut every parent fd. Open fds were:\n{fds}"
+                );
+            }
         }
     }
 
@@ -1458,7 +1683,7 @@ mod tests {
         spec.command = "/usr/bin/env".into();
         spec.args.clear();
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit()
+            .admit(HARNESS, OPTED_IN)
             .unwrap();
         let (child, receipt) = spawn_admitted(plan).unwrap();
         let output = child.wait_with_output().await.unwrap();

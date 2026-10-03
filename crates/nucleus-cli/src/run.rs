@@ -615,8 +615,13 @@ async fn run_local(
         "Spawning local tool-proxy"
     );
 
+    // The bare host tier, declared: this command passes the tool-proxy's
+    // explicit opt-in and says so (owner decision 1, 2026-10-02).
+    crate::host_tier::announce("run --local");
+
     // Spawn tool-proxy as subprocess
     let mut proxy_child = tokio::process::Command::new(&proxy_bin)
+        .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")

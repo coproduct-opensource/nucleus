@@ -354,6 +354,8 @@ pub struct PodBrokerConfig {
     pub upstreams: Arc<Vec<RegistryEntry>>,
     /// The capability the guest is served and this listener verifies.
     pub broker_secret: Arc<Vec<u8>>,
+    /// This pod's egress balance, shared with every other egress path it has.
+    pub egress: Arc<crate::egress_meter::EgressMeter>,
 }
 
 /// One pod's broker, owned, as the listener task needs it.
@@ -376,6 +378,10 @@ pub struct PodBroker {
     pub upstreams: Arc<Vec<RegistryEntry>>,
     /// How to make an outbound call.
     pub caller: UpstreamCaller,
+    /// This pod's egress balance. Per POD, like the idempotency ledger — but
+    /// built by the launch path, not here, so the pod's other egress paths
+    /// hold the same one.
+    pub egress: Arc<crate::egress_meter::EgressMeter>,
 }
 
 /// Everything the host needs to serve one pod, and nothing global.
@@ -399,6 +405,8 @@ pub struct BrokerServing<'a> {
     pub upstreams: &'a [RegistryEntry],
     /// This pod's idempotency memory.
     pub ledger: &'a IdempotencyLedger,
+    /// This pod's egress balance.
+    pub egress: &'a crate::egress_meter::EgressMeter,
     /// How to make the call.
     pub upstream_caller: UpstreamCaller,
 }
@@ -523,6 +531,7 @@ pub async fn serve_connection_with_timeout<S>(
                         credentials: serving.credentials,
                         upstreams: serving.upstreams,
                         ledger: serving.ledger,
+                        egress: serving.egress,
                     };
                     let caller = Arc::clone(&serving.upstream_caller);
                     encode(
@@ -628,8 +637,23 @@ pub(crate) mod serving_tests {
             broker_secret: secret,
             upstreams,
             ledger,
+            egress: test_egress(),
             upstream_caller: caller,
         }
+    }
+
+    /// The default (finite) ceiling, which no test here approaches. Leaked
+    /// because `BrokerServing` borrows it for the test's life.
+    pub(super) fn test_egress() -> &'static crate::egress_meter::EgressMeter {
+        Box::leak(Box::new(test_egress_arc()))
+    }
+
+    pub(crate) fn test_egress_arc() -> Arc<crate::egress_meter::EgressMeter> {
+        crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::undeclared(),
+            std::env::temp_dir(),
+            "test-pod".to_string(),
+        )
     }
 
     /// Send bytes verbatim, signed or not.
@@ -1180,6 +1204,7 @@ pub async fn serve_broker(
         broker_secret,
         upstreams,
         caller,
+        egress,
     } = pod;
     let permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
     // One ledger for the LIFETIME OF THE LISTENER, which is the lifetime of the
@@ -1205,6 +1230,7 @@ pub async fn serve_broker(
                         let upstreams = Arc::clone(&upstreams);
                         let ledger = Arc::clone(&ledger);
                         let caller = Arc::clone(&caller);
+                        let egress = Arc::clone(&egress);
                         tokio::spawn(async move {
                             serve_connection(
                                 stream,
@@ -1217,6 +1243,7 @@ pub async fn serve_broker(
                                         .map(|v| v.as_slice()),
                                     upstreams: &upstreams,
                                     ledger: &ledger,
+                                    egress: &egress,
                                     upstream_caller: caller,
                                 },
                             )
@@ -1291,6 +1318,7 @@ impl BrokerListener {
             credentials,
             upstreams,
             broker_secret,
+            egress,
         } = pod;
         let socket_path = broker_socket_path(uds_path, port);
         let listener = prepare_socket(&socket_path)?;
@@ -1340,6 +1368,7 @@ impl BrokerListener {
                     broker_secret: Some(broker_secret),
                     upstreams,
                     caller,
+                    egress,
                 },
                 async {
                     let _ = rx.await;
@@ -1484,6 +1513,7 @@ mod listener_lifecycle_tests {
                 credentials: store("api.example.test", "v"),
                 upstreams: Arc::new(Vec::new()),
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
+                egress: serving_tests::test_egress_arc(),
             },
             None,
         )
@@ -1511,6 +1541,7 @@ mod listener_lifecycle_tests {
                 credentials: store("api.example.test", "v"),
                 upstreams: Arc::new(Vec::new()),
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
+                egress: serving_tests::test_egress_arc(),
             },
             None,
         )
@@ -1546,6 +1577,7 @@ mod listener_lifecycle_tests {
                 credentials: store("api.example.test", "v"),
                 upstreams: Arc::new(Vec::new()),
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
+                egress: serving_tests::test_egress_arc(),
             },
             None,
         )
@@ -1676,6 +1708,7 @@ mod listener_tests {
                 broker_secret: Some(std::sync::Arc::new(TEST_SECRET.to_vec())),
                 upstreams: Arc::new(Vec::new()),
                 caller,
+                egress: serving_tests::test_egress_arc(),
             },
             async {
                 let _ = rx.await;
@@ -1696,6 +1729,83 @@ mod listener_tests {
         assert!(
             !reply.contains("super-secret-token"),
             "the credential crossed the socket: {reply}"
+        );
+
+        let _ = tx.send(());
+        let _ = tokio::time::timeout(Duration::from_secs(2), server).await;
+    }
+
+    /// **#2905: one balance per pod, across connections.** The listener serves
+    /// each connection on its own task; were the egress meter per-connection,
+    /// every new socket would get a fresh ceiling and the bound would be
+    /// decoration. Two connections, a ceiling that fits one send: the second
+    /// is refused by name and never reaches the upstream.
+    #[tokio::test]
+    async fn every_connection_draws_from_the_pods_one_egress_balance() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broker.sock");
+        let listener = prepare_socket(&path).expect("bind");
+
+        let frame = |key: &str| {
+            serde_json::json!({
+                "operation": "WebFetch",
+                "target": "model-api",
+                "justification": "routine",
+                "idempotency_key": key,
+                "path": "/messages",
+                "body": b"{\"prompt\":\"hi\"}".to_vec(),
+            })
+            .to_string()
+        };
+        let one: nucleus_cred_protocol::PerformRequest =
+            serde_json::from_str(&frame("k")).expect("a perform request");
+        let one = crate::broker_perform::upload_bytes(&one);
+
+        let mut s = nucleus_cred_broker::CredentialStore::new();
+        s.insert("model-api", Credential::new("upstream-token"));
+        let (caller, seen) = serving_tests::recording_caller();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(serve_broker(
+            listener,
+            PodBroker {
+                identity: who(),
+                policy: Arc::new(PermissionLattice::permissive()),
+                credentials: Arc::new(PodCredentials::static_only(s)),
+                broker_secret: Some(Arc::new(TEST_SECRET.to_vec())),
+                upstreams: Arc::new(vec![RegistryEntry::env(
+                    nucleus_spec::CredentialedEgressSpec {
+                        name: "model-api".into(),
+                        upstream: "https://upstream.invalid/v1".into(),
+                        credential_env: "NUCLEUS_TEST_TRANSPORT_CRED".into(),
+                        header: "authorization".into(),
+                        value_prefix: "Bearer ".into(),
+                    },
+                )]),
+                caller,
+                egress: crate::egress_meter::EgressMeter::new(
+                    portcullis::EgressCeiling::new(one, portcullis::EgressPace::Unpaced),
+                    dir.path().to_path_buf(),
+                    "pod-1".to_string(),
+                ),
+            },
+            async {
+                let _ = rx.await;
+            },
+        ));
+
+        let first = request_over_socket(&path, &sign(&frame("k1")))
+            .await
+            .expect("served");
+        assert!(first.contains("\"granted\":true"), "non-vacuity: {first}");
+        let second = request_over_socket(&path, &sign(&frame("k2")))
+            .await
+            .expect("served");
+        assert!(second.contains("\"granted\":false"), "reply: {second}");
+        assert!(second.contains("egress.max_bytes"), "reply: {second}");
+        assert_eq!(
+            seen.lock().expect("not poisoned").len(),
+            1,
+            "the second connection's send never reached the upstream"
         );
 
         let _ = tx.send(());

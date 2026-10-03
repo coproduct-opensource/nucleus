@@ -183,7 +183,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                     id,
                 )),
                 // Pod-scoped DLC-D admission provisioning (PodSpec labels).
-                dlc_admission: workload_api_vsock::DlcAdmissionMaterial::from_labels(
+                dlc_admission: nucleus_spec::dlc_admission::DlcProvisioning::from_labels(
                     &spec.metadata.labels,
                 ),
                 // The broker capability, minted per pod and served ONCE. See
