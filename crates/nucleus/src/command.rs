@@ -1087,5 +1087,5 @@ fn is_pr_command(args: &[String]) -> bool {
 }
 
 #[cfg(test)]
-#[path = "command_tests.rs"]
+#[path = "tests/command.rs"]
 mod tests;
