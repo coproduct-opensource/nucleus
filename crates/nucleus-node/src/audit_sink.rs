@@ -56,10 +56,11 @@
 //! endpoint = "https://objects.internal:9000" # optional; S3-compatible endpoint
 //! ```
 //!
-//! # Not done here
+//! # Credentials
 //!
-//! The credentials are still the node's ambient ones. Scoping them to the resolved bucket and
-//! prefix with a per-pod session policy is the remaining half of #3131.
+//! The uploader never signs with the node's own key. Each pod's uploader gets a short-lived
+//! credential minted for the resolved bucket and prefix only, and a node with no minter refuses
+//! every audit sink by name (#3160, [`credentials`]).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -72,9 +73,10 @@ use crate::spec_posture::PostureRefused;
 /// The node's audit sink flag, flattened into `Args`.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct AuditSinkArgs {
-    /// TOML file of the audit sinks this node ships pod audit logs to, signed with the node's own
-    /// cloud credentials. A pod spec may only name one of these and narrow its prefix. Unset: no
-    /// sink, and a spec that names one is refused at create.
+    /// TOML file of the audit sinks this node ships pod audit logs to. A pod spec may only name one
+    /// of these and narrow its prefix, and its uploader signs with a credential minted for that
+    /// prefix alone, never the node's own. Unset: no sink, and a spec that names one is refused at
+    /// create.
     #[arg(long = "audit-sinks", env = "NUCLEUS_NODE_AUDIT_SINKS")]
     pub audit_sinks: Option<PathBuf>,
 }
@@ -121,6 +123,8 @@ pub(crate) struct AuditSinks {
 /// at or under the operator's prefix. Only [`AuditSinks`] constructs one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AuditTarget {
+    /// The operator's name for the sink, so a refusal can name it.
+    name: String,
     bucket: String,
     prefix: Option<String>,
     region: Option<String>,
@@ -156,6 +160,7 @@ impl AuditSinks {
         {
             sink_name(&name)?;
             let target = AuditTarget {
+                name: name.clone(),
                 bucket: valid_bucket(&bucket).map_err(|e| format!("sink `{name}`: {e}"))?,
                 prefix: prefix
                     .map(|p| key_prefix("prefix", &p))
@@ -206,6 +211,7 @@ impl AuditSinks {
             });
         };
         let AuditTarget {
+            name: _,
             bucket,
             prefix: fixed,
             region,
@@ -230,6 +236,7 @@ impl AuditSinks {
             }
         };
         Ok(AuditTarget {
+            name: name.clone(),
             bucket: bucket.clone(),
             prefix,
             region: region.clone(),
@@ -244,6 +251,7 @@ impl AuditTarget {
     /// names (`nucleus-guest-init`).
     pub(crate) fn proxy_env(&self) -> Vec<(&'static str, &str)> {
         let Self {
+            name: _,
             bucket,
             prefix,
             region,
@@ -267,6 +275,7 @@ impl AuditTarget {
 /// checked against its grammar when the operator's file loaded or the spec's prefix resolved.
 pub(crate) fn audit_sink_boot_args(target: &AuditTarget) -> Vec<String> {
     let AuditTarget {
+        name: _,
         bucket,
         prefix,
         region,
@@ -383,9 +392,11 @@ fn endpoint_url(value: &str) -> Result<&str, PostureRefused> {
     }
 }
 
-/// S3's "safe" object key characters, plus `/`.
+/// S3's "safe" object key characters, plus `/`, minus `*`. The prefix becomes the object pattern a
+/// minted credential is scoped to (`credentials::WriteScope::object_pattern`), where `*` is a
+/// wildcard: a narrowing of `*` would scope a pod's credential to every sibling prefix (#3160).
 fn is_key_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '/' | '!' | '-' | '_' | '.' | '*' | '(' | ')')
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '!' | '-' | '_' | '.' | '(' | ')')
 }
 
 fn is_region_char(c: char) -> bool {
@@ -397,6 +408,48 @@ fn is_url_char(c: char) -> bool {
     c.is_ascii_graphic() && c != '"'
 }
 
+#[path = "audit_credentials.rs"]
+pub(crate) mod credentials;
+
 #[cfg(test)]
 #[path = "audit_sink_tests.rs"]
 mod tests;
+
+/// The node's ambient cloud key, planted in this test process's environment so a test can prove
+/// it never reaches a pod (#3160). Each value is a unique string a test searches a pod's whole
+/// environment, or a guest reply, for.
+#[cfg(test)]
+pub(crate) mod ambient_fixture {
+    /// The planted access key id.
+    pub(crate) const KEY_ID: &str = "ambient-node-key-id-3160";
+    /// The planted secret.
+    pub(crate) const SECRET: &str = "ambient-node-secret-3160";
+    /// The planted session token.
+    pub(crate) const TOKEN: &str = "ambient-node-token-3160";
+
+    /// Plant the node's ambient key under the names the uploader's credential chain reads.
+    pub(crate) fn plant() {
+        for (key, value) in [
+            ("AWS_ACCESS_KEY_ID", KEY_ID),
+            ("AWS_SECRET_ACCESS_KEY", SECRET),
+            ("AWS_SESSION_TOKEN", TOKEN),
+        ] {
+            // SAFETY: edition 2024 makes env mutation unsafe -- it races any concurrent reader.
+            // Every planting writes the same three values, and no test in this crate depends on
+            // their absence.
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "ADR 0007 H-1: test-only process-global mutation; the subject under test \
+                          is that the node's ambient environment does not reach a pod"
+            )]
+            unsafe {
+                std::env::set_var(key, value)
+            };
+        }
+    }
+
+    /// Whether `text` carries any part of the planted key.
+    pub(crate) fn leaks(text: &str) -> bool {
+        [KEY_ID, SECRET, TOKEN].iter().any(|v| text.contains(v))
+    }
+}
