@@ -1183,6 +1183,28 @@ pub(crate) mod handler_tests {
         ])
     }
 
+    /// One HTTP client for every fixture in the test process, cloned into each.
+    ///
+    /// Building a client loads and parses the platform's root certificates, and in a
+    /// test build that is ~20 ms of CPU: measured 2026-10-02, it was about 70% of the
+    /// pod census, which builds a `NodeState` for each of its 1056 runs and never
+    /// sends a request. A clone shares the client, so it is built once.
+    ///
+    /// No connection is kept between requests. Every `#[tokio::test]` has its own
+    /// runtime, and a pooled connection belongs to the runtime that opened it; with
+    /// no idle pool, none can outlive its test or be handed to another one.
+    fn http_client() -> reqwest::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .expect("a test HTTP client")
+            })
+            .clone()
+    }
+
     /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
     /// at compile time, which is the right failure: the fixture should not drift
     /// silently away from what the node actually runs with.
@@ -1240,7 +1262,7 @@ pub(crate) mod handler_tests {
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
             authority,
-            http_client: reqwest::Client::new(),
+            http_client: http_client(),
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
             lockdowns: Arc::default(),
         }
