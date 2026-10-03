@@ -240,6 +240,7 @@ impl Run {
             identity_manager: Some(manager.clone()),
             workload_api_bridge: Mutex::new(Some(bridge)),
             broker: Mutex::new(None),
+            decide: Mutex::new(None),
             snapshot: None,
         };
         let mut spec: nucleus_spec::PodSpec =

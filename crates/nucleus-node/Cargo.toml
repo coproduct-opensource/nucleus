@@ -97,6 +97,10 @@ nucleus-cred-broker = { path = "../nucleus-cred-broker" }
 # Wire types only, and the guest links the same crate. Nothing here can hold a
 # secret — the host needs `PerformRequest` to READ what a guest asked for.
 nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
+# The decision channel's one wire declaration (#2702, P7); the guest links the
+# same crate. `kernel` brings the verdict mapping and taint pairing both ends
+# compute, so the host's shadow verdicts are compared like for like (P8).
+nucleus-decision-protocol = { path = "../nucleus-decision-protocol", features = ["kernel"] }
 # Keyless upstream credentials (ADR 0010): the ES256 assertion, the signer
 # trait and the token client. The node decides WHEN to mint
 # (`federated_credential.rs`); this crate only makes the assertion honest about

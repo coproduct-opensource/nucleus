@@ -17,6 +17,15 @@
 # perturbed on its own — a green from both together would otherwise say nothing
 # about which one is load-bearing.
 #
-# ONE ENTRY, and it should stay that way. A second sanctioned vsock client on the
-# agent path is a second thing that must remember to spend an authority.
+# ONE EGRESS ENTRY, and it should stay that way. A second sanctioned vsock client
+# that asks the host to PERFORM something is a second thing that must remember to
+# spend an authority.
 file:crates/nucleus-tool-proxy/src/broker_client.rs
+#
+# 2026-10-02 (#2702, P8): the decision channel. It is not egress: it carries a
+# question (operation, subject, digest), a taint raise and the guest's own
+# outcome, and the host performs nothing on it, so there is no authority to
+# spend. It is where the deciding moves to the host (P9), which is the opposite
+# of an escape from mediation. The connect lives in exactly one function,
+# `host_decide::vsock_dialer`.
+file:crates/nucleus-tool-proxy/src/host_decide.rs

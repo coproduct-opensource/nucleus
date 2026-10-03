@@ -195,6 +195,27 @@ pub enum GuestCapability {
     /// through the workload door with no secret (#2696 P2). An older guest has
     /// no bridge, so an agent started in the pod (P5) has no tools at all.
     McpBridge,
+    /// The tool-proxy puts every decision its kernel takes to the host's shadow
+    /// decision service as well, on `nucleus_decision_protocol::DECISION_VSOCK_PORT`
+    /// (#2702, P8). [`Demand::Optional`]: the guest still enforces its own
+    /// decisions, so a guest without the client loses only the host's
+    /// measurement — the node serves the port and simply hears nothing. P9,
+    /// which makes the host's verdict the enforced one, turns this into
+    /// [`Demand::Required`].
+    HostDecideShadow,
+}
+
+/// Whether the node refuses a guest that lacks a [`GuestCapability`].
+///
+/// Two answers, as a type rather than a `bool`, because "the node cannot work
+/// without it" and "the node works without it and learns less" have different
+/// consequences for an operator holding an older guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Demand {
+    /// The node's behaviour depends on it; a guest without it is refused.
+    Required,
+    /// The node uses it when present and runs without it. Never refuses a guest.
+    Optional,
 }
 
 /// Which published release first carried a [`GuestCapability`].
@@ -210,7 +231,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 7] = [
+    pub const ALL: [GuestCapability; 8] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -218,7 +239,24 @@ impl GuestCapability {
         GuestCapability::SvidOnTmpfs,
         GuestCapability::WorkloadDoor,
         GuestCapability::McpBridge,
+        GuestCapability::HostDecideShadow,
     ];
+
+    /// Whether a guest without it is refused. Exhaustive, so a new capability
+    /// states its demand when it is added.
+    pub const fn demand(self) -> Demand {
+        match self {
+            GuestCapability::CaBundle
+            | GuestCapability::ApprovalByPublicKey
+            | GuestCapability::DlcAdmission
+            | GuestCapability::EgressAttestation
+            | GuestCapability::SvidOnTmpfs
+            | GuestCapability::WorkloadDoor
+            | GuestCapability::McpBridge => Demand::Required,
+            // Shadow mode: nothing the node does depends on the guest asking.
+            GuestCapability::HostDecideShadow => Demand::Optional,
+        }
+    }
 
     /// The first release whose rootfs has this.
     pub const fn first_shipped(self) -> FirstShipped {
@@ -231,6 +269,7 @@ impl GuestCapability {
             GuestCapability::SvidOnTmpfs => FirstShipped::NotYet,
             GuestCapability::WorkloadDoor => FirstShipped::NotYet,
             GuestCapability::McpBridge => FirstShipped::NotYet,
+            GuestCapability::HostDecideShadow => FirstShipped::NotYet,
         }
     }
 
@@ -270,6 +309,11 @@ impl GuestCapability {
             GuestCapability::McpBridge => {
                 "#2696 (P2) put the MCP bridge in the guest at /usr/local/bin/nucleus-mcp; \
                  an older guest has none, so an agent run in the pod has no way to call its tools"
+            }
+            GuestCapability::HostDecideShadow => {
+                "#2702 (P8) has the tool-proxy shadow every decision to the host's decision \
+                 service; an older guest never asks, so the host records no comparisons for it \
+                 (shadow mode: the node does not require it)"
             }
         }
     }
@@ -331,7 +375,9 @@ impl std::fmt::Display for GuestSkew {
     }
 }
 
-/// Whether the guest artifacts of `version` meet every [`GuestCapability`].
+/// Whether the guest artifacts of `version` meet every [`GuestCapability`] the
+/// node [requires](Demand::Required). An [optional](Demand::Optional) one is
+/// never a reason to refuse a guest.
 pub fn guest_skew(version: &str) -> Result<(), GuestSkew> {
     skew_against(version, GuestCapability::first_shipped)
 }
@@ -349,6 +395,10 @@ fn skew_against(
     };
     let mut missing = Vec::new();
     for cap in GuestCapability::ALL {
+        match cap.demand() {
+            Demand::Required => {}
+            Demand::Optional => continue,
+        }
         let has = match first_shipped(cap) {
             // An unparseable table entry is a table nobody can check against:
             // it counts as missing, never as present.
@@ -594,7 +644,8 @@ mod tests {
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
                 GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
                 GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
-                GuestCapability::McpBridge => GuestCapability::CaBundle,
+                GuestCapability::McpBridge => GuestCapability::HostDecideShadow,
+                GuestCapability::HostDecideShadow => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
@@ -618,6 +669,34 @@ mod tests {
                 }
                 other => panic!("{broken} must be refused for {lacks:?}: {other:?}"),
             }
+        }
+    }
+
+    /// The node does not require the shadow client (P8 is not enforcing), so a
+    /// release that has every REQUIRED capability is accepted without it — and
+    /// the same release missing one required capability is still refused.
+    #[test]
+    fn an_optional_capability_never_refuses_a_guest() {
+        let all_but_shadow = |c: GuestCapability| match c.demand() {
+            Demand::Required => FirstShipped::Release("2.2.0"),
+            Demand::Optional => FirstShipped::NotYet,
+        };
+        assert_eq!(GuestCapability::HostDecideShadow.demand(), Demand::Optional);
+        assert_eq!(skew_against("2.2.0", all_but_shadow), Ok(()));
+        let all_but_door = |c: GuestCapability| match c {
+            GuestCapability::WorkloadDoor => FirstShipped::NotYet,
+            _ => FirstShipped::Release("2.2.0"),
+        };
+        assert_eq!(
+            skew_against("2.2.0", all_but_door),
+            Err(GuestSkew::Lacks {
+                release: "2.2.0".to_string(),
+                missing: vec![GuestCapability::WorkloadDoor],
+            })
+        );
+        // And the refusal of the pinned release never names it.
+        if let Err(GuestSkew::Lacks { missing, .. }) = guest_skew(GUEST_RELEASE) {
+            assert!(!missing.contains(&GuestCapability::HostDecideShadow));
         }
     }
 
