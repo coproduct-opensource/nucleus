@@ -6679,6 +6679,7 @@ dependencies = [
  "nucleus-client",
  "nucleus-envelope",
  "nucleus-identity",
+ "nucleus-jsonl",
  "nucleus-lineage",
  "nucleus-node-binding",
  "nucleus-oci-rootfs",

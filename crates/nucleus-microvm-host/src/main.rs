@@ -6,6 +6,8 @@
 //!   scratch image, every entry owned by the workload, and prints its
 //!   `sha-256:` digest.
 //! - `harvest <image> <out>` replays the image's journal and copies its tree out.
+//! - `relay --listen <addr> --to <loopback addr>` forwards TCP to a pod's proxy
+//!   until the proxy is gone.
 
 #![cfg_attr(
     not(test),
@@ -20,15 +22,17 @@
     )
 )]
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use nucleus_microvm_host::ext4::RootOwner;
 #[cfg(target_os = "linux")]
 use nucleus_microvm_host::probe::HostRequirement;
 use nucleus_microvm_host::probe::{self, kvm::Kvm};
-use nucleus_microvm_host::workspace;
+use nucleus_microvm_host::{relay, workspace};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 
@@ -65,6 +69,17 @@ enum Command {
     },
     /// Replay an image's journal and copy its tree into an empty directory.
     Harvest { image: PathBuf, out: PathBuf },
+    /// Forward TCP from `listen` to a pod proxy on loopback until it is gone.
+    Relay {
+        #[arg(long)]
+        listen: SocketAddr,
+        /// Must be a loopback address: the relay is not a general proxy.
+        #[arg(long)]
+        to: SocketAddr,
+        /// How often, in seconds, an idle relay checks its target.
+        #[arg(long, default_value_t = 2)]
+        liveness_secs: u64,
+    },
 }
 
 /// One unmet requirement, as printed.
@@ -128,6 +143,30 @@ fn main() -> ExitCode {
             }
             Err(e) => fail(&e.to_string()),
         },
+        Command::Relay {
+            listen,
+            to,
+            liveness_secs,
+        } => run_relay(listen, to, Duration::from_secs(liveness_secs)),
+    }
+}
+
+fn run_relay(listen: SocketAddr, to: SocketAddr, liveness: Duration) -> ExitCode {
+    if !to.ip().is_loopback() {
+        return fail(&format!(
+            "refusing to relay to {to}: not a loopback address"
+        ));
+    }
+    let listener = match std::net::TcpListener::bind(listen) {
+        Ok(l) => l,
+        Err(e) => return fail(&format!("binding {listen}: {e}")),
+    };
+    match relay::serve(listener, to, liveness) {
+        relay::RelayEnd::TargetGone => {
+            eprintln!("nucleus-hostctl relay: {to} is gone; stopping");
+            ExitCode::SUCCESS
+        }
+        end @ relay::RelayEnd::ListenerFailed(_) => fail(&end.to_string()),
     }
 }
 
