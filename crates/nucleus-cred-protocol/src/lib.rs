@@ -232,6 +232,89 @@ pub struct PerformReply {
     pub body: Vec<u8>,
 }
 
+pub mod stream;
+
+/// A request that the HOST perform a call whose body and reply are STREAMED.
+///
+/// # Why a third type, not a bigger [`PerformRequest`]
+///
+/// A perform frame carries its whole body inside one signed JSON line, and the
+/// host bounds that line (256 KiB) because it must buffer it before it can
+/// verify it. A model call's prompt is routinely larger, and its reply arrives
+/// over minutes as server-sent events. Raising the bound would make the host
+/// buffer whatever the guest sends; this type instead opens a stream whose body
+/// follows as bounded chunks ([`stream`]), each one charged to the pod's egress
+/// balance before the host forwards it.
+///
+/// # Which ask this is, by shape
+///
+/// Unknown fields are refused, so a [`PerformRequest`] (which has `body` and
+/// `idempotency_key`) never reads as this, and this (which has neither) never
+/// reads as a perform, because a perform requires both. A
+/// [`TaskRequestEnvelope`] refuses this type's extra fields. So the three asks
+/// are told apart by the types, whatever order a host tries them in.
+///
+/// # No idempotency key, and why that is honest
+///
+/// A streamed body is consumed as it is sent, so there is nothing a host could
+/// replay a retry from; a guest that retries opens a new stream. What a key did
+/// for [`PerformRequest`] beyond deduplication, refusing a replayed signed
+/// frame, `nonce` does here: the host refuses a nonce it has already seen.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamRequest {
+    /// The operation, as the policy layer names it.
+    pub operation: String,
+    /// The configured upstream this targets, by name. NOT a URL.
+    pub target: String,
+    /// Free-text rationale. Auditable evidence, never an authorisation input.
+    pub justification: String,
+    /// Unique per stream. The host refuses one it has already seen.
+    pub nonce: String,
+    /// Path beneath the upstream's configured base.
+    pub path: String,
+    /// The body's media type, forwarded as `content-type`. Guest-chosen, so
+    /// the host counts it as upload bytes like the path.
+    pub content_type: String,
+}
+
+/// The host's first answer on a stream: refused, or the upstream's status.
+///
+/// Sent once, after the request body has been read to its end (or refused part
+/// way), so a refusal for exhausting the pod's egress balance mid-upload is
+/// always a head the guest can read, named, rather than a dropped connection.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamHead {
+    /// Whether the host authorised and performed the call.
+    pub granted: bool,
+    /// Why. Coarse for a policy refusal; NAMED for an egress-balance or size
+    /// refusal, whose counts are the guest's own traffic.
+    pub reason: String,
+    /// Upstream HTTP status, when the call was made.
+    #[serde(default)]
+    pub status: u16,
+    /// Upstream `content-type`, when the call was made and it sent one.
+    #[serde(default)]
+    pub content_type: String,
+}
+
+/// The host's last word on a stream whose head was granted.
+///
+/// A granted head says the upstream answered; this says whether ALL of the
+/// answer was relayed. A reply cut at the per-call ceiling, an upstream that
+/// failed part way and a stream that timed out are each `complete: false`
+/// with the reason named, so a truncated reply is never mistaken for a short
+/// one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamEnd {
+    /// Whether the whole upstream reply was relayed.
+    pub complete: bool,
+    /// Why not, when it was not.
+    pub reason: String,
+}
+
 #[cfg(test)]
 mod frame_codec {
     use super::frame;
@@ -331,17 +414,80 @@ mod tests {
     /// counted prose would fire on the very explanation of the property it
     /// checks.
     fn declarations() -> String {
-        let src = include_str!("lib.rs");
-        src.split("#[cfg(test)]")
-            .next()
-            .expect("source before tests")
-            .lines()
-            .filter(|l| {
-                let t = l.trim_start();
-                !t.starts_with("///") && !t.starts_with("//!") && !t.starts_with("//")
+        // Every source file in the crate: the stream framing is wire format
+        // the guest links too, so it is held to the same scan.
+        [include_str!("lib.rs"), include_str!("stream.rs")]
+            .iter()
+            .flat_map(|src| {
+                src.split("#[cfg(test)]")
+                    .next()
+                    .expect("source before tests")
+                    .lines()
+                    .filter(|l| {
+                        let t = l.trim_start();
+                        !t.starts_with("///") && !t.starts_with("//!") && !t.starts_with("//")
+                    })
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn stream_request() -> StreamRequest {
+        StreamRequest {
+            operation: "WebFetch".into(),
+            target: "model-api".into(),
+            justification: "credentialed egress".into(),
+            nonce: "n-1".into(),
+            path: "/v1/complete".into(),
+            content_type: "application/json".into(),
+        }
+    }
+
+    /// **The three asks cannot be read as one another**, whichever order a
+    /// host tries them in. The dangerous confusions are a stream or a query
+    /// read as a perform (an effect nobody asked for), and a perform read as
+    /// a stream (a body the host then waits for that never comes).
+    #[test]
+    fn a_stream_request_is_neither_a_perform_nor_a_query() {
+        let stream = serde_json::to_string(&stream_request()).expect("serialises");
+        assert!(serde_json::from_str::<PerformRequest>(&stream).is_err());
+        assert!(serde_json::from_str::<TaskRequestEnvelope>(&stream).is_err());
+        assert_eq!(
+            serde_json::from_str::<StreamRequest>(&stream).expect("itself"),
+            stream_request()
+        );
+
+        let perform = serde_json::to_string(&PerformRequest {
+            operation: "WebFetch".into(),
+            target: "model-api".into(),
+            justification: "x".into(),
+            idempotency_key: "k".into(),
+            path: "/p".into(),
+            body: b"{}".to_vec(),
+        })
+        .expect("serialises");
+        assert!(serde_json::from_str::<StreamRequest>(&perform).is_err());
+
+        let query = serde_json::to_string(&TaskRequestEnvelope {
+            operation: "WebFetch".into(),
+            target: "model-api".into(),
+            justification: "x".into(),
+        })
+        .expect("serialises");
+        assert!(serde_json::from_str::<StreamRequest>(&query).is_err());
+    }
+
+    /// A head or end the guest cannot fully read is not a grant: unknown
+    /// fields are refused, so a reply shaped for something else fails closed.
+    #[test]
+    fn stream_replies_refuse_shapes_they_do_not_know() {
+        assert!(
+            serde_json::from_str::<StreamHead>(r#"{"granted":true,"reason":"","x":1}"#).is_err()
+        );
+        assert!(serde_json::from_str::<StreamEnd>(r#"{"complete":true}"#).is_err());
+        let head: StreamHead =
+            serde_json::from_str(r#"{"granted":false,"reason":"not permitted"}"#).expect("refusal");
+        assert!(!head.granted);
     }
 
     /// **The structural guarantee.** No type in this crate has a field that
