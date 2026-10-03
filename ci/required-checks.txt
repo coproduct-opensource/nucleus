@@ -66,7 +66,22 @@
 # The nine still RUN -- ci.yml's `text-gates` job and its relays are untouched -- and they still
 # gate a merge, through `gatehouse/required`, which is context 14 here. What changed in September
 # is which context carries them, not whether anything does.
-# PINNED = 38
+# 2026-10-02, owner decision, 38 -> 41: `exemplar metrics ratchet`, `Dylint passes (one pod)` and
+# `the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)` become
+# required. All three merged red on main the same day while advisory, and that is not a local
+# cost: `Gates must fail on their own subject` (required) re-runs EVERY gate on the clean tree
+# before perturbing it, so one advisory red on main failed every later merge group until somebody
+# fixed it. An advisory gate that the gate of gates baselines is required in effect -- just at
+# the wrong moment, on everybody else's PR. Requiring it moves the red to the PR that caused it.
+#
+# What each needed (all decided by `cargo xtask ci-spec check`):
+#   exemplar  -- `merge_group:` added, the pull_request path filter dropped (cheap job; one copy
+#                of the path list beats a twin), and a timeout (CI-I7).
+#   Dylint    -- `merge_group:` added, plus dylint-separation-noop.yml with the real `paths`
+#                as its `paths-ignore`, verbatim (CI-I1), and `ready_for_review` (it skips drafts).
+#   podlist   -- nothing: it already had `merge_group:`, a scope step (CI-I5) and an exact-name
+#                noop twin, podlist-probe-noop.yml. It was simply never added here.
+# PINNED = 41
 
 # --- the gatehouse App ---
 gatehouse/required @app 4853870
@@ -102,6 +117,7 @@ zizmor (high+ gate)
 Manifest Guards
 Scan PodSpecs
 Analyze
+exemplar metrics ratchet
 
 # --- twin-paired (real + -noop) ----------------------------------------
 lake build CiSpec (pipeline + merge-queue theorems)
@@ -115,3 +131,5 @@ lake build Nucleus (rubric scoring proofs)
 version ceiling + wasm closure
 Kani
 Kani (constitutional kernel)
+Dylint passes (one pod)
+the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)
