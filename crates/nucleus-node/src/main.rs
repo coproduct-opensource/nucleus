@@ -942,7 +942,7 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
-    rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
+    rootfs_source::admit(&spec)?; // OCI needs an image store; boot_args are allowlisted (#3124)
     host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
     spec_posture::admit(&spec)?; // posture fields a spec may not weaken (#3120)
     let id = Uuid::new_v4();
