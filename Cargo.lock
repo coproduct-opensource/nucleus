@@ -6686,6 +6686,7 @@ dependencies = [
  "nucleus-provenance-memory",
  "nucleus-spec",
  "nucleus-task-compiler",
+ "pem 4.0.0",
  "portcullis",
  "rand 0.10.3",
  "rcgen",
