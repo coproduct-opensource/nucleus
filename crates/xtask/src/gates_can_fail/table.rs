@@ -537,6 +537,7 @@ pub const SELF_FALSIFIED: &[&str] = &[
 /// Subcommands whose ONLY route into CI is a script, with the script named. A row is a claim
 /// that is CHECKED: the named script must actually invoke the named subcommand.
 pub const SHIM_COVERED: &[&str] = &[
+    "gate-defs scripts/check-gate-defs-match-plan.sh",
     "inert-authority scripts/check-inert-authority.sh",
     "law-mechanisms  scripts/check-law-mechanisms.sh",
     "kani-coverage   scripts/check-kani-proof-count.sh",

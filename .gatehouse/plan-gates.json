@@ -27,7 +27,17 @@
     "mem_mb": 2048,
     "name": "text-gates",
     "outputs": [],
-    "platform": "linux/arm64",
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "Ed25519 verify_strict gate (M-3)",
@@ -291,7 +301,17 @@
     "mem_mb": 4096,
     "name": "fmt",
     "outputs": [],
-    "platform": "linux/arm64",
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "Rustfmt"
@@ -400,7 +420,17 @@
     "mem_mb": 8192,
     "name": "clippy",
     "outputs": [],
-    "platform": "linux/arm64",
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "Clippy"
@@ -427,7 +457,7 @@
       "examples/independent-conformance/**"
     ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-e8cb8d499-x86_64-l@sha256:ca42d85168c61fdb73a90a9665ca1adf435d7b437629493c2ab5fd52cdc1bfa4"
     ],
     "steps": [
       {
@@ -583,7 +613,17 @@
     "mem_mb": 8192,
     "name": "test",
     "outputs": [],
-    "platform": "linux/arm64",
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [],
     "scope": [
@@ -591,7 +631,7 @@
       "scripts/**"
     ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-e8cb8d499-x86_64-t@sha256:fb0c1c307911f8448d4195cab94f739adba39a955c9a21be3c96ede0a32d0218"
     ],
     "steps": [
       {
@@ -683,7 +723,8 @@
     "mem_mb": 8192,
     "name": "lean-build",
     "outputs": [],
-    "platform": "linux/arm64",
+    "pins": [],
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [],
     "scope": [
@@ -774,7 +815,17 @@
     "mem_mb": 4096,
     "name": "ci-spec",
     "outputs": [],
-    "platform": "linux/arm64",
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
     "reads": [],
     "replaces": [
       "CI configuration is sound (CI-1)",
@@ -792,7 +843,7 @@
       ".gatehouse/**"
     ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-e8cb8d499-x86_64-l@sha256:ca42d85168c61fdb73a90a9665ca1adf435d7b437629493c2ab5fd52cdc1bfa4"
     ],
     "steps": [
       {

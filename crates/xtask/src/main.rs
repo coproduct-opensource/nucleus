@@ -77,6 +77,11 @@ enum Command {
         #[arg(long)]
         only: Option<String>,
     },
+    /// Compare executor gate definitions with the elaborated plan snapshot.
+    GateDefs {
+        /// An alternative elaborated gates JSON; defaults to the committed snapshot.
+        elaborated: Option<std::path::PathBuf>,
+    },
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
     /// digest must be the SHA-256 of `prelude/ci.writ` at `gatehouse-plan.yml`'s
     /// `GATEHOUSE_REF`. Decided from declarations alone; reads no source tree.
@@ -472,6 +477,7 @@ mod econ_boundary;
 mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
+mod gate_defs;
 mod gatehouse_pin;
 mod gates_can_fail;
 mod guest_layer;
@@ -621,6 +627,9 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::GateDefs { elaborated } => {
+            gate_defs::check(&std::env::current_dir()?, elaborated.as_deref())
+        }
         Command::GatehousePin { gatehouse } => {
             gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
         }
