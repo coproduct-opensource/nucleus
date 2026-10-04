@@ -38,8 +38,6 @@
 //! set is complete — the on-chain `CommitSet` closure handles that). See
 //! `docs/PROOFS.md`.
 
-pub mod authority_spend;
-
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -2411,3 +2409,5 @@ mod ifc_flow_tests;
 // pinned in `nucleus-verifier-service/embedded-wasm.pins`. A comment above any
 // code shifts every line below it and moves the pinned artifact with no change
 // in behaviour; one after all code moves nothing.
+
+pub mod authority_spend;

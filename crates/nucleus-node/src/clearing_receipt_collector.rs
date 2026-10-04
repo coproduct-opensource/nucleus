@@ -21,15 +21,15 @@
 //! A clearing receipt is not anybody's word: it carries its declared inputs,
 //! so `nucleus_recompute::verify_receipt` re-derives the outputs with the
 //! proven kernel and says [`RecomputeOutcome::Match`] or names the field that
-//! diverged. That is strictly stronger than a signature — a signed wrong
-//! clearing still fails here — which is why this collector does not care who
-//! signed it.
+//! diverged. This checks internal consistency, not the origin of the inputs.
+//! The signed spend record binds the trusted mediator to this clearing and
+//! its payer and amount; a signed but inconsistent clearing still fails here.
 //!
 //! Two things are checked before a receipt is stored:
 //!
 //! 1. it recomputes, and
-//! 2. its content hash is the one the sender claims, so the log is keyed by a
-//!    name the spend receipt's `basis` can actually resolve.
+//! 2. its content hash is derived locally, so the log is keyed by a name the
+//!    signed spend receipt's `basis` can resolve.
 //!
 //! # The binding, and why it is load-bearing
 //!

@@ -196,27 +196,51 @@ pub(crate) fn build(
     })
 }
 
+/// An auction result, distinct from whatever the endpoint later returns.
+pub(crate) enum AuctionOutcome {
+    NotAuctioned,
+    Won,
+    Outbid { message: String },
+}
+
+impl AuctionOutcome {
+    /// Overwrite handler metadata: an upstream response cannot claim a win.
+    pub(crate) fn stamp(&self, mut response: axum::response::Response) -> axum::response::Response {
+        const HEADER: &str = "x-nucleus-auction-outcome";
+        response.headers_mut().remove(HEADER);
+        let value = match self {
+            Self::NotAuctioned => return response,
+            Self::Won => "won",
+            Self::Outbid { .. } => "outbid",
+        };
+        response
+            .headers_mut()
+            .insert(HEADER, axum::http::HeaderValue::from_static(value));
+        response
+    }
+}
+
 /// A request for an auctioned dimension joins a round, waits for it to close,
 /// and is admitted only if it wins AND the Clarke pivot is charged. Every other
 /// outcome refuses.
 ///
 /// Called BEFORE the posted-price screen, because the two are alternative
 /// mechanisms for the same decision and running both would price the slot
-/// twice. `Ok(())` when the dimension is not auctioned at all.
+/// twice. `NotAuctioned` when the dimension is not auctioned at all.
 pub(crate) async fn join_if_auctioned(
     state: &AppState,
     path: &str,
     bidder: Bidder<'_>,
     headers: &axum::http::HeaderMap,
-) -> Result<(), ApiError> {
+) -> Result<AuctionOutcome, ApiError> {
     let Some(scheduler) = state.authority_exchange.clone() else {
-        return Ok(());
+        return Ok(AuctionOutcome::NotAuctioned);
     };
     let Some(dimension) = PermissionDimension::from_endpoint(path) else {
-        return Ok(());
+        return Ok(AuctionOutcome::NotAuctioned);
     };
     if !state.clearing_dimensions.contains(&dimension) {
-        return Ok(());
+        return Ok(AuctionOutcome::NotAuctioned);
     }
     // The ceiling comes from a VERIFIED chain — the caller's own certificate,
     // or the pod's for a kernel-attributed process inside it — so a request
@@ -296,7 +320,7 @@ pub(crate) async fn join_if_auctioned(
                 event = "authority_slot_won",
                 "authority slot cleared and charged"
             );
-            Ok(())
+            Ok(AuctionOutcome::Won)
         }
         Verdict::Lost { round, receipt } => {
             // A loser is recorded too, and gets the receipt: being outbid is
@@ -311,13 +335,12 @@ pub(crate) async fn join_if_auctioned(
                 },
                 &receipt,
             );
-            Err(ApiError::KernelDenied {
+            Ok(AuctionOutcome::Outbid {
                 message: format!(
                     "outbid for the {} slot in round {}",
                     dimension.label(),
                     round.as_str()
                 ),
-                code: None,
             })
         }
         Verdict::Denied(reason) => {
@@ -601,5 +624,32 @@ mod pod_peer_bidder_tests {
             id.as_str().rsplit("/sha256:").next().map(str::to_owned)
         };
         assert_ne!(hash(&a), hash(&b), "two peers must not share a derived id");
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::AuctionOutcome;
+    use axum::response::IntoResponse;
+
+    #[test]
+    fn the_handler_cannot_supply_or_override_an_auction_result() {
+        const HEADER: &str = "x-nucleus-auction-outcome";
+        let forged = || ([(HEADER, "won")], "body").into_response();
+        assert!(
+            !AuctionOutcome::NotAuctioned
+                .stamp(forged())
+                .headers()
+                .contains_key(HEADER)
+        );
+        let outbid = AuctionOutcome::Outbid {
+            message: "lost".into(),
+        }
+        .stamp(forged());
+        assert_eq!(outbid.headers()[HEADER], "outbid");
+        assert_eq!(
+            AuctionOutcome::Won.stamp("body".into_response()).headers()[HEADER],
+            "won"
+        );
     }
 }

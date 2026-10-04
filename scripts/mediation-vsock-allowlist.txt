@@ -19,10 +19,10 @@
 #
 # TWO ENTRIES, and the second is not on the agent path. `broker_client` performs
 # EGRESS for the agent and must spend an authority to do it. `spend_shipper`
-# (#2541) ships the proxy's own signed SpendReceipt to the node: it carries no
-# agent request, reaches no upstream, and a failure to ship costs the POD (the
-# node then folds the full budget allocation), so there is no authority for it
-# to spend and nothing it could exfiltrate that the node did not already sign.
+# (#2541) ships clearing evidence and the proxy's signed spend records to the
+# node's receipt collector. It reaches no external upstream and performs no
+# agent-requested operation. Missing or invalid accounting prevents a refund;
+# the node retains the full allocation. This is trusted accounting telemetry.
 # A third entry on the agent path would be a third thing that must remember to
 # spend an authority; this one is not on it.
 file:crates/nucleus-tool-proxy/src/broker_client.rs

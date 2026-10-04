@@ -2206,7 +2206,18 @@ async fn auth_middleware(
         (None, Some(peer)) => authority_round::Bidder::PodPeer(peer),
         (None, None) => authority_round::Bidder::Nobody,
     };
-    authority_round::join_if_auctioned(&state, parts.uri.path(), bidder, &parts.headers).await?;
+    let auction =
+        authority_round::join_if_auctioned(&state, parts.uri.path(), bidder, &parts.headers)
+            .await?;
+    if let authority_round::AuctionOutcome::Outbid { message } = &auction {
+        return Ok(auction.stamp(
+            ApiError::KernelDenied {
+                message: message.clone(),
+                code: None,
+            }
+            .into_response(),
+        ));
+    }
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
@@ -2237,7 +2248,7 @@ async fn auth_middleware(
     if let Some(certified) = certified_perms {
         req.extensions_mut().insert(certified);
     }
-    Ok(next.run(req).await)
+    Ok(auction.stamp(next.run(req).await))
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
