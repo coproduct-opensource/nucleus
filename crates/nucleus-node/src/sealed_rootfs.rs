@@ -55,6 +55,42 @@ use std::path::{Path, PathBuf};
 
 use nucleus_identity::attestation::Hash256;
 
+/// Evidence from sealing for one destination and one requested pin (ADR 0007 C-1/C-2).
+/// Only this module constructs it; verification consumes it rather than accepting a raw hash.
+/// A mismatched measurement is retained only to report the pin failure, never to bless bytes.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RootfsMeasurement {
+    dest: PathBuf,
+    expected: String,
+    measured: Hash256,
+}
+
+impl RootfsMeasurement {
+    pub(crate) fn for_path(
+        &self,
+        dest: &Path,
+        expected: &nucleus_spec::ArtifactDigest,
+    ) -> Result<Hash256, String> {
+        if self.dest != dest || self.expected != expected.hex() {
+            return Err("sealed rootfs evidence belongs to another destination or pin".into());
+        }
+        Ok(self.measured)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(
+        dest: &Path,
+        expected: &nucleus_spec::ArtifactDigest,
+        measured: Hash256,
+    ) -> Self {
+        Self {
+            dest: dest.to_path_buf(),
+            expected: expected.hex().to_string(),
+            measured,
+        }
+    }
+}
+
 /// What the node recorded about a sealed inode, and re-reads before every reuse.
 ///
 /// Equality of the whole record is the reuse condition. `ctime` is in it because every way
@@ -226,8 +262,8 @@ impl SealedRootfs {
     /// Put a clone of the sealed copy of `source` at the jail's rootfs path, and return the
     /// digest that copy was measured to have.
     ///
-    /// `Some(d)` is a statement about the bytes now at `dest`: they are a clone of an inode
-    /// that was immutable when it was read and has stayed so. `d` may differ from `pin` --
+    /// `Some(evidence)` binds the measurement to `dest` and `pin`: they are a clone of an inode
+    /// that was immutable when it was read and has stayed so. The measurement may differ from `pin` --
     /// a source that does not match its pin is measured, not placed, and `verify` refuses
     /// it with the usual message. `None` changes nothing: `dest` is still whatever
     /// `prepare_jail` put there, and the caller verifies it by reading.
@@ -238,7 +274,7 @@ impl SealedRootfs {
         pin: &nucleus_spec::ArtifactDigest,
         dest: &Path,
         owner: (u32, u32),
-    ) -> Option<Hash256> {
+    ) -> Option<RootfsMeasurement> {
         let mut entries = self.entries.lock().await;
         let at = match self.find_or_seal(&mut entries, source, pin.hex()).await {
             Ok(at) => at,
@@ -253,10 +289,18 @@ impl SealedRootfs {
             let measured = entry.measured;
             let gone = entries.remove(at);
             discard(&gone.path, &gone.file);
-            return Some(measured);
+            return Some(RootfsMeasurement {
+                dest: dest.to_path_buf(),
+                expected: pin.hex().to_string(),
+                measured,
+            });
         }
         match clone_to(&entry.file, dest, owner) {
-            Ok(()) => Some(entry.measured),
+            Ok(()) => Some(RootfsMeasurement {
+                dest: dest.to_path_buf(),
+                expected: pin.hex().to_string(),
+                measured: entry.measured,
+            }),
             Err(why) => {
                 tracing::info!(dest = %dest.display(), %why, "cannot clone the sealed rootfs into the jail; measuring it in place");
                 None

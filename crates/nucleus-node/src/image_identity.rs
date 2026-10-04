@@ -114,12 +114,12 @@ pub(crate) struct Measured {
 pub(crate) async fn verify(
     image: &HostImage,
     jail: Option<&JailLayout>,
-    sealed_rootfs: Option<nucleus_identity::attestation::Hash256>,
+    sealed_rootfs: Option<crate::sealed_rootfs::RootfsMeasurement>,
 ) -> Result<Measured, String> {
     let mut measured_out = Measured::default();
     for p in pins(image, jail) {
-        let measured = match (p.what, sealed_rootfs) {
-            ("rootfs", Some(sealed)) => sealed,
+        let measured = match (p.what, sealed_rootfs.as_ref()) {
+            ("rootfs", Some(sealed)) => sealed.for_path(&p.path, p.expected)?,
             _ => nucleus_identity::attestation::measure_artifact(&p.path)
                 .await
                 .map_err(|e| {
@@ -259,12 +259,19 @@ mod tests {
             &format!("sha-256:{}", hex::encode(pin)),
         );
 
-        let ok = verify(&img, None, Some(pin))
+        let fixture = |digest| {
+            crate::sealed_rootfs::RootfsMeasurement::fixture(
+                img.rootfs_path(),
+                img.rootfs_digest.as_ref().unwrap(),
+                digest,
+            )
+        };
+        let ok = verify(&img, None, Some(fixture(pin)))
             .await
             .expect("a sealed measurement that matches must pass without a read");
         assert_eq!(ok.rootfs, Some(pin));
 
-        let err = verify(&img, None, Some([0x22_u8; 32]))
+        let err = verify(&img, None, Some(fixture([0x22_u8; 32])))
             .await
             .expect_err("a sealed measurement that does not match must refuse");
         assert!(
@@ -276,5 +283,31 @@ mod tests {
             .await
             .expect_err("unsealed: read, and missing");
         assert!(err.contains("cannot measure"), "{err}");
+    }
+    #[tokio::test]
+    async fn a_sealed_measurement_cannot_authorize_another_rootfs_path() {
+        let digest = [0x11_u8; 32];
+        let pin = format!("sha-256:{}", hex::encode(digest));
+        let original = rootfs_image(Path::new("/nonexistent/first/rootfs.ext4"), &pin);
+        let other = rootfs_image(Path::new("/nonexistent/second/rootfs.ext4"), &pin);
+        let measured = crate::sealed_rootfs::RootfsMeasurement::fixture(
+            original.rootfs_path(),
+            original.rootfs_digest.as_ref().unwrap(),
+            digest,
+        );
+        assert!(verify(&other, None, Some(measured)).await.is_err());
+    }
+    #[tokio::test]
+    async fn a_mismatched_measurement_cannot_authorize_a_different_pin() {
+        let path = Path::new("/nonexistent/rootfs.ext4");
+        let original = rootfs_image(path, &format!("sha-256:{}", "11".repeat(32)));
+        let other = rootfs_image(path, &format!("sha-256:{}", "22".repeat(32)));
+        let measured = crate::sealed_rootfs::RootfsMeasurement::fixture(
+            path,
+            original.rootfs_digest.as_ref().unwrap(),
+            [0x22; 32],
+        );
+        let err = verify(&other, None, Some(measured)).await.unwrap_err();
+        assert!(err.contains("another destination or pin"), "{err}");
     }
 }

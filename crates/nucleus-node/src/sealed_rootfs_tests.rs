@@ -149,7 +149,7 @@ mod on_a_reflink_filesystem {
                 .place(&source, &pin, &dest, me())
                 .await
                 .expect("sealed");
-            assert_eq!(hex::encode(m), pin.hex());
+            assert_eq!(hex::encode(m.measured), pin.hex());
             assert_eq!(std::fs::read(&dest).unwrap(), b"the pinned rootfs");
             assert_ne!(
                 std::fs::metadata(&dest).unwrap().ino(),
@@ -165,7 +165,7 @@ mod on_a_reflink_filesystem {
             .place(&source, &pin, &dest, me())
             .await
             .expect("sealed");
-        assert_eq!(hex::encode(m), pin.hex());
+        assert_eq!(hex::encode(m.measured), pin.hex());
         assert_eq!(
             std::fs::read(&dest).unwrap(),
             b"the pinned rootfs",
@@ -243,7 +243,7 @@ mod on_a_reflink_filesystem {
             .place(&source, &pin, &dest, me())
             .await
             .expect("sealed again");
-        assert_eq!(hex::encode(m), pin.hex());
+        assert_eq!(hex::encode(m.measured), pin.hex());
         assert_eq!(
             std::fs::read(&dest).unwrap(),
             b"good rootfs",
@@ -304,7 +304,7 @@ mod on_a_reflink_filesystem {
             .place(&source, &pin_of(b"what was pinned"), &dest, me())
             .await;
         assert_eq!(
-            m,
+            m.map(|e| e.measured),
             Some(nucleus_identity::attestation::hash_bytes(
                 b"not what was pinned"
             ))
