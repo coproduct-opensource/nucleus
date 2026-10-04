@@ -114,6 +114,12 @@ struct Record {
     /// The one-shots the ledger records as served.
     served: BTreeSet<OneShot>,
     receipts: Vec<String>,
+    /// The verified spend log (`spend-receipts.jsonl`): its own resource, since
+    /// a spend receipt and a mediation receipt land in different files.
+    spend: Vec<String>,
+    /// The recomputed clearing log (`clearing-receipts.jsonl`), likewise its
+    /// own file and its own resource.
+    clearing: Vec<String>,
 }
 
 impl Record {
@@ -123,6 +129,8 @@ impl Record {
             at_barrier: false,
             served: BTreeSet::new(),
             receipts: Vec::new(),
+            spend: Vec::new(),
+            clearing: Vec::new(),
         }
     }
 
@@ -163,6 +171,14 @@ impl Record {
             vec![BTreeSet::new(), others]
         };
         let receipt_options: &[bool] = if p.receipts { &[false, true] } else { &[false] };
+        // A spend line can only have been collected where an anchor exists.
+        let spend_options: &[bool] = if p.receipts && p.mediation_key {
+            &[false, true]
+        } else {
+            &[false]
+        };
+        // A clearing line needs no key — only collection.
+        let clearing_options: &[bool] = if p.receipts { &[false, true] } else { &[false] };
         let mut out = Vec::new();
         for mask in 0..(1u32 << own.len()) {
             for rest in &rest_options {
@@ -174,13 +190,27 @@ impl Record {
                         .map(|(_, o)| *o),
                 );
                 for flags in 0..4u32 {
-                    for &receipt in receipt_options {
+                    for ((&receipt, &spend), &clearing) in receipt_options
+                        .iter()
+                        .flat_map(|r| spend_options.iter().map(move |s| (r, s)))
+                        .flat_map(|rs| clearing_options.iter().map(move |c| (rs, c)))
+                    {
                         out.push(Record {
                             personalized: flags & 1 != 0,
                             at_barrier: flags & 2 != 0,
                             served: served.clone(),
                             receipts: if receipt {
                                 vec!["{\"receipt\":\"earlier\"}".to_string()]
+                            } else {
+                                Vec::new()
+                            },
+                            spend: if spend {
+                                vec![spend_body(uuid::Uuid::nil()).trim_end().to_string()]
+                            } else {
+                                Vec::new()
+                            },
+                            clearing: if clearing {
+                                vec![clearing_body().trim_end().to_string()]
                             } else {
                                 Vec::new()
                             },
@@ -256,6 +286,16 @@ async fn run(
         lines.push('\n');
         std::fs::write(dir.path().join("collected-receipts.jsonl"), lines).expect("receipts");
     }
+    if !start.spend.is_empty() {
+        let mut lines = start.spend.join("\n");
+        lines.push('\n');
+        std::fs::write(dir.path().join("spend-receipts.jsonl"), lines).expect("spend");
+    }
+    if !start.clearing.is_empty() {
+        let mut lines = start.clearing.join("\n");
+        lines.push('\n');
+        std::fs::write(dir.path().join("clearing-receipts.jsonl"), lines).expect("clearing");
+    }
     let pod_id = uuid::Uuid::nil();
     let mut seen = Vec::with_capacity(letters.len());
     for letter in letters {
@@ -268,7 +308,12 @@ async fn run(
             )),
             Letter::Guest(i) => {
                 let frame = format!("{}\n", wire_name(COMMANDS[*i]));
-                let mut rest: &[u8] = b"{\"receipt\":\"census\"}\n";
+                let body = match COMMANDS[*i] {
+                    Cmd::ShipSpend => spend_body(pod_id),
+                    Cmd::ShipClearing => clearing_body(),
+                    _ => "{\"receipt\":\"census\"}\n".to_string(),
+                };
+                let mut rest: &[u8] = body.as_bytes();
                 match serve_frame(frame.as_bytes(), &mut rest, manager, pod_id, &material).await {
                     Ok(body) => Seen::Served(body),
                     Err(r) => Seen::Refused(r),
@@ -288,6 +333,12 @@ async fn run(
     let receipts = std::fs::read_to_string(dir.path().join("collected-receipts.jsonl"))
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
+    let spend = std::fs::read_to_string(dir.path().join("spend-receipts.jsonl"))
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default();
+    let clearing = std::fs::read_to_string(dir.path().join("clearing-receipts.jsonl"))
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default();
     let record = Record {
         personalized: material.personalized.load(Ordering::SeqCst),
         at_barrier: material.at_snapshot_barrier.load(Ordering::SeqCst),
@@ -296,6 +347,8 @@ async fn run(
             .filter(|o| material.served.is_served(*o))
             .collect(),
         receipts,
+        spend,
+        clearing,
     };
     (seen, record)
 }
@@ -337,9 +390,9 @@ async fn take_census() -> Census {
     };
 
     // Starting states: see `Record::starts` — every personalised/barrier
-    // combination, with and without a collected receipt, against every
-    // combination of the letters' own ledger slots, with the rest of the ledger
-    // all unserved and all served.
+    // combination, with and without a collected receipt, spend line and
+    // clearing line, against every combination of the letters' own ledger
+    // slots, with the rest of the ledger all unserved and all served.
     for &p in &[FULL, EMPTY] {
         let mut touched = BTreeMap::new();
         for &l in &letters {
@@ -423,6 +476,11 @@ enum Resource {
     Served(OneShot),
     /// The collected receipt log.
     ReceiptLog,
+    /// The verified spend log (#2541). Its own resource: a spend receipt and a
+    /// mediation receipt land in different files and neither reads the other.
+    SpendLog,
+    /// The recomputed clearing log. Its own file, its own resource.
+    ClearingLog,
 }
 
 /// Each letter's footprint. Personalisation is read from the production
@@ -447,6 +505,8 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
                     fp.update(Resource::Served(OneShot::AuditCredentials))
                 }
                 Cmd::ShipReceipt => fp.update(Resource::ReceiptLog),
+                Cmd::ShipSpend => fp.update(Resource::SpendLog),
+                Cmd::ShipClearing => fp.update(Resource::ClearingLog),
                 Cmd::FetchSvid => fp.update(Resource::Served(OneShot::SvidKey)),
                 Cmd::FetchPodCallerToken => fp.update(Resource::Served(OneShot::CallerToken)),
                 Cmd::FetchTaskToken => fp.update(Resource::Served(OneShot::TaskToken)),

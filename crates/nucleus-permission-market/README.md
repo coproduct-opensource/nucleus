@@ -1,22 +1,22 @@
 # nucleus-permission-market
 
-Lagrangian permission pricing oracle for multi-dimensional capability
-constraints.
+Lagrangian permission pricing for multi-dimensional capability constraints.
 
-[![docs.rs](https://img.shields.io/docsrs/nucleus-permission-market)](https://docs.rs/nucleus-permission-market)
+## What it does
 
-In constrained optimization, a Lagrange multiplier `λ` turns a hard constraint
-into a continuous penalty — and by duality, `λ` **is** the market price of
-relaxing that constraint by one unit. This crate generalizes a 1-D budget
-constraint to N independent permission dimensions:
+In constrained optimization, a Lagrange multiplier `λ` converts a hard
+constraint into a continuous penalty; by duality, `λ` **is** the market price
+of relaxing that constraint by one unit. This crate keeps one `λ` per
+permission dimension. When a dimension's utilization is low, `λ ≈ 0` and the
+permission is effectively free; as utilization approaches its limit, `λ` grows
+exponentially and prices out low-value operations first.
 
-```text
-L' = L + Σᵢ λᵢ · gᵢ(utilization)
-```
-
-Each dimension has its own utilization and `λ`. When utilization is low, `λ ≈ 0`
-and permissions are effectively free; as utilization approaches the limit, `λ`
-grows exponentially, pricing out low-value operations first.
+Prices are **micro-USD** and utilization is **basis points**. `λ` is computed
+by a fixed-point exponential — no float anywhere in the shipped build — and
+pinned to the `f64` curve it replaced within one micro-unit at every basis
+point. Monotonicity and overflow-freedom are checked over the curve's WHOLE
+domain — `bps` is bounded by 10 000, so the test walks all 10 001 inputs under
+debug overflow checks.
 
 ## Dimensions
 
@@ -27,41 +27,56 @@ grows exponentially, pricing out low-value operations first.
 | `NetworkEgress` | outbound requests (web_fetch, web_search) |
 | `Approval` | the meta-permission to approve other operations |
 
-## Usage
+## A bid comes from a certificate, not a request
+
+`PermissionBid` has private fields, no `Deserialize`, and one public
+constructor: `PermissionBid::from_verified(&portcullis::VerifiedPermissions)`.
+That argument is sealed — it cannot exist unless a delegation certificate
+chain was walked — so a bid in hand is evidence that someone verified a
+certificate, and the value it carries is the ceiling the *principal*
+delegated. The trust tier is a function of chain depth, assigned by
+verification. There is no header, and nothing a request can say changes its
+price.
 
 ```rust
-use nucleus_permission_market::{PermissionMarket, PermissionBid, PermissionDimension, TrustTier};
+use nucleus_permission_market::{PermissionBid, PermissionDimension, PermissionMarket};
 use std::collections::BTreeMap;
 
-// Current utilization per dimension.
+// Current utilization per dimension, basis points.
 let mut utilizations = BTreeMap::new();
-utilizations.insert(PermissionDimension::Filesystem, 0.3);   // low pressure
-utilizations.insert(PermissionDimension::CommandExec, 0.85); // high pressure
+utilizations.insert(PermissionDimension::Filesystem, 3_000);  // low pressure
+utilizations.insert(PermissionDimension::CommandExec, 8_500); // high pressure
 let market = PermissionMarket::with_utilization(utilizations);
 
-// A skill bids for capabilities with a value estimate and a trust tier.
-let bid = PermissionBid {
-    skill_id: "my-plugin".into(),
-    requested: vec![PermissionDimension::Filesystem, PermissionDimension::CommandExec],
-    value_estimate: 2.0,
-    trust_tier: TrustTier::Verified,
-};
-
+// `verified` is a portcullis::VerifiedPermissions from verify_certificate(..).
+let bid = PermissionBid::from_verified(&verified);
 let grant = market.evaluate_bid(&bid);
 assert!(grant.granted.contains(&PermissionDimension::Filesystem)); // cheap → granted
-// CommandExec may be denied if value < λ_exec adjusted by the trust-tier discount.
+// CommandExec is denied if the certificate's budget < λ_exec × the tier's discount.
+// grant.total_cost_micro and each DeniedDimension::price_micro are micro-USD.
 ```
 
 ## Where it sits
 
 ```text
-Plugin → X-Nucleus-Permission-Bid header → PermissionMarket.evaluate_bid()
-         → grant/deny with λ pricing      → tool-proxy endpoint (enforcement)
+request ─► delegation certificate ─► verify_certificate ─► VerifiedPermissions
+                                                                   │
+                                                       PermissionBid::from_verified
+                                                                   │
+                                                 PermissionMarket::evaluate_bid ─► grant / 402
 ```
 
 The **mechanism** (λ computation, bid evaluation) is vendor-agnostic. The
-**calibration** (cost models, trust assignment, utilization tracking) is the
-orchestrator's responsibility — this crate prices; it does not enforce.
+**calibration** (utilization tracking, what a dollar of budget buys) is the
+orchestrator's responsibility — this crate prices; it does not decide whether
+an agent may act. `cargo xtask econ-boundary` refuses it a way into that
+decision (`docs/econ-layer-boundary.md`).
+
+## Features
+
+- `certificate` (default): `PermissionBid::from_verified`, via `portcullis`
+  with default features off. Disable for targets that cannot build it; the
+  market and dimensions remain, and no bid can be constructed.
 
 ## License
 

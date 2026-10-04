@@ -58,6 +58,10 @@ const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 const RUN_CHILD_PASS: &str = "NUCLEUS_RUN_CHILD_PROBE: PASS";
 const RUN_CHILD_FAIL: &str = "NUCLEUS_RUN_CHILD_PROBE: FAIL";
 
+/// The contention probe's per-request line and its summary line, read back off
+/// the guest console by whoever ran the pod.
+const CONTEND_SENTINEL: &str = "NUCLEUS_CONTEND";
+
 fn main() {
     // Stage 2: invoked as a `/v1/run` command
     // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--run-child"]}`)
@@ -79,6 +83,25 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+
+    // `contend N` (#2988): the composition probe for the authority exchange.
+    // N child PROCESSES — distinct kernel-reported pids, so distinct bidders —
+    // each ask the pod's proxy for the same auctioned dimension inside one
+    // clearing window, at a different declared value. The proxy's verdicts come
+    // back as one line per child, and the parent's summary says whether the
+    // round was CONTESTED at all: a run where nobody was outbid proves nothing.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("contend") => {
+            let n = args.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(3);
+            std::process::exit(contend(n));
+        }
+        Some("contend-child") => {
+            let bid = args.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            std::process::exit(contend_child(bid));
+        }
+        _ => {}
     }
 
     let mut fails: Vec<String> = Vec::new();
@@ -299,6 +322,200 @@ fn check_root_readonly(fails: &mut Vec<String>) {
         Some(true) => {}
         Some(false) => fails.push("root filesystem is mounted read-write".to_string()),
         None => fails.push("no root (/) mount found in /proc/self/mountinfo".to_string()),
+    }
+}
+
+// ── contend: the authority exchange's composition probe (#2988) ─────────────
+
+/// Spawn `n` children, each a distinct process bidding a distinct value for the
+/// same auctioned dimension, and summarise what the proxy decided. Exit 0 when
+/// the round was contested (at least one winner AND at least one outbid), 1
+/// otherwise: an uncontested run is a posted price wearing a theorem's name.
+fn contend(n: u32) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{CONTEND_SENTINEL}: FAIL current_exe: {e}");
+            return 1;
+        }
+    };
+    // Values 1 000 000, 2 000 000, … µUSD: distinct, so the second-price rule
+    // has something to discover, and all under the certificate ceilings the
+    // live specs use.
+    let mut children = Vec::new();
+    let mut failed = false;
+    for i in 1..=n {
+        let bid = u64::from(i) * 1_000_000;
+        match std::process::Command::new(&exe)
+            .arg("contend-child")
+            .arg(bid.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(c) => children.push(c),
+            Err(e) => {
+                failed = true;
+                println!("{CONTEND_SENTINEL}: FAIL spawn child {i}: {e}");
+            }
+        }
+    }
+    let (mut won, mut outbid, mut denied, mut other) = (0u32, 0u32, 0u32, 0u32);
+    for c in children {
+        let out = match c.wait_with_output() {
+            Ok(o) => o,
+            Err(e) => {
+                failed = true;
+                println!("{CONTEND_SENTINEL}: FAIL wait: {e}");
+                continue;
+            }
+        };
+        failed |= !out.status.success();
+        let line = String::from_utf8_lossy(&out.stdout);
+        // Echo the child's line so the console carries every verdict.
+        print!("{line}");
+        eprint!("{line}");
+        let outcome = line
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("outcome="));
+        if outcome == Some("won") {
+            won += 1;
+        } else if outcome == Some("outbid") {
+            outbid += 1;
+        } else if outcome == Some("denied") {
+            denied += 1;
+        } else {
+            other += 1;
+        }
+    }
+    let contested = !failed && other == 0 && won >= 1 && outbid >= 1;
+    let summary = format!(
+        "{CONTEND_SENTINEL}: SUMMARY children={n} won={won} outbid={outbid} denied={denied} \
+         other={other} contested={contested}"
+    );
+    println!("{summary}");
+    eprintln!("{summary}");
+    if contested { 0 } else { 1 }
+}
+
+/// One bidder: POST an egress request over the pod's Unix socket with a
+/// declared value, and classify the proxy's answer.
+fn contend_child(bid: u64) -> i32 {
+    use std::io::{Read, Write};
+
+    let pid = std::process::id();
+    let url = std::env::var("NUCLEUS_TOOL_PROXY_URL").unwrap_or_default();
+    let Some(path) = url.strip_prefix("unix://") else {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=no-unix-socket url={url:?}");
+        return 1;
+    };
+    let body = r#"{"url":"http://contend.invalid/","method":"GET"}"#;
+    let request = format!(
+        "POST /v1/web_fetch HTTP/1.1\r\nHost: nucleus\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nx-nucleus-bid-micro-usd: {bid}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // A connect refusal is a permission FACT, so report the facts that
+            // decide it rather than leaving the reader to guess: our uid, and
+            // the mode/owner of the socket and of every directory above it.
+            use std::os::unix::fs::MetadataExt;
+            let uid = std::fs::metadata("/proc/self")
+                .map(|m| m.uid())
+                .unwrap_or(u32::MAX);
+            let mut modes = String::new();
+            let mut acc = std::path::PathBuf::from("/");
+            for part in std::path::Path::new(path).iter().skip(1) {
+                acc.push(part);
+                let d = match std::fs::metadata(&acc) {
+                    Ok(m) => format!(
+                        "{}=mode{:o},uid{} ",
+                        acc.display(),
+                        m.mode() & 0o7777,
+                        m.uid()
+                    ),
+                    Err(e) => format!("{}=<{}> ", acc.display(), e.kind()),
+                };
+                modes.push_str(&d);
+            }
+            println!(
+                "{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=connect-failed error={e} \
+                 my_uid={uid} path_modes=[{}]",
+                modes.trim_end()
+            );
+            return 1;
+        }
+    };
+    if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_secs(30))) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=timeout-setup-failed error={e}");
+        return 1;
+    }
+    if let Err(e) = stream.write_all(request.as_bytes()) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=write-failed error={e}");
+        return 1;
+    }
+    let mut reply = Vec::new();
+    if let Err(e) = stream.take(32 * 1024 + 1).read_to_end(&mut reply) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=read-failed error={e}");
+        return 1;
+    }
+    if reply.len() > 32 * 1024 {
+        return 1;
+    }
+    let reply = String::from_utf8_lossy(&reply);
+    let status = reply.split_whitespace().nth(1).unwrap_or("?").to_string();
+    let outcome = auction_outcome(&reply);
+    let tail: String = reply
+        .chars()
+        .rev()
+        .take(120)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    println!(
+        "{CONTEND_SENTINEL}: bid={bid} pid={pid} status={status} outcome={outcome} tail={:?}",
+        tail.replace('\n', " ")
+    );
+    i32::from(outcome == "other")
+}
+
+/// HTTP status/body alone never establishes an auction result. Only the
+/// proxy's decision header does; duplicate or malformed evidence is refused.
+fn auction_outcome(reply: &str) -> &'static str {
+    let Some((headers, _)) = reply.split_once("\r\n\r\n") else {
+        return "other";
+    };
+    let mut lines = headers.split("\r\n");
+    let mut status = lines.next().unwrap_or("").split_whitespace();
+    if !matches!(status.next(), Some("HTTP/1.1" | "HTTP/1.0")) {
+        return "other";
+    }
+    let Some(code) = status
+        .next()
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|n| (200..600).contains(n))
+    else {
+        return "other";
+    };
+    let mut outcome = None;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            return "other";
+        };
+        if name.eq_ignore_ascii_case("x-nucleus-auction-outcome") {
+            if outcome.is_some() {
+                return "other";
+            }
+            outcome = Some(value.trim());
+        }
+    }
+    match outcome {
+        Some("won") => "won",
+        Some("outbid") if code == 403 => "outbid",
+        _ => "other",
     }
 }
 
@@ -590,5 +807,48 @@ mod tests {
             run_child_failures(None, &denied(), &Pid1View::Invisible).len(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod auction_tests {
+    use super::auction_outcome;
+
+    #[test]
+    fn generic_successes_refusals_and_server_errors_are_not_auction_wins() {
+        for status in [200, 401, 403, 404, 500, 502] {
+            assert_eq!(
+                auction_outcome(&format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\n\r\n"
+                )),
+                "other"
+            );
+        }
+        assert_eq!(
+            auction_outcome("HTTP/1.1 403 Forbidden\r\n\r\noutbid for the slot"),
+            "other"
+        );
+    }
+
+    #[test]
+    fn only_one_explicit_header_establishes_the_outcome() {
+        assert_eq!(
+            auction_outcome("HTTP/1.1 502 Bad Gateway\r\nX-Nucleus-Auction-Outcome: won\r\n\r\n"),
+            "won",
+            "the slot was paid for even when the downstream fetch failed"
+        );
+        assert_eq!(
+            auction_outcome("HTTP/1.1 403 Forbidden\r\nx-nucleus-auction-outcome: outbid\r\n\r\n"),
+            "outbid"
+        );
+        for reply in [
+            "HTTP/1.1 200 OK\r\nx-nucleus-auction-outcome: outbid\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nx-nucleus-auction-outcome: won\r\nx-nucleus-auction-outcome: won\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nx-nucleus-auction-outcome: won",
+            "HTTP/1.1 200 OK\r\n\r\nx-nucleus-auction-outcome: won",
+            "garbage 200 OK\r\nx-nucleus-auction-outcome: won\r\n\r\n",
+        ] {
+            assert_eq!(auction_outcome(reply), "other", "{reply:?}");
+        }
     }
 }

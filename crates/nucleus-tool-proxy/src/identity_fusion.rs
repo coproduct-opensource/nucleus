@@ -86,7 +86,7 @@ pub fn elevate_grant_trust(grant: &PermissionGrant) -> PermissionGrant {
     PermissionGrant {
         granted: grant.granted.clone(),
         denied: grant.denied.clone(),
-        total_cost: 0.0,
+        total_cost_micro: 0,
         expires_at: grant.expires_at,
     }
 }
@@ -100,11 +100,11 @@ mod tests {
         let grant = PermissionGrant {
             granted: vec![],
             denied: vec![],
-            total_cost: 42.0,
+            total_cost_micro: 42,
             expires_at: None,
         };
         let elevated = elevate_grant_trust(&grant);
-        assert_eq!(elevated.total_cost, 0.0);
+        assert_eq!(elevated.total_cost_micro, 0);
     }
 
     #[test]
