@@ -16,8 +16,8 @@
 //!   `rootfs_path` = `/etc/shadow` was ADMITTED
 //!   (`a_node_ca_key_is_refused_as_data`, red on the parent commit).
 //! - `image.kernel_path` and `image.rootfs_path` are booted, so a creator could
-//!   boot the guest from any host file, and a `read_only: false` rootfs is
-//!   hard-linked writable.
+//!   boot the guest from any host file, and a `read_only: false` rootfs was
+//!   hard-linked writable (now refused, #3132).
 //!   `image.rootfs` is a `RootfsSource` (#3078): only its `Path` arm is a host
 //!   path. An OCI source is a reference plus digests; the file it becomes is
 //!   the node's image store's to choose, never the creator's to name.
@@ -82,10 +82,9 @@
 //!   the artifacts directory (the examples do, for a dev tree); a pod could then
 //!   take the shared rootfs as its writable scratch disk. Roots are the operator's
 //!   choice; provisioned nodes keep them disjoint.
-//! - **A writable rootfs.** `read_only: false` still hard-links the rootfs from
-//!   `--artifacts-root` writable (#2784). It can no longer be a host secret, but it
-//!   can be the shared artifact; that is `ImageSpec::read_only`'s default-true, not
-//!   this module.
+//! - **A writable rootfs.** A confined rootfs is the shared artifact, so
+//!   `read_only: false` is refused by `spec_posture::admit` and the lowering
+//!   attaches every rootfs read-only (#3132), not this module.
 //! - **`credentials.workload_identity[].source`** (`static_file` path, SPIFFE
 //!   `socket_path`) is a host path no runtime reads yet. The runtime that reads it
 //!   must add a role here.

@@ -157,7 +157,7 @@ pub(crate) fn place_base(
             std::fs::create_dir_all(parent).map_err(|e| NoBase::CrossDevice(e.to_string()))?;
         }
         // A relaunch under the same pod id finds the previous link; `hard_link` would fail
-        // `AlreadyExists` rather than replace, exactly as `place_resource` documents.
+        // `AlreadyExists` rather than replace, exactly as `jail_placement::place` documents.
         let _ = std::fs::remove_file(&dest);
         std::fs::hard_link(&src, &dest).map_err(|e| {
             NoBase::CrossDevice(format!("{} -> {}: {e}", src.display(), dest.display()))

@@ -166,6 +166,24 @@ impl FederationRules {
                     rule.id, rule.subject_prefix
                 )));
             }
+            // A wildcard grant must end at a segment boundary, and what is
+            // literal must be the canonical spelling of an ID prefix (or, with
+            // no wildcard, of an ID): `spiffe://td/ns/a*` would also grant
+            // `spiffe://td/ns/ab/…`, and a literal no canonical subject can
+            // equal or extend is a rule that silently grants nothing.
+            let canonical = if rule.subject_prefix.ends_with('*') {
+                literal_prefix.ends_with('/')
+                    && nucleus_lineage::CallSpiffeId::parse(format!("{literal_prefix}x")).is_ok()
+            } else {
+                nucleus_lineage::CallSpiffeId::parse(literal_prefix).is_ok()
+            };
+            if !canonical {
+                return Err(FederationError::InvalidRule(format!(
+                    "rule {:?}: subject_prefix must be a canonical SPIFFE ID, or a canonical \
+                     ID prefix ending in `/*` (a wildcard matches whole segments only), got {:?}",
+                    rule.id, rule.subject_prefix
+                )));
+            }
             if rule.audience.trim().is_empty() {
                 return Err(FederationError::InvalidRule(format!(
                     "rule {:?}: audience must be non-empty",
@@ -582,6 +600,95 @@ mod tests {
         "#;
         let err = FederationRules::parse_toml(s).unwrap_err();
         assert!(matches!(err, FederationError::Toml(_)));
+    }
+
+    /// The rule site, walked (`docs/spiffe-taxonomy.md`, property 2): every
+    /// `subject_prefix` a bounded alphabet makes is accepted only when it is a
+    /// canonical ID or a canonical prefix ending `/*`, and an accepted rule
+    /// matches a canonical subject exactly when the subject is that ID or lies
+    /// below that prefix at a segment boundary, in its trust domain.
+    #[test]
+    fn a_rule_matches_whole_segments_only() {
+        let tds = ["td.example", "td.example.evil", "td.examplex", "TD.example"];
+        let words = ["ns", "a", "ab", "", "..", "%2F", "A"];
+        let seg_ok = |g: &str| {
+            !g.is_empty()
+                && g != "."
+                && g != ".."
+                && g.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        };
+        let td_ok = |t: &str| {
+            t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".-".contains(&b))
+        };
+        let mut paths: Vec<Vec<&str>> = vec![vec![]];
+        for len in 1..=3 {
+            let longer: Vec<Vec<&str>> = paths
+                .iter()
+                .filter(|p| p.len() == len - 1)
+                .flat_map(|p| words.iter().map(move |w| [p.clone(), vec![*w]].concat()))
+                .collect();
+            paths.extend(longer);
+        }
+        let (mut rules, mut checks, mut matched) = (0usize, 0usize, 0usize);
+        for rtd in tds {
+            for built in paths.iter().filter(|p| p.len() <= 2) {
+                // Exact, `/*`, and the intra-segment `*` that is refused.
+                for tail in ["", "/*", "*"] {
+                    let mut pattern = format!("spiffe://{rtd}");
+                    for g in built {
+                        pattern.push('/');
+                        pattern.push_str(g);
+                    }
+                    pattern.push_str(tail);
+                    let toml = format!(
+                        "[[rule]]\nid = \"r\"\nsubject_prefix = {pattern:?}\naudience = \"https://rp\"\n\
+                         allowed_grants = [\"{GRANT_TX}\"]\nmax_token_lifetime_secs = 60\n"
+                    );
+                    // Judge the string, not how it was built: `[""]` + `*` spells the
+                    // same pattern as `[]` + `/*`.
+                    let wild = pattern.ends_with("/*");
+                    let body = pattern["spiffe://".len()..].trim_end_matches("/*");
+                    let mut parts = body.split('/');
+                    let rtd_eff = parts.next().unwrap_or("");
+                    let rp: Vec<&str> = parts.collect();
+                    let segs_ok = !rtd_eff.is_empty()
+                        && td_ok(rtd_eff)
+                        && !body.contains('*')
+                        && rp.iter().all(|g| seg_ok(g));
+                    let want_ok = segs_ok && (wild || !rp.is_empty());
+                    let tail = if wild { "/*" } else { "" };
+                    let rtd = rtd_eff;
+                    let parsed = FederationRules::parse_toml(&toml);
+                    assert_eq!(parsed.is_ok(), want_ok, "{pattern:?}: {parsed:?}");
+                    if !want_ok {
+                        continue;
+                    }
+                    rules += 1;
+                    for std in tds {
+                        for sp in paths.iter().filter(|p| !p.is_empty()) {
+                            let sub = format!("spiffe://{std}/{}", sp.join("/"));
+                            if nucleus_lineage::CallSpiffeId::parse(sub.clone()).is_err() {
+                                continue; // token.rs refuses it before any rule runs
+                            }
+                            let got = subject_matches(&pattern, &sub);
+                            let want = std == rtd
+                                && if tail.is_empty() {
+                                    sp[..] == rp[..]
+                                } else {
+                                    sp.len() > rp.len() && sp[..rp.len()] == rp[..]
+                                };
+                            assert_eq!(got, want, "rule {pattern:?} subject {sub:?}");
+                            matched += usize::from(got);
+                            checks += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!("federation-rule walk: {rules} rules, {checks} subjects, {matched} matched");
+        assert!(matched > 0 && checks > matched);
     }
 
     #[test]

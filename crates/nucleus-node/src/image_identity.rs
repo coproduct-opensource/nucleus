@@ -5,7 +5,7 @@
 //! `admit_posture` already measures a rootfs, ~1300 lines before `prepare_jail` places it. That
 //! gap is a window: anything that swaps the file in between is measured as one thing and booted
 //! as another. Verifying the **placed** artifact closes it without needing `linkat`,
-//! `CAP_DAC_READ_SEARCH`, or holding an fd across the whole launch — `place_resource` hard-links
+//! `CAP_DAC_READ_SEARCH`, or holding an fd across the whole launch — `jail_placement::place` hard-links
 //! the host file into the jail, so the in-jail path is the same inode, and where it has to fall
 //! back to a copy, the copy is what boots. Either way, the bytes measured here are the bytes the
 //! VM gets.
@@ -145,7 +145,7 @@ mod tests {
             kernel_path: kernel.to_path_buf(),
             rootfs: nucleus_spec::RootfsSource::Path(PathBuf::from("/unused/rootfs.ext4")),
             boot_args: None,
-            read_only: false,
+            read_only: true,
             scratch_path: None,
             kernel_digest: kd.map(|d| ArtifactDigest::parse(d).expect("test digest parses")),
             rootfs_digest: None,

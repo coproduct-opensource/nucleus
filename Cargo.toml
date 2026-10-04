@@ -6,6 +6,7 @@ members = [
     "crates/nucleus-policy-cert",   # PCA: recompute-verifiable certificates (R1)
     "crates/nucleus-cred-broker",   # CB4A: Credential Delivery Point (holds creds, decides nothing)
     "crates/nucleus-cred-protocol", # CB4A: wire types only, safe for the guest to link
+    "crates/nucleus-decision-protocol", # L-1 P7: the per-pod decision channel's one wire declaration (guest + host)
     "crates/nucleus-oci-rootfs",    # OCI image -> one verified, normalized, deterministic rootfs tar (local layouts/archives only)
     "crates/nucleus-jsonl",       # One atomic append per record for every line-oriented evidence log
     "crates/nucleus-pca",           # PCA: the unified verify() SDK facade
@@ -34,6 +35,7 @@ members = [
     "crates/nucleus-sdk",        # Rust SDK for building sandboxed AI agents
     "crates/nucleus-authority-exchange", # truthful VCG clearing of one contended authority slot, with a recomputable receipt
     "crates/nucleus-blast-radius",       # the bound on an agent's authority, projected from a VERIFIED cert chain into underwriter terms; derived, never declared
+    "crates/nucleus-calibration",        # recomputable Brier/ECE receipts with the noise floor beside the estimate; "could not look" is an arm
     "crates/nucleus-permission-market", # Lagrangian permission pricing oracle
     "crates/ctf-engine",               # CTF engine: formally verified sandbox challenge
     "crates/ctf-server",               # HTTP API server for The Vault CTF

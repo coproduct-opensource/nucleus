@@ -5,6 +5,11 @@
 
 use super::*;
 
+/// The node's default ceilings: these tests are about the other fields.
+fn admit(s: &PodSpec) -> Result<(), PostureRefused> {
+    super::admit(s, &PodCeilings::defaults())
+}
+
 fn spec(inner: &str) -> PodSpec {
     serde_json::from_str(&format!(
         r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{inner}}}"#
@@ -205,6 +210,59 @@ fn a_container_pod_cannot_choose_a_wider_network() {
     );
 }
 
+/// #3132: `read_only: false` attached the node's shared rootfs writable, so one pod's writes were
+/// every later pod's boot image. Refused by name; `true` and omission are admitted.
+#[test]
+fn a_spec_cannot_ask_for_a_writable_shared_rootfs() {
+    let image = |extra: &str| {
+        spec(&format!(
+            r#"{{"image":{{"kernel_path":"/var/lib/nucleus/artifacts/vmlinux",
+                          "rootfs_path":"/var/lib/nucleus/artifacts/rootfs.ext4"{extra}}}}}"#
+        ))
+    };
+    let e = refused(&image(r#","read_only":false"#));
+    assert_eq!(e, PostureRefused::WritableRootfs);
+    let msg = ApiError::from(e).to_string();
+    assert!(
+        msg.contains("image.read_only"),
+        "the refusal names the field: {msg}"
+    );
+    admit(&image(r#","read_only":true"#)).expect("a read-only rootfs is admitted");
+    admit(&image("")).expect("omitted read_only means read-only (#2784)");
+}
+
+fn labelled(label: &str, value: &str) -> PodSpec {
+    let mut s = spec("{}");
+    s.metadata.labels.insert(label.into(), value.into());
+    s
+}
+
+/// #3133: the container driver read whether to run the tool-proxy, and which image it came from,
+/// from these labels. Each is refused by name whatever its value, including the value that asks
+/// for mediation: the node no longer reads it, and an ignored label would mislead its author.
+#[test]
+fn a_spec_cannot_choose_its_own_mediation() {
+    for (label, value) in [
+        ("nucleus.io/proxy-mode", "false"),
+        ("nucleus.io/proxy-mode", "true"),
+        ("nucleus.io/proxy-mode", ""),
+        (
+            "nucleus.io/container-image",
+            "attacker.example/mediator:latest",
+        ),
+        ("nucleus.io/container-image", "nucleus-tool-proxy:latest"),
+    ] {
+        let err = refused(&labelled(label, value));
+        assert!(
+            matches!(err, PostureRefused::NodeOwnedLabel { label: l, .. } if l == label),
+            "{label}={value}: {err:?}"
+        );
+        assert!(err.to_string().contains(label), "{err}");
+    }
+    // Neighbouring labels the node still reads are not swept up.
+    admit(&labelled("nucleus.io/network", "none")).expect("network label is admitted here");
+}
+
 /// A spec with none of these fields is admitted unchanged: the default is not a refusal.
 #[test]
 fn a_minimal_spec_is_admitted() {
@@ -231,5 +289,62 @@ async fn create_refuses_a_hostile_posture_before_anything_is_spawned() {
         panic!("a spec writing the guest command line must be refused at create");
     };
     assert!(msg.contains("audit_sink.s3_bucket"), "{msg}");
+    assert!(st.pods.lock().await.is_empty(), "nothing was registered");
+
+    // #3130, through the same create path: a terabyte of guest memory is refused by name.
+    let greedy = spec(r#"{"resources":{"memory_mib":1048576}}"#);
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let Err(ApiError::InvalidSpec(msg)) =
+        crate::create_pod_internal(&st, greedy, None, None, root).await
+    else {
+        panic!("a pod larger than the node's ceiling must be refused at create");
+    };
+    assert!(msg.contains("resources.memory_mib 1048576"), "{msg}");
+    assert!(st.pods.lock().await.is_empty(), "nothing was registered");
+}
+
+/// #3130: the size is decided at create by the same one decider, and the refusal reaches the
+/// caller as an invalid spec naming the field. On main a terabyte of guest memory was admitted.
+#[test]
+fn a_size_above_the_node_ceiling_is_refused_at_create() {
+    for (inner, field) in [
+        (r#"{"resources":{"memory_mib":1048576}}"#, "memory_mib"),
+        (r#"{"resources":{"cpu_cores":32}}"#, "cpu_cores"),
+        (r#"{"resources":{"huge_pages":"2M"}}"#, "huge_pages"),
+        (
+            r#"{"cgroup":{"path":"/sys/fs/cgroup/n","settings":[{"file":"memory.max","value":"max"}]}}"#,
+            "memory.max",
+        ),
+    ] {
+        let e = refused(&spec(inner));
+        assert!(matches!(e, PostureRefused::Resources(_)), "{inner}: {e}");
+        let msg = ApiError::from(e).to_string();
+        assert!(msg.contains(field), "the refusal names {field}: {msg}");
+    }
+}
+
+/// #3133 end to end: a child or tenant naming the mediation label is refused by the create path
+/// itself, so `create_sub_pod`'s label passthrough cannot reach the container driver with it.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn create_refuses_a_spec_choosing_its_mediation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = crate::pod_api::handler_tests::state(&dir);
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let hostile = labelled("nucleus.io/proxy-mode", "false");
+    let Err(ApiError::InvalidSpec(msg)) =
+        crate::create_pod_internal(&st, hostile, None, None, root).await
+    else {
+        panic!("a spec choosing its own mediation must be refused at create");
+    };
+    assert!(msg.contains("nucleus.io/proxy-mode"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 }
