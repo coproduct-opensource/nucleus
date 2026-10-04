@@ -27,6 +27,9 @@ nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
+# `nucleus federation`: the issuer key's files, rotation and discovery document
+# are defined once there and shared with the node's signer.
+nucleus-federation = { path = "../nucleus-federation" }
 # `nucleus image`: the one flattener every image source goes through.
 nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 # One atomic append per audit record (the microVM host supervisor).

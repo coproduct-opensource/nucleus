@@ -131,6 +131,7 @@ const GROUPS: &[(&str, &str, &str)] = &[
     ("identity", "identity.rs", "IdentityCommand"),
     ("node", "node.rs", "NodeCommand"),
     ("bundle", "bundle.rs", "BundleCommand"),
+    ("federation", "federation.rs", "FederationCommand"),
     ("image", "image.rs", "ImageCommand"),
 ];
 
