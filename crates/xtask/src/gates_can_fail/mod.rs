@@ -59,7 +59,9 @@
 mod inputs;
 mod main_red;
 mod perturb;
+mod restore;
 mod selftest;
+use restore::Restore;
 pub mod table;
 mod wiring;
 
@@ -431,29 +433,6 @@ fn decide(idx: &Index, scope: &Scope, probe: &Probe) -> Decision {
     }
 }
 
-/// A perturbed target, restored when this is dropped -- including on the way out of an early
-/// return. An interrupt is handled by `Harness::interrupted`, which restores explicitly.
-struct Restore {
-    path: PathBuf,
-    original: Vec<u8>,
-    active: bool,
-}
-
-impl Restore {
-    fn restore(&mut self) {
-        if self.active {
-            let _ = fs::write(&self.path, &self.original);
-            self.active = false;
-        }
-    }
-}
-
-impl Drop for Restore {
-    fn drop(&mut self) {
-        self.restore();
-    }
-}
-
 /// One gate run as the probe asks it: program, the flags it is run with, and the base question.
 struct Invocation {
     program: Program,
@@ -501,11 +480,25 @@ impl Harness {
     fn interrupted(&mut self, guard: Option<&mut Restore>) {
         if self.stop.load(Ordering::SeqCst) {
             if let Some(g) = guard {
-                g.restore();
+                if !self.restore(g) {
+                    std::process::exit(2);
+                }
             }
             self.base_tree = None;
             out("interrupted: restored the perturbed file and stopped.");
             std::process::exit(130);
+        }
+    }
+
+    fn restore(&mut self, guard: &mut Restore) -> bool {
+        match guard.restore() {
+            Ok(()) => true,
+            Err(error) => {
+                self.fail(&[format!(
+                    "  FAIL  could not restore the perturbed file: {error}"
+                )]);
+                false
+            }
         }
     }
 
@@ -882,18 +875,16 @@ impl Harness {
                 return self.fail(&[format!("  ERROR: {} could not be read: {e}", probe.target)]);
             }
         };
-        let mut guard = Restore {
-            path: target.clone(),
-            original: original.clone(),
-            active: true,
-        };
+        let mut guard = Restore::new(target.clone(), original.clone());
         let before = String::from_utf8_lossy(&original).into_owned();
         let perturbed = (probe.perturb.apply)(&self.root, &before);
         if let Some(why) = &perturbed.complaint {
             out(&format!("  ERROR: {why}"));
         }
         if let Err(e) = fs::write(&target, perturbed.text.as_bytes()) {
-            guard.restore();
+            if !self.restore(&mut guard) {
+                return;
+            }
             return self.fail(&[format!("  ERROR: could not write {}: {e}", probe.target)]);
         }
 
@@ -901,7 +892,9 @@ impl Harness {
         // gate then passes on an unchanged tree, and the probe would report a working gate as
         // broken (#2582).
         if fs::read(&target).ok().as_deref() == Some(original.as_slice()) {
-            guard.restore();
+            if !self.restore(&mut guard) {
+                return;
+            }
             let mut lines = vec![format!(
                 "  FAIL  {name} — the perturbation for '{}' changed {} not at all",
                 probe.desc, probe.target
@@ -918,7 +911,9 @@ impl Harness {
         }
 
         if self.opts.mode == Mode::VacuityOnly {
-            guard.restore();
+            if !self.restore(&mut guard) {
+                return;
+            }
             self.covered += 1;
             return;
         }
@@ -935,7 +930,9 @@ impl Harness {
         } else {
             (self.run_gate(&inv, Some(&mut guard)), String::new())
         };
-        guard.restore();
+        if !self.restore(&mut guard) {
+            return;
+        }
         let restored_rc = self.run_gate(&inv, None);
         drop(temps);
 
