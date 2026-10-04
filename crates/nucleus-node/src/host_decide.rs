@@ -815,6 +815,7 @@ impl DecideListener {
 /// `None` when the pod holds no certificate from this node (there is nothing
 /// to build the host's kernel from) or the socket cannot be bound. Shadow mode
 /// never fails a launch: nothing the guest does depends on this socket yet.
+#[cfg(target_os = "linux")]
 pub(crate) async fn start_for_pod(
     state: &crate::NodeState,
     pod: Uuid,

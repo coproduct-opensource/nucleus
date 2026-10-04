@@ -71,6 +71,8 @@ pub(crate) enum HostUnavailable {
     TooManySessions,
     /// The worker is gone.
     Stopped,
+    /// The exact subject does not fit the protocol; comparing a prefix would be misleading.
+    SubjectTooLong,
 }
 
 /// What one shadowed decision came to.
@@ -145,7 +147,7 @@ pub(crate) type Dialer = Arc<dyn Fn() -> Dialled + Send + Sync>;
 pub(crate) struct Question {
     session: Uuid,
     op: Operation,
-    subject: String,
+    subject: Subject,
     local: Outcome,
     taint: LabelRaise,
 }
@@ -216,10 +218,17 @@ impl HostDecide {
         let HostDecide::On { queue, tally } = self else {
             return;
         };
+        let subject = match Subject::new(subject) {
+            Ok(subject) => subject,
+            Err(_) => {
+                tally.count(Shadowed::Unavailable(HostUnavailable::SubjectTooLong));
+                return;
+            }
+        };
         let q = Question {
             session: kernel.session_id(),
             op,
-            subject: subject.to_string(),
+            subject,
             local: outcome_of(verdict),
             taint: taint_report(graph),
         };
@@ -354,10 +363,6 @@ impl Channel {
                 _ => return Err(HostUnavailable::Protocol),
             }
         }
-        // A subject past the wire's bound is cut to it; the digest binds what
-        // was sent, and a shadow of a truncated subject is still a shadow of
-        // the same operation.
-        let subject = Subject::new(truncate(&subject)).map_err(|_| HostUnavailable::Protocol)?;
         let decided = self.seq()?;
         let digest = args_digest(op, &subject);
         let verdict = match self
@@ -392,20 +397,6 @@ impl Channel {
             _ => Err(HostUnavailable::Protocol),
         }
     }
-}
-
-/// The longest prefix of `s` that fits the wire's subject bound, on a char
-/// boundary.
-fn truncate(s: &str) -> &str {
-    let max = nucleus_decision_protocol::MAX_SUBJECT_LEN;
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
 }
 
 async fn worker(mut rx: tokio::sync::mpsc::Receiver<Work>, dial: Dialer, tally: Arc<GuestTally>) {

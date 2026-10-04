@@ -346,12 +346,23 @@ async fn the_http_chokepoint_shadows_and_still_enforces_its_own_answer() {
     );
 }
 
-#[test]
-fn a_long_subject_is_cut_on_a_char_boundary() {
-    let max = nucleus_decision_protocol::MAX_SUBJECT_LEN;
-    let s = "é".repeat(max);
-    let t = truncate(&s);
-    assert!(t.len() <= max && t.len() >= max - 1);
-    assert!(Subject::new(t).is_ok());
-    assert_eq!(truncate("short"), "short");
+#[tokio::test]
+async fn an_oversized_subject_is_unavailable_never_a_comparison_of_its_prefix() {
+    let seen = Arc::new(Seen::default());
+    let hd = HostDecide::start(dialer(HostRule::Decide(allow_all), Arc::clone(&seen)));
+    let k = Kernel::new(PermissionLattice::permissive());
+    let g = FlowGraph::new();
+    let subject = "é".repeat(nucleus_decision_protocol::MAX_SUBJECT_LEN);
+    hd.submit(
+        &k,
+        &g,
+        Operation::ReadFiles,
+        &subject,
+        &KernelVerdict::Allow,
+    );
+    hd.flush().await;
+    let s = hd.snapshot().unwrap();
+    assert_eq!((s.agree, s.disagree, s.unavailable), (0, 0, 1));
+    assert_eq!(s.last_unavailable, Some(HostUnavailable::SubjectTooLong));
+    assert!(seen.frames.lock().unwrap().is_empty());
 }

@@ -464,6 +464,7 @@ struct NodeState {
     authority: Arc<pod_authority::PodAuthority>,
     /// Epochs for the pods' shadow decision channels (#2702, P8): one counter
     /// for the whole node, so no two channels' ledgers share an epoch.
+    #[cfg(target_os = "linux")]
     decision_epochs: Arc<host_decide::EpochSource>,
     /// HTTP client for trust API calls.
     http_client: reqwest::Client,
@@ -795,6 +796,7 @@ async fn main() -> Result<(), ApiError> {
         docker,
         trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
         authority: Arc::new(authority),
+        #[cfg(target_os = "linux")]
         decision_epochs: Arc::new(host_decide::EpochSource::seeded()),
         http_client: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))

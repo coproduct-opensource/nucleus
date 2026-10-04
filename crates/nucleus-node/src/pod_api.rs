@@ -1267,6 +1267,7 @@ pub(crate) mod handler_tests {
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
             authority,
+            #[cfg(target_os = "linux")]
             decision_epochs: Arc::new(crate::host_decide::EpochSource::seeded()),
             http_client: http_client(),
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
