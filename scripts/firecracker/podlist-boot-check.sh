@@ -109,7 +109,7 @@ for _ in $(seq 1 60); do N health >/dev/null 2>&1 && { ready=1; break; }; sleep 
 spec() {
     local name=$1 rootfs=$2
     cat > "$FC_DIR/$name.json" <<JSON
-{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{"name":"$name","labels":{"enable_pod_mgmt":"true"}},"spec":{"work_dir":"/work","timeout_seconds":120,"policy":{"type":"profile","name":"orchestrator"},"image":{"kernel_path":"$KERNEL","rootfs_path":"$rootfs","read_only":false},"vsock":{"guest_cid":3,"port":5005}}}
+{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{"name":"$name","labels":{"enable_pod_mgmt":"true"}},"spec":{"work_dir":"/work","timeout_seconds":120,"policy":{"type":"profile","name":"orchestrator"},"image":{"kernel_path":"$KERNEL","rootfs_path":"$rootfs","read_only":true},"vsock":{"guest_cid":3,"port":5005}}}
 JSON
 }
 # create <name> <rootfs> -> prints "<id> <proxy_addr>" (operator-created, no parent)

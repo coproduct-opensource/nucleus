@@ -565,16 +565,16 @@ fn no_identity_outcome_reintroduces_a_cmdline_token() {
 
 proptest! {
     #[test]
-    fn readonly_policy_lowers_to_readonly_rootfs(ro in any::<bool>(), scratch in any::<bool>()) {
+    fn every_policy_lowers_to_a_readonly_rootfs(ro in any::<bool>(), scratch in any::<bool>()) {
         let drives = lower_drives(&host(&image(ro, scratch)), false);
 
         // rootfs is always present, first, and the root device.
         prop_assert_eq!(&drives[0].drive_id, "rootfs");
         prop_assert!(drives[0].is_root_device);
 
-        // The invariant: RO policy <=> RO rootfs, with no silent flip in
-        // either direction.
-        prop_assert_eq!(drives[0].is_read_only, ro);
+        // The invariant: the rootfs is read-only whatever the spec asked (#3132).
+        // It is the node's shared artifact, never the pod's to write.
+        prop_assert!(drives[0].is_read_only);
 
         // A scratch disk, when present, is always writable and never root.
         if scratch {
@@ -871,7 +871,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         kernel_path: src.join("vmlinux"),
         rootfs: RootfsSource::Path(src.join("rootfs.ext4")),
         boot_args: None,
-        read_only: false,
+        read_only: true,
         scratch_path: Some(src.join("scratch.ext4")),
         kernel_digest: None,
         rootfs_digest: None,
@@ -945,11 +945,11 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         !layout.jail_root.exists(),
         "cleanup_jail must remove the jail"
     );
-    // Cleanup unlinks hard links, so the caller's writable image survives.
+    // Cleanup unlinks hard links, so the shared rootfs survives teardown.
     assert!(
         host(&img).rootfs_path().exists(),
-        "teardown must not destroy the caller's rootfs — those are hard links, \
-             and the guest's writes live at the source path"
+        "teardown must not destroy the shared rootfs — the jail entry is a hard \
+             link to it"
     );
 }
 
@@ -1593,61 +1593,51 @@ fn the_node_writes_init_pci_and_ipv6_exactly_once() {
 // it into its own file, so the merge conflicted on the module declaration
 // rather than on the tests. Both sides are kept: the extraction, and these.
 
-/// The pin `jail_resources` has named since it was written, and which
-/// #2784 found did not exist: `grep -rn rw_rootfs_is_hard_link_only`
-/// returned exactly one hit, the comment claiming it.
+/// #3132: a spec that says `read_only: false` cannot get the shared rootfs
+/// attached writable. The rootfs a spec names is the node's artifact
+/// (#3070/#3071), and under the jail it is a hard link to that same inode, so a
+/// writable drive meant one pod's writes became every later pod's boot image —
+/// measured in #2784, where the installed rootfs digest changed from
+/// `7739f5cd…` to `b7c40744…` after `verify --tier2` booted against it.
 ///
-/// A writable rootfs MUST be hard-linked. Copying it would put the guest's
-/// writes in a jail-local copy that is discarded when the jail is torn
-/// down — the writes would vanish silently, which is worse than refusing.
-/// A read-only rootfs may be copied, because nothing writes through it.
+/// Red on the parent: `lower_drives` copied `image.read_only` into the drive
+/// and `jail_resources` made the rootfs `HardLinkOnly` for it. Asserted on the
+/// drive config Firecracker is handed, jailed and not, and on the placement.
 #[test]
-fn rw_rootfs_is_hard_link_only() {
-    let rw = jail_resources(&host(&image(false, false)), &base_spec(), false);
-    let rootfs = rw
-        .iter()
-        .find(|r| r.in_jail == in_jail::ROOTFS)
-        .expect("a rootfs resource must be jailed");
-    assert_eq!(
-        rootfs.placement,
-        Placement::HardLinkOnly,
-        "a writable rootfs that gets copied loses every guest write when the \
-         jail is torn down"
-    );
-
-    let ro = jail_resources(&host(&image(true, false)), &base_spec(), false);
-    let rootfs = ro
-        .iter()
-        .find(|r| r.in_jail == in_jail::ROOTFS)
-        .expect("a rootfs resource must be jailed");
-    assert_eq!(
-        rootfs.placement,
-        Placement::CopyableIfCrossDevice,
-        "a read-only rootfs is safe to copy, and copying is what lets the \
-         artifact live on a different device from the jail"
-    );
-}
-
-/// The consequence the placement above cannot avoid, stated so it is not
-/// rediscovered: a hard link is the SAME FILE. `read_only: false` therefore
-/// means the guest writes through to the artifact every other pod boots
-/// from. Measured in #2784 — the installed rootfs digest changed from
-/// `7739f5cd…` to `b7c40744…` after `verify --tier2` pod boots, and the
-/// jail entry shared the artifact's inode with `links=2`.
-#[test]
-fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
-    let rw = jail_resources(&host(&image(false, false)), &base_spec(), false);
-    let rootfs = rw
-        .iter()
-        .find(|r| r.in_jail == in_jail::ROOTFS)
-        .expect("a rootfs resource must be jailed");
-    assert_eq!(
-        rootfs.host_source,
-        PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
-        "the jail entry links the shared artifact, so a writable rootfs is \
-         shared mutable state between pods — the reason the spec default is \
-         now read_only: true"
-    );
+fn a_spec_asking_for_a_writable_rootfs_never_gets_the_shared_artifact_writable() {
+    for scratch in [false, true] {
+        let asks_rw = host(&image(false, scratch));
+        for jailed in [true, false] {
+            let drives = lower_drives(&asks_rw, jailed);
+            let rootfs = drives
+                .iter()
+                .find(|d| d.is_root_device)
+                .expect("a rootfs drive");
+            assert!(
+                rootfs.is_read_only,
+                "jailed={jailed} scratch={scratch}: the shared rootfs {} was attached \
+                 writable because the spec said read_only: false",
+                rootfs.path_on_host
+            );
+            assert!(
+                drives
+                    .iter()
+                    .filter(|d| !d.is_read_only)
+                    .all(|d| d.drive_id == "scratch"),
+                "the only writable drive is the pod's scratch: {drives:?}"
+            );
+        }
+        let placed = jail_resources(&asks_rw, &base_spec(), false);
+        let rootfs = placed
+            .iter()
+            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.placement,
+            Placement::CopyableIfCrossDevice,
+            "nothing writes the rootfs, so nothing needs its writes kept"
+        );
+    }
 }
 
 // ── Node-provisioned scratch disk (#2789) ────────────────────────────────
