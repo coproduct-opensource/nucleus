@@ -1238,6 +1238,7 @@ pub(crate) mod handler_tests {
             jailer_chroot_base: a.jailer_chroot_base.clone(),
             jailer_uid: a.jailer_uid,
             jailer_gid: a.jailer_gid,
+            sealed_rootfs: None,
             network_allocator: Arc::new(crate::net::NetworkAllocator::new()),
             listen_addr: a.listen.clone(),
             proxy_auth_secret: a.proxy_auth_secret.clone(),
