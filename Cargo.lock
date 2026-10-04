@@ -13926,6 +13926,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "signal-hook",
  "syn 3.0.6",
  "tar",
  "tempfile",
