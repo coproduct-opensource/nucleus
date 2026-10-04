@@ -1018,8 +1018,11 @@ mod tests {
             assert!(v[section].get(key).is_some(), "{section}.{key}");
         }
         // And the committed baseline parses as this schema: one shape, not two.
-        let baseline = include_str!("../../../scripts/exemplar-baseline.json");
-        assert!(serde_json::from_str::<Scoreboard>(baseline).is_ok());
+        let baseline = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/exemplar-baseline.json"),
+        )
+        .unwrap();
+        assert!(serde_json::from_str::<Scoreboard>(&baseline).is_ok());
     }
 
     #[test]
