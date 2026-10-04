@@ -866,3 +866,36 @@ fail their tests. Restored tests, strict all-feature Clippy, and the Linux
 ARM64 musl build pass. The existing proxy suite also passed with all features.
 All four prepush gates pass after tightening the measured suppression ratchet.
 The disposable validation pod was cancelled and its isolated services stopped.
+
+### Apple Container acceptance host (2026-10-04)
+
+Use Apple Container in preference to Lima for further local work. A fresh
+default-kernel probe with `--virtualization` has neither `/dev/kvm` nor
+`/dev/vhost-vsock`. The existing custom L1 kernel from
+`docker/Containerfile.l1-kernel`, digest
+`7f1beb7167f70b031a73f731fc2c28af403e4fda064e3d3cacc989a9927a020d`,
+exposes both devices and tun when supplied per container with `--kernel`.
+No system-wide kernel setting was changed.
+
+The current enforcing node and HTTP adapter journey passed in nested
+Firecracker pod `b4879187-5f5f-46d6-abab-2b0e0d69a876`, hosted by Apple
+Container 1.4.1 with that kernel and NET_ADMIN, SYS_ADMIN, and SYS_PTRACE.
+Fresh node state minted its own identities; no Lima private keys were copied.
+The UID-1000 client received HTTP 200, and the fixture observed the exact
+17-byte payload and host-injected credential. Independent verification with
+the new host's public key passed for one authorization and one outcome, with
+zero unknown outcomes. The pod was cancelled after evidence collection.
+
+The first launch exposed a host setup prerequisite: cgroup controllers cannot
+be enabled while processes occupy this container's cgroup root. The jailer's
+actual error was `cgroup.subtree_control: Resource busy`; the node surfaced it
+as a seccomp verification failure. Moving the disposable host processes into
+a child cgroup allowed the next launch, with seccomp verification still on.
+Production host setup and diagnostics must handle this before fresh-install
+acceptance can be claimed.
+
+This experiment used read-only mounted copies of existing validation binaries
+and a patched guest image. It is not fresh-image packaging or either complete
+harness acceptance run. The local dependency image build succeeded after
+reclaiming regenerable incremental Rust cache and restarting the builder;
+disk exhaustion had caused I/O errors and a read-only builder filesystem.
