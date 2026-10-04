@@ -1,5 +1,6 @@
 [package]
 name = "nucleus-tool-proxy"
+default-run = "nucleus-tool-proxy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,6 +15,10 @@ categories = ["network-programming", "development-tools"]
 [[bin]]
 name = "nucleus-tool-proxy"
 path = "src/main.rs"
+
+[[bin]]
+name = "nucleus-egress-http"
+path = "src/bin/nucleus-egress-http/main.rs"
 
 [features]
 default = []
@@ -68,7 +73,7 @@ ed25519-dalek = { workspace = true }
 libc = "0.2"
 dirs = "7.0"
 whoami = "2"
-reqwest = { workspace = true, features = ["rustls-no-provider", "json", "query"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "json", "query", "stream"] }
 url = "2.5"
 uuid = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }

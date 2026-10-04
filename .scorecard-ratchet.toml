@@ -548,9 +548,11 @@ population_floor = 23
 # production suppression. Measured 23 of 141 = 16.31%; tighten both pins.
 # 2026-10-04: isolated umask regression adds one expiring test-process
 # suppression. Measured 24 of 142 = 16.90%; tighten both pins.
-floor_bp = 1690
+# 2026-10-04: the Unix-only HTTP adapter adds three checked transport
+# exceptions (including its local fixture). Measured 27 of 145 = 18.62%.
+floor_bp = 1862
 floor_set = "measurement"
-population_floor = 142
+population_floor = 145
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

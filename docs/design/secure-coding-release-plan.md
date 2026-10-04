@@ -835,5 +835,34 @@ the external egress denials. All probe pods were cancelled after validation.
 Guest-init's existing unit/doc tests and the workload probe's 17 tests pass.
 Portable strict Clippy and Linux-only guest-init Clippy pass; production
 Linux ARM64 musl builds pass. This establishes localhost availability only.
-The ordinary HTTP adapter, fresh image installation, and both coding-to-PR
-acceptance runs remain to be implemented and demonstrated.
+Fresh image installation and both coding-to-PR acceptance runs remain to be
+implemented and demonstrated.
+
+### Ordinary HTTP adapter validation (2026-10-04)
+
+The unprivileged `nucleus-egress-http` companion now maps a loopback HTTP
+listener to one configured upstream through the Unix workload door. It holds
+no upstream credentials and cannot select external TCP transport. It streams
+uploads and responses, forwards only explicitly supported headers, refuses
+unsupported method/path/query syntax, and disables redirects and retries.
+Its current protocol limits and launch instructions are in the tool-proxy
+README. Release image packaging and harness supervision remain open.
+
+Real Firecracker pod `87b66b51-1d19-4b5e-af05-21a5330fa952` ran the adapter
+and a TCP HTTP client as workload UID 1000. The guest received HTTP 200 and
+`LIVE_HTTP_ADAPTER_PASS`; the fixture observed `/http`, the exact 17-byte
+payload, and the host-injected disposable credential instead of the client's
+dummy header. The boot probes still denied direct public IPv4 connections.
+An external verifier using the independently pinned host public key verified
+one authorization and one transport outcome, with zero unknown outcomes.
+This proves the transport path and authorized journal prefix, not a harness
+journey, remote action semantics, or complete session evidence.
+
+Six adapter tests cover a 2 MiB streamed upload, incremental SSE, header
+stripping, status preservation, redirect refusal, invalid routes/listeners,
+missing Unix transport, and cancellation both before headers and during the
+response. Negative controls enabling redirects or bypassing path validation
+fail their tests. Restored tests, strict all-feature Clippy, and the Linux
+ARM64 musl build pass. The existing proxy suite also passed with all features.
+All four prepush gates pass after tightening the measured suppression ratchet.
+The disposable validation pod was cancelled and its isolated services stopped.

@@ -1,3 +1,35 @@
 # nucleus-tool-proxy
 
 HTTP JSON tool proxy that runs inside a pod (VM) and enforces nucleus policies.
+
+## Ordinary HTTP clients
+
+`nucleus-egress-http` exposes one registered broker upstream on guest loopback.
+Build it with `cargo build -p nucleus-tool-proxy --bin nucleus-egress-http` and
+include the executable in the guest image. The release image builders do not
+yet install it automatically. Start and supervise it alongside the harness,
+under the same workload UID:
+
+```text
+nucleus-egress-http --upstream model-api --listen 127.0.0.1:18081
+```
+
+`NUCLEUS_TOOL_PROXY_URL` supplies the runtime's Unix workload door; `--door`
+can also supply an absolute `unix:///...` socket path. Configure the harness's
+API base to use the local listener. A request to `/v1/inference` becomes a
+door request to `/v1/egress/model-api/v1/inference`. The upstream registration
+and credential stay on the host. No real credential belongs in the harness.
+
+The adapter accepts POST paths containing plain, nonempty ASCII segments
+(`A-Z`, `a-z`, digits, `-._~`), excluding `.` and `..`. Queries, percent
+escapes, other methods, and absolute URLs are refused. Only Content-Type and
+`x-nucleus-approval-wait-seconds` request headers pass through; authentication,
+cookies, and guest approval headers do not. Responses preserve status,
+Content-Type, and Retry-After, and stream incrementally. Redirects are returned
+without Location and never followed. There are no automatic retries.
+
+The default total deadline is 300 seconds, including approval and response
+streaming; `--timeout-seconds` accepts 1–3600. Match the harness's request
+deadline to the intended approval wait. Disconnecting the client cancels the
+adapter's pending request. The adapter does not authorize effects: the Unix
+peer check, proxy policy, and host broker remain on every request path.
