@@ -11,6 +11,13 @@ Insufficient capacity returns HTTP 503 with requested and available amounts.
 Failed or cancelled creates return their reservation; registered pods retain it
 until teardown succeeds. Per-pod ceilings and cgroup limits still apply.
 
+For registered container pods, Docker must confirm removal or report that the
+container is already absent before either the concurrency slot or aggregate
+reservation is released. Other removal errors remain visible to cancellation
+callers, and the reaper retries cleanup on its next pass before recording the
+exit and releasing authority. Docker daemon unavailability does not count as
+successful removal.
+
 `--node-memory-mib` and `--node-vcpus` set the operator's total capacity.
 Linux memory defaults to MemTotal, capped by finite visible cgroup-v2 ancestor
 memory limits. Other hosts require an explicit memory value. CPU defaults to
@@ -33,6 +40,8 @@ swapped; it bounds their total.
 
 This pool tracks the node process's admitted pods. Reconciliation of surviving
 external containers after node restart remains separate resource-management work.
+Cancellation during an unfinished Docker create/start also needs reconciliation;
+the registered-pod cleanup guarantee does not yet cover that launch window.
 
 `--egress-staging-max-bytes` bounds reserved upload payload storage across all
 pods, defaulting to 256 MiB. Each streamed upload reserves its configured

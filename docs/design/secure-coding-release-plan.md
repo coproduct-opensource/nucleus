@@ -1230,3 +1230,21 @@ used a disposable binary replacement. Model endpoint configuration remains
 needed for the two complete coding journeys. The tool-proxy README now shows
 the managed workload spec and explains how a launcher passes the local URL into
 its harness configuration.
+
+### Container teardown retains resources until confirmed (2026-10-04)
+
+While investigating restart reconciliation, ordinary teardown was found to ignore
+Docker removal errors and release the pod's concurrency slot and aggregate
+capacity anyway. Container teardown now requires successful removal or Docker's
+explicit not-found response. Other errors retain both reservations and reach the
+cancel caller. The reaper now retries failed cleanup on subsequent passes; it
+records exit and releases authority only after cleanup succeeds. Container
+lifecycle code was extracted from the node entrypoint to keep this path together.
+
+Two Docker API fixture tests exercise a temporary removal error followed by
+success, one-time exit recording, capacity return and already-absent cleanup.
+The full node suite passed 856 tests (one ignored), plus three integration tests.
+The Linux ARM64 build and all four repository gates passed. Clippy completed
+with the existing configuration warnings about unreachable blocking-client paths.
+This is registered-pod teardown coverage. Cancellation during unfinished Docker
+create/start and discovery of containers surviving a node restart remain open.

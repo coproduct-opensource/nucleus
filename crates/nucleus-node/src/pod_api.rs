@@ -1481,7 +1481,7 @@ pub(crate) mod handler_tests {
             crate::PodState::Exited { .. }
         ));
 
-        handle.cleanup_after_exit().await;
+        handle.cleanup_after_exit().await.unwrap();
 
         // The direct observable, and the defect's own shape: cleanup TOOK the proxy and awaited
         // its shutdown. `LocalPod::teardown` does `.take()` then `SignedProxy::shutdown().await`,

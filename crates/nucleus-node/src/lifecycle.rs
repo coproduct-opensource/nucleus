@@ -91,9 +91,8 @@ impl PodHandle {
         self.teardown(Stop::Kill).await
     }
 
-    pub(crate) async fn cleanup_after_exit(&self) {
-        // Nothing to kill, so nothing can fail: the error arm is the kill's.
-        let _ = self.teardown(Stop::AlreadyExited).await;
+    pub(crate) async fn cleanup_after_exit(&self) -> Result<(), ApiError> {
+        self.teardown(Stop::AlreadyExited).await
     }
 
     async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {

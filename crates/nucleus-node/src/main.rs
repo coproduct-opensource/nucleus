@@ -33,6 +33,7 @@ mod art12_collector;
 mod audit_sink;
 mod auth;
 mod clearing_receipt_collector;
+mod container_lifecycle;
 mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
@@ -1254,76 +1255,6 @@ impl FirecrackerPod {
             pod_receipt::preserve_exit_report(&layout, &self.pod_dir);
             firecracker_config::cleanup_jail(&layout);
         }
-        Ok(())
-    }
-}
-
-impl ContainerPod {
-    async fn status(&self) -> PodState {
-        // Return cached state if container was already cleaned up.
-        if let Some(ref cached) = *self.cached_exit.lock().await {
-            return cached.clone();
-        }
-        use bollard::query_parameters::InspectContainerOptions;
-        match self
-            .docker
-            .inspect_container(&self.container_id, None::<InspectContainerOptions>)
-            .await
-        {
-            Ok(info) => {
-                let state = info.state.as_ref();
-                let running = state.and_then(|s| s.running).unwrap_or(false);
-                if running {
-                    PodState::Running
-                } else {
-                    let exit_state = PodState::Exited {
-                        code: state.and_then(|s| s.exit_code).map(|c| c as i32),
-                    };
-                    // Cache the terminal state so it survives container removal.
-                    *self.cached_exit.lock().await = Some(exit_state.clone());
-                    exit_state
-                }
-            }
-            Err(e) => PodState::Error {
-                message: e.to_string(),
-            },
-        }
-    }
-
-    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
-        if let Some(proxy) = self.signed_proxy.lock().await.take() {
-            proxy.shutdown().await;
-        }
-        if stop == Stop::Kill {
-            let _ = self
-                .docker
-                .stop_container(
-                    &self.container_id,
-                    Some(bollard::query_parameters::StopContainerOptions {
-                        t: Some(5),
-                        signal: Some("SIGTERM".to_string()),
-                    }),
-                )
-                .await;
-        }
-        // Cache the exit state BEFORE removal, on both paths: once the container is
-        // gone `status()` cannot inspect it and would report an error. Cancel used to
-        // skip this, so a cancelled pod read as `Error` and the reaper audited its
-        // exit as "No such container".
-        if self.cached_exit.lock().await.is_none() {
-            let _ = self.status().await;
-        }
-        let _ = self
-            .docker
-            .remove_container(
-                &self.container_id,
-                Some(bollard::query_parameters::RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await;
-        self.permit.lock().await.take();
         Ok(())
     }
 }
@@ -2908,9 +2839,14 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
         let pod_state = pod.status().await;
         if matches!(pod_state, PodState::Exited { .. } | PodState::Error { .. }) {
             exited_ids.push(pod.id);
-            if !reaped.insert(pod.id) {
+            if reaped.contains(&pod.id) {
                 continue;
             }
+            if let Err(error) = pod.cleanup_after_exit().await {
+                error!(pod = %pod.id, %error, "pod cleanup failed; retrying on next reaper pass");
+                continue;
+            }
+            reaped.insert(pod.id);
             // Write lifecycle audit for pod exit
             let detail = match &pod_state {
                 PodState::Exited { code } => format!("exit_code={}", code.unwrap_or(-1)),
@@ -2921,7 +2857,6 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
             lifecycle::write_lifecycle_audit(pod_dir, "pod_exited", &pod.id.to_string(), &detail)
                 .await;
 
-            pod.cleanup_after_exit().await;
             let guest_spend =
                 clearing_receipt_collector::guest_reported_spend(pod_dir, &pod.id.to_string());
             tracing::debug!(pod = %pod.id, ?guest_spend, "guest-reported spend; no budget credit");
