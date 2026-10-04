@@ -15,8 +15,9 @@ Current baseline: the decision-channel protocol remains shadow-only. Broker
 PERFORM and streaming now require host decisions over shared pod policy, with
 operator approval bound to the resolved effect when required. Streams stage the
 complete bounded upload before authorization and upstream I/O. The compromised-guest socket conformance table now holds for
-observed taint, absent/reused approval, and zero remaining budget. Its two signing
-key properties remain gaps. These are local host tests, not Tier-2 evidence.
+observed taint, absent/reused approval, and zero remaining budget. Guest signing
+key delivery is retired in the working tree; guest claims are separated from
+host authorization evidence. These are local host tests, not Tier-2 evidence.
 
 Implementation sequence:
 
@@ -71,6 +72,11 @@ Implementation sequence:
    complete request review remain to be delivered.
 6. Keep receipt and exit-report authority outside the guest. Distinguish host
    observations from guest assertions in signed evidence.
+   **In progress:** no mediation signing seed exists in boot material, and the
+   legacy fetch command always refuses. Uploaded mediation claims have a separate
+   log and an explicit guest provenance acknowledgment. Plain and legacy-signed
+   exit reports become typed guest claims; neither is independent outcome
+   evidence. Host-signed execution outcomes and terminal completeness remain open.
 7. Exercise the compromised-guest conformance harness, genuine allowed effects,
    reconnects, concurrency and real Tier-2 guest traffic. Promote each gap only
    when the corresponding live host property holds. Retire shadow-only behavior
@@ -124,6 +130,27 @@ macOS unit tests do not prove the Linux launch path.
 The overall work remains incomplete until all six outcomes have current
 implementation and verification evidence. Marketplace/economic expansion and
 unrelated protocol or proof breadth are deferred; existing proof gates remain.
+
+### Guest signing-key retirement (2026-10-04)
+
+Boot material can no longer contain a mediation signing seed. The guest init
+does not fetch one, and legacy fetch requests always refuse, including the first
+request and concurrent requests. Guest mediation uploads are retained separately
+in `guest-mediation-claims.jsonl` and acknowledged as `guest_reported`. Plain and
+legacy-signed exit reports retain that same provenance in signed v2 receipts.
+
+A real admitted-pod socket test exercises a legitimate broker call, verifies its
+durable authorization under the host root, then uploads a forged guest receipt
+and confirms the host authorization journal is unchanged. The signing rows now
+hold for withheld keys and separation of claims. This does not establish truthful
+guest output, host-measured execution outcomes, or session completeness.
+
+Validation: 809 node unit tests and three integration tests pass (one unit test
+ignored), as do 14 proxy exit-report tests and 16 transcript tests. Node and
+guest-init cross-build for Linux ARM64 musl. Clippy for all five affected crates
+passes with warnings denied; all four prepush gates pass. Reintroducing key
+delivery and removing guest provenance independently make their regression tests
+fail at runtime, rather than at compilation. Real Tier-2 validation remains open.
 
 ### Action-binding evidence (2026-10-04)
 

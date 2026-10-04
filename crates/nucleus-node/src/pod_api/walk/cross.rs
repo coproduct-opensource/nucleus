@@ -199,8 +199,6 @@ impl Run {
             served,
             audit_creds: None,
             pod_spec_yaml: None,
-            mediation_signing_key: None,
-            mediation_spiffe_id: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
             receipt_dir: Some(dir.path().join("p")),

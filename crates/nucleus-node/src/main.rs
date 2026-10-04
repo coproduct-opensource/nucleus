@@ -43,7 +43,6 @@ mod image_identity;
 mod jail_placement;
 mod keys;
 mod lockdown;
-mod mediation;
 mod mediation_receipt_collector;
 mod pod_api;
 mod pod_authority;
@@ -3291,9 +3290,6 @@ impl NodeService for GrpcService {
                 pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
                 pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
                 pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
-                pod_receipt::ReceiptError::Unauthenticated(_) => {
-                    Status::permission_denied(e.to_string())
-                }
             })?;
         // The outward-facing report stays on this transport only; see `pod_receipt`'s module docs
         // for why the HTTP route deliberately does not inherit it.

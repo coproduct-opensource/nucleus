@@ -278,8 +278,8 @@ fn run() -> Result<(), String> {
     // These 28 values used to be `std::env::set_var`. Two things were wrong
     // with that. Edition 2024 makes `set_var` unsafe — mutating the environment
     // races any concurrent reader — so keeping it meant 28 `unsafe` blocks.
-    // And several of these are secrets (broker secret, mediation signing key,
-    // AWS secret key, task token): writing them into init's own environment
+    // And several of these are secrets (broker secret, cloud credentials,
+    // task token): writing them into init's own environment
     // published them to `/proc/self/environ` and to EVERY later child, when
     // only the tool-proxy needs them. `Command::envs` scopes them to the one
     // process that does.
@@ -516,25 +516,9 @@ fn run() -> Result<(), String> {
             Err(err) => eprintln!("no broker capability over vsock: {err}"),
         }
 
-        // The mediation signing key, fetched with the same before-`exec_proxy`
-        // ordering: the host serves it once, before any workload exists, so the
-        // key that signs this pod's MediationReceipts is out of the workload's
-        // reach. Absent ⇒ no receipts (additive forensics), never a boot failure.
-        // The key VALUE is never logged — only its presence.
-        match timed("mediation_key", || identity::fetch_mediation_key(port)) {
-            Ok(Some(mk)) => {
-                export!("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
-                export!("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
-                // Where the proxy ships what it signs. Not a secret — it is
-                // where to connect — and exported only alongside a key, since
-                // a proxy with nothing to sign has nothing to ship (#2541).
-                export!("NUCLEUS_WORKLOAD_API_PORT", port.to_string());
-                eprintln!("fetched mediation signing key over vsock (receipts enabled)");
-            }
-            Ok(None) => eprintln!("no mediation key provisioned — receipts disabled"),
-            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
-            Err(err) => eprintln!("no mediation key over vsock (receipts disabled): {err}"),
-        }
+        // The host signs its own authorizations. Keep the audit/report transport
+        // available without exporting any receipt-signing seed into the guest.
+        export!("NUCLEUS_WORKLOAD_API_PORT", port.to_string());
 
         // The S3 audit-sink credentials, fetched with the same before-
         // `exec_proxy` ordering as the broker capability (the host serves them
@@ -1318,8 +1302,8 @@ fn exec_proxy(
     child_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 ) -> std::io::Error {
     // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
-    // mediation verdict is recorded, and — when a mediator key was delivered
-    // (`fetch_mediation_key` above) — signed into a MediationReceipt. The log
+    // guest mediation verdict is recorded as guest testimony. The host signs
+    // its own broker authorizations with a key that never enters this VM. The log
     // lives on the `/run` tmpfs: writable, root-owned before the uid drop (so the
     // workload cannot tamper), and NOT under the agent workspace (which the
     // proxy's own path check would refuse). The chain is session-derived when no

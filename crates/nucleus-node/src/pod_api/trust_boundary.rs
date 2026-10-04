@@ -48,7 +48,7 @@ use portcullis::{ActionTerm, CapabilityLevel, NodeKind, Operation, PermissionLat
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
 use crate::broker_perform::UpstreamCall;
-use crate::pod_receipt::{ReceiptError, ReportSource};
+use crate::pod_receipt::ReceiptError;
 
 /// What a row measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,8 +112,8 @@ impl Property {
 /// THE table. Exhaustive, so a new property cannot be measured without a row.
 fn expected(p: Property) -> Expected {
     match p {
-        Property::ReceiptKeyGuestNeverHeld => Expected::Gap { issue: 3114 },
-        Property::ExitReportKeyGuestNeverHeld => Expected::Gap { issue: 3114 },
+        Property::ReceiptKeyGuestNeverHeld => Expected::Holds,
+        Property::ExitReportKeyGuestNeverHeld => Expected::Holds,
         Property::TaintedPerformRefused => Expected::Holds,
         Property::UnapprovedPerformRefused => Expected::Holds,
         Property::OverBudgetPerformRefused => Expected::Holds,
@@ -595,6 +595,7 @@ struct NodePod {
     broker: Result<(PathBuf, Vec<u8>), String>,
     /// Every upstream call the host made for this pod.
     calls: Arc<Mutex<Vec<UpstreamCall>>>,
+    host_pubkey: String,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     _prepared: crate::pod_boot_identity::PreparedIdentity,
     _dir: tempfile::TempDir,
@@ -627,7 +628,7 @@ impl Host for Node {
         .map_err(|e| e.to_string())?;
         st.identity_manager = Some(manager);
         let id = uuid::Uuid::new_v4();
-        let pod_dir = dir.path().join("pod");
+        let pod_dir = st.state_dir.join("pods").join(id.to_string());
         std::fs::create_dir_all(&pod_dir).map_err(|e| e.to_string())?;
         let kernel = dir.path().join("kernel");
         let rootfs = dir.path().join("rootfs");
@@ -638,11 +639,26 @@ impl Host for Node {
         }))
         .map_err(|e| e.to_string())?;
         let image = crate::rootfs_source::HostImage::resolve(&image).map_err(|e| e.to_string())?;
-        let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
+        let mut spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
             "apiVersion": "nucleus/v1", "kind": "Pod",
             "metadata": {"name": POD_NAME}, "spec": {},
         }))
         .map_err(|e| e.to_string())?;
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(policy.clone()),
+        };
+        st.authority
+            .admit_kept(
+                &crate::pod_authority::Admission {
+                    caller_spiffe_id: st.authority.root_minter().into(),
+                    caller_pod: None,
+                    header_cert: None,
+                },
+                &spec,
+                id,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
         let vsock = dir.path().join("vsock");
         let (serve, verify) = crate::broker_launch::BrokerCapability::mint(id);
         let prepared = crate::pod_boot_identity::prepare(crate::pod_boot_identity::Inputs {
@@ -676,7 +692,11 @@ impl Host for Node {
         );
         let (caller, calls) = crate::broker_transport::serving_tests::recording_caller();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let host_policy = crate::host_decide::test_policy(policy.clone());
+        let host_policy = st
+            .authority
+            .host_policy(id)
+            .await
+            .map_err(|e| e.to_string())?;
         let broker = crate::broker_transport::PodBroker {
             host_policy: host_policy.clone(),
             identity: nucleus_cred_broker::PodIdentity::observed_by_host(format!(
@@ -727,6 +747,7 @@ impl Host for Node {
         };
         Ok(NodePod {
             host_policy,
+            host_pubkey: st.authority.root_pubkey_hex(),
             approvals: approvals.iter().copied().collect(),
             api,
             pod_dir,
@@ -799,6 +820,11 @@ impl GuestFacing for NodePod {
     }
 
     async fn ship_receipt(&mut self, line: &str) -> Probe {
+        let journal = self.pod_dir.join(nucleus_spec::host_effect::LOG_FILE);
+        let before = match std::fs::read(&journal) {
+            Ok(bytes) => bytes,
+            Err(e) => return Probe::Inconclusive(format!("host journal unreadable: {e}")),
+        };
         let reply = match exchange(&self.api, &["SHIP_RECEIPT", line]).await {
             Ok(r) => r,
             Err(e) => return Probe::Inconclusive(format!("SHIP_RECEIPT: {e}")),
@@ -809,41 +835,41 @@ impl GuestFacing for NodePod {
         if !reply.contains("collected") {
             return Probe::Inconclusive(format!("SHIP_RECEIPT: {}", reply.trim()));
         }
-        // What an auditor would later check it against: the node's own anchor.
-        let anchor = std::fs::read_to_string(self.pod_dir.join("mediator-pubkey.hex"))
+        let classified = serde_json::from_str::<serde_json::Value>(&reply)
             .ok()
-            .and_then(|h| hex::decode(h.trim()).ok())
-            .and_then(|b| <[u8; 32]>::try_from(b).ok())
-            .and_then(|b| ed25519_dalek::VerifyingKey::from_bytes(&b).ok());
-        let audit = match (anchor, serde_json::from_str::<MediationReceipt>(line)) {
-            (Some(anchor), Ok(r)) => match r.verify(&anchor) {
-                Ok(()) => "and it VERIFIES under the node's own mediator-pubkey anchor",
-                Err(_) => "and it does not verify under the node's anchor",
-            },
-            (None, _) | (Some(_), Err(_)) => "and the node has no readable anchor to audit it",
-        };
-        Probe::Admitted(format!(
-            "SHIP_RECEIPT collected a receipt recording ALLOW for a denied RunBash, {audit}"
-        ))
+            .and_then(|v| {
+                v.get("report_provenance")
+                    .and_then(|p| p.as_str())
+                    .map(str::to_string)
+            });
+        let guest_log = crate::mediation_receipt_collector::receipt_log_path(&self.pod_dir);
+        if classified.as_deref() == Some("guest_reported")
+            && std::fs::read_to_string(guest_log).is_ok_and(|lines| lines.contains(line))
+            && !self.pod_dir.join("mediator-pubkey.hex").exists()
+            && std::fs::read(&journal).is_ok_and(|bytes| bytes == before)
+        {
+            Probe::Refused(
+                "retained only as a guest claim; no host authorization was recorded".into(),
+            )
+        } else {
+            Probe::Admitted("guest receipt was not separated from host evidence".into())
+        }
     }
 
     fn leave_exit_report(&mut self, json: &str) -> Probe {
-        let source = ReportSource::WorkloadOwnedImage {
-            pod_dir: self.pod_dir.clone(),
-        };
-        match crate::pod_receipt::parse_report(json, &source) {
-            Ok(report) => Probe::Admitted(format!(
-                "parse_report accepted a report with audit_entry_count={} workspace_hash={}",
-                report.audit_entry_count, report.workspace_hash
-            )),
-            Err(ReceiptError::Unauthenticated(why)) => {
-                Probe::Refused(format!("parse_report: unauthenticated ({why})"))
+        match crate::pod_receipt::parse_guest_report(json) {
+            Ok(claim)
+                if claim.provenance()
+                    == nucleus_spec::exit_report_auth::ReportProvenance::GuestReported =>
+            {
+                Probe::Refused(
+                    "report retained as a guest claim, never independent host measurement".into(),
+                )
             }
-            Err(ReceiptError::Malformed(why)) => {
-                Probe::Refused(format!("parse_report: malformed ({why})"))
-            }
+            Ok(_) => Probe::Admitted("guest report promoted beyond guest provenance".into()),
+            Err(ReceiptError::Malformed(why)) => Probe::Refused(format!("malformed report: {why}")),
             Err(ReceiptError::NotExited) | Err(ReceiptError::NoExitReport(_)) => {
-                Probe::Inconclusive("parse_report answered about a different question".into())
+                Probe::Inconclusive("parser answered a different question".into())
             }
         }
     }
@@ -922,6 +948,59 @@ impl GuestFacing for NodePod {
             )),
         }
     }
+}
+
+#[test]
+fn an_unmeasured_row_is_never_accepted_as_a_gap_or_a_hold() {
+    assert!(!agrees(
+        Expected::Gap { issue: 3114 },
+        Outcome::NotEvaluated
+    ));
+    assert!(!agrees(Expected::Holds, Outcome::NotEvaluated));
+}
+
+#[tokio::test]
+async fn host_signed_evidence_survives_guest_key_refusal_and_forged_receipt_upload() {
+    use nucleus_spec::host_effect::{SignedAuthorization, signing_bytes};
+    let mut pod = Node
+        .boot(PermissionLattice::permissive(), &[])
+        .await
+        .unwrap();
+    assert!(matches!(
+        pod.fetch_mediation_key().await,
+        KeyFetch::Withheld(_)
+    ));
+    assert!(matches!(
+        pod.perform(&perform_request(Operation::WebFetch, "legitimate"))
+            .await,
+        Probe::Admitted(_)
+    ));
+    let path = pod.pod_dir.join(nucleus_spec::host_effect::LOG_FILE);
+    let before = std::fs::read_to_string(&path).unwrap();
+    let record: SignedAuthorization = serde_json::from_str(before.trim()).unwrap();
+    let key: [u8; 32] = hex::decode(&pod.host_pubkey).unwrap().try_into().unwrap();
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&key).unwrap();
+    let signature =
+        ed25519_dalek::Signature::from_slice(&hex::decode(&record.signature).unwrap()).unwrap();
+    key.verify_strict(&signing_bytes(&record.authorization).unwrap(), &signature)
+        .unwrap();
+    let guest_key = SigningKey::from_bytes(&[42; 32]);
+    assert!(
+        guest_key
+            .verifying_key()
+            .verify_strict(&signing_bytes(&record.authorization).unwrap(), &signature)
+            .is_err()
+    );
+    assert!(matches!(
+        pod.ship_receipt(&serde_json::to_string(&forged_receipt(&guest_key)).unwrap())
+            .await,
+        Probe::Refused(_)
+    ));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+    assert!(matches!(
+        pod.fetch_mediation_key().await,
+        KeyFetch::Withheld(_)
+    ));
 }
 
 #[tokio::test]

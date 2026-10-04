@@ -210,10 +210,6 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // command line (the C1 exposure). Minted for this pod's
                 // resolved sink; the node's own key is never served (#3160).
                 audit_creds,
-                // A per-pod ed25519 seed the guest proxy signs receipts with,
-                // served ONCE before the workload exists. See `mediation`.
-                mediation_signing_key: mediation::new_seed_hex(pod_dir),
-                mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
                 // Where the host durably collects SHIP_RECEIPT receipts.
                 receipt_dir: Some(pod_dir.to_path_buf()),
                 pod_registry: state.pods.clone(),
