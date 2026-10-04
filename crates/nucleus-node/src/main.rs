@@ -1264,43 +1264,6 @@ impl FirecrackerPod {
         }
         Ok(())
     }
-
-    /// Cleans up identity resources (unregister from VM registry, forget certificate).
-    async fn cleanup_identity(&self) {
-        // Shut down workload API bridge
-        if let Some(bridge) = self.workload_api_bridge.lock().await.take() {
-            bridge.shutdown().await;
-        }
-
-        // Stop the credential broker and unlink its socket. Both halves matter:
-        // see `BrokerListener::shutdown`.
-        if let Some(listener) = self.broker.lock().await.take() {
-            let path = listener.socket_path().to_path_buf();
-            if listener.shutdown().await == broker_transport::ShutdownOutcome::Aborted {
-                tracing::warn!(
-                    socket = %path.display(),
-                    "credential broker had to be aborted at teardown — a connection outlived the \
-                     shutdown signal"
-                );
-            }
-        }
-
-        if let Some(listener) = self.decide.lock().await.take() {
-            let tally = listener.shutdown().await;
-            tracing::info!(pod_dir = %self.pod_dir.display(), ?tally, "host-decide shadow tally at teardown");
-        }
-
-        // A let-chain (edition 2024) rather than a tuple of Options: it says the
-        // same thing without building a throwaway tuple, and the explicit `ref`
-        // bindings the tuple form needed are gone.
-        if let Some(identity) = &self.identity
-            && let Some(manager) = &self.identity_manager
-        {
-            manager
-                .release_pod(self.identity_registry_key.as_deref(), identity)
-                .await;
-        }
-    }
 }
 
 impl ContainerPod {
