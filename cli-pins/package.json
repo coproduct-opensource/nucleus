@@ -1,7 +1,0 @@
-{
-  "name": "nucleus-cli-pins",
-  "private": true,
-  "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.263"
-  }
-}

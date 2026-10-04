@@ -538,6 +538,7 @@ impl SelfSignedCa {
         public_key: &CsrPublicKey,
         identity: &Identity,
         ttl: Duration,
+        role: LeafRole,
     ) -> Result<Vec<Certificate>> {
         // Build certificate parameters
         let mut params = CertificateParams::new(vec![])
@@ -560,10 +561,7 @@ impl SelfSignedCa {
             KeyUsagePurpose::DigitalSignature,
             KeyUsagePurpose::KeyEncipherment,
         ];
-        params.extended_key_usages = vec![
-            ExtendedKeyUsagePurpose::ServerAuth,
-            ExtendedKeyUsagePurpose::ClientAuth,
-        ];
+        params.extended_key_usages = role.extended_key_usages();
 
         // Set validity period
         let now = OffsetDateTime::now_utc();
@@ -591,20 +589,66 @@ impl SelfSignedCa {
     }
 }
 
+/// Which side of a TLS handshake a leaf this CA signs may stand on.
+///
+/// A foreign-domain leaf (the federated exchange's) is a CLIENT credential and
+/// nothing else. Several node clients verify the node's server certificate by
+/// chain and EKU alone -- no hostname, no SPIFFE ID -- so a leaf carrying
+/// `ServerAuth` from this CA would pass as the node itself to every one of
+/// them. Leaving `ServerAuth` off makes webpki refuse it at all of those sites
+/// at once, rather than relying on each to remember a trust-domain check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeafRole {
+    /// A workload in this CA's own trust domain: may serve and may call.
+    Local,
+    /// A principal in another trust domain: may only call.
+    Foreign,
+}
+
+impl LeafRole {
+    fn extended_key_usages(self) -> Vec<ExtendedKeyUsagePurpose> {
+        match self {
+            LeafRole::Local => vec![
+                ExtendedKeyUsagePurpose::ServerAuth,
+                ExtendedKeyUsagePurpose::ClientAuth,
+            ],
+            LeafRole::Foreign => vec![ExtendedKeyUsagePurpose::ClientAuth],
+        }
+    }
+}
+
 /// Public key extracted from a CSR, implementing rcgen's PublicKeyData trait.
 ///
 /// This allows signing certificates using only the public key from a CSR,
 /// without requiring the corresponding private key.
+///
+/// rcgen's [`PublicKeyData::der_bytes`] is the key's BIT STRING contents, NOT
+/// the SubjectPublicKeyInfo: rcgen wraps it in an SPKI itself. Handing it the
+/// CSR's whole SPKI (`spki.raw`) wrapped it twice, and every certificate this
+/// CA signed from a CSR carried a public key no TLS stack would load
+/// (`EE_KEY_TOO_SMALL` / `X509_PUBKEY_get0: decode error`). So the only way to
+/// build one is [`CsrPublicKey::from_spki`], which takes the key bits itself.
 struct CsrPublicKey {
-    /// DER-encoded SubjectPublicKeyInfo from the CSR.
-    spki_der: Vec<u8>,
+    /// The public key's BIT STRING contents (e.g. the SEC1 point for ECDSA).
+    key_bits: Vec<u8>,
     /// The signature algorithm for this public key.
     algorithm: &'static SignatureAlgorithm,
 }
 
+impl CsrPublicKey {
+    /// The key a CSR asks to be certified, or `None` for an algorithm this CA
+    /// does not sign.
+    fn from_spki(spki: &x509_parser::x509::SubjectPublicKeyInfo<'_>) -> Option<Self> {
+        Some(Self {
+            key_bits: spki.subject_public_key.data.to_vec(),
+            algorithm: detect_algorithm(&spki.algorithm)?,
+        })
+    }
+}
+
 impl PublicKeyData for CsrPublicKey {
     fn der_bytes(&self) -> &[u8] {
-        &self.spki_der
+        &self.key_bits
     }
 
     fn algorithm(&self) -> &'static SignatureAlgorithm {
@@ -840,22 +884,12 @@ impl CaClient for SelfSignedCa {
 
         // Extract the SubjectPublicKeyInfo from the CSR
         let csr_info = &parsed_csr.certification_request_info;
-        let spki = &csr_info.subject_pki;
-        let spki_der = spki.raw.to_vec();
-
-        // Detect the algorithm from the CSR's public key
-        let algorithm = detect_algorithm(&spki.algorithm).ok_or_else(|| {
+        let public_key = CsrPublicKey::from_spki(&csr_info.subject_pki).ok_or_else(|| {
             Error::CaSigning("unsupported public key algorithm in CSR".to_string())
         })?;
 
-        // Create a wrapper that implements PublicKeyData
-        let public_key = CsrPublicKey {
-            spki_der,
-            algorithm,
-        };
-
         // Sign using the public key from the CSR
-        let chain = self.sign_with_public_key(&public_key, identity, ttl)?;
+        let chain = self.sign_with_public_key(&public_key, identity, ttl, LeafRole::Local)?;
 
         // Convert certificate chain to PEM
         let pem = chain
@@ -865,6 +899,43 @@ impl CaClient for SelfSignedCa {
             .join("\n");
 
         Ok(pem)
+    }
+
+    async fn sign_csr_for_foreign_trust_domain(
+        &self,
+        csr: &str,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<String> {
+        // Disjoint from `sign_csr_only` by construction: see the trait docs.
+        if identity.trust_domain() == self.trust_domain {
+            return Err(Error::TrustDomainMismatch {
+                expected: "a trust domain other than this CA's own".to_string(),
+                actual: identity.trust_domain().to_string(),
+            });
+        }
+        let csr_der = Self::pem_to_der(csr, "CERTIFICATE REQUEST")?;
+        let requested = crate::certificate::spiffe_uri_from_csr_der(&csr_der)?;
+        if requested != identity.to_spiffe_uri() {
+            return Err(Error::VerificationFailed(
+                "CSR SPIFFE URI is not the identity being issued".to_string(),
+            ));
+        }
+        let (_, parsed_csr) = X509CertificationRequest::from_der(&csr_der)
+            .map_err(|e| Error::CsrGeneration(format!("failed to parse CSR: {e}")))?;
+        // The same extraction `sign_csr_only` uses (#3029): the key's BIT
+        // STRING, not the whole SPKI, which rcgen would wrap a second time.
+        let public_key =
+            CsrPublicKey::from_spki(&parsed_csr.certification_request_info.subject_pki)
+                .ok_or_else(|| {
+                    Error::CaSigning("unsupported public key algorithm in CSR".to_string())
+                })?;
+        let chain = self.sign_with_public_key(&public_key, identity, ttl, LeafRole::Foreign)?;
+        Ok(chain
+            .iter()
+            .map(|c| c.to_pem())
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     fn trust_bundle(&self) -> &TrustBundle {
@@ -944,6 +1015,40 @@ mod tests {
 
         // Verify the certificate uses the workload's own key (no key escrow)
         assert_eq!(cert.private_key_pem(), cert_sign.private_key());
+    }
+
+    /// The certificate `sign_csr_only` issues carries the CSR's key, byte for
+    /// byte, in a SubjectPublicKeyInfo a verifier can parse. Every other CSR test
+    /// checks the SAN; none read the key back, which is how a doubly wrapped
+    /// SPKI shipped.
+    #[tokio::test]
+    async fn a_csr_signed_certificate_carries_the_csrs_key_unwrapped() {
+        use x509_parser::prelude::FromDer as _;
+        let ca = SelfSignedCa::new("nucleus.local").unwrap();
+        let identity = Identity::new("nucleus.local", "default", "csr-only");
+        let request = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+
+        let chain = ca
+            .sign_csr_only(request.csr(), &identity, Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        let csr_der = SelfSignedCa::pem_to_der(request.csr(), "CERTIFICATE REQUEST").unwrap();
+        let (_, csr) = X509CertificationRequest::from_der(&csr_der).unwrap();
+        let leaf_der = SelfSignedCa::pem_to_der(&chain, "CERTIFICATE").unwrap();
+        let (_, leaf) = x509_parser::certificate::X509Certificate::from_der(&leaf_der).unwrap();
+
+        let issued = leaf.public_key();
+        assert_eq!(
+            issued.raw, csr.certification_request_info.subject_pki.raw,
+            "the issued SPKI is not the CSR's SPKI"
+        );
+        assert!(
+            issued.parsed().is_ok(),
+            "the issued public key does not parse"
+        );
     }
 
     #[tokio::test]
@@ -1518,5 +1623,114 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600, "key file mode was {mode:o}");
         }
+    }
+
+    /// The federated exchange's signer: a foreign-domain identity is issued
+    /// when the CSR asks for exactly it, and never for this CA's own domain.
+    #[tokio::test]
+    async fn a_foreign_trust_domain_is_issued_only_what_its_csr_names() {
+        let ca = SelfSignedCa::new("node.local").unwrap();
+        let ttl = Duration::from_secs(300);
+        let principal = Identity::new("tenant.example", "rt", "alice");
+
+        let csr = crate::CsrOptions::new(principal.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let pem = ca
+            .sign_csr_for_foreign_trust_domain(csr.csr(), &principal, ttl)
+            .await
+            .expect("the named identity is issued");
+        let leaf = crate::certificate::Certificate::from_pem(&pem).unwrap();
+        assert_eq!(
+            crate::spiffe_uri_from_svid(leaf.der()).unwrap(),
+            principal.to_spiffe_uri()
+        );
+
+        // A CSR for someone else is refused, not re-labelled.
+        let bob = crate::CsrOptions::new("spiffe://tenant.example/ns/rt/sa/bob")
+            .generate()
+            .unwrap();
+        assert!(
+            ca.sign_csr_for_foreign_trust_domain(bob.csr(), &principal, ttl)
+                .await
+                .is_err()
+        );
+
+        // This CA's own domain never goes through the federated door.
+        let own = Identity::new("node.local", "system", "cli");
+        let own_csr = crate::CsrOptions::new(own.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        assert!(
+            ca.sign_csr_for_foreign_trust_domain(own_csr.csr(), &own, ttl)
+                .await
+                .is_err()
+        );
+    }
+
+    /// A foreign-domain leaf may call the node and may never stand in for it.
+    ///
+    /// The clients this protects verify the node's server certificate by chain
+    /// and EKU only (`tls_certs_only` + `danger_accept_invalid_hostnames`), so
+    /// the whole defence is webpki's server-usage check refusing the leaf. The
+    /// control is the SAME leaf passing the client-usage check, and a local
+    /// leaf passing the server one: without them a broken chain would read as
+    /// the EKU doing its job.
+    #[tokio::test]
+    async fn a_foreign_leaf_is_refused_as_a_server_and_accepted_as_a_client() {
+        use rustls::pki_types::{CertificateDer, UnixTime};
+        use webpki::{EndEntityCert, KeyUsage};
+
+        let ca = SelfSignedCa::new("node.local").unwrap();
+        let ttl = Duration::from_secs(300);
+        let anchor_der = CertificateDer::from(ca.root_certificate.der().to_vec());
+        let anchors = [webpki::anchor_from_trusted_cert(&anchor_der)
+            .unwrap()
+            .to_owned()];
+        let now = UnixTime::now();
+        let verify = |pem: &str, usage: KeyUsage| {
+            let leaf = crate::certificate::Certificate::from_pem(pem).unwrap();
+            let der = CertificateDer::from(leaf.der().to_vec());
+            EndEntityCert::try_from(&der)
+                .unwrap()
+                .verify_for_usage(
+                    webpki::ALL_VERIFICATION_ALGS,
+                    &anchors,
+                    &[],
+                    now,
+                    usage,
+                    None,
+                    None,
+                )
+                .map(|_| ())
+        };
+
+        let tenant = Identity::new("tenant.example", "rt", "alice");
+        let csr = crate::CsrOptions::new(tenant.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let foreign = ca
+            .sign_csr_for_foreign_trust_domain(csr.csr(), &tenant, ttl)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                verify(&foreign, KeyUsage::server_auth()),
+                Err(webpki::Error::RequiredEkuNotFoundContext(_))
+            ),
+            "a tenant's leaf must not verify as a server: {:?}",
+            verify(&foreign, KeyUsage::server_auth())
+        );
+        verify(&foreign, KeyUsage::client_auth()).expect("it still authenticates as a client");
+
+        let local = Identity::new("node.local", "pods", "p1");
+        let local_csr = crate::CsrOptions::new(local.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let local_pem = ca
+            .sign_csr_only(local_csr.csr(), &local, ttl)
+            .await
+            .unwrap();
+        verify(&local_pem, KeyUsage::server_auth()).expect("a local leaf still serves");
     }
 }

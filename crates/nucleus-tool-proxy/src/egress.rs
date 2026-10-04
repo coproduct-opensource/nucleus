@@ -58,29 +58,6 @@ fn broker_capability() -> Option<crate::broker_client::Capability> {
     (!secret.is_empty() && port != 0).then_some(crate::broker_client::Capability { secret, port })
 }
 
-/// The idempotency key for one logical upstream call.
-///
-/// Derived from what the request IS — upstream name, path, body — rather than
-/// randomly, so a retry of the same call carries the same key and the host's
-/// ledger recognises it as one operation. A fresh random key per attempt would
-/// leave the host unable to tell a retry from a new request, which is the exact
-/// thing the key exists to prevent; the machinery would still run and still be
-/// decorative.
-///
-/// Hashed rather than concatenated: the body can be large and the key is bounded
-/// by `MAX_FIELD_BYTES` on the host, and a delimiter-joined key would let a
-/// crafted path collide with a different (name, path) pair.
-fn idempotency_key(name: &str, path: &str, body: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    // Length-prefixed, so ("ab", "c") and ("a", "bc") cannot produce one digest.
-    for part in [name.as_bytes(), path.as_bytes(), body] {
-        h.update((part.len() as u64).to_be_bytes());
-        h.update(part);
-    }
-    hex::encode(h.finalize())
-}
-
 /// Build the upstream URL for a request path.
 ///
 /// # This used to be the implementation and is now a call
@@ -102,10 +79,15 @@ pub(crate) fn upstream_url(spec: &CredentialedEgressSpec, path: &str) -> Option<
 /// Names and local addresses ONLY. The credential is deliberately absent — that
 /// absence is the feature, and a test asserts it rather than trusting the
 /// reading of this function.
+///
+/// `door_url` is the workload door's `unix://<socket>` URL, so each upstream's
+/// URL is `unix://<socket>/v1/egress/<name>`: a client connects to the socket
+/// named by `NUCLEUS_TOOL_PROXY_URL`, which is a prefix of this one, and sends
+/// the remainder as the HTTP path.
 #[must_use]
 pub(crate) fn workload_egress_env(
     specs: &[CredentialedEgressSpec],
-    proxy_url: &str,
+    door_url: &str,
 ) -> std::collections::BTreeMap<String, String> {
     specs
         .iter()
@@ -115,7 +97,7 @@ pub(crate) fn workload_egress_env(
                     "NUCLEUS_EGRESS_{}_URL",
                     s.name.to_uppercase().replace('-', "_")
                 ),
-                format!("{proxy_url}/v1/egress/{}", s.name),
+                format!("{door_url}/v1/egress/{}", s.name),
             )
         })
         .collect()
@@ -243,7 +225,8 @@ pub(crate) async fn credentialed_egress(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     axum::extract::Path((name, path)): axum::extract::Path<(String, String)>,
     certified: Option<axum::Extension<crate::pod_cert::CertifiedPermissions>>,
-    body: axum::body::Bytes,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Body,
 ) -> Result<axum::response::Response, crate::ApiError> {
     use crate::ApiError;
     use portcullis::Operation;
@@ -336,52 +319,95 @@ pub(crate) async fn credentialed_egress(
         ));
     };
 
-    let request = nucleus_cred_protocol::PerformRequest {
+    // A STREAMED call (#2696 P4): the body goes up as it arrives from the
+    // workload and the reply comes back as the upstream sends it, so a model
+    // call larger than a perform frame's 256 KiB, and a server-sent-event
+    // reply, both fit. Unique per call: a streamed body cannot be replayed, so
+    // a workload's retry is a new call, and the host refuses a nonce it has
+    // seen, which is what stops a captured open frame being sent twice.
+    let request = nucleus_cred_protocol::StreamRequest {
         operation: "WebFetch".to_string(),
         target: name.clone(),
         justification: "credentialed egress".to_string(),
-        // Derived from what the request IS, so a retry of the same call carries
-        // the same key and the host's ledger sees one logical operation. A
-        // random key per attempt would make the idempotency machinery decorative.
-        idempotency_key: idempotency_key(&name, &path, &body),
+        nonce: uuid::Uuid::new_v4().to_string(),
         path: path.clone(),
-        body: body.to_vec(),
+        content_type: request_content_type(&headers),
     };
 
     let line =
-        crate::broker_client::perform_line(authority, capability.secret.as_bytes(), &request)
+        crate::broker_client::stream_open_line(authority, capability.secret.as_bytes(), &request)
             .map_err(|e| ApiError::IfcDenied(format!("authority not spendable: {e}")))?;
 
-    let reply_line = crate::broker_client::ask(capability.port, &line)
+    let conn = crate::broker_client::dial(capability.port)
         .await
         .map_err(|e| ApiError::Spec(format!("the credential broker did not answer: {e}")))?;
 
-    let reply: nucleus_cred_protocol::PerformReply = serde_json::from_str(reply_line.trim_end())
-        .map_err(|_| {
-            ApiError::Spec("the credential broker sent an unreadable reply".to_string())
-        })?;
+    let relayed = forward_stream(conn, &line, body).await?;
 
-    if !reply.granted {
-        // The host's reason is deliberately coarse — it must not let a guest
-        // enumerate which credentials exist — so it is passed through unchanged
-        // rather than elaborated here.
-        return Err(ApiError::IfcDenied(format!(
-            "the credential broker refused: {}",
-            reply.reason
-        )));
-    }
+    // External AND model-authored. Observed BEFORE the first byte reaches the
+    // workload, which is what makes the taint real for everything it does
+    // next. The reply has not arrived yet, so the content hash is over what is
+    // known now (upstream, status, this call's nonce) rather than over the
+    // body; see the follow-up in #2696.
+    let known = format!("{name} {} {}", relayed.head.status, request.nonce);
+    crate::ingest::http_observe_flow(&state, portcullis::NodeKind::ModelPlan, known.as_bytes())
+        .await;
 
-    let status = axum::http::StatusCode::from_u16(reply.status)
+    Ok(relayed_response(relayed))
+}
+
+/// The media type the workload declared for its request body, if it is one
+/// the host will put in a header; otherwise the JSON every model API takes.
+fn request_content_type(headers: &axum::http::HeaderMap) -> String {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty() && v.len() <= 256 && v.bytes().all(|b| (0x20..0x7f).contains(&b)))
+        .unwrap_or("application/json")
+        .to_string()
+}
+
+/// Relay a streamed call to the host over `conn`, mapping the outcome into the
+/// proxy's errors.
+///
+/// A refusal carries the host's reason unchanged: coarse for policy (it must
+/// not let a guest enumerate which credentials exist), and named for the pod's
+/// own egress balance and per-call bounds, whose remedy the operator applies.
+pub(crate) async fn forward_stream<C>(
+    conn: C,
+    open_line: &str,
+    body: axum::body::Body,
+) -> Result<crate::broker_client::Relayed, crate::ApiError>
+where
+    C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    use crate::broker_client::RelayError;
+    crate::broker_client::relay(conn, open_line, body)
+        .await
+        .map_err(|e| match e {
+            RelayError::Refused(reason) => {
+                crate::ApiError::IfcDenied(format!("the credential broker refused: {reason}"))
+            }
+            RelayError::Transport(why) => {
+                crate::ApiError::Spec(format!("the credential broker did not answer: {why}"))
+            }
+        })
+}
+
+/// The workload's response: the upstream's status and media type, and its
+/// reply streamed as it arrives.
+pub(crate) fn relayed_response(relayed: crate::broker_client::Relayed) -> axum::response::Response {
+    let status = axum::http::StatusCode::from_u16(relayed.head.status)
         .unwrap_or(axum::http::StatusCode::BAD_GATEWAY);
-    let bytes = axum::body::Bytes::from(reply.body);
-
-    // External AND model-authored. Observing it is what makes the taint real for
-    // everything the workload does next.
-    crate::ingest::http_observe_flow(&state, portcullis::NodeKind::ModelPlan, &bytes).await;
-
-    let mut out = axum::response::Response::new(axum::body::Body::from(bytes));
+    let mut out = axum::response::Response::new(relayed.body);
     *out.status_mut() = status;
-    Ok(out)
+    if let Ok(value) = axum::http::HeaderValue::from_str(&relayed.head.content_type)
+        && !relayed.head.content_type.is_empty()
+    {
+        out.headers_mut()
+            .insert(axum::http::header::CONTENT_TYPE, value);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -578,28 +604,283 @@ mod tests {
         );
     }
 
-    /// The idempotency key is a function of the REQUEST, so a retry repeats it.
-    /// A random key per attempt would leave the host unable to recognise a retry
-    /// and the whole ledger would be decoration.
+    /// A media type the host would refuse to put in a header falls back to
+    /// JSON rather than reaching the host as a malformed request.
     #[test]
-    fn the_same_call_produces_the_same_idempotency_key() {
-        let a = idempotency_key("model-api", "/messages", b"{}");
-        let b = idempotency_key("model-api", "/messages", b"{}");
-        assert_eq!(a, b);
+    fn the_request_media_type_is_header_safe() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(request_content_type(&headers), "application/json");
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+        );
+        assert_eq!(request_content_type(&headers), "text/plain; charset=utf-8");
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_bytes(b"caf\xc3\xa9").expect("opaque bytes"),
+        );
+        assert_eq!(request_content_type(&headers), "application/json");
     }
 
-    /// Different calls must not collide, including under the delimiter attack a
-    /// concatenated key would admit.
-    #[test]
-    fn different_calls_produce_different_keys() {
-        let base = idempotency_key("model-api", "/messages", b"{}");
-        assert_ne!(base, idempotency_key("other-api", "/messages", b"{}"));
-        assert_ne!(base, idempotency_key("model-api", "/other", b"{}"));
-        assert_ne!(base, idempotency_key("model-api", "/messages", b"{ }"));
-        // Length-prefixing is what stops this pair colliding.
-        assert_ne!(
-            idempotency_key("ab", "c", b""),
-            idempotency_key("a", "bc", b"")
+    // ── The streamed call, end to end through the workload door ────────
+    //
+    // door (real socket, SO_PEERCRED) -> the proxy's relay (`forward_stream`,
+    // `relayed_response`: the functions `credentialed_egress` calls) -> a
+    // host over a real Unix socket. The host here is a stand-in that speaks
+    // the shared codec; the node's REAL host half, against a real upstream, is
+    // `nucleus_node::broker_stream::tests`. The two meet at
+    // `nucleus_cred_protocol::stream`, which both link.
+
+    use nucleus_cred_protocol::stream::io::{
+        Chunk, read_chunk, read_line, write_chunks, write_end, write_line,
+    };
+    use std::path::{Path, PathBuf};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+
+    const KEY: &[u8] = b"test-broker-capability";
+    /// What the HOST holds and injects. The stand-in host never sends it to
+    /// the guest; the tests assert it appears nowhere the guest can see.
+    const TOKEN: &str = "test-token-123";
+    const SSE: [&str; 3] = [
+        "event: delta\ndata: {\"text\":\"hel\"}\n\n",
+        "event: delta\ndata: {\"text\":\"lo\"}\n\n",
+        "event: done\ndata: {}\n\n",
+    ];
+
+    /// How the stand-in host answers.
+    #[derive(Clone, Copy)]
+    enum HostBehaviour {
+        /// Read the whole body, answer 200 with SSE events.
+        Serve,
+        /// Refuse once this many body bytes have arrived, by name.
+        ExhaustAfter(usize),
+    }
+
+    /// What the stand-in host saw of the proxy's request.
+    #[derive(Debug, Default, Clone)]
+    struct HostSaw {
+        open_frame: String,
+        body_len: usize,
+        authentic: bool,
+    }
+
+    /// A host broker stand-in on a Unix socket: one connection, the shared
+    /// codec, and a record of what the proxy sent it.
+    async fn stand_in_host(
+        dir: &Path,
+        behaviour: HostBehaviour,
+    ) -> (PathBuf, std::sync::Arc<std::sync::Mutex<HostSaw>>) {
+        let path = dir.join("host.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind host");
+        let saw = std::sync::Arc::new(std::sync::Mutex::new(HostSaw::default()));
+        let record = std::sync::Arc::clone(&saw);
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let (r, mut w) = tokio::io::split(stream);
+            let mut r = BufReader::new(r);
+            let open = read_line(&mut r, 64 * 1024).await.expect("open frame");
+            let authentic = nucleus_cred_protocol::frame::is_authentic(&open, Some(KEY));
+            let mut body_len = 0;
+            let mut refused = None;
+            while let Ok(Chunk::Data(d)) = read_chunk(&mut r).await {
+                body_len += d.len();
+                if let HostBehaviour::ExhaustAfter(n) = behaviour
+                    && body_len >= n
+                {
+                    refused = Some(
+                        "egress budget exhausted (egress.max_bytes): 204800 of 204800 bytes \
+                         already sent, 65536 more requested",
+                    );
+                    break;
+                }
+            }
+            *record.lock().expect("record") = HostSaw {
+                open_frame: open,
+                body_len,
+                authentic,
+            };
+            if let Some(reason) = refused {
+                let head = nucleus_cred_protocol::StreamHead {
+                    granted: false,
+                    reason: reason.to_string(),
+                    status: 0,
+                    content_type: String::new(),
+                };
+                let _ = write_line(&mut w, &serde_json::to_string(&head).expect("json")).await;
+                // Drain, as the real host does, so the proxy reads the head.
+                while let Ok(Chunk::Data(_)) = read_chunk(&mut r).await {}
+                return;
+            }
+            let head = nucleus_cred_protocol::StreamHead {
+                granted: true,
+                reason: "granted".into(),
+                status: 200,
+                content_type: "text/event-stream".into(),
+            };
+            write_line(&mut w, &serde_json::to_string(&head).expect("json"))
+                .await
+                .expect("head");
+            for event in SSE {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                write_chunks(&mut w, event.as_bytes()).await.expect("chunk");
+            }
+            write_end(&mut w).await.expect("end");
+            let end = nucleus_cred_protocol::StreamEnd {
+                complete: true,
+                reason: String::new(),
+            };
+            write_line(&mut w, &serde_json::to_string(&end).expect("json"))
+                .await
+                .expect("end line");
+        });
+        (path, saw)
+    }
+
+    /// Serve the door with its egress route bound to the proxy's relay toward
+    /// `host`. The open frame is signed here as `credentialed_egress` signs it
+    /// (the kernel decision and the discharge before it need a full
+    /// `AppState`; they are unchanged by this path and tested where they live).
+    fn serve_door(dir: &Path, host: PathBuf) -> PathBuf {
+        use axum::extract::Path as RoutePath;
+        let door_path = dir.join("door").join("workload.sock");
+        let door = crate::workload_door::UnservedDoor::bind(&door_path).expect("bind door");
+        let app = axum::Router::new().route(
+            "/v1/egress/{name}/{*path}",
+            axum::routing::post(
+                move |RoutePath((name, path)): RoutePath<(String, String)>,
+                      headers: axum::http::HeaderMap,
+                      body: axum::body::Body| {
+                    let host = host.clone();
+                    async move {
+                        let request = nucleus_cred_protocol::StreamRequest {
+                            operation: "WebFetch".into(),
+                            target: name,
+                            justification: "credentialed egress".into(),
+                            nonce: uuid::Uuid::new_v4().to_string(),
+                            path,
+                            content_type: request_content_type(&headers),
+                        };
+                        let line = format!(
+                            "{}\n",
+                            nucleus_cred_protocol::frame::sign(
+                                KEY,
+                                &serde_json::to_string(&request).expect("json")
+                            )
+                        );
+                        let conn = tokio::net::UnixStream::connect(&host)
+                            .await
+                            .expect("the host");
+                        match forward_stream(conn, &line, body).await {
+                            Ok(relayed) => relayed_response(relayed),
+                            Err(e) => axum::response::IntoResponse::into_response(e),
+                        }
+                    }
+                },
+            ),
         );
+        door.serve(
+            app,
+            crate::workload::WorkloadUid::for_test(crate::workload::nix_getuid()),
+        );
+        door_path
+    }
+
+    /// Be the workload: POST `body` to the door's egress route as HTTP/1.1
+    /// chunked, and read the whole response.
+    async fn workload_post(door: &Path, body: &[u8]) -> String {
+        // Bounded, so a regression that stalls the relay fails here in
+        // seconds rather than hanging the suite.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            workload_post_unbounded(door, body),
+        )
+        .await
+        .expect("the call through the door finished within 30 s")
+    }
+
+    async fn workload_post_unbounded(door: &Path, body: &[u8]) -> String {
+        let mut s = tokio::net::UnixStream::connect(door).await.expect("door");
+        let head = "POST /v1/egress/model-api/v1/complete HTTP/1.1\r\nHost: x\r\n\
+                    Content-Type: application/json\r\nTransfer-Encoding: chunked\r\n\
+                    Connection: close\r\n\r\n";
+        s.write_all(head.as_bytes()).await.expect("head");
+        for piece in body.chunks(32 * 1024) {
+            let chunk = format!("{:x}\r\n", piece.len());
+            // Errors are expected once the proxy has refused and hung up.
+            if s.write_all(chunk.as_bytes()).await.is_err()
+                || s.write_all(piece).await.is_err()
+                || s.write_all(b"\r\n").await.is_err()
+            {
+                break;
+            }
+        }
+        let _ = s.write_all(b"0\r\n\r\n").await;
+        let mut reply = Vec::new();
+        let _ = s.read_to_end(&mut reply).await;
+        String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    fn mebibyte() -> Vec<u8> {
+        (0..1024 * 1024)
+            .map(|i: usize| b"0123456789abcdef"[i % 16])
+            .collect()
+    }
+
+    /// **A 1 MiB streamed request with an SSE reply, through the workload
+    /// door.** The proxy streams the body to the host as chunks (the host saw
+    /// all of it, under a frame it could authenticate), and the workload reads
+    /// the events back with the upstream's media type. Neither what the proxy
+    /// sent nor what the workload received carries the credential: the host
+    /// holds it, and `broker_stream`'s tests show the host injecting it.
+    ///
+    /// Red on main: the route read the body whole and sent it in one perform
+    /// frame, which the host refuses above 256 KiB.
+    #[tokio::test]
+    async fn a_mebibyte_streams_through_the_door_and_sse_streams_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (host, saw) = stand_in_host(dir.path(), HostBehaviour::Serve).await;
+        let door = serve_door(dir.path(), host);
+        let reply = workload_post(&door, &mebibyte()).await;
+
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        assert!(
+            reply
+                .to_ascii_lowercase()
+                .contains("content-type: text/event-stream"),
+            "{reply}"
+        );
+        for event in SSE {
+            assert!(
+                reply.contains(event.trim_end()),
+                "missing {event:?} in {reply}"
+            );
+        }
+        let saw = saw.lock().expect("saw").clone();
+        assert!(
+            saw.authentic,
+            "the open frame verifies under the pod's capability"
+        );
+        assert_eq!(saw.body_len, 1024 * 1024, "the whole body went up");
+        assert!(saw.open_frame.contains("\"target\":\"model-api\""));
+        assert!(saw.open_frame.contains("\"path\":\"v1/complete\""));
+        assert!(!saw.open_frame.contains(TOKEN) && !reply.contains(TOKEN));
+    }
+
+    /// **Exhaustion mid-stream reaches the workload by name.** The host
+    /// refuses part way through the upload; the proxy reads that refusal while
+    /// still uploading and answers the workload 403 with the reason.
+    #[tokio::test]
+    async fn a_mid_stream_refusal_reaches_the_workload_by_name() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (host, saw) = stand_in_host(dir.path(), HostBehaviour::ExhaustAfter(200 * 1024)).await;
+        let door = serve_door(dir.path(), host);
+        let reply = workload_post(&door, &mebibyte()).await;
+
+        assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+        assert!(
+            reply.contains("egress budget exhausted (egress.max_bytes)"),
+            "the workload must see why: {reply}"
+        );
+        assert!(saw.lock().expect("saw").body_len < 1024 * 1024);
     }
 }

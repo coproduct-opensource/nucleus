@@ -47,11 +47,12 @@ The industry is deploying agents faster than security practices can evolve. Nucl
 
 ## Getting Started
 
-```bash
-# Install
-cargo install nucleus-node
-cargo install nucleus-cli
+Install the CLI as described in the canonical
+[install section](../../README.md#install): from this repository, never by name
+from crates.io (the crates.io name `nucleus-cli` belongs to an unrelated
+project). `nucleus setup` installs the node itself.
 
+```bash
 # Setup (macOS with Lima VM, or native Linux)
 nucleus setup
 

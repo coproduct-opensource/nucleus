@@ -202,18 +202,15 @@ pub(crate) async fn admit_posture(
         };
     // A claim names a rootfs digest, so it is only meaningful with an image to
     // measure. Fail-closed if there is nothing to measure.
-    let rootfs = spec
-        .spec
-        .image
-        .as_ref()
-        .map(|i| i.rootfs_path.clone())
-        .ok_or_else(|| {
-            ApiError::Driver(
-                "pod carries a dlc_posture claim but has no spec.image to measure".to_string(),
-            )
-        })?;
+    let image = spec.spec.image.as_ref().ok_or_else(|| {
+        ApiError::Driver(
+            "pod carries a dlc_posture claim but has no spec.image to measure".to_string(),
+        )
+    })?;
+    // An OCI rootfs has no file here to measure; refused with the same reason as at create.
+    let rootfs = crate::rootfs_source::host_path(image)?;
     let measured = hex::encode(
-        nucleus_identity::attestation::measure_artifact(&rootfs)
+        nucleus_identity::attestation::measure_artifact(rootfs)
             .await
             .map_err(|e| {
                 ApiError::Driver(format!(

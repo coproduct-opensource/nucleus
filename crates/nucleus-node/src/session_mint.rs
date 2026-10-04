@@ -41,26 +41,14 @@
 //! mis-scope the token. Operations are the choke point this brick owns.
 
 use ed25519_dalek::SigningKey;
-use nucleus_provenance_memory::{SignedTaskRef, TokenScope};
+#[cfg(test)]
+use nucleus_provenance_memory::SignedTaskRef;
 use portcullis::PermissionLattice;
-use rand_core::RngCore as _;
-
-/// Width of a [`SignedTaskRef`] block nonce, in bytes.
-const NONCE_LEN: usize = 16;
 
 /// The three host-injected boot-channel strings the tool-proxy verify half
-/// consumes. Field serialization matches
-/// `nucleus-tool-proxy::session_token` exactly: JSON token, lowercase-hex
-/// nonce, lowercase-hex issuer public key.
-#[derive(Clone)]
-pub(crate) struct MintedTaskToken {
-    /// `serde_json` serialization of the [`SignedTaskRef`] → `NUCLEUS_TASK_TOKEN`.
-    pub token_json: String,
-    /// Hex of the 16-byte effective nonce → `NUCLEUS_TASK_TOKEN_NONCE`.
-    pub nonce_hex: String,
-    /// Hex of the 32-byte task-issuer PUBLIC key → `NUCLEUS_TASK_TOKEN_ISSUER`.
-    pub issuer_hex: String,
-}
+/// consumes. One type for every launcher: the node here, and `nucleus shell` /
+/// `nucleus run --local` in the CLI.
+pub(crate) use nucleus_provenance_memory::taskref_token::MintedTaskToken;
 
 /// Mint a fresh per-pod session capability token from the pod's resolved
 /// policy.
@@ -86,32 +74,18 @@ pub(crate) fn mint_session_task_token(
     issuer: &SigningKey,
     authority: Option<[u8; 32]>,
 ) -> Result<MintedTaskToken, serde_json::Error> {
-    // Fresh per-pod nonce from the OS CSPRNG, at the exact width SignedTaskRef
-    // pins as the effective nonce.
-    let mut nonce = [0u8; NONCE_LEN];
-    rand_core::OsRng.fill_bytes(&mut nonce);
-
     // THE choke point: scope operations = ops the policy does not deny. Subset
     // of the policy by construction (granted_operations excludes every Never
-    // op). Paths deferred to the next brick — see module docs.
-    let scope = TokenScope::new(policy.granted_operations(), Vec::new());
-
-    // Bound to the certificate the node issued this pod (#2486), when it has
-    // one: the token then names the authority its scope was derived from, and
-    // the tool-proxy refuses a token naming another.
-    let token = match authority {
-        Some(fp) => SignedTaskRef::issue_under_authority(
-            task_id, scope, nonce, now_unix, ttl_secs, issuer, fp,
-        ),
-        None => SignedTaskRef::issue(task_id, scope, nonce, now_unix, ttl_secs, issuer),
-    };
-    let token_json = serde_json::to_string(&token)?;
-
-    Ok(MintedTaskToken {
-        token_json,
-        nonce_hex: hex::encode(nonce),
-        issuer_hex: hex::encode(issuer.verifying_key().to_bytes()),
-    })
+    // op). The signing, the nonce and the authority binding are the shared
+    // mint's; paths are deferred to the next brick -- see module docs.
+    nucleus_provenance_memory::taskref_token::mint_session_task_token(
+        task_id,
+        policy.granted_operations(),
+        ttl_secs,
+        now_unix,
+        issuer,
+        authority,
+    )
 }
 
 #[cfg(test)]

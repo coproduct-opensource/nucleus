@@ -71,6 +71,8 @@
 "identity mint" = "emit"
 "identity present" = "reach"         # token exchange with an OP — weakest evidence here
 "identity verify" = "observe"
+"image import" = "reach"             # fetches from a registry (a local --oci-layout/--oci-archive only emits)
+"image resolve" = "reach"            # asks a registry what a tag names now
 "manifest init" = "emit"
 "manifest sign" = "emit"
 "manifest surface" = "observe"

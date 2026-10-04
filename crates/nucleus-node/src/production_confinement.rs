@@ -1,35 +1,9 @@
 //! Admission and CLI refusals for production VMM confinement.
 use nucleus_spec::SeccompSpec;
 
-/// A jailer uid that cannot represent root.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct NonRootUid(std::num::NonZeroU32);
-
-impl NonRootUid {
-    pub(crate) fn new(uid: u32) -> Result<Self, &'static str> {
-        std::num::NonZeroU32::new(uid)
-            .map(Self)
-            .ok_or("JailerRootUid: jailer uid must not be zero")
-    }
-
-    pub(crate) fn get(self) -> u32 {
-        self.0.get()
-    }
-}
-
-impl std::str::FromStr for NonRootUid {
-    type Err = String;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let uid = value.parse::<u32>().map_err(|e| e.to_string())?;
-        Self::new(uid).map_err(str::to_owned)
-    }
-}
-
-impl std::fmt::Display for NonRootUid {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.get().fmt(f)
-    }
-}
+/// A jailer uid that cannot represent root. Declared beside the jail user it is part of, which
+/// `nucleus-hostctl seed` hands a written-through disk to (#3152).
+pub(crate) use nucleus_microvm_host::jail_user::NonRootUid;
 
 pub(crate) fn parse_jailer_enabled(value: &str) -> Result<bool, String> {
     let enabled = value.parse::<bool>().map_err(|e| e.to_string())?;

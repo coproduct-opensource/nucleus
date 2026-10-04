@@ -204,7 +204,8 @@ theorem bool_rollup_hides_what_three_values_keep :
 -- ── The scope a push did not touch ────────────────────────────────────────
 
 /-- `test-core`'s declared `scope.include`, as `.gatehouse/gates/test-core.json`
-    carries it (the `sdks/verifier-js` file list elided: every entry of it is
+    carried it until 2026-09-28, when `test-core` and `test-audit` became one
+    `test` gate reading `**` -- the example stands as the case it records (the `sdks/verifier-js` file list elided: every entry of it is
     under a prefix already listed here or irrelevant to the two paths below). -/
 def testCoreScope : List Pattern :=
   [["Cargo.toml"], ["Cargo.lock"], ["rust-toolchain.toml"], [".cargo", "config.toml"],

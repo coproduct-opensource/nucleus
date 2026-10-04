@@ -295,9 +295,11 @@ pub(crate) fn preflight_read_fs(
 /// oversight: an `Authority` buys one read, so a search over N files needs N
 /// discharges. The alternative — one authority covering a whole directory walk —
 /// is exactly the replay the by-value cutover removed.
-/// Only the MCP search tool greps, and `mod mcp` is feature-gated, so this is
-/// dead code without it — `-D warnings` in the musl type-check job caught that.
-#[cfg(feature = "mcp")]
+///
+/// No longer `#[cfg(feature = "mcp")]` (2026-09-27): HTTP `/v1/grep_search`
+/// opened each file with a raw `std::fs::File::open` under an `#[expect]` that
+/// named #1216, so only the MCP search tool preflighted. Both transports now
+/// spend one of these per file, so the function is live in every build.
 pub(crate) fn preflight_grep_fs(
     verified_scope: Option<&TokenScope>,
     levels: GateLevels,
@@ -306,6 +308,35 @@ pub(crate) fn preflight_grep_fs(
 ) -> PreflightResult {
     preflight_scoped(
         Operation::GrepSearch,
+        SinkClass::AuditLogAppend,
+        verified_scope,
+        levels,
+        subject,
+        flow,
+    )
+}
+
+/// Discharge obligations for one directory listing by pattern.
+///
+/// `GlobSearch` against `AuditLogAppend`, which `ActionKind` classifies as a
+/// pure read: a listing names paths and carries nothing outward, so a tainted
+/// session may glob and egress still pays for whatever it learned.
+///
+/// Until 2026-09-27 neither glob transport minted a bundle. HTTP
+/// `/v1/glob_search` discarded the decision token (`let _ =`) and walked
+/// `std::fs` through the `glob` crate; MCP `glob` did the same with
+/// `Ok(_decision_token) => {}`. So the listing was Checked, never Sealed: the
+/// decision ran, and the walk did not need its result. One call buys one
+/// listing through `Sandbox::glob`, which takes the resulting `Authority` by
+/// value.
+pub(crate) fn preflight_glob_fs(
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    subject: &str,
+    flow: &FlowGraph,
+) -> PreflightResult {
+    preflight_scoped(
+        Operation::GlobSearch,
         SinkClass::AuditLogAppend,
         verified_scope,
         levels,
@@ -394,6 +425,71 @@ fn preflight_scoped(
     };
 
     preflight_action(&term)
+}
+
+/// Discharge obligations for a memory WRITE (`/v1/memory/write`, 2026-09-27).
+///
+/// Memory is the one store an agent writes that a LATER session reads back, so
+/// a poisoned record admitted today steers tomorrow. Until this existed the
+/// handler bound its `DecisionToken` to `_dt`, dropped it, and admitted the
+/// record: the decision ran and the effect did not need it. It had no choice —
+/// `(WriteFiles, MemoryPersist)` was not an earnable pair, so there was nothing
+/// to discharge.
+///
+/// The pair is [`Acting`](nucleus_ifc_kernel::discharge::ActionKind::Acting):
+/// `MemoryPersist`'s `Untrusted` integrity floor and `NoAdversarialAncestry`
+/// both apply, so a tainted session cannot write memory. That is the point —
+/// the honest web record `verified_admit` quarantines is admitted by an
+/// UNtainted session that has not yet read it back.
+///
+/// There is no `preflight_memory_recall`. A recall is a read: it discharges
+/// `(ReadFiles, AuditLogAppend)` through [`preflight_read_fs`], the one decider
+/// for that pair (G-1), with the recall's own subject. The subject is not a
+/// filesystem path, and it does not need to be — `InScopeWithTask` checks the
+/// operation, not the path, and the spend binds whatever string was rendered.
+pub(crate) fn preflight_memory_write(
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    subject: &str,
+    flow: &FlowGraph,
+) -> PreflightResult {
+    preflight_scoped(
+        Operation::WriteFiles,
+        SinkClass::MemoryPersist,
+        verified_scope,
+        levels,
+        subject,
+        flow,
+    )
+}
+
+/// Discharge obligations for one pod-management act (2026-09-27).
+///
+/// Takes the [`Act`](portcullis::Act) rather than an `(op, sink, subject)`
+/// triple so the pair and target are derived from the same value the node
+/// client will spend against (`node_client::acts`) — minting and spending
+/// cannot render the target differently. The kernel decides the kind from the
+/// pair: create (`AgentSpawn`) is Acting, list/status/logs (`AuditLogAppend`)
+/// a pure read, and cancel (`CloudMutation`) authority-reducing, so a tainted
+/// session can still stop its children and still cannot spawn one.
+pub(crate) fn preflight_pod(
+    act: &portcullis::Act,
+    verified_scope: Option<&TokenScope>,
+    levels: GateLevels,
+    flow: &FlowGraph,
+) -> PreflightResult {
+    debug_assert!(
+        matches!(act, portcullis::Act::ManagePod { .. }),
+        "preflight_pod is only for pod-management acts",
+    );
+    preflight_scoped(
+        act.operation(),
+        act.sink_class(),
+        verified_scope,
+        levels,
+        &act.subject(),
+        flow,
+    )
 }
 
 /// Consume a [`DischargedBundle`] into an audit-record string.
@@ -625,6 +721,213 @@ mod tests {
             "bundle must carry the InScopeWithTask witness"
         );
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Tests — a tainted session may read, and may still not egress
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// A session that has observed web content, built the way the live ingest
+    /// path builds it (`observe_with_content_hash(NodeKind::WebContent, ..)`).
+    fn tainted_flow() -> FlowGraph {
+        use portcullis::NodeKind;
+        let mut flow = FlowGraph::new();
+        flow.observe_with_content_hash(
+            NodeKind::WebContent,
+            &[],
+            0,
+            crate::ingest_content_hash(b"<hostile page>"),
+        )
+        .expect("the web observation must land");
+        assert!(
+            flow.is_tainted(),
+            "non-vacuity: the session must be tainted"
+        );
+        flow
+    }
+
+    /// **A tainted session can read a file** (2026-09-27).
+    ///
+    /// `/v1/read` and MCP `read` discharge `(ReadFiles, AuditLogAppend)`
+    /// through this function. Before `ActionKind`, the first web page an agent
+    /// fetched put an `Adversarial` source label in the session and
+    /// `NoAdversarialAncestry` refused every later read, so the agent could
+    /// not inspect its own workspace. A read carries nothing outward; its bytes
+    /// are observed back into this graph by the ingest path, and egress still
+    /// pays for them (`tainted_session_still_cannot_web_fetch`).
+    ///
+    /// RED-FIRST: on the unmodified kernel this is denied by
+    /// `NoAdversarialAncestry`.
+    #[test]
+    fn tainted_session_can_read_a_file() {
+        let flow = tainted_flow();
+        let scope = TokenScope::new(
+            vec![Operation::ReadFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let result = preflight_read_fs(
+            Some(&scope),
+            GateLevels::honest(FS_CEILING),
+            "/workspace/notes.txt",
+            &flow,
+        );
+        assert!(
+            result.is_allowed(),
+            "a tainted session must still be able to read, got {result:?}"
+        );
+    }
+
+    /// Glob has the same fail-closed shape as every other scoped preflight:
+    /// no verified task scope, no listing. And a scope that names only
+    /// `ReadFiles` does not buy a `GlobSearch` — the discharge is bound to the
+    /// operation, so a read grant cannot be spent on a directory walk.
+    #[test]
+    fn glob_denies_without_task_scope() {
+        let flow = FlowGraph::new();
+        let missing = preflight_glob_fs(None, GateLevels::honest(FS_CEILING), "**/*.rs", &flow);
+        assert!(
+            missing.is_denied() && missing.denial_reason().unwrap().contains("InScopeWithTask"),
+            "no verified scope must deny a glob by InScopeWithTask, got {missing:?}"
+        );
+        let read_only = TokenScope::new(
+            vec![Operation::ReadFiles],
+            vec!["/workspace/**".to_string()],
+        );
+        let wrong_op = preflight_glob_fs(
+            Some(&read_only),
+            GateLevels::honest(FS_CEILING),
+            "**/*.rs",
+            &flow,
+        );
+        assert!(
+            wrong_op.is_denied(),
+            "a ReadFiles scope must not pay for GlobSearch, got {wrong_op:?}"
+        );
+        // Non-vacuity: the same inputs with GlobSearch in scope mint.
+        let glob_scope = TokenScope::new(
+            vec![Operation::GlobSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        assert!(
+            preflight_glob_fs(
+                Some(&glob_scope),
+                GateLevels::honest(FS_CEILING),
+                "**/*.rs",
+                &flow,
+            )
+            .is_allowed(),
+            "an in-scope glob on a clean session must mint"
+        );
+    }
+
+    /// A listing is a pure read, so a tainted session may glob and grep —
+    /// the same reason it may read (`tainted_session_can_read_a_file`).
+    #[test]
+    fn glob_allowed_on_tainted_session() {
+        let flow = tainted_flow();
+        let scope = TokenScope::new(
+            vec![Operation::GlobSearch, Operation::GrepSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        let glob = preflight_glob_fs(
+            Some(&scope),
+            GateLevels::honest(FS_CEILING),
+            "**/*.rs",
+            &flow,
+        );
+        assert!(
+            glob.is_allowed(),
+            "a tainted session must still be able to glob, got {glob:?}"
+        );
+        let grep = preflight_grep_fs(
+            Some(&scope),
+            GateLevels::honest(FS_CEILING),
+            "src/lib.rs",
+            &flow,
+        );
+        assert!(
+            grep.is_allowed(),
+            "a tainted session must still be able to grep, got {grep:?}"
+        );
+    }
+
+    /// The other half: taint still refuses the effect that could carry the
+    /// read bytes out. `HTTPEgress` is Acting, so both the integrity floor and
+    /// `NoAdversarialAncestry` still apply to `web_fetch` and `web_search`.
+    #[test]
+    fn tainted_session_still_cannot_web_fetch() {
+        let flow = tainted_flow();
+        let scope = TokenScope::new(
+            vec![Operation::WebFetch, Operation::WebSearch],
+            vec!["/workspace/**".to_string()],
+        );
+        for op in [Operation::WebFetch, Operation::WebSearch] {
+            let result = preflight_web(
+                op,
+                Some(&scope),
+                GateLevels::honest(WEB_CEILING),
+                "https://api.example",
+                &flow,
+            );
+            assert!(
+                result.is_denied(),
+                "{op:?} on a tainted session must be refused, got {result:?}"
+            );
+            // Non-vacuity: the same request on a clean session mints, so the
+            // refusal is the taint and not the scope or ceiling.
+            assert!(
+                preflight_web(
+                    op,
+                    Some(&scope),
+                    GateLevels::honest(WEB_CEILING),
+                    "https://api.example",
+                    &FlowGraph::new(),
+                )
+                .is_allowed(),
+                "{op:?} on a clean session must mint"
+            );
+        }
+    }
+
+    /// **A tainted session cannot write memory** (2026-09-27). Memory outlives
+    /// the session, so `(WriteFiles, MemoryPersist)` is Acting: the session's
+    /// adversarial label fails the `Untrusted` floor. Non-vacuity: the same
+    /// request on a clean session mints, so the refusal is the taint and not
+    /// the pair, the scope or the ceiling.
+    #[test]
+    fn tainted_session_cannot_write_memory() {
+        let scope = TokenScope::new(vec![Operation::WriteFiles], vec![]);
+        let levels = GateLevels::honest(FS_CEILING);
+        let result = preflight_memory_write(Some(&scope), levels, "memory://x", &tainted_flow());
+        assert!(result.is_denied(), "got {result:?}");
+        let clean = preflight_memory_write(Some(&scope), levels, "memory://x", &FlowGraph::new());
+        assert!(clean.is_allowed(), "a clean session must mint: {clean:?}");
+    }
+
+    /// **…and can still recall.** A recall is a pure read through
+    /// [`preflight_read_fs`], so the taint that refuses the write above does not
+    /// refuse bringing a record back in — the record's own label is what the
+    /// recall observes afterwards.
+    #[test]
+    fn tainted_session_can_still_recall() {
+        let scope = TokenScope::new(vec![Operation::ReadFiles], vec![]);
+        let levels = GateLevels::honest(FS_CEILING);
+        let result = preflight_read_fs(Some(&scope), levels, "memory://recall/x", &tainted_flow());
+        assert!(result.is_allowed(), "got {result:?}");
+    }
+
+    /// The certificate-ceiling middleware now sees both memory routes: they
+    /// were `_ => None` in `endpoint_operation`, so no ceiling applied to them.
+    #[test]
+    fn memory_routes_have_an_operation() {
+        assert_eq!(
+            endpoint_operation("/v1/memory/write"),
+            Some(Operation::WriteFiles)
+        );
+        assert_eq!(
+            endpoint_operation("/v1/memory/recall"),
+            Some(Operation::ReadFiles)
+        );
+    }
 }
 
 /// Operation of each HTTP effect endpoint. Approval is a market meta-dimension,
@@ -640,6 +943,8 @@ pub(crate) fn endpoint_operation(path: &str) -> Option<Operation> {
         "/v1/web_search" => Some(Operation::WebSearch),
         "/v1/pod/create" | "/v1/pod/list" | "/v1/pod/status" | "/v1/pod/logs"
         | "/v1/pod/cancel" => Some(Operation::ManagePods),
+        "/v1/memory/write" => Some(Operation::WriteFiles),
+        "/v1/memory/recall" => Some(Operation::ReadFiles),
         p if p.starts_with("/v1/egress/") => Some(Operation::WebFetch),
         _ => None,
     }

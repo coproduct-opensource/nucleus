@@ -30,6 +30,11 @@ use std::fs;
 const REQUIRED: &str = "ci/required-checks.txt";
 const DECIDERS: &str = "ci/local-deciders.txt";
 const PREPUSH: &str = "scripts/prepush.sh";
+/// The gate-of-gates probe table. Since #2990 the gauntlet runs every gate in it through
+/// `--baseline-only` rather than naming each one, so a gate listed here IS in the gauntlet --
+/// provided the gauntlet actually makes that call.
+const PROBES: &str = "scripts/check-gates-can-fail.sh";
+const BASELINE_CALL: &str = "check-gates-can-fail.sh --baseline-only";
 
 fn fail(failures: &mut u32, msg: &str) {
     println!("  FAIL  {msg}");
@@ -84,6 +89,16 @@ fn pin(text: &str, key: &str) -> Option<usize> {
         .ok()
 }
 
+/// The gates the probe table names: `probe <gate>.sh …` lines, as `<gate>`.
+fn parse_probed(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("probe "))
+        .filter_map(|rest| rest.split_whitespace().next())
+        .filter_map(|gate| gate.strip_suffix(".sh"))
+        .map(str::to_string)
+        .collect()
+}
+
 /// What the audit found, as a function of its inputs alone.
 ///
 /// Extracted from `run` so every rule below is reachable from a test. The whole
@@ -96,12 +111,27 @@ struct Audit {
     not_local: usize,
 }
 
+#[cfg(test)]
 fn audit(
     req: &BTreeSet<String>,
     dec: &BTreeMap<String, String>,
     prepush: &str,
     deciders_text: &str,
 ) -> Audit {
+    audit_with(req, dec, prepush, &BTreeSet::new(), deciders_text)
+}
+
+/// `probed` is the probe table's gate set. It credits a decider only when `prepush` makes the
+/// baseline call: a table the gauntlet does not run decides nothing, and crediting it would be
+/// the "declared and not wired" red this gate exists for.
+fn audit_with(
+    req: &BTreeSet<String>,
+    dec: &BTreeMap<String, String>,
+    prepush: &str,
+    probed: &BTreeSet<String>,
+    deciders_text: &str,
+) -> Audit {
+    let runs_baseline = prepush.contains(BASELINE_CALL);
     let mut findings = Vec::new();
 
     // Both directions between the ledger and the declaration.
@@ -151,7 +181,12 @@ fn audit(
         // VERBATIM, because the point is to catch the token moving. A looser match -- the first
         // word, say -- would find `cargo` in a file that is nothing but cargo invocations, and
         // the check would pass while the gauntlet ran something else entirely.
-        if !prepush.contains(cmd) {
+        //
+        // Or derived: a gate in the probe table the gauntlet baselines. Before this, #2990 moved
+        // seventeen gates from a hand-written loop into that derivation, every token vanished
+        // from the file, and this check went red on every branch for gates that still ran.
+        let derived = runs_baseline && probed.contains(cmd);
+        if !prepush.contains(cmd) && !derived {
             findings.push(format!(
                 "`{c}` declares `{cmd}`, which does not appear in {PREPUSH}"
             ));
@@ -194,8 +229,13 @@ pub fn run() -> Result<()> {
         bail!("could not look: {PREPUSH} is not readable");
     };
     let text = fs::read_to_string(DECIDERS)?;
+    // Unreadable is an empty set, not an error: every derived decider then reads as unwired,
+    // which is the fail-closed direction.
+    let probed = fs::read_to_string(PROBES)
+        .map(|t| parse_probed(&t))
+        .unwrap_or_default();
 
-    let found = audit(&req, &dec, &prepush, &text);
+    let found = audit_with(&req, &dec, &prepush, &probed, &text);
     let mut failures = 0u32;
     for f in &found.findings {
         fail(&mut failures, f);
@@ -316,6 +356,44 @@ mod tests {
             "cargo nextest run --workspace\n".to_string(),
             "# PINNED = 2\n# NOT-LOCAL = 1\n".to_string(),
         )
+    }
+
+    #[test]
+    fn the_probe_table_names_its_gates_without_the_suffix_or_flags() {
+        let table = "probe check-dep-ceiling.sh    \"\" scripts/x.sh \\\n\
+                     \x20   probe check-kani-proof-count.sh \"--strict\" a.rs \\\n\
+                     # probe check-commented-out.sh is prose, not a probe\n\
+                     not_a_probe check-other.sh\n";
+        assert_eq!(
+            parse_probed(table),
+            set(&["check-dep-ceiling", "check-kani-proof-count"])
+        );
+    }
+
+    /// A gate the gauntlet runs through the baseline counts as wired, and ONLY while the
+    /// gauntlet makes the baseline call: the probe table alone decides nothing.
+    #[test]
+    fn a_derived_decider_counts_only_while_the_gauntlet_runs_the_baseline() {
+        let req = set(&["Kani"]);
+        let dec = map(&[("Kani", "prepush: check-kani-divergence")]);
+        let txt = "# PINNED = 1\n# NOT-LOCAL = 0\n";
+        let probed = set(&["check-kani-divergence"]);
+
+        let wired = "bash scripts/check-gates-can-fail.sh --baseline-only >\"$gb\"\n";
+        let got = audit_with(&req, &dec, wired, &probed, txt);
+        assert!(got.findings.is_empty(), "{:?}", got.findings);
+
+        let unwired = "echo the baseline call was removed\n";
+        let got = audit_with(&req, &dec, unwired, &probed, txt);
+        assert!(
+            got.findings.iter().any(|f| f.contains("does not appear")),
+            "a probe table the gauntlet never runs was credited: {:?}",
+            got.findings
+        );
+
+        // And a gate the table does not name is still missing, baseline or not.
+        let got = audit_with(&req, &dec, wired, &set(&["check-other"]), txt);
+        assert!(got.findings.iter().any(|f| f.contains("does not appear")));
     }
 
     #[test]

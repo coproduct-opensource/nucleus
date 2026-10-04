@@ -11,7 +11,9 @@
 //!   - no file descriptor above its own stdio leaked in (the `close_range`
 //!     structural closure — the runc CVE-2024-21626 shape),
 //!   - if it was given a distinct uid, its supplementary groups were dropped,
-//!   - its root filesystem is mounted read-only.
+//!   - its root filesystem is mounted read-only,
+//!   - if it runs under a non-root uid, PID 1 (the tool-proxy, guest root) is
+//!     invisible in its `/proc` (`hidepid=invisible`, #2696 P3d).
 //!
 //! Zero dependencies (it is baked into the musl rootfs as a static binary,
 //! exactly like `nucleus-net-probe`); everything is a `std::fs` read of procfs.
@@ -51,13 +53,41 @@ const IDENTITY_VARS: &[&str] = &[
 /// learns the full canary and no secret ever reaches the console.
 const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 
+/// The `/v1/run` child's sentinels — a different stage from the workload's, so
+/// one console log can carry both verdicts without either masking the other.
+const RUN_CHILD_PASS: &str = "NUCLEUS_RUN_CHILD_PROBE: PASS";
+const RUN_CHILD_FAIL: &str = "NUCLEUS_RUN_CHILD_PROBE: FAIL";
+
 fn main() {
+    // Stage 2: invoked as a `/v1/run` command
+    // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--run-child"]}`)
+    // rather than as the pod workload. A command the tool-proxy runs for the
+    // agent must not be guest root: the proxy is PID 1 and root, and its
+    // environment holds the pod's secrets.
+    if std::env::args().nth(1).as_deref() == Some("--run-child") {
+        let status = std::fs::read_to_string("/proc/self/status");
+        let pid1_environ = std::fs::read("/proc/1/environ");
+        let view = observe_pid1();
+        let fails = run_child_failures(status.as_deref().ok(), &pid1_environ, &view);
+        if fails.is_empty() {
+            println!("{RUN_CHILD_PASS}");
+            eprintln!("{RUN_CHILD_PASS}");
+        } else {
+            let reason = fails.join("; ");
+            println!("{RUN_CHILD_FAIL}: {reason}");
+            eprintln!("{RUN_CHILD_FAIL}: {reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let mut fails: Vec<String> = Vec::new();
 
     check_environment(&mut fails);
     check_file_descriptors(&mut fails);
     check_groups(&mut fails);
     check_root_readonly(&mut fails);
+    check_pid1_invisible(&mut fails);
     check_credential_absence();
 
     if fails.is_empty() {
@@ -269,5 +299,296 @@ fn check_root_readonly(fails: &mut Vec<String>) {
         Some(true) => {}
         Some(false) => fails.push("root filesystem is mounted read-write".to_string()),
         None => fails.push("no root (/) mount found in /proc/self/mountinfo".to_string()),
+    }
+}
+
+/// What a process saw of PID 1 in its own `/proc`.
+///
+/// Three outcomes, not a bool (ADR 0007 A-1, A-2): PID 1 always exists, so
+/// "not there" means hidden ONLY when `/proc` demonstrably answers. A `/proc`
+/// that cannot be listed, or that does not even list this process, is a probe
+/// that could not look, and that is never reported as hidden.
+#[derive(Debug, PartialEq, Eq)]
+enum Pid1View {
+    /// Absent from the `/proc` listing and `/proc/1/cmdline` is `ENOENT`, while
+    /// the same listing shows this process: `hidepid=invisible` at work.
+    Invisible,
+    /// The workload can see PID 1. Which of the two leaked is kept, so the
+    /// failure says what a fix has to close.
+    Visible {
+        listed: bool,
+        cmdline_readable: bool,
+    },
+    /// The observation itself failed, with why.
+    Unobserved(String),
+}
+
+/// Look at PID 1 from here. The effectful half of [`pid1_view`].
+fn observe_pid1() -> Pid1View {
+    let listing = std::fs::read_dir("/proc").map(|entries| {
+        entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .collect::<Vec<String>>()
+    });
+    let cmdline = std::fs::read("/proc/1/cmdline");
+    pid1_view(&listing, std::process::id(), &cmdline)
+}
+
+/// Classify one observation of PID 1. Pure, so the red case (a plain `/proc`)
+/// is testable off-guest.
+fn pid1_view(
+    listing: &std::io::Result<Vec<String>>,
+    self_pid: u32,
+    pid1_cmdline: &std::io::Result<Vec<u8>>,
+) -> Pid1View {
+    let names = match listing {
+        Ok(names) => names,
+        Err(e) => return Pid1View::Unobserved(format!("cannot list /proc: {e}")),
+    };
+    // Non-vacuity: an empty or foreign `/proc` "hides" PID 1 too.
+    let self_name = self_pid.to_string();
+    if !names.contains(&self_name) {
+        return Pid1View::Unobserved(format!(
+            "/proc does not list this process (pid {self_pid}), so PID 1's absence \
+             from it shows nothing"
+        ));
+    }
+    let listed = names.iter().any(|n| n == "1");
+    let cmdline_readable = match pid1_cmdline {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        // hidepid=noaccess answers EACCES for a pid it still lists; an unlisted
+        // PID 1 that fails with anything but ENOENT is not invisibility.
+        Err(e) if !listed => {
+            return Pid1View::Unobserved(format!(
+                "PID 1 is unlisted but /proc/1/cmdline fails with {e}, not ENOENT"
+            ));
+        }
+        Err(_) => false,
+    };
+    if listed || cmdline_readable {
+        Pid1View::Visible {
+            listed,
+            cmdline_readable,
+        }
+    } else {
+        Pid1View::Invisible
+    }
+}
+
+/// The failure, if any, for a non-root process's view of PID 1.
+fn pid1_failure(view: &Pid1View) -> Option<String> {
+    match view {
+        Pid1View::Invisible => None,
+        Pid1View::Visible {
+            listed,
+            cmdline_readable,
+        } => Some(format!(
+            "PID 1 is visible to the workload (listed in /proc: {listed}, /proc/1/cmdline \
+             readable: {cmdline_readable}); /proc is not mounted hidepid=invisible"
+        )),
+        Pid1View::Unobserved(why) => Some(format!(
+            "could not observe PID 1's visibility: {why}; containment was not observed"
+        )),
+    }
+}
+
+/// `/proc` is mounted `hidepid=invisible` (#2696 P3d): a non-root workload
+/// must not see PID 1 at all.
+///
+/// Root sees every pid whatever the mount says, so for a root workload there is
+/// nothing to observe and this asserts nothing, as `check_groups` does. The
+/// probe pod (`examples/openclaw-demo/probe-pod.yaml`) runs as 65534.
+fn check_pid1_invisible(fails: &mut Vec<String>) {
+    let uid = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| status_uid(&s));
+    match uid {
+        Some(0) => {}
+        Some(_) => fails.extend(pid1_failure(&observe_pid1())),
+        None => fails.push("could not read the workload's uid from /proc/self/status".into()),
+    }
+}
+
+/// The real uid: the first field of `/proc/self/status`'s `Uid:` line.
+fn status_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|v| v.parse::<u32>().ok())
+}
+
+/// The `--run-child` verdict, pure so it is testable off-guest.
+///
+/// * the real uid (`Uid:` first field) must not be 0;
+/// * PID 1 must be invisible to it (`hidepid=invisible`, P3d);
+/// * `/proc/1/environ` must be refused: `EACCES` (the uid fence), or `ENOENT`
+///   when PID 1 was observed to be invisible. "Could not look" for any other
+///   reason (no procfs, an `ENOENT` nothing explains) is not "looked and it
+///   was denied" (ADR 0007 A-2), so it fails too: the probe cannot vouch for
+///   containment it did not observe.
+fn run_child_failures(
+    status: Option<&str>,
+    pid1_environ: &std::io::Result<Vec<u8>>,
+    pid1: &Pid1View,
+) -> Vec<String> {
+    let mut fails = Vec::new();
+    let uid = status.and_then(status_uid);
+    match uid {
+        Some(0) => fails.push("the /v1/run child runs as root (uid 0)".to_string()),
+        Some(_) => {}
+        None => fails.push("could not read the child's uid from /proc/self/status".to_string()),
+    }
+    match pid1_environ {
+        Ok(_) => fails
+            .push("the /v1/run child can read /proc/1/environ — the runtime's secrets".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && *pid1 == Pid1View::Invisible => {}
+        Err(e) => fails.push(format!(
+            "/proc/1/environ unreadable for a reason other than permission ({e}); \
+             containment was not observed"
+        )),
+    }
+    fails.extend(pid1_failure(pid1));
+    fails
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Pid1View, pid1_failure, pid1_view, run_child_failures};
+    use std::io;
+
+    const NOBODY: &str = "Name:\tprobe\nUid:\t65534\t65534\t65534\t65534\n";
+    const ROOT: &str = "Name:\tprobe\nUid:\t0\t0\t0\t0\n";
+
+    fn denied() -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    }
+
+    fn missing() -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    fn listing(pids: &[&str]) -> io::Result<Vec<String>> {
+        Ok(pids.iter().map(|p| (*p).to_string()).collect())
+    }
+
+    /// The child's own pid in the fixtures below.
+    const SELF: u32 = 42;
+
+    /// Plain `/proc`, which the guest mounted before P3d, as a uid-65534 child
+    /// saw it in the P3 spike (section 5): PID 1 listed and its cmdline
+    /// readable. The red case for the new stage.
+    fn plain_proc() -> Pid1View {
+        pid1_view(
+            &listing(&["1", "42", "self", "cmdline"]),
+            SELF,
+            &Ok(b"/init\0".to_vec()),
+        )
+    }
+
+    /// `hidepid=invisible`: only the child's own pid, and `ENOENT` for PID 1.
+    fn hidepid_proc() -> Pid1View {
+        pid1_view(&listing(&["42", "self", "cmdline"]), SELF, &missing())
+    }
+
+    #[test]
+    fn plain_proc_shows_pid1_and_fails() {
+        assert_eq!(
+            plain_proc(),
+            Pid1View::Visible {
+                listed: true,
+                cmdline_readable: true
+            }
+        );
+        assert!(pid1_failure(&plain_proc()).is_some());
+    }
+
+    #[test]
+    fn hidepid_invisible_hides_pid1_and_passes() {
+        assert_eq!(hidepid_proc(), Pid1View::Invisible);
+        assert!(pid1_failure(&hidepid_proc()).is_none());
+    }
+
+    /// `hidepid=noaccess` lists PID 1 and answers `EACCES`: enumerable, so not
+    /// the posture.
+    #[test]
+    fn hidepid_noaccess_still_lists_pid1_and_fails() {
+        let denied_cmdline = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let v = pid1_view(&listing(&["1", "42"]), SELF, &denied_cmdline);
+        assert_eq!(
+            v,
+            Pid1View::Visible {
+                listed: true,
+                cmdline_readable: false
+            }
+        );
+    }
+
+    /// Absence of PID 1 is evidence only when `/proc` demonstrably answers.
+    #[test]
+    fn an_empty_or_unlistable_proc_is_not_invisibility() {
+        assert!(matches!(
+            pid1_view(&listing(&[]), SELF, &missing()),
+            Pid1View::Unobserved(_)
+        ));
+        assert!(matches!(
+            pid1_view(
+                &Err(io::Error::from(io::ErrorKind::NotFound)),
+                SELF,
+                &missing()
+            ),
+            Pid1View::Unobserved(_)
+        ));
+        let odd = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(matches!(
+            pid1_view(&listing(&["42"]), SELF, &odd),
+            Pid1View::Unobserved(_)
+        ));
+        assert!(pid1_failure(&Pid1View::Unobserved("x".into())).is_some());
+    }
+
+    #[test]
+    fn an_unprivileged_child_that_is_refused_pid1s_environ_passes() {
+        assert!(run_child_failures(Some(NOBODY), &denied(), &Pid1View::Invisible).is_empty());
+    }
+
+    /// With hidepid, PID 1's environ is `ENOENT`, not `EACCES`, and that is the
+    /// stronger containment: accepted because PID 1 was observed invisible.
+    #[test]
+    fn enoent_on_pid1s_environ_passes_when_pid1_is_invisible() {
+        assert!(run_child_failures(Some(NOBODY), &missing(), &hidepid_proc()).is_empty());
+    }
+
+    /// The pre-hidepid guest: the uid fence held (`EACCES`) but PID 1 was
+    /// visible, which is now a failure of its own.
+    #[test]
+    fn a_child_that_sees_pid1_fails_even_when_environ_is_denied() {
+        let fails = run_child_failures(Some(NOBODY), &denied(), &plain_proc());
+        assert_eq!(fails.len(), 1, "{fails:?}");
+        assert!(fails[0].contains("PID 1 is visible"), "{fails:?}");
+    }
+
+    /// The pre-fix guest: root, the read succeeds, and PID 1 is visible.
+    #[test]
+    fn a_root_child_that_reads_pid1s_environ_fails_three_times() {
+        let fails = run_child_failures(Some(ROOT), &Ok(b"K=V\0".to_vec()), &plain_proc());
+        assert_eq!(fails.len(), 3, "{fails:?}");
+    }
+
+    #[test]
+    fn could_not_look_is_not_denied() {
+        let unobserved = Pid1View::Unobserved("no /proc".into());
+        // An ENOENT that hidepid does not explain is not containment.
+        assert_eq!(
+            run_child_failures(Some(NOBODY), &missing(), &unobserved).len(),
+            2
+        );
+        assert_eq!(
+            run_child_failures(None, &denied(), &Pid1View::Invisible).len(),
+            1
+        );
     }
 }

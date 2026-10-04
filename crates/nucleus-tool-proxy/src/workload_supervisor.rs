@@ -85,8 +85,10 @@ impl Drop for Supervisor {
 
 pub(crate) fn start(
     spec: &nucleus_spec::PodSpec,
-    bound: workload::BoundProxy,
-    auth_secret: &str,
+    door_path: &std::path::Path,
+    door_app: axum::Router,
+    containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
     writer: Writer,
     on_exit: Option<ExitHook>,
 ) -> Result<Option<Supervisor>, ApiError> {
@@ -96,12 +98,14 @@ pub(crate) fn start(
             reason: error.to_string(),
         },
     };
-    let Some((child, launch)) = workload::start_if_configured(spec, bound, auth_secret)? else {
+    let Some((child, launch)) =
+        workload::start_if_configured(spec, door_path, door_app, containment, opt_in)?
+    else {
         crate::console_line("[workload] no workload configured in pod spec");
         return Ok(None);
     };
     crate::console_line(&format!("[workload] started (pid={:?})", child.id()));
-    let isolation = if launch.hardened && launch.uid_boundary == "distinct" {
+    let isolation = if launch.hardened && launch.uid_boundary == workload::UidBoundary::Distinct {
         WorkloadIsolation::UidIsolated
     } else {
         WorkloadIsolation::Unconfined

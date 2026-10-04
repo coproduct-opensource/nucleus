@@ -1,7 +1,14 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod boot_args;
+pub mod boot_budget;
+pub mod dlc_admission;
+pub mod egress_budget;
 pub mod exit_report_auth;
+pub mod guest_layout;
 pub mod identity;
+pub mod microvm_host;
+mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod vmm_version;
 pub mod workload_result;
@@ -12,6 +19,10 @@ use std::path::PathBuf;
 use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use egress_budget::{EgressBudgetSpec, EgressRateSpec};
+use rootfs_source::ImageSpecWire;
+pub use rootfs_source::{OciDigest, OciReference, OciRootfs, RootfsSource};
 
 /// Top-level pod spec document (YAML/JSON).
 /// The only API version this build understands.
@@ -117,7 +128,8 @@ pub struct PodSpecInner {
     /// Working directory for the pod.
     #[serde(default = "default_work_dir")]
     pub work_dir: PathBuf,
-    /// Timeout in seconds for pod execution.
+    /// Timeout in seconds for pod execution. It also bounds the pod's
+    /// certificate and task token, and the node refuses more than 30 days.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
     /// Permission policy.
@@ -338,7 +350,8 @@ pub struct DeniedDimensionInfo {
 ///
 /// Requesting 2 MiB asks Firecracker for hugetlbfs pages instead, which are
 /// reserved from a distinct pool the operator must provision
-/// (`vm.nr_hugepages`) rather than promoted opportunistically.
+/// (`vm.nr_hugepages`) rather than promoted opportunistically. A node refuses
+/// the request unless its operator offers that pool to pods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HugePages {
     /// 2 MiB hugetlbfs pages.
@@ -358,7 +371,12 @@ impl HugePages {
     }
 }
 
-/// Resource hints for the pod.
+/// The pod's size.
+///
+/// A node holds every pod to per-pod ceilings its operator sets, and refuses at
+/// create a size above them rather than clamping it. An absent field is the
+/// node's default size, never unlimited, and the node limits the pod to its
+/// size with a cgroup whether or not the spec carries one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
@@ -398,14 +416,50 @@ pub struct NetworkSpec {
     /// the built-in allowlist (text + structured data) is used.
     #[serde(default)]
     pub mime_allow: Option<Vec<String>>,
-    /// Per-pod maximum response body size in bytes for web_fetch.
-    /// When `None`, the proxy's configured cap applies
-    /// (`--web-fetch-max-bytes` / `NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES`).
+    /// Per-pod maximum response body size in bytes for web_fetch. It may only
+    /// lower the proxy's configured cap (`--web-fetch-max-bytes` /
+    /// `NUCLEUS_TOOL_PROXY_WEB_FETCH_MAX_BYTES`), which applies when `None` and
+    /// whenever this asks for more.
     #[serde(default)]
     pub max_response_bytes: Option<u64>,
+    /// How many bytes this pod may SEND, and optionally how fast (#2905).
+    ///
+    /// Absent is NOT unbounded: [`NetworkSpec::egress_ceiling`] reads absence
+    /// as [`portcullis::DEFAULT_EGRESS_MAX_BYTES`] (1 GiB), unpaced. A pod that
+    /// needs more names the number here. Skipped when absent so a spec that
+    /// does not set it canonicalises exactly as it did before the field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub egress: Option<EgressBudgetSpec>,
 }
 
 impl NetworkSpec {
+    /// The egress volume authority of a pod whose network section is
+    /// `network` — the one place absence is decided (ADR 0007 G).
+    ///
+    /// No network section and no `egress` field both mean the finite default,
+    /// never unbounded (ADR 0007 B-2).
+    pub fn egress_ceiling(network: Option<&NetworkSpec>) -> portcullis::EgressCeiling {
+        match network.and_then(|n| n.egress.as_ref()) {
+            Some(declared) => declared.ceiling(),
+            None => portcullis::EgressCeiling::undeclared(),
+        }
+    }
+
+    /// Nothing listed: no allow, deny or DNS entries, so under the node's
+    /// default-deny chain nothing is reachable. What a pod with no network
+    /// section is held to.
+    pub fn nothing_listed() -> Self {
+        Self {
+            allow: vec![],
+            deny: vec![],
+            dns_allow: vec![],
+            url_allow: vec![],
+            mime_allow: None,
+            max_response_bytes: None,
+            egress: None,
+        }
+    }
+
     /// No egress at all — for airgapped workloads.
     ///
     /// Denies all outbound traffic. The pod can only communicate with the
@@ -419,6 +473,7 @@ impl NetworkSpec {
             url_allow: vec![],
             mime_allow: None,
             max_response_bytes: None,
+            egress: None,
         }
     }
 
@@ -451,6 +506,7 @@ impl NetworkSpec {
             url_allow: vec![],
             mime_allow: None,
             max_response_bytes: None,
+            egress: None,
         }
     }
 
@@ -466,6 +522,7 @@ impl NetworkSpec {
             url_allow: vec![],
             mime_allow: None,
             max_response_bytes: None,
+            egress: None,
         }
     }
 }
@@ -535,15 +592,23 @@ impl<'de> Deserialize<'de> for ArtifactDigest {
     }
 }
 
+// The wire shape carries the rootfs as two optional keys and refuses both-and-neither; this type
+// carries the one that was given. See `rootfs_source` for why the split, and for the defaults.
+// Under `try_from` serde reads `deny_unknown_fields` off the WIRE struct, which carries it; it is
+// kept here so `strict_parsing` still sees this type declare it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[serde(try_from = "ImageSpecWire", into = "ImageSpecWire")]
 pub struct ImageSpec {
     /// Path to the kernel image.
     pub kernel_path: PathBuf,
-    /// Path to the root filesystem image.
-    pub rootfs_path: PathBuf,
-    /// Optional kernel boot args.
-    #[serde(default)]
+    /// Where the root filesystem comes from: `rootfs_path` (a file on the node) or `rootfs_oci`
+    /// (an OCI artifact) on the wire, exactly one. A LOCATION, like `kernel_path`: the program
+    /// identity takes `rootfs_digest`, never this.
+    pub rootfs: RootfsSource,
+    /// Extra guest kernel command line tokens. The node owns the command line. A spec may add only
+    /// the tokens [`boot_args::SpecBootArgs::parse`] admits, and the node refuses any other token
+    /// when the pod is created (#3124).
     pub boot_args: Option<String>,
     /// Whether the root filesystem should be mounted read-only.
     ///
@@ -557,26 +622,26 @@ pub struct ImageSpec {
     /// changes underneath the attestation reporting it.
     ///
     /// `#[serde(default)]` on a `bool` is `false`, so a spec that simply omitted
-    /// this field got the unsafe value. Omission now means isolation; a caller
-    /// that genuinely wants a writable rootfs must say so, and should give the
-    /// pod a private image or a `scratch_path`.
-    #[serde(default = "default_read_only")]
+    /// this field got the unsafe value. Omission now means isolation.
+    ///
+    /// **`false` is refused at create** (#3132). A rootfs a spec can name is the
+    /// node's shared artifact, so there is no private image to write, and the
+    /// node attaches every rootfs read-only. Writable storage is `/work`, on the
+    /// scratch disk. The field stays on the wire so `true` keeps parsing and
+    /// `false` is refused by name rather than as an unknown shape.
     pub read_only: bool,
     /// Optional scratch disk image for writable storage.
-    #[serde(default)]
     pub scratch_path: Option<PathBuf>,
     /// Expected digest of the kernel image, if the spec pins one.
     ///
     /// Absent means unpinned, which is what every spec written before this field says, so absence
     /// cannot be a refusal without breaking them. What it costs is that the node has nothing to
     /// check the bytes against — a later flag can turn absence itself into a refusal; today it simply means unchecked.
-    #[serde(default)]
     pub kernel_digest: Option<ArtifactDigest>,
-    /// Expected digest of the root filesystem, if the spec pins one.
-    #[serde(default)]
+    /// Expected digest of the root filesystem, if the spec pins one. Required for
+    /// `rootfs_oci`: a new source starts pinned (B-2).
     pub rootfs_digest: Option<ArtifactDigest>,
     /// Expected digest of the scratch image, if the spec pins one.
-    #[serde(default)]
     pub scratch_digest: Option<ArtifactDigest>,
     /// An additional READ-ONLY filesystem image handed to the guest.
     ///
@@ -591,7 +656,6 @@ pub struct ImageSpec {
     ///   the way a scratch disk does (see `snapshot::clone_safety`);
     /// * and being immutable, it has a digest, which is what lets it enter the pod's program
     ///   identity rather than being invisible input.
-    #[serde(default)]
     pub data_path: Option<PathBuf>,
     /// Expected digest of the read-only data image, if the spec pins one.
     ///
@@ -602,7 +666,6 @@ pub struct ImageSpec {
     /// paths baked into the snapshot, so a base is only valid for a pod whose data image holds
     /// the same bytes. Without this field in the identity, a base could be restored against a
     /// different corpus and the guest would carry the old one's page cache.
-    #[serde(default)]
     pub data_digest: Option<ArtifactDigest>,
 }
 
@@ -610,7 +673,9 @@ pub struct ImageSpec {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VsockSpec {
-    /// Guest CID for vsock.
+    /// Guest CID for vsock. The node owns it and refuses any value but `3` at
+    /// create: the guest binds only CID 3 (#2395), and a guest whose own CID
+    /// were the host's (2) would let a loopback peer pass for the host (#3120).
     pub guest_cid: u32,
     /// Guest vsock port to listen on.
     pub port: u32,
@@ -630,6 +695,10 @@ pub enum SeccompSpec {
 }
 
 /// Cgroup placement and settings for the Firecracker process.
+///
+/// The node always applies its own memory, CPU and pids limits, derived from
+/// the pod's size. Settings here may lower those, or set other files of a
+/// resource controller; a node refuses one that raises or lifts its limit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CgroupSpec {
@@ -674,6 +743,8 @@ pub struct CgroupSetting {
 pub struct CredentialsSpec {
     /// Environment variables containing credentials.
     /// Keys are the variable names (e.g., `LLM_API_TOKEN`), values are the secrets.
+    /// The node refuses at create a name in the runtime's `NUCLEUS_` namespace
+    /// (bar `NUCLEUS_TASK_CMD`) or an `LD_` loader variable (#3120).
     #[serde(default)]
     pub env: BTreeMap<String, String>,
 
@@ -736,6 +807,13 @@ impl CredentialsSpec {
 }
 
 /// A single OIDC workload-identity binding.
+///
+/// **Superseded by ADR 0010** (`docs/adr/0010-a-credential-minted-per-exchange-never-stored.md`).
+/// This type would write a JWT *into the guest* and refresh it there, so a
+/// workload could read, copy, and replay it. ADR 0010 goes the other way: the
+/// node mints an assertion per exchange after the PDP approves a call, holds
+/// the resulting token on the host, and the guest receives only the upstream's
+/// response. Kept so existing specs still parse; do not give it a consumer.
 ///
 /// **Status: draft RFC, no runtime consumer in this repo today.** This type
 /// parses and serializes; nothing in `nucleus`, `nucleus-tool-proxy`,
@@ -841,6 +919,10 @@ impl Default for IdentitySource {
 /// object with `if_none_match("*")` to enforce append-only semantics.
 ///
 /// Compatible with: any S3-compatible object store (e.g. AWS S3, MinIO).
+///
+/// The node writes these values onto the guest kernel command line, so it
+/// refuses at create any value that is not exactly one token of its grammar
+/// (#3120): a bucket name, a key prefix, a region, an http(s) URL.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditSinkSpec {
@@ -2214,7 +2296,14 @@ spec:
     /// property is about the SET of types, which no value-level test can see.
     #[test]
     fn every_deserializable_spec_type_denies_unknown_fields() {
-        let src = include_str!("lib.rs");
+        // `rootfs_source.rs` too: `ImageSpec` deserializes THROUGH its wire struct there, so
+        // that struct is where the strictness actually lives (`try_from` ignores the attribute
+        // on `ImageSpec` itself).
+        let src = concat!(
+            include_str!("lib.rs"),
+            "\n",
+            include_str!("rootfs_source.rs")
+        );
         let lines: Vec<&str> = src.lines().collect();
         let mut offenders = Vec::new();
         let mut checked = 0;
@@ -2299,10 +2388,11 @@ spec:
         );
     }
 
-    /// The escape hatch still works: a caller that genuinely wants a writable
-    /// rootfs says so, and gets it. The default is a default, not a ban.
+    /// `read_only: false` still PARSES, so the node can refuse it by name at
+    /// create (`spec_posture::admit`, #3132) rather than the author meeting a
+    /// deserialization error that does not say why. Parsing is not granting.
     #[test]
-    fn a_writable_rootfs_can_still_be_asked_for_explicitly() {
+    fn an_explicit_writable_rootfs_parses_so_the_node_can_refuse_it_by_name() {
         let spec: ImageSpec =
             serde_json::from_str(r#"{"kernel_path":"/k","rootfs_path":"/r","read_only":false}"#)
                 .expect("an explicit read_only must deserialize");

@@ -38,9 +38,13 @@
 //! - Which commands personalise is read from `personalizes_the_vm` on both
 //!   sides, so the census cannot catch that classification being wrong — only
 //!   the laws that follow from it. The walk makes the same choice (ADR 0007 G).
-//! - Starting states are every reachable host state under full and under empty
-//!   provisioning. Mixed provisioning (one command provisioned, the other not)
-//!   is not enumerated.
+//! - Starting states are every personalised/barrier/receipt combination under
+//!   full and under empty provisioning, crossed with every combination of the
+//!   face's own (measured) ledger slots, with the rest of the ledger all
+//!   unserved or all served (see [`Record::starts`]). A face whose orders
+//!   differ only when the slots of OTHER one-shots are mixed is not reached.
+//!   Mixed provisioning (one command provisioned, the other not) is not
+//!   enumerated.
 //! - Squares, not higher cubes: an interaction only three commands together
 //!   produce is not looked for.
 
@@ -87,7 +91,16 @@ enum Seen {
 impl Seen {
     fn outcome_only(&self) -> Seen {
         match self {
-            Seen::Served(_) => Seen::Served(String::new()),
+            // The outcome AND the reply's shape (its field names): a fresh
+            // certificate's bytes differ run to run, but whether the SVID key is
+            // IN the reply is exactly what a one-shot changes.
+            Seen::Served(body) => Seen::Served(
+                serde_json::from_str::<serde_json::Value>(body)
+                    .ok()
+                    .and_then(|v| v.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()))
+                    .unwrap_or_default()
+                    .join(","),
+            ),
             other => other.clone(),
         }
     }
@@ -98,9 +111,8 @@ impl Seen {
 struct Record {
     personalized: bool,
     at_barrier: bool,
-    broker_served: bool,
-    mediation_key_served: bool,
-    audit_served: bool,
+    /// The one-shots the ledger records as served.
+    served: BTreeSet<OneShot>,
     receipts: Vec<String>,
 }
 
@@ -109,37 +121,89 @@ impl Record {
         Record {
             personalized: false,
             at_barrier: false,
-            broker_served: false,
-            mediation_key_served: false,
-            audit_served: false,
+            served: BTreeSet::new(),
             receipts: Vec::new(),
         }
     }
 
-    /// Every host state reachable under `p`.
-    fn reachable(p: Provision) -> Vec<Record> {
-        let bits: u32 = if p.broker_secret { 5 } else { 2 };
+    /// The host states a census question about letters whose ledger slots are
+    /// `own` starts from, under `p`.
+    ///
+    /// The SVID key is served whatever the provision (the identity manager
+    /// always issues), so it is the one one-shot an empty provision can spend;
+    /// every other one-shot exists only under a full provision.
+    ///
+    /// # Not every subset of the ledger, and why that is still every face
+    ///
+    /// With eight one-shots the ledger alone has 256 states, and all of them
+    /// times every face made this test five times slower than the rest of the
+    /// crate's walks together. A face involves two letters, so what can tell
+    /// its orders apart is those letters' own slots — `own`, MEASURED by
+    /// [`slots_touched`], never read from the footprint the census checks —
+    /// in every combination, against the rest of the ledger. The rest is taken
+    /// at both extremes, all unserved and all served, so a letter that reads a
+    /// slot it does not write still shows its coupling. What this does not
+    /// reach is a face whose orders differ only when the OTHER slots are
+    /// mixed; the module docs list it with the other limits.
+    fn starts(p: Provision, own: &BTreeSet<OneShot>) -> Vec<Record> {
+        let spendable: BTreeSet<OneShot> = if p.broker_secret {
+            OneShot::ALL.into_iter().collect()
+        } else {
+            BTreeSet::from([OneShot::SvidKey])
+        };
+        let own: Vec<OneShot> = own.intersection(&spendable).copied().collect();
+        let others: BTreeSet<OneShot> = spendable
+            .iter()
+            .filter(|o| !own.contains(o))
+            .copied()
+            .collect();
+        let rest_options: Vec<BTreeSet<OneShot>> = if others.is_empty() {
+            vec![BTreeSet::new()]
+        } else {
+            vec![BTreeSet::new(), others]
+        };
         let receipt_options: &[bool] = if p.receipts { &[false, true] } else { &[false] };
         let mut out = Vec::new();
-        for mask in 0..(1u32 << bits) {
-            for &receipt in receipt_options {
-                let bit = |i: u32| mask & (1 << i) != 0;
-                out.push(Record {
-                    personalized: bit(0),
-                    at_barrier: bit(1),
-                    broker_served: bits > 2 && bit(2),
-                    mediation_key_served: bits > 3 && bit(3),
-                    audit_served: bits > 4 && bit(4),
-                    receipts: if receipt {
-                        vec!["{\"receipt\":\"earlier\"}".to_string()]
-                    } else {
-                        Vec::new()
-                    },
-                });
+        for mask in 0..(1u32 << own.len()) {
+            for rest in &rest_options {
+                let mut served = rest.clone();
+                served.extend(
+                    own.iter()
+                        .enumerate()
+                        .filter(|(i, _)| mask & (1 << i) != 0)
+                        .map(|(_, o)| *o),
+                );
+                for flags in 0..4u32 {
+                    for &receipt in receipt_options {
+                        out.push(Record {
+                            personalized: flags & 1 != 0,
+                            at_barrier: flags & 2 != 0,
+                            served: served.clone(),
+                            receipts: if receipt {
+                                vec!["{\"receipt\":\"earlier\"}".to_string()]
+                            } else {
+                                Vec::new()
+                            },
+                        });
+                    }
+                }
             }
         }
         out
     }
+}
+
+/// The ledger slots `letter` spends under `p`, measured: run it once from the
+/// initial state and see what the ledger records.
+async fn slots_touched(
+    manager: &IdentityManager,
+    p: Provision,
+    letter: Letter,
+) -> BTreeSet<OneShot> {
+    run(manager, p, &Record::initial(), &[letter])
+        .await
+        .1
+        .served
 }
 
 const FULL: Provision = Provision {
@@ -184,15 +248,9 @@ async fn run(
     material
         .at_snapshot_barrier
         .store(start.at_barrier, Ordering::SeqCst);
-    material
-        .broker_secret_served
-        .store(start.broker_served, Ordering::SeqCst);
-    material
-        .mediation_key_served
-        .store(start.mediation_key_served, Ordering::SeqCst);
-    material
-        .audit_creds_served
-        .store(start.audit_served, Ordering::SeqCst);
+    for o in OneShot::ALL {
+        material.served.mark_served(o, start.served.contains(&o));
+    }
     if !start.receipts.is_empty() {
         let mut lines = start.receipts.join("\n");
         lines.push('\n');
@@ -233,9 +291,10 @@ async fn run(
     let record = Record {
         personalized: material.personalized.load(Ordering::SeqCst),
         at_barrier: material.at_snapshot_barrier.load(Ordering::SeqCst),
-        broker_served: material.broker_secret_served.load(Ordering::SeqCst),
-        mediation_key_served: material.mediation_key_served.load(Ordering::SeqCst),
-        audit_served: material.audit_creds_served.load(Ordering::SeqCst),
+        served: OneShot::ALL
+            .into_iter()
+            .filter(|o| material.served.is_served(*o))
+            .collect(),
         receipts,
     };
     (seen, record)
@@ -277,20 +336,24 @@ async fn take_census() -> Census {
         }
     };
 
-    // Starting states: EVERY reachable host state, not a sample. With everything
-    // provisioned, all 32 flag combinations are reachable, with and without a
-    // collected receipt; with nothing provisioned, no one-shot can be served and
-    // no receipt collected, leaving the 4 personalised/barrier combinations.
+    // Starting states: see `Record::starts` — every personalised/barrier
+    // combination, with and without a collected receipt, against every
+    // combination of the letters' own ledger slots, with the rest of the ledger
+    // all unserved and all served.
     for &p in &[FULL, EMPTY] {
-        for start in Record::reachable(p) {
-            let at = |extra: &str| {
-                format!(
-                    "from {} provision, state {start:?}: {extra}",
-                    if p.broker_secret { "full" } else { "empty" },
-                )
-            };
-            for (i, &a) in letters.iter().enumerate() {
-                // Idempotence: `a ; a` against `a`, by the record and a's first reply.
+        let mut touched = BTreeMap::new();
+        for &l in &letters {
+            touched.insert(l, slots_touched(&manager, p, l).await);
+        }
+        let at = |start: &Record, extra: &str| {
+            format!(
+                "from {} provision, state {start:?}: {extra}",
+                if p.broker_secret { "full" } else { "empty" },
+            )
+        };
+        for (i, &a) in letters.iter().enumerate() {
+            // Idempotence: `a ; a` against `a`, by the record and a's first reply.
+            for start in Record::starts(p, &touched[&a]) {
                 let (once_seen, once) = run(&manager, p, &start, &[a]).await;
                 let (twice_seen, twice) = run(&manager, p, &start, &[a, a]).await;
                 let first = compare(a, &once_seen[0]);
@@ -298,14 +361,20 @@ async fn take_census() -> Census {
                 if (once != twice || first != second) && !census.not_idempotent.contains_key(&a) {
                     census.not_idempotent.insert(
                         a,
-                        at(&format!(
-                            "once {first:?} / again {second:?}; record equal={}",
-                            once == twice
-                        )),
+                        at(
+                            &start,
+                            &format!(
+                                "once {first:?} / again {second:?}; record equal={}",
+                                once == twice
+                            ),
+                        ),
                     );
                 }
+            }
 
-                for &b in &letters[i + 1..] {
+            for &b in &letters[i + 1..] {
+                let own: BTreeSet<OneShot> = touched[&a].union(&touched[&b]).copied().collect();
+                for start in Record::starts(p, &own) {
                     let (ab_seen, ab) = run(&manager, p, &start, &[a, b]).await;
                     let (ba_seen, ba) = run(&manager, p, &start, &[b, a]).await;
                     let k = 0;
@@ -328,7 +397,10 @@ async fn take_census() -> Census {
                     };
                     match differs {
                         Some(why) => {
-                            census.hollow.entry((a, b)).or_insert_with(|| at(&why));
+                            census
+                                .hollow
+                                .entry((a, b))
+                                .or_insert_with(|| at(&start, &why));
                         }
                         None => census.filled += 1,
                     }
@@ -346,7 +418,8 @@ enum Resource {
     Personalized,
     /// Whether the guest announced its snapshot barrier.
     AtBarrier,
-    /// Whether a one-shot has been served.
+    /// Whether a one-shot has been served (the SVID key among them, though it
+    /// is spent inside a success rather than refused).
     Served(OneShot),
     /// The collected receipt log.
     ReceiptLog,
@@ -374,15 +447,12 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
                     fp.update(Resource::Served(OneShot::AuditCredentials))
                 }
                 Cmd::ShipReceipt => fp.update(Resource::ReceiptLog),
-                Cmd::FetchSvid
-                | Cmd::FetchBundle
-                | Cmd::Ping
-                | Cmd::FetchPodCallerToken
-                | Cmd::FetchTaskToken
-                | Cmd::FetchPodCertificate
-                | Cmd::FetchDlcAdmission
-                | Cmd::FetchPodSpec
-                | Cmd::PodList => fp,
+                Cmd::FetchSvid => fp.update(Resource::Served(OneShot::SvidKey)),
+                Cmd::FetchPodCallerToken => fp.update(Resource::Served(OneShot::CallerToken)),
+                Cmd::FetchTaskToken => fp.update(Resource::Served(OneShot::TaskToken)),
+                Cmd::FetchPodCertificate => fp.update(Resource::Served(OneShot::PodCertificate)),
+                Cmd::FetchDlcAdmission => fp.update(Resource::Served(OneShot::DlcAdmission)),
+                Cmd::FetchBundle | Cmd::Ping | Cmd::FetchPodSpec | Cmd::PodList => fp,
             }
         }
         Letter::Unknown => Footprint::pure(),

@@ -4,8 +4,8 @@
 //!
 //! Firecracker's guest-initiated vsock connections arrive at `{uds_path}_{port}`
 //! — a socket the NODE creates, running as root, while Firecracker runs as the
-//! jailer uid. `prepare_jail` chowns everything it places and its comment notes
-//! that the vsock socket is "deliberately absent" because Firecracker creates
+//! jailer uid. `prepare_jail` gives the jail user the files it creates there and
+//! its comment notes that the vsock socket is "deliberately absent" because Firecracker creates
 //! it. That is true of `vsock.sock`, and **not** of the `_{port}` sockets.
 //!
 //! Connecting to a Unix socket requires WRITE permission on it, so a root-owned

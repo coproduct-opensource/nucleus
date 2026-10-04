@@ -8,6 +8,25 @@ session to establish and none of them is discoverable by reading the tree.
 Everything here was measured, not inferred. Where something was not measured it
 says so.
 
+## Before every push: `cargo xtask prepush`
+
+Run it before **every** push, and do not push on a red:
+
+```sh
+cargo xtask prepush
+```
+
+It runs the cheap tree-only gates in parallel: the exemplar ratchet, `cargo audit
+--deny warnings`, `xtask scorecard`, and `xtask line-ratchet --strict`. Each gets a
+verdict of `PASS`, `FAIL`, or `COULD NOT RUN`, and it exits non-zero unless every
+gate passes. On 2026-10-02 all four were first seen red in the merge queue, where
+a red ejects the whole group.
+
+`COULD NOT RUN` is a red, not a skip. A missing `cargo-audit` prints the install
+command, which is `cargo +stable install cargo-audit --version 0.22.0 --locked
+--no-default-features`. `just prepush` (`scripts/prepush.sh`) calls it too, along
+with the rest of the gauntlet.
+
 ## What a sandboxed container can and cannot run
 
 **It can boot a node.** It cannot boot a Tier 2 pod. Those are different
@@ -28,7 +47,7 @@ genuinely impossible and `verify --tier2` cannot pass. **Everything short of a
 microVM still works**, including the whole HTTP/mTLS surface, the CLI client
 path, and — via the local driver — a real pod lifecycle.
 
-`crates/nucleus-node/src/host_requirements.rs` is the tree's own statement of
+`crates/nucleus-microvm-host/src/probe.rs` is the tree's own statement of
 what a launch needs; its `unmet` half is pure and runs anywhere.
 
 ## Booting a node, verified

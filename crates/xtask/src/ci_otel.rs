@@ -6,7 +6,7 @@
 //! many landed per conclusion, how deep the merge queue is — only exists in
 //! the Actions API. This pulls the jobs that completed in a window and pushes
 //! them to an OTLP/HTTP endpoint as histograms and counters, so both halves
-//! land on the same dashboard (k8s/ci-metrics).
+//! land on the same dashboard (deploy/k8s/ci-metrics).
 //!
 //! Metrics (all with unit `s` where a duration):
 //!   * `ci.job.queue_wait`  histogram  {workflow, runner, event}

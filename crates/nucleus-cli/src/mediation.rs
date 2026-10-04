@@ -22,7 +22,9 @@
 //! EXACTLY one of the allowed nucleus MCP tools and denies everything else —
 //! a built-in, a tool the agent CLI grew last week, a nucleus tool the policy
 //! did not grant, a malformed event, a missing allowlist. Unknown is denied,
-//! not passed through.
+//! not passed through. The one built-in admitted is the agent CLI's schema
+//! loader, by exact name ([`SCHEMA_LOADER_TOOL`]): it reads tool metadata and
+//! cannot invoke a tool, and without it no granted tool is reachable (#2994).
 //!
 //! The static denylist stays as defence in depth (it also keeps the agent
 //! from wasting tokens on tool definitions it cannot use); the hook is the
@@ -67,6 +69,32 @@ pub const HOOK_SUBCOMMAND: &str = "mediation-hook";
 /// blocks on every version that has hooks at all.
 const BLOCK_EXIT_CODE: u8 = 2;
 
+/// The wrapped agent CLI's built-in schema loader, admitted by EXACT name.
+///
+/// The agent CLI defers MCP tool schemas and loads them on demand through this
+/// one built-in. Denying it left every granted `mcp__nucleus__*` tool
+/// unreachable: the agent could not learn a tool's arguments, so it guessed
+/// them or gave up (#2994). The profile was enforced down to nothing.
+///
+/// Why admitting it does not open the boundary:
+///
+/// - It is a pure READ of tool metadata. Its argument is a query string and
+///   its result is tool schemas — names, descriptions, argument shapes. It has
+///   no effect on the filesystem, the network, or a process.
+/// - It cannot INVOKE a tool. Calling a tool whose schema it loaded is a
+///   separate tool call, which comes back through this hook and is decided by
+///   [`decide`] like any other: a nucleus MCP tool the policy granted, routed
+///   through the `PermissionLattice`, or denied.
+/// - The schemas it can return are bounded by what the session exposes, and
+///   [`confine_to_nucleus_settings`] passes `--strict-mcp-config`, so the only
+///   MCP server in the session is nucleus's own.
+///
+/// Admitted by exact string equality, never by prefix or pattern: a built-in
+/// that merely resembles this name is denied like every other built-in. The
+/// literal is the external CLI's own interop identifier, not a nucleus name,
+/// and this constant is its single copy.
+pub const SCHEMA_LOADER_TOOL: &str = "ToolSearch";
+
 /// What the hook decided for one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -77,7 +105,8 @@ pub enum Decision {
 }
 
 /// The pure decision: allow iff `tool_name` is EXACTLY in `allowed` AND is a
-/// nucleus MCP tool. An empty allowlist denies everything (the launch site
+/// nucleus MCP tool, or is EXACTLY [`SCHEMA_LOADER_TOOL`] (a metadata read
+/// that cannot invoke anything; see its doc). An empty allowlist denies everything (the launch site
 /// refuses to start with no allowed tools, so this is only reachable if the
 /// env var was lost — and losing it must fail closed).
 pub fn decide(tool_name: &str, allowed: &[String]) -> Decision {
@@ -86,6 +115,11 @@ pub fn decide(tool_name: &str, allowed: &[String]) -> Decision {
         return Decision::Deny {
             reason: "tool call carried no tool name".to_string(),
         };
+    }
+    // Exact match on the raw name, not the trimmed one: a padded variant is
+    // not the schema loader and falls through to the built-in denial.
+    if tool_name == SCHEMA_LOADER_TOOL {
+        return Decision::Allow;
     }
     if !name.starts_with(crate::run::NUCLEUS_MCP_TOOL_PREFIX) {
         return Decision::Deny {
@@ -333,6 +367,68 @@ mod tests {
             assert!(
                 matches!(decide(novel, &allowed()), Decision::Deny { .. }),
                 "{novel} must be denied without being listed anywhere"
+            );
+        }
+    }
+
+    #[test]
+    fn the_schema_loader_is_admitted() {
+        // #2994: without it every granted nucleus MCP tool is unreachable,
+        // because the agent CLI loads their schemas through this built-in.
+        assert_eq!(decide(SCHEMA_LOADER_TOOL, &allowed()), Decision::Allow);
+        assert_eq!(decide("ToolSearch", &allowed()), Decision::Allow);
+        // Admitted independently of the grant: it reads schemas, it does not
+        // run a tool, so it needs no grant of its own.
+        assert_eq!(decide(SCHEMA_LOADER_TOOL, &[]), Decision::Allow);
+    }
+
+    #[test]
+    fn a_near_miss_of_the_schema_loader_is_denied() {
+        // Exact name, never a pattern: nothing that merely resembles the
+        // schema loader rides on its admission.
+        for near in [
+            "toolsearch",
+            "TOOLSEARCH",
+            "Toolsearch",
+            "ToolSearch2",
+            "ToolSearc",
+            "ToolSearchAndRun",
+            "XToolSearch",
+            " ToolSearch",
+            "ToolSearch ",
+            "Tool Search",
+            "mcp__nucleus__ToolSearch",
+            "mcp__other__ToolSearch",
+        ] {
+            assert!(
+                matches!(decide(near, &allowed()), Decision::Deny { .. }),
+                "{near:?} must be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn every_other_effectful_builtin_is_still_denied() {
+        // Admitting the schema loader admits nothing else: every built-in that
+        // has an effect on the world stays denied.
+        let effectful = crate::constants::DISALLOWED_BUILTIN_TOOLS
+            .split(',')
+            .chain([
+                "Task",
+                "BashOutput",
+                "KillShell",
+                "Skill",
+                "TodoWrite",
+                "MultiEdit",
+                "NotebookRead",
+                "SlashCommand",
+                "ExitPlanMode",
+            ]);
+        for builtin in effectful {
+            assert_ne!(builtin, SCHEMA_LOADER_TOOL);
+            assert!(
+                matches!(decide(builtin, &allowed()), Decision::Deny { .. }),
+                "{builtin} must be denied"
             );
         }
     }

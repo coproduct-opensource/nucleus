@@ -86,6 +86,33 @@
 //! var = "SEARCH_API_TOKEN"
 //! ```
 //!
+//! # Reserved: a client certificate as the subject
+//!
+//! Some token endpoints accept the caller's X.509 certificate, presented in
+//! the TLS handshake, as the RFC 8693 subject (`subject_token_type` …`:mtls`,
+//! the subject token being the certificate chain) instead of a signed
+//! assertion. That form is **parsed and validated, and then refused** with
+//! "not supported yet": the node has no client for it. It is in the format now
+//! so that a registry written for it loads unchanged once it is served, and so
+//! that the meaning of the fields above cannot drift to accommodate it later:
+//!
+//! ```toml
+//! [upstream.credential.federated]
+//! subject            = "client-certificate"   # default: "assertion"
+//! client_certificate = "pod-svid"             # or "node-svid": whose certificate the node presents
+//! token_endpoint     = "https://sts.example/v1/token"   # https only: it must be an mTLS endpoint
+//! grant              = "token-exchange"       # the only grant this subject has
+//! encoding           = "json"                 # or "form"
+//! request_audience   = "example-provider-0001"  # required: RFC 8693 `audience`
+//! # `audience` and `assertion_ttl_secs` describe an assertion and are refused here.
+//!
+//! [upstream.credential.federated.params]
+//! requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
+//! ```
+//!
+//! The node refuses to START on such an entry, rather than load the rest and
+//! leave that upstream unusable: an operator who wrote it expects it to work.
+//!
 //! The first version of this file (P0, never released) used the spec's own
 //! field names flat — `upstream` for the base URL and `credential_env` beside
 //! it. That shape is not read any more: with a second source kind, a flat
@@ -107,6 +134,11 @@ use serde::Deserialize;
 struct RegistryFile {
     #[serde(default)]
     upstream: Vec<EntryFile>,
+    /// Inbound bindings (`federation_ingress.rs`). Same file, because a binding
+    /// names the upstreams its callers may hold, and one file is one atomic
+    /// statement of what this node offers in both directions.
+    #[serde(default)]
+    caller: Vec<crate::federation_ingress::CallerFile>,
 }
 
 #[derive(Deserialize)]
@@ -124,16 +156,24 @@ struct EntryFile {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 enum CredentialFile {
     Env { var: String },
-    Federated(FederatedFile),
+    Federated(Box<FederatedFile>),
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FederatedFile {
+    /// `"assertion"` (the default) or `"client-certificate"` (reserved).
+    #[serde(default)]
+    subject: Option<String>,
+    /// For `subject = "client-certificate"`: `"pod-svid"` or `"node-svid"`.
+    #[serde(default)]
+    client_certificate: Option<String>,
     token_endpoint: String,
     grant: String,
     encoding: String,
-    audience: String,
+    /// The assertion's `aud`: required for an assertion, refused without one.
+    #[serde(default)]
+    audience: Option<String>,
     #[serde(default)]
     scope: Option<String>,
     #[serde(default)]
@@ -226,6 +266,9 @@ pub(crate) struct UpstreamRegistry {
     entries: Vec<RegistryEntry>,
     /// Each entry's projection, in the same order: the admission ceiling.
     specs: Vec<CredentialedEgressSpec>,
+    /// The file's `[[caller]]` tables, as written. Validated (against this
+    /// registry) by `federation_ingress::CallerBindings::from_files`.
+    callers: Vec<crate::federation_ingress::CallerFile>,
 }
 
 impl UpstreamRegistry {
@@ -289,7 +332,7 @@ impl UpstreamRegistry {
                     (CredentialSource::Env { var: var.clone() }, var)
                 }
                 CredentialFile::Federated(fed) => (
-                    CredentialSource::Federated(Arc::new(federated(&up.name, fed)?)),
+                    CredentialSource::Federated(Arc::new(federated(&up.name, *fed)?)),
                     String::new(),
                 ),
             };
@@ -305,7 +348,16 @@ impl UpstreamRegistry {
             });
         }
         let specs = entries.iter().map(|e| e.spec.clone()).collect();
-        Ok(Self { entries, specs })
+        Ok(Self {
+            entries,
+            specs,
+            callers: file.caller,
+        })
+    }
+
+    /// The `[[caller]]` tables of this file, unvalidated.
+    pub fn callers(&self) -> &[crate::federation_ingress::CallerFile] {
+        &self.callers
     }
 
     /// Every entry's projection, for admission to clamp against.
@@ -347,6 +399,20 @@ impl UpstreamRegistry {
 /// agree today.
 fn federated(name: &str, f: FederatedFile) -> Result<FederatedUpstream, String> {
     let bad = |what: &str| format!("upstream {name:?}: credential.federated: {what}");
+    match f.subject.as_deref() {
+        None | Some("assertion") => {}
+        Some("client-certificate") => return Err(client_certificate_subject(name, &f)),
+        Some(_) => {
+            return Err(bad(
+                "subject must be \"assertion\" or \"client-certificate\"",
+            ));
+        }
+    }
+    if f.client_certificate.is_some() {
+        return Err(bad(
+            "client_certificate is only meaningful with subject = \"client-certificate\"",
+        ));
+    }
     let token_endpoint =
         Url::parse(&f.token_endpoint).map_err(|e| bad(&format!("token_endpoint: {e}")))?;
     let grant = match f.grant.as_str() {
@@ -368,9 +434,10 @@ fn federated(name: &str, f: FederatedFile) -> Result<FederatedUpstream, String> 
     .map_err(|_| bad("token_endpoint must be https (or http to loopback)"))?
     .with_params(f.params.clone())
     .map_err(|_| bad("params may not set a key the token client sets itself"))?;
-    if f.audience.trim().is_empty() {
-        return Err(bad("audience must be set"));
-    }
+    let audience = match f.audience {
+        Some(a) if !a.trim().is_empty() => a,
+        _ => return Err(bad("audience must be set")),
+    };
     if f.scope.as_deref().is_some_and(|s| s.trim().is_empty())
         || f.request_audience
             .as_deref()
@@ -395,13 +462,74 @@ fn federated(name: &str, f: FederatedFile) -> Result<FederatedUpstream, String> 
         token_endpoint,
         grant,
         encoding,
-        audience: f.audience,
+        audience,
         scope: f.scope,
         request_audience: f.request_audience,
         params: f.params,
         assertion_ttl,
     })
 }
+
+/// Validate a `subject = "client-certificate"` table in full, then refuse it.
+///
+/// Always an error: the variant is reserved, not served. The message says
+/// "not supported yet" only for a table that is otherwise valid, so an
+/// operator writing one ahead of support learns about a typo now rather than
+/// on the release that serves it.
+fn client_certificate_subject(name: &str, f: &FederatedFile) -> String {
+    let bad = |what: &str| format!("upstream {name:?}: credential.federated: {what}");
+    match f.client_certificate.as_deref() {
+        Some("pod-svid" | "node-svid") => {}
+        Some(_) => return bad("client_certificate must be \"pod-svid\" or \"node-svid\""),
+        None => return bad("subject = \"client-certificate\" needs client_certificate"),
+    }
+    match Url::parse(&f.token_endpoint) {
+        Ok(u) if u.scheme() == "https" && u.host_str().is_some() => {}
+        Ok(_) => return bad("token_endpoint must be https: the certificate is presented in TLS"),
+        Err(e) => return bad(&format!("token_endpoint: {e}")),
+    }
+    if f.grant != "token-exchange" {
+        return bad("subject = \"client-certificate\" takes grant = \"token-exchange\" only");
+    }
+    if !matches!(f.encoding.as_str(), "form" | "json") {
+        return bad("encoding must be \"form\" or \"json\"");
+    }
+    if f.audience.is_some() || f.assertion_ttl_secs.is_some() {
+        return bad(
+            "audience and assertion_ttl_secs describe an assertion; with a client certificate \
+             the endpoint's audience is request_audience",
+        );
+    }
+    if f.request_audience
+        .as_deref()
+        .is_none_or(|a| a.trim().is_empty())
+    {
+        return bad("subject = \"client-certificate\" needs request_audience");
+    }
+    if f.scope.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return bad("scope, when present, must be non-empty");
+    }
+    if f.params
+        .keys()
+        .any(|k| RESERVED_FOR_CLIENT_CERTIFICATE.contains(&k.as_str()))
+    {
+        return bad("params may not set a key the token client sets itself");
+    }
+    bad(
+        "subject = \"client-certificate\" is not supported yet; the entry is valid and will \
+         load unchanged once it is",
+    )
+}
+
+/// The request keys a client-certificate exchange sets itself, refused in
+/// `params` for the reason the token client refuses its own.
+const RESERVED_FOR_CLIENT_CERTIFICATE: &[&str] = &[
+    "grant_type",
+    "subject_token",
+    "subject_token_type",
+    "audience",
+    "scope",
+];
 
 #[cfg(test)]
 mod tests {
@@ -559,6 +687,113 @@ policy_id = "example-policy-0001"
         // The control: the unmodified federated fixture loads, so the cases
         // above fail on their perturbation and not on the fixture.
         assert!(UpstreamRegistry::from_toml_str(FEDERATED).is_ok());
+    }
+
+    const CLIENT_CERTIFICATE: &str = r#"
+[[upstream]]
+name = "object-store"
+base_url = "https://objects.invalid"
+header = "authorization"
+value_prefix = "Bearer "
+
+[upstream.credential.federated]
+subject = "client-certificate"
+client_certificate = "pod-svid"
+token_endpoint = "https://sts.invalid/v1/token"
+grant = "token-exchange"
+encoding = "json"
+request_audience = "example-provider-0001"
+
+[upstream.credential.federated.params]
+requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
+"#;
+
+    const NOT_YET: &str = "is not supported yet";
+
+    /// The reserved client-certificate subject: a valid entry is refused as
+    /// not supported yet, and nothing else is.
+    #[test]
+    fn a_client_certificate_subject_is_reserved_and_refused() {
+        let err = UpstreamRegistry::from_toml_str(CLIENT_CERTIFICATE)
+            .expect_err("the client-certificate subject is not served");
+        assert!(err.contains(NOT_YET), "{err}");
+        assert!(err.contains("object-store"), "{err}");
+        let node = CLIENT_CERTIFICATE.replace("\"pod-svid\"", "\"node-svid\"");
+        let err = UpstreamRegistry::from_toml_str(&node).expect_err("not served either");
+        assert!(err.contains(NOT_YET), "{err}");
+    }
+
+    /// The reserved form is validated in full, so each of these is refused
+    /// for what is wrong with it, never as merely "not supported yet".
+    #[test]
+    fn a_malformed_client_certificate_entry_is_refused_for_its_defect() {
+        let set = |old: &str, new: &str| CLIENT_CERTIFICATE.replace(old, new);
+        let cases = [
+            (
+                set("client_certificate = \"pod-svid\"\n", ""),
+                "no client_certificate",
+            ),
+            (
+                set("\"pod-svid\"", "\"any-svid\""),
+                "an unknown client_certificate",
+            ),
+            (
+                set("https://sts.invalid", "http://127.0.0.1"),
+                "a non-https endpoint",
+            ),
+            (
+                set("\"token-exchange\"", "\"jwt-bearer\""),
+                "an assertion-only grant",
+            ),
+            (set("\"json\"", "\"xml\""), "an unknown encoding"),
+            (
+                set("request_audience", "audience = \"x\"\nrequest_audience"),
+                "an assertion audience",
+            ),
+            (
+                set(
+                    "request_audience",
+                    "assertion_ttl_secs = 60\nrequest_audience",
+                ),
+                "an assertion lifetime",
+            ),
+            (
+                set("request_audience = \"example-provider-0001\"\n", ""),
+                "no request_audience",
+            ),
+            (
+                set("requested_token_type", "subject_token_type"),
+                "a reserved param",
+            ),
+            (
+                set("subject = \"client-certificate\"", "subject = \"mtls\""),
+                "an unknown subject",
+            ),
+            (
+                set("encoding = \"json\"", "encoding = \"json\"\ntypo = 1"),
+                "an unknown field",
+            ),
+        ];
+        for (text, what) in cases {
+            let err = UpstreamRegistry::from_toml_str(&text)
+                .expect_err(&format!("{what} must refuse to load"));
+            assert!(
+                !err.contains(NOT_YET),
+                "{what} was refused only as unsupported: {err}"
+            );
+        }
+        // An assertion-subject entry may not name a client certificate.
+        let stray = FEDERATED.replace(
+            "grant = \"token-exchange\"",
+            "grant = \"token-exchange\"\nclient_certificate = \"pod-svid\"",
+        );
+        assert!(UpstreamRegistry::from_toml_str(&stray).is_err());
+        // The default subject is the assertion, spelled or not.
+        let spelled = FEDERATED.replace(
+            "grant = \"token-exchange\"",
+            "grant = \"token-exchange\"\nsubject = \"assertion\"",
+        );
+        assert!(UpstreamRegistry::from_toml_str(&spelled).is_ok());
     }
 
     /// The broker's entries come from the registry, and only for what was

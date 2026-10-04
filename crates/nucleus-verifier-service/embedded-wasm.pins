@@ -128,5 +128,22 @@
 # is the whole drift this pin catches. Not a local rebuild either: the digest differs by platform.
 # build.rs DID refuse once, as predicted, and that refusal was the pin working. It reported what it
 # reports.
-623d27d67a366fe027d1734749a620d615edd7e106a4acd17898a4351c12f020  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-10-01 (#3092): the .wasm moved, and the source change is a DOC change. Seven
+# lines of module doc in `nucleus-recompute/src/lib.rs` shift every line below
+# them, and the wasm embeds panic locations as `file:line`, so bytes move with no
+# change in behaviour. `623d27d6…` is REPLACED, on the rule above: the pin says
+# which artifact was reviewed, not whether a change mattered.
+#
+# Provenance, and new: this digest was minted OFF CI and reproduces CI. A clean
+# x86_64 Linux host built main at de845e369 to `c0401ffe…` from a home checkout,
+# and to `623d27d6…` -- main's CI pin, byte for byte -- from CI's own paths
+# (`/data/work/nucleus/nucleus`, CARGO_HOME `/home/runner/.cargo`). So what
+# "differs by platform" above is at least partly differs by PATH: the wasm embeds
+# absolute source paths. Under those paths this branch, merged with main,
+# gives the digest below, the same `a0084d1e…` CI reported for this PR's head.
+# 2026-10-02 (#3175): the .wasm moved because the SOURCE did: `nucleus-lineage`'s
+# `CallSpiffeId` now enforces the SPIFFE grammar, and `sdks/verifier-js` compiles it
+# in. `a0084d1e…` is REPLACED, on the rule above. Taken from CI's Clippy run of this
+# PR's final tree, landed in a pins-only commit; verified by the run that consumes it.
+8517eb3e8366cfbe91aa9a2a8e5e786707c6ac473cd8a1b2de6f08f38058640d  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

@@ -238,6 +238,57 @@ fn block_hash(task_id: &str, claim: &BlockClaim) -> [u8; 32] {
     out
 }
 
+/// The three strings a tool-proxy is launched with to verify its session task
+/// token: `NUCLEUS_TASK_TOKEN`, `NUCLEUS_TASK_TOKEN_NONCE`,
+/// `NUCLEUS_TASK_TOKEN_ISSUER`.
+#[derive(Clone)]
+pub struct MintedTaskToken {
+    /// `serde_json` serialization of the [`SignedTaskRef`].
+    pub token_json: String,
+    /// Lowercase hex of the 16-byte effective nonce.
+    pub nonce_hex: String,
+    /// Lowercase hex of the 32-byte issuer PUBLIC key (never the private half).
+    pub issuer_hex: String,
+}
+
+/// Mint a session task token granting exactly `operations`, the one mint
+/// every launcher of a tool-proxy uses.
+///
+/// Callers pass `PermissionLattice::granted_operations()` of the policy the
+/// proxy will enforce -- that call is the scope decision; this function only
+/// signs it. A fresh CSPRNG nonce is drawn per call, so no two sessions share
+/// an effective nonce. `authority` binds the token to a pod certificate's
+/// fingerprint when the proxy is launched with one (#2486).
+///
+/// It lives here, beside the token, because it has two callers: the node,
+/// minting per pod, and the local launchers (`nucleus shell`, `nucleus run
+/// --local`), which minted nothing -- so their proxies started `Missing` and
+/// every preflight's `InScopeWithTask` refused, `ls` included (2026-09-29).
+pub fn mint_session_task_token(
+    task_id: &str,
+    operations: Vec<Operation>,
+    ttl_secs: u64,
+    now_unix: u64,
+    issuer: &SigningKey,
+    authority: Option<[u8; 32]>,
+) -> Result<MintedTaskToken, serde_json::Error> {
+    use rand_core::RngCore as _;
+    let mut nonce = [0u8; 16];
+    rand_core::OsRng.fill_bytes(&mut nonce);
+    let scope = TokenScope::new(operations, Vec::new());
+    let token = match authority {
+        Some(fp) => SignedTaskRef::issue_under_authority(
+            task_id, scope, nonce, now_unix, ttl_secs, issuer, fp,
+        ),
+        None => SignedTaskRef::issue(task_id, scope, nonce, now_unix, ttl_secs, issuer),
+    };
+    Ok(MintedTaskToken {
+        token_json: serde_json::to_string(&token)?,
+        nonce_hex: hex::encode(nonce),
+        issuer_hex: hex::encode(issuer.verifying_key().to_bytes()),
+    })
+}
+
 impl SignedTaskRef {
     /// Issue a fresh root token: a single block granting `scope`, signed by
     /// `issuer`. (The `SigningKey` is supplied by the caller — e.g. a
