@@ -242,21 +242,7 @@ fn agency_run(a: AgencyArgs) -> Result<()> {
             "run_bash",
         ])?;
     set(&mut spec, "/metadata/name", serde_json::json!("agency"));
-    set(
-        &mut spec,
-        "/metadata/labels/dlc_trusted_keys",
-        serde_json::json!(issuer),
-    );
-    set(
-        &mut spec,
-        "/metadata/labels/dlc_issuer",
-        serde_json::json!(issuer),
-    );
-    set(
-        &mut spec,
-        "/metadata/labels/dlc_credentials",
-        serde_json::json!(creds),
-    );
+    set_dlc_labels(&mut spec, &issuer, &creds);
 
     let body = serde_json::to_string(&spec)?;
     let (id, proxy) = node.create_pod_with_proxy(&body)?;
@@ -751,6 +737,24 @@ fn set(v: &mut serde_json::Value, ptr: &str, val: serde_json::Value) {
 /// and its only power is over the one ephemeral pod. Crediting ONLY the
 /// operations under test is deliberate — an uncredentialed operation must still
 /// be refused, and that refusal is half of what each iteration proves.
+/// Provision a pod for verified admission through its labels, using the label
+/// names the node reads them back with (`nucleus_spec::dlc_admission`). The
+/// issuer key doubles as its own trust anchor.
+fn set_dlc_labels(spec: &mut serde_json::Value, issuer: &str, creds: &str) {
+    let dlc = nucleus_spec::dlc_admission::DlcProvisioning {
+        trusted_keys: issuer.to_string(),
+        issuer: issuer.to_string(),
+        credentials: creds.to_string(),
+    };
+    for (label, value) in dlc.labels() {
+        set(
+            spec,
+            &format!("/metadata/labels/{label}"),
+            serde_json::json!(value),
+        );
+    }
+}
+
 fn mint_admission(ops: &[&str]) -> Result<(String, String)> {
     use std::io::Read as _;
     let mut seed = [0u8; 32];
@@ -879,21 +883,7 @@ fn toolcall(t: ToolCall) -> Result<()> {
         "/metadata/name",
         serde_json::json!("perf-toolcall"),
     );
-    set(
-        &mut spec,
-        "/metadata/labels/dlc_trusted_keys",
-        serde_json::json!(issuer),
-    );
-    set(
-        &mut spec,
-        "/metadata/labels/dlc_issuer",
-        serde_json::json!(issuer),
-    );
-    set(
-        &mut spec,
-        "/metadata/labels/dlc_credentials",
-        serde_json::json!(creds),
-    );
+    set_dlc_labels(&mut spec, &issuer, &creds);
 
     let body = serde_json::to_string(&spec)?;
     let created = Instant::now();

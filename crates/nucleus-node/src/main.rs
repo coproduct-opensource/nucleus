@@ -16,6 +16,7 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
+use nucleus_spec::dlc_admission::DlcProvisioning;
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 #[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
@@ -37,6 +38,7 @@ mod guest_diagnosis;
 mod http_serve;
 mod identity;
 mod image_identity;
+mod jail_placement;
 mod keys;
 mod lockdown;
 mod mediation;
@@ -56,7 +58,11 @@ mod workload_api_vsock;
 mod workload_artifacts;
 mod workload_result;
 use api_error::ApiError;
+#[cfg(feature = "local-driver")]
+mod bare_tier_opt_in;
 mod boot_trace;
+#[cfg(feature = "local-driver")]
+use bare_tier_opt_in::{local_driver_opt_in, unsandboxed_proxy_flag};
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
 // binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
@@ -65,13 +71,16 @@ mod broker;
 mod broker_launch;
 mod broker_perform;
 mod broker_rollout;
+mod broker_stream;
 mod broker_transport;
 mod cgroup;
+mod container_mediation;
 mod container_transport;
 mod cred_split;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
+mod egress_meter;
 mod envelope_frame;
 mod federated_credential;
 mod federation_ingress;
@@ -86,6 +95,8 @@ mod snapshot;
 mod snapshot_restore;
 mod snapshot_store;
 mod snapshot_vmm;
+#[cfg(test)]
+mod spiffe_walk;
 mod trust_gate;
 mod upstreams;
 mod vsock_bridge;
@@ -209,11 +220,12 @@ struct Args {
         default_value = "/srv/jailer"
     )]
     jailer_chroot_base: PathBuf,
-    /// Unprivileged uid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_UID", default_value = "123")]
+    /// Unprivileged uid the jailed VMM drops to. `nucleus-hostctl seed` reads the same variable,
+    /// so a disk it seeds is handed to this uid.
+    #[arg(long, env = nucleus_microvm_host::jail_user::UID_ENV, default_value = "123")]
     jailer_uid: production_confinement::NonRootUid,
     /// Unprivileged gid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_GID", default_value_t = 100)]
+    #[arg(long, env = nucleus_microvm_host::jail_user::GID_ENV, default_value_t = 100)]
     jailer_gid: u32,
     /// Seal each pinned read-only rootfs once per node life and boot every pod from a reflink
     /// clone of it, instead of reading the whole file before each boot (`sealed_rootfs.rs`).
@@ -222,13 +234,23 @@ struct Args {
     seal_pinned_rootfs: bool,
 
     // Container driver configuration
-    /// Container image for pod execution (container driver).
+    /// Container image every container pod runs, and in mediated mode the image whose
+    /// `nucleus-tool-proxy` mediates it. Node-owned: a spec cannot choose it (#3133).
     #[arg(
         long,
         env = "NUCLEUS_CONTAINER_IMAGE",
         default_value = "nucleus-tool-proxy:latest"
     )]
     container_image: String,
+    /// Whether container pods run under the tool-proxy. `unmediated` runs the image's entrypoint
+    /// with no reference monitor; it is an operator opt-in, never a spec choice (#3133).
+    #[arg(
+        long,
+        env = "NUCLEUS_CONTAINER_MEDIATION",
+        value_enum,
+        default_value = "tool-proxy"
+    )]
+    container_mediation: container_mediation::ContainerMediation,
     /// Network mode for containers ("none", "bridge", or a custom network name).
     #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
     container_network: String,
@@ -291,6 +313,22 @@ struct Args {
     /// Vsock port the guest uses to reach the credential broker.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
     broker_vsock_port: u32,
+    /// Largest request body one streamed credentialed-egress call may upload
+    /// (#2696 P4). Every byte is also charged to the pod's egress ceiling.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_EGRESS_STREAM_MAX_REQUEST_BYTES",
+        default_value_t = broker_stream::DEFAULT_MAX_STREAM_REQUEST_BYTES
+    )]
+    egress_stream_max_request_bytes: u64,
+    /// Largest reply one streamed credentialed-egress call may relay back to
+    /// the guest. A longer reply is cut and the guest told why.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_EGRESS_STREAM_MAX_RESPONSE_BYTES",
+        default_value_t = broker_stream::DEFAULT_MAX_STREAM_RESPONSE_BYTES
+    )]
+    egress_stream_max_response_bytes: u64,
     /// Enable drand anchoring for approval signatures.
     #[arg(long, env = "NUCLEUS_NODE_DRAND_ENABLED", default_value_t = true)]
     drand_enabled: bool,
@@ -329,6 +367,13 @@ struct NodeState {
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
+    /// Whether this node's local driver deliberately runs its tool-proxies
+    /// on the bare host tier, decided once at startup by
+    /// [`local_driver_opt_in`]. It is what puts `--unsandboxed` on a proxy's
+    /// command line, so the flag traces to the operator's
+    /// `--driver local --allow-local-driver` and to nothing else.
+    #[cfg(feature = "local-driver")]
+    local_driver_opt_in: nucleus::UnsandboxedOptIn,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -401,11 +446,16 @@ struct NodeState {
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
+    /// Per-call bounds on a streamed credentialed-egress call.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    egress_stream_limits: broker_stream::StreamLimits,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
-    /// Default container image for pods.
+    /// The image every container pod runs (`--container-image`).
     container_image: String,
+    /// Whether container pods run under the tool-proxy (`--container-mediation`).
+    container_mediation: container_mediation::ContainerMediation,
     /// Default network mode for containers.
     container_network: String,
     container_proxy_unix: bool,
@@ -527,16 +577,13 @@ struct FirecrackerPod {
 
 /// Container-based pod execution via Docker API (Colima, Docker Desktop, Podman).
 ///
-/// The container image can be either:
-///   - `nucleus-tool-proxy:latest` (proxy mode: audit + policy enforcement)
-///   - An LLM/agent CLI image like `gt-executor:latest` (direct mode)
-///
-/// The mode is determined by the PodSpec label `nucleus.io/proxy-mode`.
+/// The image and whether the tool-proxy mediates the pod are node configuration
+/// (`--container-image`, `--container-mediation`); see `container_mediation` (#3133).
 #[derive(Debug)]
 struct ContainerPod {
     container_id: String,
     docker: bollard::Docker,
-    /// Only present in proxy mode (when PodSpec label `nucleus.io/proxy-mode` = "true").
+    /// Only present when the node mediates its container pods.
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
     /// Semaphore permit for concurrency limiting.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
@@ -660,6 +707,11 @@ async fn main() -> Result<(), ApiError> {
                 )));
             }
         }
+        if !args.container_mediation.runs_tool_proxy() {
+            tracing::warn!(
+                "--container-mediation=unmediated: container pods run with NO reference monitor"
+            );
+        }
         Some(Arc::new(docker))
     } else {
         None
@@ -674,6 +726,14 @@ async fn main() -> Result<(), ApiError> {
 
     let authority = pod_authority::PodAuthority::from_args(&args).map_err(ApiError::Driver)?;
 
+    // A zero bound is refused at start-up, not discovered as a refusal of
+    // every streamed call later (ADR 0007 B).
+    let egress_stream_limits = broker_stream::StreamLimits::new(
+        args.egress_stream_max_request_bytes,
+        args.egress_stream_max_response_bytes,
+    )
+    .map_err(ApiError::Driver)?;
+
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -681,6 +741,8 @@ async fn main() -> Result<(), ApiError> {
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
+        #[cfg(feature = "local-driver")]
+        local_driver_opt_in: local_driver_opt_in(&args.driver, args.allow_local_driver),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_api_boot: args.firecracker_api_boot,
@@ -728,10 +790,12 @@ async fn main() -> Result<(), ApiError> {
         broker_listen: args.broker_listen,
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
+        egress_stream_limits,
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
             .with_operator_identity(authority.root_minter())
             .with_federated_trust_domains(authority.caller_bindings().trust_domains()),
         container_image: args.container_image.clone(),
+        container_mediation: args.container_mediation,
         container_network: args.container_network.clone(),
         container_proxy_unix: args.container_proxy_unix,
         container_pool,
@@ -759,6 +823,23 @@ async fn main() -> Result<(), ApiError> {
         if n > 0 {
             info!(count = n, "reclaimed jail(s) stranded by a previous node");
         }
+    }
+
+    // Refuse, by name, an installed artifact the jailed VMM cannot read or could rewrite, rather
+    // than chowning it at the first pod: it is hard-linked into every jail (#3152).
+    #[cfg(target_os = "linux")]
+    if args.firecracker_jailer && matches!(&args.driver, DriverKind::Firecracker) {
+        let who = jail_placement::JailUser {
+            uid: args.jailer_uid.get(),
+            gid: args.jailer_gid,
+        };
+        let checked =
+            jail_placement::check_installed_artifacts(&args.host_paths.artifacts_root, who)
+                .map_err(|refusal| ApiError::Driver(refusal.to_string()))?;
+        info!(
+            checked,
+            "installed artifacts: readable and not writable by the jail user"
+        );
     }
 
     // Pods that outlived a restart get their certificates + holder keys back.
@@ -939,7 +1020,7 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
-    rootfs_source::admit(&spec)?; // an OCI rootfs needs an image store this node lacks
+    rootfs_source::admit(&spec)?; // OCI needs an image store; boot_args are allowlisted (#3124)
     host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
     spec_posture::admit(&spec)?; // posture fields a spec may not weaken (#3120)
     let id = Uuid::new_v4();
@@ -952,7 +1033,7 @@ async fn create_pod_internal(
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
     admission.stamp_ci_principal(&state.authz_policy, &mut spec)?;
 
-    let pod_dir = state.state_dir.join("pods").join(id.to_string());
+    let pod_dir = lifecycle::pod_dir(&state.state_dir, id);
     tokio::fs::create_dir_all(&pod_dir).await?;
 
     // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
@@ -1288,6 +1369,7 @@ async fn spawn_local_pod(
 
     let mut command = Command::new(&state.tool_proxy_path);
     command
+        .args(unsandboxed_proxy_flag(state.local_driver_opt_in))
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
@@ -1365,20 +1447,15 @@ async fn spawn_local_pod(
     }
 
     // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
-    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads
-    // (crates/nucleus-tool-proxy/src/dlc_admission.rs). Node-global env still
-    // inherits (Command does not env_clear); labels let a single pod — e.g.
-    // `nucleus verify --tier2`'s — run under admission without touching host
-    // config. Values are NOT validated here: the proxy's parser owns that and
-    // fails CLOSED (partial/garbage config provisions deny-all).
-    for (label, env) in [
-        ("dlc_trusted_keys", "NUCLEUS_DLC_TRUSTED_KEYS"),
-        ("dlc_issuer", "NUCLEUS_DLC_ISSUER"),
-        ("dlc_credentials", "NUCLEUS_DLC_CREDENTIALS"),
-    ] {
-        if let Some(value) = spec.metadata.labels.get(label) {
-            command.env(env, value);
-        }
+    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads. The
+    // label->env mapping is `nucleus_spec::dlc_admission`'s, the same one the
+    // container driver and the Firecracker workload API use. Node-global env
+    // still inherits (Command does not env_clear); labels let a single pod —
+    // e.g. `nucleus verify --tier2`'s — run under admission without touching
+    // host config. Values are NOT validated here: the proxy's parser owns that
+    // and fails CLOSED (partial/garbage config provisions deny-all).
+    if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+        command.envs(dlc.env());
     }
 
     // Detect orchestrator pod: inject pod management env vars
@@ -1505,6 +1582,100 @@ fn container_driver_reject_unsupported_network_policy(spec: &PodSpec) -> Result<
     Ok(())
 }
 
+/// The environment a container pod is started with.
+///
+/// Split out of [`spawn_container_pod`] so what reaches the container's
+/// tool-proxy can be read by a test without a Docker daemon: every other half
+/// of that function needs one.
+async fn container_env(
+    state: &NodeState,
+    spec: &PodSpec,
+    id: Uuid,
+    mediation: container_mediation::ContainerMediation,
+    sandbox_token: &str,
+    spec_yaml: &str,
+) -> Vec<String> {
+    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+    let proxy_mode = mediation.runs_tool_proxy();
+
+    if proxy_mode {
+        env.extend(container_transport::proxy_env(state));
+        env.push(format!(
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
+            state.proxy_approval_secret
+        ));
+        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
+        art12_collector::provision_container_env(&mut env);
+
+        // Pass audit sink config from PodSpec for deletion-resistant remote storage
+        if let Some(ref sink) = spec.spec.audit_sink {
+            env.push(format!(
+                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
+                sink.s3_bucket
+            ));
+            if let Some(ref prefix) = sink.s3_prefix {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
+            }
+            if let Some(ref region) = sink.s3_region {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
+            }
+            if let Some(ref endpoint) = sink.s3_endpoint {
+                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
+            }
+            // Forward ambient AWS credentials for the S3 sink
+            for key in [
+                "AWS_ACCESS_KEY_ID",
+                "AWS_SECRET_ACCESS_KEY",
+                "AWS_SESSION_TOKEN",
+                "AWS_DEFAULT_REGION",
+            ] {
+                if let Ok(val) = std::env::var(key) {
+                    env.push(format!("{key}={val}"));
+                }
+            }
+        }
+
+        // Live-path session capability token (see spawn_local_pod). Injected in
+        // proxy mode — the only container mode that runs the tool-proxy sidecar.
+        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
+            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
+            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
+            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
+        }
+        for (key, value) in state.authority.boot_env(id).await {
+            env.push(format!("{key}={value}"));
+        }
+        // DLC-D verified admission from the PodSpec labels, through the same
+        // declaration the local driver and the Firecracker workload API use.
+        // This driver used to have no copy of the mapping at all, so a
+        // container pod's dlc_* labels were accepted, listed by `nucleus node
+        // pods`, and never reached the tool-proxy that enforces them (#2903).
+        if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+            env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
+        }
+    }
+
+    // Pass credentials from PodSpec (if any)
+    if let Some(ref creds) = spec.spec.credentials {
+        for (key, val) in &creds.env {
+            env.push(format!("{key}={val}"));
+        }
+    }
+
+    // In direct mode, extract the task from the raw YAML (task is not in the typed
+    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
+    if !proxy_mode
+        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(spec_yaml)
+        && let Some(task) = raw
+            .get("spec")
+            .and_then(|s| s.get("task"))
+            .and_then(|t| t.as_str())
+    {
+        env.push(format!("NUCLEUS_TASK={task}"));
+    }
+    env
+}
+
 async fn spawn_container_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -1556,92 +1727,12 @@ async fn spawn_container_pod(
         &spec_yaml_hash,
     );
 
-    // Determine mode: proxy (tool-proxy entrypoint) vs direct (image-defined entrypoint)
-    let proxy_mode = spec
-        .metadata
-        .labels
-        .get("nucleus.io/proxy-mode")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-
-    // Resolve container image: per-pod label override or node default
-    let image = spec
-        .metadata
-        .labels
-        .get("nucleus.io/container-image")
-        .cloned()
-        .unwrap_or_else(|| state.container_image.clone());
-
-    // Build environment variables
-    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
-
-    if proxy_mode {
-        env.extend(container_transport::proxy_env(state));
-        env.push(format!(
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
-            state.proxy_approval_secret
-        ));
-        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
-        art12_collector::provision_container_env(&mut env);
-
-        // Pass audit sink config from PodSpec for deletion-resistant remote storage
-        if let Some(ref sink) = spec.spec.audit_sink {
-            env.push(format!(
-                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
-                sink.s3_bucket
-            ));
-            if let Some(ref prefix) = sink.s3_prefix {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
-            }
-            if let Some(ref region) = sink.s3_region {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
-            }
-            if let Some(ref endpoint) = sink.s3_endpoint {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
-            }
-            // Forward ambient AWS credentials for the S3 sink
-            for key in [
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_DEFAULT_REGION",
-            ] {
-                if let Ok(val) = std::env::var(key) {
-                    env.push(format!("{key}={val}"));
-                }
-            }
-        }
-
-        // Live-path session capability token (see spawn_local_pod). Injected in
-        // proxy mode — the only container mode that runs the tool-proxy sidecar.
-        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
-            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
-            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
-            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
-        }
-        for (key, value) in state.authority.boot_env(id).await {
-            env.push(format!("{key}={value}"));
-        }
-    }
-
-    // Pass credentials from PodSpec (if any)
-    if let Some(ref creds) = spec.spec.credentials {
-        for (key, val) in &creds.env {
-            env.push(format!("{key}={val}"));
-        }
-    }
-
-    // In direct mode, extract the task from the raw YAML (task is not in the typed
-    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
-    if !proxy_mode
-        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml)
-        && let Some(task) = raw
-            .get("spec")
-            .and_then(|s| s.get("task"))
-            .and_then(|t| t.as_str())
-    {
-        env.push(format!("NUCLEUS_TASK={task}"));
-    }
+    // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
+    let mediation = state.container_mediation;
+    let proxy_mode = mediation.runs_tool_proxy();
+    let env = container_env(state, spec, id, mediation, &sandbox_token, &spec_yaml).await;
+    let launch = container_mediation::launch(mediation, &state.container_image, &env);
+    let image = launch.image.clone();
 
     let pod_dir_abs = pod_dir
         .canonicalize()
@@ -1675,54 +1766,10 @@ async fn spawn_container_pod(
         ..Default::default()
     };
 
-    // In proxy mode: override entrypoint + cmd so we control the full command,
-    // regardless of the image's ENTRYPOINT/CMD. This avoids double-binary issues
-    // when the image has ENTRYPOINT ["nucleus-tool-proxy", "--listen", "..."].
-    // In direct mode with NUCLEUS_TASK: override entrypoint to run a shell that
-    // invokes the task via the orchestrator-supplied runner command.
-    // In direct mode without NUCLEUS_TASK: use the image's default entrypoint/cmd.
-    let has_task = env.iter().any(|e| e.starts_with("NUCLEUS_TASK="));
-    let (entrypoint, cmd) = if proxy_mode {
-        (
-            Some(vec!["nucleus-tool-proxy".to_string()]),
-            Some(vec![
-                "--spec".to_string(),
-                "/data/pod/pod.yaml".to_string(),
-                "--listen".to_string(),
-                "0.0.0.0:0".to_string(),
-                "--announce-path".to_string(),
-                "/data/pod/proxy.addr".to_string(),
-            ]),
-        )
-    } else if has_task {
-        // Direct task execution. The runner command — and any vendor-specific
-        // credential bootstrap it needs — is supplied by the orchestrator via
-        // the generic NUCLEUS_TASK_CMD env var, keeping nucleus vendor-agnostic:
-        // it executes an opaque operator-supplied command rather than a specific
-        // LLM CLI (see the project vendor-neutrality guidelines, "Integration
-        // Pattern"). Nucleus only wraps it in its own task_start/task_complete
-        // artifact markers. When no runner is
-        // supplied, fall through to the image's default entrypoint/cmd with
-        // NUCLEUS_TASK left in the environment for the image to consume.
-        match env.iter().find_map(|e| e.strip_prefix("NUCLEUS_TASK_CMD=")) {
-            Some(runner) => (
-                Some(vec!["/bin/bash".to_string(), "-c".to_string()]),
-                Some(vec![format!(
-                    "echo \"NUCLEUS_ARTIFACT type=task_start\" && \
-                     {runner} 2>&1 && \
-                     echo \"NUCLEUS_ARTIFACT type=task_complete\""
-                )]),
-            ),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
-
     let config = bollard::models::ContainerCreateBody {
-        image: Some(image.clone()),
-        entrypoint,
-        cmd,
+        image: Some(launch.image),
+        entrypoint: launch.entrypoint,
+        cmd: launch.cmd,
         env: Some(env),
         host_config: Some(host_config),
         working_dir: Some("/workspace".to_string()),
@@ -1832,7 +1879,7 @@ async fn spawn_container_pod(
         cached_exit: Mutex::new(None),
     };
 
-    info!(pod_id = %id, %image, proxy_mode, "spawned container pod");
+    info!(pod_id = %id, %image, ?mediation, "spawned container pod");
     Ok((
         DriverState::Container(Box::new(handle)),
         proxy_addr,
@@ -2470,14 +2517,7 @@ async fn spawn_firecracker_pod(
         let mut netns_pid: Option<u32> = None;
 
         if state.firecracker_netns {
-            let default_policy = NetworkSpec {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                dns_allow: Vec::new(),
-                url_allow: Vec::new(),
-                mime_allow: None,
-                max_response_bytes: None,
-            };
+            let default_policy = NetworkSpec::nothing_listed();
             let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
             let pid = match pid {
                 Some(pid) => pid,

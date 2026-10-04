@@ -568,6 +568,7 @@ pub(crate) async fn cancel_sub_pod(
 pub(crate) fn build_runtime(
     spec: &PodSpec,
     containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
 ) -> Result<PodRuntime, ApiError> {
     let policy = spec
         .spec
@@ -575,7 +576,8 @@ pub(crate) fn build_runtime(
         .map_err(|e| ApiError::Spec(e.to_string()))?;
     let timeout = std::time::Duration::from_secs(spec.spec.timeout_seconds);
     let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout)
-        .with_containment(containment);
+        .with_containment(containment)
+        .with_unsandboxed_opt_in(opt_in);
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }
@@ -1450,7 +1452,8 @@ mod containment_tests {
         spec.spec.policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
         };
-        let runtime = build_runtime(&spec, containment).expect("runtime builds");
+        let runtime = build_runtime(&spec, containment, nucleus::UnsandboxedOptIn::Explicit)
+            .expect("runtime builds");
         // The kernel is built WITH microvm isolation so it mints a token; the
         // executor's containment gate is the thing under test.
         let mut kernel = Kernel::with_isolation(policy, IsolationLattice::microvm());
@@ -1476,11 +1479,23 @@ mod containment_tests {
         );
     }
 
-    /// A proxy with a verified launch (tier 1) executes under the same policy.
+    /// A proxy with a verified launch (tier 1) passes the isolation gate under
+    /// the same policy. A root runtime (the guest) then runs the command; any
+    /// other runtime cannot separate the child from itself and refuses BY NAME
+    /// after the gate (#3120) — so the refusal is not `IsolationInsufficient`.
     #[test]
     fn microvm_runtime_executes_a_microvm_policy() {
-        let out = run_echo(nucleus::ContainmentMode::MicroVM).expect("microVM containment runs");
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+        let result = run_echo(nucleus::ContainmentMode::MicroVM);
+        match nucleus::runtime_uid() {
+            0 => {
+                let out = result.expect("microVM containment runs");
+                assert!(out.status.success());
+                assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+            }
+            _ => assert!(
+                matches!(result, Err(NucleusError::ChildSeparationUnavailable { .. })),
+                "a non-root MicroVM runtime must refuse by name, got {result:?}"
+            ),
+        }
     }
 }

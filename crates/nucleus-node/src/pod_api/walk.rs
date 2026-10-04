@@ -43,6 +43,16 @@ use crate::PodState;
 use super::handler_tests::{register, state};
 use super::*;
 
+/// A model's caller (`None` = the operator) as a scope. Lives with the walks
+/// that use it, not on `CallerScope`: in production "no pod" is never read as
+/// "node-wide".
+fn scope_of(caller: Option<Uuid>) -> crate::auth::CallerScope {
+    caller.map_or(
+        crate::auth::CallerScope::NodeWide,
+        crate::auth::CallerScope::Pod,
+    )
+}
+
 /// Who issues a step. A pod caller is an index into the pods created so far,
 /// resolved modulo their count when the step runs.
 #[derive(Debug, Clone, Copy)]
@@ -209,13 +219,10 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let caller_id = model.caller_id(caller);
                     let header_text =
                         header.map(|h| model.pods[h % model.pods.len()].id.to_string());
-                    let parent = parent_for_create(
-                        &st,
-                        &crate::auth::CallerScope::from_model(caller_id),
-                        header_text.as_deref(),
-                    )
-                    .await
-                    .map_err(|e| at(format!("parent refused: {e}")))?;
+                    let parent =
+                        parent_for_create(&st, &scope_of(caller_id), header_text.as_deref())
+                            .await
+                            .map_err(|e| at(format!("parent refused: {e}")))?;
                     let want = match caller_id {
                         Some(c) => Some(c),
                         None => header_text.as_deref().and_then(|h| Uuid::parse_str(h).ok()),
@@ -241,9 +248,7 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 }
                 Op::List { caller } => {
                     let caller_id = model.caller_id(caller);
-                    let infos =
-                        collect_pod_infos(&st, &crate::auth::CallerScope::from_model(caller_id))
-                            .await;
+                    let infos = collect_pod_infos(&st, &scope_of(caller_id)).await;
                     let got: BTreeSet<Uuid> = infos.iter().map(|i| i.id).collect();
                     let want = model.visible_to(caller_id);
                     if got != want {
@@ -271,12 +276,7 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 Op::Get { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
-                    let got = get_pod_for_caller(
-                        &st,
-                        id,
-                        &crate::auth::CallerScope::from_model(caller_id),
-                    )
-                    .await;
+                    let got = get_pod_for_caller(&st, id, &scope_of(caller_id)).await;
                     check_scoped(&model, caller_id, id, got.map(|p| p.id), &mut stats)
                         .map_err(at)?;
                 }
@@ -285,7 +285,7 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let id = model.target_id(target, unknown);
                     let got = pod_logs(
                         State(st.clone()),
-                        Extension(crate::auth::CallerScope::from_model(caller_id)),
+                        Extension(scope_of(caller_id)),
                         AxumPath(id),
                     )
                     .await;
@@ -297,7 +297,7 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let already = model.pod(id).is_some_and(|p| p.cancelled);
                     let got = cancel_pod(
                         State(st.clone()),
-                        Extension(crate::auth::CallerScope::from_model(caller_id)),
+                        Extension(scope_of(caller_id)),
                         AxumPath(id),
                     )
                     .await;

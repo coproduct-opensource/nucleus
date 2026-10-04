@@ -78,7 +78,7 @@ pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover, a
 pub use budget::AtomicBudget;
 pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
-pub use hardening::{ChildConfinement, DEFAULT_CHILD_UID, runtime_uid};
+pub use hardening::{ChildConfinement, ChildUid, DEFAULT_CHILD_UID, UnsandboxedOptIn, runtime_uid};
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};
 pub use time::MonotonicGuard;

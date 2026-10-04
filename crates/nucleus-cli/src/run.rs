@@ -290,7 +290,8 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_FIRECRACKER_VSOCK_PORT", default_value_t = 5000)]
     pub vsock_port: u32,
 
-    /// Mount rootfs read-only (recommended).
+    /// Mount rootfs read-only. The node refuses `false` at create (#3132): the
+    /// rootfs is its shared artifact, and writable storage is `/work`.
     #[arg(long, env = "NUCLEUS_FIRECRACKER_READ_ONLY", default_value_t = true)]
     pub rootfs_read_only: bool,
 
@@ -615,8 +616,13 @@ async fn run_local(
         "Spawning local tool-proxy"
     );
 
+    // The bare host tier, declared: this command passes the tool-proxy's
+    // explicit opt-in and says so (owner decision 1, 2026-10-02).
+    crate::host_tier::announce("run --local");
+
     // Spawn tool-proxy as subprocess
     let mut proxy_child = tokio::process::Command::new(&proxy_bin)
+        .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")

@@ -54,7 +54,7 @@ pub(crate) type PodRegistry =
 /// Reaches exactly the pods it created: those the node stamped
 /// `auth::CI_PRINCIPAL_LABEL` = its SPIFFE ID (`ci_principal`). It used to fall
 /// into the operator's arm, because "not a pod" was spelled like "every pod".
-fn caller_may_manage(
+pub(crate) fn caller_may_manage(
     caller: &CallerScope,
     pod_id: Uuid,
     parent_pod_id: Option<Uuid>,
@@ -165,7 +165,7 @@ pub(crate) async fn list_pods(
 /// registry, so the shipped set operation cannot diverge from what the test
 /// checks — the pointwise `caller_may_manage` tests never exercised the actual
 /// `.filter` as a SET (a sibling being *excluded* vs never present).
-trait Lineage {
+pub(crate) trait Lineage {
     fn lineage_id(&self) -> Uuid;
     fn lineage_parent(&self) -> Option<Uuid>;
     /// The CI/CD identity the node recorded as this pod's creator, if any.
@@ -199,7 +199,7 @@ impl Lineage for Arc<PodHandle> {
     }
 }
 
-fn in_scope<T: Lineage>(it: &T, caller: &CallerScope) -> bool {
+pub(crate) fn in_scope<T: Lineage>(it: &T, caller: &CallerScope) -> bool {
     // A federated tenant (ADR 0001): exactly the pods whose certificate root is
     // in its trust domain. Not lineage -- a tenant is not a pod.
     if let CallerScope::Tenant(td) = caller {
@@ -1183,6 +1183,28 @@ pub(crate) mod handler_tests {
         ])
     }
 
+    /// One HTTP client for every fixture in the test process, cloned into each.
+    ///
+    /// Building a client loads and parses the platform's root certificates, and in a
+    /// test build that is ~20 ms of CPU: measured 2026-10-02, it was about 70% of the
+    /// pod census, which builds a `NodeState` for each of its 1056 runs and never
+    /// sends a request. A clone shares the client, so it is built once.
+    ///
+    /// No connection is kept between requests. Every `#[tokio::test]` has its own
+    /// runtime, and a pooled connection belongs to the runtime that opened it; with
+    /// no idle pool, none can outlive its test or be handed to another one.
+    fn http_client() -> reqwest::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .expect("a test HTTP client")
+            })
+            .clone()
+    }
+
     /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
     /// at compile time, which is the right failure: the fixture should not drift
     /// silently away from what the node actually runs with.
@@ -1200,6 +1222,7 @@ pub(crate) mod handler_tests {
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
+            local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
             firecracker_path: a.firecracker_path.clone(),
             firecracker_pool: None,
             firecracker_api_boot: a.firecracker_api_boot,
@@ -1231,15 +1254,21 @@ pub(crate) mod handler_tests {
             broker_listen: a.broker_listen,
             broker_enforcing: a.broker_enforcing,
             broker_vsock_port: a.broker_vsock_port,
+            egress_stream_limits: crate::broker_stream::StreamLimits::new(
+                a.egress_stream_max_request_bytes,
+                a.egress_stream_max_response_bytes,
+            )
+            .expect("the default stream bounds are non-zero"),
             authz_policy: crate::auth::AuthorizationPolicy::new(&a.identity_trust_domain),
             container_image: a.container_image.clone(),
+            container_mediation: a.container_mediation,
             container_network: a.container_network.clone(),
             container_proxy_unix: a.container_proxy_unix,
             container_pool: None,
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
             authority,
-            http_client: reqwest::Client::new(),
+            http_client: http_client(),
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
             lockdowns: Arc::default(),
         }

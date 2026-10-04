@@ -3,6 +3,7 @@
 //! This module handles fetching X.509 SVID certificates from the host's
 //! Workload API over a vsock connection.
 
+use nucleus_spec::dlc_admission::DlcProvisioning;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -175,21 +176,14 @@ pub struct TaskTokenResponse {
 /// are in the environment before anything reads them. That ordering is the whole
 /// risk of moving delivery off the command line, and it is structural rather
 /// than hoped-for: `main` calls this and only then calls `exec_proxy`.
-/// This pod's DLC-D verified-admission provisioning, from `FETCH_DLC_ADMISSION`.
-#[derive(serde::Deserialize)]
-pub struct DlcAdmissionResponse {
-    /// Comma-separated hex trusted issuer public keys.
-    pub trusted_keys: String,
-    /// Hex public key of the issuer whose credentials this pod presents.
-    pub issuer: String,
-    /// Comma-separated `operation=hex_signature` credentials.
-    pub credentials: String,
-}
-
 /// Fetch this pod's DLC admission provisioning from the host. `Ok(None)` is the
 /// ordinary unprovisioned case (the host answers `{"error": ...}`); only a
 /// transport failure or a preemption is an `Err`.
-pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, FetchError> {
+///
+/// The reply is `nucleus_spec::dlc_admission::DlcProvisioning`, the type the
+/// node serializes it from, and its `env()` is what the tool-proxy is exec'd
+/// with — one declaration from the PodSpec label to the proxy's variable.
+pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcProvisioning>, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -209,11 +203,11 @@ pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, Fe
 
 /// Parse the `FETCH_DLC_ADMISSION` reply. Split out so it is testable without
 /// a live vsock. The body is never echoed: it carries credentials.
-fn parse_dlc_admission(response: &str) -> Result<Option<DlcAdmissionResponse>, FetchError> {
+fn parse_dlc_admission(response: &str) -> Result<Option<DlcProvisioning>, FetchError> {
     if let Ok(reply) = serde_json::from_str::<serde_json::Value>(response) {
         refuse_if_preempted(&reply, "DLC admission provisioning")?;
     }
-    match serde_json::from_str::<DlcAdmissionResponse>(response) {
+    match serde_json::from_str::<DlcProvisioning>(response) {
         Ok(material) => Ok(Some(material)),
         // The unprovisioned host answers {"error": ...}: not a failure.
         Err(_) => Ok(None),
@@ -917,6 +911,27 @@ mod preemption_tests {
         ));
     }
 
+    /// A served reply, in the exact text every node since #2124 sends, becomes
+    /// the three variables the tool-proxy reads. Literal on purpose: the node
+    /// half is pinned by `the_wire_body_is_the_one_released_guests_parse`, and
+    /// this is the guest half of the same bytes.
+    #[test]
+    fn a_served_dlc_reply_becomes_the_proxy_env() {
+        let reply = r#"{"trusted_keys":"aa","issuer":"bb","credentials":"read_files=cc"}"#;
+        let Ok(Some(m)) = parse_dlc_admission(reply) else {
+            panic!("a served reply must parse")
+        };
+        let env: std::collections::BTreeMap<_, _> = m.env().into_iter().collect();
+        assert_eq!(
+            env,
+            std::collections::BTreeMap::from([
+                ("NUCLEUS_DLC_CREDENTIALS", "read_files=cc"),
+                ("NUCLEUS_DLC_ISSUER", "bb"),
+                ("NUCLEUS_DLC_TRUSTED_KEYS", "aa"),
+            ])
+        );
+    }
+
     /// The preemption message names the value and never echoes the reply.
     #[test]
     fn a_preemption_names_what_was_taken() {
@@ -939,7 +954,7 @@ mod identity_location_tests {
     fn on_a_tmpfs_mount(dir: &str) -> bool {
         crate::GUEST_MOUNTS
             .iter()
-            .filter(|m| m.fstype == "tmpfs")
+            .filter(|m| m.fs == crate::GuestFs::Tmpfs)
             .any(|m| dir.starts_with(&format!("{}/", m.target)))
     }
 
@@ -979,12 +994,12 @@ mod identity_location_tests {
     fn the_identity_mount_is_declared_in_guest_mounts() {
         let mount = crate::GUEST_MOUNTS
             .iter()
-            .filter(|m| m.fstype == "tmpfs")
+            .filter(|m| m.fs == crate::GuestFs::Tmpfs)
             .find(|m| IDENTITY_DIR.starts_with(&format!("{}/", m.target)))
             .expect("no tmpfs mount covers IDENTITY_DIR");
         // GUEST_MOUNTS is mounted in main() before identity::fetch_identity is
         // called; this pins the entry that ordering depends on.
-        assert_eq!(mount.fstype, "tmpfs");
+        assert_eq!(mount.fs, crate::GuestFs::Tmpfs);
         assert!(
             mount.nosuid && mount.nodev,
             "{} must stay hardened",

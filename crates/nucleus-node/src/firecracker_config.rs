@@ -168,37 +168,8 @@ impl JailLayout {
     }
 }
 
-/// How a resource may legitimately be placed inside the jail.
-///
-/// THIS DISTINCTION IS LOAD-BEARING AND IT IS ABOUT DATA, NOT ISOLATION. Today a
-/// non-jailed Firecracker is handed the caller's path directly, so when the guest
-/// writes to an RW rootfs those writes land in the caller's file. Under a jail the
-/// resource has to be brought inside, and a hard link preserves exactly that
-/// semantics while a copy silently does not.
-///
-/// So a cross-device jail — where `hard_link` fails with `EXDEV` — must be a
-/// LAUNCH FAILURE for anything writable, never a quiet fallback to copy. The
-/// failure mode a copy would create is the worst kind: every pod appears to work,
-/// and the guest's writes are discarded at teardown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) enum Placement {
-    /// The guest only reads this. A copy is an acceptable cross-device fallback.
-    CopyableIfCrossDevice,
-    /// The guest WRITES here. Hard link or fail — a copy would change semantics.
-    HardLinkOnly,
-}
-
-/// One resource that must exist inside the jail before Firecracker execs.
-#[derive(Debug, Clone)]
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) struct JailResource {
-    /// Where it lives on the host now.
-    pub host_source: std::path::PathBuf,
-    /// The name Firecracker will open it by, after `chroot`.
-    pub in_jail: &'static str,
-    pub placement: Placement,
-}
+// Placement and ownership are one decision per artifact role, made in `jail_placement` (#3152).
+pub(crate) use crate::jail_placement::{ArtifactRole, JailResource};
 
 /// Everything that must be inside the jail, derived from the spec.
 ///
@@ -217,31 +188,15 @@ pub(crate) fn jail_resources(
     let mut resources = vec![
         JailResource {
             host_source: image.kernel_path.clone(),
-            in_jail: in_jail::KERNEL,
-            // The kernel image is never written by the guest.
-            placement: Placement::CopyableIfCrossDevice,
+            role: ArtifactRole::Kernel,
         },
         JailResource {
             host_source: image.rootfs_path().to_path_buf(),
-            in_jail: in_jail::ROOTFS,
-            // Mirrors `lower_drives`' `is_read_only: image.read_only` exactly. If
-            // these two ever disagree, a writable rootfs gets copied and the
-            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only`
-            // pin, which until #2784 was named here and never written.
-            //
-            // The agreement is necessary and NOT sufficient. A hard link means
-            // the guest writes through to `image.rootfs_path()` itself, so
-            // `read_only: false` against the shared installed artifact gives
-            // every later pod the previous pod's writes and lets concurrent
-            // pods share one writable block device. That is why
-            // `ImageSpec::read_only` now defaults to TRUE: the placement below
-            // is correct for a private image and unsafe for a shared one, and
-            // nothing here can tell which it was handed.
-            placement: if image.read_only {
-                Placement::CopyableIfCrossDevice
-            } else {
-                Placement::HardLinkOnly
-            },
+            // The rootfs is the node's shared artifact (#3070/#3071), so it is
+            // attached read-only whatever the spec says (`lower_drives`). It used
+            // to be hard-link-only under `read_only: false`, which made the guest
+            // write through to the artifact every later pod boots (#2784, #3132).
+            role: ArtifactRole::Rootfs,
         },
     ];
 
@@ -254,9 +209,7 @@ pub(crate) fn jail_resources(
         if !scratch_is_node_provisioned {
             resources.push(JailResource {
                 host_source: scratch.clone(),
-                in_jail: in_jail::SCRATCH,
-                // `lower_drives` gives scratch `is_read_only: false` unconditionally.
-                placement: Placement::HardLinkOnly,
+                role: ArtifactRole::CallerScratch,
             });
         }
     }
@@ -264,12 +217,7 @@ pub(crate) fn jail_resources(
     if let Some(ref data) = image.data_path {
         resources.push(JailResource {
             host_source: data.clone(),
-            in_jail: in_jail::DATA,
-            // COPYABLE, unlike scratch, and the difference is exactly `is_read_only`. The reason
-            // scratch must be hard-linked is that a copy would silently discard the guest's
-            // writes; a read-only image has no writes to discard, so a cross-device copy is
-            // correct — merely slower, and the same trade the kernel and rootfs already make.
-            placement: Placement::CopyableIfCrossDevice,
+            role: ArtifactRole::Data,
         });
     }
 
@@ -280,59 +228,19 @@ pub(crate) fn jail_resources(
     if let Some(nucleus_spec::SeccompSpec::Custom { filter_path }) = spec.spec.seccomp.as_ref() {
         resources.push(JailResource {
             host_source: filter_path.clone(),
-            in_jail: in_jail::SECCOMP,
-            placement: Placement::CopyableIfCrossDevice,
+            role: ArtifactRole::SeccompFilter,
         });
     }
 
     resources
 }
 
-/// Bring one resource inside the jail, honouring its `Placement`.
-///
-/// Hard link first, always: it is cheap, it shares no page cache across jails
-/// that the resource did not already share, and — critically — it keeps writes
-/// visible at the caller's path exactly as the non-jailed path does today.
-#[cfg(target_os = "linux")]
-fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
-    // A relaunch under the same pod id finds the previous link still there.
-    // `hard_link` fails with AlreadyExists rather than replacing.
-    if dest.exists() {
-        std::fs::remove_file(dest)
-            .map_err(|e| format!("cannot clear stale {}: {e}", dest.display()))?;
-    }
-    match std::fs::hard_link(&resource.host_source, dest) {
-        Ok(()) => Ok(()),
-        Err(err) => match resource.placement {
-            Placement::HardLinkOnly => Err(format!(
-                "cannot hard-link {} into the jail at {}: {err}. This resource is \
-                 WRITABLE by the guest, so falling back to a copy would silently \
-                 discard the guest's writes instead of landing them at the source \
-                 path — which is what the non-jailed path does. Put the jail \
-                 (--jailer-chroot-base) on the same filesystem as the image, or \
-                 pass an image whose writable drives already live there.",
-                resource.host_source.display(),
-                dest.display()
-            )),
-            Placement::CopyableIfCrossDevice => std::fs::copy(&resource.host_source, dest)
-                .map(|_| ())
-                .map_err(|copy_err| {
-                    format!(
-                        "cannot bring {} into the jail: hard link failed ({err}) and \
-                         copy failed ({copy_err})",
-                        resource.host_source.display()
-                    )
-                }),
-        },
-    }
-}
-
 /// The per-pod scratch disk that makes `/work` writable (#2789).
 ///
 /// `/work` mounts `/dev/vdb`, which exists only when a scratch drive is
 /// attached — and nothing created one, so a `codegen` pod met `EROFS` on its
-/// first write. The other route to a writable guest, `read_only: false`, is the
-/// one #2784 closed: it writes through the shared rootfs artifact.
+/// first write. The other route to a writable guest, `read_only: false`, wrote
+/// through the shared rootfs artifact; #2784 and #3132 closed it.
 ///
 /// BORN INSIDE THE JAIL. Under the jailer `lower_drives` gives the drive a
 /// `path_on_host` of `in_jail::SCRATCH`, resolved after `chroot`, so the file
@@ -407,19 +315,17 @@ fn build_scratch_image(
     uid: u32,
     gid: u32,
 ) -> Result<(), String> {
-    use std::os::unix::fs::chown;
-
     // `prepare_jail` also does this and the jailer tolerates an existing root;
     // doing it here lets the disk be made BEFORE the config that declares the
     // drive is written, which is what keeps the fallback honest.
     std::fs::create_dir_all(jail_root)
         .map_err(|e| format!("creating {}: {e}", jail_root.display()))?;
 
-    let file =
-        std::fs::File::create(path).map_err(|e| format!("creating {}: {e}", path.display()))?;
-    file.set_len(size_bytes)
+    // Born in the jail, never through whatever a previous jail left at this path.
+    let disk = crate::jail_placement::BornInJail::create(path)?;
+    disk.file()
+        .set_len(size_bytes)
         .map_err(|e| format!("sizing {} to {size_bytes} bytes: {e}", path.display()))?;
-    drop(file);
 
     let out = std::process::Command::new("mkfs.ext4")
         .args(["-q", "-F", &path.display().to_string()])
@@ -434,10 +340,9 @@ fn build_scratch_image(
 
     // Firecracker runs unprivileged after the jailer's drop, and the guest
     // writes through this disk — a root-owned image would leave `/work`
-    // read-only for the very workload it exists to serve. Same reasoning, and
-    // the same uid/gid, as every other file `prepare_jail` chowns.
-    chown(path, Some(uid), Some(gid)).map_err(|e| format!("chown {}: {e}", path.display()))?;
-    Ok(())
+    // read-only for the very workload it exists to serve. It is this pod's own
+    // inode, so it is the jail user's to own.
+    disk.give_to_jail(crate::jail_placement::JailUser { uid, gid })
 }
 
 /// Build the jail's contents so the jailer has something to chroot into.
@@ -446,9 +351,14 @@ fn build_scratch_image(
 /// jailer's documented behaviour on an existing `<chroot_base>/<exec>/<id>/root`
 /// is "nothing is done if the path already exists" — it does not refuse, and it
 /// does not clear what is there. It does `chown` the root directory to
-/// `<uid>:<gid>`, but that is the directory only, so every file placed here is
-/// chowned explicitly below. Firecracker runs unprivileged after the drop; a
-/// root-owned scratch image would leave it unable to write its own disk.
+/// `<uid>:<gid>`, the directory only.
+///
+/// OWNERSHIP (#3152). What is placed here is never chowned: a hard link is the
+/// installed artifact's own inode, so chowning it gave the artifact every pod
+/// boots to the jail user. `jail_placement::place` instead refuses, by name, an
+/// artifact the jail user cannot read (or, for a shared one, could modify). Only
+/// what is born here for this pod — the config and the log — is given to the
+/// jail user, through `BornInJail`.
 ///
 /// The vsock socket is deliberately absent: Firecracker CREATES it at `uds_path`
 /// inside the jail, and the host reaches it through `layout.host_path(VSOCK)`.
@@ -463,7 +373,8 @@ pub(crate) fn prepare_jail(
     gid: u32,
     scratch_is_node_provisioned: bool,
 ) -> Result<(), String> {
-    use std::os::unix::fs::chown;
+    use crate::jail_placement::{BornInJail, JailUser, place};
+    let who = JailUser { uid, gid };
 
     std::fs::create_dir_all(&layout.jail_root).map_err(|e| {
         format!(
@@ -472,40 +383,22 @@ pub(crate) fn prepare_jail(
         )
     })?;
 
-    let mut placed: Vec<std::path::PathBuf> = Vec::new();
-
     for resource in jail_resources(image, spec, scratch_is_node_provisioned) {
-        let dest = layout.host_path(resource.in_jail);
-        place_resource(&resource, &dest)?;
-        placed.push(dest);
+        place(&resource, &layout.host_path(resource.in_jail()), who)?;
     }
 
     // The VM config, written where the jailed Firecracker will read it.
-    let config_dest = layout.host_path(in_jail::CONFIG);
-    std::fs::write(&config_dest, config_json)
-        .map_err(|e| format!("cannot write jailed config {}: {e}", config_dest.display()))?;
-    placed.push(config_dest);
+    let mut config = BornInJail::create(&layout.host_path(in_jail::CONFIG))?;
+    config.write_all(config_json)?;
+    config.give_to_jail(who)?;
 
     // Firecracker's logger opens this after dropping privileges and won't create it.
-    let log_dest = layout.host_path(in_jail::LOG);
-    std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&log_dest)
-        .map_err(|e| format!("cannot create jailed log {}: {e}", log_dest.display()))?;
-    placed.push(log_dest);
+    BornInJail::create(&layout.host_path(in_jail::LOG))?.give_to_jail(who)?;
 
     // The jail root itself must be writable by the dropped uid: Firecracker
-    // creates the vsock socket inside it.
-    chown(&layout.jail_root, Some(uid), Some(gid))
-        .map_err(|e| format!("cannot chown jail root to {uid}:{gid}: {e}"))?;
-    for path in &placed {
-        chown(path, Some(uid), Some(gid))
-            .map_err(|e| format!("cannot chown {} to {uid}:{gid}: {e}", path.display()))?;
-    }
-
-    Ok(())
+    // creates the vsock socket inside it. A directory this function created.
+    std::os::unix::fs::chown(&layout.jail_root, Some(uid), Some(gid))
+        .map_err(|e| format!("cannot chown jail root to {uid}:{gid}: {e}"))
 }
 
 /// The directory the jailer nests pods under: the basename of the Firecracker binary.
@@ -845,11 +738,10 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
 /// `jailer_argv_never_enables_the_pci_transport` pins. Neither half should be
 /// reachable from spec input.
 ///
-/// A spec-supplied `pci=` is **stripped**, not honoured and not an error:
-/// `from_spec` returns `Self` with no error channel, and silently keeping a
-/// weaker value would be the worst of the three options. In nucleus's model no
-/// PodSpec has a legitimate reason to want guest PCI — the VMM is not started
-/// with the PCI transport at all.
+/// A spec-supplied `pci=` used to be **stripped** here because `from_spec` had
+/// no error channel. Since #3124 it is **refused at admission**
+/// (`nucleus_spec::boot_args`): the node builds the whole line, so this strip
+/// is a closure over the node's own assembly and never edits spec input.
 /// Ungated although its only caller is Linux-only, so the logic is compiled and
 /// unit-tested on a macOS dev host rather than only in CI.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -958,37 +850,31 @@ impl FirecrackerConfig {
             .unwrap_or(512) as i64;
 
         let huge_pages = spec.spec.resources.as_ref().and_then(|r| r.huge_pages);
-        let default_args = format!("console=ttyS0 reboot=k panic=1 pci=off init={INIT}");
-        let mut boot_args = match image.boot_args.clone() {
-            Some(args) => {
-                if args.contains("init=") {
-                    Some(args)
-                } else {
-                    Some(format!("{args} init={INIT}"))
-                }
-            }
-            None => Some(default_args),
+        // The node owns the command line (#3124), and this is its one builder: the node's base,
+        // then the tokens the spec was admitted to add, then the node's own keys, then the audit
+        // sink as rendered by the parser admission ran (#3120). The spec's tokens come from
+        // `HostImage::spec_boot_args`, which admission parsed against the allowlist, and never
+        // from the raw `image.boot_args` string. So no branch here asks what the spec wrote, and
+        // no spec token can stand in for `init=`, `nucleus.net=` or `ipv6.disable=`, or precede
+        // a `nucleus.*` key the guest reads first-match.
+        let mut base = vec![
+            "console=ttyS0".to_string(),
+            "reboot=k".to_string(),
+            "panic=1".to_string(),
+            format!("init={INIT}"),
+        ];
+        let admitted = image.spec_boot_args().tokens();
+        base.extend(admitted.iter().map(ToString::to_string));
+        base.extend(net_plan.map(net::NetPlan::kernel_arg));
+        base.push("ipv6.disable=1".to_string());
+        // A spec can no longer supply `pci=`, so this strips nothing. It stays as the
+        // Lean-modelled closure (`GuestDeviceSurfaceProofs`): every line the node builds ends in
+        // exactly one `pci=off`. See `enforce_pci_off`.
+        let mut line = enforce_pci_off(&base.join(" "));
+        let mut push = |token: &str| {
+            line.push(' ');
+            line.push_str(token);
         };
-
-        if let Some(plan) = net_plan {
-            let extra = plan.kernel_arg();
-            boot_args = match boot_args.take() {
-                Some(args) if args.contains("nucleus.net=") => Some(args),
-                Some(args) => Some(format!("{args} {extra}")),
-                None => Some(extra),
-            };
-        }
-
-        boot_args = match boot_args.take() {
-            Some(args) if args.contains("ipv6.disable=") => Some(args),
-            Some(args) => Some(format!("{args} ipv6.disable=1")),
-            None => Some("ipv6.disable=1".to_string()),
-        };
-
-        // Applied AFTER every branch that can build a command line, so no path
-        // — default, spec-supplied, or net-augmented — can reach the guest
-        // without it. See `enforce_pci_off`.
-        boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
         // OS assumption: KB-VSOCK-PEER-CID; docs/assumptions/kernel-behaviour.md.
         // `nucleus.auth_secret` is NO LONGER EMITTED.
@@ -1018,19 +904,11 @@ impl FirecrackerConfig {
         // nothing else with the key — reading it grants no forging power, so
         // it is safe on a world-readable channel, and it is per-node config,
         // so it does not block a snapshot base (see `SHARED_CONFIG_KEYS`).
-        boot_args = match boot_args.take() {
-            Some(args) => Some(format!(
-                "{args} nucleus.approval_pubkeys={approval_pubkeys}"
-            )),
-            None => Some(format!("nucleus.approval_pubkeys={approval_pubkeys}")),
-        };
+        push(&format!("nucleus.approval_pubkeys={approval_pubkeys}"));
 
         // Inject workload API port if identity management is enabled
         if let Some(port) = workload_api_port {
-            boot_args = match boot_args.take() {
-                Some(args) => Some(format!("{args} nucleus.workload_api_port={port}")),
-                None => Some(format!("nucleus.workload_api_port={port}")),
-            };
+            push(&format!("nucleus.workload_api_port={port}"));
         }
 
         // Inject audit S3 sink config via kernel args. Rendered by the same parser admission ran
@@ -1040,14 +918,7 @@ impl FirecrackerConfig {
         // a closure over that, like `enforce_pci_off`, and emits no sink rather than a raw value.
         if let Some(ref sink) = spec.spec.audit_sink {
             match crate::spec_posture::audit_sink_boot_args(sink) {
-                Ok(tokens) => {
-                    for token in tokens {
-                        boot_args = match boot_args.take() {
-                            Some(args) => Some(format!("{args} {token}")),
-                            None => Some(token),
-                        };
-                    }
-                }
+                Ok(tokens) => tokens.iter().map(String::as_str).for_each(&mut push),
                 Err(refused) => tracing::error!(%refused, "audit sink not rendered"),
             }
             // The AWS credentials are NO LONGER EMITTED here.
@@ -1063,9 +934,7 @@ impl FirecrackerConfig {
             // stays: it is per-fleet configuration, not a secret, and the
             // snapshot guard classifies it as shared.
             if let Ok(region) = std::env::var("AWS_DEFAULT_REGION") {
-                if let Some(ref mut args) = boot_args {
-                    args.push_str(&format!(" nucleus.aws_default_region={region}"));
-                }
+                push(&format!("nucleus.aws_default_region={region}"));
             }
         }
 
@@ -1123,7 +992,7 @@ impl FirecrackerConfig {
                 } else {
                     image.kernel_path.display().to_string()
                 },
-                boot_args,
+                boot_args: Some(line),
             },
             drives: lower_drives(image, jailed),
             machine_config: MachineConfig {
@@ -1160,10 +1029,11 @@ impl FirecrackerConfig {
 
 /// ISOLATION INVARIANT (1) — read-only rootfs.
 ///
-/// The rootfs drive's `is_read_only` is a pure function of `image.read_only`:
-/// an RO policy lowers to `is_read_only = true` and an RW policy lowers to
-/// `false` (no silent flip in either direction). The optional scratch drive is
-/// always writable and never the root device.
+/// The rootfs drive is ALWAYS `is_read_only = true`, and `image.read_only` is
+/// not read here (#3132): the rootfs is the node's shared artifact, so there is
+/// no spec under which a pod may write it. `spec_posture::admit` refuses
+/// `read_only: false` by name; this is what holds if a spec reaches the lowering
+/// without passing it. The scratch drive is the writable one, never root.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// ISOLATION INVARIANT: under the jailer, `path_on_host` is a path in the JAIL.
 /// Firecracker resolves it after `chroot`, so a host path here would simply not
@@ -1177,7 +1047,7 @@ fn lower_drives(image: &HostImage, jailed: bool) -> Vec<DriveConfig> {
             image.rootfs_path().display().to_string()
         },
         is_root_device: true,
-        is_read_only: image.read_only,
+        is_read_only: true,
     }];
 
     if let Some(ref scratch) = image.scratch_path {

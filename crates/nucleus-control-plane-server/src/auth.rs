@@ -215,6 +215,11 @@ pub enum AuthError {
     AudienceMismatch,
     #[error("subject {sub:?} does not start with allowed prefix")]
     SubjectPrefixMismatch { sub: String },
+    /// The `sub` is not the one canonical spelling of a SPIFFE ID
+    /// (`docs/spiffe-taxonomy.md`). The prefix test reads it as a string, which
+    /// is sound only for that spelling.
+    #[error("subject {sub:?} is not a canonical SPIFFE ID")]
+    NonCanonicalSubject { sub: String },
     #[error("system clock before unix epoch (server misconfigured)")]
     ClockBeforeEpoch,
 }
@@ -233,9 +238,9 @@ impl AuthError {
             | AuthError::BadSignature
             | AuthError::Expired { .. }
             | AuthError::NotYetValid { .. } => StatusCode::UNAUTHORIZED,
-            AuthError::AudienceMismatch | AuthError::SubjectPrefixMismatch { .. } => {
-                StatusCode::FORBIDDEN
-            }
+            AuthError::AudienceMismatch
+            | AuthError::SubjectPrefixMismatch { .. }
+            | AuthError::NonCanonicalSubject { .. } => StatusCode::FORBIDDEN,
             AuthError::ClockBeforeEpoch => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -423,6 +428,9 @@ pub fn verify_jwt_svid(
             return Err(AuthError::SubjectPrefixMismatch { sub: claims.sub });
         }
     }
+    if nucleus_oidc_core::spiffe_federation::SpiffeId::parse(&claims.sub).is_err() {
+        return Err(AuthError::NonCanonicalSubject { sub: claims.sub });
+    }
 
     Ok(AuthenticatedPrincipal::new(claims.sub, auds, true))
 }
@@ -440,6 +448,16 @@ pub enum SpiffeConfigError {
          trust_jwks/allowed_audience/allowed_subject_prefix, or NONE. Got {set_count}/3."
     )]
     Partial { set_count: usize },
+
+    /// The subject prefix does not end at a segment boundary of a canonical
+    /// SPIFFE ID. The check is a byte prefix, so `spiffe://td/ns/a` would also
+    /// admit `spiffe://td/ns/ab/…` and `spiffe://td` would admit
+    /// `spiffe://td.evil/…`.
+    #[error(
+        "allowed_subject_prefix {0:?} must be `spiffe://<trust-domain>/` followed by zero or \
+         more path segments, each followed by `/`"
+    )]
+    SubjectPrefix(String),
 
     /// Production build booted with SPIFFE auth UNCONFIGURED. The orchestration
     /// API (submit/get/cancel/stream job) must not run open — fail-closed
@@ -481,10 +499,21 @@ pub fn resolve_spiffe_auth(
     ) {
         (0, _, _, _) => Ok(None),
         (3, Some(jwks), Some(aud), Some(prefix)) => {
+            if !is_segment_prefix(&prefix) {
+                return Err(SpiffeConfigError::SubjectPrefix(prefix));
+            }
             Ok(Some(SpiffeAuthConfig::new(jwks, aud, prefix)))
         }
         _ => Err(SpiffeConfigError::Partial { set_count }),
     }
+}
+
+/// Is `prefix` a canonical SPIFFE ID prefix ending at a segment boundary:
+/// `spiffe://<td>/` then zero or more `<segment>/`? Decided by the same parser
+/// the subject goes through, on `prefix` completed with one segment.
+pub fn is_segment_prefix(prefix: &str) -> bool {
+    prefix.ends_with('/')
+        && nucleus_oidc_core::spiffe_federation::SpiffeId::parse(&format!("{prefix}x")).is_ok()
 }
 
 /// Fail-closed gate (most-paranoid #6): a PRODUCTION build REQUIRES SPIFFE
@@ -556,6 +585,116 @@ mod tests {
     use ed25519_dalek::{SECRET_KEY_LENGTH, Signer as _, SigningKey};
     use nucleus_oidc_core::Jwk;
     use serde_json::json;
+
+    /// The subject-prefix site, walked (`docs/spiffe-taxonomy.md`, property 2):
+    /// over every prefix and every subject a bounded alphabet makes, a prefix
+    /// the config accepts admits a subject exactly when the subject is a
+    /// canonical ID strictly below it, at a segment boundary, in its trust
+    /// domain. The admission predicate is the one `verify_jwt_svid` runs.
+    #[test]
+    fn an_admitted_subject_is_below_its_prefix_at_a_segment_boundary() {
+        let tds = [
+            "td.example",
+            "td.example.evil",
+            "td.examplex",
+            "TD.example",
+            "td.example:1",
+        ];
+        let words = ["ns", "a", "ab", "", ".", "..", "%2F", "A", "a;b"];
+        let seg_ok = |g: &str| {
+            !g.is_empty()
+                && g != "."
+                && g != ".."
+                && g.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+        };
+        let td_ok = |t: &str| {
+            t.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b".-".contains(&b))
+        };
+        let mut paths: Vec<Vec<&str>> = vec![vec![]];
+        for _ in 0..3 {
+            let longer: Vec<Vec<&str>> = paths
+                .iter()
+                .filter(|p| p.len() < 3)
+                .flat_map(|p| words.iter().map(move |w| [p.clone(), vec![*w]].concat()))
+                .collect();
+            paths.extend(longer);
+            paths.sort();
+            paths.dedup();
+        }
+        let (mut accepted_prefixes, mut admitted, mut checks) = (0usize, 0usize, 0usize);
+        for ptd in tds {
+            for built in paths.iter().filter(|p| p.len() <= 2) {
+                for slash in [false, true] {
+                    let mut prefix = format!("spiffe://{ptd}");
+                    for g in built {
+                        prefix.push('/');
+                        prefix.push_str(g);
+                    }
+                    if slash {
+                        prefix.push('/');
+                    }
+                    // Judge the string, not how it was built: `[""]` without a slash
+                    // spells the same prefix as `[]` with one.
+                    let body = prefix["spiffe://".len()..].strip_suffix('/');
+                    let mut parts = body.unwrap_or("").split('/');
+                    let ptd_eff = parts.next().unwrap_or("");
+                    let pp: Vec<&str> = parts.collect();
+                    let want_prefix = body.is_some()
+                        && !ptd_eff.is_empty()
+                        && td_ok(ptd_eff)
+                        && pp.iter().all(|g| seg_ok(g));
+                    assert_eq!(is_segment_prefix(&prefix), want_prefix, "{prefix:?}");
+                    if !want_prefix {
+                        continue;
+                    }
+                    let ptd = ptd_eff;
+                    accepted_prefixes += 1;
+                    for std in tds {
+                        for sp in paths.iter().filter(|p| !p.is_empty()) {
+                            let sub = format!("spiffe://{std}/{}", sp.join("/"));
+                            let got =
+                                jwt_svid_claims::has_prefix(sub.as_bytes(), prefix.as_bytes())
+                                    && nucleus_oidc_core::spiffe_federation::SpiffeId::parse(&sub)
+                                        .is_ok();
+                            let want = std == ptd
+                                && td_ok(std)
+                                && sp.iter().all(|g| seg_ok(g))
+                                && sp.len() > pp.len()
+                                && sp[..pp.len()] == pp[..];
+                            assert_eq!(got, want, "prefix {prefix:?} subject {sub:?}");
+                            admitted += usize::from(got);
+                            checks += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "subject-prefix walk: {accepted_prefixes} prefixes, {checks} subjects, {admitted} admitted"
+        );
+        assert!(admitted > 0 && checks > admitted);
+    }
+
+    #[test]
+    fn resolve_refuses_a_prefix_without_a_segment_boundary() {
+        let f = Fixture::new();
+        for bad in [
+            "spiffe://td",
+            "spiffe://td/ns/a",
+            "spiffe://td/ns/../",
+            "spiffe://TD/",
+        ] {
+            let err = resolve_spiffe_auth(
+                Some(f.jwks()),
+                Some("aud".to_string()),
+                Some(bad.to_string()),
+            )
+            .unwrap_err();
+            assert!(matches!(err, SpiffeConfigError::SubjectPrefix(_)), "{bad}");
+        }
+    }
 
     /// Fail-closed: a PRODUCTION build (no `insecure-dev`) must REFUSE to boot
     /// when SPIFFE auth is unconfigured. On main the `None` branch only warned

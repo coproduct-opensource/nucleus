@@ -520,6 +520,16 @@ pub async fn start_broker_for_pod(
             // verifier holding another pod's secret would authenticate that
             // pod's proxy against this pod's broker.
             broker_secret: capability.into_verifier(id)?,
+            // This pod's ONE egress balance (#2905): its declared
+            // `network.egress`, or the finite default — never unbounded.
+            egress: crate::egress_meter::EgressMeter::for_pod(
+                spec,
+                crate::lifecycle::pod_dir(&state.state_dir, id),
+                id,
+            ),
+            // The operator's per-call bounds on a streamed call (#2696 P4),
+            // validated at start-up; finite whether or not they were set.
+            stream_limits: state.egress_stream_limits,
         },
         jail_owner,
     ) {

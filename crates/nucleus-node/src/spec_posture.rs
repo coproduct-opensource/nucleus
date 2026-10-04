@@ -29,6 +29,13 @@
 //!   `TimeDelta`'s range panicked the create handler; one inside it minted tokens for centuries.
 //! - **`budget_model`** — the spec priced its own command executions, below the runtime's
 //!   default, so a budget stopped bounding how much a pod could run.
+//! - **`image.read_only`** — `false` attached the rootfs writable, and the rootfs a spec can name
+//!   is the node's shared artifact (#3070/#3071 confine it there), hard-linked into the jail. One
+//!   pod's writes were the next pod's boot image (#3132). The lowering no longer reads the field
+//!   (`lower_drives` attaches every rootfs read-only); refusing it here is what tells the author.
+//! - **[`NODE_OWNED_LABELS`]** — on the container driver, `nucleus.io/proxy-mode` chose whether the
+//!   pod was mediated at all (absent meant not), and `nucleus.io/container-image` chose the image
+//!   the mediating binary came from (#3133). Both are node flags now (`container_mediation`).
 
 use nucleus_spec::{AuditSinkSpec, BudgetModelSpec, PodSpec};
 
@@ -46,6 +53,20 @@ pub(crate) const MAX_TIMEOUT_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// task runner, which the orchestrator supplies there (`spawn_container_pod`). Every other name in
 /// the namespace is the runtime's.
 const SPEC_SETTABLE_RESERVED: &[&str] = &["NUCLEUS_TASK_CMD"];
+
+/// Labels that used to choose a pod's mediation and are now node configuration (#3133). A spec
+/// naming one is refused at create rather than ignored, whatever its value, so its author learns
+/// the node no longer reads it. Each entry names the node setting that owns the fact instead.
+pub(crate) const NODE_OWNED_LABELS: &[(&str, &str)] = &[
+    (
+        "nucleus.io/proxy-mode",
+        "whether the pod is mediated is the node's --container-mediation",
+    ),
+    (
+        "nucleus.io/container-image",
+        "the image, and so the binary that mediates the pod, is the node's --container-image",
+    ),
+];
 
 /// Why a spec was refused. Every variant names the field, and the value where showing it is safe.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -88,12 +109,25 @@ pub(crate) enum PostureRefused {
         value: f64,
         floor: f64,
     },
+    /// A writable root filesystem. The rootfs is the node's shared artifact, never the pod's.
+    #[error(
+        "image.read_only false is refused: the root filesystem a pod names is the node's shared \
+         artifact, which every later pod boots, so the node attaches it read-only. Writable \
+         storage is `/work`, on the per-pod scratch disk the node provisions (or `scratch_path`)."
+    )]
+    WritableRootfs,
     /// A container network mode other than the node's own or `none`.
     #[error(
         "label nucleus.io/network `{value}` is refused: a pod may ask for `none` or the node's \
          own network (`{node}`), never a different one such as `host`"
     )]
     ContainerNetwork { value: String, node: String },
+    /// A label naming a fact the node owns.
+    #[error("label {label} is refused: {owner}. A pod spec cannot choose its own mediation.")]
+    NodeOwnedLabel {
+        label: &'static str,
+        owner: &'static str,
+    },
 }
 
 impl From<PostureRefused> for ApiError {
@@ -104,6 +138,11 @@ impl From<PostureRefused> for ApiError {
 
 /// Refuse at create a spec that asks for a weaker posture than the node gives. The one decider.
 pub(crate) fn admit(spec: &PodSpec) -> Result<(), PostureRefused> {
+    for &(label, owner) in NODE_OWNED_LABELS {
+        if spec.metadata.labels.contains_key(label) {
+            return Err(PostureRefused::NodeOwnedLabel { label, owner });
+        }
+    }
     let inner = &spec.spec;
     if let Some(sink) = &inner.audit_sink {
         audit_sink_boot_args(sink)?;
@@ -127,6 +166,9 @@ pub(crate) fn admit(spec: &PodSpec) -> Result<(), PostureRefused> {
     }
     if let Some(model) = &inner.budget_model {
         budget_model(model)?;
+    }
+    if inner.image.as_ref().is_some_and(|image| !image.read_only) {
+        return Err(PostureRefused::WritableRootfs);
     }
     Ok(())
 }
