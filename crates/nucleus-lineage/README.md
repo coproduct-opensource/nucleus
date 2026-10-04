@@ -62,7 +62,7 @@ For Graphviz output: `--format dot`. For machine-readable JSON: `--format json`.
 
 | Module | Purpose |
 |---|---|
-| `id::CallSpiffeId` | SPIFFE-format identity. Validates `/call/<uuid>/...` suffix structure and content-hash format; full SPIFFE ID grammar enforcement is roadmap. Round-trips through serde. |
+| `id::CallSpiffeId` | SPIFFE-format identity. Enforces the SPIFFE ID grammar (lowercase trust domain ≤ 255 bytes, no empty, `.` or `..` segments, `[A-Za-z0-9._-]` segments, ≤ 2048 bytes; see [`docs/spiffe-taxonomy.md`](../../docs/spiffe-taxonomy.md)) plus the `/call/<uuid>/...` suffix structure and content-hash format. Round-trips through serde, and deserialization validates. |
 | `edge::LineageEdge` | One record in the DAG: `(child, parents[], kind, content_hash, ts, attrs)`. JSON wire format. **Edges are not yet signed.** |
 | `sink::LineageSink` | Trait for persistence. `InMemorySink` (tests) + `JsonlSink` (file-backed, `O_APPEND` mode — not tamper-evident, see below) ship in this crate. |
 | `issuer::IdentityFetcher` | Trait for JWT-SVID minting. `LocalIssuer` (Ed25519, in-process, demo-only) ships here. **No SPIRE-backed impl exists in this repo yet.** |

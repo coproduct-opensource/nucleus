@@ -70,7 +70,10 @@ rm -f "$gb"
 # added to CI and never reaching the fast path, and the Lean builds were four required
 # contexts CI alone was deciding. Dropping either is the defect both sides exist to prevent;
 # running a gate twice is merely wasteful, so the union errs toward running more.
-run "check-line-ratchet --strict" bash scripts/check-line-ratchet.sh --strict
+# The cheap tree-only gates -- exemplar ratchet, cargo-audit, scorecard, line ratchet --strict --
+# as ONE typed Rust command (crates/xtask/src/prepush.rs). Owner decision 2026-10-02: all four
+# reached the merge queue that day. Pass/Fail/CouldNotRun per gate; a missing cargo-audit is a red.
+run "xtask prepush (tree-only gates)" cargo run -q -p xtask -- prepush
 # Three gates CI decides that this file did not, measured 2026-09-20 by pushing five branches
 # green and watching CI red on each. All three already existed in the tree; none was a cost
 # trade-off, just a list nobody reconciled. Timed before adding: 0 s and 3 s, against a fast
@@ -84,11 +87,9 @@ run "ci-spec check" cargo run -q -p xtask -- ci-spec check
 # The gauntlet checking its own list. Cheap, and the only thing that stops a gate being added to
 # CI and never reaching the fast path -- which is how three of today's five misses happened.
 run "ci-spec local-coverage" cargo run -q -p xtask -- ci-spec local-coverage
-# The scorecard families (bound, alg, tot, life, typed, suppress) and their ratchet. Manifest
-# Guards runs it and this file did not: on 2026-09-26 #3019 and #3020 each passed this gauntlet
-# 31/31 and then went red in CI -- a new crate diluting `tot` below its floor, a new affine
-# right entering `life` without a validity interval. 2.8 s warm.
-run "xtask scorecard" cargo run -q -p xtask -- scorecard
+# The scorecard families (bound, alg, tot, life, typed, suppress) and their ratchet run inside
+# `xtask prepush` above. Manifest Guards runs it: on 2026-09-26 #3019 and #3020 each passed this
+# gauntlet 31/31 and then went red in CI -- a new crate diluting `tot` below its floor.
 
 # The Lean gates. Declared NOT-LOCAL on 2026-09-20 on the assumption that a developer has no
 # Lean toolchain -- which was never tested and is wrong: `lean-toolchain` pins v4.30.0 and elan

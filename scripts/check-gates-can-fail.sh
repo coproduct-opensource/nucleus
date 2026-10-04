@@ -1935,6 +1935,7 @@ UNCOVERED=(
     # and the ceiling below only shrinks. Two of the ten are probed already.
     "xtask ci-spec                 reads live branch protection; a perturbation needs the GitHub API, not a file"
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure"
+    "xtask prepush                 a local aggregator CI never runs (only scripts/prepush.sh calls it, so no workflow invocation exists to probe); each gate it wraps is decided in CI on its own -- scoreboard-ratchet and scorecard probed, line-ratchet via check-line-ratchet.sh, cargo audit in audit.yml -- and its fold is unit-tested in crates/xtask/src/prepush.rs. Remove when the domain is derived from CI-reachable sources only"
 )
 # Was 5. Three were paid down once their detection was read rather than guessed
 # at. The remaining two need a Cargo.lock change, which this script will not make.
@@ -1991,7 +1992,15 @@ UNCOVERED=(
 # One entry added to `network_allow` is refused as CapabilityNonEscalation. Sixth entry
 # this session whose stated obstacle named the gate's SUBJECT and not its DETECTION.
 # 2026-09-12: merging all three independent removals above leaves two exemptions.
-UNCOVERED_CEILING=2
+#
+# 2026-10-02, 2 -> 3: `xtask prepush` (#3165) enters the domain because the domain is
+# globbed over scripts/*.sh and scripts/prepush.sh -- the LOCAL gauntlet, which CI never
+# runs -- now calls it. Not a relaxation of any CI gate: every gate it wraps is still
+# decided, and probed, on its own. It is listed rather than hidden (respelling the call
+# so the regex misses it would be the vacuity this script exists to find). The row goes,
+# and this returns to 2, when the domain is derived from CI-reachable sources only --
+# a logic change that belongs in the Rust port, not here.
+UNCOVERED_CEILING=3
 
 # ── Self-falsified elsewhere, not here ────────────────────────────────────
 #

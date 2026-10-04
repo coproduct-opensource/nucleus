@@ -1,0 +1,172 @@
+[
+  {
+    "configuration": {
+      "capAdd": [
+        "CAP_NET_ADMIN",
+        "CAP_SYS_ADMIN",
+        "CAP_SYS_PTRACE"
+      ],
+      "capDrop": [],
+      "creationDate": "2026-09-30T03:03:34Z",
+      "dns": {
+        "nameservers": [],
+        "options": [],
+        "searchDomains": []
+      },
+      "id": "nucleus-dev-microvm-host",
+      "image": {
+        "descriptor": {
+          "annotations": {
+            "com.apple.containerization.image.name": "nucleus-dev-microvm-host:local",
+            "io.containerd.image.name": "docker.io/library/nucleus-dev-microvm-host:local",
+            "org.opencontainers.image.created": "2026-09-30T03:02:42Z",
+            "org.opencontainers.image.ref.name": "local"
+          },
+          "digest": "sha256:c8adcdbcb8ab249091ddda7f9f9e570318f7ee339a16c9c6e2ba8fe45ddff416",
+          "mediaType": "application/vnd.oci.image.index.v1+json",
+          "size": 375
+        },
+        "reference": "nucleus-dev-microvm-host:local"
+      },
+      "initProcess": {
+        "arguments": [],
+        "environment": [
+          "NUCLEUS_IDENTITY_TRUST_DOMAIN=nucleus.local",
+          "NUCLEUS_FIRECRACKER_PATH=/usr/local/bin/firecracker",
+          "NUCLEUS_NODE_LISTEN=0.0.0.0:8080",
+          "RUST_LOG=info",
+          "NUCLEUS_NODE_PROXY_APPROVAL_SECRET=test-secret-nucleus_node_proxy_approval_secret",
+          "NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=/srv/state/wapi.sock",
+          "NUCLEUS_JAILER_PATH=/usr/local/bin/jailer",
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+          "NUCLEUS_NODE_PROXY_AUTH_SECRET=test-secret-nucleus_node_proxy_auth_secret",
+          "NUCLEUS_NODE_STATE_DIR=/srv/state",
+          "NUCLEUS_NODE_DRIVER=firecracker",
+          "NUCLEUS_NODE_AUTH_SECRET=test-secret-nucleus_node_auth_secret",
+          "NUCLEUS_JAILER_CHROOT_BASE=/srv/jailer"
+        ],
+        "executable": "/usr/local/bin/nucleus-node",
+        "rlimits": [],
+        "supplementalGroups": [],
+        "terminal": false,
+        "user": {
+          "id": {
+            "gid": 0,
+            "uid": 0
+          }
+        },
+        "workingDirectory": "/"
+      },
+      "labels": {
+        "org.nucleus.microvm-host": "nucleus-dev-microvm-host"
+      },
+      "mounts": [
+        {
+          "destination": "/srv",
+          "options": [],
+          "source": "/Users/me/Library/Application Support/com.apple.container/volumes/nucleus-dev-microvm-host-srv/volume.img",
+          "type": {
+            "volume": {
+              "cache": {
+                "on": {}
+              },
+              "format": "ext4",
+              "name": "nucleus-dev-microvm-host-srv",
+              "sync": {
+                "fsync": {}
+              }
+            }
+          }
+        },
+        {
+          "destination": "/srv/state/ca",
+          "options": [],
+          "source": "/Users/me/nucleus/target/microvm-host-live/state/ca",
+          "type": {
+            "virtiofs": {}
+          }
+        }
+      ],
+      "networks": [
+        {
+          "network": "default",
+          "options": {
+            "hostname": "nucleus-dev-microvm-host",
+            "mtu": 1280
+          }
+        }
+      ],
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux"
+      },
+      "publishedPorts": [
+        {
+          "containerPort": 8080,
+          "count": 1,
+          "hostAddress": "127.0.0.1",
+          "hostPort": 61110,
+          "proto": "tcp"
+        },
+        {
+          "containerPort": 7101,
+          "count": 1,
+          "hostAddress": "127.0.0.1",
+          "hostPort": 61111,
+          "proto": "tcp"
+        },
+        {
+          "containerPort": 7102,
+          "count": 1,
+          "hostAddress": "127.0.0.1",
+          "hostPort": 61112,
+          "proto": "tcp"
+        },
+        {
+          "containerPort": 7103,
+          "count": 1,
+          "hostAddress": "127.0.0.1",
+          "hostPort": 61113,
+          "proto": "tcp"
+        },
+        {
+          "containerPort": 7104,
+          "count": 1,
+          "hostAddress": "127.0.0.1",
+          "hostPort": 61114,
+          "proto": "tcp"
+        }
+      ],
+      "publishedSockets": [],
+      "readOnly": false,
+      "resources": {
+        "cpuOverhead": 1,
+        "cpus": 4,
+        "memoryInBytes": 4294967296
+      },
+      "rosetta": false,
+      "runtimeHandler": "container-runtime-linux",
+      "ssh": false,
+      "sysctls": {},
+      "useInit": true,
+      "virtualization": true
+    },
+    "id": "nucleus-dev-microvm-host",
+    "status": {
+      "networks": [
+        {
+          "hostname": "nucleus-dev-microvm-host",
+          "ipv4Address": "192.168.64.102/24",
+          "ipv4Gateway": "192.168.64.1",
+          "ipv6Address": "fdef:5eb4:acb8:4aeb:f8fd:ccff:fe9b:12f4/64",
+          "macAddress": "fa:fd:cc:9b:12:f4",
+          "mtu": 1280,
+          "network": "default",
+          "variant": "reserved"
+        }
+      ],
+      "startedDate": "2026-09-30T03:03:35Z",
+      "state": "running"
+    }
+  }
+]
