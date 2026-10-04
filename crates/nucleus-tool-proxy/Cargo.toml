@@ -135,7 +135,7 @@ aws-config = { workspace = true, optional = true }
 tokio-vsock = "0.7"
 
 [dev-dependencies]
-nix = { version = "0.31", default-features = false, features = ["fs"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "process"] }
 # Credential minting for the DLC admission provisioning tests (same rev as
 # portcullis's dlc-d pin).
 dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }

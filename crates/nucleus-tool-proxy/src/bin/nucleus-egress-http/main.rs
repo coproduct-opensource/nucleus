@@ -11,6 +11,8 @@ use axum::http::{Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clap::Parser;
 
+mod managed;
+
 #[derive(Parser)]
 #[command(about = "Expose one credentialed broker upstream to local HTTP clients")]
 struct Args {
@@ -26,6 +28,9 @@ struct Args {
     /// Total request deadline, including operator approval and streamed response.
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
     timeout_seconds: u64,
+    /// Optional workload to run once the listener is bound: -- command args...
+    #[arg(last = true)]
+    command: Vec<std::ffi::OsString>,
 }
 
 /// A listener address checked before it can be bound by this adapter.
@@ -166,7 +171,7 @@ fn router(adapter: Adapter) -> Router {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let args = Args::parse();
     let adapter = Adapter::new(
         &args.door,
@@ -174,12 +179,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Duration::from_secs(args.timeout_seconds),
     )?;
     let listener = args.listen.bind().await?;
-    println!(
-        "NUCLEUS_EGRESS_HTTP_READY http://{}",
-        listener.local_addr()?
-    );
-    axum::serve(listener, router(adapter)).await?;
-    Ok(())
+    let address = listener.local_addr()?;
+    println!("NUCLEUS_EGRESS_HTTP_READY http://{}", address);
+    managed::run(
+        listener,
+        router(adapter),
+        args.command,
+        managed::shutdown()?,
+    )
+    .await
 }
 
 #[cfg(test)]

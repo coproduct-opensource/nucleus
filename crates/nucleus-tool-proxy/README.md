@@ -7,12 +7,22 @@ HTTP JSON tool proxy that runs inside a pod (VM) and enforces nucleus policies.
 `nucleus-egress-http` exposes one registered broker upstream on guest loopback.
 Build it with `cargo build -p nucleus-tool-proxy --bin nucleus-egress-http` and
 include the executable in the guest image. Both the guest layer and release
-rootfs builder include it. Start and supervise it alongside the harness,
-under the same workload UID:
+rootfs builder include it. Use it as the pod's workload command to manage the
+listener and harness together, under the same workload UID:
 
 ```text
-nucleus-egress-http --upstream model-api --listen 127.0.0.1:18081
+nucleus-egress-http --upstream model-api --listen 127.0.0.1:18081 -- /opt/harness/bin/agent task
 ```
+
+The adapter binds before launching the command after `--`, passes its arguments
+verbatim, and sets `NUCLEUS_EGRESS_HTTP_URL` to the bound listener URL. The
+orchestrator configures the harness's API base using this URL or the fixed
+listen address. The command inherits the workload's filtered environment,
+working directory and captured standard streams. Its exit status becomes the
+adapter's exit status; the listener closes when the command exits. SIGINT or
+SIGTERM stops and reaps the direct child. The enclosing pod supervisor remains
+responsible for containment and descendant cleanup. Without a command, the
+adapter runs as a standalone listener until stopped.
 
 For the legacy rootfs builder, the adapter must be beside `PROXY_BIN` in the
 build directory. A normal package build produces both executables. Image

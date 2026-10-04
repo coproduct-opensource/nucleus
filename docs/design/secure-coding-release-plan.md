@@ -129,11 +129,15 @@ recovery. A serializable library object alone is not this deliverable.
 
 ## Verification and completion
 
-Each implementation change gets focused adversarial and positive controls, with
-regression checks driven red where required by ADR 0007. Follow repository
-prepush gates before every push. Protocol consumers include the node and the
-tool proxy with all features. Real guest behavior needs a supported Tier-2 host;
-macOS unit tests do not prove the Linux launch path.
+Owner direction (2026-10-04): prioritize design implementation and the supported
+coding workflow; stop the active red-team work. Outstanding adversarial cases
+below remain unverified, but do not drive the current work queue. Continue with
+ordinary workload execution, artifact collection and approval UX.
+
+Validate implementation changes with ordinary functional and regression checks.
+Follow repository prepush gates before every push. Protocol consumers include
+the node and the tool proxy with all features. Real guest behavior needs a
+supported Tier-2 host; macOS unit tests do not prove the Linux launch path.
 
 The overall work remains incomplete until all six outcomes have current
 implementation and verification evidence. Marketplace/economic expansion and
@@ -1057,3 +1061,19 @@ default-feature test compilation.
 
 The updated binary still needs the real compromised-guest streaming run,
 including nonce replay, spent-approval reuse and changed-payload refusal.
+
+### Managed HTTP adapter workload (2026-10-04)
+
+The adapter now accepts `-- command args...`. It binds the loopback listener
+before spawning that command, supplies `NUCLEUS_EGRESS_HTTP_URL`, and preserves
+the direct child's exit status. Both processes run inside the already admitted
+workload's UID and containment, with its filtered environment and captured
+standard streams. A child exit closes the listener; adapter termination kills
+and reaps the direct child. The pod supervisor retains responsibility for
+descendant cleanup. Standalone listener mode remains available.
+
+All eight adapter tests passed, including endpoint delivery, exit status,
+listener shutdown and direct-child reaping. An actual CLI invocation with an
+ephemeral listener and ordinary shell workload preserved exit code 7. Clippy
+with warnings denied passed. This implements managed launch; a complete coding
+session and artifact/approval UX still remain to be exercised.
