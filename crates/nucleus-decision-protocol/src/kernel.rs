@@ -109,7 +109,7 @@ pub fn taint_report(graph: &FlowGraph) -> LabelRaise {
     })
 }
 
-/// The host's taint for one decision channel (owner decision D2).
+/// The host's taint for one pod, shared across decision channels (decision D2).
 ///
 /// One label, starting at the bottom of the lattice — in shadow mode the host
 /// has delivered nothing to the guest yet, so it has nothing of its own to

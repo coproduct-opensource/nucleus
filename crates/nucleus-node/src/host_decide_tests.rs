@@ -97,7 +97,7 @@ async fn guest_kernel(auth: &PodAuthority, pod: Uuid) -> Kernel {
 }
 
 /// A pod's real listener, on a socket in `dir`.
-fn listen(
+async fn listen(
     dir: &Path,
     auth: &Arc<PodAuthority>,
     pod: Uuid,
@@ -106,15 +106,17 @@ fn listen(
     DecideListener::start(
         &dir.join("v.sock"),
         DECISION_VSOCK_PORT,
-        PodDecide {
+        PodDecide::new(
             pod,
-            authority: Arc::clone(auth),
-            epochs: Arc::clone(epochs),
-            recorder: Recorder {
+            Arc::clone(auth),
+            Arc::clone(epochs),
+            Recorder {
                 tally: Arc::new(ShadowTally::default()),
                 log: Some(dir.join(DISAGREEMENT_LOG)),
             },
-        },
+        )
+        .await
+        .expect("pod policy"),
         None,
     )
     .expect("listener binds")
@@ -432,7 +434,7 @@ async fn host_and_guest_agree_over_the_corpus() {
         let auth = authority(dir.path());
         let pod = admit(&auth, s.policy.clone()).await;
         let epochs = Arc::new(EpochSource::seeded());
-        let listener = listen(dir.path(), &auth, pod, &epochs);
+        let listener = listen(dir.path(), &auth, pod, &epochs).await;
         let tally = listener.tally();
         let mut guest = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
         let mut here = 0u64;
@@ -512,7 +514,7 @@ async fn a_divergent_host_policy_is_recorded() {
     let host_pod = admit(&auth, PermissionLattice::restrictive()).await;
     let guest_pod = admit(&auth, PermissionLattice::permissive()).await;
     let epochs = Arc::new(EpochSource::seeded());
-    let listener = listen(dir.path(), &auth, host_pod, &epochs);
+    let listener = listen(dir.path(), &auth, host_pod, &epochs).await;
     let tally = listener.tally();
     let mut guest = Guest::new(
         guest_kernel(&auth, guest_pod).await,
@@ -619,7 +621,7 @@ async fn every_channel_has_its_own_epoch() {
     let auth = authority(dir.path());
     let pod = admit(&auth, PermissionLattice::permissive()).await;
     let epochs = Arc::new(EpochSource::seeded());
-    let listener = listen(dir.path(), &auth, pod, &epochs);
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
 
     async fn epoch_of(g: &mut Guest<tokio::net::UnixStream>) -> u64 {
         let x = g.decide(Operation::ReadFiles, "a").await;
@@ -695,6 +697,104 @@ fn the_epoch_counter_never_wraps_onto_a_used_epoch() {
 }
 
 // ── replay ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn taint_survives_another_channel_and_reconnect() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let listener = listen(dir.path(), &auth, pod, &Arc::new(EpochSource::seeded())).await;
+    let mut observer = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    let mut peer = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    assert_eq!(
+        observer.decide(Operation::GitCommit, "commit").await.host,
+        Outcome::Allowed
+    );
+    observer.observe(NodeKind::WebContent);
+    let denied = Outcome::Denied {
+        reason: DenyReason::FlowRefused,
+    };
+    assert_eq!(
+        observer.decide(Operation::GitCommit, "commit").await.host,
+        denied
+    );
+    // This connection existed before the observation, and reports clean.
+    let exchange = peer.decide(Operation::GitCommit, "commit").await;
+    assert_eq!(
+        exchange.guest,
+        Outcome::Allowed,
+        "positive control: fresh guest allows"
+    );
+    assert_eq!(exchange.host, denied);
+    drop((observer, peer));
+    let mut replacement = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    assert_eq!(
+        replacement
+            .decide(Operation::GitCommit, "commit")
+            .await
+            .host,
+        denied
+    );
+    drop(replacement);
+    let tally = listener.shutdown().await;
+    assert_eq!(tally.faults, 0);
+    assert_eq!(
+        tally.disagree, 2,
+        "clean guest reports cannot reset host history"
+    );
+}
+
+#[tokio::test]
+async fn policy_history_and_faults_survive_channel_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let decide = PodDecide::new(
+        pod,
+        auth,
+        Arc::new(EpochSource::seeded()),
+        Recorder {
+            tally: Arc::new(ShadowTally::default()),
+            log: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut original = decide.open().await.unwrap();
+    let _id = allowed_id(&decide_step(&mut original, 0, Operation::ReadFiles, "a"));
+    // Simulate a host charge. Broker cost settlement remains separate work;
+    // this test proves that reopening does not replace the charged kernel.
+    {
+        let mut state = decide.policy.lock().unwrap();
+        let remaining = state.kernel.remaining_usd();
+        state.kernel.charge(remaining).unwrap();
+    }
+    drop(original);
+    let mut replacement = decide.open().await.unwrap();
+    assert!(matches!(
+        HostFrame::decode(&decide_step(&mut replacement, 0, Operation::ReadFiles, "a")).unwrap(),
+        HostFrame::Verdict {
+            verdict: Verdict::Denied {
+                reason: DenyReason::BudgetExhausted
+            },
+            ..
+        }
+    ));
+    let policy = Arc::clone(&decide.policy);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = policy.lock().unwrap();
+        panic!("interrupt a policy update");
+    }));
+    assert!(panic.is_err());
+    let mut poisoned = decide.open().await.unwrap();
+    assert!(matches!(
+        poisoned.step(GuestFrame::Observe {
+            seq: Seq::FIRST,
+            label_raise: taint_report(&FlowGraph::new()),
+        }),
+        Err(ChannelError::PolicyUnavailable)
+    ));
+}
 
 fn decide_step(c: &mut Channel, seq: u64, op: Operation, subject: &str) -> Vec<u8> {
     let subject = Subject::new(subject).unwrap();
@@ -912,7 +1012,7 @@ async fn garbage_is_a_counted_fault_and_the_listener_survives() {
     let auth = authority(dir.path());
     let pod = admit(&auth, PermissionLattice::permissive()).await;
     let epochs = Arc::new(EpochSource::seeded());
-    let listener = listen(dir.path(), &auth, pod, &epochs);
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
     let mut junk = connect(&listener).await;
     junk.write_all(&[0, 0, 0, 3, 9, 9, 9]).await.unwrap();
     let mut buf = [0u8; 1];
@@ -951,7 +1051,7 @@ async fn the_hosts_taint_only_rises() {
     })
     .unwrap();
     assert!(portcullis::exposure_core::EgressAggregates::is_tainted(
-        c.taint()
+        &c.taint()
     ));
     let reply = decide_step(&mut c, 2, Operation::GitCommit, "commit");
     assert_eq!(

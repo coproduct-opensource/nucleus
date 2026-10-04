@@ -11,8 +11,9 @@ repository.
 
 Issues: #2702, #3114, #3115, #3116, #3117.
 
-Current baseline: `host_decide` is shadow-only. Its kernel, taint and ledger are
-per connection. Broker PERFORM and streaming calls do not consume host decision
+Current baseline: `host_decide` is shadow-only. Its kernel and taint are now
+shared across pod channels; decision ledgers remain per connection. Broker
+PERFORM and streaming calls do not consume host decision
 rights. `pod_api/trust_boundary.rs` records six expected gaps. None of those gaps
 may be relabelled as holding solely because a protocol or kernel unit test passes.
 
@@ -40,9 +41,17 @@ Implementation sequence:
    reset observed taint, spent budget or revocation. Concurrent channels must
    share the applicable limits. Host-delivered observations raise host taint
    independently of guest reports.
+   **In progress:** the shadow service shares one kernel and taint across pod
+   connections. Protocol sequence/decision epochs remain per channel. A policy
+   panic refuses subsequent observations and decisions rather than resetting
+   state. This is in-memory state for the running pod listener, not persistence
+   across node restart. Broker charging, revocation and host-derived observations
+   are not yet wired into this state.
 4. Connect host decisions to both PERFORM and streaming effects. The executable
    effect requires a consumed, matching host decision. Missing, stale, foreign,
    replayed and mismatched decisions refuse before credentials or upstream I/O.
+   Recheck current pod taint, expiry, revocation and budget when committing the
+   effect: another channel may change them after an earlier decision was issued.
 5. Wire authenticated host approval, expiry and one-shot consumption. Preserve
    legitimate approved work; denying every approval-gated operation is not done.
 6. Keep receipt and exit-report authority outside the guest. Distinguish host
@@ -126,3 +135,18 @@ genuine retries still return the original result without another upstream call.
 In-flight and settled bindings are both checked. Removing the effect comparison
 makes `a_retry_key_cannot_name_a_different_effect` fail; restoring it passes.
 These are retry-integrity results, not proof of host-authoritative policy.
+
+### Pod policy lifetime evidence (2026-10-04)
+
+The decision-channel suites pass 16 host and 9 guest tests with all features.
+A real socket test establishes that an observation on one channel affects an
+already-open peer and a newly connected replacement, even when they report clean
+state. A separate test charges the host kernel directly, reopens the channel,
+and observes budget exhaustion; it then poisons the policy lock and verifies
+refusal. This does not claim broker charging is connected. Reintroducing a fresh
+kernel per connection makes the budget-history test fail.
+
+`cargo zigbuild -p nucleus-node --all-features --target
+aarch64-unknown-linux-musl` succeeds, compiling the Linux-only production startup
+as well as the shared implementation. This is cross-build evidence, not a guest
+boot or a node-restart recovery test.
