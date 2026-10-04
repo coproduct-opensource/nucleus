@@ -11,14 +11,17 @@
 //! their spec means something other than what they wrote (#3124, #3125).
 //!
 //! [`admit`] is the one decider, and `create_pod_internal` calls it before anything is spawned.
-//! Where the same fact is needed again when the node builds the channel, the builder calls the
-//! same parser ([`audit_sink_boot_args`]) rather than restating it (ADR 0007 G-1).
+//! Where a fact is needed again when the node builds the channel, admission hands the builder the
+//! value it resolved (the audit sink's [`crate::audit_sink::AuditTarget`]) rather than the builder
+//! deciding again (ADR 0007 G-1).
 //!
 //! # What each check closes
 //!
 //! - **`audit_sink`** — its four strings were appended verbatim to the guest kernel command line,
 //!   after the node's own tokens. A bucket of `b init=/bin/sh` was two tokens; the kernel takes
-//!   the LAST `init=`, so PID 1 was the spec's. Each value is now one token of a fixed charset.
+//!   the LAST `init=`, so PID 1 was the spec's (#3120). And the spec chose the bucket and endpoint
+//!   that the node's credentials then signed writes to (#3131). The spec now only names a sink the
+//!   operator configured and may narrow its prefix (`audit_sink.rs`); an unknown name is refused.
 //! - **`vsock.guest_cid`** — the node's PID-1 transport authenticates the host by peer CID 2
 //!   (`KB-VSOCK-PEER-CID`). A guest whose own CID is 2 makes a loopback peer indistinguishable
 //!   from the host. The guest only ever binds CID 3 (#2395), so 3 is the node's value.
@@ -39,9 +42,10 @@
 //!   pod was mediated at all (absent meant not), and `nucleus.io/container-image` chose the image
 //!   the mediating binary came from (#3133). Both are node flags now (`container_mediation`).
 
-use nucleus_spec::{AuditSinkSpec, BudgetModelSpec, PodSpec};
+use nucleus_spec::{BudgetModelSpec, PodSpec};
 
 use crate::ApiError;
+use crate::audit_sink::{AuditSinks, AuditTarget};
 use crate::pod_resources::{PodCeilings, ResourceRefused};
 
 /// The only guest vsock CID the node configures. The guest binds this CID (#2395), and the host
@@ -84,6 +88,13 @@ pub(crate) enum PostureRefused {
         value: String,
         why: &'static str,
     },
+    /// An `audit_sink` naming a sink this node's operator did not configure (#3131).
+    #[error(
+        "audit_sink.sink `{name}` is refused: {configured}. Audit logs are written with the \
+         operator's credentials, so the operator chooses where (`nucleus-node --audit-sinks`); \
+         a spec may only name one of those sinks and narrow its prefix."
+    )]
+    AuditSinkUnknown { name: String, configured: String },
     /// A guest CID other than the node's.
     #[error(
         "vsock.guest_cid {cid} is refused: the node owns the guest CID and configures {GUEST_CID}. \
@@ -143,7 +154,14 @@ impl From<PostureRefused> for ApiError {
 }
 
 /// Refuse at create a spec that asks for a weaker posture than the node gives. The one decider.
-pub(crate) fn admit(spec: &PodSpec, ceilings: &PodCeilings) -> Result<(), PostureRefused> {
+///
+/// On success, returns where the pod's audit log goes, resolved against the operator's `sinks`:
+/// the only value the drivers render an audit sink from.
+pub(crate) fn admit(
+    spec: &PodSpec,
+    sinks: &AuditSinks,
+    ceilings: &PodCeilings,
+) -> Result<Option<AuditTarget>, PostureRefused> {
     crate::pod_resources::admit(spec, ceilings)?;
     for &(label, owner) in NODE_OWNED_LABELS {
         if spec.metadata.labels.contains_key(label) {
@@ -151,9 +169,7 @@ pub(crate) fn admit(spec: &PodSpec, ceilings: &PodCeilings) -> Result<(), Postur
         }
     }
     let inner = &spec.spec;
-    if let Some(sink) = &inner.audit_sink {
-        audit_sink_boot_args(sink)?;
-    }
+    let audit = sinks.resolve_for(spec)?;
     if let Some(vsock) = &inner.vsock
         && vsock.guest_cid != GUEST_CID
     {
@@ -177,123 +193,7 @@ pub(crate) fn admit(spec: &PodSpec, ceilings: &PodCeilings) -> Result<(), Postur
     if inner.image.as_ref().is_some_and(|image| !image.read_only) {
         return Err(PostureRefused::WritableRootfs);
     }
-    Ok(())
-}
-
-/// The guest kernel command line tokens for an audit sink, or the refusal.
-///
-/// The only way these values reach the command line: `admit` calls it to refuse a spec, and
-/// `FirecrackerConfig::from_spec` calls it to render one. The struct is destructured without `..`
-/// (ADR 0007 E-1), so a new field is a compile error here rather than a value that skips the check.
-pub(crate) fn audit_sink_boot_args(sink: &AuditSinkSpec) -> Result<Vec<String>, PostureRefused> {
-    let AuditSinkSpec {
-        s3_bucket,
-        s3_prefix,
-        s3_region,
-        s3_endpoint,
-    } = sink;
-    let mut args = vec![format!(
-        "nucleus.audit_s3_bucket={}",
-        bucket("s3_bucket", s3_bucket)?
-    )];
-    if let Some(prefix) = s3_prefix {
-        args.push(format!(
-            "nucleus.audit_s3_prefix={}",
-            token("s3_prefix", prefix, is_key_char)?
-        ));
-    }
-    if let Some(region) = s3_region {
-        args.push(format!(
-            "nucleus.audit_s3_region={}",
-            token("s3_region", region, is_region_char)?
-        ));
-    }
-    if let Some(endpoint) = s3_endpoint {
-        args.push(format!(
-            "nucleus.audit_s3_endpoint={}",
-            endpoint_url(endpoint)?
-        ));
-    }
-    Ok(args)
-}
-
-/// The longest audit sink value admitted.
-const MAX_SINK_VALUE: usize = 512;
-
-fn refuse(field: &'static str, value: &str, why: &'static str) -> PostureRefused {
-    PostureRefused::AuditSink {
-        field,
-        value: value.to_string(),
-        why,
-    }
-}
-
-/// One non-empty token of `allowed` characters, at most [`MAX_SINK_VALUE`] long.
-fn token<'a>(
-    field: &'static str,
-    value: &'a str,
-    allowed: fn(char) -> bool,
-) -> Result<&'a str, PostureRefused> {
-    if value.is_empty() || value.len() > MAX_SINK_VALUE {
-        return Err(refuse(field, value, "it must be 1 to 512 characters"));
-    }
-    if !value.chars().all(allowed) {
-        return Err(refuse(
-            field,
-            value,
-            "it contains a character outside its grammar (whitespace and quotes are never allowed)",
-        ));
-    }
-    Ok(value)
-}
-
-/// An S3 bucket name: 3 to 63 of `[a-z0-9.-]`, starting and ending with a letter or digit.
-fn bucket<'a>(field: &'static str, value: &'a str) -> Result<&'a str, PostureRefused> {
-    let edge = |c: Option<char>| c.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
-    let body = value
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
-    if (3..=63).contains(&value.len())
-        && body
-        && edge(value.chars().next())
-        && edge(value.chars().last())
-    {
-        Ok(value)
-    } else {
-        Err(refuse(
-            field,
-            value,
-            "a bucket name is 3 to 63 of [a-z0-9.-], starting and ending with a letter or digit",
-        ))
-    }
-}
-
-/// An `http://` or `https://` URL with no whitespace or quote.
-fn endpoint_url(value: &str) -> Result<&str, PostureRefused> {
-    let value = token("s3_endpoint", value, is_url_char)?;
-    if value.starts_with("https://") || value.starts_with("http://") {
-        Ok(value)
-    } else {
-        Err(refuse(
-            "s3_endpoint",
-            value,
-            "an endpoint is an http:// or https:// URL",
-        ))
-    }
-}
-
-/// S3's "safe" object key characters, plus `/`.
-fn is_key_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '/' | '!' | '-' | '_' | '.' | '*' | '(' | ')')
-}
-
-fn is_region_char(c: char) -> bool {
-    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
-}
-
-/// Visible ASCII except the quote, which the kernel command line parser treats specially.
-fn is_url_char(c: char) -> bool {
-    c.is_ascii_graphic() && c != '"'
+    Ok(audit)
 }
 
 /// A `credentials.env` name: an environment variable name outside the runtime's namespaces.

@@ -6,8 +6,8 @@
 use super::*;
 
 /// The node's default ceilings: these tests are about the other fields.
-fn admit(s: &PodSpec) -> Result<(), PostureRefused> {
-    super::admit(s, &PodCeilings::defaults())
+fn admit(s: &PodSpec, sinks: &AuditSinks) -> Result<Option<AuditTarget>, PostureRefused> {
+    super::admit(s, sinks, &PodCeilings::defaults())
 }
 
 fn spec(inner: &str) -> PodSpec {
@@ -17,81 +17,164 @@ fn spec(inner: &str) -> PodSpec {
     .expect("test spec parses")
 }
 
-fn sink(fields: &str) -> PodSpec {
-    spec(&format!(r#"{{"audit_sink":{{{fields}}}}}"#))
+/// The operator's audit sinks every test here admits against: one sink, named `audit`.
+fn sinks() -> AuditSinks {
+    AuditSinks::from_toml(
+        r#"
+        [[sink]]
+        name     = "audit"
+        bucket   = "operator-audit"
+        prefix   = "nucleus/node-1"
+        region   = "us-east-1"
+        endpoint = "https://objects.internal:9000"
+        "#,
+    )
+    .expect("the operator's sinks load")
+}
+
+fn admitted(s: &PodSpec) -> Result<Option<AuditTarget>, PostureRefused> {
+    admit(s, &sinks())
 }
 
 fn refused(s: &PodSpec) -> PostureRefused {
-    admit(s).expect_err("a hostile spec must be refused at create")
+    admitted(s).expect_err("a hostile spec must be refused at create")
 }
 
-/// The finding: a bucket was appended verbatim to the guest command line, so it could carry its
-/// own `init=` (the kernel takes the last one) or any other token the node did not write.
+/// #3131, the finding: the spec chose the bucket, region and endpoint, and the node handed the
+/// tool-proxy the OPERATOR's cloud credentials to write there. A tenant could write into any
+/// bucket that key reaches, or name an endpoint it runs and receive the key ID and session token.
+///
+/// Red on main: every one of these specs parsed and was admitted. Now the spec type has no field
+/// for a destination, so each is refused when the spec is read, naming the field.
 #[test]
-fn an_audit_sink_value_cannot_carry_a_second_kernel_token() {
+fn a_spec_cannot_choose_where_the_operators_credentials_write() {
     for (fields, field) in [
-        (r#""s3_bucket":"b init=/bin/sh""#, "s3_bucket"),
+        (r#""s3_bucket":"attacker-bucket""#, "s3_bucket"),
         (
-            r#""s3_bucket":"bkt","s3_prefix":"p ipv6.disable=0""#,
-            "s3_prefix",
-        ),
-        (
-            r#""s3_bucket":"bkt","s3_region":"us-east-1 NUCLEUS_TOOL_PROXY_POLICY=permissive""#,
-            "s3_region",
-        ),
-        (
-            r#""s3_bucket":"bkt","s3_endpoint":"https://x \"init=/bin/sh""#,
+            r#""sink":"audit","s3_endpoint":"https://attacker.example""#,
             "s3_endpoint",
         ),
-        (r#""s3_bucket":"bkt","s3_prefix":"a\tb""#, "s3_prefix"),
+        (
+            r#""sink":"audit","s3_bucket":"attacker-bucket""#,
+            "s3_bucket",
+        ),
+        (r#""sink":"audit","s3_region":"us-west-2""#, "s3_region"),
+        (r#""sink":"audit","bucket":"attacker-bucket""#, "bucket"),
+        (
+            r#""sink":"audit","endpoint":"https://attacker.example""#,
+            "endpoint",
+        ),
     ] {
-        let e = refused(&sink(fields));
-        assert!(
-            matches!(&e, PostureRefused::AuditSink { field: f, .. } if *f == field),
-            "{fields}: {e}"
+        let json = format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"audit_sink":{{{fields}}}}}}}"#
         );
-        let msg = ApiError::from(e).to_string();
-        assert!(msg.contains(field), "the refusal names the field: {msg}");
+        let refusal = match serde_json::from_str::<PodSpec>(&json) {
+            Err(e) => e.to_string(),
+            Ok(s) => match admitted(&s) {
+                Err(e) => e.to_string(),
+                Ok(target) => panic!("{fields}: a spec chose its own destination: {target:?}"),
+            },
+        };
+        assert!(
+            refusal.contains(field),
+            "{fields}: the refusal names `{field}`: {refusal}"
+        );
     }
 }
 
+/// A spec naming a sink the operator did not configure is refused at create, by name. With no
+/// `--audit-sinks` at all, every name is unconfigured.
 #[test]
-fn an_audit_sink_outside_its_grammar_is_refused() {
-    for fields in [
-        r#""s3_bucket":"UPPER""#,
-        r#""s3_bucket":"ab""#,
-        r#""s3_bucket":"-leading""#,
-        r#""s3_bucket":"bkt","s3_endpoint":"file:///etc/passwd""#,
-        r#""s3_bucket":"bkt","s3_prefix":"""#,
-        r#""s3_bucket":"bkt","s3_region":"US""#,
-    ] {
-        assert!(
-            matches!(refused(&sink(fields)), PostureRefused::AuditSink { .. }),
-            "{fields}"
-        );
-    }
-}
-
-/// The control: an ordinary sink is admitted and renders one token per value, in order.
-#[test]
-fn an_ordinary_audit_sink_renders_one_token_per_value() {
-    let s = sink(
-        r#""s3_bucket":"audit.example-1","s3_prefix":"audit/pod-a/","s3_region":"us-east-1",
-            "s3_endpoint":"https://minio.internal:9000""#,
+fn an_unconfigured_audit_sink_is_refused_by_name() {
+    let s = spec(r#"{"audit_sink":{"sink":"elsewhere"}}"#);
+    let e = refused(&s);
+    assert!(
+        matches!(&e, PostureRefused::AuditSinkUnknown { name, .. } if name == "elsewhere"),
+        "{e}"
     );
-    admit(&s).expect("an ordinary sink is admitted");
-    let tokens = audit_sink_boot_args(s.spec.audit_sink.as_ref().expect("sink")).expect("renders");
+    let msg = ApiError::from(e).to_string();
+    assert!(msg.contains("audit_sink.sink `elsewhere`"), "{msg}");
+    assert!(msg.contains("configures: audit"), "{msg}");
+
+    let configured = spec(r#"{"audit_sink":{"sink":"audit"}}"#);
+    let e = admit(&configured, &AuditSinks::none()).expect_err("no sinks: nothing is configured");
+    assert!(e.to_string().contains("configures none"), "{e}");
+}
+
+/// The control: a configured sink is admitted, and resolves to the operator's destination.
+#[test]
+fn a_configured_audit_sink_is_admitted() {
+    let target = admitted(&spec(r#"{"audit_sink":{"sink":"audit"}}"#))
+        .expect("a configured sink is admitted")
+        .expect("and resolved");
     assert_eq!(
-        tokens,
+        crate::audit_sink::audit_sink_boot_args(&target),
         [
-            "nucleus.audit_s3_bucket=audit.example-1",
-            "nucleus.audit_s3_prefix=audit/pod-a/",
+            "nucleus.audit_s3_bucket=operator-audit",
+            "nucleus.audit_s3_prefix=nucleus/node-1",
             "nucleus.audit_s3_region=us-east-1",
-            "nucleus.audit_s3_endpoint=https://minio.internal:9000",
+            "nucleus.audit_s3_endpoint=https://objects.internal:9000",
         ]
     );
-    for t in &tokens {
-        assert_eq!(t.split_whitespace().count(), 1, "{t}");
+    assert_eq!(
+        admitted(&spec("{}")).expect("no sink"),
+        None,
+        "a spec without a sink resolves to none"
+    );
+}
+
+/// A narrowing that would add a kernel token, or climb out of the operator's prefix, is refused.
+#[test]
+fn an_audit_prefix_cannot_escape_or_add_a_token() {
+    for prefix in [
+        "p ipv6.disable=0",
+        "a\tb",
+        "x\" init=/bin/sh",
+        "",
+        "..",
+        "../other-tenant",
+        "a/../../b",
+        "./a",
+        "/absolute",
+        "a//b",
+    ] {
+        let s = spec(&format!(
+            r#"{{"audit_sink":{{"sink":"audit","prefix":{}}}}}"#,
+            serde_json::to_string(prefix).expect("json")
+        ));
+        assert!(
+            matches!(
+                refused(&s),
+                PostureRefused::AuditSink {
+                    field: "prefix",
+                    ..
+                }
+            ),
+            "`{prefix}` must be refused"
+        );
+    }
+}
+
+/// Built on the operator's prefix, never in place of it.
+#[test]
+fn an_audit_prefix_narrows_the_operators() {
+    for (prefix, want) in [
+        ("team-a/run-7", "nucleus/node-1/team-a/run-7"),
+        ("team-a/", "nucleus/node-1/team-a"),
+    ] {
+        let s = spec(&format!(
+            r#"{{"audit_sink":{{"sink":"audit","prefix":"{prefix}"}}}}"#
+        ));
+        let target = admitted(&s).expect("admitted").expect("resolved");
+        let args = crate::audit_sink::audit_sink_boot_args(&target);
+        assert!(
+            args.contains(&format!("nucleus.audit_s3_prefix={want}")),
+            "{args:?}"
+        );
+        assert!(
+            args.contains(&"nucleus.audit_s3_bucket=operator-audit".to_string()),
+            "{args:?}"
+        );
     }
 }
 
@@ -106,7 +189,7 @@ fn the_guest_cid_is_the_nodes() {
     let ok = spec(&format!(
         r#"{{"vsock":{{"guest_cid":{GUEST_CID},"port":5000}}}}"#
     ));
-    admit(&ok).expect("the node's own CID is admitted");
+    admitted(&ok).expect("the node's own CID is admitted");
 }
 
 /// On the container driver `credentials.env` is appended after the runtime's own variables, so
@@ -136,7 +219,7 @@ fn a_credential_cannot_name_a_runtime_variable() {
     let ok = spec(
         r#"{"credentials":{"env":{"LLM_API_TOKEN":"test-token-123","NUCLEUS_TASK_CMD":"run"}}}"#,
     );
-    admit(&ok).expect("an ordinary credential and the task runner are admitted");
+    admitted(&ok).expect("an ordinary credential and the task runner are admitted");
 }
 
 /// A value past `TimeDelta`'s range panicked the create handler (`Duration::seconds`); one inside
@@ -147,11 +230,11 @@ fn a_timeout_past_the_ceiling_is_refused() {
         let s = spec(&format!(r#"{{"timeout_seconds":{seconds}}}"#));
         assert_eq!(refused(&s), PostureRefused::Timeout { seconds });
     }
-    admit(&spec(&format!(
+    admitted(&spec(&format!(
         r#"{{"timeout_seconds":{MAX_TIMEOUT_SECONDS}}}"#
     )))
     .expect("the ceiling itself is admitted");
-    admit(&spec("{}")).expect("the default timeout is admitted");
+    admitted(&spec("{}")).expect("the default timeout is admitted");
 }
 
 /// A spec priced its own executions. Zero per-second also removed the time guard requirement.
@@ -181,7 +264,7 @@ fn a_budget_model_cannot_undercut_the_runtime() {
     nan.spec.budget_model.as_mut().expect("model").base_cost_usd = f64::NAN;
     assert!(matches!(refused(&nan), PostureRefused::BudgetModel { .. }));
 
-    admit(&spec(
+    admitted(&spec(
         r#"{"budget_model":{"base_cost_usd":0.5,"cost_per_second_usd":0.25}}"#,
     ))
     .expect("a dearer price is admitted");
@@ -227,8 +310,8 @@ fn a_spec_cannot_ask_for_a_writable_shared_rootfs() {
         msg.contains("image.read_only"),
         "the refusal names the field: {msg}"
     );
-    admit(&image(r#","read_only":true"#)).expect("a read-only rootfs is admitted");
-    admit(&image("")).expect("omitted read_only means read-only (#2784)");
+    admitted(&image(r#","read_only":true"#)).expect("a read-only rootfs is admitted");
+    admitted(&image("")).expect("omitted read_only means read-only (#2784)");
 }
 
 fn labelled(label: &str, value: &str) -> PodSpec {
@@ -260,13 +343,14 @@ fn a_spec_cannot_choose_its_own_mediation() {
         assert!(err.to_string().contains(label), "{err}");
     }
     // Neighbouring labels the node still reads are not swept up.
-    admit(&labelled("nucleus.io/network", "none")).expect("network label is admitted here");
+    admit(&labelled("nucleus.io/network", "none"), &sinks())
+        .expect("network label is admitted here");
 }
 
 /// A spec with none of these fields is admitted unchanged: the default is not a refusal.
 #[test]
 fn a_minimal_spec_is_admitted() {
-    admit(&spec("{}")).expect("minimal spec");
+    admitted(&spec("{}")).expect("minimal spec");
 }
 
 /// End to end through the real create path: the refusal happens in `create_pod_internal`, before
@@ -282,13 +366,14 @@ async fn create_refuses_a_hostile_posture_before_anything_is_spawned() {
         caller_pod: None,
         header_cert: None,
     };
-    let hostile = sink(r#""s3_bucket":"b init=/bin/sh""#);
+    // The fixture node configures no audit sink (`--audit-sinks` unset), so any name is foreign.
+    let hostile = spec(r#"{"audit_sink":{"sink":"attacker"}}"#);
     let Err(ApiError::InvalidSpec(msg)) =
         crate::create_pod_internal(&st, hostile, None, None, root).await
     else {
-        panic!("a spec writing the guest command line must be refused at create");
+        panic!("a spec naming an audit sink the operator did not configure must be refused");
     };
-    assert!(msg.contains("audit_sink.s3_bucket"), "{msg}");
+    assert!(msg.contains("audit_sink.sink `attacker`"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 
     // #3130, through the same create path: a terabyte of guest memory is refused by name.

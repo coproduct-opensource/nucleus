@@ -10,6 +10,26 @@
 //! (`spec_posture::admit`), so its author learns the label no longer means anything.
 //! [`launch`] is the one place the container's image and entrypoint are decided.
 
+/// Fail-closed parity with `spawn_local_pod` (which rejects) and firecracker's
+/// `reject_unsupported_policy` (which enforces or rejects): the container driver
+/// sets only a coarse docker `network_mode` and CANNOT enforce a structured
+/// network egress policy (`spec.spec.network`). Silently ignoring one fails OPEN
+/// — the pod would run with unrestricted egress while believing its policy is in
+/// force — so reject it instead. Network policy requires the firecracker driver.
+pub(crate) fn container_driver_reject_unsupported_network_policy(
+    spec: &nucleus_spec::PodSpec,
+) -> Result<(), crate::ApiError> {
+    if spec.spec.network.is_some() {
+        return Err(crate::ApiError::Driver(
+            "network policy requires the firecracker driver — the container driver cannot enforce \
+             a structured egress policy (it would run with unrestricted egress); \
+             run with --driver firecracker"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// How the container driver runs every pod on this node. Chosen by the operator, never by a spec.
 ///
 /// Two named variants rather than a `bool` (ADR 0007 A-7), matched exhaustively (E-2), and no `Default` impl (B-1): the CLI
