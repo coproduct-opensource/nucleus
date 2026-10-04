@@ -77,6 +77,11 @@ enum Command {
         #[arg(long)]
         only: Option<String>,
     },
+    /// Compare executor gate definitions with the elaborated plan snapshot.
+    GateDefs {
+        /// An alternative elaborated gates JSON; defaults to the committed snapshot.
+        elaborated: Option<std::path::PathBuf>,
+    },
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
     /// digest must be the SHA-256 of `prelude/ci.writ` at `gatehouse-plan.yml`'s
     /// `GATEHOUSE_REF`. Decided from declarations alone; reads no source tree.
@@ -358,6 +363,15 @@ enum Command {
         #[arg(default_value = "scoreboard.json")]
         out: String,
     },
+    /// The gate of gates: every gate must RED on a real violation of its own subject and GREEN
+    /// when restored. CI calls it through `scripts/check-gates-can-fail.sh`; the arguments are
+    /// that script's (`--vacuity-only`, `--baseline-only`, `--for-event <event> <base>`, ...).
+    /// See crates/xtask/src/gates_can_fail/mod.rs.
+    #[command(name = "gates-can-fail", disable_help_flag = true)]
+    GatesCanFail {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
     /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
     /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
@@ -463,7 +477,9 @@ mod econ_boundary;
 mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
+mod gate_defs;
 mod gatehouse_pin;
+mod gates_can_fail;
 mod guest_layer;
 mod inert_authority;
 mod kani_coverage;
@@ -611,6 +627,9 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::GateDefs { elaborated } => {
+            gate_defs::check(&std::env::current_dir()?, elaborated.as_deref())
+        }
         Command::GatehousePin { gatehouse } => {
             gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
         }
@@ -636,6 +655,7 @@ fn main() -> Result<()> {
                 json,
             } => ci_spec::trace_check(&github, since_hours, json),
         },
+        Command::GatesCanFail { args } => std::process::exit(gates_can_fail::run(&args)),
         Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
             scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)
