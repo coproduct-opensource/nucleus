@@ -1512,7 +1512,7 @@ perturb_portability_bsd_only() {
     # perturbation -- which is exactly what happened, and is gatehouse F-115's shape in a
     # second gate: the ring-ED25519 check had to split its pattern for the same reason.
     # `/e` evaluates the replacement, so `mktemp -t` never appears contiguously here.
-    perl -0pi -e 's/\$\(mktemp "\$\{TMPDIR:-\/tmp\}\/scoreboard\.XXXXXX"\)/"\$(mk" . "temp -" . "t scoreboard)"/e' "$f"
+    perl -0pi -e 's/\$\(mktemp "\$\{TMPDIR:-\/tmp\}\/policy-base\.XXXXXX"\)/"\$(mk" . "temp -" . "t policy-base)"/e' "$f"
 }
 
 # action-inputs: a `with:` key the action does not declare. GitHub drops it with a log
@@ -1557,10 +1557,6 @@ perturb_policy_escalation() {
     perl -0pi -e 's/^(network_allow = \[)/${1}"evil.example.com", /m' "$f"
 }
 
-
-gen_exemplar_scoreboard() {
-    bash scripts/exemplar-scoreboard.sh "$1" >/dev/null 2>&1
-}
 
 perturb_exemplar_baseline() {
     # Claim a perfect score the tree does not have. `sorry_admit` is lower-is-better,
@@ -1802,11 +1798,9 @@ probe_xtask workspace-members Cargo.toml \
     "a crate dropped from the workspace members list" perturb_workspace_member_dropped
 probe_xtask command-grammar docs/design/command-bands.toml \
     "a leaf command whose authority band the table no longer declares" perturb_command_band_dropped
-probe_xtask_generated scoreboard-ratchet scripts/exemplar-baseline.json \
-    "a baseline claiming a score the tree does not have" \
-    "--current scoreboard.json --baseline scripts/exemplar-baseline.json" \
-    "scoreboard.json" "$(mktemp "${TMPDIR:-/tmp}/scoreboard.XXXXXX").json" \
-    gen_exemplar_scoreboard perturb_exemplar_baseline
+probe_xtask_flagged scoreboard-ratchet "--baseline scripts/exemplar-baseline.json" \
+    scripts/exemplar-baseline.json "a baseline claiming a score the tree does not have" \
+    perturb_exemplar_baseline
 probe_xtask fly-pools .github/workflows/audit.yml \
     "a job routed at a runner variable nobody declared" perturb_runs_on_undeclared_var
 probe_xtask push-auth .github/workflows/clippy-ratchet.yml \
