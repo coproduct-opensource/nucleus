@@ -234,12 +234,15 @@ impl GuestCapability {
             GuestCapability::CaBundle => FirstShipped::Release("2.1.0"),
             GuestCapability::ApprovalByPublicKey => FirstShipped::Release("2.2.0"),
             GuestCapability::DlcAdmission => FirstShipped::Release("2.2.0"),
-            // Both merged on 2026-09-02, after `v2.2.0` (8a452030b) was tagged.
-            GuestCapability::EgressAttestation => FirstShipped::NotYet,
-            GuestCapability::SvidOnTmpfs => FirstShipped::NotYet,
-            GuestCapability::WorkloadDoor => FirstShipped::NotYet,
-            GuestCapability::McpBridge => FirstShipped::NotYet,
-            GuestCapability::StreamingEgress => FirstShipped::NotYet,
+            // #2365 and #2379 merged on 2026-09-02, after `v2.2.0` (8a452030b)
+            // was tagged; #3122 (the door) and #3135 (the bridge) on
+            // 2026-10-02. 2.3.0 is the first release cut from a tree carrying
+            // all four; #3178 added streaming egress before the tag as well.
+            GuestCapability::EgressAttestation => FirstShipped::Release("2.3.0"),
+            GuestCapability::SvidOnTmpfs => FirstShipped::Release("2.3.0"),
+            GuestCapability::WorkloadDoor => FirstShipped::Release("2.3.0"),
+            GuestCapability::McpBridge => FirstShipped::Release("2.3.0"),
+            GuestCapability::StreamingEgress => FirstShipped::Release("2.3.0"),
         }
     }
 
@@ -386,8 +389,13 @@ fn skew_against(
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.2.0` is the first release whose rootfs matches a post-#2214 node. 2.1.0
-/// was the first release containing everything a pod needed to boot at the time
+/// `2.3.0` is the first release whose rootfs meets every [`GuestCapability`]:
+/// it runs the egress probe (#2365), keeps its SVID on tmpfs (#2379), serves
+/// the workload its own door (#3122), carries the MCP bridge (#3135), and
+/// streams credentialed egress (#3178). 2.2.0
+/// was the first release matching a post-#2214 node, and it stopped serving
+/// `main` the day after it was tagged. 2.1.0 was the first release containing
+/// everything a pod needed to boot at the time
 /// — the CA bundle in the rootfs (#2110), the `ip netns exec` separator fix
 /// without which no pod launches on a default install, and the workload-API
 /// socket chown without which the guest cannot fetch its SVID — and it stayed
@@ -395,25 +403,20 @@ fn skew_against(
 ///
 /// Bumped BEFORE the tag is cut, matching how `2.1.0` was bumped from its RC in
 /// the change that was released as `2.1.0`. The ordering is deliberate and it
-/// has a cost worth naming: between this landing and the `v2.2.0` assets being
+/// has a cost worth naming: between this landing and the `v2.3.0` assets being
 /// built, `setup` points at a release that does not exist yet. That window is
 /// inherent to pinning your own next version, and the alternative — tag first,
 /// bump after — ships a release whose CLI pins the *previous* release's guest,
 /// which is precisely the skew being closed.
 ///
-/// **2.2.0 does not serve this tree.** It predates
-/// [`GuestCapability::EgressAttestation`], [`GuestCapability::SvidOnTmpfs`],
-/// [`GuestCapability::WorkloadDoor`], [`GuestCapability::McpBridge`] and
-/// [`GuestCapability::StreamingEgress`], so
-/// `setup` refuses to install it (see
-/// [`guest_skew`]) and says to build the guest locally instead. The change that
-/// bumps this constant to the next release must also turn those entries into
-/// [`FirstShipped::Release`];
-/// `no_capability_claims_a_release_after_the_pin` stops it naming a release
-/// the pin has not reached.
+/// The change that bumps this constant must also turn every
+/// [`FirstShipped::NotYet`] entry whose behaviour is in the tagged tree into
+/// [`FirstShipped::Release`]: `the_pinned_release_serves_this_tree` fails until
+/// it does, and `no_capability_claims_a_release_after_the_pin` stops an entry
+/// naming a release the pin has not reached.
 ///
 /// `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.2.0";
+pub const GUEST_RELEASE: &str = "2.3.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -548,13 +551,20 @@ mod tests {
         assert_eq!(guest_layer_for("riscv64"), None);
     }
 
+    /// The pin must serve the tree that pins it. From 2.2.0's tag until 2.3.0 it
+    /// did not, and `setup --artifacts release` refused the pinned guest.
+    #[test]
+    fn the_pinned_release_serves_this_tree() {
+        assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
+    }
+
     /// THE FINDING, as a refusal. A node built from this tree cannot boot the
-    /// pinned 2.2.0 guest: it never prints `NUCLEUS_EGRESS_PROBE:`, and read-only
-    /// it dies creating `/etc/nucleus/identity`. Before this table the floor said
+    /// 2.2.0 guest: it never prints `NUCLEUS_EGRESS_PROBE:`, and read-only it
+    /// dies creating `/etc/nucleus/identity`. Before this table the floor said
     /// 2.2.0 was fine, `setup` installed it, and the failure surfaced mid-boot.
     #[test]
-    fn the_pinned_release_is_refused_and_the_refusal_names_why() {
-        let skew = guest_skew(GUEST_RELEASE)
+    fn the_previous_release_is_refused_and_the_refusal_names_why() {
+        let skew = guest_skew("2.2.0")
             .expect_err("2.2.0 predates #2365 and #2379; a node from this tree cannot boot it");
         let GuestSkew::Lacks { missing, .. } = &skew else {
             panic!("2.2.0 is orderable: {skew:?}");
@@ -576,7 +586,7 @@ mod tests {
             "#2379",
             "#3031",
             "#2696",
-            "no published release yet",
+            "first released in v2.3.0",
             "build-rootfs.sh",
             "--artifacts local",
         ] {
@@ -619,8 +629,9 @@ mod tests {
     }
 
     /// 2.0.2 and everything before it ship a rootfs with no CA store, on which
-    /// the tool-proxy panics as PID 1; 2.1.0 predates #2214. If either starts
-    /// passing, an entry has been moved back past its fix.
+    /// the tool-proxy panics as PID 1; 2.1.0 predates #2214; 2.2.0 predates
+    /// #2365, #2379, #3031 and #2696 P2. If any starts passing, an entry has
+    /// been moved back past its fix.
     #[test]
     fn the_known_broken_releases_are_refused() {
         for (broken, lacks) in [
@@ -629,6 +640,11 @@ mod tests {
             ("1.0.9", GuestCapability::CaBundle),
             ("2.1.0", GuestCapability::ApprovalByPublicKey),
             ("2.1.0", GuestCapability::DlcAdmission),
+            ("2.2.0", GuestCapability::EgressAttestation),
+            ("2.2.0", GuestCapability::SvidOnTmpfs),
+            ("2.2.0", GuestCapability::WorkloadDoor),
+            ("2.2.0", GuestCapability::McpBridge),
+            ("2.2.0", GuestCapability::StreamingEgress),
         ] {
             match guest_skew(broken) {
                 Err(GuestSkew::Lacks { missing, .. }) => {
@@ -640,7 +656,7 @@ mod tests {
     }
 
     /// A table in which everything shipped by 2.2.0, to test the ordering rules
-    /// on a release that satisfies it — the real table has none today.
+    /// independently of where the real table's entries sit.
     fn all_by_2_2_0(_: GuestCapability) -> FirstShipped {
         FirstShipped::Release("2.2.0")
     }
@@ -664,6 +680,12 @@ mod tests {
             assert!(skew_against(rc, all_by_2_2_0).is_err(), "{rc}");
             assert!(guest_skew(rc).is_err(), "{rc}");
         }
+        // 2.3.0 raised the floor past 2.2.0: a prerelease of 2.2.0 is refused by
+        // the real table, while one of 2.3.0 itself is accepted.
+        for rc in ["2.2.0-rc.1", "v2.2.0-rc.2", "2.2.0+build.7"] {
+            assert!(guest_skew(rc).is_err(), "{rc}");
+        }
+        assert_eq!(guest_skew("2.3.0-rc.1"), Ok(()));
     }
 
     /// "Could not order it" is its own answer, not a refusal for being old.
