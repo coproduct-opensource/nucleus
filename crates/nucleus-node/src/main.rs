@@ -329,6 +329,9 @@ struct Args {
         default_value_t = broker_stream::DEFAULT_MAX_STREAM_REQUEST_BYTES
     )]
     egress_stream_max_request_bytes: u64,
+    /// Node-wide reserved payload storage for concurrent uploads, in bytes.
+    #[arg(long, default_value_t = broker_stream::staging_budget::DEFAULT_BYTES)]
+    egress_staging_max_bytes: u64,
     /// Largest reply one streamed credentialed-egress call may relay back to
     /// the guest. A longer reply is cut and the guest told why.
     #[arg(
@@ -466,6 +469,7 @@ struct NodeState {
     /// Per-call bounds on a streamed credentialed-egress call.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     egress_stream_limits: broker_stream::StreamLimits,
+    staging_budget: broker_stream::staging_budget::Budget,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
@@ -755,6 +759,11 @@ async fn main() -> Result<(), ApiError> {
 
     // A zero bound is refused at start-up, not discovered as a refusal of
     // every streamed call later (ADR 0007 B).
+    if args.egress_staging_max_bytes < args.egress_stream_max_request_bytes {
+        return Err(ApiError::Driver(
+            "upload staging capacity must cover at least one maximum-size request".into(),
+        ));
+    }
     let egress_stream_limits = broker_stream::StreamLimits::new(
         args.egress_stream_max_request_bytes,
         args.egress_stream_max_response_bytes,
@@ -825,6 +834,8 @@ async fn main() -> Result<(), ApiError> {
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
         egress_stream_limits,
+        staging_budget: broker_stream::staging_budget::Budget::new(args.egress_staging_max_bytes)
+            .map_err(ApiError::Driver)?,
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
             .with_operator_identity(authority.root_minter())
             .with_federated_trust_domains(authority.caller_bindings().trust_domains()),

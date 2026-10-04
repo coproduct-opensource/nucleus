@@ -12,13 +12,16 @@ pub(super) struct StagedBody {
     file: tokio::fs::File,
     len: u64,
     digest: [u8; 32],
+    _reservation: super::staging_budget::Reservation,
 }
 
 impl StagedBody {
     pub(super) async fn read<R: AsyncRead + Unpin>(
         reader: &mut R,
         max: u64,
+        budget: &super::staging_budget::Budget,
     ) -> Result<Self, Refusal> {
+        let reservation = budget.reserve(max)?;
         let file = tokio::task::spawn_blocking(tempfile::tempfile)
             .await
             .map_err(|_| storage_error())?
@@ -50,6 +53,7 @@ impl StagedBody {
             file,
             len,
             digest: hash.finalize().into(),
+            _reservation: reservation,
         })
     }
 
@@ -107,8 +111,36 @@ fn storage_error() -> Refusal {
 
 #[cfg(test)]
 mod tests {
+    use super::super::staging_budget::Budget;
     use super::*;
     use nucleus_cred_protocol::stream::io::{write_chunks, write_end};
+
+    #[tokio::test]
+    async fn shared_staging_capacity_is_held_until_the_body_is_released() {
+        let budget = Budget::new(8).unwrap();
+        let other_pod = budget.clone();
+        let mut encoded = Vec::new();
+        write_chunks(&mut encoded, b"abc").await.unwrap();
+        write_end(&mut encoded).await.unwrap();
+        let first = StagedBody::read(&mut encoded.as_slice(), 8, &budget)
+            .await
+            .unwrap();
+        assert!(
+            matches!(StagedBody::read(&mut encoded.as_slice(), 8, &other_pod).await, Err(Refusal::Named(reason)) if reason.contains("capacity exhausted"))
+        );
+        drop(first);
+        let next = StagedBody::read(&mut encoded.as_slice(), 8, &other_pod)
+            .await
+            .unwrap();
+        assert_eq!(next.len(), 3);
+        drop(next);
+        assert!(StagedBody::read(&mut &b""[..], 8, &budget).await.is_err());
+        assert!(
+            StagedBody::read(&mut encoded.as_slice(), 8, &other_pod)
+                .await
+                .is_ok()
+        );
+    }
 
     #[tokio::test]
     async fn replay_and_hash_are_the_complete_payload_independent_of_chunking() {
@@ -118,9 +150,13 @@ mod tests {
             write_chunks(&mut encoded, piece).await.unwrap();
         }
         write_end(&mut encoded).await.unwrap();
-        let body = StagedBody::read(&mut encoded.as_slice(), payload.len() as u64)
-            .await
-            .unwrap();
+        let body = StagedBody::read(
+            &mut encoded.as_slice(),
+            payload.len() as u64,
+            &Budget::new(1 << 20).unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(body.len(), payload.len() as u64);
         assert_eq!(body.digest(), <[u8; 32]>::from(Sha256::digest(&payload)));
         let (tx, mut rx) = mpsc::channel::<Result<Vec<u8>, std::io::Error>>(1);
@@ -143,12 +179,12 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            StagedBody::read(&mut encoded.as_slice(), 100).await,
+            StagedBody::read(&mut encoded.as_slice(), 100, &Budget::new(100).unwrap()).await,
             Err(Refusal::Malformed)
         ));
         write_end(&mut encoded).await.unwrap();
         assert!(matches!(
-            StagedBody::read(&mut encoded.as_slice(), 4).await,
+            StagedBody::read(&mut encoded.as_slice(), 4, &Budget::new(100).unwrap()).await,
             Err(Refusal::Named(_))
         ));
     }

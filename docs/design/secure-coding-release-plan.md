@@ -1125,8 +1125,8 @@ The full node suite passed 850 tests (one ignored). Linux ARM64 builds, Clippy
 and all four repository gates passed.
 
 This implements process-lifetime aggregate admission, not the entire resource
-priority. Aggregate staging-disk capacity and reconciling external
-containers surviving a node restart remain open.
+priority. Reconciling external containers surviving a node restart remains open;
+the subsequent staging reservation implementation is recorded below.
 
 ### Pod swap bounds (2026-10-04)
 
@@ -1156,3 +1156,23 @@ Eight focused tests passed, including ownership-preserving cleanup and a busy
 leaf becoming removable after cancellation. Clippy, the Linux ARM64 build and
 all four repository gates passed. These are ordinary filesystem/lifecycle tests;
 abrupt node termination and stale cgroup reconciliation remain separate work.
+
+### Shared upload staging reservations (2026-10-04)
+
+All production pod brokers now share one node-owned payload-storage budget.
+`--egress-staging-max-bytes` defaults to 256 MiB. An upload reserves its full
+configured per-call maximum before creating a temporary file; the reservation
+stays with the body through approval and replay and returns on release, error or
+cancellation. With default 32 MiB requests this permits eight concurrent staging
+reservations. Exhaustion refuses before credential access or upstream I/O, and
+startup refuses a capacity smaller than one maximum request. This conservative
+reservation avoids accepting partial uploads that later run out of shared space.
+
+The budget bounds reserved payload bytes, not filesystem metadata, unrelated
+temporary files or physical free space. Egress accounting remains upload-only
+as designed; response limits are separate. Direct-network accounting and the
+other egress paths still need integration into the pod's shared outbound budget.
+
+All 26 streaming tests passed, including shared staging capacity, body release,
+malformed-upload cleanup and the timed approval lifecycle. Clippy, the Linux
+ARM64 build and all four repository gates passed.

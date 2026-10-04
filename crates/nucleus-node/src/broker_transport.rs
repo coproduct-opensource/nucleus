@@ -368,6 +368,7 @@ pub struct PodBrokerConfig {
     pub egress: Arc<crate::egress_meter::EgressMeter>,
     /// Per-call bounds on a streamed call (the operator's, or the defaults).
     pub stream_limits: crate::broker_stream::StreamLimits,
+    pub staging_budget: crate::broker_stream::staging_budget::Budget,
 }
 
 /// One pod's broker, owned, as the listener task needs it.
@@ -1432,6 +1433,7 @@ impl BrokerListener {
             broker_secret,
             egress,
             stream_limits,
+            staging_budget,
         } = pod;
         let socket_path = broker_socket_path(uds_path, port);
         let listener = prepare_socket(&socket_path)?;
@@ -1494,7 +1496,11 @@ impl BrokerListener {
                     upstreams,
                     caller,
                     egress,
-                    streams: crate::broker_stream::PodStreams::new(stream_caller, stream_limits),
+                    streams: crate::broker_stream::PodStreams::with_staging(
+                        stream_caller,
+                        stream_limits,
+                        staging_budget,
+                    ),
                 },
                 async {
                     let _ = rx.await;
@@ -1648,6 +1654,10 @@ mod listener_lifecycle_tests {
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
                 egress: serving_tests::test_egress_arc(),
                 stream_limits: crate::broker_stream::StreamLimits::DEFAULT,
+                staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                    crate::broker_stream::staging_budget::DEFAULT_BYTES,
+                )
+                .unwrap(),
             },
             None,
         )
@@ -1678,6 +1688,10 @@ mod listener_lifecycle_tests {
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
                 egress: serving_tests::test_egress_arc(),
                 stream_limits: crate::broker_stream::StreamLimits::DEFAULT,
+                staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                    crate::broker_stream::staging_budget::DEFAULT_BYTES,
+                )
+                .unwrap(),
             },
             None,
         )
@@ -1716,6 +1730,10 @@ mod listener_lifecycle_tests {
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
                 egress: serving_tests::test_egress_arc(),
                 stream_limits: crate::broker_stream::StreamLimits::DEFAULT,
+                staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                    crate::broker_stream::staging_budget::DEFAULT_BYTES,
+                )
+                .unwrap(),
             },
             None,
         )

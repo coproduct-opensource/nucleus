@@ -1258,6 +1258,10 @@ pub(crate) mod handler_tests {
             broker_listen: a.broker_listen,
             broker_enforcing: a.broker_enforcing,
             broker_vsock_port: a.broker_vsock_port,
+            staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                crate::broker_stream::staging_budget::DEFAULT_BYTES,
+            )
+            .unwrap(),
             egress_stream_limits: crate::broker_stream::StreamLimits::new(
                 a.egress_stream_max_request_bytes,
                 a.egress_stream_max_response_bytes,

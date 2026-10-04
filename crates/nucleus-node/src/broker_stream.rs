@@ -32,6 +32,7 @@
 //! upload-only egress ledger; [`StreamLimits`] bounds each response.
 
 mod staged;
+pub(crate) mod staging_budget;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -292,6 +293,7 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
 
 /// One pod's streamed-call machinery, held for the listener's life.
 pub struct PodStreams {
+    staging: staging_budget::Budget,
     /// How to make the call.
     pub caller: StreamCaller,
     /// Per-call bounds.
@@ -302,9 +304,22 @@ pub struct PodStreams {
 
 impl PodStreams {
     /// A pod's streams, with an empty nonce memory.
-    #[must_use]
+    #[cfg(test)]
     pub fn new(caller: StreamCaller, limits: StreamLimits) -> Self {
+        Self::with_staging(
+            caller,
+            limits,
+            staging_budget::Budget::new(staging_budget::DEFAULT_BYTES).unwrap(),
+        )
+    }
+
+    pub(crate) fn with_staging(
+        caller: StreamCaller,
+        limits: StreamLimits,
+        staging: staging_budget::Budget,
+    ) -> Self {
         Self {
+            staging,
             caller,
             limits,
             nonces: StreamNonces::new(),
@@ -528,11 +543,16 @@ where
     };
     // No credentials or upstream I/O until the complete bounded upload is owned.
     let started = std::time::Instant::now();
-    let mut staged =
-        match staged::StagedBody::read(reader, ctx.streams.limits.max_request_bytes()).await {
-            Ok(body) => body,
-            Err(reason) => return refuse(&reason, 0, Remaining::MayFollow, reader, writer).await,
-        };
+    let mut staged = match staged::StagedBody::read(
+        reader,
+        ctx.streams.limits.max_request_bytes(),
+        &ctx.streams.staging,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(reason) => return refuse(&reason, 0, Remaining::MayFollow, reader, writer).await,
+    };
     let current_time = || {
         let elapsed = started.elapsed();
         now.saturating_add(elapsed.as_secs())

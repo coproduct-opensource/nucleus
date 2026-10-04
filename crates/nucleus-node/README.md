@@ -32,8 +32,18 @@ limits memory and swap together, so v1 does not promise that no page is ever
 swapped; it bounds their total.
 
 This pool tracks the node process's admitted pods. Reconciliation of surviving
-external containers after node restart and aggregate staging-disk limits remain
-separate resource-management work.
+external containers after node restart remains separate resource-management work.
+
+`--egress-staging-max-bytes` bounds reserved upload payload storage across all
+pods, defaulting to 256 MiB. Each streamed upload reserves its configured
+per-call maximum before creating its temporary file, retaining the reservation
+through review and replay. The default 32 MiB per-call limit therefore admits
+eight concurrent staged uploads, even if their actual payloads are smaller.
+Insufficient capacity refuses the upload before credential retrieval or upstream
+I/O; callers can retry after active uploads finish. The node requires enough
+staging capacity for at least one maximum-size request at startup. This is a
+payload reservation bound, not a filesystem quota or free-space measurement;
+filesystem metadata and other users of the temporary directory are separate.
 
 Development direct-spawn cgroups retain an ownership handle for the leaf created
 by the launch. Teardown removes that leaf after the VMM stops; cancelled launches

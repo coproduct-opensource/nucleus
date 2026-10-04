@@ -507,6 +507,7 @@ pub(crate) async fn start_broker_for_pod(
             // The operator's per-call bounds on a streamed call (#2696 P4),
             // validated at start-up; finite whether or not they were set.
             stream_limits: state.egress_stream_limits,
+            staging_budget: state.staging_budget.clone(),
         },
         jail_owner,
     ) {
