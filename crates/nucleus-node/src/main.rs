@@ -32,6 +32,7 @@ mod api_error;
 mod art12_collector;
 mod audit_sink;
 mod auth;
+mod clearing_receipt_collector;
 mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
@@ -54,6 +55,7 @@ mod pod_view;
 mod production_confinement;
 mod rootfs_source;
 mod spec_posture;
+mod spend_receipt_collector;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -1103,6 +1105,7 @@ async fn create_pod_internal(
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
+            // Nothing ran, so nothing was spent: the reservation goes back whole.
             reservation.release().await;
             return Err(e);
         }
@@ -2911,12 +2914,8 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
             }
             // Write lifecycle audit for pod exit
             let detail = match &pod_state {
-                PodState::Exited { code } => {
-                    format!("exit_code={}", code.unwrap_or(-1))
-                }
-                PodState::Error { message } => {
-                    format!("error={}", message)
-                }
+                PodState::Exited { code } => format!("exit_code={}", code.unwrap_or(-1)),
+                PodState::Error { message } => format!("error={message}"),
                 _ => "unknown".to_string(),
             };
             let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
@@ -2924,8 +2923,10 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
                 .await;
 
             pod.cleanup_after_exit().await;
-            // Hand the child's budget allocation back to its parent.
-            state.authority.release_child(pod.id).await;
+            // Credit only what the node could verify; see `creditable_spend`.
+            let creditable =
+                clearing_receipt_collector::creditable_spend(pod_dir, &pod.id.to_string());
+            state.authority.release_child(pod.id, creditable).await;
         }
     }
 

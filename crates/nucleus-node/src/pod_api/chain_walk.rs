@@ -409,21 +409,24 @@ fn case() -> impl Strategy<Value = Case> {
 
 // ── Where the model and the node part ways on purpose ────────────────────────
 
-/// A rule the model states, and the node does not yet follow. Each flag names
-/// the issue; the walk runs [`Rules::AS_SHIPPED`], and the ignored tests at
-/// the bottom run the documented rule.
+/// A rule the model states, which the node has not always followed. Each flag
+/// names the issue; the walk runs [`Rules::AS_SHIPPED`]. A rule the node does
+/// not yet follow gets an ignored test at the bottom running the documented
+/// rule; none is open now.
 #[derive(Debug, Clone, Copy)]
 struct Rules {
     /// A create that never ran hands its reservation back: `Reservation`'s own
-    /// doc says so. On main the release folds the whole allocation into the
-    /// parent's consumption, as for a pod that ran, so the slot comes back and
-    /// the budget does not (#3105).
+    /// doc says so. Until #3002 the release folded the whole allocation into
+    /// the parent's consumption, as for a pod that ran, so the slot came back
+    /// and the budget did not (#3105). The node now releases an uncommitted
+    /// reservation with a spend of zero, so the shipped rule is the
+    /// documented one; `false` remains the model of the old node.
     unrun_refunds: bool,
 }
 
 impl Rules {
     const AS_SHIPPED: Self = Self {
-        unrun_refunds: false,
+        unrun_refunds: true,
     };
 }
 
@@ -2342,15 +2345,4 @@ fn replay(rules: Rules) {
 #[test]
 fn the_corpus_agrees_with_the_model() {
     replay(Rules::AS_SHIPPED);
-}
-
-// ── The documented rules, red on main ────────────────────────────────────────
-
-/// #3105: a create that never ran hands its whole reservation back.
-#[test]
-#[ignore = "red on main until #3105: an unrun create's reservation is folded into consumption"]
-fn as_documented_a_create_that_never_ran_refunds_its_reservation() {
-    explore(Rules {
-        unrun_refunds: true,
-    });
 }

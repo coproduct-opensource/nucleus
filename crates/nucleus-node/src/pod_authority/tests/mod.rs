@@ -146,13 +146,115 @@ async fn a_child_is_narrowed_to_its_parent_and_budget_is_conserved() {
 
     // Releasing c1 folds its allocation into the parent's consumption
     // (conservative: no refund), so the parent still cannot over-spawn.
-    auth.release_child(c1).await;
+    auth.release_child(c1, None).await;
     assert!(
         auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
             .await
             .is_err()
     );
     assert!(auth.boot_certificate(c1).await.is_none());
+}
+
+/// What this file decides about spend is the CLAMP and the "could not look"
+/// arm — nothing more. Whether the evidence is good is decided by
+/// `clearing_receipt_collector::creditable_spend`, whose own tests cover
+/// the signatures, the sequence and the clearing receipts; keeping that out
+/// of here is what `docs/econ-layer-boundary.md` asks for.
+///
+/// The control is one $4 admission that fails under the old rule (fold
+/// everything) and succeeds under the new one.
+#[tokio::test]
+async fn the_credited_spend_is_clamped_and_absence_folds_everything() {
+    /// Whether a $4 sibling fits after a $3 child is released from a $5
+    /// parent, having been credited `creditable`.
+    async fn four_dollar_sibling_fits(creditable: Option<Decimal>) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = authority(dir.path(), args());
+        let parent = Uuid::new_v4();
+        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
+            .await
+            .unwrap();
+        let child = Uuid::new_v4();
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(3)), child)
+            .await
+            .unwrap();
+        auth.release_child(child, creditable).await;
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(4)), Uuid::new_v4())
+            .await
+            .is_ok()
+    }
+
+    assert!(
+        four_dollar_sibling_fits(Some(Decimal::from_i128_with_scale(500_000, 6))).await,
+        "$0.50 credited of a $3 allocation leaves $4.50: a $4 child fits"
+    );
+    assert!(
+        !four_dollar_sibling_fits(None).await,
+        "nothing verifiable folds the full allocation"
+    );
+    assert!(
+        !four_dollar_sibling_fits(Some(Decimal::from(3))).await,
+        "crediting the whole allocation is the same as folding it"
+    );
+    // Over-claimed spend clamps: a pod cannot be charged more than it was
+    // delegated however many receipts it signs, so a $2 sibling still fits.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = authority(dir.path(), args());
+        let parent = Uuid::new_v4();
+        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
+            .await
+            .unwrap();
+        let child = Uuid::new_v4();
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(3)), child)
+            .await
+            .unwrap();
+        auth.release_child(child, Some(Decimal::from(9))).await;
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(2)), Uuid::new_v4())
+            .await
+            .expect("$9 claimed against a $3 allocation folds as $3, leaving $2");
+    }
+}
+
+/// A pod whose driver never started it spent nothing, so its parent gets
+/// the whole reservation back through `Reservation::release` — unlike
+/// `release_child(_, None)`, which folds it. The control: the same $5
+/// sibling is refused after a fold.
+#[tokio::test]
+async fn a_pod_that_never_spawned_hands_its_whole_reservation_back() {
+    async fn five_dollar_sibling_fits(unspawned: bool) -> bool {
+        let dir = tempfile::tempdir().unwrap();
+        let auth = authority(dir.path(), args());
+        let parent = Uuid::new_v4();
+        auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), parent)
+            .await
+            .unwrap();
+        let child = Uuid::new_v4();
+        if unspawned {
+            let issued = auth
+                .admit(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            issued.reservation.release().await;
+        } else {
+            auth.admit_kept(&from_pod(parent), &spec_with(lattice(3)), child)
+                .await
+                .unwrap();
+            auth.release_child(child, None).await;
+        }
+        auth.admit_kept(&from_pod(parent), &spec_with(lattice(5)), Uuid::new_v4())
+            .await
+            .is_ok()
+    }
+
+    assert!(
+        five_dollar_sibling_fits(true).await,
+        "nothing ran, nothing spent"
+    );
+    assert!(
+        !five_dollar_sibling_fits(false).await,
+        "the control: a fold keeps the $3 consumed"
+    );
 }
 
 #[tokio::test]
