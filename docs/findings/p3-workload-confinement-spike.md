@@ -5,6 +5,14 @@
 virtualisation on an Apple M5 Pro), Firecracker v1.16.1. **Probe build:** GCP
 `nucleus-agent-build-2` (aarch64), `aarch64-unknown-linux-musl`, Rust 1.96.1.
 
+This is the measurement record from 2026-10-02. References below to "today",
+"current", and "the repo" describe that experiment's tree, not the tree at a
+later merge or release. In particular, the workload seccomp implementation is
+tracked separately in [#3162](https://github.com/coproduct-opensource/nucleus/pull/3162).
+This document changes no kernel pin or runtime confinement. The appendix is
+experimental probe source, not a production filter or an automated passing gate;
+the reported guest boots have not been repeated during the documentation review.
+
 **Verdict: GO with a kernel re-pin. No nucleus-built kernel is needed.**
 
 - The pinned guest kernel (Firecracker CI `v1.13/.../vmlinux-6.1.141`) has
@@ -90,7 +98,8 @@ the full Tier-2 regression (egress probe, vsock, identity), not a drop-in.
 
 This was costed because Landlock might have been unavailable anywhere upstream.
 It is available, so this is the fallback only. The project already has the
-template: `docker/Containerfile.l1-kernel` (47 lines) rebuilds kernel.org 6.18.35
+template in the separate [Apple-container spike #3073](https://github.com/coproduct-opensource/nucleus/pull/3073):
+`docker/Containerfile.l1-kernel` (47 lines) rebuilds kernel.org 6.18.35
 from an embedded config plus `docker/l1-kernel.fragment`.
 
 The guest equivalent:
