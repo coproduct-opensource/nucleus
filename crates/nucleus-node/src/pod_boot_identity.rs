@@ -251,6 +251,11 @@ impl FirecrackerPod {
             }
         }
 
+        if let Some(listener) = self.decide.lock().await.take() {
+            let tally = listener.shutdown().await;
+            tracing::info!(pod_dir = %self.pod_dir.display(), ?tally, "host-decide shadow tally at teardown");
+        }
+
         // A let-chain (edition 2024) rather than a tuple of Options: it says the
         // same thing without building a throwaway tuple, and the explicit `ref`
         // bindings the tuple form needed are gone.
