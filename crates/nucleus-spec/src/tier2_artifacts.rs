@@ -203,6 +203,13 @@ pub enum GuestCapability {
     /// which makes the host's verdict the enforced one, turns this into
     /// [`Demand::Required`].
     HostDecideShadow,
+    /// The tool-proxy relays a workload's credentialed egress to the host as a
+    /// STREAM: the body goes up in bounded chunks, each charged to the pod's
+    /// egress ceiling, and the reply comes back as the upstream sends it
+    /// (#2696 P4). An older proxy sends the whole call in one perform frame,
+    /// which the host refuses above 256 KiB and which cannot carry a streamed
+    /// (server-sent-event) reply, so a model call from the pod fails or stalls.
+    StreamingEgress,
 }
 
 /// Whether the node refuses a guest that lacks a [`GuestCapability`].
@@ -240,6 +247,7 @@ impl GuestCapability {
         GuestCapability::WorkloadDoor,
         GuestCapability::McpBridge,
         GuestCapability::HostDecideShadow,
+        GuestCapability::StreamingEgress,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -252,7 +260,8 @@ impl GuestCapability {
             | GuestCapability::EgressAttestation
             | GuestCapability::SvidOnTmpfs
             | GuestCapability::WorkloadDoor
-            | GuestCapability::McpBridge => Demand::Required,
+            | GuestCapability::McpBridge
+            | GuestCapability::StreamingEgress => Demand::Required,
             // Shadow mode: nothing the node does depends on the guest asking.
             GuestCapability::HostDecideShadow => Demand::Optional,
         }
@@ -270,6 +279,7 @@ impl GuestCapability {
             GuestCapability::WorkloadDoor => FirstShipped::NotYet,
             GuestCapability::McpBridge => FirstShipped::NotYet,
             GuestCapability::HostDecideShadow => FirstShipped::NotYet,
+            GuestCapability::StreamingEgress => FirstShipped::NotYet,
         }
     }
 
@@ -314,6 +324,12 @@ impl GuestCapability {
                 "#2702 (P8) has the tool-proxy shadow every decision to the host's decision \
                  service; an older guest never asks, so the host records no comparisons for it \
                  (shadow mode: the node does not require it)"
+            }
+            GuestCapability::StreamingEgress => {
+                "#2696 (P4) made the tool-proxy stream a workload's credentialed egress to the \
+                 host in bounded, metered chunks; an older proxy sends the whole call in one \
+                 perform frame, which the host refuses above 256 KiB and which cannot carry a \
+                 streamed reply"
             }
         }
     }
@@ -438,7 +454,8 @@ fn skew_against(
 ///
 /// **2.2.0 does not serve this tree.** It predates
 /// [`GuestCapability::EgressAttestation`], [`GuestCapability::SvidOnTmpfs`],
-/// [`GuestCapability::WorkloadDoor`] and [`GuestCapability::McpBridge`], so
+/// [`GuestCapability::WorkloadDoor`], [`GuestCapability::McpBridge`] and
+/// [`GuestCapability::StreamingEgress`], so
 /// `setup` refuses to install it (see
 /// [`guest_skew`]) and says to build the guest locally instead. The change that
 /// bumps this constant to the next release must also turn those entries into
@@ -600,6 +617,7 @@ mod tests {
                 GuestCapability::SvidOnTmpfs,
                 GuestCapability::WorkloadDoor,
                 GuestCapability::McpBridge,
+                GuestCapability::StreamingEgress,
             ]
         );
         let msg = skew.to_string();
@@ -644,7 +662,8 @@ mod tests {
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
                 GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
                 GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
-                GuestCapability::McpBridge => GuestCapability::HostDecideShadow,
+                GuestCapability::McpBridge => GuestCapability::StreamingEgress,
+                GuestCapability::StreamingEgress => GuestCapability::HostDecideShadow,
                 GuestCapability::HostDecideShadow => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");

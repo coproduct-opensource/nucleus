@@ -2,7 +2,7 @@
 # Deprecated: replaced by crates/nucleus-guest-init (Rust).
 set -eu
 
-mount -t proc proc /proc
+mount -t proc -o hidepid=invisible proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 mount -t tmpfs tmpfs /tmp
