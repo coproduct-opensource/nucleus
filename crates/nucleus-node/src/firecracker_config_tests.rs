@@ -1535,6 +1535,46 @@ fn enforcing_pci_off_is_idempotent() {
     );
 }
 
+/// #3124: the node owns the guest command line. With a net plan and every allowlisted spec token
+/// present, the line still names the node's `init=`, `pci=off`, `ipv6.disable=1` and
+/// `nucleus.net=` exactly once each, and the spec's tokens appear verbatim. On main a spec
+/// `init=`/`nucleus.net=`/`ipv6.disable=` suppressed the node's own value. Admission now refuses
+/// those (`rootfs_source::tests`), so the shape checked here is the only shape reachable.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_node_writes_init_pci_and_ipv6_exactly_once() {
+    let plan = net::NetworkAllocator::new()
+        .allocate(uuid::Uuid::new_v4(), "nuc-test".to_string())
+        .expect("allocate net plan");
+    let mut img = image(true, false);
+    img.boot_args = Some("quiet loglevel=3 twosafety.canary=abc-123".into());
+    let config = FirecrackerConfig::from_spec(
+        &base_spec(),
+        std::path::Path::new("/unused/firecracker.log"),
+        std::path::Path::new("/unused/vsock.sock"),
+        &host(&img),
+        Some(&plan),
+        "aa00bb11-approval-pubkeys",
+        Some(15012),
+        None,
+    );
+    let args = config.boot_source.boot_args.unwrap_or_default();
+    let toks: Vec<&str> = args.split_whitespace().collect();
+    let count = |want: &str| toks.iter().filter(|t| **t == want).count();
+    let keyed = |key: &str| toks.iter().filter(|t| t.starts_with(key)).count();
+    assert_eq!(count(&format!("init={INIT}")), 1, "{args}");
+    assert_eq!(keyed("init="), 1, "{args}");
+    assert_eq!(count("pci=off"), 1, "{args}");
+    assert_eq!(keyed("pci="), 1, "{args}");
+    assert_eq!(count("ipv6.disable=1"), 1, "{args}");
+    assert_eq!(keyed("ipv6."), 1, "{args}");
+    assert_eq!(count(&plan.kernel_arg()), 1, "{args}");
+    assert_eq!(keyed("nucleus.net="), 1, "{args}");
+    for spec_tok in ["quiet", "loglevel=3", "twosafety.canary=abc-123"] {
+        assert_eq!(count(spec_tok), 1, "{spec_tok} missing: {args}");
+    }
+}
+
 // ── Writable-rootfs isolation ────────────────────────────────────────
 // Added to this module on main (#2786) while this branch had already moved
 // it into its own file, so the merge conflicted on the module declaration

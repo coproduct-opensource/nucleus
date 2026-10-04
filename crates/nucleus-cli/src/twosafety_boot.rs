@@ -69,10 +69,13 @@ const CANARY_ENV_KEY: &str = "NUCLEUS_E2E_CANARY";
 
 /// The kernel command line key the positive control plants into.
 ///
-/// Not a `nucleus.*` key the guest parses: `parse_cmdline_secret` looks for
-/// exact prefixes, so an unknown one is inert in the guest and the control
-/// measures the harness rather than provoking the runtime.
-const PLANT_KEY: &str = "nucleus.twosafety_canary";
+/// The node owns the guest command line and refuses any spec token outside
+/// its allowlist (#3124). This key is on that allowlist for exactly this
+/// control, and it is inert in the guest: it is outside `nucleus.*`, so
+/// guest-init never reads it, and it is dotted, so the kernel never hands it
+/// to PID 1. Naming the spec's constant rather than restating it means the
+/// node and the harness cannot disagree about the key (G-1).
+const PLANT_KEY: &str = nucleus_spec::boot_args::CANARY_KEY;
 
 /// The node's HTTP address on the machine running the experiment. `https://`
 /// since Move B: the node's HTTP listener requires mTLS unconditionally,
@@ -557,11 +560,10 @@ impl PodBoot {
     /// secret — the experiment's inputs must be equal apart from the one under
     /// test.
     fn create_pod(&self, secret: &str, plant: bool) -> Result<String> {
+        // Only the plant: the node writes the rest of the line itself, and refuses
+        // a spec that tries to (#3124). Both arms therefore get the same node line.
         let boot_args = if plant {
-            format!(
-                ",\"boot_args\":\"console=ttyS0 reboot=k panic=1 pci=off init=/init \
-                 {PLANT_KEY}={secret}\""
-            )
+            format!(",\"boot_args\":\"{}\"", planted_boot_args(secret))
         } else {
             String::new()
         };
@@ -803,6 +805,11 @@ fn env_value(env: &str, key: &str) -> Option<String> {
 /// Deliberately an allow-list. A deny-list of metacharacters is the shape that
 /// has to be right about every shell; an allow-list only has to be right about
 /// the characters a canary needs.
+/// The `image.boot_args` the positive control sends: the plant and nothing else.
+fn planted_boot_args(secret: &str) -> String {
+    format!("{PLANT_KEY}={secret}")
+}
+
 fn is_shell_safe(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -1037,14 +1044,22 @@ mod tests {
         }
     }
 
-    /// The planted command line must keep `init=/init`, or `from_spec` appends
-    /// it and the two arms of the control differ in shape as well as in value.
+    /// The node refuses any spec `boot_args` token outside its allowlist
+    /// (#3124). The control's plant must be admitted, or every real control run
+    /// would fail at pod create rather than measure the harness. This test
+    /// runs the plant through the same parser admission uses.
     #[test]
-    fn the_planted_boot_args_still_name_init() {
-        let plant = format!(
-            "console=ttyS0 reboot=k panic=1 pci=off init=/init {PLANT_KEY}=twosafety-control-aaaaaaaa"
-        );
-        assert!(plant.contains("init="));
-        assert!(plant.contains("console=ttyS0"));
+    fn the_planted_boot_args_are_admitted_by_the_node() {
+        for secret in ["twosafety-control-aaaaaaaa", "twosafety-control-bbbbbbbb"] {
+            let line = planted_boot_args(secret);
+            let parsed = nucleus_spec::boot_args::SpecBootArgs::parse(&line)
+                .unwrap_or_else(|e| panic!("the node would refuse the plant: {e}"));
+            assert_eq!(
+                parsed.tokens(),
+                [nucleus_spec::boot_args::SpecBootToken::Canary(
+                    secret.into()
+                )]
+            );
+        }
     }
 }
