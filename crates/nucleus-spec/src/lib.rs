@@ -6,6 +6,7 @@ pub mod dlc_admission;
 pub mod egress_budget;
 pub mod exit_report_auth;
 pub mod guest_layout;
+pub mod host_effect;
 pub mod identity;
 pub mod microvm_host;
 mod rootfs_source;

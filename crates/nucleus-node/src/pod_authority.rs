@@ -211,6 +211,8 @@ pub(crate) enum HostKernelError {
     NoCertificate,
     #[error("the restored pod has no recovered host policy history")]
     HistoryUnavailable,
+    #[error("host authorization evidence unavailable: {0}")]
+    EvidenceUnavailable(String),
     #[error("the pod's certificate does not verify against this node's root: {0}")]
     DoesNotVerify(String),
 }
@@ -698,6 +700,7 @@ pub(crate) struct PodAuthority {
     trust_domain: String,
     root_minter: String,
     root_key: Ed25519KeyPair,
+    authorization_signer: std::sync::Arc<ed25519_dalek::SigningKey>,
     root_pubkey: Vec<u8>,
     anchors: Vec<Vec<u8>>,
     max_children: usize,
@@ -786,6 +789,7 @@ impl PodAuthority {
             trust_domain: trust_domain.to_string(),
             root_minter,
             root_key,
+            authorization_signer: std::sync::Arc::new(dalek),
             root_pubkey,
             anchors,
             max_children: args.max_children_per_pod,
@@ -1352,7 +1356,13 @@ impl PodAuthority {
             PolicyHistory::Live(policy) => Ok(std::sync::Arc::clone(policy)),
             PolicyHistory::UnavailableAfterRestart => Err(HostKernelError::HistoryUnavailable),
             PolicyHistory::Fresh => {
-                let policy = PodPolicy::new(kernel);
+                let evidence = crate::host_decide::evidence::Evidence::create(
+                    pod_id,
+                    &self.state_dir.join("pods").join(pod_id.to_string()),
+                    std::sync::Arc::clone(&self.authorization_signer),
+                )
+                .map_err(|e| HostKernelError::EvidenceUnavailable(e.to_string()))?;
+                let policy = PodPolicy::new(kernel, evidence);
                 entry.host_policy = PolicyHistory::Live(std::sync::Arc::clone(&policy));
                 Ok(policy)
             }

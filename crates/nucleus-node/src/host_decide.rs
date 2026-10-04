@@ -63,6 +63,7 @@
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
 pub(crate) mod effects;
+pub(crate) mod evidence;
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -359,6 +360,7 @@ pub(crate) struct PodPolicy {
     kernel: Kernel,
     taint: HostTaint,
     approvals: effects::Approvals,
+    evidence: evidence::Evidence,
 }
 
 /// One policy history shared by the decision and credential listeners.
@@ -377,11 +379,12 @@ impl PodPolicy {
         Ok(())
     }
 
-    pub(crate) fn new(kernel: Kernel) -> SharedPodPolicy {
+    pub(crate) fn new(kernel: Kernel, evidence: evidence::Evidence) -> SharedPodPolicy {
         Arc::new(Mutex::new(Self {
             kernel,
             taint: HostTaint::clean(),
             approvals: effects::Approvals::new(),
+            evidence,
         }))
     }
 
@@ -412,7 +415,7 @@ impl PodPolicy {
 
 #[cfg(test)]
 pub(crate) fn test_policy(policy: portcullis::PermissionLattice) -> SharedPodPolicy {
-    PodPolicy::new(Kernel::new(policy))
+    PodPolicy::new(Kernel::new(policy), evidence::Evidence::memory())
 }
 
 /// One decision channel's host state. See the module docs.
@@ -443,6 +446,7 @@ impl Channel {
                 kernel,
                 taint: HostTaint::clean(),
                 approvals: effects::Approvals::new(),
+                evidence: evidence::Evidence::memory(),
             })),
             epoch,
         )

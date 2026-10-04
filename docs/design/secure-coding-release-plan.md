@@ -250,3 +250,51 @@ a throttled rate. Preserve this limitation in the P1 egress work: useful large
 uploads under a paced policy need explicit paced replay with conserved total
 reservations. Default unpaced uploads remain bounded by per-call and pod ceilings.
 Clippy with warnings denied and all four repository prepush gates also passed.
+
+### Host-signed authorization journal (2026-10-04)
+
+Every committed broker authorization now appends a signed record to
+`<state-dir>/pods/<pod-id>/host-effect-authorizations.jsonl` before the private
+execution permit can be constructed. The node certificate-root key signs this
+capability decision with a distinct domain separator. That key stays in host
+memory and node key storage; it is not part of guest PodMaterial. The same
+mandatory journal sits under both PERFORM and streaming gates. Idempotent result
+replay adds no second authorization.
+
+Records bind pod UUID, sequence, resolved effect digest, operation, subject,
+authorization time and the previous signed record's hash. The existing
+`nucleus-jsonl` durable append proof gates permit issuance. A failed/ambiguous
+append latches refusal; an existing journal is never truncated or silently
+reinitialized. A pod is bounded to 65,536 authorization records and refuses
+further commits when full. Production requires a durable sink; the memory-only
+sink is compiled exclusively for tests.
+
+External verification:
+
+```
+nucleus-audit verify-host-effects --log host-effect-authorizations.jsonl \
+  --pod <admitted-pod-uuid> --host-pubkey <independently-pinned-node-root-key>
+```
+
+The command requires a pinned key and pod, checks every signature and chain link,
+and refuses empty or torn evidence. It verifies an authorized prefix. It does
+not prove successful execution, a truthful guest result, or session completeness;
+a separately trusted terminal checkpoint and outcome records remain to be added.
+Guest-produced mediation/exit reports have not been promoted to host observations.
+The two #3114 conformance gaps remain open until their guest-key paths are retired
+and replaced by useful host evidence. Node restart still refuses policy history
+recovery; this journal alone is not a recovered policy or budget ledger.
+
+Durable append currently runs synchronously under the pod policy lock so no
+permit can escape before storage succeeds. Moving I/O to a worker requires a
+pending-commit protocol that preserves ordering and rechecks, not fire-and-forget
+logging. Approval already consumed before a storage failure remains consumed.
+
+Validation: 814 node unit tests (one ignored), 128 audit unit tests, and both
+packages' existing integration suites passed. The added shipped-CLI integration
+also passed with an independently supplied key and rejected a guest key. The
+storage-failure negative control reached the forbidden upstream callback when
+persistence refusal was removed; the four restored evidence tests passed.
+Linux ARM64 musl cross-build and all four prepush gates passed. Clippy completed
+with `-D warnings`; the combined feature graph emitted existing configuration
+warnings about unreachable reqwest blocking-method entries in `clippy.toml`.

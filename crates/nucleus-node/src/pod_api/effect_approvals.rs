@@ -38,7 +38,9 @@ fn policy_error(e: crate::pod_authority::HostKernelError) -> ApiError {
     use crate::pod_authority::HostKernelError;
     match e {
         HostKernelError::NoCertificate => ApiError::NotFound,
-        HostKernelError::HistoryUnavailable => ApiError::SupervisorUnavailable(e.to_string()),
+        HostKernelError::HistoryUnavailable | HostKernelError::EvidenceUnavailable(_) => {
+            ApiError::SupervisorUnavailable(e.to_string())
+        }
         HostKernelError::DoesNotVerify(reason) => ApiError::Authority(reason),
     }
 }
@@ -206,5 +208,25 @@ mod tests {
                 now().unwrap(),
             )
             .unwrap();
+        let journal = state
+            .state_dir
+            .join("pods")
+            .join(id.to_string())
+            .join(nucleus_spec::host_effect::LOG_FILE);
+        let record: nucleus_spec::host_effect::SignedAuthorization =
+            serde_json::from_str(std::fs::read_to_string(journal).unwrap().trim()).unwrap();
+        assert_eq!(record.authorization.pod_id, id.to_string());
+        let public: [u8; 32] = hex::decode(state.authority.root_pubkey_hex())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let key = ed25519_dalek::VerifyingKey::from_bytes(&public).unwrap();
+        let signature =
+            ed25519_dalek::Signature::from_slice(&hex::decode(record.signature).unwrap()).unwrap();
+        key.verify_strict(
+            &nucleus_spec::host_effect::signing_bytes(&record.authorization).unwrap(),
+            &signature,
+        )
+        .unwrap();
     }
 }

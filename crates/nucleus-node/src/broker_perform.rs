@@ -881,6 +881,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn durable_host_evidence_precedes_the_call_and_a_storage_fault_blocks_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[17; 32]));
+        let evidence = crate::host_decide::evidence::Evidence::create(
+            uuid::Uuid::new_v4(),
+            dir.path(),
+            key.clone(),
+        )
+        .unwrap();
+        let policy = PermissionLattice::permissive();
+        let host_policy = crate::host_decide::PodPolicy::new(
+            portcullis::kernel::Kernel::new(policy.clone()),
+            evidence,
+        );
+        let (credentials, upstreams, ledger, identity) =
+            (store(), vec![upstream()], IdempotencyLedger::new(), who());
+        let mut context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        context.host_policy = &host_policy;
+        let log = dir.path().join(nucleus_spec::host_effect::LOG_FILE);
+        let caller = |_| {
+            let record: nucleus_spec::host_effect::SignedAuthorization =
+                serde_json::from_str(std::fs::read_to_string(&log).unwrap().trim()).unwrap();
+            let signature =
+                ed25519_dalek::Signature::from_slice(&hex::decode(record.signature).unwrap())
+                    .unwrap();
+            key.verifying_key()
+                .verify_strict(
+                    &nucleus_spec::host_effect::signing_bytes(&record.authorization).unwrap(),
+                    &signature,
+                )
+                .unwrap();
+            std::future::ready(Ok(UpstreamResponse {
+                status: 200,
+                body: b"{}".to_vec(),
+            }))
+        };
+        assert!(
+            handle_perform(&request(), &context, NOW, caller)
+                .await
+                .granted
+        );
+        let never = |_| -> std::future::Ready<Result<UpstreamResponse, String>> {
+            panic!("no second effect may execute")
+        };
+        assert!(
+            handle_perform(&request(), &context, NOW, never)
+                .await
+                .granted,
+            "replay uses existing evidence"
+        );
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+        std::fs::remove_file(&log).unwrap();
+        std::fs::create_dir(&log).unwrap();
+        let refused = handle_perform(&with_key("storage-failed"), &context, NOW, never).await;
+        assert!(!refused.granted);
+        assert!(refused.reason.contains("evidence storage failed"));
+    }
+
+    #[tokio::test]
     async fn broker_response_taints_the_host_without_a_guest_report() {
         let (policy, credentials, upstreams, ledger, identity) = (
             PermissionLattice::permissive(),

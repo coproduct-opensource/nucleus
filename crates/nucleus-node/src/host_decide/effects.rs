@@ -159,6 +159,7 @@ impl Approvals {
 pub(crate) struct EffectPermit {
     _decisions: Vec<DecisionToken>,
     _effect: ArgsDigest,
+    _record: super::evidence::Recorded,
 }
 
 impl PodPolicy {
@@ -202,9 +203,11 @@ impl PodPolicy {
         now: u64,
     ) -> Result<EffectPermit, String> {
         let tokens = self.check_effect(digest, op, subject, now, Phase::Commit)?;
+        let record = self.evidence.commit(digest, op, subject, now)?;
         Ok(EffectPermit {
             _decisions: tokens,
             _effect: digest,
+            _record: record,
         })
     }
 
@@ -216,6 +219,7 @@ impl PodPolicy {
         now: u64,
         phase: Phase,
     ) -> Result<Vec<DecisionToken>, String> {
+        self.evidence.available()?;
         let mut tokens = Vec::new();
         let mut approval_ops = Vec::new();
         for operation in [
