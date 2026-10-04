@@ -39,7 +39,7 @@
 //! # Where it falls back, and to what
 //!
 //! Every failure here returns `None`, and `None` means the pod is placed and verified exactly
-//! as before: hard link, full read, held to the pin. That covers a filesystem without reflink
+//! as before: private rootfs copy, full read, held to the pin. That covers a filesystem without reflink
 //! (`FICLONE` refuses, e.g. ext4), a source on another filesystem (`EXDEV`), a node without
 //! `CAP_LINUX_IMMUTABLE`, and any record that no longer matches. Nothing in this module can
 //! turn a pod that boots into one that does not, or skip a read it cannot justify.
