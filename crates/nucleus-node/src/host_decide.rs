@@ -393,8 +393,12 @@ impl Channel {
     /// ledger forgets a spent id, so a second presentation — a copy decoded
     /// from the same bytes — is `Retired`, and an id from another channel is
     /// `ForeignEpoch`.
-    pub fn spend(&mut self, id: DecisionId) -> Result<Spent, LedgerError> {
-        self.ledger.consume(id)
+    pub fn spend(
+        &mut self,
+        id: DecisionId,
+        digest: nucleus_decision_protocol::ArgsDigest,
+    ) -> Result<Spent, LedgerError> {
+        self.ledger.consume(id, digest)
     }
 
     /// Answer one guest frame.
@@ -469,11 +473,11 @@ impl Channel {
         let host_detail = kernel_detail(&decision.verdict);
         let verdict = match host {
             Outcome::Allowed => Verdict::Allowed {
-                decision_id: self.ledger.allow()?,
+                decision_id: self.ledger.allow(digest)?,
             },
             Outcome::Denied { reason } => Verdict::Denied { reason },
             Outcome::ApprovalRequired => Verdict::ApprovalRequired {
-                approval_id: self.ledger.require_approval()?,
+                approval_id: self.ledger.require_approval(digest)?,
             },
         };
         let frame = HostFrame::Verdict { seq, verdict };
@@ -531,7 +535,7 @@ impl Channel {
             right,
         } = p;
         let agreement = Agreement::of(host, local);
-        let retired_decision = self.retire(right)?;
+        let retired_decision = self.retire(right, args_digest(op, &subject))?;
         let compared = Comparison {
             pod: self.pod,
             epoch: self.ledger.epoch(),
@@ -553,15 +557,19 @@ impl Channel {
     /// Retire the right a verdict carried. Nothing in shadow mode acts on it,
     /// and an approval has no host approver yet, so it is refused and redeemed
     /// to nothing.
-    fn retire(&mut self, right: Right) -> Result<Option<u64>, ChannelError> {
+    fn retire(
+        &mut self,
+        right: Right,
+        digest: nucleus_decision_protocol::ArgsDigest,
+    ) -> Result<Option<u64>, ChannelError> {
         match right {
             Right::Nothing => Ok(None),
-            Right::Decision(id) => Ok(Some(self.spend(id)?.decision())),
+            Right::Decision(id) => Ok(Some(self.spend(id, digest)?.decision())),
             Right::Approval(id) => {
                 self.ledger.refuse(id.number())?;
                 match self.ledger.redeem(id)? {
                     Redemption::Refused => Ok(None),
-                    Redemption::Granted(d) => Ok(Some(self.spend(d)?.decision())),
+                    Redemption::Granted(d) => Ok(Some(self.spend(d, digest)?.decision())),
                     Redemption::Pending(_) => Err(ChannelError::ApprovalUnsettled),
                 }
             }

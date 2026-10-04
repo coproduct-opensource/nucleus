@@ -13,6 +13,7 @@ use crate::*;
 // ── builders ────────────────────────────────────────────────────────────────
 
 const EPOCH: u64 = 0x5eed;
+const ACTION: ArgsDigest = ArgsDigest::new([17; ArgsDigest::LEN]);
 
 fn label(
     c: ConfLevel,
@@ -576,7 +577,7 @@ fn observe_cannot_lower_a_label() {
 #[test]
 fn a_decision_id_cannot_be_reused() {
     let mut ledger = DecisionLedger::new(EPOCH);
-    let id = ledger.allow().unwrap();
+    let id = ledger.allow(ACTION).unwrap();
     let wire = enc_h(&HostFrame::Verdict {
         seq: Seq::FIRST,
         verdict: Verdict::Allowed { decision_id: id },
@@ -595,16 +596,16 @@ fn a_decision_id_cannot_be_reused() {
     let replay = take(&wire);
     assert_eq!(first, replay);
 
-    let spent = ledger.consume(first).expect("first use is good");
+    let spent = ledger.consume(first, ACTION).expect("first use is good");
     assert_eq!(spent.decision(), 0);
     assert_eq!(
-        ledger.consume(replay),
+        ledger.consume(replay, ACTION),
         Err(LedgerError::Retired { decision: 0 })
     );
 
     // A number the ledger never issued is a forgery, not a replay.
     assert_eq!(
-        ledger.consume(DecisionId::mint(EPOCH, 99)),
+        ledger.consume(DecisionId::mint(EPOCH, 99), ACTION),
         Err(LedgerError::NeverIssued { decision: 99 })
     );
 }
@@ -616,13 +617,13 @@ fn an_id_from_another_ledger_is_refused() {
     // on the new one: that would be a replay across the reconnect that neither
     // ledger's bookkeeping can see on its own.
     let mut old = DecisionLedger::new(1);
-    let stale = old.allow().unwrap();
+    let stale = old.allow(ACTION).unwrap();
     let wire = enc_h(&HostFrame::Verdict {
         seq: Seq::FIRST,
         verdict: Verdict::Allowed { decision_id: stale },
     });
     let mut new = DecisionLedger::new(2);
-    let fresh = new.allow().unwrap();
+    let fresh = new.allow(ACTION).unwrap();
     assert_eq!(fresh.number(), 0);
 
     let HostFrame::Verdict {
@@ -636,17 +637,17 @@ fn an_id_from_another_ledger_is_refused() {
     };
     assert_eq!(replayed.number(), 0, "same number as the fresh id");
     assert_eq!(
-        new.consume(replayed),
+        new.consume(replayed, ACTION),
         Err(LedgerError::ForeignEpoch {
             expected: 2,
             got: 1
         })
     );
     // The fresh id is unaffected.
-    assert_eq!(new.consume(fresh).unwrap().epoch(), 2);
+    assert_eq!(new.consume(fresh, ACTION).unwrap().epoch(), 2);
 
     // Same for approvals.
-    let foreign = old.require_approval().unwrap();
+    let foreign = old.require_approval(ACTION).unwrap();
     assert_eq!(
         new.redeem(foreign),
         Err(LedgerError::ForeignEpoch {
@@ -659,7 +660,7 @@ fn an_id_from_another_ledger_is_refused() {
 #[test]
 fn an_approval_redeems_to_exactly_one_decision_once() {
     let mut ledger = DecisionLedger::new(EPOCH);
-    let approval = ledger.require_approval().unwrap();
+    let approval = ledger.require_approval(ACTION).unwrap();
     let number = approval.number();
     let wire = enc_g(&GuestFrame::Redeem {
         seq: Seq::FIRST,
@@ -672,7 +673,7 @@ fn an_approval_redeems_to_exactly_one_decision_once() {
 
     // The reserved decision is not usable before the approval is redeemed.
     assert_eq!(
-        ledger.consume(DecisionId::mint(EPOCH, 0)),
+        ledger.consume(DecisionId::mint(EPOCH, 0), ACTION),
         Err(LedgerError::AwaitingApproval { decision: 0 })
     );
 
@@ -705,9 +706,9 @@ fn an_approval_redeems_to_exactly_one_decision_once() {
     );
 
     // And the one decision it yielded is single-use like any other.
-    assert!(ledger.consume(decision).is_ok());
+    assert!(ledger.consume(decision, ACTION).is_ok());
     assert_eq!(
-        ledger.consume(DecisionId::mint(EPOCH, 0)),
+        ledger.consume(DecisionId::mint(EPOCH, 0), ACTION),
         Err(LedgerError::Retired { decision: 0 })
     );
 }
@@ -715,11 +716,11 @@ fn an_approval_redeems_to_exactly_one_decision_once() {
 #[test]
 fn a_refused_approval_yields_nothing_and_retires_its_decision() {
     let mut ledger = DecisionLedger::new(EPOCH);
-    let approval = ledger.require_approval().unwrap();
+    let approval = ledger.require_approval(ACTION).unwrap();
     ledger.refuse(approval.number()).unwrap();
     assert_eq!(ledger.redeem(approval), Ok(Redemption::Refused));
     assert_eq!(
-        ledger.consume(DecisionId::mint(EPOCH, 0)),
+        ledger.consume(DecisionId::mint(EPOCH, 0), ACTION),
         Err(LedgerError::Retired { decision: 0 })
     );
 }
@@ -729,17 +730,62 @@ fn live_ids_are_bounded() {
     let mut ledger = DecisionLedger::new(EPOCH);
     let mut held = Vec::new();
     for _ in 0..crate::host::MAX_LIVE {
-        held.push(ledger.allow().unwrap());
+        held.push(ledger.allow(ACTION).unwrap());
     }
-    assert_eq!(ledger.allow(), Err(LedgerError::TooManyLive));
-    assert_eq!(ledger.require_approval(), Err(LedgerError::TooManyLive));
+    assert_eq!(ledger.allow(ACTION), Err(LedgerError::TooManyLive));
+    assert_eq!(
+        ledger.require_approval(ACTION),
+        Err(LedgerError::TooManyLive)
+    );
     // Consuming one frees one slot.
     let one = held.pop().unwrap();
-    assert!(ledger.consume(one).is_ok());
-    assert!(ledger.allow().is_ok());
+    assert!(ledger.consume(one, ACTION).is_ok());
+    assert!(ledger.allow(ACTION).is_ok());
 }
 
 // ── the host numbers the channel ──────────────────────────────────────────
+
+proptest! {
+    #[test]
+    fn decisions_and_approvals_cannot_authorize_substituted_arguments(
+        admitted in any::<[u8; ArgsDigest::LEN]>(),
+        substituted in any::<[u8; ArgsDigest::LEN]>(),
+        needs_approval in any::<bool>(),
+    ) {
+        prop_assume!(admitted != substituted);
+        let admitted = ArgsDigest::new(admitted);
+        let substituted = ArgsDigest::new(substituted);
+        let mut ledger = DecisionLedger::new(EPOCH);
+        let decision = if needs_approval {
+            let approval = ledger.require_approval(admitted).unwrap();
+            ledger.grant(approval.number()).unwrap();
+            let Redemption::Granted(decision) = ledger.redeem(approval).unwrap() else {
+                panic!("granted approval must yield its decision");
+            };
+            decision
+        } else {
+            ledger.allow(admitted).unwrap()
+        };
+        let number = decision.number();
+        prop_assert_eq!(
+            ledger.consume(decision, substituted),
+            Err(LedgerError::ArgumentsMismatch { decision: number })
+        );
+        // A rejected substitution must neither spend the original grant nor
+        // make it authorize the substituted effect. Retrying the genuine
+        // request succeeds exactly once, even after another wrong attempt.
+        prop_assert_eq!(
+            ledger.consume(DecisionId::mint(EPOCH, number), substituted),
+            Err(LedgerError::ArgumentsMismatch { decision: number })
+        );
+        let spent = ledger.consume(DecisionId::mint(EPOCH, number), admitted).unwrap();
+        prop_assert_eq!(spent.args_digest(), admitted);
+        prop_assert_eq!(
+            ledger.consume(DecisionId::mint(EPOCH, number), admitted),
+            Err(LedgerError::Retired { decision: number })
+        );
+    }
+}
 
 #[test]
 fn seq_gate_admits_only_the_next_number() {

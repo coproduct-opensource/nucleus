@@ -7,9 +7,9 @@
 //! nothing: a ledger the guest builds is a ledger nobody consults. What makes
 //! an id good is that the host's own ledger issued it and has not retired it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use crate::frame::{ApprovalId, DecisionId, Seq};
+use crate::frame::{ApprovalId, ArgsDigest, DecisionId, Seq};
 
 /// Admits guest frames strictly in the host's order.
 ///
@@ -109,9 +109,15 @@ pub const MAX_LIVE: usize = 1024;
 pub struct Spent {
     epoch: u64,
     decision: u64,
+    args: ArgsDigest,
 }
 
 impl Spent {
+    /// The action binding checked before this decision was consumed.
+    pub const fn args_digest(&self) -> ArgsDigest {
+        self.args
+    }
+
     /// The epoch of the ledger that issued and retired the decision.
     pub const fn epoch(&self) -> u64 {
         self.epoch
@@ -159,6 +165,8 @@ pub enum LedgerError {
     ApprovalRetired { approval: u64 },
     /// No approval with this number was ever issued on this channel.
     ApprovalNeverIssued { approval: u64 },
+    /// The live decision authorizes different arguments. It remains live.
+    ArgumentsMismatch { decision: u64 },
     /// [`MAX_LIVE`] ids are already live.
     TooManyLive,
     /// The channel has used every id number; it must be closed.
@@ -186,6 +194,9 @@ impl std::fmt::Display for LedgerError {
             LedgerError::ApprovalNeverIssued { approval } => {
                 write!(f, "approval {approval} was never issued (forged)")
             }
+            LedgerError::ArgumentsMismatch { decision } => {
+                write!(f, "decision {decision} does not authorize these arguments")
+            }
             LedgerError::TooManyLive => write!(f, "more than {MAX_LIVE} live ids"),
             LedgerError::Exhausted => write!(f, "the channel's id numbers ran out"),
         }
@@ -204,6 +215,7 @@ enum ApprovalState {
 #[derive(Debug)]
 struct Reservation {
     decision: u64,
+    args: ArgsDigest,
     state: ApprovalState,
 }
 
@@ -228,7 +240,7 @@ pub struct DecisionLedger {
     next_decision: u64,
     next_approval: u64,
     /// Allowed, not yet consumed.
-    live: BTreeSet<u64>,
+    live: BTreeMap<u64, ArgsDigest>,
     /// Approval number -> the decision it reserves, and what the human said.
     approvals: BTreeMap<u64, Reservation>,
 }
@@ -240,7 +252,7 @@ impl DecisionLedger {
             epoch,
             next_decision: 0,
             next_approval: 0,
-            live: BTreeSet::new(),
+            live: BTreeMap::new(),
             approvals: BTreeMap::new(),
         }
     }
@@ -258,10 +270,11 @@ impl DecisionLedger {
         Ok(n)
     }
 
-    /// The host has decided to allow an operation: mint its one-shot id.
-    pub fn allow(&mut self) -> Result<DecisionId, LedgerError> {
+    /// Mint a one-shot id bound to the action the host decided to allow.
+    /// `args` must be computed from the action checked by the host.
+    pub fn allow(&mut self, args: ArgsDigest) -> Result<DecisionId, LedgerError> {
         let n = self.take_decision_number()?;
-        self.live.insert(n);
+        self.live.insert(n, args);
         Ok(DecisionId::mint(self.epoch, n))
     }
 
@@ -283,7 +296,7 @@ impl DecisionLedger {
 
     /// The host requires a human approval: reserve the decision the approval
     /// will become, and mint the handle that redeems it.
-    pub fn require_approval(&mut self) -> Result<ApprovalId, LedgerError> {
+    pub fn require_approval(&mut self, args: ArgsDigest) -> Result<ApprovalId, LedgerError> {
         let a = self.next_approval;
         let next_approval = a.checked_add(1).ok_or(LedgerError::Exhausted)?;
         let decision = self.take_decision_number()?;
@@ -292,6 +305,7 @@ impl DecisionLedger {
             a,
             Reservation {
                 decision,
+                args,
                 state: ApprovalState::Pending,
             },
         );
@@ -344,8 +358,12 @@ impl DecisionLedger {
         match state {
             ApprovalState::Pending => Ok(Redemption::Pending(approval)),
             ApprovalState::Granted => match self.approvals.remove(&a) {
-                Some(Reservation { decision, state: _ }) => {
-                    self.live.insert(decision);
+                Some(Reservation {
+                    decision,
+                    args,
+                    state: _,
+                }) => {
+                    self.live.insert(decision, args);
                     Ok(Redemption::Granted(DecisionId::mint(self.epoch, decision)))
                 }
                 None => Err(self.approval_error(a)),
@@ -358,15 +376,26 @@ impl DecisionLedger {
     }
 
     /// Spend a decision id. By value: the caller's id is gone whatever the
-    /// answer, and the ledger forgets a spent id so a copy decoded from the
-    /// same bytes is [`LedgerError::Retired`].
-    pub fn consume(&mut self, decision: DecisionId) -> Result<Spent, LedgerError> {
+    /// answer. The host must compute `args` from the effect it will execute,
+    /// never accept a digest supplied by the guest as evidence. A mismatch
+    /// leaves the original authorization live. The ledger forgets a spent id
+    /// so a copy decoded from the same bytes is [`LedgerError::Retired`].
+    pub fn consume(
+        &mut self,
+        decision: DecisionId,
+        args: ArgsDigest,
+    ) -> Result<Spent, LedgerError> {
         self.check_epoch(decision.epoch())?;
         let n = decision.number();
-        if self.live.remove(&n) {
+        if let Some(expected) = self.live.get(&n) {
+            if *expected != args {
+                return Err(LedgerError::ArgumentsMismatch { decision: n });
+            }
+            self.live.remove(&n);
             return Ok(Spent {
                 epoch: self.epoch,
                 decision: n,
+                args,
             });
         }
         if self.approvals.values().any(|r| r.decision == n) {

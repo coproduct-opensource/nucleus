@@ -54,7 +54,16 @@ async fn double(mut io: DuplexStream, rule: HostRule, seen: Arc<Seen>) {
                 seen.frames.lock().unwrap().push(Sent::Observe);
                 HostFrame::Observed { seq }
             }
-            GuestFrame::Decide { seq, op, .. } => {
+            GuestFrame::Decide {
+                seq,
+                op,
+                subject,
+                args_digest,
+            } => {
+                assert_eq!(
+                    args_digest,
+                    nucleus_decision_protocol::kernel::args_digest(op, &subject)
+                );
                 seen.frames.lock().unwrap().push(Sent::Decide(op));
                 let decide = match rule {
                     HostRule::Decide(f) => f,
@@ -69,11 +78,11 @@ async fn double(mut io: DuplexStream, rule: HostRule, seen: Arc<Seen>) {
                 pending = Some(outcome);
                 let verdict = match outcome {
                     Outcome::Allowed => Verdict::Allowed {
-                        decision_id: ledger.allow().unwrap(),
+                        decision_id: ledger.allow(args_digest).unwrap(),
                     },
                     Outcome::Denied { reason } => Verdict::Denied { reason },
                     Outcome::ApprovalRequired => Verdict::ApprovalRequired {
-                        approval_id: ledger.require_approval().unwrap(),
+                        approval_id: ledger.require_approval(args_digest).unwrap(),
                     },
                 };
                 HostFrame::Verdict { seq, verdict }

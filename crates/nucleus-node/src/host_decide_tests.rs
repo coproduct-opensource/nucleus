@@ -661,7 +661,10 @@ async fn an_id_from_another_channel_is_a_foreign_epoch() {
     let id = allowed_id(&reply);
     let epoch = id.epoch();
     assert_eq!(
-        second.spend(id),
+        second.spend(
+            id,
+            args_digest(Operation::ReadFiles, &Subject::new("a").unwrap())
+        ),
         Err(LedgerError::ForeignEpoch {
             expected: second.epoch(),
             got: epoch
@@ -671,7 +674,10 @@ async fn an_id_from_another_channel_is_a_foreign_epoch() {
     drop(first);
     let mut replacement = open(auth.host_kernel(pod).await.unwrap());
     assert!(matches!(
-        replacement.spend(allowed_id(&reply)),
+        replacement.spend(
+            allowed_id(&reply),
+            args_digest(Operation::ReadFiles, &Subject::new("a").unwrap())
+        ),
         Err(LedgerError::ForeignEpoch { .. })
     ));
 }
@@ -715,6 +721,37 @@ fn allowed_id(reply: &[u8]) -> DecisionId {
     }
 }
 
+/// A decision obtained for a harmless read cannot be spent for a write or
+/// another path, even when all three actions would separately be permitted.
+#[tokio::test]
+async fn a_decision_is_bound_to_the_host_checked_action() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let mut channel = Channel::open(pod, auth.host_kernel(pod).await.unwrap(), 44);
+    let reply = decide_step(&mut channel, 0, Operation::ReadFiles, "public.txt");
+    for (op, path) in [
+        (Operation::WriteFiles, "public.txt"),
+        (Operation::ReadFiles, "secret.txt"),
+    ] {
+        let id = allowed_id(&reply);
+        let number = id.number();
+        assert_eq!(
+            channel.spend(id, args_digest(op, &Subject::new(path).unwrap())),
+            Err(LedgerError::ArgumentsMismatch { decision: number })
+        );
+    }
+    let digest = args_digest(Operation::ReadFiles, &Subject::new("public.txt").unwrap());
+    let spent = channel
+        .spend(allowed_id(&reply), digest)
+        .expect("original action");
+    assert_eq!(spent.args_digest(), digest);
+    assert!(matches!(
+        channel.spend(allowed_id(&reply), digest),
+        Err(LedgerError::Retired { .. })
+    ));
+}
+
 /// **A replayed DecisionId is refused by the host ledger.** Two copies decoded
 /// from the one reply: the first spends, the second is `Retired`.
 #[tokio::test]
@@ -727,9 +764,19 @@ async fn a_replayed_decision_id_is_refused() {
     let (first, replay) = (allowed_id(&reply), allowed_id(&reply));
     assert_eq!(first, replay, "bytes decode to equal ids");
     let number = first.number();
-    assert!(c.spend(first).is_ok(), "the first presentation spends");
+    assert!(
+        c.spend(
+            first,
+            args_digest(Operation::WriteFiles, &Subject::new("out.txt").unwrap())
+        )
+        .is_ok(),
+        "the first presentation spends"
+    );
     assert_eq!(
-        c.spend(replay),
+        c.spend(
+            replay,
+            args_digest(Operation::WriteFiles, &Subject::new("out.txt").unwrap())
+        ),
         Err(LedgerError::Retired { decision: number })
     );
 }
@@ -753,7 +800,10 @@ async fn the_report_retires_the_hosts_id() {
     let compared = step.compared.expect("a comparison");
     assert_eq!(compared.retired_decision, Some(allowed_id(&reply).number()));
     assert!(matches!(
-        c.spend(allowed_id(&reply)),
+        c.spend(
+            allowed_id(&reply),
+            args_digest(Operation::ReadFiles, &Subject::new("a").unwrap())
+        ),
         Err(LedgerError::Retired { .. })
     ));
 }
