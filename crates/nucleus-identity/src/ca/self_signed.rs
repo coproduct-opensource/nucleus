@@ -1687,7 +1687,6 @@ mod tests {
         let anchors = [webpki::anchor_from_trusted_cert(&anchor_der)
             .unwrap()
             .to_owned()];
-        let now = UnixTime::now();
         let verify = |pem: &str, usage: KeyUsage| {
             let leaf = crate::certificate::Certificate::from_pem(pem).unwrap();
             let der = CertificateDer::from(leaf.der().to_vec());
@@ -1697,7 +1696,7 @@ mod tests {
                     webpki::ALL_VERIFICATION_ALGS,
                     &anchors,
                     &[],
-                    now,
+                    UnixTime::now(), // Sample after issuance, even across a second boundary.
                     usage,
                     None,
                     None,
