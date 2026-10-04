@@ -53,7 +53,7 @@ hex = { workspace = true }
 serde_json_canonicalizer = "0.3"
 ipnet = "2.12"
 
-reqwest = { workspace = true, features = ["json", "rustls-no-provider"] }
+reqwest = { workspace = true, features = ["json", "rustls-no-provider", "stream"] }
 rustls = { workspace = true }
 # The federation exchange listener's server-auth-only TLS (`federation_ingress.rs`).
 tokio-rustls = { workspace = true }
@@ -96,7 +96,7 @@ nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }
 nucleus-cred-broker = { path = "../nucleus-cred-broker" }
 # Wire types only, and the guest links the same crate. Nothing here can hold a
 # secret — the host needs `PerformRequest` to READ what a guest asked for.
-nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
+nucleus-cred-protocol = { path = "../nucleus-cred-protocol", features = ["io"] }
 # Keyless upstream credentials (ADR 0010): the ES256 assertion, the signer
 # trait and the token client. The node decides WHEN to mint
 # (`federated_credential.rs`); this crate only makes the assertion honest about
@@ -130,6 +130,10 @@ wiremock = "0.6"
 # CSRs with arbitrary SANs for the federation exchange's refusal tests. The
 # version nucleus-identity uses.
 rcgen = { version = "0.14", features = ["x509-parser"] }
+# The SPIFFE taxonomy walk (`spiffe_walk.rs`) drives every parser of a SPIFFE
+# ID the node's peers and lineage go through, against one oracle.
+nucleus-lineage = { path = "../nucleus-lineage" }
+nucleus-oidc-core = { path = "../nucleus-oidc-core" }
 
 [lints]
 workspace = true

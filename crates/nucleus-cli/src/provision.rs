@@ -65,6 +65,17 @@ impl Tier2Host {
     /// Errors carry stderr, because the failures worth debugging here
     /// (a missing package, a full disk, a refused sudo) only say so there.
     pub fn sh(&self, script: &str) -> Result<String> {
+        let stdout = self.sh_bytes(script)?;
+        Ok(String::from_utf8_lossy(&stdout).trim().to_string())
+    }
+
+    /// [`Self::sh`] without the trim: stdout exactly as the script wrote it.
+    ///
+    /// For reading a file's bytes back. `sh` trims, which is right for a
+    /// one-line answer and wrong for file content: a PEM read through it loses
+    /// its trailing newline, and that stripped PEM, written back out beside
+    /// another, glued the two together (#3158).
+    pub fn sh_bytes(&self, script: &str) -> Result<Vec<u8>> {
         let output = match self {
             Self::Lima(vm) => Command::new("limactl")
                 .args(["shell", vm, "--", "sudo", "sh", "-c", script])
@@ -83,7 +94,7 @@ impl Tier2Host {
                 String::from_utf8_lossy(&output.stderr).trim()
             );
         }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        Ok(output.stdout)
     }
 
     /// Whether a shell test succeeds, without treating failure as an error.
@@ -162,6 +173,11 @@ impl Tier2Host {
 /// was just installed. That is exactly what happened installing the node tarball,
 /// whose destination is `/tmp/<asset>.tar.gz` — provenance verified, file copied,
 /// then removed, and `tar` reported a missing archive three layers later.
+///
+/// The staged copy is created under `umask 077`, into a path cleared first, so a
+/// file whose final mode is `0600` (a private key) is never briefly readable at
+/// the root umask's `0644` between `cp` and `chmod`. The umask is scoped to the
+/// `cp` so directories `mkdir -p` creates keep their ordinary mode.
 fn put_script(remote: &str, staged: &str, source: &str, mode: &str) -> String {
     // Only clean up a source that is not the destination.
     let cleanup = if source == remote {
@@ -172,7 +188,8 @@ fn put_script(remote: &str, staged: &str, source: &str, mode: &str) -> String {
     format!(
         "set -e
                      mkdir -p \"$(dirname {remote})\"
-                     cp {source} {staged}
+                     rm -f {staged}
+                     (umask 077 && cp {source} {staged})
                      chmod {mode} {staged}
                      mv {staged} {remote}{cleanup}"
     )
@@ -604,6 +621,163 @@ pub struct MtlsIdentityPaths {
     pub trust_bundle: PathBuf,
 }
 
+impl MtlsIdentityPaths {
+    /// The three files under `dir`, named by [`IdentityFile::name`].
+    fn in_dir(dir: &Path) -> Self {
+        Self {
+            cli_cert: dir.join(IdentityFile::CertChain.name()),
+            cli_key: dir.join(IdentityFile::Key.name()),
+            trust_bundle: dir.join(IdentityFile::TrustBundle.name()),
+        }
+    }
+
+    fn path(&self, file: IdentityFile) -> &Path {
+        match file {
+            IdentityFile::CertChain => &self.cli_cert,
+            IdentityFile::Key => &self.cli_key,
+            IdentityFile::TrustBundle => &self.trust_bundle,
+        }
+    }
+}
+
+/// One file of the CLI identity: its name, its mode, and what it must hold.
+///
+/// One decider for all three facts (ADR 0007 G-1): minting, installing into the
+/// Tier 2 host, and deciding whether an existing identity can be reused all
+/// read them from here rather than each restating a filename or a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentityFile {
+    /// The CLI's certificate chain, leaf first. Public.
+    CertChain,
+    /// The CLI's private key. Owner-only.
+    Key,
+    /// The CA root(s) the node's certificate is verified against. Public.
+    TrustBundle,
+}
+
+impl IdentityFile {
+    const ALL: [Self; 3] = [Self::CertChain, Self::Key, Self::TrustBundle];
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::CertChain => "cli-cert.pem",
+            Self::Key => "cli-key.pem",
+            Self::TrustBundle => "trust-bundle.pem",
+        }
+    }
+
+    fn mode(self) -> &'static str {
+        match self {
+            Self::Key => "0600",
+            Self::CertChain | Self::TrustBundle => "0644",
+        }
+    }
+
+    /// Refuse, by file name, content this file must not hold.
+    ///
+    /// A certificate file holds certificates and nothing else — in particular
+    /// no private key, because tools and people treat a file named as a
+    /// certificate as public, and #3158 put the key in exactly that file. A key
+    /// file holds exactly one private key. Text outside a PEM block is refused
+    /// too, since that is what a mis-terminated heredoc leaves behind and a PEM
+    /// parser skips silently.
+    fn check(self, bytes: &[u8]) -> Result<()> {
+        let name = self.name();
+        let text =
+            std::str::from_utf8(bytes).map_err(|e| anyhow!("{name} is not UTF-8 text: {e}"))?;
+        let mut inside = false;
+        for line in text.lines() {
+            let line = line.trim_end_matches('\r');
+            let framed = line.ends_with("-----");
+            if inside {
+                if line.starts_with("-----END ") {
+                    if !framed {
+                        bail!("{name} has a malformed PEM END line: {line:?}");
+                    }
+                    inside = false;
+                }
+            } else if line.starts_with("-----BEGIN ") && framed {
+                inside = true;
+            } else if !line.trim().is_empty() {
+                bail!("{name} holds text outside a PEM block: {line:?}");
+            }
+        }
+        let blocks = pem::parse_many(bytes).map_err(|e| anyhow!("{name} is not valid PEM: {e}"))?;
+        let (mut certs, mut keys) = (0usize, 0usize);
+        for block in &blocks {
+            match block.tag() {
+                "CERTIFICATE" => certs += 1,
+                tag if tag.ends_with("PRIVATE KEY") => keys += 1,
+                tag => bail!("{name} holds an unexpected PEM block: {tag}"),
+            }
+        }
+        match self {
+            Self::CertChain | Self::TrustBundle => {
+                if keys != 0 {
+                    bail!(
+                        "{name} holds {keys} private key(s): it is a certificate file, which \
+                         is treated as public — refusing it"
+                    );
+                }
+                if certs == 0 {
+                    bail!("{name} holds no certificate");
+                }
+            }
+            Self::Key => {
+                if certs != 0 {
+                    bail!("{name} holds {certs} certificate(s); it must hold only the key");
+                }
+                if keys != 1 {
+                    bail!("{name} must hold exactly one private key, found {keys}");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The three identity files' bytes, each checked by [`IdentityFile::check`],
+/// and refused by name when one fails,
+/// and checked together: the key is the leaf's key, and the leaf chains to the
+/// bundle. The certificate is a CHAIN (leaf, then the CA root — what
+/// `WorkloadCertificate::chain_pem` writes), so "only certificates" rather than
+/// "one certificate" is the per-file rule.
+fn check_identity(cert: &[u8], key: &[u8], bundle: &[u8]) -> Result<()> {
+    IdentityFile::CertChain.check(cert)?;
+    IdentityFile::Key.check(key)?;
+    IdentityFile::TrustBundle.check(bundle)?;
+    // `check` has already refused non-UTF-8 text, so these cannot fail.
+    let utf8 = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
+    let workload = nucleus_identity::WorkloadCertificate::from_pem(&utf8(cert), &utf8(key))
+        .map_err(|e| {
+            anyhow!(
+                "{} does not parse as an SVID chain: {e}",
+                IdentityFile::CertChain.name()
+            )
+        })?;
+    workload
+        .to_rustls_certified_key()
+        .map_err(|e| anyhow!("{} is not a usable key: {e}", IdentityFile::Key.name()))?
+        .keys_match()
+        .map_err(|e| {
+            anyhow!(
+                "{} is not the key of the leaf in {}: {e}",
+                IdentityFile::Key.name(),
+                IdentityFile::CertChain.name()
+            )
+        })?;
+    let bundle = nucleus_identity::TrustBundle::from_pem(&utf8(bundle))
+        .map_err(|e| anyhow!("{} does not parse: {e}", IdentityFile::TrustBundle.name()))?;
+    nucleus_identity::verify_svid_chain(workload.leaf(), &bundle).map_err(|e| {
+        anyhow!(
+            "the leaf in {} does not verify against {}: {e}",
+            IdentityFile::CertChain.name(),
+            IdentityFile::TrustBundle.name()
+        )
+    })?;
+    Ok(())
+}
+
 /// Builds an mTLS client presenting the identity provisioned at
 /// `~/.config/nucleus/identity/` (`Config::identity_dir()`,
 /// `mint_cli_identity`'s output). Shared by every in-process caller that
@@ -625,6 +799,12 @@ pub struct MtlsIdentityPaths {
 fn read_provisioned_identity_pems() -> Result<(Vec<u8>, Vec<u8>)> {
     let dir = crate::config::Config::identity_dir()
         .context("could not resolve the identity directory")?;
+    read_identity_pems_in(&dir)
+}
+
+/// `(identity_pem, bundle_pem)` from the three files [`mint_cli_identity`]
+/// writes into `dir`.
+fn read_identity_pems_in(dir: &Path) -> Result<(Vec<u8>, Vec<u8>)> {
     let cert_path = dir.join("cli-cert.pem");
     let key_path = dir.join("cli-key.pem");
     let bundle_path = dir.join("trust-bundle.pem");
@@ -679,10 +859,17 @@ pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
 /// exactly the node in the trust domain that identity belongs to. See
 /// `nucleus_identity::node_tls`.
 fn provisioned_node_tls() -> Result<rustls::ClientConfig> {
-    let (identity_pem, bundle_pem) = read_provisioned_identity_pems()?;
+    node_tls_from_pems(read_provisioned_identity_pems()?)
+}
+
+/// The node TLS configuration for an `(identity_pem, bundle_pem)` pair, read
+/// from the provisioned identity or from one [`mint_cli_identity`] wrote into
+/// another directory.
+fn node_tls_from_pems(pems: (Vec<u8>, Vec<u8>)) -> Result<rustls::ClientConfig> {
+    let (identity_pem, bundle_pem) = pems;
     let _ = rustls::crypto::ring::default_provider().install_default();
     nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
-        .context("failed to build the node TLS configuration from the provisioned identity")
+        .context("failed to build the node TLS configuration from the CLI identity")
 }
 
 /// The `reqwest::blocking` twin of [`mtls_client_from_provisioned_identity`],
@@ -693,7 +880,17 @@ fn provisioned_node_tls() -> Result<rustls::ClientConfig> {
 /// wrap the call (and every use of the returned client) in
 /// `tokio::task::block_in_place`, as `twosafety_boot::execute` does.
 pub fn mtls_blocking_client_from_provisioned_identity() -> Result<reqwest::blocking::Client> {
-    let tls = provisioned_node_tls()?;
+    blocking_client_from_tls(provisioned_node_tls()?)
+}
+
+/// The blocking mTLS client for an identity [`mint_cli_identity`] wrote into
+/// `dir`, for a node whose CA is not the provisioned Tier 2 one, such as the
+/// Apple `container` microVM host's.
+pub fn mtls_blocking_client_in(dir: &Path) -> Result<reqwest::blocking::Client> {
+    blocking_client_from_tls(node_tls_from_pems(read_identity_pems_in(dir)?)?)
+}
+
+fn blocking_client_from_tls(tls: rustls::ClientConfig) -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .tls_backend_preconfigured(tls)
@@ -729,14 +926,85 @@ pub fn mtls_blocking_client_from_provisioned_identity() -> Result<reqwest::block
 /// previously-provisioned CLI identity) issued under the old one, the same
 /// failure mode `SelfSignedCa::load_or_create`'s own doc comment describes
 /// for the node itself.
+///
+/// The CLI identity is kept the same way: an identity already on disk that
+/// [`reusable_cli_identity`] accepts is installed again as-is rather than
+/// re-minted, so a second `setup` leaves byte-identical files on both machines
+/// (#3158).
 pub async fn provision_mtls_identity(
     host: &Tier2Host,
     trust_domain: &str,
 ) -> Result<MtlsIdentityPaths> {
     let ca = load_or_seed_host_ca(host, trust_domain)?;
-    let paths =
-        mint_cli_identity(&ca, trust_domain, &crate::config::Config::identity_dir()?).await?;
+    let dir = crate::config::Config::identity_dir()?;
+    let paths = match reusable_cli_identity(&ca, trust_domain, &dir) {
+        Ok(paths) => {
+            println!("  CLI identity at {} is current; keeping it", dir.display());
+            paths
+        }
+        Err(why) => {
+            println!("  minting a CLI identity ({why:#})");
+            mint_cli_identity(&ca, trust_domain, &dir).await?
+        }
+    };
     install_identity_on_tier2_host(host, &paths)?;
+    Ok(paths)
+}
+
+/// Renew the CLI identity on a `setup` run when it has less than this left.
+/// It is minted for 90 days (`mint_cli_identity`).
+const CLI_IDENTITY_RENEW_WITHIN_DAYS: i64 = 30;
+
+/// The identity under `dir`, when it can be kept: all three files pass
+/// [`check_identity`], the leaf is this CLI's SPIFFE ID, the bundle is exactly
+/// `ca`'s root, and the leaf has more than [`CLI_IDENTITY_RENEW_WITHIN_DAYS`]
+/// left. `Err` says why not, and the caller mints — the only thing a wrong
+/// answer here costs is a fresh identity.
+fn reusable_cli_identity(
+    ca: &nucleus_identity::SelfSignedCa,
+    trust_domain: &str,
+    dir: &Path,
+) -> Result<MtlsIdentityPaths> {
+    use nucleus_identity::CaClient as _;
+
+    let paths = MtlsIdentityPaths::in_dir(dir);
+    let [cert, key, bundle] = read_identity(&paths)?;
+    check_identity(&cert, &key, &bundle)?;
+
+    let workload = nucleus_identity::WorkloadCertificate::from_pem(
+        &String::from_utf8_lossy(&cert),
+        &String::from_utf8_lossy(&key),
+    )
+    .map_err(|e| anyhow!("{} does not parse: {e}", IdentityFile::CertChain.name()))?;
+    let want = nucleus_identity::Identity::new(trust_domain, "system", "cli");
+    if workload.identity() != &want {
+        bail!(
+            "{} names {}, not {}",
+            IdentityFile::CertChain.name(),
+            workload.identity().to_spiffe_uri(),
+            want.to_spiffe_uri()
+        );
+    }
+    let bundle = nucleus_identity::TrustBundle::from_pem(&String::from_utf8_lossy(&bundle))
+        .map_err(|e| anyhow!("{} does not parse: {e}", IdentityFile::TrustBundle.name()))?;
+    let ders = |b: &nucleus_identity::TrustBundle| {
+        b.roots()
+            .iter()
+            .map(|c| c.der().to_vec())
+            .collect::<Vec<_>>()
+    };
+    if ders(&bundle) != ders(ca.trust_bundle()) {
+        bail!(
+            "{} is not this host's CA root",
+            IdentityFile::TrustBundle.name()
+        );
+    }
+    if workload.expires_within(chrono::Duration::days(CLI_IDENTITY_RENEW_WITHIN_DAYS)) {
+        bail!(
+            "it expires {}, within {CLI_IDENTITY_RENEW_WITHIN_DAYS} days",
+            workload.expiry()
+        );
+    }
     Ok(paths)
 }
 
@@ -772,57 +1040,154 @@ const TIER2_IDENTITY_DIR: &str = "/root/.config/nucleus/identity";
 /// It is the operator's own credential and the VM is the operator's own
 /// machine, already holding the CA **private key** that can mint more of them
 /// (`{HOST_CA_DIR}/ca-key.pem`). Writing a leaf key beside a root key it is
-/// derived from adds no reachable authority. It is written by root, `umask 077`
-/// before creation and `chmod 0600` after, matching how the CA key is written.
+/// derived from adds no reachable authority. It lands owner-only: staged at
+/// `0600` here, copied under `umask 077` there (`put_script`).
+///
+/// # Why files, not a script (#3158)
+///
+/// This used to splice the three PEMs into heredocs. A terminator only counts
+/// on a line of its own, so a cert without a trailing newline glued the
+/// terminator to `-----END CERTIFICATE-----`, the heredoc ran on, and the
+/// private key was written into `cli-cert.pem`. The bytes now travel as files
+/// through [`Tier2Host::put`], the path every other artifact takes; no secret
+/// is ever part of a shell command, and the content cannot change the shape of
+/// the command that lands it.
+///
+/// # What is checked
+///
+/// Before: [`check_identity`] — each file holds what its name says, and the
+/// three belong together. After: each installed file's SHA-256, taken on the
+/// host, equals the digest of those checked bytes, so what `verify --tier2`
+/// reads is exactly what was checked.
 fn install_identity_on_tier2_host(host: &Tier2Host, paths: &MtlsIdentityPaths) -> Result<()> {
-    let read = |p: &Path| {
-        std::fs::read_to_string(p).with_context(|| format!("failed to read {}", p.display()))
-    };
-    let script = tier2_identity_install_script(
-        &read(&paths.cli_cert)?,
-        &read(&paths.cli_key)?,
-        &read(&paths.trust_bundle)?,
-    );
-    host.sh(&script).with_context(|| {
+    let staging = tempfile::tempdir().context("failed to create a staging directory")?;
+    let staged = stage_identity(paths, staging.path(), TIER2_IDENTITY_DIR)?;
+    land_staged(host, &staged).with_context(|| {
         format!(
             "failed to install the CLI identity into {TIER2_IDENTITY_DIR} on {} — \
              `nucleus verify --tier2` reads it from there",
             host.describe()
         )
-    })?;
+    })
+}
+
+/// A file staged locally for [`Tier2Host::put`], with the digest it must have
+/// when it arrives.
+#[derive(Debug)]
+struct StagedFile {
+    local: PathBuf,
+    remote: String,
+    mode: &'static str,
+    sha256: String,
+}
+
+/// Read the identity under `paths`, refuse it by name unless it passes
+/// [`check_identity`], and stage those exact bytes under `staging` for landing
+/// in `remote_dir`.
+///
+/// The pure half of [`install_identity_on_tier2_host`]: no `Tier2Host`, so a
+/// test can land the result with `put_script` into a temporary directory.
+fn stage_identity(
+    paths: &MtlsIdentityPaths,
+    staging: &Path,
+    remote_dir: &str,
+) -> Result<Vec<StagedFile>> {
+    let bytes = read_identity(paths)?;
+    let [cert, key, bundle] = &bytes;
+    check_identity(cert, key, bundle).context("refusing to install the CLI identity")?;
+    let files: Vec<_> = IdentityFile::ALL
+        .iter()
+        .zip(&bytes)
+        .map(|(file, b)| (file.name(), b.as_slice(), file.mode()))
+        .collect();
+    stage_files(staging, remote_dir, &files)
+}
+
+/// The bytes of the three identity files under `paths`, in
+/// [`IdentityFile::ALL`] order: certificate chain, key, trust bundle.
+fn read_identity(paths: &MtlsIdentityPaths) -> Result<[Vec<u8>; 3]> {
+    let read = |f: IdentityFile| {
+        let p = paths.path(f);
+        std::fs::read(p).with_context(|| format!("failed to read {}", p.display()))
+    };
+    let [cert, key, bundle] = IdentityFile::ALL;
+    Ok([read(cert)?, read(key)?, read(bundle)?])
+}
+
+/// Write each `(name, bytes, mode)` to `staging/name`, owner-only, and pair it
+/// with `remote_dir/name` and the digest of `bytes`.
+///
+/// Staged rather than handed to `put` from where it lies: `put` removes its
+/// source after landing (the `/tmp` copy, on a Lima host), which on a Linux host
+/// would be the operator's own identity file.
+fn stage_files(
+    staging: &Path,
+    remote_dir: &str,
+    files: &[(&str, &[u8], &'static str)],
+) -> Result<Vec<StagedFile>> {
+    let mut staged = Vec::with_capacity(files.len());
+    for &(name, bytes, mode) in files {
+        let local = staging.join(name);
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        let mut file = open
+            .open(&local)
+            .with_context(|| format!("failed to stage {}", local.display()))?;
+        std::io::Write::write_all(&mut file, bytes)
+            .with_context(|| format!("failed to stage {}", local.display()))?;
+        staged.push(StagedFile {
+            local,
+            remote: format!("{remote_dir}/{name}"),
+            mode,
+            sha256: hex::encode(Sha256::digest(bytes)),
+        });
+    }
+    Ok(staged)
+}
+
+/// Land each staged file with [`Tier2Host::put`], then confirm on the host
+/// that every one arrived byte-for-byte: its SHA-256 there must equal the
+/// digest of what was staged. Refuses by path otherwise.
+fn land_staged(host: &Tier2Host, staged: &[StagedFile]) -> Result<()> {
+    for file in staged {
+        host.put(&file.local, &file.remote, file.mode)?;
+    }
+    for file in staged {
+        let out = host.sh(&format!("sha256sum {}", file.remote))?;
+        let arrived = sha256sum_digest(&out)
+            .ok_or_else(|| anyhow!("sha256sum printed no digest for {}: {out:?}", file.remote))?;
+        if arrived != file.sha256 {
+            bail!(
+                "{} on {} is not the file that was checked: sha256 {arrived}, expected {}",
+                file.remote,
+                host.describe(),
+                file.sha256
+            );
+        }
+    }
     Ok(())
 }
 
-/// The pure half of [`install_identity_on_tier2_host`]: the script, built from
-/// the three PEMs, with no `Tier2Host` involved so a test can read it.
-///
-/// Split for the same reason `mint_cli_identity` is split from
-/// `load_or_seed_host_ca` — the half that runs real shell commands is exercised
-/// by review, and the half that decides WHAT to run is exercised by a test.
-fn tier2_identity_install_script(cert_pem: &str, key_pem: &str, bundle_pem: &str) -> String {
-    // `set -e` so a failed mkdir cannot leave a later `cat` writing into the
-    // wrong directory, and `umask 077` so the key is never briefly world-readable
-    // between creation and chmod.
-    format!(
-        "set -e
-         mkdir -p {TIER2_IDENTITY_DIR}
-         umask 077
-         cat > {TIER2_IDENTITY_DIR}/cli-cert.pem <<'NUCLEUS_CLI_CERT_EOF'
-{cert_pem}NUCLEUS_CLI_CERT_EOF
-         cat > {TIER2_IDENTITY_DIR}/cli-key.pem <<'NUCLEUS_CLI_KEY_EOF'
-{key_pem}NUCLEUS_CLI_KEY_EOF
-         cat > {TIER2_IDENTITY_DIR}/trust-bundle.pem <<'NUCLEUS_TRUST_BUNDLE_EOF'
-{bundle_pem}NUCLEUS_TRUST_BUNDLE_EOF
-         chmod 0600 {TIER2_IDENTITY_DIR}/cli-key.pem"
-    )
+/// The digest from one line of `sha256sum` output (`<hex>  <path>`).
+fn sha256sum_digest(line: &str) -> Option<&str> {
+    let digest = line.split_whitespace().next()?;
+    (digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())).then_some(digest)
 }
 
 /// The `Tier2Host`-touching half: load the CA root already at `HOST_CA_DIR`
-/// on `host`, or generate one and write it there. Split out from
-/// [`provision_mtls_identity`] because it runs real shell commands (via
-/// `Tier2Host::sh`) and so is exercised by review and by reusing
-/// `install_node_service`'s already-proven heredoc-write pattern, not by a
-/// unit test — see [`mint_cli_identity`] for the half that IS unit-tested.
+/// on `host`, or generate one and land it there through [`stage_files`] and
+/// [`land_staged`] — the same file path the CLI identity takes, never a PEM
+/// spliced into a shell command. Exercised by review and the live `setup`;
+/// see [`mint_cli_identity`] for the half that IS unit-tested.
+///
+/// The existing root is read with [`Tier2Host::sh_bytes`], not `sh`: `sh`
+/// trims, and the root read through it lost its trailing newline, which is how
+/// a re-run of `setup` came to mint a chain whose last line had none (#3158).
 fn load_or_seed_host_ca(
     host: &Tier2Host,
     trust_domain: &str,
@@ -832,8 +1197,12 @@ fn load_or_seed_host_ca(
     let cert_path = format!("{HOST_CA_DIR}/ca-cert.pem");
     let key_path = format!("{HOST_CA_DIR}/ca-key.pem");
     if host.test(&format!("test -f {cert_path} -a -f {key_path}")) {
-        let cert_pem = host.sh(&format!("cat {cert_path}"))?;
-        let key_pem = host.sh(&format!("cat {key_path}"))?;
+        let read = |path: &str| -> Result<String> {
+            String::from_utf8(host.sh_bytes(&format!("cat {path}"))?)
+                .map_err(|e| anyhow!("{path} on {} is not UTF-8: {e}", host.describe()))
+        };
+        let cert_pem = read(&cert_path)?;
+        let key_pem = read(&key_path)?;
         SelfSignedCa::from_pem(trust_domain, &cert_pem, &key_pem).map_err(|e| {
             anyhow!(
                 "CA root at {HOST_CA_DIR} on {} is unreadable: {e}",
@@ -843,18 +1212,21 @@ fn load_or_seed_host_ca(
     } else {
         let ca = SelfSignedCa::new(trust_domain)
             .map_err(|e| anyhow!("failed to generate a new CA root: {e}"))?;
-        host.sh(&format!(
-            "set -e
-             mkdir -p {HOST_CA_DIR}
-             umask 077
-             cat > {cert_path} <<'NUCLEUS_CA_CERT_EOF'
-{}NUCLEUS_CA_CERT_EOF
-             cat > {key_path} <<'NUCLEUS_CA_KEY_EOF'
-{}NUCLEUS_CA_KEY_EOF
-             chmod 0600 {key_path}",
-            ca.root_cert_pem(),
-            ca.root_key_pem(),
-        ))?;
+        let staging = tempfile::tempdir().context("failed to create a staging directory")?;
+        let staged = stage_files(
+            staging.path(),
+            HOST_CA_DIR,
+            &[
+                ("ca-cert.pem", ca.root_cert_pem().as_bytes(), "0644"),
+                ("ca-key.pem", ca.root_key_pem().as_bytes(), "0600"),
+            ],
+        )?;
+        land_staged(host, &staged).with_context(|| {
+            format!(
+                "failed to seed the CA root into {HOST_CA_DIR} on {}",
+                host.describe()
+            )
+        })?;
         Ok(ca)
     }
 }
@@ -864,7 +1236,7 @@ fn load_or_seed_host_ca(
 /// `identity_dir` as a parameter rather than reading
 /// `Config::identity_dir()` itself specifically so a test can point it at a
 /// tempdir instead of `~/.config/nucleus/identity`.
-async fn mint_cli_identity(
+pub(crate) async fn mint_cli_identity(
     ca: &nucleus_identity::SelfSignedCa,
     trust_domain: &str,
     identity_dir: &Path,
@@ -894,9 +1266,11 @@ async fn mint_cli_identity(
 
     std::fs::create_dir_all(identity_dir)
         .with_context(|| format!("failed to create {}", identity_dir.display()))?;
-    let cli_cert = identity_dir.join("cli-cert.pem");
-    let cli_key = identity_dir.join("cli-key.pem");
-    let trust_bundle_path = identity_dir.join("trust-bundle.pem");
+    let MtlsIdentityPaths {
+        cli_cert,
+        cli_key,
+        trust_bundle: trust_bundle_path,
+    } = MtlsIdentityPaths::in_dir(identity_dir);
 
     std::fs::write(&cli_cert, cert.chain_pem())
         .with_context(|| format!("failed to write {}", cli_cert.display()))?;
@@ -1097,8 +1471,9 @@ mod tests {
             "/tmp/a.tar.gz",
             "0644",
         );
+        // The staged path is cleared before the copy; the source never is.
         assert!(
-            !same.contains("rm -f"),
+            !same.lines().any(|l| l.trim() == "rm -f /tmp/a.tar.gz"),
             "source == destination, so there is nothing to clean up:\n{same}"
         );
         assert!(same.contains("mv /tmp/a.tar.gz.new /tmp/a.tar.gz"));
@@ -1382,43 +1757,285 @@ mod tests {
         );
     }
 
-    /// The three filenames are not free: `node.rs::provisioned_identity_paths_in`
-    /// requires all three to be present before it will default the node client's
-    /// flags, and treats a partial set as none. A script that wrote two of them
-    /// would leave `verify --tier2` failing exactly as it did before.
-    #[test]
-    fn the_install_script_writes_all_three_files_the_node_client_requires() {
-        let script = tier2_identity_install_script("CERT\n", "KEY\n", "BUNDLE\n");
-        for name in ["cli-cert.pem", "cli-key.pem", "trust-bundle.pem"] {
-            assert!(
-                script.contains(&format!("{TIER2_IDENTITY_DIR}/{name}")),
-                "{name} is never written, so the identity stays partial: {script}"
+    // ── #3158: the identity travels as files, and is checked ────────────────
+
+    /// The CA `load_or_seed_host_ca` returned on a re-run before #3158: its
+    /// root read back through the trimming `Tier2Host::sh`, so the root PEM —
+    /// and therefore the minted chain, whose last certificate it is — ends
+    /// without a newline.
+    fn reloaded_through_a_trim(
+        ca: &nucleus_identity::SelfSignedCa,
+    ) -> nucleus_identity::SelfSignedCa {
+        nucleus_identity::SelfSignedCa::from_pem(
+            "nucleus.local",
+            ca.root_cert_pem().trim_end(),
+            &ca.root_key_pem(),
+        )
+        .unwrap()
+    }
+
+    /// Land `staged` exactly as `Tier2Host::put` does on a Linux host — through
+    /// `put_script`, run by `sh` — except as this user, into `dest`'s tree.
+    fn land_locally(staged: &[StagedFile]) {
+        for file in staged {
+            let script = put_script(
+                &file.remote,
+                &format!("{}.nucleus-new", file.remote),
+                &file.local.display().to_string(),
+                file.mode,
             );
-        }
-        for pem in ["CERT", "KEY", "BUNDLE"] {
-            assert!(script.contains(pem), "{pem} never reaches the host");
+            let out = std::process::Command::new("sh")
+                .args(["-c", &script])
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "landing {} failed: {}",
+                file.remote,
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
     }
 
-    /// The key is a private key on a shared filesystem. `umask 077` must come
-    /// before the first `cat`, or it exists world-readable for the window
-    /// between creation and `chmod`.
+    /// #3158, red on main: a cert chain without a trailing newline — what every
+    /// re-run of `setup` minted — is installed byte-for-byte, the key stays out
+    /// of the cert file, and the installed identity passes `check_identity`.
+    #[tokio::test]
+    async fn a_cert_without_a_trailing_newline_is_installed_correctly() {
+        let ca =
+            reloaded_through_a_trim(&nucleus_identity::SelfSignedCa::new("nucleus.local").unwrap());
+        let src = tempfile::tempdir().unwrap();
+        let paths = mint_cli_identity(&ca, "nucleus.local", src.path())
+            .await
+            .unwrap();
+        let cert = std::fs::read(&paths.cli_cert).unwrap();
+        assert!(!cert.ends_with(b"\n"), "precondition: the re-run shape");
+
+        let staging = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        let dest_dir = dest.path().join("identity").display().to_string();
+        let staged = stage_identity(&paths, staging.path(), &dest_dir).unwrap();
+        land_locally(&staged);
+
+        let installed = MtlsIdentityPaths::in_dir(Path::new(&dest_dir));
+        for file in IdentityFile::ALL {
+            assert_eq!(
+                std::fs::read(installed.path(file)).unwrap(),
+                std::fs::read(paths.path(file)).unwrap(),
+                "{} did not arrive byte-for-byte",
+                file.name()
+            );
+        }
+        let installed_cert = std::fs::read_to_string(&installed.cli_cert).unwrap();
+        assert!(
+            !installed_cert.contains("PRIVATE KEY"),
+            "cli-cert.pem holds a private key:\n{installed_cert}"
+        );
+        check_identity(
+            &std::fs::read(&installed.cli_cert).unwrap(),
+            &std::fs::read(&installed.cli_key).unwrap(),
+            &std::fs::read(&installed.trust_bundle).unwrap(),
+        )
+        .expect("the installed identity is valid");
+        for file in &staged {
+            assert_eq!(
+                sha256_file(Path::new(&file.remote)).unwrap(),
+                file.sha256,
+                "the post-install digest check would refuse {}",
+                file.remote
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&installed.cli_key)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "installed key mode was {mode:o}");
+        }
+    }
+
+    /// The exact file #3158 produced — the private key appended to the
+    /// certificate chain — is refused, and by the name of the file at fault.
+    #[tokio::test]
+    async fn a_cert_file_holding_the_key_is_refused_by_name() {
+        let ca = nucleus_identity::SelfSignedCa::new("nucleus.local").unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let paths = mint_cli_identity(&ca, "nucleus.local", src.path())
+            .await
+            .unwrap();
+        let cert = std::fs::read(&paths.cli_cert).unwrap();
+        let key = std::fs::read(&paths.cli_key).unwrap();
+        let bundle = std::fs::read(&paths.trust_bundle).unwrap();
+
+        let mut glued = cert.clone();
+        glued.extend_from_slice(&key);
+        let err = check_identity(&glued, &key, &bundle).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("cli-cert.pem holds 1 private key"),
+            "{err:#}"
+        );
+
+        // And the heredoc's leftovers, if a key were not also there.
+        let mut trailing = cert.clone();
+        trailing.extend_from_slice(b"NUCLEUS_CLI_CERT_EOF\n");
+        let err = IdentityFile::CertChain.check(&trailing).unwrap_err();
+        assert!(format!("{err:#}").contains("cli-cert.pem"), "{err:#}");
+
+        let mut two_keys = key.clone();
+        two_keys.extend_from_slice(&key);
+        let err = check_identity(&cert, &two_keys, &bundle).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("cli-key.pem must hold exactly one private key, found 2"),
+            "{err:#}"
+        );
+
+        let err = check_identity(&cert, &key, &key).unwrap_err();
+        assert!(format!("{err:#}").contains("trust-bundle.pem"), "{err:#}");
+
+        // A key that is not the leaf's.
+        let other = tempfile::tempdir().unwrap();
+        let other = mint_cli_identity(&ca, "nucleus.local", other.path())
+            .await
+            .unwrap();
+        let err =
+            check_identity(&cert, &std::fs::read(&other.cli_key).unwrap(), &bundle).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("cli-key.pem is not the key"),
+            "{err:#}"
+        );
+
+        // And `stage_identity` refuses rather than staging any of it.
+        std::fs::write(&paths.cli_cert, &glued).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        assert!(stage_identity(&paths, staging.path(), "/nowhere").is_err());
+        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+    }
+
+    /// Idempotence: a second `setup` keeps the identity it finds instead of
+    /// re-minting, so the files on both machines are byte-identical across
+    /// runs — including when the CA is reloaded from the host, as it is on
+    /// every run after the first.
+    #[tokio::test]
+    async fn a_second_run_keeps_the_identity_byte_for_byte() {
+        let ca = nucleus_identity::SelfSignedCa::new("nucleus.local").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let first = mint_cli_identity(&ca, "nucleus.local", dir.path())
+            .await
+            .unwrap();
+        let before: Vec<_> = IdentityFile::ALL
+            .iter()
+            .map(|f| std::fs::read(first.path(*f)).unwrap())
+            .collect();
+
+        // The second run's CA: the same root, read back raw.
+        let reloaded = nucleus_identity::SelfSignedCa::from_pem(
+            "nucleus.local",
+            &ca.root_cert_pem(),
+            &ca.root_key_pem(),
+        )
+        .unwrap();
+        let kept = reusable_cli_identity(&reloaded, "nucleus.local", dir.path())
+            .expect("a current identity under the same CA is kept");
+        let after: Vec<_> = IdentityFile::ALL
+            .iter()
+            .map(|f| std::fs::read(kept.path(*f)).unwrap())
+            .collect();
+        assert_eq!(before, after);
+
+        // A different CA (the host's root was replaced) is not kept.
+        let other = nucleus_identity::SelfSignedCa::new("nucleus.local").unwrap();
+        assert!(reusable_cli_identity(&other, "nucleus.local", dir.path()).is_err());
+        // Nor an identity from another trust domain.
+        assert!(reusable_cli_identity(&reloaded, "other.local", dir.path()).is_err());
+        // Nor nothing.
+        let empty = tempfile::tempdir().unwrap();
+        assert!(reusable_cli_identity(&reloaded, "nucleus.local", empty.path()).is_err());
+    }
+
+    /// The three filenames are not free: `node.rs::provisioned_identity_paths_in`
+    /// requires all three to be present before it will default the node client's
+    /// flags, and treats a partial set as none.
+    #[tokio::test]
+    async fn the_install_lands_all_three_files_the_node_client_requires() {
+        let ca = nucleus_identity::SelfSignedCa::new("nucleus.local").unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let paths = mint_cli_identity(&ca, "nucleus.local", src.path())
+            .await
+            .unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let staged = stage_identity(&paths, staging.path(), TIER2_IDENTITY_DIR).unwrap();
+        let landed: Vec<_> = staged.iter().map(|f| (f.remote.as_str(), f.mode)).collect();
+        assert_eq!(
+            landed,
+            [
+                (&*format!("{TIER2_IDENTITY_DIR}/cli-cert.pem"), "0644"),
+                (&*format!("{TIER2_IDENTITY_DIR}/cli-key.pem"), "0600"),
+                (&*format!("{TIER2_IDENTITY_DIR}/trust-bundle.pem"), "0644"),
+            ]
+        );
+    }
+
+    /// No secret is part of a shell command: what lands a file names it by
+    /// path, and the PEM bytes never appear in the script. This is the
+    /// property that makes #3158 unwritable rather than fixed.
+    #[tokio::test]
+    async fn no_landing_script_carries_pem_content() {
+        let ca = nucleus_identity::SelfSignedCa::new("nucleus.local").unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let paths = mint_cli_identity(&ca, "nucleus.local", src.path())
+            .await
+            .unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        for file in stage_identity(&paths, staging.path(), TIER2_IDENTITY_DIR).unwrap() {
+            let script = put_script(
+                &file.remote,
+                &format!("{}.nucleus-new", file.remote),
+                "/tmp/staged",
+                file.mode,
+            );
+            assert!(!script.contains("-----"), "PEM in the script:\n{script}");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(&file.local).unwrap().permissions().mode();
+                assert_eq!(
+                    mode & 0o777,
+                    0o600,
+                    "{} staged at {mode:o}",
+                    file.local.display()
+                );
+            }
+        }
+    }
+
+    /// The staged copy is created owner-only, before the `chmod` that gives a
+    /// public file its mode, so a key is never briefly world-readable.
     #[test]
-    fn the_install_script_never_exposes_the_key() {
-        let script = tier2_identity_install_script("CERT\n", "KEY\n", "BUNDLE\n");
-        let umask = script.find("umask 077").expect("umask is set");
-        let first_write = script.find("cat >").expect("something is written");
-        assert!(
-            umask < first_write,
-            "umask must precede the first write or the key is briefly world-readable"
+    fn the_staged_copy_is_created_owner_only() {
+        let s = put_script(
+            "/root/k.pem",
+            "/root/k.pem.nucleus-new",
+            "/tmp/k.pem",
+            "0600",
         );
+        let cp = s
+            .find("(umask 077 && cp ")
+            .expect("the copy is umask-scoped");
+        let chmod = s.find("chmod 0600").expect("the mode is set");
+        assert!(cp < chmod, "{s}");
         assert!(
-            script.contains(&format!("chmod 0600 {TIER2_IDENTITY_DIR}/cli-key.pem")),
-            "the key is left at the umask default rather than explicitly restricted"
+            s.starts_with("set -e"),
+            "a failed step must stop the script"
         );
-        assert!(
-            script.starts_with("set -e"),
-            "a failed mkdir must stop the script"
-        );
+    }
+
+    #[test]
+    fn sha256sum_digest_takes_only_a_digest() {
+        let d = "a".repeat(64);
+        assert_eq!(sha256sum_digest(&format!("{d}  /x/y")), Some(d.as_str()));
+        assert_eq!(sha256sum_digest(""), None);
+        assert_eq!(sha256sum_digest("sha256sum: /x: No such file"), None);
     }
 }

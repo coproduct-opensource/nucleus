@@ -6649,6 +6649,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-calibration"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "nucleus-recompute",
+ "proptest",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "nucleus-ci-verdict"
 version = "1.0.0"
 dependencies = [
@@ -6679,6 +6692,7 @@ dependencies = [
  "nucleus-client",
  "nucleus-envelope",
  "nucleus-identity",
+ "nucleus-jsonl",
  "nucleus-lineage",
  "nucleus-node-binding",
  "nucleus-oci-rootfs",
@@ -6686,6 +6700,7 @@ dependencies = [
  "nucleus-provenance-memory",
  "nucleus-spec",
  "nucleus-task-compiler",
+ "pem 4.0.0",
  "portcullis",
  "rand 0.10.3",
  "rcgen",
@@ -6813,6 +6828,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "tokio",
 ]
 
 [[package]]
@@ -7227,7 +7243,9 @@ dependencies = [
  "nucleus-identity",
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
+ "nucleus-lineage",
  "nucleus-microvm-host",
+ "nucleus-oidc-core",
  "nucleus-otel-bootstrap",
  "nucleus-proto",
  "nucleus-provenance-memory",
