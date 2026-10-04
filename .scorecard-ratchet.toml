@@ -546,9 +546,11 @@ population_floor = 23
 # discharged suppression and one more in the population.
 # 2026-10-04 (#3155 integration): audit credential helpers add one expiring
 # production suppression. Measured 23 of 141 = 16.31%; tighten both pins.
-floor_bp = 1631
+# 2026-10-04: isolated umask regression adds one expiring test-process
+# suppression. Measured 24 of 142 = 16.90%; tighten both pins.
+floor_bp = 1690
 floor_set = "measurement"
-population_floor = 141
+population_floor = 142
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

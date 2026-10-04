@@ -7694,6 +7694,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "libc",
+ "nix",
  "nucleus",
  "nucleus-authority-exchange",
  "nucleus-client",

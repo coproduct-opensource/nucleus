@@ -386,12 +386,19 @@ impl UnservedDoor {
         if let Some(parent) = path.parent()
             && !parent.exists()
         {
-            // Traversable by the workload's uid, writable only by the proxy.
-            std::fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o755)
-                .create(parent)
-                .map_err(|e| failed_at(path, "create the directory of", e))?;
+            // guest-init's umask is 077, so DirBuilder::mode(0755) alone
+            // creates 0700 directories. Set each directory we create explicitly;
+            // never widen an existing private ancestor. A racing creator makes
+            // create() fail rather than handing us somebody else's directory.
+            let missing: Vec<_> = parent.ancestors().take_while(|p| !p.exists()).collect();
+            for dir in missing.into_iter().rev() {
+                std::fs::DirBuilder::new()
+                    .mode(0o755)
+                    .create(dir)
+                    .map_err(|e| failed_at(dir, "create parent directory for", e))?;
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755))
+                    .map_err(|e| failed_at(dir, "set parent directory mode for", e))?;
+            }
         }
         match std::fs::remove_file(path) {
             Ok(()) => {}
@@ -764,6 +771,52 @@ mod tests {
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o666);
         assert!(UnservedDoor::bind(Path::new("rel/door.sock")).is_err());
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "test-only self-execution isolates the process-global umask from other tests"
+    )]
+    fn restrictive_umask_keeps_new_door_parents_traversable() {
+        const CHILD: &str = "NUCLEUS_TEST_DOOR_UMASK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "workload_door::tests::restrictive_umask_keeps_new_door_parents_traversable",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .status()
+                .unwrap();
+            assert!(status.success(), "isolated umask regression failed");
+            return;
+        }
+        // This is a separate test process running only this test. The
+        // process-global mask cannot affect other tests or a production process.
+        nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            use std::os::unix::fs::PermissionsExt;
+            let root = tempfile::tempdir().unwrap();
+            let parent = root.path().join("door/nested");
+            let _door = UnservedDoor::bind(&parent.join("workload.sock")).unwrap();
+            for dir in [root.path().join("door"), parent] {
+                assert_eq!(
+                    std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                    0o755
+                );
+            }
+            assert_eq!(
+                std::fs::metadata(root.path()).unwrap().permissions().mode() & 0o777,
+                0o700,
+                "an existing private ancestor must not be made public"
+            );
+        });
     }
 
     // ── the attestation requirement, by transport ──────────────────────

@@ -866,7 +866,17 @@ pub(crate) enum GuestFs {
     },
     Sysfs,
     Devtmpfs,
-    Tmpfs,
+    Tmpfs {
+        access: TmpfsAccess,
+    },
+}
+
+/// Every writable tmpfs root needs an explicit ownership policy. The kernel's
+/// default 0777 permits workload replacement of names inside runtime directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TmpfsAccess {
+    Runtime,
+    SharedTemporary,
 }
 
 /// procfs `hidepid`: what a process sees of another uid's `/proc/<pid>`.
@@ -905,7 +915,7 @@ impl GuestFs {
             GuestFs::Proc { .. } => "proc",
             GuestFs::Sysfs => "sysfs",
             GuestFs::Devtmpfs => "devtmpfs",
-            GuestFs::Tmpfs => "tmpfs",
+            GuestFs::Tmpfs { access: _ } => "tmpfs",
         }
     }
 
@@ -920,7 +930,11 @@ impl GuestFs {
     pub(crate) const fn data(self) -> Option<&'static str> {
         match self {
             GuestFs::Proc { hidepid } => Some(hidepid.option()),
-            GuestFs::Sysfs | GuestFs::Devtmpfs | GuestFs::Tmpfs => None,
+            GuestFs::Sysfs | GuestFs::Devtmpfs => None,
+            GuestFs::Tmpfs { access } => Some(match access {
+                TmpfsAccess::Runtime => "mode=0755",
+                TmpfsAccess::SharedTemporary => "mode=1777",
+            }),
         }
     }
 }
@@ -1024,7 +1038,9 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "tmpfs",
         target: "/tmp",
-        fs: GuestFs::Tmpfs,
+        fs: GuestFs::Tmpfs {
+            access: TmpfsAccess::SharedTemporary,
+        },
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -1033,7 +1049,9 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "tmpfs",
         target: "/run",
-        fs: GuestFs::Tmpfs,
+        fs: GuestFs::Tmpfs {
+            access: TmpfsAccess::Runtime,
+        },
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -1528,6 +1546,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_tmpfs_is_not_workload_writable_and_shared_tmp_is_sticky() {
+        for (target, options) in [("/run", "mode=0755"), ("/tmp", "mode=1777")] {
+            let mount = super::GUEST_MOUNTS
+                .iter()
+                .find(|m| m.target == target)
+                .unwrap();
+            assert_eq!(
+                mount.fs.data(),
+                Some(options),
+                "{target} must set its root directory mode"
+            );
+        }
+    }
+
     /// P3d (#2696): `/proc` is mounted `hidepid=invisible`, so a workload under
     /// its own uid cannot see PID 1 (the tool-proxy, root) at all.
     ///
@@ -1554,16 +1587,18 @@ mod tests {
         );
     }
 
-    /// Non-vacuity for the test above: only procfs takes data, so the option
-    /// is not riding on every mount, where `tmpfs` would reject it and the
-    /// load-bearing mount would abort the boot.
+    /// Options belong only to filesystems whose policy requires them. In
+    /// particular the procfs hidepid option must never be passed to tmpfs.
     #[test]
-    fn only_procfs_carries_mount_data() {
+    fn only_configured_filesystems_carry_mount_data() {
         for m in super::GUEST_MOUNTS {
-            let is_proc = matches!(m.fs, super::GuestFs::Proc { .. });
+            let configured = matches!(
+                m.fs,
+                super::GuestFs::Proc { .. } | super::GuestFs::Tmpfs { .. }
+            );
             assert_eq!(
                 m.fs.data().is_some(),
-                is_proc,
+                configured,
                 "{} ({}) has unexpected mount data {:?}",
                 m.target,
                 m.fs.fstype(),

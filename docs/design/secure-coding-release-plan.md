@@ -736,3 +736,31 @@ The next live milestone is approved and denied broker effects from this guest,
 with independently verified host journals, followed by the two full harness
 journeys. Secrets deliberately baked into an image or placed in arbitrary
 workload arguments/files are not scrubbed by `credentials.env` preparation.
+
+### Real workload broker access (2026-10-04)
+
+A UID-1000 workload in the enforcing Firecracker guest could not connect to its
+workload door: guest-init's restrictive umask made newly created socket parent
+folders mode 0700 despite `DirBuilder::mode(0755)`. The `/run` tmpfs root also
+used the kernel's default 0777. New door folders now receive explicit 0755
+permissions without widening existing private ancestors. Tmpfs mount policy
+explicitly selects root-owned runtime mode 0755 or shared temporary mode 1777.
+An isolated subprocess regression exercises the real restrictive umask; the
+mount regression rejects omitted mode options. Both failed against their
+respective old implementations before passing with the fixes.
+
+The rebuilt production guest-init and all-feature proxy were installed into an
+isolated local ARM64 validation image. Real pod
+`590ab208-bdab-4015-aae2-0fef8d86a394` reported `/run` and `/run/nucleus-door` as
+root-owned 0755. Its unprivileged workload received HTTP 200 through the broker;
+the local upstream observed the exact fixture payload and host-supplied test
+credential. The independent audit CLI verified one host authorization and one
+linked transport outcome, with zero unknown outcomes, using a public key derived
+separately from the node's persisted certificate-root key. The pod was cancelled
+after validation. This proves a legitimate baseline broker call from a real
+guest, not the approval-gated path, a fresh installation, or a coding harness
+journey. The upstream was a local fixture, not an external provider.
+
+Validation: 574 proxy unit tests and 51 guest-init unit tests passed, alongside
+their integration/doc tests (existing ignored tests remain ignored). Linux ARM64
+musl builds and strict Clippy passed for the affected crates.

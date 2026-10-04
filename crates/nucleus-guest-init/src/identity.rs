@@ -895,7 +895,7 @@ mod identity_location_tests {
     fn on_a_tmpfs_mount(dir: &str) -> bool {
         crate::GUEST_MOUNTS
             .iter()
-            .filter(|m| m.fs == crate::GuestFs::Tmpfs)
+            .filter(|m| matches!(m.fs, crate::GuestFs::Tmpfs { access: _ }))
             .any(|m| dir.starts_with(&format!("{}/", m.target)))
     }
 
@@ -935,12 +935,17 @@ mod identity_location_tests {
     fn the_identity_mount_is_declared_in_guest_mounts() {
         let mount = crate::GUEST_MOUNTS
             .iter()
-            .filter(|m| m.fs == crate::GuestFs::Tmpfs)
+            .filter(|m| matches!(m.fs, crate::GuestFs::Tmpfs { access: _ }))
             .find(|m| IDENTITY_DIR.starts_with(&format!("{}/", m.target)))
             .expect("no tmpfs mount covers IDENTITY_DIR");
         // GUEST_MOUNTS is mounted in main() before identity::fetch_identity is
         // called; this pins the entry that ordering depends on.
-        assert_eq!(mount.fs, crate::GuestFs::Tmpfs);
+        assert_eq!(
+            mount.fs,
+            crate::GuestFs::Tmpfs {
+                access: crate::TmpfsAccess::Runtime
+            }
+        );
         assert!(
             mount.nosuid && mount.nodev,
             "{} must stay hardened",
