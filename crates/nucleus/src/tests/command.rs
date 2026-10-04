@@ -785,6 +785,7 @@ fn a_run_child_carries_the_workload_syscall_filter() {
 /// runtime's environ: 1943 bytes"). Not `#[ignore]`d: each uid asserts
 /// its own exact outcome, so CI as root and a developer as themselves
 /// both run it.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_microvm_child_never_reads_the_runtimes_environ_whoever_the_runtime_is() {
     let tmp = tempdir().unwrap();

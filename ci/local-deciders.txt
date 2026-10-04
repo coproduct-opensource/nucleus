@@ -31,7 +31,7 @@
 # predicting that gate.
 #
 # PINNED = 38
-# NOT-LOCAL = 13
+# NOT-LOCAL = 12
 
 # --- decided locally, in the fast gauntlet -----------------------------------
 Tests <- prepush: cargo test
@@ -51,6 +51,9 @@ The CI assurance ledger cannot outrun its wiring <- prepush: ci-spec check
 gatehouse/required <- prepush: check-gate-defs-match-plan
 cargo hack --each-feature <- prepush: cargo hack check --each-feature
 MSRV floor (workspace rust-version) <- prepush: cargo hack check --each-feature
+# 2026-10-02: `audit` left NOT-LOCAL. cargo-audit fetches the advisory DB in seconds; a missing binary is
+# CouldNotRun (a red, with the install command), never a skip. See crates/xtask/src/prepush.rs.
+audit <- prepush: cargo run -q -p xtask -- prepush
 
 # --- decided locally, only under --full --------------------------------------
 Analyze <- prepush --full: cargo clippy --all-targets --all-features -D warnings
@@ -81,7 +84,6 @@ Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests <- NOT-LOCAL: charo
 musl type-check (nucleus-node, nucleus-tool-proxy) <- NOT-LOCAL: musl cross-toolchain
 Scan PodSpecs <- NOT-LOCAL: scans PodSpecs from the live cluster, not the tree
 zizmor (high+ gate) <- NOT-LOCAL: zizmor is not a workspace tool
-audit <- NOT-LOCAL: cargo-audit needs the advisory DB fetched
 OWASP LLM Security Gauntlet <- NOT-LOCAL: a hosted adversarial suite
 Policy-kernel model↔Rust parity (K4) <- prepush: policy-kernel parity (K4)
 Every lean_lib is type-checked by something <- prepush: check-lean-libs-built

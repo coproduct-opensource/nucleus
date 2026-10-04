@@ -246,11 +246,16 @@ impl AuthorizationPolicy {
     /// The pod id a SPIFFE ID names, if it has the node-assigned pod shape
     /// (`<pod prefix><uuid>`). Anything else — including an orchestrator or
     /// CI/CD identity — is `None`: those callers are not pods.
+    ///
+    /// The uuid must be spelled exactly as the node mints it (lowercase,
+    /// hyphenated). `Uuid::parse_str` also reads the simple, braced, URN and
+    /// uppercase forms, and a pod named by any of those would be a second ID
+    /// for the same pod.
     pub fn pod_id_from_spiffe(&self, spiffe_id: &str) -> Option<uuid::Uuid> {
         self.pod_prefixes.iter().find_map(|prefix| {
-            spiffe_id
-                .strip_prefix(prefix.as_str())
-                .and_then(|rest| uuid::Uuid::parse_str(rest).ok())
+            let rest = spiffe_id.strip_prefix(prefix.as_str())?;
+            let pod = uuid::Uuid::parse_str(rest).ok()?;
+            (pod.hyphenated().to_string() == rest).then_some(pod)
         })
     }
 
@@ -275,6 +280,12 @@ impl AuthorizationPolicy {
         caller_token_pod: Option<uuid::Uuid>,
         spiffe_id: &str,
     ) -> Result<CallerScope, AuthorizationError> {
+        if !is_canonical_spiffe_id(spiffe_id) {
+            return Err(AuthorizationError::NotAuthorized {
+                identity: spiffe_id.to_string(),
+                operation: "anything: not a canonical SPIFFE ID".to_string(),
+            });
+        }
         if let Some(td) = self.federated_tenant(spiffe_id) {
             return Ok(CallerScope::Tenant(td.to_string()));
         }
@@ -285,7 +296,7 @@ impl AuthorizationPolicy {
             || self
                 .orchestrator_prefixes
                 .iter()
-                .any(|prefix| spiffe_id.starts_with(prefix.as_str()));
+                .any(|prefix| id_under(spiffe_id, prefix));
         if node_wide {
             return Ok(CallerScope::NodeWide);
         }
@@ -301,7 +312,7 @@ impl AuthorizationPolicy {
     fn is_cicd(&self, spiffe_id: &str) -> bool {
         self.cicd_prefixes
             .iter()
-            .any(|prefix| spiffe_id.starts_with(prefix.as_str()))
+            .any(|prefix| id_under(spiffe_id, prefix))
     }
 
     /// Record who created a pod, where the CI/CD scope reads it: a pod created
@@ -380,6 +391,15 @@ impl AuthorizationPolicy {
 
     /// Check if a SPIFFE ID is authorized to perform an operation.
     fn authorize_spiffe(&self, spiffe_id: &str, op: Operation) -> Result<(), AuthorizationError> {
+        // Every decision below reads the ID as a string. Each reading is sound
+        // only for the one canonical spelling (`docs/spiffe-taxonomy.md`), so
+        // anything else is refused before any of them runs.
+        if !is_canonical_spiffe_id(spiffe_id) {
+            return Err(AuthorizationError::NotAuthorized {
+                identity: spiffe_id.to_string(),
+                operation: format!("{op:?}"),
+            });
+        }
         // A federated tenant: pod management over its own pods — which ones is
         // `CallerScope::Tenant`'s scoping, not this table's. Never a snapshot, for
         // the reason on `Operation::SnapshotPod`, which applies to a tenant
@@ -421,7 +441,7 @@ impl AuthorizationPolicy {
 
         // Check if this is an orchestrator identity (full access)
         for prefix in &self.orchestrator_prefixes {
-            if spiffe_id.starts_with(prefix) {
+            if id_under(spiffe_id, prefix) {
                 tracing::debug!(
                     spiffe_id = %spiffe_id,
                     operation = ?op,
@@ -433,7 +453,7 @@ impl AuthorizationPolicy {
 
         // Check if this is a CI/CD identity (limited access)
         for prefix in &self.cicd_prefixes {
-            if spiffe_id.starts_with(prefix) {
+            if id_under(spiffe_id, prefix) {
                 // CI/CD identities can only perform pod management operations
                 match op {
                     Operation::CreatePod
@@ -460,7 +480,7 @@ impl AuthorizationPolicy {
         // A pod this node minted: pod-management operations only. Its
         // certificate decides what those operations may grant (pod_authority).
         for prefix in &self.pod_prefixes {
-            if spiffe_id.starts_with(prefix) {
+            if id_under(spiffe_id, prefix) {
                 match op {
                     Operation::CreatePod
                     | Operation::GetPod
@@ -489,6 +509,31 @@ impl AuthorizationPolicy {
             operation: format!("{:?}", op),
         })
     }
+}
+
+/// Is `id` the one canonical spelling of a workload SPIFFE ID
+/// (`nucleus_identity::Identity::from_spiffe_uri`, the parser every peer
+/// certificate already went through)?
+pub(crate) fn is_canonical_spiffe_id(id: &str) -> bool {
+    nucleus_identity::Identity::from_spiffe_uri(id).is_ok()
+}
+
+/// Is `id` below the grant `prefix`, at a SEGMENT boundary?
+///
+/// A grant is a path prefix, so it must end where a segment ends. Written with
+/// a trailing `/` (as every built-in one is) it is a plain prefix; written
+/// without one, `…/ns/ops` would otherwise also grant `…/ns/ops-anything` and,
+/// as a bare trust domain, `spiffe://td.example` would grant
+/// `spiffe://td.example.evil/…`. Here it grants only itself and what lies
+/// below it.
+pub(crate) fn id_under(id: &str, prefix: &str) -> bool {
+    if prefix.ends_with('/') {
+        return id.len() > prefix.len() && id.starts_with(prefix);
+    }
+    id == prefix
+        || id
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Authorization errors.

@@ -354,7 +354,7 @@ mod tests {
     #[tokio::test]
     async fn authenticates_a_bound_svid() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let peer = authenticate_hail(
             &hail(&chain, node, &id, &sk),
@@ -374,7 +374,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_binding_for_a_different_node() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let h = hail(&chain, [11u8; 32], &id, &sk);
         let err = authenticate_hail(
             &h,
@@ -391,7 +391,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_an_svid_for_the_wrong_principal() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let err = authenticate_hail(
             &hail(&chain, node, &id, &sk),
@@ -409,7 +409,7 @@ mod tests {
     async fn rejects_an_svid_not_signed_by_the_trusted_ca() {
         let ca = SelfSignedCa::new("demo").unwrap();
         let stranger = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let err = authenticate_hail(
             &hail(&chain, node, &id, &sk),
@@ -426,7 +426,7 @@ mod tests {
     #[tokio::test]
     async fn rejects_a_binding_not_signed_by_the_passport() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, _sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, _sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let forger = SigningKey::from_bytes(&[9u8; 32]);
         let err = authenticate_hail(
@@ -444,7 +444,7 @@ mod tests {
     #[tokio::test]
     async fn an_l1_floor_fails_closed_on_a_plain_svid() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let err = authenticate_hail(
             &hail(&chain, node, &id, &sk),
@@ -462,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn an_l1_floor_admits_an_attested_svid() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint_attested(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint_attested(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let peer = authenticate_hail(
             &hail(&chain, node, &id, &sk),
@@ -483,7 +483,7 @@ mod tests {
     #[tokio::test]
     async fn an_l2_floor_refuses_a_merely_software_attested_svid() {
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint_attested(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint_attested(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
         let node = [11u8; 32];
         let err = authenticate_hail(
             &hail(&chain, node, &id, &sk),
@@ -509,7 +509,7 @@ mod tests {
 
         let _ = rustls::crypto::ring::default_provider().install_default();
         let ca = SelfSignedCa::new("demo").unwrap();
-        let (chain, id, sk) = mint(&ca, "spiffe://demo/agent-x").await;
+        let (chain, id, sk) = mint(&ca, "spiffe://demo/ns/default/sa/agent-x").await;
 
         let node_secret = SecretKey::from_bytes(&[11u8; 32]);
         let node_id = *node_secret.public().as_bytes();

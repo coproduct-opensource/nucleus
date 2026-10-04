@@ -655,7 +655,7 @@ mod imp {
             // allocate.
             match seccomp {
                 Seccomp::NotRequested => {}
-                Seccomp::Refuse => return Err(io::ErrorKind::Unsupported.into()),
+                Seccomp::Refuse => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
                 Seccomp::Install(program) => {
                     let fprog = program.fprog();
                     if libc::prctl(
@@ -705,7 +705,11 @@ mod imp {
         match filter {
             SyscallFilter::Unfiltered => {}
             SyscallFilter::WorkloadDenylist => {
-                super::hook::pre_exec(cmd, || Err(std::io::ErrorKind::Unsupported.into()));
+                // std transports a pre_exec error by errno; a bare ErrorKind loses
+                // its identity and arrives in the parent as EINVAL.
+                super::hook::pre_exec(cmd, || {
+                    Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+                });
             }
         }
     }
@@ -714,6 +718,23 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn a_required_syscall_filter_refuses_the_spawn_off_linux() {
+        let confinement = ChildConfinement::decide(
+            ContainmentMode::HostHardened,
+            1000,
+            UnsandboxedOptIn::Absent,
+        )
+        .expect("the posture requires a filter");
+        let mut cmd = std::process::Command::new("/bin/true");
+        confinement.apply(&mut cmd);
+        let err = cmd
+            .status()
+            .expect_err("an unavailable filter must prevent exec");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
 
     /// Owner decision 2 (2026-10-02): a root runtime's `/v1/run` child drops
     /// to the workload uid in every mode, not only `MicroVM`. Red before the

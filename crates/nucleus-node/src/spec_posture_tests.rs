@@ -205,6 +205,38 @@ fn a_container_pod_cannot_choose_a_wider_network() {
     );
 }
 
+fn labelled(label: &str, value: &str) -> PodSpec {
+    let mut s = spec("{}");
+    s.metadata.labels.insert(label.into(), value.into());
+    s
+}
+
+/// #3133: the container driver read whether to run the tool-proxy, and which image it came from,
+/// from these labels. Each is refused by name whatever its value, including the value that asks
+/// for mediation: the node no longer reads it, and an ignored label would mislead its author.
+#[test]
+fn a_spec_cannot_choose_its_own_mediation() {
+    for (label, value) in [
+        ("nucleus.io/proxy-mode", "false"),
+        ("nucleus.io/proxy-mode", "true"),
+        ("nucleus.io/proxy-mode", ""),
+        (
+            "nucleus.io/container-image",
+            "attacker.example/mediator:latest",
+        ),
+        ("nucleus.io/container-image", "nucleus-tool-proxy:latest"),
+    ] {
+        let err = refused(&labelled(label, value));
+        assert!(
+            matches!(err, PostureRefused::NodeOwnedLabel { label: l, .. } if l == label),
+            "{label}={value}: {err:?}"
+        );
+        assert!(err.to_string().contains(label), "{err}");
+    }
+    // Neighbouring labels the node still reads are not swept up.
+    admit(&labelled("nucleus.io/network", "none")).expect("network label is admitted here");
+}
+
 /// A spec with none of these fields is admitted unchanged: the default is not a refusal.
 #[test]
 fn a_minimal_spec_is_admitted() {
@@ -231,5 +263,27 @@ async fn create_refuses_a_hostile_posture_before_anything_is_spawned() {
         panic!("a spec writing the guest command line must be refused at create");
     };
     assert!(msg.contains("audit_sink.s3_bucket"), "{msg}");
+    assert!(st.pods.lock().await.is_empty(), "nothing was registered");
+}
+
+/// #3133 end to end: a child or tenant naming the mediation label is refused by the create path
+/// itself, so `create_sub_pod`'s label passthrough cannot reach the container driver with it.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn create_refuses_a_spec_choosing_its_mediation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = crate::pod_api::handler_tests::state(&dir);
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let hostile = labelled("nucleus.io/proxy-mode", "false");
+    let Err(ApiError::InvalidSpec(msg)) =
+        crate::create_pod_internal(&st, hostile, None, None, root).await
+    else {
+        panic!("a spec choosing its own mediation must be refused at create");
+    };
+    assert!(msg.contains("nucleus.io/proxy-mode"), "{msg}");
     assert!(st.pods.lock().await.is_empty(), "nothing was registered");
 }
