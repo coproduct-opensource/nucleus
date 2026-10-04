@@ -799,6 +799,7 @@ mod through_the_broker {
             r#"
 [[upstream]]
 name = "model-api"
+call_charge_micro_usd = 0
 base_url = "{up}/v1"
 header = "authorization"
 value_prefix = "Bearer "
@@ -898,6 +899,56 @@ policy_id = "example-policy-0001"
                 .read(|s| format!("{s:?}").contains(target))
                 .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn operator_tariffs_refuse_before_mint_and_failed_mint_does_not_spend() {
+        let tokens = TokenEndpoint::start(Some(3600), Duration::ZERO, &[400]).await;
+        let up = Upstream::start(&[]).await;
+        let pod = Pod::new(POD_A, &source(), registry(&tokens, &up), NOW + DAY);
+        let mut policy = pod.policy.clone();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        let host_policy = crate::host_decide::test_policy(policy.clone());
+        let expensive: Vec<_> = pod
+            .upstreams
+            .iter()
+            .cloned()
+            .map(|entry| entry.with_call_charge(2_000_000))
+            .collect();
+        let affordable: Vec<_> = pod
+            .upstreams
+            .iter()
+            .cloned()
+            .map(|entry| entry.with_call_charge(1_000_000))
+            .collect();
+        let mut ctx = PerformContext {
+            host_policy: &host_policy,
+            identity: &pod.identity,
+            policy: &policy,
+            credentials: &pod.credentials,
+            upstreams: &expensive,
+            ledger: &pod.ledger,
+            egress: &pod.egress,
+        };
+        let reply = handle_perform(&perform("priced"), &ctx, NOW, |call| (pod.caller)(call)).await;
+        assert!(reply.reason.contains("budget exhausted"));
+        assert!(tokens.assertions().await.is_empty());
+        ctx.upstreams = &affordable;
+        let failed = handle_perform(&perform("priced"), &ctx, NOW, |call| (pod.caller)(call)).await;
+        assert_eq!(failed.reason, "upstream call failed");
+        assert!(up.seen().is_empty());
+        let retried =
+            handle_perform(&perform("priced"), &ctx, NOW, |call| (pod.caller)(call)).await;
+        assert!(
+            retried.granted,
+            "failed mint must preserve the entire budget"
+        );
+        let exhausted = handle_perform(&perform("after-charge"), &ctx, NOW, |call| {
+            (pod.caller)(call)
+        })
+        .await;
+        assert!(!exhausted.granted);
+        assert_eq!(up.seen().len(), 1);
     }
 
     #[tokio::test]

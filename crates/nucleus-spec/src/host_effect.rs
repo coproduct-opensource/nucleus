@@ -5,9 +5,9 @@ use sha2::{Digest, Sha256};
 
 pub mod outcome;
 
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 pub const LOG_FILE: &str = "host-effect-authorizations.jsonl";
-const DOMAIN: &[u8] = b"nucleus.host-effect-authorization.v1\n";
+const DOMAIN: &[u8] = b"nucleus.host-effect-authorization.v2\n";
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +20,8 @@ pub struct Authorization {
     pub operation: String,
     pub subject: String,
     pub authorized_unix: u64,
+    /// Operator-defined tariff debited by the host for this dispatch attempt.
+    pub call_charge_micro_usd: u64,
     /// Empty only on sequence 1; otherwise the previous signed record's hash.
     pub previous_record_sha256: String,
 }

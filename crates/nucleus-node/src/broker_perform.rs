@@ -633,6 +633,10 @@ where
     ) else {
         return refused("not permitted");
     };
+    let call_charge = match resolved.entry().call_charge() {
+        Ok(charge) => charge,
+        Err(reason) => return refused(reason),
+    };
     let spec = resolved.entry.spec();
     let url = resolved.url.clone();
     // Hash the checked destination and exact bytes, never a guest digest.
@@ -671,7 +675,7 @@ where
 
     let preflight = match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-            Some(op) => policy.preflight_effect(effect, op, &url, now_unix),
+            Some(op) => policy.preflight_effect(effect, op, &url, now_unix, call_charge),
             None => Err("unknown operation".into()),
         },
         Err(_) => Err("host policy unavailable".into()),
@@ -712,7 +716,9 @@ where
                 .saturating_add(u64::from(elapsed.subsec_nanos() != 0));
             let permit = match ctx.host_policy.lock() {
                 Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-                    Some(op) => policy.authorize_effect(effect, op, &url, current_time),
+                    Some(op) => {
+                        policy.authorize_effect(effect, op, &url, current_time, call_charge)
+                    }
                     None => Err("unknown operation".into()),
                 },
                 Err(_) => Err("host policy unavailable".into()),
@@ -897,6 +903,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn operator_charges_share_one_budget_across_calls_retries_and_listener_replacement() {
+        let mut policy = PermissionLattice::permissive();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::new(2, 0);
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream().with_call_charge(1_000_000)];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let net = Upstream::default();
+        let first = with_key("first");
+        assert!(
+            handle_perform(&first, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert!(
+            handle_perform(&first, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(
+            net.count(),
+            1,
+            "a cached retry has no second charge or call"
+        );
+        let second = with_key("second");
+        let third = with_key("third");
+        let (second, third) = tokio::join!(
+            handle_perform(&second, &context, NOW, net.caller()),
+            handle_perform(&third, &context, NOW, net.caller())
+        );
+        assert_eq!(usize::from(second.granted) + usize::from(third.granted), 1);
+        assert_eq!(net.count(), 2);
+        let new_ledger = IdempotencyLedger::new();
+        let mut replacement = ctx(&policy, &credentials, &upstreams, &new_ledger, &identity);
+        replacement.host_policy = context.host_policy;
+        assert!(
+            !handle_perform(&with_key("reopened"), &replacement, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_transport_failure_is_charged_and_price_changes_invalidate_retry_binding() {
+        let mut policy = PermissionLattice::permissive();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream().with_call_charge(1_000_000)];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let failed = handle_perform(&request(), &context, NOW, |_| async {
+            Err("connection lost after send".into())
+        })
+        .await;
+        assert!(!failed.granted);
+        let net = Upstream::default();
+        assert!(
+            !handle_perform(&with_key("fresh"), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        let changed = [upstream().with_call_charge(500_000)];
+        let mut repriced = ctx(&policy, &credentials, &changed, &ledger, &identity);
+        repriced.host_policy = context.host_policy;
+        let reply = handle_perform(&request(), &repriced, NOW, net.caller()).await;
+        assert_eq!(reply.reason, "idempotency key names a different effect");
+        assert_eq!(net.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unpriced_calls_and_missing_credentials_never_consume_the_host_budget() {
+        let registry = crate::upstreams::UpstreamRegistry::from_toml_str(
+            r#"
+[[upstream]]
+name = "model-api"
+base_url = "https://model-api.example/v1"
+header = "authorization"
+[upstream.credential.env]
+var = "LLM_API_TOKEN"
+"#,
+        )
+        .unwrap();
+        let unpriced = registry.resolve(registry.entries());
+        let mut policy = PermissionLattice::permissive();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        let credentials = store();
+        let ledger = IdempotencyLedger::new();
+        let identity = who();
+        let mut context = ctx(&policy, &credentials, &unpriced, &ledger, &identity);
+        let net = Upstream::default();
+        let reply = handle_perform(&request(), &context, NOW, net.caller()).await;
+        assert_eq!(reply.reason, "upstream has no operator call charge");
+        let priced = [upstream().with_call_charge(1_000_000)];
+        context.upstreams = &priced;
+        let absent = PodCredentials::static_only(nucleus_cred_broker::CredentialStore::new());
+        context.credentials = &absent;
+        assert!(
+            !handle_perform(&with_key("missing-credential"), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        context.credentials = &credentials;
+        assert!(
+            handle_perform(&with_key("funded"), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 1);
+    }
+
+    #[tokio::test]
     async fn durable_host_evidence_precedes_the_call_and_a_storage_fault_blocks_io() {
         let dir = tempfile::tempdir().unwrap();
         let key = std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[17; 32]));
@@ -911,14 +1031,19 @@ mod tests {
             portcullis::kernel::Kernel::new(policy.clone()),
             evidence,
         );
-        let (credentials, upstreams, ledger, identity) =
-            (store(), vec![upstream()], IdempotencyLedger::new(), who());
+        let (credentials, upstreams, ledger, identity) = (
+            store(),
+            vec![upstream().with_call_charge(125_000)],
+            IdempotencyLedger::new(),
+            who(),
+        );
         let mut context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
         context.host_policy = &host_policy;
         let log = dir.path().join(nucleus_spec::host_effect::LOG_FILE);
         let caller = |_| {
             let record: nucleus_spec::host_effect::SignedAuthorization =
                 serde_json::from_str(std::fs::read_to_string(&log).unwrap().trim()).unwrap();
+            assert_eq!(record.authorization.call_charge_micro_usd, 125_000);
             let signature =
                 ed25519_dalek::Signature::from_slice(&hex::decode(record.signature).unwrap())
                     .unwrap();

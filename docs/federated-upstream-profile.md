@@ -242,6 +242,7 @@ name         = "model-api"
 base_url     = "https://api.model.example.com"
 header       = "authorization"
 value_prefix = "Bearer "
+call_charge_micro_usd = 1000 # example operator tariff, not a provider price
 
 [upstream.credential.federated]
 token_endpoint     = "https://auth.model.example.com/oauth/token"
@@ -260,6 +261,7 @@ policy_id = "example-policy-0001"
 name         = "search-api"
 base_url     = "https://search.example.com"
 header       = "x-api-key"
+call_charge_micro_usd = 1000
 value_prefix = ""
 
 [upstream.credential.env]
@@ -268,6 +270,21 @@ var = "SEARCH_API_TOKEN"
 
 A pod spec selects an upstream by `name`. A spec whose `credentialed_egress` entry differs
 from the registry entry in any field is refused at admission.
+
+`call_charge_micro_usd` is the operator's fixed tariff for each authorized dispatch
+attempt (1,000,000 micro-USD = 1 USD). It is not copied from the pod spec or inferred
+from a model/provider. Omission leaves the entry unpriced: PERFORM and streaming
+refuse it before retrieving credentials. Explicit zero declares a free attempt.
+Existing registry files must declare a tariff before their calls can execute.
+
+The host checks affordability before token exchange and debits the shared pod
+budget at final authorization. Failed exchange or absent credentials do not debit;
+an authorized attempt retains its charge on timeout, cancellation, or upstream
+failure. Cached PERFORM retries do not debit again. Approval details and signed
+authorization records include the charge, and a price change invalidates the
+effect binding. This is accounting for an operator tariff, not a guarantee about
+variable provider bills. Variable usage pricing and terminal settlement require
+additional trusted evidence.
 
 Without `--upstreams` the node has no registry, and every request for a credentialed
 upstream is refused, the root minter's included: a pod spec never chooses which node

@@ -136,7 +136,8 @@ mod tests {
                     digest,
                     portcullis::Operation::GitCommit,
                     "https://upstream.invalid/commit",
-                    now().unwrap()
+                    now().unwrap(),
+                    crate::upstreams::CallCharge::free()
                 )
                 .is_err()
         );
@@ -206,6 +207,7 @@ mod tests {
                 portcullis::Operation::GitCommit,
                 "https://upstream.invalid/commit",
                 now().unwrap(),
+                crate::upstreams::CallCharge::free(),
             )
             .unwrap();
         let journal = state

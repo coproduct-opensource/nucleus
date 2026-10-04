@@ -54,7 +54,8 @@ Implementation sequence:
    A policy panic refuses observations, decisions and new broker I/O. State is
    in memory; restored certificates without recovered runtime history cannot
    obtain a clean policy or start a broker. Teardown and authority release now
-   revoke shared policy and cancel live broker requests. Broker charging,
+   revoke shared policy and cancel live broker requests. Fixed operator tariffs
+   now debit this shared kernel for both broker paths. Variable usage charging,
    broader certificate/fleet revocation, and durable runtime recovery remain open.
 4. Connect host decisions to both PERFORM and streaming effects. The executable
    effect requires a consumed, matching host decision. Missing, stale, foreign,
@@ -65,7 +66,8 @@ Implementation sequence:
    requested operation before credential access and again after async minting,
    immediately before execution. Private non-cloneable permits are required to
    construct either upstream call. Pod-lifetime revocation now vetoes final
-   authorization; broader certificate revocation and cost settlement remain.
+   authorization; fixed tariffs debit under the same lock. Broader certificate
+   revocation and variable/terminal cost settlement remain.
 5. Wire authenticated host approval, expiry and one-shot consumption. Preserve
    legitimate approved work; denying every approval-gated operation is not done.
    **In progress:** operator-only mTLS routes list and grant/refuse pending host
@@ -225,6 +227,45 @@ at runtime. Restoring the implementation passes the affected suites.
 This establishes pod-lifetime revocation locally. Broader certificate/fleet
 revocation, descendant propagation guarantees, durable recovery, and live Tier-2
 validation remain open, as do cost charging and settlement.
+
+### Host accounting for operator tariffs (2026-10-04)
+
+The upstream registry accepts `call_charge_micro_usd`: an exact nonnegative
+integer charge for an authorized dispatch attempt. Only the operator supplies
+it. An omitted tariff refuses PERFORM and streaming before credential access;
+an explicit zero is a declared free attempt. This changes existing unpriced
+registry behavior and requires operator configuration before calls resume.
+
+Both paths check affordability before credential access and again under the pod
+policy mutex at final authorization, then debit the kernel and durably record the
+charge before issuing an executable permit. Concurrent calls share the same
+remaining budget. Failed minting and missing credentials do not debit; a failed
+authorization journal write refunds its local debit and latches evidence failure.
+Committed attempts remain charged on ambiguous failures and cancellation. Cached
+PERFORM retries neither execute nor debit again. This is a fixed tariff, not a
+reservation whose amount depends on guest-reported usage.
+
+The charge appears in approval views, effect binding v3, and host authorization
+schema v2 with a new signing domain. Tariff changes invalidate old retry and
+approval bindings. The updated verifier expects v2 authorization records; prior
+v1 journals are not silently interpreted as priced records. This branch does not
+yet recover live runtime history from either journal format.
+
+Variable provider pricing, observed execution cost, complete terminal spend
+evidence, unused-allocation credit, and composition with child allocations remain
+required. A declared tariff must not be reported as a verified provider bill.
+
+Validation: 826 node unit tests (one ignored), 129 audit unit tests, and seven
+integration tests pass. Broker tests cover a paid call, a cached retry, concurrent
+budget exhaustion, listener replacement, ambiguous transport failure, missing
+credentials, unpriced refusal, and streamed charging. A real token endpoint
+confirms that unaffordable calls do not mint and failed minting leaves budget for
+a successful retry. The signed-record verifier rejects charge tampering. Linux
+ARM64 musl compilation, Clippy with warnings denied (apart from the existing
+reqwest configuration diagnostics), and all four prepush gates pass.
+Removing the host debit and removing the tariff from the effect digest each make
+their corresponding regression fail at runtime; the restored broker and real
+federation tests pass.
 
 ### Action-binding evidence (2026-10-04)
 

@@ -33,6 +33,7 @@ pub(crate) struct ApprovalView {
     pub operation: &'static str,
     pub subject: String,
     pub effect_sha256: String,
+    pub call_charge_micro_usd: u64,
     pub expires_unix: u64,
     pub status: ApprovalStatus,
 }
@@ -55,6 +56,11 @@ struct Approval {
 enum Phase {
     Preflight,
     Commit,
+}
+
+struct EffectCheck {
+    phase: Phase,
+    charge: crate::upstreams::CallCharge,
 }
 
 pub(super) struct Approvals {
@@ -108,8 +114,9 @@ impl Approvals {
         op: Operation,
         subject: &str,
         now: u64,
-        phase: Phase,
+        check: EffectCheck,
     ) -> Result<(), String> {
+        let EffectCheck { phase, charge } = check;
         self.prune(now);
         if let Some(a) = self
             .entries
@@ -144,6 +151,7 @@ impl Approvals {
                     operation: portcullis::grant_usage::operation_name(op),
                     subject: subject.to_string(),
                     effect_sha256: hex::encode(digest.as_bytes()),
+                    call_charge_micro_usd: charge.micro_usd(),
                     expires_unix,
                     status: ApprovalStatus::Pending,
                 },
@@ -217,9 +225,19 @@ impl PodPolicy {
         op: Operation,
         subject: &str,
         now: u64,
+        charge: crate::upstreams::CallCharge,
     ) -> Result<(), String> {
-        self.check_effect(digest, op, subject, now, Phase::Preflight)
-            .map(|_| ())
+        self.check_effect(
+            digest,
+            op,
+            subject,
+            now,
+            EffectCheck {
+                phase: Phase::Preflight,
+                charge,
+            },
+        )
+        .map(|_| ())
     }
 
     /// Decide the real HTTP effect, then any additional requested operation.
@@ -231,9 +249,28 @@ impl PodPolicy {
         op: Operation,
         subject: &str,
         now: u64,
+        charge: crate::upstreams::CallCharge,
     ) -> Result<EffectPermit, String> {
-        let tokens = self.check_effect(digest, op, subject, now, Phase::Commit)?;
-        let record = self.evidence.commit(digest, op, subject, now)?;
+        let tokens = self.check_effect(
+            digest,
+            op,
+            subject,
+            now,
+            EffectCheck {
+                phase: Phase::Commit,
+                charge,
+            },
+        )?;
+        self.kernel
+            .charge(charge.usd())
+            .map_err(|_| "host budget exhausted")?;
+        let record = match self.evidence.commit(digest, op, subject, now, charge) {
+            Ok(record) => record,
+            Err(error) => {
+                self.kernel.refund(charge.usd());
+                return Err(error);
+            }
+        };
         Ok(EffectPermit {
             _decisions: tokens,
             _effect: digest,
@@ -247,11 +284,15 @@ impl PodPolicy {
         op: Operation,
         subject: &str,
         now: u64,
-        phase: Phase,
+        check: EffectCheck,
     ) -> Result<Vec<DecisionToken>, String> {
+        let EffectCheck { phase, charge } = check;
         self.ensure_live()
             .map_err(|_| "host policy revoked or unavailable")?;
         self.evidence.available()?;
+        if charge.usd() > self.kernel.remaining_usd() {
+            return Err("host budget exhausted for operator call charge".into());
+        }
         let mut tokens = Vec::new();
         let mut approval_ops = Vec::new();
         for operation in [
@@ -277,8 +318,13 @@ impl PodPolicy {
             }
         }
         if !approval_ops.is_empty() {
-            self.approvals
-                .check_or_request(digest, op, subject, now, phase)?;
+            self.approvals.check_or_request(
+                digest,
+                op,
+                subject,
+                now,
+                EffectCheck { phase, charge },
+            )?;
             for operation in approval_ops
                 .into_iter()
                 .filter(|_| matches!(phase, Phase::Commit))
@@ -311,7 +357,13 @@ mod tests {
     fn request_and_grant(policy: &mut PodPolicy, digest: ArgsDigest) -> Uuid {
         assert!(
             policy
-                .preflight_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .preflight_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free()
+                )
                 .is_err()
         );
         let pending = policy.list_effect_approvals(operator(), NOW);
@@ -334,7 +386,13 @@ mod tests {
             let mut state = policy.lock().unwrap();
             let id = request_and_grant(&mut state, digest);
             state
-                .preflight_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .preflight_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free(),
+                )
                 .unwrap();
             id
         };
@@ -345,7 +403,13 @@ mod tests {
         let mut state = policy.lock().unwrap();
         assert!(
             state
-                .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .authorize_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free()
+                )
                 .unwrap_err()
                 .contains("revoked")
         );
@@ -364,20 +428,44 @@ mod tests {
         let id = request_and_grant(&mut policy, digest);
         for _ in 0..2 {
             policy
-                .preflight_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .preflight_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free(),
+                )
                 .unwrap();
         }
         assert!(
             policy
-                .authorize_effect(ArgsDigest::new([2; 32]), Operation::GitCommit, SUBJECT, NOW)
+                .authorize_effect(
+                    ArgsDigest::new([2; 32]),
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free()
+                )
                 .is_err()
         );
         let _permit = policy
-            .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+            .authorize_effect(
+                digest,
+                Operation::GitCommit,
+                SUBJECT,
+                NOW,
+                crate::upstreams::CallCharge::free(),
+            )
             .unwrap();
         assert!(
             policy
-                .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .authorize_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free()
+                )
                 .is_err()
         );
         assert_eq!(
@@ -412,7 +500,13 @@ mod tests {
         );
         assert!(
             policy
-                .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW + APPROVAL_TTL)
+                .authorize_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW + APPROVAL_TTL,
+                    crate::upstreams::CallCharge::free()
+                )
                 .is_err()
         );
         let pending = policy.list_effect_approvals(operator(), NOW + APPROVAL_TTL);
@@ -421,7 +515,13 @@ mod tests {
             .unwrap();
         assert!(
             policy
-                .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW + APPROVAL_TTL)
+                .authorize_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW + APPROVAL_TTL,
+                    crate::upstreams::CallCharge::free()
+                )
                 .is_err()
         );
         assert!(Operator::authenticate("spiffe://test/guest", "spiffe://test/operator").is_err());
@@ -438,13 +538,25 @@ mod tests {
         let digest = ArgsDigest::new([1; 32]);
         let id = request_and_grant(&mut policy, digest);
         policy
-            .preflight_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+            .preflight_effect(
+                digest,
+                Operation::GitCommit,
+                SUBJECT,
+                NOW,
+                crate::upstreams::CallCharge::free(),
+            )
             .unwrap();
         let remaining = policy.kernel.remaining_usd();
         policy.kernel.charge(remaining).unwrap();
         assert!(
             policy
-                .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .authorize_effect(
+                    digest,
+                    Operation::GitCommit,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free()
+                )
                 .unwrap_err()
                 .contains("budget_exhausted")
         );
@@ -468,7 +580,13 @@ mod tests {
             shared
                 .lock()
                 .unwrap()
-                .authorize_effect(ArgsDigest::new([1; 32]), Operation::ReadFiles, SUBJECT, NOW)
+                .authorize_effect(
+                    ArgsDigest::new([1; 32]),
+                    Operation::ReadFiles,
+                    SUBJECT,
+                    NOW,
+                    crate::upstreams::CallCharge::free()
+                )
                 .is_err()
         );
     }
@@ -487,13 +605,25 @@ mod tests {
                     shared
                         .lock()
                         .unwrap()
-                        .preflight_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                        .preflight_effect(
+                            digest,
+                            Operation::GitCommit,
+                            SUBJECT,
+                            NOW,
+                            crate::upstreams::CallCharge::free(),
+                        )
                         .unwrap();
                     barrier.wait();
                     shared
                         .lock()
                         .unwrap()
-                        .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                        .authorize_effect(
+                            digest,
+                            Operation::GitCommit,
+                            SUBJECT,
+                            NOW,
+                            crate::upstreams::CallCharge::free(),
+                        )
                         .is_ok()
                 })
             })

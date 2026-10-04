@@ -81,6 +81,7 @@ impl Evidence {
         operation: Operation,
         subject: &str,
         now: u64,
+        charge: crate::upstreams::CallCharge,
     ) -> Result<Recorded, String> {
         self.available()?;
         let claim = Authorization {
@@ -91,6 +92,7 @@ impl Evidence {
             operation: portcullis::grant_usage::operation_name(operation).into(),
             subject: subject.into(),
             authorized_unix: now,
+            call_charge_micro_usd: charge.micro_usd(),
             previous_record_sha256: self.previous.clone(),
         };
         let bytes = signing_bytes(&claim).map_err(|_| "cannot encode host authorization")?;
@@ -142,12 +144,24 @@ mod tests {
         let mut policy = policy.lock().unwrap();
         let digest = ArgsDigest::new([5; 32]);
         policy
-            .preflight_effect(digest, Operation::WebFetch, "https://upstream.invalid", 5)
+            .preflight_effect(
+                digest,
+                Operation::WebFetch,
+                "https://upstream.invalid",
+                5,
+                crate::upstreams::CallCharge::free(),
+            )
             .unwrap();
         let path = dir.path().join(LOG_FILE);
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 0);
         let _first = policy
-            .authorize_effect(digest, Operation::WebFetch, "https://upstream.invalid", 6)
+            .authorize_effect(
+                digest,
+                Operation::WebFetch,
+                "https://upstream.invalid",
+                6,
+                crate::upstreams::CallCharge::free(),
+            )
             .unwrap();
         let _second = policy
             .authorize_effect(
@@ -155,6 +169,7 @@ mod tests {
                 Operation::WebFetch,
                 "https://upstream.invalid",
                 7,
+                crate::upstreams::CallCharge::free(),
             )
             .unwrap();
         let records: Vec<SignedAuthorization> = std::fs::read_to_string(&path)
@@ -214,7 +229,8 @@ mod tests {
                     ArgsDigest::new([1; 32]),
                     Operation::WebFetch,
                     "https://upstream.invalid",
-                    1
+                    1,
+                    crate::upstreams::CallCharge::free()
                 )
                 .unwrap_err()
                 .contains("storage failed")
@@ -226,7 +242,8 @@ mod tests {
                     ArgsDigest::new([1; 32]),
                     Operation::WebFetch,
                     "https://upstream.invalid",
-                    1
+                    1,
+                    crate::upstreams::CallCharge::free()
                 )
                 .is_err()
         );
@@ -236,7 +253,8 @@ mod tests {
                     ArgsDigest::new([1; 32]),
                     Operation::WebFetch,
                     "https://upstream.invalid",
-                    1
+                    1,
+                    crate::upstreams::CallCharge::free()
                 )
                 .is_err()
         );
@@ -253,7 +271,8 @@ mod tests {
                     ArgsDigest::new([1; 32]),
                     Operation::WebFetch,
                     "https://upstream.invalid",
-                    1
+                    1,
+                    crate::upstreams::CallCharge::free()
                 )
                 .is_err()
         );

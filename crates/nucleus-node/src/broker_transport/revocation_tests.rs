@@ -124,7 +124,8 @@ async fn saturated(revoke_directly: bool) {
                 nucleus_decision_protocol::ArgsDigest::new([1; 32]),
                 portcullis::Operation::WebFetch,
                 "https://upstream.invalid/call",
-                100
+                100,
+                crate::upstreams::CallCharge::free()
             )
             .is_err()
     );

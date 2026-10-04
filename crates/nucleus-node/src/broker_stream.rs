@@ -515,6 +515,19 @@ where
         }
     }
 
+    let call_charge = match resolved.entry().call_charge() {
+        Ok(charge) => charge,
+        Err(reason) => {
+            return refuse(
+                &Refusal::Named(reason.into()),
+                0,
+                Remaining::MayFollow,
+                reader,
+                writer,
+            )
+            .await;
+        }
+    };
     // No credentials or upstream I/O until the complete bounded upload is owned.
     let started = std::time::Instant::now();
     let staged =
@@ -539,7 +552,9 @@ where
     };
     let preflight = match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-            Some(op) => policy.preflight_effect(effect, op, resolved.url(), current_time()),
+            Some(op) => {
+                policy.preflight_effect(effect, op, resolved.url(), current_time(), call_charge)
+            }
             None => Err("unknown operation".into()),
         },
         Err(_) => Err("host policy unavailable".into()),
@@ -585,7 +600,9 @@ where
     // Staging and minting await other work; commit over current shared policy.
     let permit = match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-            Some(op) => policy.authorize_effect(effect, op, resolved.url(), current_time()),
+            Some(op) => {
+                policy.authorize_effect(effect, op, resolved.url(), current_time(), call_charge)
+            }
             None => Err("unknown operation".into()),
         },
         Err(_) => Err("host policy unavailable".into()),
@@ -1020,6 +1037,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_calls_debit_the_same_operator_tariff_budget() {
+        let (base, seen) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        pod.policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        pod.host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        pod.upstreams = pod
+            .upstreams
+            .into_iter()
+            .map(|entry| entry.with_call_charge(1_000_000))
+            .collect();
+        let first = drive(&pod, &open("model-api", "paid"), b"request").await;
+        assert!(first.head.granted);
+        let second = drive(&pod, &open("model-api", "exhausted"), b"request").await;
+        assert!(!second.head.granted);
+        assert!(second.head.reason.contains("budget exhausted"));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn streamed_outcomes_are_host_signed_and_distinguish_truncation() {
         use nucleus_spec::host_effect::{self, outcome};
         for truncated in [false, true] {
@@ -1165,6 +1201,7 @@ mod tests {
                 portcullis::Operation::WebFetch,
                 "http://upstream",
                 100,
+                crate::upstreams::CallCharge::free(),
             )
             .unwrap();
         let (permit, _observation) = permit.observe(policy.clone(), 100);

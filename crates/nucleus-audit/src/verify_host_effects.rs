@@ -134,6 +134,7 @@ mod tests {
             operation: "web_fetch".into(),
             subject: "https://upstream.invalid".into(),
             authorized_unix: 123,
+            call_charge_micro_usd: 0,
             previous_record_sha256: previous,
         };
         let signature = hex::encode(key.sign(&signing_bytes(&authorization).unwrap()).to_bytes());
@@ -167,7 +168,14 @@ mod tests {
             Chain::new("pod-a", &other).accept(1, &first).is_err(),
             "guest key"
         );
-        for changed in ["payload", "subject", "time", "version", "operation"] {
+        for changed in [
+            "payload",
+            "subject",
+            "time",
+            "version",
+            "operation",
+            "charge",
+        ] {
             let mut tampered = first.clone();
             match changed {
                 "payload" => tampered.authorization.effect_sha256 = "cd".repeat(32),
@@ -175,6 +183,7 @@ mod tests {
                 "time" => tampered.authorization.authorized_unix += 1,
                 "version" => tampered.authorization.version += 1,
                 "operation" => tampered.authorization.operation = "git_commit".into(),
+                "charge" => tampered.authorization.call_charge_micro_usd = 1,
                 _ => unreachable!(),
             }
             assert!(

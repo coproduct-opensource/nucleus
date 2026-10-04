@@ -64,6 +64,7 @@
 //! base_url     = "https://model-api.example/v1"
 //! header       = "authorization"
 //! value_prefix = "Bearer "
+//! call_charge_micro_usd = 1000 # operator tariff per authorized dispatch attempt
 //!
 //! [upstream.credential.federated]
 //! token_endpoint     = "https://auth.model-api.example/oauth/token"
@@ -81,6 +82,7 @@
 //! name         = "search-api"
 //! base_url     = "https://search.example"
 //! header       = "x-api-key"
+//! call_charge_micro_usd = 1000
 //!
 //! [upstream.credential.env]
 //! var = "SEARCH_API_TOKEN"
@@ -150,6 +152,8 @@ struct EntryFile {
     #[serde(default)]
     value_prefix: String,
     credential: CredentialFile,
+    /// Missing prices never imply free calls. The broker refuses unpriced entries.
+    call_charge_micro_usd: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -230,9 +234,36 @@ pub(crate) struct RegistryEntry {
     /// What a pod spec sees and admission compares. See the module docs.
     spec: CredentialedEgressSpec,
     credential: CredentialSource,
+    call_charge: Option<CallCharge>,
+}
+
+/// A fixed operator tariff for one authorized dispatch attempt, never guest usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CallCharge(u64);
+
+impl CallCharge {
+    pub(crate) fn micro_usd(self) -> u64 {
+        self.0
+    }
+    pub(crate) fn usd(self) -> rust_decimal::Decimal {
+        rust_decimal::Decimal::from_i128_with_scale(i128::from(self.0), 6)
+    }
+    #[cfg(test)]
+    pub(crate) fn free() -> Self {
+        Self(0)
+    }
 }
 
 impl RegistryEntry {
+    #[cfg(test)]
+    pub(crate) fn with_call_charge(mut self, micro_usd: u64) -> Self {
+        self.call_charge = Some(CallCharge(micro_usd));
+        self
+    }
+    pub(crate) fn call_charge(&self) -> Result<CallCharge, &'static str> {
+        self.call_charge
+            .ok_or("upstream has no operator call charge")
+    }
     /// The projection a pod spec selects this entry by: name, base, header,
     /// prefix, and the env variable's name (empty for a federated entry).
     pub fn spec(&self) -> &CredentialedEgressSpec {
@@ -256,7 +287,11 @@ impl RegistryEntry {
         let credential = CredentialSource::Env {
             var: spec.credential_env.clone(),
         };
-        Self { spec, credential }
+        Self {
+            spec,
+            credential,
+            call_charge: Some(CallCharge::free()),
+        }
     }
 }
 
@@ -337,6 +372,7 @@ impl UpstreamRegistry {
                 ),
             };
             entries.push(RegistryEntry {
+                call_charge: up.call_charge_micro_usd.map(CallCharge),
                 spec: CredentialedEgressSpec {
                     name: up.name,
                     upstream: up.base_url,

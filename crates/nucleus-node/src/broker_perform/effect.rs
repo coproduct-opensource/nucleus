@@ -25,6 +25,7 @@ struct Effect<'a> {
     content_type: &'a str,
     body_sha256: [u8; 32],
     body_bytes: u64,
+    call_charge_micro_usd: Option<u64>,
 }
 
 pub(super) fn digest(
@@ -58,9 +59,14 @@ pub(crate) fn digest_body(
         content_type,
         body_sha256,
         body_bytes,
+        call_charge_micro_usd: resolved
+            .entry()
+            .call_charge()
+            .ok()
+            .map(|charge| charge.micro_usd()),
     };
     let mut hash = Sha256::new();
-    hash.update(b"nucleus-broker-effect-v2\0");
+    hash.update(b"nucleus-broker-effect-v3\0");
     hash.update(serde_json::to_vec(&effect)?);
     Ok(ArgsDigest::new(hash.finalize().into()))
 }
