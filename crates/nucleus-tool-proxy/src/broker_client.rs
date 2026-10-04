@@ -175,6 +175,18 @@ pub fn perform_line(
     key: &[u8],
     request: &nucleus_cred_protocol::PerformRequest,
 ) -> Result<String, portcullis_effects::authority::SpendError> {
+    signed_egress_line(authority, key, request)
+}
+
+/// Spend `authority` at `(WebFetch, HTTPEgress)` and only then sign `request`.
+///
+/// The one spend site for every request-to-act frame (perform and streamed),
+/// so the scope a brokered call is paid for is written once.
+fn signed_egress_line<T: serde::Serialize>(
+    authority: portcullis_effects::authority::Authority,
+    key: &[u8],
+    request: &T,
+) -> Result<String, portcullis_effects::authority::SpendError> {
     use nucleus_ifc_kernel::{Operation, SinkClass};
     // Spent BEFORE the frame is built. A frame that exists is a frame that could
     // be written to the socket by a later edit, so the refusal has to happen
@@ -256,6 +268,207 @@ pub async fn ask(_port: u32, _line: &str) -> std::io::Result<String> {
         std::io::ErrorKind::Unsupported,
         "vsock is Linux-only; there is no credential broker on this platform",
     ))
+}
+
+// ── Streamed calls (#2696 P4) ─────────────────────────────────────────────
+//
+// A perform frame carries its whole body in one signed line, which the host
+// buffers before it can verify it, so it is bounded at 256 KiB. A model call
+// is larger and its reply streams. A streamed call signs only its open frame;
+// the body follows as bounded chunks on the same connection and the reply
+// comes back the same way (`nucleus_cred_protocol::stream`).
+
+/// Build the open frame for a STREAMED call, spending the authority.
+///
+/// The same obligation as [`perform_line`], discharged the same way: the
+/// `Authority` is spent at `(WebFetch, HTTPEgress)` before the frame exists,
+/// which records the attempt and refuses an unwitnessed or mis-scoped bundle.
+///
+/// # Errors
+/// The authority could not be spent.
+pub fn stream_open_line(
+    authority: portcullis_effects::authority::Authority,
+    key: &[u8],
+    request: &nucleus_cred_protocol::StreamRequest,
+) -> Result<String, portcullis_effects::authority::SpendError> {
+    signed_egress_line(authority, key, request)
+}
+
+/// Open a connection to the host broker for a streamed call.
+///
+/// # Errors
+/// The connection could not be made in time.
+#[cfg(target_os = "linux")]
+pub async fn dial(port: u32) -> std::io::Result<tokio_vsock::VsockStream> {
+    match tokio::time::timeout(
+        REQUEST_TIMEOUT,
+        tokio_vsock::VsockStream::connect(tokio_vsock::VsockAddr::new(VMADDR_CID_HOST, port)),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "the broker did not accept the stream within the request timeout",
+        )),
+    }
+}
+
+/// The non-Linux arm: no vsock, so no broker, and an error rather than a
+/// bypass, for the reason [`ask`]'s non-Linux arm gives.
+///
+/// # Errors
+/// Always.
+#[cfg(not(target_os = "linux"))]
+pub async fn dial(_port: u32) -> std::io::Result<tokio::net::UnixStream> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "vsock is Linux-only; there is no credential broker on this platform",
+    ))
+}
+
+/// A streamed call the host granted: its head, and the reply as it arrives.
+pub struct Relayed {
+    /// The host's head: granted, with the upstream's status and media type.
+    pub head: nucleus_cred_protocol::StreamHead,
+    /// The upstream's reply. Ends with an error, never cleanly, when the
+    /// host's end frame says the reply was not relayed whole, so a truncated
+    /// reply cannot be read as a complete one.
+    pub body: axum::body::Body,
+}
+
+/// Why a streamed call produced no reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RelayError {
+    /// The host refused, with its reason (coarse for policy, named for the
+    /// pod's own egress balance and size bounds).
+    Refused(String),
+    /// The host could not be talked to, or broke the framing.
+    Transport(String),
+}
+
+/// Relay one streamed call over `conn`: write `open_line`, stream `body` up as
+/// chunks, and return the host's head and a body that streams the reply.
+///
+/// The upload runs concurrently with waiting for the head, because the host
+/// may refuse part way through the upload (the pod's egress balance ran out)
+/// and the refusal must be read, not lost behind a blocked write.
+///
+/// A workload body that fails part way is NOT ended: the host then sees the
+/// connection close mid-body and aborts the upstream request, rather than
+/// completing a truncated one the upstream might act on.
+///
+/// # Errors
+/// [`RelayError`].
+pub async fn relay<C>(
+    conn: C,
+    open_line: &str,
+    body: axum::body::Body,
+) -> Result<Relayed, RelayError>
+where
+    C: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + 'static,
+{
+    use nucleus_cred_protocol::stream::io::{
+        Chunk, read_chunk, read_line, write_chunks, write_end,
+    };
+    use nucleus_cred_protocol::stream::{GUEST_HEAD_WAIT, GUEST_REPLY_WAIT, MAX_STREAM_LINE_BYTES};
+    use tokio::io::AsyncWriteExt;
+    use tokio_stream::StreamExt;
+
+    let (reader, mut writer) = tokio::io::split(conn);
+    writer
+        .write_all(open_line.as_bytes())
+        .await
+        .map_err(|e| RelayError::Transport(e.to_string()))?;
+
+    let upload = tokio::spawn(async move {
+        let mut parts = body.into_data_stream();
+        while let Some(part) = parts.next().await {
+            let Ok(bytes) = part else {
+                return;
+            };
+            if write_chunks(&mut writer, &bytes).await.is_err() {
+                return;
+            }
+        }
+        let _ = write_end(&mut writer).await;
+    });
+
+    let mut reader = tokio::io::BufReader::new(reader);
+    let head_line = match tokio::time::timeout(
+        GUEST_HEAD_WAIT,
+        read_line(&mut reader, MAX_STREAM_LINE_BYTES),
+    )
+    .await
+    {
+        Ok(Ok(line)) => line,
+        Ok(Err(e)) => {
+            upload.abort();
+            return Err(RelayError::Transport(e.to_string()));
+        }
+        Err(_) => {
+            upload.abort();
+            return Err(RelayError::Transport(
+                "the broker sent no answer in time".to_string(),
+            ));
+        }
+    };
+    let Ok(head) = serde_json::from_str::<nucleus_cred_protocol::StreamHead>(&head_line) else {
+        upload.abort();
+        return Err(RelayError::Transport(
+            "the credential broker sent an unreadable answer".to_string(),
+        ));
+    };
+    if !head.granted {
+        upload.abort();
+        return Err(RelayError::Refused(head.reason));
+    }
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, std::io::Error>>(4);
+    tokio::spawn(async move {
+        let broke = |why: &str| std::io::Error::other(format!("the reply was cut short: {why}"));
+        loop {
+            match tokio::time::timeout(GUEST_REPLY_WAIT, read_chunk(&mut reader)).await {
+                Ok(Ok(Chunk::Data(data))) => {
+                    if tx.send(Ok(data)).await.is_err() {
+                        // The workload hung up; stop reading.
+                        return;
+                    }
+                }
+                Ok(Ok(Chunk::End)) => break,
+                Ok(Err(e)) => {
+                    let _ = tx.send(Err(broke(&e.to_string()))).await;
+                    return;
+                }
+                Err(_) => {
+                    let _ = tx.send(Err(broke("the broker went quiet"))).await;
+                    return;
+                }
+            }
+        }
+        let end = match tokio::time::timeout(
+            GUEST_REPLY_WAIT,
+            read_line(&mut reader, MAX_STREAM_LINE_BYTES),
+        )
+        .await
+        {
+            Ok(Ok(line)) => serde_json::from_str::<nucleus_cred_protocol::StreamEnd>(&line).ok(),
+            _ => None,
+        };
+        match end {
+            Some(end) if end.complete => {}
+            Some(end) => {
+                let _ = tx.send(Err(broke(&end.reason))).await;
+            }
+            None => {
+                let _ = tx.send(Err(broke("no end frame"))).await;
+            }
+        }
+    });
+    Ok(Relayed {
+        head,
+        body: axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    })
 }
 
 /// Largest reply the guest will read from the host.
@@ -458,6 +671,46 @@ mod tests {
         ));
         assert_eq!(
             perform_line(authority, TEST_KEY, &perform_request()).unwrap_err(),
+            SpendError::Unwitnessed
+        );
+    }
+
+    /// A streamed call's open frame is paid for exactly as a perform is: a
+    /// witnessed egress authority signs it and leaves one receipt, and an
+    /// unwitnessed one produces no frame.
+    #[test]
+    fn a_stream_open_frame_spends_the_authority_like_a_perform() {
+        use portcullis_effects::authority::{Authority, SpendError};
+        use std::sync::Arc;
+
+        let request = nucleus_cred_protocol::StreamRequest {
+            operation: "WebFetch".to_string(),
+            target: "model-api".to_string(),
+            justification: "routine".to_string(),
+            nonce: "n-1".to_string(),
+            path: "/complete".to_string(),
+            content_type: "application/json".to_string(),
+        };
+        let bundle = || {
+            nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
+                nucleus_ifc_kernel::Operation::WebFetch,
+                nucleus_ifc_kernel::SinkClass::HTTPEgress,
+            )
+        };
+        let log = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
+        let line = stream_open_line(
+            Authority::new(bundle()).witnessed_by(Arc::clone(&log)),
+            TEST_KEY,
+            &request,
+        )
+        .expect("spendable");
+        assert!(nucleus_cred_protocol::frame::is_authentic(
+            line.trim_end(),
+            Some(TEST_KEY)
+        ));
+        assert_eq!(log.len(), 1);
+        assert_eq!(
+            stream_open_line(Authority::new(bundle()), TEST_KEY, &request).unwrap_err(),
             SpendError::Unwitnessed
         );
     }

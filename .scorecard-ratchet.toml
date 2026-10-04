@@ -226,9 +226,17 @@ population_floor = 278
 # channel's codec -- it parses every byte a guest writes on that channel --
 # declares all seven from its first commit; 32/90, 35.55%. The ratio rose, so
 # the floor follows it up.
-floor_bp = 3555
+# 2026-10-02 (#2981): new crate nucleus-calibration declares all seven from its
+# first commit; 32/90, 35.55%. The declaration paid for itself before the first
+# commit: two integer divisions behind a `.max(1)` that the type could not see
+# (now `checked_div`). Note the census reads git, not the working tree -- the
+# crate was invisible to this gate until `git add`. A crate that decides whether
+# a probability may be trusted is exactly what this family counts.
+# 2026-10-04 (#3156 integration): both new crates are now in the tree.
+# Measured 33 of 91 = 36.26%; preserve both gains in the combined floor.
+floor_bp = 3626
 floor_set = "measurement"
-population_floor = 90
+population_floor = 91
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -524,9 +532,17 @@ population_floor = 23
 # -- the allow that had been hiding `workload.rs`'s expect. Nothing was
 # discharged: 21 of 139 = 15.10%, and the ratio rises because the denominator
 # shrank. Both pins follow the measurement so it does not read as progress.
-floor_bp = 1510
+#
+# 2026-10-02 (#3076, rebased onto #3119): the microVM host backend
+# (crates/nucleus-cli/src/microvm_host) lands before the change that wires it
+# into `shell`/`run`, so its module carries
+# `#[expect(dead_code, reason = ...)]`. That waiver expires by itself once the
+# wiring uses the module. Re-measured on the tree rebased onto 02e7aa341
+# (`cargo xtask scorecard --measure`): 22 of 140 = 15.71% -- one more
+# discharged suppression and one more in the population.
+floor_bp = 1571
 floor_set = "measurement"
-population_floor = 139
+population_floor = 140
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

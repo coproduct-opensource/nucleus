@@ -303,44 +303,11 @@ impl SpireCaClient {
         Ok(trust_domain.to_string())
     }
 
-    /// Parses a SPIFFE ID string into an Identity.
-    ///
-    /// Handles both standard SPIFFE paths and Kubernetes-style paths:
-    /// - `spiffe://domain/ns/namespace/sa/service-account`
-    /// - `spiffe://domain/workload-name`
-    ///
-    /// Note: The Identity type only allows alphanumeric, dash, underscore, and dot
-    /// in service account names. Path components with slashes are converted to use
-    /// the last segment only.
+    /// Parses a SPIFFE ID string into an Identity: [`Identity::from_spiffe_uri`],
+    /// the one parser, so this client and every verifier read an SVID alike. An
+    /// SVID that is not `ns/<ns>/sa/<sa>...` is refused rather than renamed.
     fn parse_spiffe_id(spiffe_uri: &str) -> Result<Identity> {
-        let uri = spiffe_uri
-            .strip_prefix("spiffe://")
-            .ok_or_else(|| Error::InvalidSpiffeUri(spiffe_uri.to_string()))?;
-
-        let parts: Vec<&str> = uri.split('/').collect();
-        if parts.is_empty() || parts[0].is_empty() {
-            return Err(Error::InvalidSpiffeUri(spiffe_uri.to_string()));
-        }
-
-        let trust_domain = parts[0].to_string();
-
-        // Try to parse as Kubernetes-style: ns/<namespace>/sa/<service-account>
-        if parts.len() >= 5 && parts[1] == "ns" && parts[3] == "sa" {
-            let namespace = parts[2].to_string();
-            // Use last segment only since Identity doesn't allow slashes
-            let service_account = parts.last().unwrap_or(&"default").to_string();
-            return Ok(Identity::new(trust_domain, namespace, service_account));
-        }
-
-        // Generic path: use last component as service account, "default" as namespace
-        let service_account = if parts.len() > 1 {
-            // Use last segment only since Identity doesn't allow slashes
-            parts.last().unwrap_or(&"default").to_string()
-        } else {
-            "default".to_string()
-        };
-
-        Ok(Identity::new(trust_domain, "default", service_account))
+        Identity::from_spiffe_uri(spiffe_uri)
     }
 
     /// Converts SPIFFE bundle set to our TrustBundle type.
@@ -767,19 +734,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_spiffe_id_generic() {
-        // Generic paths use the last segment as service account
-        let identity =
-            SpireCaClient::parse_spiffe_id("spiffe://example.org/workload/my-service").unwrap();
-        assert_eq!(identity.trust_domain(), "example.org");
-        assert_eq!(identity.namespace(), "default");
-        assert_eq!(identity.service_account(), "my-service");
-
-        // Single segment path
-        let identity = SpireCaClient::parse_spiffe_id("spiffe://example.org/my-workload").unwrap();
-        assert_eq!(identity.trust_domain(), "example.org");
-        assert_eq!(identity.namespace(), "default");
-        assert_eq!(identity.service_account(), "my-workload");
+    fn test_parse_spiffe_id_generic_is_refused_not_renamed() {
+        // Not `ns/<ns>/sa/<sa>`: refused, so distinct SVIDs stay distinct.
+        for uri in [
+            "spiffe://example.org/workload/my-service",
+            "spiffe://example.org/my-workload",
+            "spiffe://example.org/ns/a/sa/b/../my-service",
+        ] {
+            assert!(SpireCaClient::parse_spiffe_id(uri).is_err(), "{uri}");
+        }
+        // Segments below the account stay the account's.
+        let id = SpireCaClient::parse_spiffe_id("spiffe://example.org/ns/a/sa/b/c").unwrap();
+        assert_eq!(id.service_account(), "b/c");
     }
 
     #[test]
