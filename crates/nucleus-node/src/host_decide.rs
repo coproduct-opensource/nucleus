@@ -297,11 +297,10 @@ struct Pending {
     right: Right,
 }
 
-/// Why the host closed a channel. Every one is the guest breaking the protocol
-/// (or the channel's own bounds), so every one is counted as a fault.
+/// Why the host closed a channel: protocol faults, bounds, or unavailable policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChannelError {
-    /// Shared pod policy state cannot be trusted after a panic.
+    /// Shared pod policy was revoked or cannot be trusted after a panic.
     PolicyUnavailable,
     /// The frame's number was not the one the host expected.
     Sequence(SeqError),
@@ -361,6 +360,7 @@ pub(crate) struct PodPolicy {
     taint: HostTaint,
     approvals: effects::Approvals,
     evidence: evidence::Evidence,
+    revoked: tokio::sync::watch::Sender<bool>,
 }
 
 /// One policy history shared by the decision and credential listeners.
@@ -374,9 +374,34 @@ pub(crate) enum PolicyHistory {
 }
 
 impl PodPolicy {
+    fn ensure_live(&self) -> Result<(), ChannelError> {
+        if *self.revoked.borrow() {
+            Err(ChannelError::PolicyUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn revoke(policy: &SharedPodPolicy) {
+        let state = policy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.revoked.send_replace(true);
+    }
+
+    pub(crate) fn revocation(
+        policy: &SharedPodPolicy,
+    ) -> Result<tokio::sync::watch::Receiver<bool>, ChannelError> {
+        let state = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
+        state.ensure_live()?;
+        Ok(state.revoked.subscribe())
+    }
+
     pub(crate) fn available(policy: &SharedPodPolicy) -> Result<(), ChannelError> {
-        let _guard = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
-        Ok(())
+        policy
+            .lock()
+            .map_err(|_| ChannelError::PolicyUnavailable)?
+            .ensure_live()
     }
 
     pub(crate) fn new(kernel: Kernel, evidence: evidence::Evidence) -> SharedPodPolicy {
@@ -385,6 +410,7 @@ impl PodPolicy {
             taint: HostTaint::clean(),
             approvals: effects::Approvals::new(),
             evidence,
+            revoked: tokio::sync::watch::channel(false).0,
         }))
     }
 
@@ -392,6 +418,7 @@ impl PodPolicy {
     /// guest. A guest report is not needed and cannot undo this observation.
     pub(crate) fn observe_response(policy: &SharedPodPolicy, now: u64) -> Result<(), ChannelError> {
         let mut policy = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
+        policy.ensure_live()?;
         policy
             .taint
             .raise(nucleus_decision_protocol::LabelRaise::new(
@@ -447,6 +474,7 @@ impl Channel {
                 taint: HostTaint::clean(),
                 approvals: effects::Approvals::new(),
                 evidence: evidence::Evidence::memory(),
+                revoked: tokio::sync::watch::channel(false).0,
             })),
             epoch,
         )
@@ -488,6 +516,7 @@ impl Channel {
 
     /// Answer one guest frame.
     pub fn step(&mut self, frame: GuestFrame) -> Result<Step, ChannelError> {
+        PodPolicy::available(&self.policy)?;
         self.gate.admit(frame.seq())?;
         match frame {
             GuestFrame::Decide {
@@ -556,6 +585,7 @@ impl Channel {
                 .policy
                 .lock()
                 .map_err(|_| ChannelError::PolicyUnavailable)?;
+            policy.ensure_live()?;
             policy.decide(op, subject.as_str())
         };
         // The host performs nothing in shadow mode; the token authorizes I/O

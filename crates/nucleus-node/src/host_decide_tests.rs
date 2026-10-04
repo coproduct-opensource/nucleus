@@ -866,6 +866,25 @@ fn decide_step(c: &mut Channel, seq: u64, op: Operation, subject: &str) -> Vec<u
     .reply
 }
 
+#[test]
+fn revoked_policy_refuses_existing_and_replacement_decision_channels() {
+    let policy = test_policy(PermissionLattice::permissive());
+    let pod = Uuid::new_v4();
+    let mut existing = Channel::with_policy(pod, policy.clone(), 7);
+    decide_step(&mut existing, 0, Operation::ReadFiles, "src/lib.rs");
+    PodPolicy::revoke(&policy);
+    let mut replacement = Channel::with_policy(pod, policy.clone(), 8);
+    for (channel, seq) in [(&mut existing, 1), (&mut replacement, 0)] {
+        assert!(matches!(
+            channel.step(GuestFrame::Observe {
+                seq: Seq::new(seq),
+                label_raise: taint_report(&FlowGraph::new())
+            }),
+            Err(ChannelError::PolicyUnavailable)
+        ));
+    }
+}
+
 /// Decode the id an `Allowed` reply carries — as many times as anyone likes,
 /// which is exactly why the type cannot be the replay defence on its own.
 fn allowed_id(reply: &[u8]) -> DecisionId {

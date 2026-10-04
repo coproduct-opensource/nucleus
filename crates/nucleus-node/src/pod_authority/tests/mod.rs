@@ -975,3 +975,29 @@ async fn the_federation_subject_comes_from_the_issued_certificate() {
 
 // Ledgers across a restart.
 mod restart;
+
+#[tokio::test]
+async fn release_revokes_policy_references_already_held_by_brokers() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path(), args());
+    let pod = Uuid::new_v4();
+    auth.admit_kept(&by(MINTER), &spec_with(lattice(5)), pod)
+        .await
+        .unwrap();
+    let policy = auth.host_policy(pod).await.unwrap();
+    assert!(crate::host_decide::PodPolicy::available(&policy).is_ok());
+    auth.release_child(pod, None).await;
+    assert!(crate::host_decide::PodPolicy::available(&policy).is_err());
+    assert!(auth.host_policy(pod).await.is_err());
+    let mut policy = policy.lock().unwrap();
+    assert!(
+        policy
+            .authorize_effect(
+                nucleus_decision_protocol::ArgsDigest::new([1; 32]),
+                portcullis::Operation::WebFetch,
+                "https://upstream.invalid",
+                100
+            )
+            .is_err()
+    );
+}

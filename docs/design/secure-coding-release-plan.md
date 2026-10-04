@@ -53,8 +53,9 @@ Implementation sequence:
    responses raise host taint before delivery, without relying on guest reports.
    A policy panic refuses observations, decisions and new broker I/O. State is
    in memory; restored certificates without recovered runtime history cannot
-   obtain a clean policy or start a broker. Broker charging and revocation are
-   not yet wired into this state, and durable runtime recovery remains open.
+   obtain a clean policy or start a broker. Teardown and authority release now
+   revoke shared policy and cancel live broker requests. Broker charging,
+   broader certificate/fleet revocation, and durable runtime recovery remain open.
 4. Connect host decisions to both PERFORM and streaming effects. The executable
    effect requires a consumed, matching host decision. Missing, stale, foreign,
    replayed and mismatched decisions refuse before credentials or upstream I/O.
@@ -63,7 +64,8 @@ Implementation sequence:
    **In progress:** both broker paths check actual WebFetch authority plus the
    requested operation before credential access and again after async minting,
    immediately before execution. Private non-cloneable permits are required to
-   construct either upstream call. Revocation and cost settlement remain.
+   construct either upstream call. Pod-lifetime revocation now vetoes final
+   authorization; broader certificate revocation and cost settlement remain.
 5. Wire authenticated host approval, expiry and one-shot consumption. Preserve
    legitimate approved work; denying every approval-gated operation is not done.
    **In progress:** operator-only mTLS routes list and grant/refuse pending host
@@ -189,6 +191,40 @@ their regression fail. Linux ARM64 musl compilation and all four prepush gates
 pass. Clippy completes with `-D warnings`, retaining the existing configuration
 warnings about unreachable reqwest blocking methods. This is local evidence;
 real Tier-2 execution remains unverified.
+
+### Pod-lifetime revocation and cancellation (2026-10-04)
+
+Shared pod policy now carries an irreversible revocation signal. Authority
+release revokes previously issued policy references; listener shutdown/drop and
+Firecracker identity cleanup revoke before waiting on teardown. Both preflight
+and final effect authorization refuse revoked state, including previously
+approved effects. Existing and replacement decision channels also refuse it.
+An already authorized request may have reached its upstream; cancellation does
+not claim to reverse a remote effect.
+
+Broker connections observe revocation while awaiting frames, credentials,
+upstream work, or guest writes. The listener owns their task set and cancels and
+drains it on shutdown. Waiting for a connection slot no longer hides the shutdown
+signal. Response streaming now owns the HTTP reader directly instead of spawning
+a detached reader; dropping a serving future drops its upstream response.
+Interrupted calls retain the host outcome journal's interruption classification.
+
+The node suite passes 821 unit tests (one ignored) and three integration tests.
+Real socket tests fill all 16 connection slots and prove that shutdown drains the
+calls, while direct policy revocation cancels them without waiting for shutdown.
+A real HTTP server proves that a partially read, stalled response closes when
+its owner drops. Tests also cover stale approvals, retained authority references,
+and replacement decision channels. Linux ARM64 musl compilation and all four
+prepush gates pass. Clippy completes with warnings denied, retaining the existing
+unreachable reqwest blocking-method configuration warnings.
+
+Restoring the detached reader, the shutdown-blind semaphore wait, and release
+without policy revocation independently makes each corresponding regression fail
+at runtime. Restoring the implementation passes the affected suites.
+
+This establishes pod-lifetime revocation locally. Broader certificate/fleet
+revocation, descendant propagation guarantees, durable recovery, and live Tier-2
+validation remain open, as do cost charging and settlement.
 
 ### Action-binding evidence (2026-10-04)
 

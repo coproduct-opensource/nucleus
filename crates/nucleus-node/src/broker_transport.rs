@@ -227,6 +227,9 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 16;
 
+#[cfg(test)]
+mod revocation_tests;
+
 /// Read one frame asynchronously, refusing to accumulate past `max`.
 ///
 /// The async twin of [`read_frame_bounded`], and bounded for the same reason:
@@ -479,10 +482,26 @@ pub fn http_caller(client: reqwest::Client) -> UpstreamCaller {
 /// constant sitting right there unused. `a_peer_that_sends_nothing_gets_a_refusal_not_a_hang`
 /// found it. A named constant is not a bound until something reads it.
 pub async fn serve_connection_with_timeout<S>(
-    stream: S,
+    mut stream: S,
     serving: &BrokerServing<'_>,
     deadline: Duration,
 ) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Ok(mut revoked) = crate::host_decide::PodPolicy::revocation(serving.host_policy) else {
+        let reply = format!("{}\n", refusal_line("host policy unavailable"));
+        let _ = tokio::time::timeout(deadline, stream.write_all(reply.as_bytes())).await;
+        return;
+    };
+    tokio::select! {
+        biased;
+        _ = revoked.wait_for(|revoked| *revoked) => {},
+        _ = serve_live_connection(stream, serving, deadline) => {},
+    }
+}
+
+async fn serve_live_connection<S>(stream: S, serving: &BrokerServing<'_>, deadline: Duration)
+where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (reader, mut writer) = tokio::io::split(stream);
@@ -1284,13 +1303,20 @@ pub async fn serve_broker(
     // be decoration.
     let ledger = Arc::new(IdempotencyLedger::new());
     tokio::pin!(shutdown);
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let permit = match Arc::clone(&permits).acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => return, // semaphore closed
+        let permit = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+            permit = Arc::clone(&permits).acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            },
         };
         tokio::select! {
-            _ = &mut shutdown => return,
+            biased;
+            _ = &mut shutdown => break,
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
@@ -1304,7 +1330,7 @@ pub async fn serve_broker(
                         let caller = Arc::clone(&caller);
                         let egress = Arc::clone(&egress);
                         let streams = Arc::clone(&streams);
-                        tokio::spawn(async move {
+                        connections.spawn(async move {
                             serve_connection(
                                 stream,
                                 &BrokerServing {
@@ -1338,6 +1364,9 @@ pub async fn serve_broker(
             }
         }
     }
+    crate::host_decide::PodPolicy::revoke(&host_policy);
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
 }
 
 /// Connect to the broker as a guest would, for tests and diagnostics.
@@ -1361,6 +1390,7 @@ pub enum ShutdownOutcome {
 /// identity, and be served credentials as that pod. Owning the handle is what
 /// makes the identity binding hold over time rather than only at start-up.
 pub struct BrokerListener {
+    host_policy: crate::host_decide::SharedPodPolicy,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
     socket_path: std::path::PathBuf,
@@ -1373,6 +1403,12 @@ impl std::fmt::Debug for BrokerListener {
         f.debug_struct("BrokerListener")
             .field("socket_path", &self.socket_path)
             .finish()
+    }
+}
+
+impl Drop for BrokerListener {
+    fn drop(&mut self) {
+        self.revoke();
     }
 }
 
@@ -1440,6 +1476,7 @@ impl BrokerListener {
                 crate::broker_stream::refusing_stream_caller(),
             )
         };
+        let listener_policy = Arc::clone(&host_policy);
         let task = tokio::spawn(async move {
             serve_broker(
                 listener,
@@ -1466,6 +1503,7 @@ impl BrokerListener {
             .await;
         });
         Ok(BrokerListener {
+            host_policy: listener_policy,
             shutdown: Some(tx),
             task,
             socket_path,
@@ -1492,7 +1530,12 @@ impl BrokerListener {
     /// leak. The task is aborted if it does not observe the shutdown signal,
     /// because teardown must not be able to hang on a connection that is being
     /// slow on purpose.
+    pub fn revoke(&self) {
+        crate::host_decide::PodPolicy::revoke(&self.host_policy);
+    }
+
     pub async fn shutdown(mut self) -> ShutdownOutcome {
+        self.revoke();
         // Dropping the sender resolves the receiver too, so shutdown is robust
         // to a path that forgets to send. Established by perturbation: replacing
         // the send with a drop changed nothing, and only `mem::forget` on the
@@ -1500,15 +1543,15 @@ impl BrokerListener {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        // The serving loop only checks for shutdown between accepts, so a
-        // connection in flight can outlive the signal by up to CONNECTION_TIMEOUT.
-        // Teardown does not wait that long for a guest that may be stalling
-        // deliberately.
+        // Revocation wakes existing connections; the serving loop aborts and
+        // drains its owned tasks even when all connection slots were occupied.
+        // Retain a bounded fallback for a stuck serving task.
         let outcome = if tokio::time::timeout(Duration::from_secs(2), &mut self.task)
             .await
             .is_err()
         {
             self.task.abort();
+            let _ = (&mut self.task).await;
             ShutdownOutcome::Aborted
         } else {
             ShutdownOutcome::Stopped

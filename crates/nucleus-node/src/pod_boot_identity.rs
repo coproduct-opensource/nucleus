@@ -229,6 +229,10 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
 impl FirecrackerPod {
     /// Cleans up identity resources (unregister from VM registry, forget certificate).
     pub(super) async fn cleanup_identity(&self) {
+        // Revoke effects before waiting for any other identity service to drain.
+        if let Some(listener) = self.broker.lock().await.as_ref() {
+            listener.revoke();
+        }
         // Shut down workload API bridge
         if let Some(bridge) = self.workload_api_bridge.lock().await.take() {
             bridge.shutdown().await;

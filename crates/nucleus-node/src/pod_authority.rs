@@ -397,6 +397,9 @@ async fn release(
     let Some(entry) = inner.pods.remove(&pod_id) else {
         return;
     };
+    if let crate::host_decide::PolicyHistory::Live(policy) = &entry.host_policy {
+        crate::host_decide::PodPolicy::revoke(policy);
+    }
     let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
     let consumed = match creditable {
         Some(spent) => {

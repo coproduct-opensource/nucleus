@@ -203,7 +203,29 @@ pub struct StreamResponse {
     /// The upstream's `content-type`, or empty.
     pub content_type: String,
     /// The reply, chunk by chunk. An `Err` is an upstream failure part way.
-    pub body: mpsc::Receiver<Result<ResponseChunk, String>>,
+    pub body: ResponseBody,
+}
+
+/// The response reader belongs to the serving future. Dropping the request
+/// drops its HTTP response rather than leaving a detached reader waiting on it.
+pub enum ResponseBody {
+    Http(reqwest::Response),
+    #[cfg(test)]
+    Channel(mpsc::Receiver<Result<ResponseChunk, String>>),
+}
+
+impl ResponseBody {
+    async fn recv(&mut self) -> Option<Result<ResponseChunk, String>> {
+        match self {
+            Self::Http(response) => Some(match response.chunk().await {
+                Ok(Some(bytes)) => Ok(ResponseChunk::Data(bytes.to_vec())),
+                Ok(None) => Ok(ResponseChunk::End),
+                Err(error) => Err(error.to_string()),
+            }),
+            #[cfg(test)]
+            Self::Channel(receiver) => receiver.recv().await,
+        }
+    }
 }
 
 pub enum ResponseChunk {
@@ -258,31 +280,10 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
-            // Bounded: the relay below reads one chunk at a time, so an
-            // upstream faster than the guest is held to four chunks here.
-            let (tx, rx) = mpsc::channel(4);
-            tokio::spawn(async move {
-                let mut resp = resp;
-                loop {
-                    let next = match resp.chunk().await {
-                        Ok(Some(bytes)) => Ok(ResponseChunk::Data(bytes.to_vec())),
-                        Ok(None) => {
-                            let _ = tx.send(Ok(ResponseChunk::End)).await;
-                            break;
-                        }
-                        Err(e) => Err(e.to_string()),
-                    };
-                    let failed = next.is_err();
-                    // The relay hung up: stop reading the upstream.
-                    if tx.send(next).await.is_err() || failed {
-                        break;
-                    }
-                }
-            });
             Ok(StreamResponse {
                 status,
                 content_type,
-                body: rx,
+                body: ResponseBody::Http(resp),
             })
         })
     })
@@ -1135,6 +1136,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dropping_a_stream_response_closes_the_real_upstream_reader() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+                head.push(byte[0]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\nx")
+                .await
+                .unwrap();
+            let mut tail = [0u8; 1024];
+            while socket.read(&mut tail).await.unwrap_or(0) != 0 {}
+        });
+        let policy = crate::host_decide::test_policy(PermissionLattice::permissive());
+        let permit = policy
+            .lock()
+            .unwrap()
+            .authorize_effect(
+                nucleus_decision_protocol::ArgsDigest::new([1; 32]),
+                portcullis::Operation::WebFetch,
+                "http://upstream",
+                100,
+            )
+            .unwrap();
+        let (permit, _observation) = permit.observe(policy.clone(), 100);
+        let (tx, rx) = mpsc::channel(1);
+        drop(tx);
+        let caller = http_stream_caller(reqwest::Client::new());
+        let mut response = caller(StreamCall {
+            _permit: permit,
+            url: format!("http://{address}/call"),
+            header_name: "authorization".into(),
+            header_value: "test-token".into(),
+            content_type: "application/json".into(),
+            body: rx,
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            response.body.recv().await,
+            Some(Ok(ResponseChunk::Data(_)))
+        ));
+        drop(response);
+        tokio::time::timeout(Duration::from_secs(3), upstream)
+            .await
+            .expect("the upstream reader must not outlive its owner")
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn upstream_reader_disappearance_is_not_a_complete_response() {
         let (base, _) = upstream().await;
         let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
@@ -1146,7 +1204,7 @@ mod tests {
                 Ok(StreamResponse {
                     status: 200,
                     content_type: String::new(),
-                    body: rx,
+                    body: ResponseBody::Channel(rx),
                 })
             })
         });

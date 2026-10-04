@@ -205,6 +205,8 @@ impl PodPolicy {
         grant: bool,
         now: u64,
     ) -> Result<(), &'static str> {
+        self.ensure_live()
+            .map_err(|_| "host policy revoked or unavailable")?;
         self.approvals.settle(operator, id, grant, now)
     }
 
@@ -247,6 +249,8 @@ impl PodPolicy {
         now: u64,
         phase: Phase,
     ) -> Result<Vec<DecisionToken>, String> {
+        self.ensure_live()
+            .map_err(|_| "host policy revoked or unavailable")?;
         self.evidence.available()?;
         let mut tokens = Vec::new();
         let mut approval_ops = Vec::new();
@@ -320,6 +324,36 @@ mod tests {
             .settle_effect_approval(operator(), id, true, NOW)
             .unwrap();
         id
+    }
+
+    #[test]
+    fn revocation_overrides_an_approved_preflight_and_cannot_be_reapproved() {
+        let policy = gated();
+        let digest = ArgsDigest::new([19; 32]);
+        let id = {
+            let mut state = policy.lock().unwrap();
+            let id = request_and_grant(&mut state, digest);
+            state
+                .preflight_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .unwrap();
+            id
+        };
+        PodPolicy::revoke(&policy);
+        PodPolicy::revoke(&policy);
+        assert!(PodPolicy::available(&policy).is_err());
+        assert!(PodPolicy::observe_response(&policy, NOW).is_err());
+        let mut state = policy.lock().unwrap();
+        assert!(
+            state
+                .authorize_effect(digest, Operation::GitCommit, SUBJECT, NOW)
+                .unwrap_err()
+                .contains("revoked")
+        );
+        assert!(
+            state
+                .settle_effect_approval(operator(), id, true, NOW)
+                .is_err()
+        );
     }
 
     #[test]
