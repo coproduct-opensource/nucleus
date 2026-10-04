@@ -17,7 +17,8 @@ operator approval bound to the resolved effect when required. Streams stage the
 complete bounded upload before authorization and upstream I/O. The compromised-guest socket conformance table now holds for
 observed taint, absent/reused approval, and zero remaining budget. Guest signing
 key delivery is retired in the working tree; guest claims are separated from
-host authorization evidence. These are local host tests, not Tier-2 evidence.
+host authorization evidence. The full table has local host tests; selected
+PERFORM cases now also have compromised-guest Tier-2 evidence (see below).
 
 Implementation sequence:
 
@@ -992,3 +993,39 @@ existing release-input shell check. The spec suite also exposed and corrected
 an assertion still expecting the pre-cgroup-preparation container entrypoint.
 This completes adapter inclusion in the source packaging paths, not a published
 release, fresh user installation, or either full harness journey.
+
+### Compromised-guest PERFORM conformance (2026-10-04)
+
+Real Firecracker pod `337861be-81ef-4842-b8f4-041ac9e64950` ran a disposable
+root-level wrapper in place of the mediating proxy. It launched the ordinary
+proxy for the control-plane listener, but submitted its own signed PERFORM
+frames directly over vsock, using the delivered pod broker capability without
+calling the guest kernel or spending a guest authority. This tests the host
+against a guest that bypasses its own checks, not just a confined workload.
+The external probe source is `/tmp/nucleus-compromised-broker-probe/src/main.rs`,
+SHA-256 `1cf267a7feb2f8f6da3fac617cb486e316a46882a1de593e2fa9492b1bf116bb`.
+
+The node used an inline network-only policy with a $0.002 budget and the
+fixture upstream's fixed $0.001 call tariff. Observed results:
+
+| Direct guest request | Host result | Additional upstream calls |
+| --- | --- | --- |
+| Forbidden GitPush | Refused | 0 |
+| WebFetch with an invalid signature | Refused | 0 |
+| Allowed WebFetch | HTTP 200 | 1 |
+| Identical retry with the same idempotency key, on a new connection | Cached result | 0 |
+| Changed payload under that key | Effect mismatch refusal | 0 |
+| Eight concurrent unique calls with one charge remaining | Exactly one grant; seven budget refusals | 1 |
+| New call after reconnect at exhausted budget | Refused | 0 |
+
+The independent fixture log grew by exactly two calls, both authenticated
+with the disposable host credential. External verification against the host's
+public key accepted exactly two authorizations and two transport outcomes,
+with zero unknown outcomes. Each signed authorization recorded a 1,000-micro-USD
+charge. The pod was cancelled and the Apple Container host stopped.
+
+This promotes these PERFORM properties to real compromised-guest evidence.
+Raw streaming approval/replay/taint cases, foreign pod/epoch attempts, durable
+recovery, and the rest of the full conformance matrix remain open. No production
+policy or transport enforcement was disabled; only the disposable guest image
+was replaced to act as the adversary.

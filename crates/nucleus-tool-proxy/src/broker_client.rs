@@ -46,12 +46,12 @@
 //! `perform_line` builds them here, and the obligation is no longer prose: it
 //! takes an `Authority`, which is constructible only from a `DischargedBundle`,
 //! which only `preflight_action` can mint. Spending it also RECORDS the attempt,
-//! so a perform that reached the wire with no audit record is not expressible.
+//! so this client cannot compose a perform without recording the attempt. A
+//! compromised guest can bypass this client; the host independently authorizes
+//! the resolved effect, consumes approval, and charges the shared budget.
 
-// Not yet called: the tool-proxy still reads credential values from its spec,
-// and switching it over is gated on `BrokerRollout::Enforcing` on the host.
-// Landed first so the fail-closed reply semantics are reviewable on their own,
-// rather than inside the change that also rewires credential delivery.
+// Streaming uses this transport in production. Query and PERFORM helpers
+// remain available for callers and tests; not every helper has a live caller.
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::time::Duration;
@@ -141,21 +141,13 @@ pub fn request_line(key: &[u8], envelope: &nucleus_cred_protocol::TaskRequestEnv
 
 /// Build the request line for a PERFORM — a request that the host ACT.
 ///
-/// # The `Authority` is the whole point of this signature
+/// # Guest authority is defence in depth
 ///
-/// `broker_perform`'s module docs on the host state an obligation the host
-/// cannot check: *a `PerformRequest` is composed only past a minted
-/// `DischargedBundle`*. The host applies a coarse capability check and
-/// structurally cannot see the flow state — `FlowTracker`, the session taint
-/// ceiling, the lethal-trifecta guard — that makes an egress safe or not. Those
-/// live here, in the guest.
-///
-/// So the obligation is discharged here or nowhere, and this signature is what
-/// stops it being prose. An [`Authority`] is constructible only from a
-/// `DischargedBundle`, whose constructor is private to
-/// `nucleus_ifc_kernel::discharge` — `preflight_action` is the only way to mint
-/// one, and a struct literal naming all eight obligation fields still does not
-/// compile outside that module.
+/// This client spends a guest `Authority` before composing the request. That
+/// preserves the ordinary guest policy path, but the channel signature cannot
+/// prove that a compromised guest used this function. The host evaluates its
+/// own pod policy, observations, approvals and budget before performing the
+/// resolved effect. A raw signed frame does not bypass those checks.
 ///
 /// # Why `Authority` and not `&DischargedBundle`
 ///
@@ -165,7 +157,7 @@ pub fn request_line(key: &[u8], envelope: &nucleus_cred_protocol::TaskRequestEnv
 ///
 /// * it **records** the attempt — `spend` refuses an unwitnessed authority
 ///   outright (`SpendError::Unwitnessed`), so a perform that reached the wire
-///   with no audit record is not expressible;
+///   through this helper without a guest audit record is not expressible;
 /// * it **binds the scope** — the bundle is spent at `(WebFetch, HTTPEgress)`,
 ///   the same pair a direct fetch spends, because a brokered call is HTTP egress
 ///   by exactly the definition that governs `web_fetch`. A bundle earned for a
