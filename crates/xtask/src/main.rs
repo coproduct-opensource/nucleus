@@ -358,6 +358,15 @@ enum Command {
         #[arg(default_value = "scoreboard.json")]
         out: String,
     },
+    /// The gate of gates: every gate must RED on a real violation of its own subject and GREEN
+    /// when restored. CI calls it through `scripts/check-gates-can-fail.sh`; the arguments are
+    /// that script's (`--vacuity-only`, `--baseline-only`, `--for-event <event> <base>`, ...).
+    /// See crates/xtask/src/gates_can_fail/mod.rs.
+    #[command(name = "gates-can-fail", disable_help_flag = true)]
+    GatesCanFail {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
     /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
     /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
@@ -464,6 +473,7 @@ mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
+mod gates_can_fail;
 mod guest_layer;
 mod inert_authority;
 mod kani_coverage;
@@ -636,6 +646,7 @@ fn main() -> Result<()> {
                 json,
             } => ci_spec::trace_check(&github, since_hours, json),
         },
+        Command::GatesCanFail { args } => std::process::exit(gates_can_fail::run(&args)),
         Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
             scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)

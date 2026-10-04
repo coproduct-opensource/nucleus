@@ -1,21 +1,9 @@
-# Same shape as probe-pod.yaml, but the workload is `nucleus-podlist-probe` and
-# the pod is an ORCHESTRATOR with pod-management enabled — because the probe
-# needs two things an ordinary pod does not get:
-#
-#   * `enable_pod_mgmt: "true"` (+ the orchestrator profile) makes this a
-#     management-enabled pod, so the node mints it a caller token and records
-#     its lineage. The token and the pod id are served once, to
-#     `nucleus-guest-init`, never to the probe (#3113); the probe needs neither.
-#   * The probe reaches the workload-API vsock (CID 2, port 15012) and sends
-#     `POD_LIST`, the one request it can make; the socket says which pod is
-#     asking and the node answers that pod's lineage-scoped listing (G3). The
-#     host checks A's own id is in it.
-#
-# This is pod A of the C2 G4 live scenario. The boot harness also creates a
-# non-lineage sibling B on the node, so A's listing being {A} (B excluded) over
-# the REAL vsock transport — not {A,B} — is the live cross-pod isolation proof.
-# (C-inclusion / lineage-scoping is enforced KVM-free by cross-pod-scoped-check.sh
-# over the same `scope_to_caller` filter this path uses.)
+# CI-only rootfs: guest-init is built with `ci-podlist-probe` and launches the
+# trusted lineage probe beside the proxy. It queries POD_LIST over this pod's
+# real vsock; the host checks A and child C are included, sibling B excluded.
+# The ordinary workload stays under the default seccomp filter, which denies
+# AF_VSOCK. Syscall-filter denial is measured by the separate workload probe.
+# The guest-init feature is absent from production builds.
 apiVersion: nucleus/v1
 kind: Pod
 metadata:
@@ -25,14 +13,11 @@ metadata:
 spec:
   work_dir: /work
   timeout_seconds: 2700
-  # A distinct unprivileged uid, so the launch's privilege-drop path runs before
-  # the probe does — matching probe-pod.yaml, so the probe observes the same
-  # dropped-privilege child the other boot probes assert against.
+  # Keep the pod alive while trusted instrumentation polls for child creation.
   workload:
-    command: /bin/sh
+    command: /bin/sleep
     args:
-      - "-c"
-      - "/usr/local/bin/nucleus-podlist-probe"
+      - "60"
     uid: 65534
   policy:
     type: profile
