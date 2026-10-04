@@ -350,7 +350,8 @@ pub struct DeniedDimensionInfo {
 ///
 /// Requesting 2 MiB asks Firecracker for hugetlbfs pages instead, which are
 /// reserved from a distinct pool the operator must provision
-/// (`vm.nr_hugepages`) rather than promoted opportunistically.
+/// (`vm.nr_hugepages`) rather than promoted opportunistically. A node refuses
+/// the request unless its operator offers that pool to pods.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HugePages {
     /// 2 MiB hugetlbfs pages.
@@ -370,7 +371,12 @@ impl HugePages {
     }
 }
 
-/// Resource hints for the pod.
+/// The pod's size.
+///
+/// A node holds every pod to per-pod ceilings its operator sets, and refuses at
+/// create a size above them rather than clamping it. An absent field is the
+/// node's default size, never unlimited, and the node limits the pod to its
+/// size with a cgroup whether or not the spec carries one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceSpec {
@@ -616,9 +622,13 @@ pub struct ImageSpec {
     /// changes underneath the attestation reporting it.
     ///
     /// `#[serde(default)]` on a `bool` is `false`, so a spec that simply omitted
-    /// this field got the unsafe value. Omission now means isolation; a caller
-    /// that genuinely wants a writable rootfs must say so, and should give the
-    /// pod a private image or a `scratch_path`.
+    /// this field got the unsafe value. Omission now means isolation.
+    ///
+    /// **`false` is refused at create** (#3132). A rootfs a spec can name is the
+    /// node's shared artifact, so there is no private image to write, and the
+    /// node attaches every rootfs read-only. Writable storage is `/work`, on the
+    /// scratch disk. The field stays on the wire so `true` keeps parsing and
+    /// `false` is refused by name rather than as an unknown shape.
     pub read_only: bool,
     /// Optional scratch disk image for writable storage.
     pub scratch_path: Option<PathBuf>,
@@ -685,6 +695,10 @@ pub enum SeccompSpec {
 }
 
 /// Cgroup placement and settings for the Firecracker process.
+///
+/// The node always applies its own memory, CPU and pids limits, derived from
+/// the pod's size. Settings here may lower those, or set other files of a
+/// resource controller; a node refuses one that raises or lifts its limit.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CgroupSpec {
@@ -2374,10 +2388,11 @@ spec:
         );
     }
 
-    /// The escape hatch still works: a caller that genuinely wants a writable
-    /// rootfs says so, and gets it. The default is a default, not a ban.
+    /// `read_only: false` still PARSES, so the node can refuse it by name at
+    /// create (`spec_posture::admit`, #3132) rather than the author meeting a
+    /// deserialization error that does not say why. Parsing is not granting.
     #[test]
-    fn a_writable_rootfs_can_still_be_asked_for_explicitly() {
+    fn an_explicit_writable_rootfs_parses_so_the_node_can_refuse_it_by_name() {
         let spec: ImageSpec =
             serde_json::from_str(r#"{"kernel_path":"/k","rootfs_path":"/r","read_only":false}"#)
                 .expect("an explicit read_only must deserialize");

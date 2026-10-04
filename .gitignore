@@ -72,7 +72,7 @@ ci/lean/.lake/
 # The Vault CTF build output (trunk); docs.yml rebuilds it and `fly deploy` expects a local build
 crates/ctf-engine/dist/
 
-# Generated per run by scripts/exemplar-scoreboard.sh in exemplar-scoreboard.yml;
+# Written by `cargo xtask exemplar-scoreboard` (CI measures in process instead);
 # the committed baseline is scripts/exemplar-baseline.json.
 /scoreboard.json
 

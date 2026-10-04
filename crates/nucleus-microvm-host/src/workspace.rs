@@ -21,35 +21,61 @@
 //! image from that. The same step makes the image a function of the tree's
 //! content and modes alone, not of when or where it was checked out.
 //!
+//! # Handed to the jail user
+//!
+//! Two principals own two different things. `owner` owns every entry INSIDE
+//! the filesystem, as the guest sees it. The image FILE is opened on the host
+//! by the jailed VMM, which runs as the node's jail user, and the guest writes
+//! through it. The node hard-links it into the jail and does not chown it
+//! (#3152: the link is the caller's own inode), so it refuses a disk the jail
+//! user cannot already read and write. [`seed`] therefore hands the file to
+//! the [`JailUser`] it is given, mode [`SEEDED_DISK_MODE`], before it returns
+//! the digest: a seeded disk is admissible as it stands.
+//!
 //! # Where the image must live
 //!
 //! The node admits a caller-supplied scratch image only from inside its
 //! `--scratch-root`, so [`seed`]'s `image` belongs there. The staging tar is
 //! written beside it and removed.
 
+use std::fs::{File, Permissions};
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::Path;
 
 use nucleus_spec::ArtifactDigest;
 
 use crate::ext4::{self, Ext4Error, Ext4Input, Ext4Spec, RootOwner, tree_tar};
+use crate::jail_user::JailUser;
 use crate::scratch_readback::{self, ReadbackError};
 
 /// Free inodes per free MiB: ext4's default ratio of one per 16 KiB, so the
 /// workload can create files as well as grow them.
 const INODES_PER_FREE_MIB: u32 = 64;
 
+/// The mode a seeded disk is handed to the jail user with: its owner reads and
+/// writes it (the guest writes through it), and nobody else may read the
+/// workspace.
+pub const SEEDED_DISK_MODE: u32 = 0o600;
+
 /// Build an ext4 image at `image` holding `tree`, every entry owned by `owner`
-/// (the workload's uid:gid), with `free_mib` MiB of room beyond the content,
-/// and return its digest in the form `image.scratch_digest` takes.
+/// (the workload's uid:gid inside the guest), with `free_mib` MiB of room
+/// beyond the content, hand the image file to `jail` (the node's jail user) at
+/// [`SEEDED_DISK_MODE`], and return its digest in the form
+/// `image.scratch_digest` takes.
 ///
 /// The image's UUID is derived from the staging tar's digest, so the same tree
 /// seeded twice is the same image, and the digest can be computed ahead of
 /// the pod. `image` must not already exist: overwriting a file is never what
 /// seeding means, and it may be a scratch disk a running pod still has.
+///
+/// Handing the file to a jail user other than the caller needs root. A seed
+/// that cannot hand it over fails and removes what it built, rather than
+/// leaving a disk the node would refuse.
 pub async fn seed(
     tree: &Path,
     image: &Path,
     owner: RootOwner,
+    jail: JailUser,
     free_mib: u32,
 ) -> Result<ArtifactDigest, Ext4Error> {
     if !tree.is_dir() {
@@ -83,7 +109,46 @@ pub async fn seed(
         extra_mib: free_mib,
         extra_inodes: free_mib.saturating_mul(INODES_PER_FREE_MIB),
     };
-    ext4::build(Ext4Input::Tar(tar.path()), image, spec).await
+    let digest = ext4::build(Ext4Input::Tar(tar.path()), image, spec).await?;
+    if let Err(e) = hand_to_jail(image, jail) {
+        let _ = std::fs::remove_file(image);
+        let _ = std::fs::remove_file(ext4::provenance_path(image));
+        return Err(e);
+    }
+    Ok(digest)
+}
+
+/// Give the image file to the jail user, through an open fd, after checking
+/// that the name still is the regular, singly-linked file this seed created.
+/// A path that has become a symlink or gained a second name is refused, never
+/// chowned: that would hand some other inode to the jail user (#3152).
+fn hand_to_jail(image: &Path, jail: JailUser) -> Result<(), Ext4Error> {
+    let io =
+        |what: &str, e: std::io::Error| Ext4Error::Io(format!("{what} {}: {e}", image.display()));
+    let named = std::fs::symlink_metadata(image).map_err(|e| io("inspecting", e))?;
+    let file = File::open(image).map_err(|e| io("opening", e))?;
+    let opened = file.metadata().map_err(|e| io("inspecting", e))?;
+    let same = named.file_type().is_file()
+        && (named.dev(), named.ino()) == (opened.dev(), opened.ino())
+        && opened.nlink() == 1;
+    if !same {
+        return Err(Ext4Error::Refused(format!(
+            "{} is no longer the single-linked regular file seed built; it is not handed \
+             to the jail user",
+            image.display()
+        )));
+    }
+    file.set_permissions(Permissions::from_mode(SEEDED_DISK_MODE))
+        .map_err(|e| io("setting the mode of", e))?;
+    std::os::unix::fs::fchown(&file, Some(jail.uid), Some(jail.gid)).map_err(|e| {
+        Ext4Error::Refused(format!(
+            "cannot hand {} to the jail user {}:{} ({e}). The node does not chown a disk the \
+             guest writes through (#3152), so seed must: run it as root, or as the jail user",
+            image.display(),
+            jail.uid,
+            jail.gid
+        ))
+    })
 }
 
 /// Read the whole filesystem in `image` back out into `out`, replaying the
@@ -128,6 +193,17 @@ mod tests {
         crate::ext4::tests::tar_capable()
     }
 
+    /// This process's own uid:gid: the only jail user an unprivileged run can
+    /// hand a file to.
+    fn runner() -> JailUser {
+        let probe = tempfile::NamedTempFile::new().expect("probe");
+        let m = probe.as_file().metadata().expect("meta");
+        JailUser {
+            uid: m.uid(),
+            gid: m.gid(),
+        }
+    }
+
     /// Every regular file under `root`, by relative path, with its bytes.
     fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
         let mut out = BTreeMap::new();
@@ -163,7 +239,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let t = tree(dir.path());
         let image = dir.path().join("ws.ext4");
-        let digest = seed(&t, &image, WORKLOAD, 16).await.expect("seed");
+        let digest = seed(&t, &image, WORKLOAD, runner(), 16)
+            .await
+            .expect("seed");
 
         // The digest is the node's own measurement of the file.
         let measured = nucleus_identity::attestation::measure_artifact(&image)
@@ -191,7 +269,7 @@ mod tests {
         let image = dir.path().join("exists.ext4");
         std::fs::write(&image, b"a running pod's disk").expect("file");
         assert!(matches!(
-            seed(&t, &image, WORKLOAD, 16).await,
+            seed(&t, &image, WORKLOAD, runner(), 16).await,
             Err(Ext4Error::Refused(_))
         ));
         assert_eq!(
@@ -199,7 +277,7 @@ mod tests {
             b"a running pod's disk"
         );
         assert!(matches!(
-            seed(&image, &dir.path().join("new.ext4"), WORKLOAD, 16).await,
+            seed(&image, &dir.path().join("new.ext4"), WORKLOAD, runner(), 16).await,
             Err(Ext4Error::Refused(_))
         ));
     }
@@ -215,7 +293,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let t = tree(dir.path());
         let image = dir.path().join("ws.ext4");
-        seed(&t, &image, WORKLOAD, 16).await.expect("seed");
+        seed(&t, &image, WORKLOAD, runner(), 16)
+            .await
+            .expect("seed");
         let paths = [
             "/",
             "/README",
@@ -245,6 +325,66 @@ mod tests {
         assert_eq!(left, ["tree", "ws.ext4", "ws.ext4.provenance.json"]);
     }
 
+    /// #3152: the node will not chown a disk the guest writes through, so the
+    /// image FILE must leave seed as the jail user's, read-write, and nobody
+    /// else's. As root the jail user is not the runner, which is a node's case.
+    #[tokio::test]
+    async fn a_seeded_disk_is_handed_to_the_jail_user() {
+        if !have_e2fsprogs() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let t = tree(dir.path());
+        let me = runner();
+        let jail = if me.uid == 0 {
+            JailUser { uid: 123, gid: 100 }
+        } else {
+            me
+        };
+        let image = dir.path().join("ws.ext4");
+        let digest = seed(&t, &image, WORKLOAD, jail, 16).await.expect("seed");
+        let m = std::fs::metadata(&image).expect("meta");
+        assert_eq!(
+            (m.uid(), m.gid(), m.mode() & 0o7777, m.nlink()),
+            (jail.uid, jail.gid, SEEDED_DISK_MODE, 1)
+        );
+        // Handing it over changes no byte the pinned digest covers.
+        let measured = nucleus_identity::attestation::measure_artifact(&image)
+            .await
+            .expect("measure");
+        assert_eq!(digest.hex(), hex::encode(measured));
+    }
+
+    /// Unprivileged, seed cannot give the disk to another user. It says so by
+    /// name and removes what it built, so the retry is not refused as "exists".
+    #[tokio::test]
+    async fn a_seed_that_cannot_hand_over_the_disk_leaves_nothing() {
+        if !have_e2fsprogs() {
+            return;
+        }
+        let me = runner();
+        if me.uid == 0 {
+            eprintln!("skipping: root can hand a file to anyone");
+            return;
+        }
+        let other = JailUser {
+            uid: me.uid.wrapping_add(1),
+            gid: me.gid,
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let t = tree(dir.path());
+        let image = dir.path().join("ws.ext4");
+        let err = seed(&t, &image, WORKLOAD, other, 16)
+            .await
+            .expect_err("an unprivileged seed cannot hand the disk to another uid");
+        assert!(
+            matches!(err, Ext4Error::Refused(_)) && err.to_string().contains("jail user"),
+            "{err}"
+        );
+        assert!(!image.exists(), "a disk the node would refuse is not left");
+        assert!(!ext4::provenance_path(&image).exists());
+    }
+
     #[test]
     fn harvest_does_not_merge_into_a_populated_directory() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -270,7 +410,9 @@ mod tests {
         std::fs::create_dir_all(&t).expect("tree");
         std::fs::write(t.join("f"), vec![b'A'; 4096]).expect("old bytes");
         let image = dir.path().join("ws.ext4");
-        seed(&t, &image, WORKLOAD, 16).await.expect("seed");
+        seed(&t, &image, WORKLOAD, runner(), 16)
+            .await
+            .expect("seed");
 
         // Where `f`'s first block lives.
         let bmap = std::process::Command::new("debugfs")
