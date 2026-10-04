@@ -554,6 +554,7 @@ struct LocalPod {
 #[derive(Debug)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct FirecrackerPod {
+    direct_cgroup: Mutex<Option<cgroup::Placement>>,
     /// The host-owned pod dir: where teardown preserves the exit report and where
     /// the node's record of the pod's mediation key lives (`pod_receipt`).
     pod_dir: PathBuf,
@@ -1231,6 +1232,11 @@ impl FirecrackerPod {
         if stop == Stop::Kill {
             self.child.lock().await.kill().await.map_err(ApiError::Io)?;
         }
+        let mut placement = self.direct_cgroup.lock().await;
+        if let Some(group) = placement.as_mut() {
+            group.cleanup().await?;
+        }
+        placement.take();
         // After the kill, never before: pulling files out from under a live VMM is
         // its own failure mode.
         if let Some(layout) = self.jail.lock().await.take() {
@@ -2583,6 +2589,7 @@ async fn spawn_firecracker_pod(
         // On the direct-spawn path it remains the only mechanism, and it remains
         // late — the guest runs briefly before its limits exist. That is the window
         // the jailer closes, and the reason `--firecracker-jailer` defaults on.
+        let mut direct_cgroup = None;
         if jail_layout.is_none() {
             // Always placed (#3130): in the spec's directory if it names one, else the node's.
             let dir = spec
@@ -2596,17 +2603,20 @@ async fn spawn_firecracker_pod(
                     "firecracker process id unavailable for cgroup placement".to_string(),
                 )),
             };
-            if let Err(err) = placed {
-                let _ = child.kill().await;
-                cleanup_net_resources(
-                    &state.network_allocator,
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(err);
+            match placed {
+                Ok(placement) => direct_cgroup = Some(placement),
+                Err(err) => {
+                    let _ = child.kill().await;
+                    cleanup_net_resources(
+                        &state.network_allocator,
+                        &mut net_plan,
+                        &mut netns_name,
+                        &mut dns_proxy,
+                        jail_layout.as_ref(),
+                    )
+                    .await;
+                    return Err(err);
+                }
             }
         }
 
@@ -2732,6 +2742,7 @@ async fn spawn_firecracker_pod(
         } = identity_parts;
 
         let handle = FirecrackerPod {
+            direct_cgroup: Mutex::new(direct_cgroup),
             pod_dir: pod_dir.to_path_buf(),
             jail: Mutex::new(jail_layout.clone()),
             child,

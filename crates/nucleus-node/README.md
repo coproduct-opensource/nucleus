@@ -35,6 +35,13 @@ This pool tracks the node process's admitted pods. Reconciliation of surviving
 external containers after node restart and aggregate staging-disk limits remain
 separate resource-management work.
 
+Development direct-spawn cgroups retain an ownership handle for the leaf created
+by the launch. Teardown removes that leaf after the VMM stops; cancelled launches
+retry a busy leaf for up to one second. Existing operator-created directories
+and parent hierarchies are preserved. Failed cleanup is reported, and normal
+teardown retains its capacity reservation until cleanup succeeds. Abrupt node
+termination can still leave directories requiring startup reconciliation.
+
 ## Production confinement
 
 Default builds require `--firecracker-jailer=true` and reject pod specs using

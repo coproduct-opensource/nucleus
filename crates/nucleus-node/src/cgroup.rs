@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ApiError;
 use crate::pod_resources::NodeCgroup;
+mod placement;
+pub(crate) use placement::Placement;
 
 /// The only hierarchy the node writes under. `host_paths` holds a spec's `cgroup.path` to it.
 #[cfg(target_os = "linux")]
@@ -22,7 +24,11 @@ pub fn node_dir(pod_id: &str) -> PathBuf {
 /// Late by construction: the VMM is already running. That window is why production uses the
 /// jailer. Cgroup v2 only; a v1 host is refused rather than left unlimited.
 #[cfg(target_os = "linux")]
-pub async fn apply_cgroup(pid: u32, dir: &Path, cgroup: &NodeCgroup) -> Result<(), ApiError> {
+pub async fn apply_cgroup(
+    pid: u32,
+    dir: &Path,
+    cgroup: &NodeCgroup,
+) -> Result<Placement, ApiError> {
     use crate::pod_resources::CgroupVersion;
     match cgroup.version() {
         CgroupVersion::V2 => {}
@@ -34,7 +40,7 @@ pub async fn apply_cgroup(pid: u32, dir: &Path, cgroup: &NodeCgroup) -> Result<(
             ));
         }
     }
-    tokio::fs::create_dir_all(dir).await?;
+    let placement = Placement::create(dir).await?;
 
     // A v2 controller's files exist in a child only once every ancestor delegates it, which the
     // jailer does for itself and this path must do too, or every limit write fails.
@@ -60,7 +66,7 @@ pub async fn apply_cgroup(pid: u32, dir: &Path, cgroup: &NodeCgroup) -> Result<(
     tokio::fs::write(dir.join("cgroup.procs"), format!("{pid}"))
         .await
         .map_err(ApiError::Io)?;
-    Ok(())
+    Ok(placement)
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -69,7 +75,7 @@ pub async fn apply_cgroup(
     _pid: u32,
     _dir: &std::path::Path,
     _cgroup: &NodeCgroup,
-) -> Result<(), ApiError> {
+) -> Result<Placement, ApiError> {
     Err(ApiError::Driver(
         "cgroup placement requires Linux".to_string(),
     ))

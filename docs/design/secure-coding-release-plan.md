@@ -1142,3 +1142,17 @@ the actual jailer argument path. A disposable cgroup on the Apple Container host
 accepted and read back `memory.max=671088640` and `memory.swap.max=0`, then was
 removed. Clippy passed. The updated node has not yet been used for a live pod
 launch with these defaults.
+
+### Development cgroup lifecycle (2026-10-04)
+
+Direct-spawn placement now returns an owned handle for a newly created cgroup
+leaf and carries it into the Firecracker pod handle. Successful teardown removes
+the leaf after stopping the VMM. Cancelled or failed launch drops retry a busy
+leaf for up to one second, reporting cleanup failure. Existing directories are
+borrowed, never deleted, and parent hierarchies are preserved. A normal teardown
+failure retains the pod's aggregate capacity reservation for a later retry.
+
+Eight focused tests passed, including ownership-preserving cleanup and a busy
+leaf becoming removable after cancellation. Clippy, the Linux ARM64 build and
+all four repository gates passed. These are ordinary filesystem/lifecycle tests;
+abrupt node termination and stale cgroup reconciliation remain separate work.
