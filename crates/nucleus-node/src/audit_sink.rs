@@ -273,6 +273,7 @@ impl AuditTarget {
 
 /// The guest kernel command line tokens for a resolved sink: one token per value. Every value was
 /// checked against its grammar when the operator's file loaded or the spec's prefix resolved.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn audit_sink_boot_args(target: &AuditTarget) -> Vec<String> {
     let AuditTarget {
         name: _,
@@ -418,7 +419,7 @@ mod tests;
 /// The node's ambient cloud key, planted in this test process's environment so a test can prove
 /// it never reaches a pod (#3160). Each value is a unique string a test searches a pod's whole
 /// environment, or a guest reply, for.
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", feature = "local-driver")))]
 pub(crate) mod ambient_fixture {
     /// The planted access key id.
     pub(crate) const KEY_ID: &str = "ambient-node-key-id-3160";

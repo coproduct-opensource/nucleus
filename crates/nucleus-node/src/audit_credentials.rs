@@ -334,6 +334,7 @@ impl fmt::Debug for AuditGrant {
 
 impl AuditGrant {
     /// Where the uploader writes, as admission resolved it.
+    #[cfg(target_os = "linux")]
     pub(crate) fn target(&self) -> &AuditTarget {
         &self.target
     }
@@ -370,6 +371,7 @@ impl AuditGrant {
     }
 
     /// The credential as the microVM workload API serves it (`FETCH_AUDIT_CREDENTIALS`).
+    #[cfg(any(target_os = "linux", all(test, feature = "local-driver")))]
     pub(crate) fn served_credentials(&self) -> crate::workload_api_vsock::AuditCredentials {
         let MintedCredential {
             access_key_id,
@@ -470,6 +472,7 @@ pub(crate) mod fake {
     }
 
     /// A grant for `target`, minted by a fresh [`FakeMinter`].
+    #[cfg(any(target_os = "linux", feature = "local-driver"))]
     pub(crate) async fn grant(target: AuditTarget) -> AuditGrant {
         let minter: Arc<dyn ScopedCredentialMinter> = FakeMinter::new(Behaviour::Mint);
         admit(Some(target), Some(&minter))

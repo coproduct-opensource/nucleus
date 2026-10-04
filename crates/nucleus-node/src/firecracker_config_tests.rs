@@ -1570,6 +1570,7 @@ fn the_node_writes_init_pci_and_ipv6_exactly_once() {
         "aa00bb11-approval-pubkeys",
         Some(15012),
         None,
+        None,
     );
     let args = config.boot_source.boot_args.unwrap_or_default();
     let toks: Vec<&str> = args.split_whitespace().collect();
