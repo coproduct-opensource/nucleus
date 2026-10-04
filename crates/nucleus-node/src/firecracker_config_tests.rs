@@ -1,4 +1,7 @@
 use super::*;
+use crate::jail_placement::Placement;
+#[cfg(target_os = "linux")]
+use crate::jail_placement::{JailUser, place};
 use nucleus_spec::{ImageSpec, PodSpec, RootfsSource, SeccompSpec, VsockSpec};
 
 use crate::rootfs_source::HostImage;
@@ -764,14 +767,91 @@ fn jail_layout_matches_the_jailers_own_convention() {
     );
 }
 
-/// `place_resource` must produce a LINK, not a copy, for writable resources —
+/// Own uid/gid, read off a file this test made: the one jail user an
+/// unprivileged test can give a born-in-the-jail file to.
+#[cfg(target_os = "linux")]
+fn own_ids(dir: &Path) -> JailUser {
+    use std::os::unix::fs::MetadataExt;
+    let probe = dir.join(".ids");
+    std::fs::write(&probe, b"").expect("probe");
+    let m = std::fs::metadata(&probe).expect("probe meta");
+    let _ = std::fs::remove_file(&probe);
+    JailUser {
+        uid: m.uid(),
+        gid: m.gid(),
+    }
+}
+
+/// Sources a jail test can place, as whoever runs it (#3152).
+///
+/// A shared artifact must be readable by the jail user and NOT owned by it, and
+/// a born-in-the-jail file can only be given to a foreign uid by root. So:
+///
+/// - as ROOT, the jail user is `123:100` (the node's default), the shared
+///   artifacts are root-owned `0444` files made here, and the caller's scratch
+///   is given to the jail user first, as its stager must;
+/// - UNPRIVILEGED, the jail user is the test's own uid, so a shared artifact has
+///   to be a file the test does not own: `/etc/passwd`, root-owned and
+///   world-readable, which is placed by hard link or copy and never written.
+#[cfg(target_os = "linux")]
+struct JailFixture {
+    who: JailUser,
+    as_root: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl JailFixture {
+    fn new(dir: &Path) -> Self {
+        let me = own_ids(dir);
+        if me.uid == 0 {
+            JailFixture {
+                who: JailUser { uid: 123, gid: 100 },
+                as_root: true,
+            }
+        } else {
+            JailFixture {
+                who: me,
+                as_root: false,
+            }
+        }
+    }
+
+    /// A shared, read-only artifact named `name` under `dir`.
+    fn shared(&self, dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if self.as_root {
+            let p = dir.join(name);
+            std::fs::write(&p, b"shared artifact").expect("write shared");
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o444)).expect("chmod");
+            return p;
+        }
+        let p = PathBuf::from("/etc/passwd");
+        let m = std::fs::metadata(&p).expect("/etc/passwd must exist for an unprivileged run");
+        assert!(
+            m.uid() != self.who.uid && m.mode() & 0o006 == 0o004,
+            "an unprivileged run needs a world-readable file it does not own and cannot write; \
+             /etc/passwd is {:o} owned by {}",
+            m.mode(),
+            m.uid()
+        );
+        p
+    }
+
+    /// The caller's own writable scratch disk, already the jail user's.
+    fn scratch(&self, dir: &Path) -> PathBuf {
+        let p = dir.join("scratch.ext4");
+        std::fs::write(&p, b"guest writes land here").expect("write scratch");
+        if self.as_root {
+            std::os::unix::fs::chown(&p, Some(self.who.uid), Some(self.who.gid))
+                .expect("stage the scratch for the jail user");
+        }
+        p
+    }
+}
+
+/// `place` must produce a LINK, not a copy, for a disk the guest writes —
 /// asserted on the inode, because a copy is indistinguishable from a link by
 /// content and that is exactly what makes the bug silent.
-///
-/// Linux-only because `place_resource` is; that is not a coverage gap, it is
-/// where the code runs. The current uid/gid are read off a file this test just
-/// created rather than hardcoded, so it passes as root in a container and as an
-/// unprivileged user in CI.
 #[cfg(target_os = "linux")]
 #[test]
 fn placing_a_writable_resource_links_rather_than_copies() {
@@ -779,16 +859,15 @@ fn placing_a_writable_resource_links_rather_than_copies() {
 
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir = tmp.path();
-    let src = dir.join("scratch.ext4");
-    std::fs::write(&src, b"guest writes land here").expect("write source");
+    let fx = JailFixture::new(dir);
+    let src = fx.scratch(dir);
     let dest = dir.join("in-jail-scratch");
 
     let resource = JailResource {
         host_source: src.clone(),
-        in_jail: in_jail::SCRATCH,
-        placement: Placement::HardLinkOnly,
+        role: ArtifactRole::CallerScratch,
     };
-    place_resource(&resource, &dest).expect("same-filesystem hard link must succeed");
+    place(&resource, &dest, fx.who).expect("same-filesystem hard link must succeed");
 
     let src_ino = std::fs::metadata(&src).expect("src meta").ino();
     let dest_ino = std::fs::metadata(&dest).expect("dest meta").ino();
@@ -801,7 +880,7 @@ fn placing_a_writable_resource_links_rather_than_copies() {
     );
 
     // A relaunch under the same pod id must not trip over the previous link.
-    place_resource(&resource, &dest).expect("re-placing over a stale link must succeed");
+    place(&resource, &dest, fx.who).expect("re-placing over a stale link must succeed");
     assert_eq!(std::fs::metadata(&dest).expect("dest meta").ino(), src_ino);
 }
 
@@ -813,14 +892,15 @@ fn placing_a_writable_resource_links_rather_than_copies() {
 fn an_unlinkable_writable_resource_refuses_rather_than_copying() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir = tmp.path();
-    let dest = dir.join("dest");
+    let fx = JailFixture::new(dir);
+    // A jail directory that does not exist: the source is fine, the link fails.
+    let dest = dir.join("no-such-jail").join("dest");
 
     let writable = JailResource {
-        host_source: dir.join("does-not-exist.ext4"),
-        in_jail: in_jail::SCRATCH,
-        placement: Placement::HardLinkOnly,
+        host_source: fx.scratch(dir),
+        role: ArtifactRole::CallerScratch,
     };
-    let err = place_resource(&writable, &dest)
+    let err = place(&writable, &dest, fx.who)
         .expect_err("an unlinkable WRITABLE resource must fail the launch");
     assert!(
         err.contains("WRITABLE") && err.contains("discard"),
@@ -832,12 +912,12 @@ fn an_unlinkable_writable_resource_refuses_rather_than_copying() {
     );
 
     // The read-only side is allowed to fall back — but only to something that
-    // actually works, so an absent source still fails, naming both attempts.
+    // actually works, so a copy into nowhere still fails, naming both attempts.
     let readable = JailResource {
-        placement: Placement::CopyableIfCrossDevice,
-        ..writable.clone()
+        host_source: fx.shared(dir, "vmlinux"),
+        role: ArtifactRole::Kernel,
     };
-    let err = place_resource(&readable, &dest).expect_err("absent source cannot be placed");
+    let err = place(&readable, &dest, fx.who).expect_err("nowhere to place it");
     assert!(
         err.contains("hard link failed") && err.contains("copy failed"),
         "a failed fallback must report both attempts: {err}"
@@ -853,26 +933,18 @@ fn an_unlinkable_writable_resource_refuses_rather_than_copying() {
 #[cfg(target_os = "linux")]
 #[test]
 fn prepare_jail_creates_every_path_the_jailed_config_names() {
-    use std::os::unix::fs::MetadataExt;
-
     let tmp = tempfile::tempdir().expect("temp dir");
     let base = tmp.path();
     let src = base.join("images");
     std::fs::create_dir_all(&src).expect("image dir");
-    for name in ["vmlinux", "rootfs.ext4", "scratch.ext4", "filter.bpf"] {
-        std::fs::write(src.join(name), b"x").expect("write image");
-    }
-    // Own uid/gid, read off a file we just made: chowning to ourselves is always
-    // permitted, so this works unprivileged in CI and as root in a container.
-    let meta = std::fs::metadata(src.join("vmlinux")).expect("meta");
-    let (uid, gid) = (meta.uid(), meta.gid());
+    let fx = JailFixture::new(&src);
 
     let img = nucleus_spec::ImageSpec {
-        kernel_path: src.join("vmlinux"),
-        rootfs: RootfsSource::Path(src.join("rootfs.ext4")),
+        kernel_path: fx.shared(&src, "vmlinux"),
+        rootfs: RootfsSource::Path(fx.shared(&src, "rootfs.ext4")),
         boot_args: None,
         read_only: true,
-        scratch_path: Some(src.join("scratch.ext4")),
+        scratch_path: Some(fx.scratch(&src)),
         kernel_digest: None,
         rootfs_digest: None,
         scratch_digest: None,
@@ -885,7 +957,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         port: 1024,
     });
     spec.spec.seccomp = Some(SeccompSpec::Custom {
-        filter_path: src.join("filter.bpf"),
+        filter_path: fx.shared(&src, "filter.bpf"),
     });
 
     let layout = JailLayout::new(
@@ -904,6 +976,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         Some(&layout),
     );
     let config_json = serde_json::to_vec_pretty(&config).expect("serialize");
+    let (uid, gid) = (fx.who.uid, fx.who.gid);
 
     prepare_jail(&layout, &host(&img), &spec, &config_json, uid, gid, false).expect("prepare_jail");
 
@@ -953,6 +1026,175 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
 }
 
+/// #3152: preparing a jail never changes the owner or mode of a placed source's
+/// inode. A hard link IS the source inode, so the old chown of every placed file
+/// gave the installed kernel and rootfs — the files every pod on the node boots —
+/// to the jail user.
+///
+/// Red on the parent, as root: the kernel and rootfs went from `0:0` to
+/// `123:100`. Unprivileged the owner half cannot bite (a test can chown only to
+/// itself, and its shared sources are a file it does not own), so the check is of
+/// the mode and of the files given to the jail user being the jail's own.
+#[cfg(target_os = "linux")]
+#[test]
+fn preparing_a_jail_never_changes_a_placed_sources_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let src = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&src).expect("dir");
+    let fx = JailFixture::new(&src);
+    let (kernel, rootfs, scratch) = (
+        fx.shared(&src, "vmlinux"),
+        fx.shared(&src, "rootfs.ext4"),
+        fx.scratch(&src),
+    );
+    let inode = |p: &Path| {
+        let m = std::fs::metadata(p).expect("meta");
+        (m.uid(), m.gid(), m.mode() & 0o7777)
+    };
+    let before = [inode(&kernel), inode(&rootfs), inode(&scratch)];
+
+    let mut img = image(true, true);
+    img.kernel_path = kernel.clone();
+    img.rootfs = RootfsSource::Path(rootfs.clone());
+    img.scratch_path = Some(scratch.clone());
+    let layout = JailLayout::new(
+        &tmp.path().join("jail"),
+        Path::new("/usr/bin/firecracker"),
+        "p",
+    );
+    prepare_jail(
+        &layout,
+        &host(&img),
+        &base_spec(),
+        b"{}",
+        fx.who.uid,
+        fx.who.gid,
+        false,
+    )
+    .expect("prepare_jail");
+
+    assert_eq!(
+        before,
+        [inode(&kernel), inode(&rootfs), inode(&scratch)],
+        "preparing a jail changed a placed source's owner or mode (kernel, rootfs, scratch)"
+    );
+    // What IS the jail user's is only what was born there.
+    for born in [in_jail::CONFIG, in_jail::LOG] {
+        let m = std::fs::metadata(layout.host_path(born)).expect("born");
+        assert_eq!((m.uid(), m.gid(), m.nlink()), (fx.who.uid, fx.who.gid, 1));
+    }
+    cleanup_jail(&layout);
+}
+
+/// #3152: an artifact the jail user cannot read is refused by name, and nothing
+/// is chowned to make it readable. Unprivileged: the refusal comes before any
+/// ownership change, so a foreign jail user is fine here.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_artifact_the_jail_user_cannot_read_is_refused_by_name() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let src = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&src).expect("dir");
+    let me = own_ids(&src);
+    let foreign = JailUser {
+        uid: me.uid.wrapping_add(1),
+        gid: me.gid.wrapping_add(1),
+    };
+    for (name, mode) in [("vmlinux", 0o600), ("rootfs.ext4", 0o444)] {
+        std::fs::write(src.join(name), b"x").expect("write");
+        std::fs::set_permissions(src.join(name), std::fs::Permissions::from_mode(mode))
+            .expect("chmod");
+    }
+    let mut img = image(true, false);
+    img.kernel_path = src.join("vmlinux");
+    img.rootfs = RootfsSource::Path(src.join("rootfs.ext4"));
+    let layout = JailLayout::new(
+        &tmp.path().join("jail"),
+        Path::new("/usr/bin/firecracker"),
+        "p",
+    );
+    let err = prepare_jail(
+        &layout,
+        &host(&img),
+        &base_spec(),
+        b"{}",
+        foreign.uid,
+        foreign.gid,
+        false,
+    )
+    .expect_err("a kernel the jail user cannot read must be refused, not chowned");
+    assert!(
+        err.contains("image.kernel_path") && err.contains("vmlinux") && err.contains("cannot read"),
+        "the refusal must name the field and the file: {err}"
+    );
+    let m = std::fs::metadata(src.join("vmlinux")).expect("meta");
+    assert_eq!((m.uid(), m.mode() & 0o7777), (me.uid, 0o600));
+    assert!(
+        !layout.host_path(in_jail::KERNEL).exists(),
+        "a refused artifact is not placed"
+    );
+}
+
+/// #3152, the second door: a relaunch finds the previous jail's entries, which
+/// the previous VMM — owner of the jail root — could have replaced with a
+/// symlink or a hard link to anything. The node must replace them, never write
+/// or chown through them. Red on the parent, unprivileged: `fs::write` followed
+/// the planted `/config.json` symlink into the victim.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_planted_jail_entry_is_replaced_never_written_through() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let src = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&src).expect("dir");
+    let fx = JailFixture::new(&src);
+    let victim = tmp.path().join("victim");
+    std::fs::write(&victim, b"untouched").expect("victim");
+    let victim_before = std::fs::metadata(&victim).expect("meta");
+
+    let layout = JailLayout::new(
+        &tmp.path().join("jail"),
+        Path::new("/usr/bin/firecracker"),
+        "p",
+    );
+    std::fs::create_dir_all(&layout.jail_root).expect("jail root");
+    std::os::unix::fs::symlink(&victim, layout.host_path(in_jail::CONFIG)).expect("plant");
+    std::fs::hard_link(&victim, layout.host_path(in_jail::LOG)).expect("plant");
+    std::os::unix::fs::symlink(&victim, layout.host_path(in_jail::KERNEL)).expect("plant");
+
+    let mut img = image(true, false);
+    img.kernel_path = fx.shared(&src, "vmlinux");
+    img.rootfs = RootfsSource::Path(fx.shared(&src, "rootfs.ext4"));
+    prepare_jail(
+        &layout,
+        &host(&img),
+        &base_spec(),
+        b"{\"new\":1}",
+        fx.who.uid,
+        fx.who.gid,
+        false,
+    )
+    .expect("prepare_jail");
+
+    assert_eq!(std::fs::read(&victim).expect("read"), b"untouched");
+    let victim_after = std::fs::metadata(&victim).expect("meta");
+    assert_eq!(
+        (victim_after.uid(), victim_after.gid(), victim_after.nlink()),
+        (victim_before.uid(), victim_before.gid(), 1),
+        "the victim was chowned through, or is still linked from the jail"
+    );
+    assert_eq!(
+        std::fs::read(layout.host_path(in_jail::CONFIG)).expect("config"),
+        b"{\"new\":1}"
+    );
+    cleanup_jail(&layout);
+}
+
 /// A bounded WAIT must not become a bounded SUCCESS.
 ///
 /// `verify_seccomp_active_within` was added because the jailer holds the pid
@@ -999,7 +1241,7 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
             }
             let placed = resources
                 .iter()
-                .find(|r| r.in_jail == drive.path_on_host)
+                .find(|r| r.in_jail() == drive.path_on_host)
                 .unwrap_or_else(|| {
                     panic!(
                         "writable drive {} is in the config but nothing brings it \
@@ -1009,8 +1251,8 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
                     )
                 });
             assert_eq!(
-                placed.placement,
-                Placement::HardLinkOnly,
+                placed.placement(),
+                Placement::GuestWritesThrough,
                 "drive {} is writable (is_read_only=false) but may be COPIED into \
                      the jail; the guest's writes would not reach {}",
                 drive.path_on_host,
@@ -1061,7 +1303,7 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
     let resources = jail_resources(&host(&img), &spec, false);
     // Produced inside the jail rather than relocated into it.
     let produced = [in_jail::CONFIG, in_jail::LOG, in_jail::VSOCK];
-    let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail).collect();
+    let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail()).collect();
     known.extend_from_slice(&produced);
 
     let mut config_paths = vec![config.boot_source.kernel_image_path.clone()];
@@ -1617,11 +1859,11 @@ fn a_spec_asking_for_a_writable_rootfs_never_gets_the_shared_artifact_writable()
         let placed = jail_resources(&asks_rw, &base_spec(), false);
         let rootfs = placed
             .iter()
-            .find(|r| r.in_jail == in_jail::ROOTFS)
+            .find(|r| r.in_jail() == in_jail::ROOTFS)
             .expect("a rootfs resource must be jailed");
         assert_eq!(
-            rootfs.placement,
-            Placement::CopyableIfCrossDevice,
+            rootfs.placement(),
+            Placement::SharedReadOnly,
             "nothing writes the rootfs, so nothing needs its writes kept"
         );
     }
@@ -1638,7 +1880,7 @@ fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
 
     let placed = jail_resources(&host(&img), &base_spec(), true);
     assert!(
-        !placed.iter().any(|r| r.in_jail == in_jail::SCRATCH),
+        !placed.iter().any(|r| r.in_jail() == in_jail::SCRATCH),
         "the node already made this file inside the jail; placing it would \
          hard-link it onto itself: {placed:?}"
     );
@@ -1651,11 +1893,11 @@ fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
     let placed = jail_resources(&host(&image(true, true)), &base_spec(), false);
     let scratch = placed
         .iter()
-        .find(|r| r.in_jail == in_jail::SCRATCH)
+        .find(|r| r.in_jail() == in_jail::SCRATCH)
         .expect("a caller-supplied scratch must be jailed");
     assert_eq!(
-        scratch.placement,
-        Placement::HardLinkOnly,
+        scratch.placement(),
+        Placement::GuestWritesThrough,
         "a copied scratch loses every guest write when the jail is torn down"
     );
 }

@@ -80,11 +80,23 @@ pub fn ratchet(current: &Value, baseline: &Value) -> (Vec<String>, Vec<String>) 
     (fail, improved)
 }
 
-pub fn scoreboard_ratchet(current: &str, baseline: &str) -> Result<()> {
-    let cur: Value = serde_json::from_str(
-        &std::fs::read_to_string(current).with_context(|| format!("reading {current}"))?,
-    )
-    .with_context(|| format!("parsing {current}"))?;
+/// `current: None` measures the tree here, in process: one command, so the
+/// measurement and the decision cannot be run on different trees.
+pub fn scoreboard_ratchet(current: Option<&str>, baseline: &str) -> Result<()> {
+    let (cur, current): (Value, &str) = match current {
+        Some(path) => (
+            serde_json::from_str(
+                &std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?,
+            )
+            .with_context(|| format!("parsing {path}"))?,
+            path,
+        ),
+        None => (
+            serde_json::to_value(crate::exemplar_scoreboard::measure_cwd()?)
+                .context("serialising the scoreboard")?,
+            "the measured tree",
+        ),
+    };
     let base: Value = serde_json::from_str(
         &std::fs::read_to_string(baseline).with_context(|| format!("reading {baseline}"))?,
     )
