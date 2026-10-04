@@ -691,6 +691,7 @@ mod tests {
                 parent_pod_id: None,
                 posture_stamp: None,
                 owner: None,
+                capacity: tokio::sync::Mutex::new(None),
             });
 
             if exit {

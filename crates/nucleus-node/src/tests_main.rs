@@ -969,6 +969,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         parent_pod_id: None,
         posture_stamp: None,
         owner: None,
+        capacity: tokio::sync::Mutex::new(None),
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;

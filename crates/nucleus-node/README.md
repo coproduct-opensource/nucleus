@@ -2,6 +2,27 @@
 
 Node daemon that manages pods and exposes an HTTP API.
 
+## Aggregate resource admission
+
+Every create reserves the pod's requested memory plus 128 MiB of VMM overhead,
+and its requested vCPUs, from one node-wide pool. Omitted pod sizes use the
+existing 512 MiB / 1 vCPU defaults. Reservations include pods still booting.
+Insufficient capacity returns HTTP 503 with requested and available amounts.
+Failed or cancelled creates return their reservation; registered pods retain it
+until teardown succeeds. Per-pod ceilings and cgroup limits still apply.
+
+`--node-memory-mib` and `--node-vcpus` set the operator's total capacity.
+Linux memory defaults to MemTotal, capped by finite visible cgroup-v2 ancestor
+memory limits. Other hosts require an explicit memory value. CPU defaults to
+available parallelism. `--host-reserve-memory-mib` defaults to 512 and
+`--host-reserve-vcpus` defaults to 0; reserves are subtracted before pod admission.
+An empty resulting pool prevents startup. Configure capacity explicitly when
+other services share the host or memory restrictions are imposed by cgroup v1.
+
+This pool tracks the node process's admitted pods. Reconciliation of surviving
+external containers after node restart, aggregate staging-disk limits, and
+additional swap policy remain separate resource-management work.
+
 ## Production confinement
 
 Default builds require `--firecracker-jailer=true` and reject pod specs using

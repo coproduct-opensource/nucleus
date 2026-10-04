@@ -44,6 +44,7 @@ mod jail_placement;
 mod keys;
 mod lockdown;
 mod mediation_receipt_collector;
+mod node_capacity;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
@@ -133,6 +134,8 @@ struct Args {
     audit_sinks: audit_sink::AuditSinkArgs,
     #[command(flatten)]
     pod_ceilings: pod_resources::PodCeilingArgs,
+    #[command(flatten)]
+    node_capacity: node_capacity::CapacityArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -371,6 +374,7 @@ struct NodeState {
     host_roots: host_paths::Roots,
     /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
     pod_ceilings: pod_resources::PodCeilings,
+    node_capacity: node_capacity::Capacity,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
@@ -516,6 +520,7 @@ struct PodHandle {
     /// creation and never re-derived: its trust domain is the pod's tenant
     /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
     owner: Option<String>,
+    capacity: Mutex<Option<node_capacity::Reservation>>,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -760,6 +765,7 @@ async fn main() -> Result<(), ApiError> {
         state_dir: args.state_dir.clone(),
         host_roots: args.host_paths.ensure(&args.state_dir)?,
         pod_ceilings: args.pod_ceilings.ceilings(),
+        node_capacity: args.node_capacity.build()?,
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
@@ -1094,6 +1100,7 @@ async fn create_pod_internal(
 
     // The uploader's credential, minted only now that the caller's authority is admitted: one
     // limited to this pod's resolved bucket and prefix, for the pod's lifetime (#3160).
+    let capacity = state.node_capacity.reserve(&spec)?;
     let audit = match audit_mint {
         None => None,
         Some(mint) => {
@@ -1149,55 +1156,12 @@ async fn create_pod_internal(
         parent_pod_id,
         posture_stamp,
         owner: Some(owner),
+        capacity: Mutex::new(Some(capacity)),
     });
 
     state.pods.lock().await.insert(id, handle);
     reservation.commit(); // registered: the reaper releases it from here (a drop before, #3032)
     Ok((id, proxy_addr))
-}
-
-impl PodHandle {
-    async fn info(&self) -> PodInfo {
-        let state = self.status().await;
-        let proxy_addr = self.proxy_addr.lock().await.clone();
-        PodInfo {
-            id: self.id,
-            name: self.spec.metadata.name.clone(),
-            created_at_unix: self.created_at,
-            state,
-            proxy_addr,
-            labels: self.spec.metadata.labels.clone(),
-            parent_pod_id: self.parent_pod_id,
-            posture: self.posture_stamp.clone(),
-        }
-    }
-
-    async fn status(&self) -> PodState {
-        match &self.driver_state {
-            #[cfg(feature = "local-driver")]
-            DriverState::Local(local) => local.status().await,
-            DriverState::Firecracker(firecracker) => firecracker.status().await,
-            DriverState::Container(container) => container.status().await,
-        }
-    }
-
-    async fn cancel(&self) -> Result<(), ApiError> {
-        self.teardown(Stop::Kill).await
-    }
-
-    async fn cleanup_after_exit(&self) {
-        // Nothing to kill, so nothing can fail: the error arm is the kill's.
-        let _ = self.teardown(Stop::AlreadyExited).await;
-    }
-
-    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
-        match &self.driver_state {
-            #[cfg(feature = "local-driver")]
-            DriverState::Local(local) => local.teardown(stop).await,
-            DriverState::Firecracker(firecracker) => firecracker.teardown(stop).await,
-            DriverState::Container(container) => container.teardown(stop).await,
-        }
-    }
 }
 
 #[cfg(feature = "local-driver")]

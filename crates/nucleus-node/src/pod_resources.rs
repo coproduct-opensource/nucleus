@@ -48,10 +48,8 @@
 //! The container driver applies the same size as `HostConfig` (`memory`, `memory_swap`,
 //! `nano_cpus`, `pids_limit`), where the pod's own processes are in the container.
 //!
-//! # Not here
-//!
-//! An aggregate node budget (the sum of admitted pods within host capacity). `--firecracker-max-pods`
-//! bounds the count; with these ceilings that bounds the total, but not to the host's size.
+//! Aggregate memory and CPU admission lives in `node_capacity`: each launch
+//! reserves its size plus VMM overhead until failed launch or completed teardown.
 
 use nucleus_spec::{CgroupSetting, HugePages, PodSpec};
 

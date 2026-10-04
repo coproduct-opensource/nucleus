@@ -257,6 +257,7 @@ impl Run {
                 parent_pod_id: None,
                 posture_stamp: None,
                 owner: None,
+                capacity: tokio::sync::Mutex::new(None),
             }),
         );
         let k = register(&st, Some(p)).await;

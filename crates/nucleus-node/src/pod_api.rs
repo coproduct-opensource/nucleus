@@ -1221,6 +1221,7 @@ pub(crate) mod handler_tests {
             state_dir: a.state_dir.clone(),
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
             pod_ceilings: a.pod_ceilings.ceilings(),
+            node_capacity: crate::node_capacity::Capacity::new(65536, 128),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
             local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
@@ -1288,6 +1289,7 @@ pub(crate) mod handler_tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let mut st = state(&dir);
+        st.node_capacity = crate::node_capacity::Capacity::new(640, 1);
         // The script must be EXECUTABLE where it lives, and a temp dir need not
         // be: a hardened host mounts /tmp noexec (the guest does, see
         // nucleus-guest-init's GUEST_MOUNTS), the exec fails at once, the spawn's
@@ -1334,6 +1336,12 @@ pub(crate) mod handler_tests {
             panic!("the create must still be booting when it is dropped; it returned {early:?}");
         }
 
+        drop(
+            st.node_capacity
+                .reserve(&spec())
+                .expect("dropped create returns node capacity"),
+        );
+
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while st.authority.live_children(parent).await != Some(0) {
             assert!(
@@ -1342,6 +1350,19 @@ pub(crate) mod handler_tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn completed_teardown_returns_node_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(&dir);
+        st.node_capacity = crate::node_capacity::Capacity::new(640, 1);
+        let id = register(&st, None).await;
+        let pod = st.pods.lock().await.get(&id).unwrap().clone();
+        *pod.capacity.lock().await = Some(st.node_capacity.reserve(&pod.spec).unwrap());
+        assert!(st.node_capacity.reserve(&pod.spec).is_err());
+        pod.cancel().await.unwrap();
+        drop(st.node_capacity.reserve(&pod.spec).unwrap());
     }
 
     /// A registered pod, running, optionally owned by `parent`.
@@ -1400,6 +1421,7 @@ pub(crate) mod handler_tests {
             parent_pod_id: parent,
             posture_stamp: None,
             owner: owner.map(str::to_string),
+            capacity: tokio::sync::Mutex::new(None),
         });
         st.pods.lock().await.insert(id, handle);
         id
@@ -1448,6 +1470,7 @@ pub(crate) mod handler_tests {
             parent_pod_id: None,
             posture_stamp: None,
             owner: None,
+            capacity: tokio::sync::Mutex::new(None),
         };
         assert!(matches!(
             handle.status().await,

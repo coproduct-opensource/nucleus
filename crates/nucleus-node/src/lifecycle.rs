@@ -60,6 +60,56 @@ fn now_unix() -> u64 {
         .as_secs()
 }
 
+use crate::{ApiError, DriverState, PodHandle, PodInfo, PodState, Stop};
+
+impl PodHandle {
+    pub(crate) async fn info(&self) -> PodInfo {
+        let state = self.status().await;
+        let proxy_addr = self.proxy_addr.lock().await.clone();
+        PodInfo {
+            id: self.id,
+            name: self.spec.metadata.name.clone(),
+            created_at_unix: self.created_at,
+            state,
+            proxy_addr,
+            labels: self.spec.metadata.labels.clone(),
+            parent_pod_id: self.parent_pod_id,
+            posture: self.posture_stamp.clone(),
+        }
+    }
+
+    pub(crate) async fn status(&self) -> PodState {
+        match &self.driver_state {
+            #[cfg(feature = "local-driver")]
+            DriverState::Local(local) => local.status().await,
+            DriverState::Firecracker(firecracker) => firecracker.status().await,
+            DriverState::Container(container) => container.status().await,
+        }
+    }
+
+    pub(crate) async fn cancel(&self) -> Result<(), ApiError> {
+        self.teardown(Stop::Kill).await
+    }
+
+    pub(crate) async fn cleanup_after_exit(&self) {
+        // Nothing to kill, so nothing can fail: the error arm is the kill's.
+        let _ = self.teardown(Stop::AlreadyExited).await;
+    }
+
+    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
+        let result = match &self.driver_state {
+            #[cfg(feature = "local-driver")]
+            DriverState::Local(local) => local.teardown(stop).await,
+            DriverState::Firecracker(firecracker) => firecracker.teardown(stop).await,
+            DriverState::Container(container) => container.teardown(stop).await,
+        };
+        if result.is_ok() {
+            self.capacity.lock().await.take();
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

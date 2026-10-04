@@ -1107,3 +1107,23 @@ alongside collection in `docs/handoffs/nucleus-build-receipts.md`.
 All 134 audit tests passed, including a CLI integration that verifies a signed
 receipt and binary artifact while preserving nonzero workload exit status.
 Clippy and all four repository gates passed. The full coding journeys remain open.
+
+### Aggregate node capacity admission (2026-10-04)
+
+The node now reserves pod memory (including 128 MiB VMM overhead) and vCPUs
+against one shared pool before launch. Booting pods count against the pool;
+failed or cancelled creates return their reservation. A registered pod retains
+it until successful teardown. Capacity exhaustion returns HTTP 503 with the
+requested and available amounts. Per-pod ceilings remain independent.
+
+Operator capacity and host reserve flags are documented in the node README.
+Linux memory detection is capped by visible cgroup-v2 ancestor limits. Other
+hosts require an explicit memory capacity; cgroup-v1 deployments should also
+configure capacity explicitly. Ordinary concurrency and lifecycle tests cover
+pool conservation, host reserves, cancelled creates and completed teardown.
+The full node suite passed 850 tests (one ignored). Linux ARM64 builds, Clippy
+and all four repository gates passed.
+
+This implements process-lifetime aggregate admission, not the entire resource
+priority. Swap policy, aggregate staging-disk capacity, and reconciling external
+containers surviving a node restart remain open.
