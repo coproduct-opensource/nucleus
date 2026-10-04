@@ -3,6 +3,7 @@
 //! Test utilities for nucleus-node HTTP and gRPC APIs.
 
 mod effect_approvals;
+mod workload;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
@@ -107,6 +108,13 @@ pub enum NodeCommand {
         command: effect_approvals::Command,
     },
 
+    /// Read workload results and logs, or collect a signed artifact bundle
+    Workload {
+        pod_id: uuid::Uuid,
+        #[command(subcommand)]
+        command: workload::Command,
+    },
+
     /// Generate a signed request (for debugging)
     Sign {
         /// HTTP method
@@ -167,11 +175,14 @@ pub async fn execute(mut args: NodeArgs) -> Result<()> {
     apply_provisioned_identity_defaults(&mut args);
     let agent = create_client(&args)?;
     let auth_secret = match &args.command {
-        NodeCommand::EffectApprovals { .. } => None,
+        NodeCommand::EffectApprovals { .. } | NodeCommand::Workload { .. } => None,
         _ => resolve_auth(&args)?,
     };
 
     match args.command {
+        NodeCommand::Workload { pod_id, command } => {
+            workload::run(&agent, &args.url, pod_id, &command).await
+        }
         NodeCommand::EffectApprovals { pod_id, command } => {
             println!(
                 "{}",

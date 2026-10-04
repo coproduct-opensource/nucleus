@@ -1077,3 +1077,18 @@ listener shutdown and direct-child reaping. An actual CLI invocation with an
 ephemeral listener and ordinary shell workload preserved exit code 7. Clippy
 with warnings denied passed. This implements managed launch; a complete coding
 session and artifact/approval UX still remain to be exercised.
+
+### Workload output CLI (2026-10-04)
+
+`nucleus node workload <pod> result|logs|collect` now exposes the existing
+node APIs using the provisioned mTLS identity. Logs go to exact-byte files;
+collection exports either the execution receipt or the receipt and declared
+artifact bundle. Output publication never overwrites an existing file. The
+CLI preserves node refusal details and distinguishes a workload's exit status
+from failure of the management request. Collection does not itself verify the
+signature or execution expectations. Usage and the artifact selection format
+are documented in `docs/handoffs/nucleus-build-receipts.md`.
+
+The CLI suite passed 311 tests (two ignored), including binary output
+preservation and artifact selection, and Clippy and all four prepush gates
+passed. These checks do not complete the two live coding-harness journeys.

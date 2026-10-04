@@ -203,6 +203,31 @@ digest. It alone constructs the private, deadline-bound `VerifiedArtifacts`.
 Checking just the receipt cannot construct that witness. It proves the captured
 bytes, not that the build passed: the observed exit remains part of the claim.
 
+The operator CLI exposes these APIs using the provisioned mTLS identity:
+
+```sh
+nucleus node workload <pod-uuid> result
+nucleus node workload <pod-uuid> logs stdout --output workload.stdout
+nucleus node workload <pod-uuid> logs stderr --output workload.stderr
+nucleus node workload <pod-uuid> collect --output execution-receipt.json
+nucleus node workload <pod-uuid> collect --artifacts outputs.json --output execution-bundle.json
+```
+
+`outputs.json` is the selection object itself, for example
+`{"patch":"changes.patch","tests":"test-results.json"}`. These names and paths
+must already appear in the launched spec's `workload.artifacts`. Collect while
+the pod's proxy is available, before cancelling the pod. Without `--artifacts`,
+the output is the signed receipt; with it, the output is the node's JSON bundle
+containing `receipt` and base64 `artifacts`. Collection exports evidence; it does
+not perform independent signature or execution-policy verification.
+
+Logs are saved as exact bytes instead of being interpreted as terminal output.
+Output files are published only after writing succeeds and never replace an
+existing file. A running workload, unavailable logs, or a failed artifact read
+surfaces the node's error with a failing CLI exit status. `result` reports the
+workload state as JSON; a completed workload's nonzero exit code is data in that
+observation, separate from whether the CLI request succeeded.
+
 Live mTLS/local-driver evidence: binary output containing NUL and invalid UTF-8
 survived collection unchanged. OpenSSL independently verified the host signature,
 and independently computed size/hash matched the signed descriptor. Symlink
