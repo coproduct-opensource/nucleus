@@ -44,7 +44,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::firecracker_config::in_jail;
@@ -411,6 +411,9 @@ fn copy_read_only(source: &Path, dest: &Path) -> std::io::Result<()> {
         .mode(0o444)
         .open(dest)?;
     std::io::copy(&mut from, &mut to)?;
+    // Creation is filtered by umask. Set the final mode through this new inode's fd so
+    // a restrictive node umask cannot remove the jail user's read access.
+    to.set_permissions(std::fs::Permissions::from_mode(0o444))?;
     to.sync_all()
 }
 
