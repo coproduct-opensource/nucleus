@@ -1,5 +1,10 @@
 use super::*;
-use nucleus_spec::{ImageSpec, PodSpec, SeccompSpec, VsockSpec};
+use crate::jail_placement::Placement;
+#[cfg(target_os = "linux")]
+use crate::jail_placement::{JailUser, place};
+use nucleus_spec::{ImageSpec, PodSpec, RootfsSource, SeccompSpec, VsockSpec};
+
+use crate::rootfs_source::HostImage;
 use proptest::prelude::*;
 use std::collections::HashSet;
 use std::ffi::OsString;
@@ -25,7 +30,7 @@ fn base_spec() -> PodSpec {
 fn a_data_image_lowers_to_a_read_only_non_root_drive() {
     let mut img = image(true, false);
     img.data_path = Some(PathBuf::from("/var/lib/nucleus/corpus.img"));
-    let drives = lower_drives(&img, true);
+    let drives = lower_drives(&host(&img), true);
     let data = drives
         .iter()
         .find(|d| d.drive_id == "data")
@@ -35,14 +40,14 @@ fn a_data_image_lowers_to_a_read_only_non_root_drive() {
     assert_eq!(data.path_on_host, in_jail::DATA);
 
     // Unjailed it keeps the host path, like every other artifact on that path.
-    let unjailed = lower_drives(&img, false);
+    let unjailed = lower_drives(&host(&img), false);
     let data = unjailed.iter().find(|d| d.drive_id == "data").unwrap();
     assert_eq!(data.path_on_host, "/var/lib/nucleus/corpus.img");
 
     // And no data image means no drive at all — absence is a no-op, so every spec written
     // before this field is unaffected.
     assert!(
-        lower_drives(&image(true, false), true)
+        lower_drives(&host(&image(true, false)), true)
             .iter()
             .all(|d| d.drive_id != "data")
     );
@@ -68,7 +73,7 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
             kernel_image_path: String::new(),
             boot_args: None,
         },
-        drives: lower_drives(img, true),
+        drives: lower_drives(&host(img), true),
         machine_config: MachineConfig {
             vcpu_count: 1,
             mem_size_mib: 256,
@@ -96,10 +101,15 @@ fn a_read_only_data_image_does_not_count_as_writable_scratch() {
     );
 }
 
+/// The launch path takes a resolved image; every fixture here is a path rootfs, so this cannot fail.
+fn host(img: &ImageSpec) -> HostImage {
+    HostImage::resolve(img).expect("a path rootfs resolves")
+}
+
 fn image(read_only: bool, scratch: bool) -> ImageSpec {
     ImageSpec {
         kernel_path: PathBuf::from("/var/lib/nucleus/vmlinux"),
-        rootfs_path: PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
+        rootfs: RootfsSource::Path(PathBuf::from("/var/lib/nucleus/rootfs.ext4")),
         boot_args: None,
         read_only,
         scratch_path: scratch.then(|| PathBuf::from("/var/lib/nucleus/scratch.ext4")),
@@ -263,13 +273,54 @@ fn boot_args_with_identity(will_have_identity: bool) -> String {
         &base_spec(),
         std::path::Path::new("/unused/firecracker.log"),
         std::path::Path::new("/unused/vsock.sock"),
-        &image(true, false),
+        &host(&image(true, false)),
         None,
         "aa00bb11-approval-pubkeys",
         will_have_identity.then_some(15012),
         None,
     );
     config.boot_source.boot_args.unwrap_or_default()
+}
+
+/// #2903: a pod's DLC-D provisioning reaches the guest over the workload API
+/// (`FETCH_DLC_ADMISSION`, served once), NEVER on the kernel command line,
+/// which every process in the guest can read. A pod that asks for admission
+/// gets the same line, byte for byte, as one that does not.
+#[cfg(target_os = "linux")]
+#[test]
+fn dlc_provisioning_never_rides_the_cmdline() {
+    use nucleus_spec::dlc_admission::{DlcProvisioning, ENV_PREFIX};
+    let dlc = DlcProvisioning {
+        trusted_keys: "5a".repeat(32),
+        issuer: "6b".repeat(32),
+        credentials: "read_files=7c7c".to_string(),
+    };
+    let line = |spec: &PodSpec| {
+        FirecrackerConfig::from_spec(
+            spec,
+            std::path::Path::new("/unused/firecracker.log"),
+            std::path::Path::new("/unused/vsock.sock"),
+            &host(&image(true, false)),
+            None,
+            "aa00bb11-approval-pubkeys",
+            Some(15012),
+            None,
+        )
+        .boot_source
+        .boot_args
+        .unwrap_or_default()
+    };
+    let mut provisioned = base_spec();
+    provisioned.metadata.labels = dlc.labels();
+    let args = line(&provisioned);
+    assert_eq!(args, line(&base_spec()), "labels changed the cmdline");
+    assert!(!args.contains(ENV_PREFIX), "{args}");
+    for (_, value) in dlc.env() {
+        assert!(
+            !args.contains(value),
+            "a provisioning value is on the cmdline: {args}"
+        );
+    }
 }
 
 /// **No pod carries a Tier-3 `sandbox_token` on its cmdline — RETIRED.**
@@ -347,20 +398,57 @@ fn no_pod_cmdline_carries_any_per_pod_secret() {
 #[cfg(target_os = "linux")]
 fn boot_args_maximal() -> String {
     let spec: PodSpec = serde_json::from_str(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"b","s3_prefix":"p/","s3_region":"us-west-2","s3_endpoint":"https://e.example"}}}"#,
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"bkt","s3_prefix":"p/","s3_region":"us-west-2","s3_endpoint":"https://e.example"}}}"#,
         )
         .expect("maximal spec must deserialize");
     let config = FirecrackerConfig::from_spec(
         &spec,
         std::path::Path::new("/unused/firecracker.log"),
         std::path::Path::new("/unused/vsock.sock"),
-        &image(true, false),
+        &host(&image(true, false)),
         None,
         "aa00bb11-approval-pubkeys",
         Some(15012),
         None,
     );
     config.boot_source.boot_args.unwrap_or_default()
+}
+
+/// #3120: an audit sink value reaches the command line only through the parser admission runs.
+/// On main the bucket was appended verbatim, so this spec's line named a second `init=` — after
+/// the node's, and the kernel takes the last one — and a `nucleus.net=` the node never wrote.
+/// Admission refuses the spec (`spec_posture`); this pins that even a spec that reached the
+/// builder some other way contributes no token the node did not write.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_audit_sink_cannot_add_a_kernel_token() {
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"s3_bucket":"bkt init=/bin/sh nucleus.net=10.9.9.2/30"}}}"#,
+    )
+    .expect("spec deserializes");
+    let config = FirecrackerConfig::from_spec(
+        &spec,
+        std::path::Path::new("/unused/firecracker.log"),
+        std::path::Path::new("/unused/vsock.sock"),
+        &host(&image(true, false)),
+        None,
+        "aa00bb11-approval-pubkeys",
+        None,
+        None,
+    );
+    let args = config.boot_source.boot_args.unwrap_or_default();
+    let keyed = |key: &str| {
+        args.split_whitespace()
+            .filter(|t| t.starts_with(key))
+            .count()
+    };
+    assert_eq!(keyed("init="), 1, "only the node's init=: {args}");
+    assert_eq!(
+        keyed("nucleus.net="),
+        0,
+        "no net plan, so no nucleus.net=: {args}"
+    );
+    assert_eq!(keyed("nucleus.audit_s3_bucket="), 0, "{args}");
 }
 
 /// **Behavioral completeness — the robust replacement for the source-scrape.**
@@ -480,16 +568,16 @@ fn no_identity_outcome_reintroduces_a_cmdline_token() {
 
 proptest! {
     #[test]
-    fn readonly_policy_lowers_to_readonly_rootfs(ro in any::<bool>(), scratch in any::<bool>()) {
-        let drives = lower_drives(&image(ro, scratch), false);
+    fn every_policy_lowers_to_a_readonly_rootfs(ro in any::<bool>(), scratch in any::<bool>()) {
+        let drives = lower_drives(&host(&image(ro, scratch)), false);
 
         // rootfs is always present, first, and the root device.
         prop_assert_eq!(&drives[0].drive_id, "rootfs");
         prop_assert!(drives[0].is_root_device);
 
-        // The invariant: RO policy <=> RO rootfs, with no silent flip in
-        // either direction.
-        prop_assert_eq!(drives[0].is_read_only, ro);
+        // The invariant: the rootfs is read-only whatever the spec asked (#3132).
+        // It is the node's shared artifact, never the pod's to write.
+        prop_assert!(drives[0].is_read_only);
 
         // A scratch disk, when present, is always writable and never root.
         if scratch {
@@ -679,14 +767,91 @@ fn jail_layout_matches_the_jailers_own_convention() {
     );
 }
 
-/// `place_resource` must produce a LINK, not a copy, for writable resources —
+/// Own uid/gid, read off a file this test made: the one jail user an
+/// unprivileged test can give a born-in-the-jail file to.
+#[cfg(target_os = "linux")]
+fn own_ids(dir: &Path) -> JailUser {
+    use std::os::unix::fs::MetadataExt;
+    let probe = dir.join(".ids");
+    std::fs::write(&probe, b"").expect("probe");
+    let m = std::fs::metadata(&probe).expect("probe meta");
+    let _ = std::fs::remove_file(&probe);
+    JailUser {
+        uid: m.uid(),
+        gid: m.gid(),
+    }
+}
+
+/// Sources a jail test can place, as whoever runs it (#3152).
+///
+/// A shared artifact must be readable by the jail user and NOT owned by it, and
+/// a born-in-the-jail file can only be given to a foreign uid by root. So:
+///
+/// - as ROOT, the jail user is `123:100` (the node's default), the shared
+///   artifacts are root-owned `0444` files made here, and the caller's scratch
+///   is given to the jail user first, as its stager must;
+/// - UNPRIVILEGED, the jail user is the test's own uid, so a shared artifact has
+///   to be a file the test does not own: `/etc/passwd`, root-owned and
+///   world-readable, which is placed by hard link or copy and never written.
+#[cfg(target_os = "linux")]
+struct JailFixture {
+    who: JailUser,
+    as_root: bool,
+}
+
+#[cfg(target_os = "linux")]
+impl JailFixture {
+    fn new(dir: &Path) -> Self {
+        let me = own_ids(dir);
+        if me.uid == 0 {
+            JailFixture {
+                who: JailUser { uid: 123, gid: 100 },
+                as_root: true,
+            }
+        } else {
+            JailFixture {
+                who: me,
+                as_root: false,
+            }
+        }
+    }
+
+    /// A shared, read-only artifact named `name` under `dir`.
+    fn shared(&self, dir: &Path, name: &str) -> PathBuf {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        if self.as_root {
+            let p = dir.join(name);
+            std::fs::write(&p, b"shared artifact").expect("write shared");
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o444)).expect("chmod");
+            return p;
+        }
+        let p = PathBuf::from("/etc/passwd");
+        let m = std::fs::metadata(&p).expect("/etc/passwd must exist for an unprivileged run");
+        assert!(
+            m.uid() != self.who.uid && m.mode() & 0o006 == 0o004,
+            "an unprivileged run needs a world-readable file it does not own and cannot write; \
+             /etc/passwd is {:o} owned by {}",
+            m.mode(),
+            m.uid()
+        );
+        p
+    }
+
+    /// The caller's own writable scratch disk, already the jail user's.
+    fn scratch(&self, dir: &Path) -> PathBuf {
+        let p = dir.join("scratch.ext4");
+        std::fs::write(&p, b"guest writes land here").expect("write scratch");
+        if self.as_root {
+            std::os::unix::fs::chown(&p, Some(self.who.uid), Some(self.who.gid))
+                .expect("stage the scratch for the jail user");
+        }
+        p
+    }
+}
+
+/// `place` must produce a LINK, not a copy, for a disk the guest writes —
 /// asserted on the inode, because a copy is indistinguishable from a link by
 /// content and that is exactly what makes the bug silent.
-///
-/// Linux-only because `place_resource` is; that is not a coverage gap, it is
-/// where the code runs. The current uid/gid are read off a file this test just
-/// created rather than hardcoded, so it passes as root in a container and as an
-/// unprivileged user in CI.
 #[cfg(target_os = "linux")]
 #[test]
 fn placing_a_writable_resource_links_rather_than_copies() {
@@ -694,16 +859,15 @@ fn placing_a_writable_resource_links_rather_than_copies() {
 
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir = tmp.path();
-    let src = dir.join("scratch.ext4");
-    std::fs::write(&src, b"guest writes land here").expect("write source");
+    let fx = JailFixture::new(dir);
+    let src = fx.scratch(dir);
     let dest = dir.join("in-jail-scratch");
 
     let resource = JailResource {
         host_source: src.clone(),
-        in_jail: in_jail::SCRATCH,
-        placement: Placement::HardLinkOnly,
+        role: ArtifactRole::CallerScratch,
     };
-    place_resource(&resource, &dest).expect("same-filesystem hard link must succeed");
+    place(&resource, &dest, fx.who).expect("same-filesystem hard link must succeed");
 
     let src_ino = std::fs::metadata(&src).expect("src meta").ino();
     let dest_ino = std::fs::metadata(&dest).expect("dest meta").ino();
@@ -716,7 +880,7 @@ fn placing_a_writable_resource_links_rather_than_copies() {
     );
 
     // A relaunch under the same pod id must not trip over the previous link.
-    place_resource(&resource, &dest).expect("re-placing over a stale link must succeed");
+    place(&resource, &dest, fx.who).expect("re-placing over a stale link must succeed");
     assert_eq!(std::fs::metadata(&dest).expect("dest meta").ino(), src_ino);
 }
 
@@ -728,14 +892,15 @@ fn placing_a_writable_resource_links_rather_than_copies() {
 fn an_unlinkable_writable_resource_refuses_rather_than_copying() {
     let tmp = tempfile::tempdir().expect("temp dir");
     let dir = tmp.path();
-    let dest = dir.join("dest");
+    let fx = JailFixture::new(dir);
+    // A jail directory that does not exist: the source is fine, the link fails.
+    let dest = dir.join("no-such-jail").join("dest");
 
     let writable = JailResource {
-        host_source: dir.join("does-not-exist.ext4"),
-        in_jail: in_jail::SCRATCH,
-        placement: Placement::HardLinkOnly,
+        host_source: fx.scratch(dir),
+        role: ArtifactRole::CallerScratch,
     };
-    let err = place_resource(&writable, &dest)
+    let err = place(&writable, &dest, fx.who)
         .expect_err("an unlinkable WRITABLE resource must fail the launch");
     assert!(
         err.contains("WRITABLE") && err.contains("discard"),
@@ -747,12 +912,12 @@ fn an_unlinkable_writable_resource_refuses_rather_than_copying() {
     );
 
     // The read-only side is allowed to fall back — but only to something that
-    // actually works, so an absent source still fails, naming both attempts.
+    // actually works, so a copy into nowhere still fails, naming both attempts.
     let readable = JailResource {
-        placement: Placement::CopyableIfCrossDevice,
-        ..writable.clone()
+        host_source: fx.shared(dir, "vmlinux"),
+        role: ArtifactRole::Kernel,
     };
-    let err = place_resource(&readable, &dest).expect_err("absent source cannot be placed");
+    let err = place(&readable, &dest, fx.who).expect_err("nowhere to place it");
     assert!(
         err.contains("hard link failed") && err.contains("copy failed"),
         "a failed fallback must report both attempts: {err}"
@@ -768,26 +933,18 @@ fn an_unlinkable_writable_resource_refuses_rather_than_copying() {
 #[cfg(target_os = "linux")]
 #[test]
 fn prepare_jail_creates_every_path_the_jailed_config_names() {
-    use std::os::unix::fs::MetadataExt;
-
     let tmp = tempfile::tempdir().expect("temp dir");
     let base = tmp.path();
     let src = base.join("images");
     std::fs::create_dir_all(&src).expect("image dir");
-    for name in ["vmlinux", "rootfs.ext4", "scratch.ext4", "filter.bpf"] {
-        std::fs::write(src.join(name), b"x").expect("write image");
-    }
-    // Own uid/gid, read off a file we just made: chowning to ourselves is always
-    // permitted, so this works unprivileged in CI and as root in a container.
-    let meta = std::fs::metadata(src.join("vmlinux")).expect("meta");
-    let (uid, gid) = (meta.uid(), meta.gid());
+    let fx = JailFixture::new(&src);
 
     let img = nucleus_spec::ImageSpec {
-        kernel_path: src.join("vmlinux"),
-        rootfs_path: src.join("rootfs.ext4"),
+        kernel_path: fx.shared(&src, "vmlinux"),
+        rootfs: RootfsSource::Path(fx.shared(&src, "rootfs.ext4")),
         boot_args: None,
-        read_only: false,
-        scratch_path: Some(src.join("scratch.ext4")),
+        read_only: true,
+        scratch_path: Some(fx.scratch(&src)),
         kernel_digest: None,
         rootfs_digest: None,
         scratch_digest: None,
@@ -800,7 +957,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         port: 1024,
     });
     spec.spec.seccomp = Some(SeccompSpec::Custom {
-        filter_path: src.join("filter.bpf"),
+        filter_path: fx.shared(&src, "filter.bpf"),
     });
 
     let layout = JailLayout::new(
@@ -812,15 +969,16 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         &spec,
         Path::new("/unused/host/firecracker.log"),
         Path::new("/unused/host/vsock.sock"),
-        &img,
+        &host(&img),
         None,
         "aa00bb11-approval-pubkeys",
         None,
         Some(&layout),
     );
     let config_json = serde_json::to_vec_pretty(&config).expect("serialize");
+    let (uid, gid) = (fx.who.uid, fx.who.gid);
 
-    prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false).expect("prepare_jail");
+    prepare_jail(&layout, &host(&img), &spec, &config_json, uid, gid, false).expect("prepare_jail");
 
     // Every path the config names, except the vsock socket, which Firecracker
     // creates itself at boot — so what must exist for it is the writable jail
@@ -852,7 +1010,7 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
     );
 
     // Re-running must be idempotent: pods get relaunched.
-    prepare_jail(&layout, &img, &spec, &config_json, uid, gid, false)
+    prepare_jail(&layout, &host(&img), &spec, &config_json, uid, gid, false)
         .expect("prepare_jail must be idempotent");
 
     cleanup_jail(&layout);
@@ -860,12 +1018,181 @@ fn prepare_jail_creates_every_path_the_jailed_config_names() {
         !layout.jail_root.exists(),
         "cleanup_jail must remove the jail"
     );
-    // Cleanup unlinks hard links, so the caller's writable image survives.
+    // Cleanup unlinks hard links, so the shared rootfs survives teardown.
     assert!(
-        img.rootfs_path.exists(),
-        "teardown must not destroy the caller's rootfs — those are hard links, \
-             and the guest's writes live at the source path"
+        host(&img).rootfs_path().exists(),
+        "teardown must not destroy the shared rootfs — the jail entry is a hard \
+             link to it"
     );
+}
+
+/// #3152: preparing a jail never changes the owner or mode of a placed source's
+/// inode. A hard link IS the source inode, so the old chown of every placed file
+/// gave the installed kernel and rootfs — the files every pod on the node boots —
+/// to the jail user.
+///
+/// Red on the parent, as root: the kernel and rootfs went from `0:0` to
+/// `123:100`. Unprivileged the owner half cannot bite (a test can chown only to
+/// itself, and its shared sources are a file it does not own), so the check is of
+/// the mode and of the files given to the jail user being the jail's own.
+#[cfg(target_os = "linux")]
+#[test]
+fn preparing_a_jail_never_changes_a_placed_sources_inode() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let src = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&src).expect("dir");
+    let fx = JailFixture::new(&src);
+    let (kernel, rootfs, scratch) = (
+        fx.shared(&src, "vmlinux"),
+        fx.shared(&src, "rootfs.ext4"),
+        fx.scratch(&src),
+    );
+    let inode = |p: &Path| {
+        let m = std::fs::metadata(p).expect("meta");
+        (m.uid(), m.gid(), m.mode() & 0o7777)
+    };
+    let before = [inode(&kernel), inode(&rootfs), inode(&scratch)];
+
+    let mut img = image(true, true);
+    img.kernel_path = kernel.clone();
+    img.rootfs = RootfsSource::Path(rootfs.clone());
+    img.scratch_path = Some(scratch.clone());
+    let layout = JailLayout::new(
+        &tmp.path().join("jail"),
+        Path::new("/usr/bin/firecracker"),
+        "p",
+    );
+    prepare_jail(
+        &layout,
+        &host(&img),
+        &base_spec(),
+        b"{}",
+        fx.who.uid,
+        fx.who.gid,
+        false,
+    )
+    .expect("prepare_jail");
+
+    assert_eq!(
+        before,
+        [inode(&kernel), inode(&rootfs), inode(&scratch)],
+        "preparing a jail changed a placed source's owner or mode (kernel, rootfs, scratch)"
+    );
+    // What IS the jail user's is only what was born there.
+    for born in [in_jail::CONFIG, in_jail::LOG] {
+        let m = std::fs::metadata(layout.host_path(born)).expect("born");
+        assert_eq!((m.uid(), m.gid(), m.nlink()), (fx.who.uid, fx.who.gid, 1));
+    }
+    cleanup_jail(&layout);
+}
+
+/// #3152: an artifact the jail user cannot read is refused by name, and nothing
+/// is chowned to make it readable. Unprivileged: the refusal comes before any
+/// ownership change, so a foreign jail user is fine here.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_artifact_the_jail_user_cannot_read_is_refused_by_name() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let src = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&src).expect("dir");
+    let me = own_ids(&src);
+    let foreign = JailUser {
+        uid: me.uid.wrapping_add(1),
+        gid: me.gid.wrapping_add(1),
+    };
+    for (name, mode) in [("vmlinux", 0o600), ("rootfs.ext4", 0o444)] {
+        std::fs::write(src.join(name), b"x").expect("write");
+        std::fs::set_permissions(src.join(name), std::fs::Permissions::from_mode(mode))
+            .expect("chmod");
+    }
+    let mut img = image(true, false);
+    img.kernel_path = src.join("vmlinux");
+    img.rootfs = RootfsSource::Path(src.join("rootfs.ext4"));
+    let layout = JailLayout::new(
+        &tmp.path().join("jail"),
+        Path::new("/usr/bin/firecracker"),
+        "p",
+    );
+    let err = prepare_jail(
+        &layout,
+        &host(&img),
+        &base_spec(),
+        b"{}",
+        foreign.uid,
+        foreign.gid,
+        false,
+    )
+    .expect_err("a kernel the jail user cannot read must be refused, not chowned");
+    assert!(
+        err.contains("image.kernel_path") && err.contains("vmlinux") && err.contains("cannot read"),
+        "the refusal must name the field and the file: {err}"
+    );
+    let m = std::fs::metadata(src.join("vmlinux")).expect("meta");
+    assert_eq!((m.uid(), m.mode() & 0o7777), (me.uid, 0o600));
+    assert!(
+        !layout.host_path(in_jail::KERNEL).exists(),
+        "a refused artifact is not placed"
+    );
+}
+
+/// #3152, the second door: a relaunch finds the previous jail's entries, which
+/// the previous VMM — owner of the jail root — could have replaced with a
+/// symlink or a hard link to anything. The node must replace them, never write
+/// or chown through them. Red on the parent, unprivileged: `fs::write` followed
+/// the planted `/config.json` symlink into the victim.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_planted_jail_entry_is_replaced_never_written_through() {
+    use std::os::unix::fs::MetadataExt;
+
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let src = tmp.path().join("artifacts");
+    std::fs::create_dir_all(&src).expect("dir");
+    let fx = JailFixture::new(&src);
+    let victim = tmp.path().join("victim");
+    std::fs::write(&victim, b"untouched").expect("victim");
+    let victim_before = std::fs::metadata(&victim).expect("meta");
+
+    let layout = JailLayout::new(
+        &tmp.path().join("jail"),
+        Path::new("/usr/bin/firecracker"),
+        "p",
+    );
+    std::fs::create_dir_all(&layout.jail_root).expect("jail root");
+    std::os::unix::fs::symlink(&victim, layout.host_path(in_jail::CONFIG)).expect("plant");
+    std::fs::hard_link(&victim, layout.host_path(in_jail::LOG)).expect("plant");
+    std::os::unix::fs::symlink(&victim, layout.host_path(in_jail::KERNEL)).expect("plant");
+
+    let mut img = image(true, false);
+    img.kernel_path = fx.shared(&src, "vmlinux");
+    img.rootfs = RootfsSource::Path(fx.shared(&src, "rootfs.ext4"));
+    prepare_jail(
+        &layout,
+        &host(&img),
+        &base_spec(),
+        b"{\"new\":1}",
+        fx.who.uid,
+        fx.who.gid,
+        false,
+    )
+    .expect("prepare_jail");
+
+    assert_eq!(std::fs::read(&victim).expect("read"), b"untouched");
+    let victim_after = std::fs::metadata(&victim).expect("meta");
+    assert_eq!(
+        (victim_after.uid(), victim_after.gid(), victim_after.nlink()),
+        (victim_before.uid(), victim_before.gid(), 1),
+        "the victim was chowned through, or is still linked from the jail"
+    );
+    assert_eq!(
+        std::fs::read(layout.host_path(in_jail::CONFIG)).expect("config"),
+        b"{\"new\":1}"
+    );
+    cleanup_jail(&layout);
 }
 
 /// A bounded WAIT must not become a bounded SUCCESS.
@@ -905,8 +1232,8 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
     for (read_only, scratch) in [(true, true), (true, false), (false, true), (false, false)] {
         let img = image(read_only, scratch);
         let spec = base_spec();
-        let resources = jail_resources(&img, &spec, false);
-        let drives = lower_drives(&img, true);
+        let resources = jail_resources(&host(&img), &spec, false);
+        let drives = lower_drives(&host(&img), true);
 
         for drive in &drives {
             if drive.is_read_only {
@@ -914,7 +1241,7 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
             }
             let placed = resources
                 .iter()
-                .find(|r| r.in_jail == drive.path_on_host)
+                .find(|r| r.in_jail() == drive.path_on_host)
                 .unwrap_or_else(|| {
                     panic!(
                         "writable drive {} is in the config but nothing brings it \
@@ -924,8 +1251,8 @@ fn a_drive_the_guest_can_write_is_never_copyable() {
                     )
                 });
             assert_eq!(
-                placed.placement,
-                Placement::HardLinkOnly,
+                placed.placement(),
+                Placement::GuestWritesThrough,
                 "drive {} is writable (is_read_only=false) but may be COPIED into \
                      the jail; the guest's writes would not reach {}",
                 drive.path_on_host,
@@ -962,7 +1289,7 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
         &spec,
         Path::new("/host/pod/firecracker.log"),
         Path::new("/host/pod/vsock.sock"),
-        &img,
+        &host(&img),
         None,
         "aa00bb11-approval-pubkeys",
         None,
@@ -973,10 +1300,10 @@ fn every_jailed_config_path_is_brought_into_the_jail() {
         )),
     );
 
-    let resources = jail_resources(&img, &spec, false);
+    let resources = jail_resources(&host(&img), &spec, false);
     // Produced inside the jail rather than relocated into it.
     let produced = [in_jail::CONFIG, in_jail::LOG, in_jail::VSOCK];
-    let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail).collect();
+    let mut known: Vec<&str> = resources.iter().map(|r| r.in_jail()).collect();
     known.extend_from_slice(&produced);
 
     let mut config_paths = vec![config.boot_source.kernel_image_path.clone()];
@@ -1063,6 +1390,14 @@ fn sample_cgroup() -> nucleus_spec::CgroupSpec {
     }
 }
 
+/// The node's cgroup for a pod whose spec carries `cgroup`, as the launch path builds it.
+fn node_cg(cgroup: Option<nucleus_spec::CgroupSpec>) -> crate::pod_resources::NodeCgroup {
+    let mut spec = base_spec();
+    spec.spec.cgroup = cgroup;
+    crate::pod_resources::node_cgroup(&spec, crate::pod_resources::CgroupVersion::V2)
+        .expect("an admissible cgroup")
+}
+
 /// THE FLAG THAT WAS MISSING, and what it cost.
 ///
 /// The jailer's `--cgroup-version` is documented `[default: "1"]`, and the
@@ -1089,8 +1424,7 @@ fn the_cgroup_version_is_declared_whenever_cgroups_are_requested() {
         uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
         gid: 100,
         netns: None,
-        cgroup: Some(&spec),
-        cgroup_version: 2,
+        cgroup: &node_cg(Some(spec)),
         config_file_in_jail: Some("/config.json"),
     });
     let vpos = args.iter().position(|a| a == "--cgroup-version").expect(
@@ -1107,12 +1441,10 @@ fn the_cgroup_version_is_declared_whenever_cgroups_are_requested() {
     assert!(cpos < sep, "cgroup args belong to the JAILER, before `--`");
 }
 
-/// With no cgroup spec there is no hierarchy to find, and the jailer launches
-/// on a v2 host without the flag — verified against the real binary. So the
-/// flag is emitted only where it is needed, and its absence here is a
-/// decision rather than an oversight.
+/// #3130: a spec with no `cgroup` used to reach the jailer with no `--cgroup` at all, so its VMM
+/// ran with no memory, CPU or pids limit. It now carries the node's, before the separator.
 #[test]
-fn no_cgroup_request_means_no_version_flag() {
+fn a_spec_without_a_cgroup_still_launches_under_node_limits() {
     let args = jailer_args(&JailerPlan {
         firecracker_path: "/usr/bin/firecracker",
         pod_id: "pod-1",
@@ -1120,11 +1452,23 @@ fn no_cgroup_request_means_no_version_flag() {
         uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
         gid: 100,
         netns: None,
-        cgroup: None,
-        cgroup_version: 2,
+        cgroup: &node_cg(base_spec().spec.cgroup),
         config_file_in_jail: Some("/config.json"),
     });
-    assert!(!args.iter().any(|a| a == "--cgroup-version"));
+    let sep = args.iter().position(|a| a == "--").expect("separator");
+    let jailer = &args[..sep];
+    let pair = |flag: &str| jailer.iter().position(|a| a == flag).map(|i| &args[i + 1]);
+    assert_eq!(pair("--cgroup-version").map(String::as_str), Some("2"));
+    for limit in [
+        "memory.max=671088640",
+        "cpu.max=100000 100000",
+        "pids.max=64",
+    ] {
+        assert!(
+            jailer.iter().any(|a| a == limit),
+            "a pod with no cgroup spec must still get {limit}: {args:?}"
+        );
+    }
 }
 
 #[test]
@@ -1137,8 +1481,7 @@ fn jailer_applies_every_cgroup_limit_before_exec() {
         uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
         gid: 1000,
         netns: Some("/var/run/netns/ns-pod-1"),
-        cgroup: Some(&cg),
-        cgroup_version: 2,
+        cgroup: &node_cg(Some(cg.clone())),
         config_file_in_jail: Some("/config.json"),
     });
 
@@ -1173,8 +1516,7 @@ fn jailer_drops_privileges_and_passes_the_netns() {
         uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
         gid: 1000,
         netns: Some("/var/run/netns/ns-pod-1"),
-        cgroup: None,
-        cgroup_version: 2,
+        cgroup: &node_cg(None),
         config_file_in_jail: Some("/config.json"),
     });
     let pair = |flag: &str| -> Option<String> {
@@ -1206,8 +1548,7 @@ fn firecracker_argv_stays_behind_the_separator() {
         uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
         gid: 1000,
         netns: None,
-        cgroup: Some(&sample_cgroup()),
-        cgroup_version: 2,
+        cgroup: &node_cg(Some(sample_cgroup())),
         config_file_in_jail: Some("/config.json"),
     });
     let sep = args
@@ -1382,7 +1723,7 @@ fn jailer_argv_never_enables_the_pci_transport() {
         r#"{"path":"/sys/fs/cgroup/nucleus","settings":[{"file":"cpu.weight","value":"42"}]}"#,
     )
     .expect("cgroup spec");
-    for cgroup in [None, Some(&spec)] {
+    for cgroup in [node_cg(None), node_cg(Some(spec))] {
         for netns in [None, Some("/var/run/netns/pod-1")] {
             let args = jailer_args(&JailerPlan {
                 firecracker_path: "/usr/bin/firecracker",
@@ -1391,8 +1732,7 @@ fn jailer_argv_never_enables_the_pci_transport() {
                 uid: crate::production_confinement::NonRootUid::new(123).unwrap(),
                 gid: 100,
                 netns,
-                cgroup,
-                cgroup_version: 2,
+                cgroup: &cgroup,
                 config_file_in_jail: Some(in_jail::CONFIG),
             });
             assert!(
@@ -1450,66 +1790,96 @@ fn enforcing_pci_off_is_idempotent() {
     );
 }
 
+/// #3124: the node owns the guest command line. With a net plan and every allowlisted spec token
+/// present, the line still names the node's `init=`, `pci=off`, `ipv6.disable=1` and
+/// `nucleus.net=` exactly once each, and the spec's tokens appear verbatim. On main a spec
+/// `init=`/`nucleus.net=`/`ipv6.disable=` suppressed the node's own value. Admission now refuses
+/// those (`rootfs_source::tests`), so the shape checked here is the only shape reachable.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_node_writes_init_pci_and_ipv6_exactly_once() {
+    let plan = net::NetworkAllocator::new()
+        .allocate(uuid::Uuid::new_v4(), "nuc-test".to_string())
+        .expect("allocate net plan");
+    let mut img = image(true, false);
+    img.boot_args = Some("quiet loglevel=3 twosafety.canary=abc-123".into());
+    let config = FirecrackerConfig::from_spec(
+        &base_spec(),
+        std::path::Path::new("/unused/firecracker.log"),
+        std::path::Path::new("/unused/vsock.sock"),
+        &host(&img),
+        Some(&plan),
+        "aa00bb11-approval-pubkeys",
+        Some(15012),
+        None,
+    );
+    let args = config.boot_source.boot_args.unwrap_or_default();
+    let toks: Vec<&str> = args.split_whitespace().collect();
+    let count = |want: &str| toks.iter().filter(|t| **t == want).count();
+    let keyed = |key: &str| toks.iter().filter(|t| t.starts_with(key)).count();
+    assert_eq!(count(&format!("init={INIT}")), 1, "{args}");
+    assert_eq!(keyed("init="), 1, "{args}");
+    assert_eq!(count("pci=off"), 1, "{args}");
+    assert_eq!(keyed("pci="), 1, "{args}");
+    assert_eq!(count("ipv6.disable=1"), 1, "{args}");
+    assert_eq!(keyed("ipv6."), 1, "{args}");
+    assert_eq!(count(&plan.kernel_arg()), 1, "{args}");
+    assert_eq!(keyed("nucleus.net="), 1, "{args}");
+    for spec_tok in ["quiet", "loglevel=3", "twosafety.canary=abc-123"] {
+        assert_eq!(count(spec_tok), 1, "{spec_tok} missing: {args}");
+    }
+}
+
 // ── Writable-rootfs isolation ────────────────────────────────────────
 // Added to this module on main (#2786) while this branch had already moved
 // it into its own file, so the merge conflicted on the module declaration
 // rather than on the tests. Both sides are kept: the extraction, and these.
 
-/// The pin `jail_resources` has named since it was written, and which
-/// #2784 found did not exist: `grep -rn rw_rootfs_is_hard_link_only`
-/// returned exactly one hit, the comment claiming it.
+/// #3132: a spec that says `read_only: false` cannot get the shared rootfs
+/// attached writable. The rootfs a spec names is the node's artifact
+/// (#3070/#3071), and under the jail it is a hard link to that same inode, so a
+/// writable drive meant one pod's writes became every later pod's boot image —
+/// measured in #2784, where the installed rootfs digest changed from
+/// `7739f5cd…` to `b7c40744…` after `verify --tier2` booted against it.
 ///
-/// A writable rootfs MUST be hard-linked. Copying it would put the guest's
-/// writes in a jail-local copy that is discarded when the jail is torn
-/// down — the writes would vanish silently, which is worse than refusing.
-/// A read-only rootfs may be copied, because nothing writes through it.
+/// Red on the parent: `lower_drives` copied `image.read_only` into the drive
+/// and `jail_resources` made the rootfs `HardLinkOnly` for it. Asserted on the
+/// drive config Firecracker is handed, jailed and not, and on the placement.
 #[test]
-fn rw_rootfs_is_hard_link_only() {
-    let rw = jail_resources(&image(false, false), &base_spec(), false);
-    let rootfs = rw
-        .iter()
-        .find(|r| r.in_jail == in_jail::ROOTFS)
-        .expect("a rootfs resource must be jailed");
-    assert_eq!(
-        rootfs.placement,
-        Placement::HardLinkOnly,
-        "a writable rootfs that gets copied loses every guest write when the \
-         jail is torn down"
-    );
-
-    let ro = jail_resources(&image(true, false), &base_spec(), false);
-    let rootfs = ro
-        .iter()
-        .find(|r| r.in_jail == in_jail::ROOTFS)
-        .expect("a rootfs resource must be jailed");
-    assert_eq!(
-        rootfs.placement,
-        Placement::CopyableIfCrossDevice,
-        "a read-only rootfs is safe to copy, and copying is what lets the \
-         artifact live on a different device from the jail"
-    );
-}
-
-/// The consequence the placement above cannot avoid, stated so it is not
-/// rediscovered: a hard link is the SAME FILE. `read_only: false` therefore
-/// means the guest writes through to the artifact every other pod boots
-/// from. Measured in #2784 — the installed rootfs digest changed from
-/// `7739f5cd…` to `b7c40744…` after `verify --tier2` pod boots, and the
-/// jail entry shared the artifact's inode with `links=2`.
-#[test]
-fn a_writable_rootfs_is_the_artifact_itself_not_a_copy() {
-    let rw = jail_resources(&image(false, false), &base_spec(), false);
-    let rootfs = rw
-        .iter()
-        .find(|r| r.in_jail == in_jail::ROOTFS)
-        .expect("a rootfs resource must be jailed");
-    assert_eq!(
-        rootfs.host_source,
-        PathBuf::from("/var/lib/nucleus/rootfs.ext4"),
-        "the jail entry links the shared artifact, so a writable rootfs is \
-         shared mutable state between pods — the reason the spec default is \
-         now read_only: true"
-    );
+fn a_spec_asking_for_a_writable_rootfs_never_gets_the_shared_artifact_writable() {
+    for scratch in [false, true] {
+        let asks_rw = host(&image(false, scratch));
+        for jailed in [true, false] {
+            let drives = lower_drives(&asks_rw, jailed);
+            let rootfs = drives
+                .iter()
+                .find(|d| d.is_root_device)
+                .expect("a rootfs drive");
+            assert!(
+                rootfs.is_read_only,
+                "jailed={jailed} scratch={scratch}: the shared rootfs {} was attached \
+                 writable because the spec said read_only: false",
+                rootfs.path_on_host
+            );
+            assert!(
+                drives
+                    .iter()
+                    .filter(|d| !d.is_read_only)
+                    .all(|d| d.drive_id == "scratch"),
+                "the only writable drive is the pod's scratch: {drives:?}"
+            );
+        }
+        let placed = jail_resources(&asks_rw, &base_spec(), false);
+        let rootfs = placed
+            .iter()
+            .find(|r| r.in_jail() == in_jail::ROOTFS)
+            .expect("a rootfs resource must be jailed");
+        assert_eq!(
+            rootfs.placement(),
+            Placement::SharedReadOnly,
+            "nothing writes the rootfs, so nothing needs its writes kept"
+        );
+    }
 }
 
 // ── Node-provisioned scratch disk (#2789) ────────────────────────────────
@@ -1521,9 +1891,9 @@ fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
     let mut img = image(true, true);
     img.scratch_path = Some(PathBuf::from("/srv/jailer/.../root/scratch.ext4"));
 
-    let placed = jail_resources(&img, &base_spec(), true);
+    let placed = jail_resources(&host(&img), &base_spec(), true);
     assert!(
-        !placed.iter().any(|r| r.in_jail == in_jail::SCRATCH),
+        !placed.iter().any(|r| r.in_jail() == in_jail::SCRATCH),
         "the node already made this file inside the jail; placing it would \
          hard-link it onto itself: {placed:?}"
     );
@@ -1533,14 +1903,14 @@ fn a_node_provisioned_scratch_is_not_placed_into_the_jail() {
 /// hard link: a copy would discard the guest's writes at teardown.
 #[test]
 fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
-    let placed = jail_resources(&image(true, true), &base_spec(), false);
+    let placed = jail_resources(&host(&image(true, true)), &base_spec(), false);
     let scratch = placed
         .iter()
-        .find(|r| r.in_jail == in_jail::SCRATCH)
+        .find(|r| r.in_jail() == in_jail::SCRATCH)
         .expect("a caller-supplied scratch must be jailed");
     assert_eq!(
-        scratch.placement,
-        Placement::HardLinkOnly,
+        scratch.placement(),
+        Placement::GuestWritesThrough,
         "a copied scratch loses every guest write when the jail is torn down"
     );
 }
@@ -1549,7 +1919,7 @@ fn a_caller_supplied_scratch_is_still_placed_hard_link_only() {
 /// block device behind `/work`, at the in-jail path resolved after `chroot`.
 #[test]
 fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
-    let drives = lower_drives(&image(true, true), true);
+    let drives = lower_drives(&host(&image(true, true)), true);
     let scratch = drives
         .iter()
         .find(|d| d.drive_id == "scratch")
@@ -1568,12 +1938,12 @@ fn a_provisioned_scratch_still_reaches_the_guest_as_a_writable_drive() {
 #[test]
 fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
     let declared = image(true, true);
-    let (out, provisioned) = scratch_for_pod(&declared, None, 123, 100);
+    let (out, provisioned) = scratch_for_pod(&host(&declared), None, 123, 100);
     assert_eq!(out.scratch_path, declared.scratch_path);
     assert!(!provisioned, "the caller's file is not the node's to skip");
 
     let plain = image(true, false);
-    let (out, provisioned) = scratch_for_pod(&plain, None, 123, 100);
+    let (out, provisioned) = scratch_for_pod(&host(&plain), None, 123, 100);
     assert_eq!(out.scratch_path, None, "no jail, so nothing was made");
     assert!(!provisioned);
 }
@@ -1582,7 +1952,7 @@ fn scratch_for_pod_leaves_a_caller_supplied_or_jailless_image_alone() {
 /// the pod boots as before rather than dying on a drive it cannot open.
 #[test]
 fn no_scratch_means_no_drive_rather_than_a_broken_one() {
-    let drives = lower_drives(&image(true, false), true);
+    let drives = lower_drives(&host(&image(true, false)), true);
     assert!(
         !drives.iter().any(|d| d.drive_id == "scratch"),
         "a declared drive with no file behind it would fail the boot"
@@ -1645,7 +2015,7 @@ fn a_spec_asking_for_huge_pages_reaches_the_machine_config() {
             &spec,
             std::path::Path::new("/unused/firecracker.log"),
             std::path::Path::new("/unused/vsock.sock"),
-            &image(true, false),
+            &host(&image(true, false)),
             None,
             "aa00bb11-approval-pubkeys",
             None,

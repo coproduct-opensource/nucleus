@@ -1881,3 +1881,64 @@ async fn concurrent_audit_entries_land_whole_and_in_chain_order() {
     }
     assert_eq!(n, 64, "every entry exactly once");
 }
+
+/// clap prints an env-backed arg's CURRENT value in `--help` unless the arg
+/// hides it, so a secret sitting in the environment reaches the terminal, shell
+/// logs and CI logs (#3026). Walked over the whole command tree, so a new flag
+/// or subcommand that forgets `hide_env_values` reds here.
+#[test]
+fn help_never_prints_an_env_value() {
+    fn walk(cmd: &clap::Command, seen: &mut usize, shown: &mut Vec<String>) {
+        for arg in cmd.get_arguments().filter(|a| a.get_env().is_some()) {
+            *seen += 1;
+            if !arg.is_hide_env_values_set() {
+                shown.push(format!("{} --{}", cmd.get_name(), arg.get_id()));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, seen, shown);
+        }
+    }
+    let (mut seen, mut shown) = (0, Vec::new());
+    walk(
+        &<Args as clap::CommandFactory>::command(),
+        &mut seen,
+        &mut shown,
+    );
+    assert!(
+        seen > 0,
+        "no env-backed arg was found; the walk reached nothing"
+    );
+    assert!(
+        shown.is_empty(),
+        "--help would print the value of: {shown:?}"
+    );
+}
+
+/// Owner decision 1 (2026-10-02): the bare-tier workload opt-in is a typed
+/// value that only the explicit `--unsandboxed` flag produces. Absent flag,
+/// absent opt-in; there is no env var that could set it ambiently.
+#[test]
+fn the_unsandboxed_opt_in_comes_only_from_the_flag() {
+    let parse = |extra: &[&str]| {
+        let mut argv = vec!["nucleus-tool-proxy", "--spec", "/nonexistent/pod.yaml"];
+        argv.extend_from_slice(extra);
+        <Args as clap::Parser>::try_parse_from(argv)
+            .expect("parses")
+            .unsandboxed
+    };
+    assert_eq!(parse(&[]), nucleus::UnsandboxedOptIn::Absent);
+    assert_eq!(
+        parse(&["--unsandboxed"]),
+        nucleus::UnsandboxedOptIn::Explicit
+    );
+    let not_env_backed = <Args as clap::CommandFactory>::command()
+        .get_arguments()
+        .find(|a| a.get_id() == "unsandboxed")
+        .map(|a| a.get_env().is_none());
+    assert_eq!(
+        not_env_backed,
+        Some(true),
+        "the opt-in must not be env-backed"
+    );
+}

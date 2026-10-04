@@ -269,6 +269,18 @@ var = "SEARCH_API_TOKEN"
 A pod spec selects an upstream by `name`. A spec whose `credentialed_egress` entry differs
 from the registry entry in any field is refused at admission.
 
+Without `--upstreams` the node has no registry, and every request for a credentialed
+upstream is refused, the root minter's included: a pod spec never chooses which node
+variable is read. A pod caller is admitted only upstreams its own pod holds; an external
+caller, the registry's, until caller bindings (§4.2) carry their own list.
+
+A third source is reserved: `subject = "client-certificate"` in the `federated` table, for a
+token endpoint that takes the caller's X.509 certificate from the TLS handshake as the RFC 8693
+subject (`client_certificate = "pod-svid" | "node-svid"`, `grant = "token-exchange"`, an
+`https` endpoint, `request_audience` required, `audience` and `assertion_ttl_secs` refused).
+It is parsed and validated today and then refused as "not supported yet", so the node will not
+start on it; the format is fixed now so such a registry loads unchanged once it is served.
+
 The matching registration on the Upstream's side, stated generically:
 
 ```text

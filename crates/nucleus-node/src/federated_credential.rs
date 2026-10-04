@@ -828,6 +828,7 @@ policy_id = "example-policy-0001"
         credentials: PodCredentials,
         upstreams: Vec<RegistryEntry>,
         ledger: IdempotencyLedger,
+        egress: Arc<crate::egress_meter::EgressMeter>,
         caller: UpstreamCaller,
     }
 
@@ -847,6 +848,11 @@ policy_id = "example-policy-0001"
                 ),
                 upstreams,
                 ledger: IdempotencyLedger::new(),
+                egress: crate::egress_meter::EgressMeter::new(
+                    portcullis::EgressCeiling::undeclared(),
+                    std::env::temp_dir(),
+                    pod.to_string(),
+                ),
                 caller: http_caller(reqwest::Client::new()),
             }
         }
@@ -858,6 +864,7 @@ policy_id = "example-policy-0001"
                 credentials: &self.credentials,
                 upstreams: &self.upstreams,
                 ledger: &self.ledger,
+                egress: &self.egress,
             };
             let caller = Arc::clone(&self.caller);
             handle_perform(req, &ctx, now, move |c| caller(c)).await
@@ -927,6 +934,8 @@ policy_id = "example-policy-0001"
             broker_secret: Some(CAPABILITY),
             upstreams: &pod.upstreams,
             ledger: &pod.ledger,
+            egress: &pod.egress,
+            streams: crate::broker_transport::serving_tests::test_streams_ref(),
             upstream_caller: Arc::clone(&pod.caller),
         };
         let serve = serve_connection_with_timeout(server, &serving, Duration::from_secs(10));

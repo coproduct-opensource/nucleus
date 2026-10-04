@@ -109,7 +109,7 @@ jobs:
   darwin-build:
     name: Build (macOS, release crates)
     # CI_MACOS_RUNNER names the self-hosted macOS runner registered on the
-    # owner's Apple-silicon machine (k8s/ci-runner/README.md); unset, hosted.
+    # owner's Apple-silicon machine (deploy/k8s/ci-runner/README.md); unset, hosted.
     runs-on: ${{ vars.CI_MACOS_RUNNER || 'macos-14' }}
     timeout-minutes: 30
     steps:
@@ -585,7 +585,7 @@ jobs:
       #
       # The slow half: 573 s of an 801-second job when it runs everything. How much it runs is
       # decided by the script, per event, from each probe's INPUTS -- derived from the gate's own
-      # text by scripts/gate-inputs.sh (its code, the files it names, the probe's target):
+      # text by crates/xtask/src/gates_can_fail/inputs.rs (its code, the files it names, the probe's target):
       #   pull_request  only the probes whose inputs this change touched, each skip printed
       #                 with its reason. A change to the engine, its derivation or this file
       #                 runs every probe.
@@ -593,8 +593,11 @@ jobs:
       #                 (scripts/, .github/, crates/xtask/, manifests, toolchain) -- at least the
       #                 queue's filter before scoping -- otherwise the scoped selection.
       #   push          every probe, unconditionally.
-      # The soundness argument, and what an undeclared input would take, is at the top of the
-      # script ("SCOPED RUNS"). The cheap half above is unscoped and runs on every commit.
+      # The soundness argument, and what an undeclared input would take, is at the top of
+      # gates_can_fail/mod.rs ("Scoped runs"). The cheap half above is unscoped and runs on every
+      # commit. A gate already red before any perturbation is run on the merge base too: red there
+      # with the same exit status is MAIN's red -- a `main is red` annotation, not charged to this
+      # change -- and anything else, including "could not evaluate main", fails (main_red.rs).
       - name: Every gate REDs on a real violation and GREENs when restored
         id: gates
         continue-on-error: true

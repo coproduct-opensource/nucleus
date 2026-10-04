@@ -95,14 +95,18 @@ pub fn check_url_allowlist(url_allow: &[String], url: &str) -> Result<(), String
 
 /// Resolve the effective web_fetch response cap.
 ///
-/// The pod's `network.max_response_bytes` overrides the proxy's configured
-/// default (`--web-fetch-max-bytes`); an absent or unrepresentable override
-/// falls back to that default. Kept pure so the override's precedence is
-/// unit-tested rather than trusted at the construction site.
-pub fn resolve_max_response_bytes(spec_override: Option<u64>, configured_default: usize) -> usize {
-    spec_override
-        .and_then(|b| usize::try_from(b).ok())
-        .unwrap_or(configured_default)
+/// The pod's `network.max_response_bytes` may LOWER the proxy's configured
+/// cap (`--web-fetch-max-bytes`), never raise it: the operator's cap is a
+/// ceiling, and a spec that could raise it could make the proxy buffer an
+/// unbounded body (#3120). An absent override, or one at or above the cap,
+/// leaves the cap. Kept pure so the precedence is unit-tested rather than
+/// trusted at the construction site.
+pub fn resolve_max_response_bytes(spec_override: Option<u64>, configured_cap: usize) -> usize {
+    match spec_override.map(usize::try_from) {
+        Some(Ok(requested)) => requested.min(configured_cap),
+        // A value no `usize` holds is above any cap there could be.
+        Some(Err(_)) | None => configured_cap,
+    }
 }
 
 /// Every web_fetch enforcement input resolved from the PodSpec's `network`
@@ -423,8 +427,8 @@ mod tests {
         assert!(check_mime_type("", Some(&empty)).is_ok());
     }
 
-    /// **The per-pod response cap actually overrides the default.** A spec
-    /// value wins over the configured default; absence falls back to it. Before
+    /// **The per-pod response cap actually lowers the default.** A smaller spec
+    /// value wins over the configured cap; absence falls back to it. Before
     /// this was wired, `network.max_response_bytes` was parsed and ignored and
     /// the CLI cap always applied.
     #[test]
@@ -438,6 +442,19 @@ mod tests {
             5 * 1024 * 1024,
             "absent override must fall back to the configured cap"
         );
+    }
+
+    /// #3120: the operator's cap is a ceiling. A spec asking for more than it
+    /// gets the cap, not its request. On main this returned the request.
+    #[test]
+    fn a_pod_response_cap_cannot_raise_the_configured_cap() {
+        let cap = 5 * 1024 * 1024;
+        assert_eq!(resolve_max_response_bytes(Some(u64::MAX), cap), cap);
+        assert_eq!(
+            resolve_max_response_bytes(Some(10 * 1024 * 1024 * 1024), cap),
+            cap
+        );
+        assert_eq!(resolve_max_response_bytes(Some(cap as u64), cap), cap);
     }
 
     /// **The redirect-hop gate refuses an escape from the allowlist.** An

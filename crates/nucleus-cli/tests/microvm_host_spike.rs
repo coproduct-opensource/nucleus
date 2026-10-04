@@ -1,7 +1,9 @@
 //! SPIKE (PR0 of the microVM host-tier plan): can an Apple `container` with
 //! nested virtualization host nucleus-node's Firecracker pods?
 //!
-//! Measurement only. Nothing here is wired into the CLI. Every step drives the
+//! Historical September 29 measurement harness; not a CI acceptance gate.
+//! Read printed result rows: a completed test can report a failed experiment.
+//! Nothing here is wired into the CLI. Every step drives the
 //! `container` CLI through `std::process::Command` and prints what it saw;
 //! results are written up in `docs/findings/microvm-host-apple-container.md`.
 //!
@@ -228,25 +230,46 @@ fn ensure_volume() {
 }
 
 /// `container list --all --format json`, reduced to our host's status string.
-fn host_state(name: &str) -> String {
+fn host_state(name: &str) -> Result<String, String> {
     let out = container(&["list", "--all", "--format", "json"]);
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&out.stdout) else {
-        return format!("unparseable list: {}", out.text());
-    };
-    v.as_array()
-        .into_iter()
-        .flatten()
-        .find(|c| {
-            c.pointer("/configuration/id").and_then(|x| x.as_str()) == Some(name)
-                || c.get("id").and_then(|x| x.as_str()) == Some(name)
-        })
-        .map(|c| {
-            c.pointer("/status/state")
+    if !out.ok() {
+        return Err(format!("container list failed: {}", out.text()));
+    }
+    parse_host_state(&out.stdout, name)
+}
+
+// A-1: failure to observe a VM must not count as a measured VM death.
+fn parse_host_state(json: &str, name: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let entries = v.as_array().ok_or("container list is not an array")?;
+    for c in entries {
+        let id = c
+            .pointer("/configuration/id")
+            .or_else(|| c.get("id"))
+            .and_then(|v| v.as_str())
+            .ok_or("container entry has no id")?;
+        if id == name {
+            return c
+                .pointer("/status/state")
                 .and_then(|s| s.as_str())
-                .unwrap_or("?")
-                .to_string()
-        })
-        .unwrap_or_else(|| "absent".into())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| "container entry has no state".to_string());
+        }
+    }
+    Ok("absent".to_string())
+}
+
+#[test]
+fn status_observation_failure_is_not_a_vm_death() {
+    for json in ["not json", "null", "{}", "[{}]", r#"[{"id":"host"}]"#] {
+        assert!(parse_host_state(json, "host").is_err(), "{json}");
+    }
+    assert_eq!(parse_host_state("[]", "host").unwrap(), "absent");
+    for state in ["running", "stopped"] {
+        let json = serde_json::json!([{"configuration":{"id":"host"},"status":{"state":state}}]);
+        assert_eq!(parse_host_state(&json.to_string(), "host").unwrap(), state);
+    }
 }
 
 fn kv(text: &str, key: &str) -> Option<String> {
@@ -859,7 +882,7 @@ fn p2_minimal_capabilities() {
 /// its node. Returns (`container run` time, node-ready wait) when it started one.
 fn ensure_host() -> Option<(Duration, Duration)> {
     ensure_volume();
-    if host_state(HOST) == "running" {
+    if host_state(HOST).expect("observe spike host state") == "running" {
         wait_node_healthy(HOST, Duration::from_secs(120)).expect("node healthy");
         return None;
     }
@@ -1101,7 +1124,7 @@ fn mcp_roundtrip(pod: &Pod) -> Result<String, String> {
         .and_then(|t| t.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    if !init.contains("\"result\"") || tools == 0 {
+    if !status.success() || !init.contains("\"result\"") || tools == 0 {
         return Err(format!("init={init} list={list}"));
     }
     Ok(format!(
@@ -1228,13 +1251,18 @@ fn p6_lifecycles() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(40);
     ensure_volume();
-    if host_state(HOST) != "running" {
+    if host_state(HOST).expect("observe spike host state") != "running" {
         remove(HOST);
         let run = run_host(&HostOpts::node(HOST));
         assert!(run.ok(), "run: {}", run.text());
     }
     wait_node_healthy(HOST, Duration::from_secs(120)).expect("node healthy");
-    let marker = sh(HOST, "sha256sum /srv/state/ca/ca-cert.pem").stdout;
+    let marker = sh(HOST, "sha256sum /srv/state/ca/ca-cert.pem");
+    assert!(
+        marker.ok() && !marker.stdout.trim().is_empty(),
+        "read CA digest"
+    );
+    let marker = marker.stdout;
     // NUCLEUS_SPIKE_P6_LOAD=1: each pod runs ~10 s of guest CPU + block I/O
     // before it is cancelled, so the nested guest takes the exits a real
     // workload does. An idle pod exits the VM far less than a gate build
@@ -1327,10 +1355,10 @@ fn p6_lifecycles() {
             Err(e) => {
                 // Did the host VM die, or did one pod fail?
                 let detect_started = Instant::now();
-                let mut state = host_state(HOST);
+                let mut state = host_state(HOST).expect("observe spike host state");
                 while state == "running" && detect_started.elapsed() < Duration::from_secs(10) {
                     std::thread::sleep(Duration::from_millis(250));
-                    state = host_state(HOST);
+                    state = host_state(HOST).expect("observe spike host state");
                 }
                 let detected = detect_started.elapsed();
                 if state == "running" {
@@ -1393,7 +1421,12 @@ fn p6b_forced_death() {
         return;
     }
     ensure_host();
-    let marker = sh(HOST, "sha256sum /srv/state/ca/ca-cert.pem").stdout;
+    let marker = sh(HOST, "sha256sum /srv/state/ca/ca-cert.pem");
+    assert!(
+        marker.ok() && !marker.stdout.trim().is_empty(),
+        "read CA digest"
+    );
+    let marker = marker.stdout;
     let pod = create_pod(HOST, &pod_spec("p6b", None, None)).expect("pod");
     wait_proxy_healthy(HOST, &pod, Duration::from_secs(60)).expect("pod healthy");
 
@@ -1402,7 +1435,7 @@ fn p6b_forced_death() {
     let killed_at = Instant::now();
     let watcher = std::thread::spawn(move || {
         loop {
-            let state = host_state(HOST);
+            let state = host_state(HOST).expect("observe spike host state");
             if state != "running" || killed_at.elapsed() > Duration::from_secs(60) {
                 return (killed_at.elapsed(), state);
             }
@@ -1439,7 +1472,9 @@ fn p6b_forced_death() {
         let _ = cancel_pod(HOST, &p);
         r.map(|(d, _)| p.create + d)
     });
-    let ok = detected < Duration::from_secs(5)
+    let ok = kill.ok()
+        && state == "stopped"
+        && detected < Duration::from_secs(5)
         && start.ok()
         && healthy.is_ok()
         && restart < Duration::from_secs(60)

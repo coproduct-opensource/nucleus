@@ -33,7 +33,7 @@ use tracing::{info, warn};
 /// further attempts inside the validity window, so a single failure is survivable
 /// and a persistent one is visible in the log well before clients notice. The
 /// floor keeps a very short TTL (tests use seconds) from becoming a busy loop.
-fn spawn_certificate_rotation(
+pub(crate) fn spawn_certificate_rotation(
     state: &NodeState,
     resolver: Arc<nucleus_identity::tls::RotatingServerCert>,
 ) {

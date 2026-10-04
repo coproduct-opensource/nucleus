@@ -35,8 +35,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo/ .cargo/
 COPY crates/ crates/
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/build/target \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
     cargo build --locked --release -p nucleus-node -p nucleus-mcp \
     && mkdir -p /out \
     && cp target/release/nucleus-node target/release/nucleus-mcp /out/ \
@@ -53,6 +53,22 @@ RUN mkdir -p /out /tmp/x && tar -xzf /tmp/node.tgz -C /tmp/x && tar -xzf /tmp/mc
 
 FROM node-${NODE_SOURCE} AS node
 
+# ── nucleus-hostctl, always from this tree ────────────────────────────
+# The in-container probe (`probe`) and the MCP relay (`relay`) the CLI's
+# microVM host backend drives (crates/nucleus-cli/src/microvm_host/). No
+# release ships it yet, so it is built from source whatever NODE_SOURCE is.
+FROM rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS hostctl
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/ .cargo/
+COPY crates/ crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cargo build --locked --release -p nucleus-microvm-host --bin nucleus-hostctl \
+    && mkdir -p /out \
+    && cp target/release/nucleus-hostctl /out/ \
+    && strip /out/nucleus-hostctl
+
 # ── the in-container KVM probe (throwaway; PR2 moves it to nucleus-hostctl) ─
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS probe
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
@@ -68,10 +84,16 @@ ADD --checksum=sha256:69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31
     https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141 /out/artifacts/vmlinux
 ADD --checksum=sha256:6d2b41244ddd074f1eebc1ab4ca1c7be5b7bc55cde71eefbb9af919771fd4fe4 \
     https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-rootfs-2.2.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
+# `ADD <url>` lays files down 0600. The jailed VMM (an unprivileged uid) could
+# open the kernel only because the node used to chown it into every jail, which
+# handed the shared artifact to the jail user (#3152). The node no longer chowns
+# a placed artifact and refuses an unreadable one at startup, so the shared
+# artifacts are root-owned 0444 here, as `nucleus setup` installs them.
 RUN mkdir -p /out/bin && tar -xzf /tmp/fc.tgz -C /tmp \
     && cp /tmp/release-v1.17.0-aarch64/firecracker-v1.17.0-aarch64 /out/bin/firecracker \
     && cp /tmp/release-v1.17.0-aarch64/jailer-v1.17.0-aarch64 /out/bin/jailer \
-    && gunzip -c /tmp/rootfs.ext4.gz > /out/artifacts/rootfs.ext4
+    && gunzip -c /tmp/rootfs.ext4.gz > /out/artifacts/rootfs.ext4 \
+    && chmod 0444 /out/artifacts/vmlinux /out/artifacts/rootfs.ext4
 
 # ── the host ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
@@ -86,6 +108,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=artifacts /out/bin/ /usr/local/bin/
 COPY --from=artifacts /out/artifacts/ /var/lib/nucleus/artifacts/
 COPY --from=node /out/ /usr/local/bin/
+COPY --from=hostctl /out/nucleus-hostctl /usr/local/bin/nucleus-hostctl
 COPY --from=probe /kvm-probe /usr/local/bin/kvm-probe
 
 # Mirrors nucleus-cli provision::node_env_body. /srv is meant to be a

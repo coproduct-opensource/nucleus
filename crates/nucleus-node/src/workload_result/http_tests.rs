@@ -54,19 +54,35 @@ async fn invalid_and_refused_observations_are_not_transient() {
     }
 }
 
-#[tokio::test]
+/// The production deadline, run on tokio's paused clock: the request is real
+/// (a real client, a real socket, the production `fetch`), but once nothing is
+/// left to do except wait, the clock jumps to the next timer instead of sleeping
+/// through it. Ten seconds of observation deadline cost milliseconds, and the
+/// paused clock also measures it: the error must arrive at exactly the
+/// production deadline, which a real-time test could not tell from any shorter one.
+#[tokio::test(start_paused = true)]
 async fn supervisor_transport_timeout_is_reported_as_unavailable() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     // A live listener that never accepts keeps TCP connected but supplies no
     // HTTP response. Exercise the production ten-second observation deadline.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
+    let started = tokio::time::Instant::now();
     let error = fetch(&reqwest::Client::new(), &format!("http://{address}"))
         .await
         .unwrap_err();
+    let waited = started.elapsed();
     assert!(error.to_string().contains("timed out"), "{error}");
     assert_eq!(
         error.into_response().status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
+    // The deadline that fired is the production one: not an earlier timer, and
+    // not one far past it.
+    let deadline = std::time::Duration::from_secs(10);
+    assert!(
+        waited >= deadline && waited < deadline + std::time::Duration::from_secs(1),
+        "the observation deadline fired after {waited:?}, not {deadline:?}"
+    );
+    drop(listener);
 }

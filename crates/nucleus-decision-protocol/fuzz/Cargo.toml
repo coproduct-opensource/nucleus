@@ -1,0 +1,33 @@
+[package]
+name = "nucleus-decision-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Excluded from the workspace (the empty `[workspace]` below makes this its own
+# root) because `cargo fuzz` builds with nightly `-Z` flags that must not leak
+# into the rest of the workspace. Same arrangement as the repository's root
+# `fuzz/` crate.
+#
+#   cd crates/nucleus-decision-protocol/fuzz
+#   cargo +nightly fuzz run decision_frame -- -max_total_time=30
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nucleus-decision-protocol = { path = ".." }
+
+[[bin]]
+name = "decision_frame"
+path = "fuzz_targets/decision_frame.rs"
+test = false
+doc = false
+
+# `cargo fuzz run <target>` takes the binary name verbatim and cargo-fuzz's
+# convention is snake_case; the root fuzz/Cargo.toml records the same allowance.
+[lints.cargo]
+non_kebab_case_bins = "allow"

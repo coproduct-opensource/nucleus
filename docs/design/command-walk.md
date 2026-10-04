@@ -233,7 +233,10 @@ monotone-growing on a pod in `phase = Running`, and *stable* once
 `phase in {Exited, Cancelled, Errored}`. A walk asserts growth-monotonicity
 before termination and byte equality after it.
 
-**A2 — one-shot absorption.** For `v` in `{broker, audit, mediate}`:
+**A2 — one-shot absorption.** For `v` in `{broker, audit, mediate, pod
+certificate, task token, caller token, DLC admission}` (the last four since
+#2724; the SVID key obeys the same law inside a success, the repeat carrying the
+public chain alone):
 
 ```
 v ; v  =  v ; Refusal(Repeat)

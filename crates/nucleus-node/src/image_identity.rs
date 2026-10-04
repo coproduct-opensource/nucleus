@@ -5,7 +5,7 @@
 //! `admit_posture` already measures a rootfs, ~1300 lines before `prepare_jail` places it. That
 //! gap is a window: anything that swaps the file in between is measured as one thing and booted
 //! as another. Verifying the **placed** artifact closes it without needing `linkat`,
-//! `CAP_DAC_READ_SEARCH`, or holding an fd across the whole launch — `place_resource` hard-links
+//! `CAP_DAC_READ_SEARCH`, or holding an fd across the whole launch — `jail_placement::place` hard-links
 //! the host file into the jail, so the in-jail path is the same inode, and where it has to fall
 //! back to a copy, the copy is what boots. Either way, the bytes measured here are the bytes the
 //! VM gets.
@@ -22,9 +22,10 @@
 
 use std::path::{Path, PathBuf};
 
-use nucleus_spec::{ArtifactDigest, ImageSpec};
+use nucleus_spec::ArtifactDigest;
 
 use crate::firecracker_config::{JailLayout, in_jail};
+use crate::rootfs_source::HostImage;
 
 /// One artifact to check: what it is called, where it now lives, and what it should hash to.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -36,7 +37,7 @@ struct Pinned<'a> {
 
 /// Resolve the pins to the paths that will actually boot.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> {
+fn pins<'a>(image: &'a HostImage, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> {
     // In the jail every artifact has a fixed name; unjailed, the spec's own path is used.
     let at = |in_jail_name: &str, host: &Path| -> PathBuf {
         match jail {
@@ -55,7 +56,7 @@ fn pins<'a>(image: &'a ImageSpec, jail: Option<&JailLayout>) -> Vec<Pinned<'a>> 
     if let Some(d) = &image.rootfs_digest {
         out.push(Pinned {
             what: "rootfs",
-            path: at(in_jail::ROOTFS, &image.rootfs_path),
+            path: at(in_jail::ROOTFS, image.rootfs_path()),
             expected: d,
         });
     }
@@ -105,7 +106,7 @@ pub(crate) struct Measured {
 /// those bytes.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) async fn verify(
-    image: &ImageSpec,
+    image: &HostImage,
     jail: Option<&JailLayout>,
 ) -> Result<Measured, String> {
     let mut measured_out = Measured::default();
@@ -139,19 +140,20 @@ pub(crate) async fn verify(
 mod tests {
     use super::*;
 
-    fn image(kernel: &Path, kd: Option<&str>) -> ImageSpec {
-        ImageSpec {
+    fn image(kernel: &Path, kd: Option<&str>) -> HostImage {
+        HostImage::resolve(&nucleus_spec::ImageSpec {
             kernel_path: kernel.to_path_buf(),
-            rootfs_path: PathBuf::from("/unused/rootfs.ext4"),
+            rootfs: nucleus_spec::RootfsSource::Path(PathBuf::from("/unused/rootfs.ext4")),
             boot_args: None,
-            read_only: false,
+            read_only: true,
             scratch_path: None,
             kernel_digest: kd.map(|d| ArtifactDigest::parse(d).expect("test digest parses")),
             rootfs_digest: None,
             scratch_digest: None,
             data_path: None,
             data_digest: None,
-        }
+        })
+        .expect("a path rootfs resolves")
     }
 
     /// A spec that pins nothing is checked against nothing — and must not fail for it.

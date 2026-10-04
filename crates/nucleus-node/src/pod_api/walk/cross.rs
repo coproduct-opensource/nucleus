@@ -180,7 +180,12 @@ impl Run {
             .await
             .expect("certificate");
 
-        let broker_served = Arc::new(AtomicBool::new(broker_already_served));
+        let served = crate::workload_api_vsock::ServedLedger::new();
+        served.mark_served(
+            crate::workload_api_vsock::OneShot::BrokerSecret,
+            broker_already_served,
+        );
+        let broker_served = served.watch(crate::workload_api_vsock::OneShot::BrokerSecret);
         let personalized = Arc::new(AtomicBool::new(false));
         // Every field named (E-1): a new kind of material is a decision for this
         // census, not a silent default.
@@ -191,15 +196,13 @@ impl Run {
             dlc_admission: None,
             broker_secret: Some("test-broker-secret".into()),
             broker_port: 0,
-            broker_secret_served: Arc::clone(&broker_served),
+            served,
             audit_creds: None,
-            audit_creds_served: Arc::default(),
             pod_spec_yaml: None,
             mediation_signing_key: None,
             mediation_spiffe_id: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
-            mediation_key_served: Arc::default(),
             receipt_dir: Some(dir.path().join("p")),
             pod_registry: st.pods.clone(),
         };
@@ -254,11 +257,17 @@ impl Run {
                 driver_state: crate::DriverState::Firecracker(Box::new(firecracker)),
                 parent_pod_id: None,
                 posture_stamp: None,
+                owner: None,
             }),
         );
         let k = register(&st, Some(p)).await;
         if k_cancelled {
-            let _ = cancel_pod(State(st.clone()), Extension(None), AxumPath(k)).await;
+            let _ = cancel_pod(
+                State(st.clone()),
+                Extension(crate::auth::CallerScope::NodeWide),
+                AxumPath(k),
+            )
+            .await;
         }
 
         let (r, w) = UnixStream::connect(&socket)
@@ -291,11 +300,12 @@ impl Run {
     }
 
     async fn registry(&self) -> Vec<(String, bool)> {
-        let mut out: Vec<(String, bool)> = collect_pod_infos(&self.st, None)
-            .await
-            .iter()
-            .map(|i| (self.label(i.id), matches!(i.state, PodState::Running)))
-            .collect();
+        let mut out: Vec<(String, bool)> =
+            collect_pod_infos(&self.st, &crate::auth::CallerScope::NodeWide)
+                .await
+                .iter()
+                .map(|i| (self.label(i.id), matches!(i.state, PodState::Running)))
+                .collect();
         out.sort();
         out
     }
@@ -359,7 +369,13 @@ impl Run {
                 } else {
                     self.k
                 };
-                match cancel_pod(State(self.st.clone()), Extension(None), AxumPath(id)).await {
+                match cancel_pod(
+                    State(self.st.clone()),
+                    Extension(crate::auth::CallerScope::NodeWide),
+                    AxumPath(id),
+                )
+                .await
+                {
                     Ok(_) => Seen::HostOk,
                     Err(ApiError::NotFound) => Seen::HostNotFound,
                     Err(e) => Seen::Other(e.to_string()),
@@ -641,7 +657,12 @@ async fn a_guest_fetching_during_cancel_leaves_no_certificate() {
         });
         // Let the guest get going, so cancel lands mid-stream rather than first.
         tokio::time::sleep(Duration::from_millis(5)).await;
-        let _ = cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)).await;
+        let _ = cancel_pod(
+            State(run.st.clone()),
+            Extension(crate::auth::CallerScope::NodeWide),
+            AxumPath(run.p),
+        )
+        .await;
         done.store(true, Ordering::SeqCst);
         let cached = run
             .manager
@@ -688,7 +709,12 @@ async fn a_mint_in_flight_at_cancel_is_waited_for() {
         let (mut r, mut w) = run.open.take().expect("the open connection");
         w.write_all(b"FETCH_SVID\n").await.expect("frame written");
         w.flush().await.expect("frame flushed");
-        let _ = cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)).await;
+        let _ = cancel_pod(
+            State(run.st.clone()),
+            Extension(crate::auth::CallerScope::NodeWide),
+            AxumPath(run.p),
+        )
+        .await;
         let cached = run
             .manager
             .secret_manager()
@@ -754,7 +780,11 @@ async fn cancel_p(run: &Run) -> Duration {
     let started = std::time::Instant::now();
     let r = tokio::time::timeout(
         Duration::from_secs(10),
-        cancel_pod(State(run.st.clone()), Extension(None), AxumPath(run.p)),
+        cancel_pod(
+            State(run.st.clone()),
+            Extension(crate::auth::CallerScope::NodeWide),
+            AxumPath(run.p),
+        ),
     )
     .await;
     assert!(
@@ -764,33 +794,64 @@ async fn cancel_p(run: &Run) -> Duration {
     started.elapsed()
 }
 
+/// Wait for one bridge signal, failing rather than hanging if it never comes.
+async fn signalled(what: &tokio::sync::Notify, name: &str) {
+    tokio::time::timeout(Duration::from_secs(10), what.notified())
+        .await
+        .unwrap_or_else(|_| panic!("the bridge never signalled {name}"));
+}
+
 /// The command frame is read and the body is half-sent when cancel begins; the rest
 /// arrives inside the drain window. The receipt must be collected whole and acked,
 /// and cancel must have waited for it.
+///
+/// Ordered by the bridge's own signals, not by sleeps (#3144): the test waits until
+/// the bridge is reading the body, starts the cancel, and sends the tail only once
+/// the bridge is draining — so the ship is in flight when cancel lands, by
+/// construction rather than by timing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receipt_mid_ship_at_cancel_is_collected_whole() {
     let mut run = Run::new(false, false).await;
+    let probe = crate::workload_api_vsock::ship_probe::install(run.p);
     let (mut r, mut w) = run.open.take().expect("the open connection");
     let body = receipt_body(1);
     let (head, tail) = body.split_at(body.len() / 2);
     w.write_all(b"SHIP_RECEIPT\n").await.expect("command");
     w.write_all(head.as_bytes()).await.expect("half the body");
     w.flush().await.expect("flush");
-    // Let the bridge read the command frame and block in the body.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // The bridge has read the command frame and is past its stop check: it is
+    // reading this body, and a cancel from here on must drain it, not drop it.
+    signalled(&probe.body_read_begun, "that it began reading the body").await;
 
-    let tail = tail.to_string();
-    let guest = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let _ = w.write_all(tail.as_bytes()).await;
-        let _ = w.write_all(b"\n").await;
-        let _ = w.flush().await;
+    let cancel_returned = AtomicBool::new(false);
+    let cancel = async {
+        cancel_p(&run).await;
+        cancel_returned.store(true, Ordering::SeqCst);
+    };
+    let guest = async {
+        // Cancel has landed: the bridge told its connections to stop and is
+        // waiting for this one.
+        signalled(&probe.draining, "that it is draining").await;
+        // Non-vacuity: at this instant the ship is genuinely in flight — cancel is
+        // under way, has not returned, and the receipt is not yet collected (half
+        // its body has not been sent).
+        let in_flight = !cancel_returned.load(Ordering::SeqCst) && collected(&run).is_empty();
+        w.write_all(tail.as_bytes())
+            .await
+            .expect("the rest of the body");
+        w.write_all(b"\n").await.expect("the body's newline");
+        w.flush().await.expect("flush");
         let mut line = String::new();
         let _ = tokio::time::timeout(Duration::from_secs(5), r.read_line(&mut line)).await;
-        line
-    });
-    let took = cancel_p(&run).await;
-    let reply = guest.await.expect("guest task");
+        (in_flight, line)
+    };
+    let ((), (in_flight, reply)) = tokio::join!(cancel, guest);
+    // Cancel waited for the receipt: it had not returned when the tail was sent,
+    // and the receipt below was collected from that tail.
+    assert!(
+        in_flight,
+        "the receipt was not mid-ship when cancel landed: nothing raced"
+    );
 
     let lines = collected(&run);
     assert_eq!(
@@ -806,10 +867,6 @@ async fn a_receipt_mid_ship_at_cancel_is_collected_whole() {
         reply.contains("collected"),
         "the guest was not told its receipt was collected: {reply:?}"
     );
-    assert!(
-        took >= Duration::from_millis(250),
-        "cancel returned in {took:?}, before the receipt it was draining arrived"
-    );
     let _ = run.finish().await;
 }
 
@@ -818,6 +875,7 @@ async fn a_receipt_mid_ship_at_cancel_is_collected_whole() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_receipt_stalled_at_cancel_is_dropped_whole_and_cancel_is_bounded() {
     let mut run = Run::new(false, false).await;
+    let probe = crate::workload_api_vsock::ship_probe::install(run.p);
     let (mut r, mut w) = run.open.take().expect("the open connection");
     let body = receipt_body(2);
     w.write_all(b"SHIP_RECEIPT\n").await.expect("command");
@@ -825,7 +883,9 @@ async fn a_receipt_stalled_at_cancel_is_dropped_whole_and_cancel_is_bounded() {
         .await
         .expect("half the body");
     w.flush().await.expect("flush");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Stalled INSIDE the body, not before the command frame: without this the
+    // cancel could land between frames and the test would pass vacuously.
+    signalled(&probe.body_read_begun, "that it began reading the body").await;
 
     let took = cancel_p(&run).await;
     assert!(

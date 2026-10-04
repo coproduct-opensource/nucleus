@@ -3,6 +3,7 @@
 //! This module handles fetching X.509 SVID certificates from the host's
 //! Workload API over a vsock connection.
 
+use nucleus_spec::dlc_admission::DlcProvisioning;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -50,7 +51,9 @@ const IDENTITY_DIR: &str = "/run/nucleus/identity";
 struct SvidResponse {
     spiffe_id: String,
     certificate_chain: String,
-    private_key: String,
+    /// Served once per pod, to the first `FETCH_SVID`. guest-init asks first,
+    /// before any workload exists; `None` means something else already had it.
+    private_key: Option<String>,
     #[allow(dead_code)]
     expires_at: i64,
 }
@@ -90,6 +93,62 @@ pub fn trust_bundle_path() -> String {
     format!("{IDENTITY_DIR}/bundle.pem")
 }
 
+/// Why a per-pod fetch failed. Two cases, because they carry different
+/// consequences (ADR 0007 A-8).
+#[derive(Debug)]
+pub enum FetchError {
+    /// The host had already served this value to an earlier request.
+    ///
+    /// The host serves every per-pod value ONCE (#2724), and this process asks
+    /// before any workload exists — so something else in this guest asked
+    /// first, and now holds what the tool-proxy was to hold. That is not "the
+    /// host has none" (A-2): booting on would run the pod with its proxy's
+    /// material in another process's hands. The caller refuses to boot.
+    Preempted(String),
+    /// Transport, protocol or parse failure. Each caller decides whether that
+    /// is fatal, as before.
+    Failed(String),
+}
+
+impl std::fmt::Display for FetchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FetchError::Preempted(what) => write!(
+                f,
+                "the host had already served this pod's {what} to an earlier request; guest-init \
+                 asks before any workload exists, so another process in this guest asked first \
+                 and holds it — refusing to boot"
+            ),
+            FetchError::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+impl From<String> for FetchError {
+    /// Every `String` error in these fetchers is a transport, protocol or parse
+    /// failure; preemption is recognised explicitly by [`refuse_if_preempted`],
+    /// before any of them can occur.
+    fn from(why: String) -> Self {
+        FetchError::Failed(why)
+    }
+}
+
+/// The ending every once-only refusal's wire text shares on the host
+/// (`Refusal::AlreadyServed`; `the_wire_text_of_every_refusal_is_unchanged`
+/// pins each, and `a_preempted_reply_is_named_for_every_one_shot` here reads
+/// the same texts).
+const ALREADY_SERVED: &str = " already served";
+
+/// Fail with [`FetchError::Preempted`] if `reply` is the host saying `what` was
+/// already served. Called on every once-only reply BEFORE it is read any
+/// other way, so no fetcher can mistake a preemption for "none provisioned".
+fn refuse_if_preempted(reply: &serde_json::Value, what: &str) -> Result<(), FetchError> {
+    match reply.get("error").and_then(|e| e.as_str()) {
+        Some(err) if err.ends_with(ALREADY_SERVED) => Err(FetchError::Preempted(what.to_string())),
+        _ => Ok(()),
+    }
+}
+
 /// The three values a session capability token comprises.
 ///
 /// Named to match what the tool-proxy reads from its environment —
@@ -117,21 +176,14 @@ pub struct TaskTokenResponse {
 /// are in the environment before anything reads them. That ordering is the whole
 /// risk of moving delivery off the command line, and it is structural rather
 /// than hoped-for: `main` calls this and only then calls `exec_proxy`.
-/// This pod's DLC-D verified-admission provisioning, from `FETCH_DLC_ADMISSION`.
-#[derive(serde::Deserialize)]
-pub struct DlcAdmissionResponse {
-    /// Comma-separated hex trusted issuer public keys.
-    pub trusted_keys: String,
-    /// Hex public key of the issuer whose credentials this pod presents.
-    pub issuer: String,
-    /// Comma-separated `operation=hex_signature` credentials.
-    pub credentials: String,
-}
-
 /// Fetch this pod's DLC admission provisioning from the host. `Ok(None)` is the
 /// ordinary unprovisioned case (the host answers `{"error": ...}`); only a
-/// transport failure is an `Err`.
-pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, String> {
+/// transport failure or a preemption is an `Err`.
+///
+/// The reply is `nucleus_spec::dlc_admission::DlcProvisioning`, the type the
+/// node serializes it from, and its `env()` is what the tool-proxy is exec'd
+/// with — one declaration from the PodSpec label to the proxy's variable.
+pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcProvisioning>, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -146,8 +198,16 @@ pub fn fetch_dlc_admission(port: u32) -> Result<Option<DlcAdmissionResponse>, St
     reader
         .read_line(&mut response)
         .map_err(|e| format!("failed to read dlc admission response: {e}"))?;
+    parse_dlc_admission(&response)
+}
 
-    match serde_json::from_str::<DlcAdmissionResponse>(&response) {
+/// Parse the `FETCH_DLC_ADMISSION` reply. Split out so it is testable without
+/// a live vsock. The body is never echoed: it carries credentials.
+fn parse_dlc_admission(response: &str) -> Result<Option<DlcProvisioning>, FetchError> {
+    if let Ok(reply) = serde_json::from_str::<serde_json::Value>(response) {
+        refuse_if_preempted(&reply, "DLC admission provisioning")?;
+    }
+    match serde_json::from_str::<DlcProvisioning>(response) {
         Ok(material) => Ok(Some(material)),
         // The unprovisioned host answers {"error": ...}: not a failure.
         Err(_) => Ok(None),
@@ -274,7 +334,7 @@ pub fn fetch_pod_spec(port: u32, _past_barrier: &PastBarrier) -> Result<String, 
         .ok_or_else(|| "pod-spec response named no spec".to_string())
 }
 
-pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
+pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -294,8 +354,9 @@ pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, String> {
         // Not `{e}` and not the body: a parse error that echoed the response
         // would put the capability in the guest console log.
         .map_err(|_| "broker-secret response was not valid JSON".to_string())?;
+    refuse_if_preempted(&parsed, "broker capability")?;
     if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
-        return Err(err.to_string());
+        return Err(FetchError::Failed(err.to_string()));
     }
     let secret = parsed
         .get("secret")
@@ -328,11 +389,13 @@ pub struct MediationKey {
 
 /// Fetch this pod's mediation signing key, once, before `exec_proxy`.
 ///
-/// Returns `Ok(None)` when the host provisioned none (or refuses a repeat):
-/// signed receipts are ADDITIVE forensics, so their absence is a graceful
-/// degrade, not a reason to fail the pod. Like the broker secret, the key value
-/// is never logged — errors name the failure, never the payload.
-pub fn fetch_mediation_key(port: u32) -> Result<Option<MediationKey>, String> {
+/// Returns `Ok(None)` when the host provisioned none: signed receipts are
+/// ADDITIVE forensics, so their absence is a graceful degrade, not a reason to
+/// fail the pod. A refused REPEAT is not absence — it means another process
+/// holds the key that signs this pod's receipts — and is
+/// [`FetchError::Preempted`]. Like the broker secret, the key value is never
+/// logged — errors name the failure, never the payload.
+pub fn fetch_mediation_key(port: u32) -> Result<Option<MediationKey>, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -352,6 +415,7 @@ pub fn fetch_mediation_key(port: u32) -> Result<Option<MediationKey>, String> {
         // Never echo the body: a parse error that printed it could put the
         // signing key in the guest console log.
         .map_err(|_| "mediation-key response was not valid JSON".to_string())?;
+    refuse_if_preempted(&parsed, "mediation signing key")?;
     // A host with no key provisioned answers with an error; treat that as "no
     // receipts", not a boot failure.
     if parsed.get("error").is_some() {
@@ -392,7 +456,7 @@ pub struct AuditCredentials {
 ///
 /// `Ok(None)` when the pod has no audit sink — the ordinary case, not a
 /// failure.
-pub fn fetch_audit_credentials(port: u32) -> Result<Option<AuditCredentials>, String> {
+pub fn fetch_audit_credentials(port: u32) -> Result<Option<AuditCredentials>, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -412,13 +476,14 @@ pub fn fetch_audit_credentials(port: u32) -> Result<Option<AuditCredentials>, St
         // Not `{e}` and not the body: a parse error that echoed the response
         // would put the credentials in the guest console log.
         .map_err(|_| "audit-credentials response was not valid JSON".to_string())?;
+    refuse_if_preempted(&parsed, "audit-sink credentials")?;
     if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
         // "not provisioned" is the unremarkable no-audit-sink case; every other
-        // error (including "already served") is worth surfacing.
+        // error is worth surfacing.
         if err.contains("no audit credentials provisioned") {
             return Ok(None);
         }
-        return Err(err.to_string());
+        return Err(FetchError::Failed(err.to_string()));
     }
     let access_key_id = parsed
         .get("access_key_id")
@@ -461,7 +526,7 @@ pub struct PodCallerIdentity {
 /// host serves the identity belonging to whichever pod's socket this is, so the
 /// guest never states which pod it is — the socket says so, and nothing the guest
 /// can write does.
-pub fn fetch_pod_caller_token(port: u32) -> Result<PodCallerIdentity, String> {
+pub fn fetch_pod_caller_token(port: u32) -> Result<PodCallerIdentity, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -482,9 +547,10 @@ pub fn fetch_pod_caller_token(port: u32) -> Result<PodCallerIdentity, String> {
 
 /// Parse the `FETCH_POD_CALLER_TOKEN` response. Split out so it is testable
 /// without a live vsock.
-fn parse_caller_identity(response: &str) -> Result<PodCallerIdentity, String> {
+fn parse_caller_identity(response: &str) -> Result<PodCallerIdentity, FetchError> {
     let v: serde_json::Value = serde_json::from_str(response)
         .map_err(|e| format!("caller token response is not JSON: {e}"))?;
+    refuse_if_preempted(&v, "caller token")?;
     let token = v
         .get("caller_token")
         .and_then(|t| t.as_str())
@@ -500,8 +566,8 @@ fn parse_caller_identity(response: &str) -> Result<PodCallerIdentity, String> {
 /// legitimate state — the tool-proxy then records the token as Missing and
 /// fails closed at verify). `Err` is reserved for a real transport or
 /// protocol failure, which the caller treats as fatal on the identity path
-/// where the kernel-cmdline fallback no longer exists.
-pub fn fetch_task_token(port: u32) -> Result<Option<TaskTokenResponse>, String> {
+/// where the kernel-cmdline fallback no longer exists, and for a preemption.
+pub fn fetch_task_token(port: u32) -> Result<Option<TaskTokenResponse>, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -516,27 +582,34 @@ pub fn fetch_task_token(port: u32) -> Result<Option<TaskTokenResponse>, String> 
     reader
         .read_line(&mut response)
         .map_err(|e| format!("failed to read task token response: {e}"))?;
+    parse_task_token(&response)
+}
 
+/// Parse the `FETCH_TASK_TOKEN` reply. Split out so it is testable without a
+/// live vsock.
+fn parse_task_token(response: &str) -> Result<Option<TaskTokenResponse>, FetchError> {
     // The host answers a pod with no minted token with `{"error": ...}` rather
     // than an empty token — the ordinary degraded case, distinguished HERE from
     // a real protocol problem so the caller can make only the latter fatal.
-    if let Ok(t) = serde_json::from_str::<TaskTokenResponse>(&response) {
+    if let Ok(t) = serde_json::from_str::<TaskTokenResponse>(response) {
         return Ok(Some(t));
     }
-    let v: serde_json::Value = serde_json::from_str(&response).map_err(|e| {
+    let v: serde_json::Value = serde_json::from_str(response).map_err(|e| {
         format!(
             "failed to parse task token response ({e}): {}",
             response.trim()
         )
     })?;
+    // "Already served" is NOT "none minted": another process holds the token.
+    refuse_if_preempted(&v, "session task token")?;
     if v.get("error").and_then(|e| e.as_str()).is_some() {
         // Explicit "no token minted" — not a failure.
         return Ok(None);
     }
-    Err(format!(
+    Err(FetchError::Failed(format!(
         "task token response had neither a token nor an error: {}",
         response.trim()
-    ))
+    )))
 }
 
 /// The pod's certificate of authority, as the tool-proxy reads it from
@@ -554,8 +627,8 @@ pub struct PodCertificateResponse {
 /// `Ok(None)` when the host issued none (a legacy node, or a pod created
 /// before the node's authority came up) — the tool-proxy then falls back to
 /// its resolved policy as its own ceiling. `Err` is a real transport or
-/// protocol failure.
-pub fn fetch_pod_certificate(port: u32) -> Result<Option<PodCertificateResponse>, String> {
+/// protocol failure, or a preemption.
+pub fn fetch_pod_certificate(port: u32) -> Result<Option<PodCertificateResponse>, FetchError> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -575,8 +648,11 @@ pub fn fetch_pod_certificate(port: u32) -> Result<Option<PodCertificateResponse>
 
 /// Parse the `FETCH_POD_CERTIFICATE` reply. Split out so it is testable
 /// without a live vsock. An `{"error": ...}` reply (none issued, or a legacy
-/// node that does not know the command) is `Ok(None)`, not a failure.
-fn parse_pod_certificate(response: &str) -> Result<Option<PodCertificateResponse>, String> {
+/// node that does not know the command) is `Ok(None)`, not a failure — except
+/// "already served", which is a preemption: the proxy falling back to its
+/// image's policy because another process took the certificate is exactly the
+/// "could not look ⇒ fine" shape A-2 forbids.
+fn parse_pod_certificate(response: &str) -> Result<Option<PodCertificateResponse>, FetchError> {
     if let Ok(c) = serde_json::from_str::<PodCertificateResponse>(response) {
         return Ok(Some(c));
     }
@@ -586,13 +662,14 @@ fn parse_pod_certificate(response: &str) -> Result<Option<PodCertificateResponse
             response.trim()
         )
     })?;
+    refuse_if_preempted(&v, "pod certificate")?;
     if v.get("error").and_then(|e| e.as_str()).is_some() {
         return Ok(None);
     }
-    Err(format!(
+    Err(FetchError::Failed(format!(
         "pod certificate response had neither a certificate nor an error: {}",
         response.trim()
-    ))
+    )))
 }
 
 /// Fetches the workload certificate from the host via vsock.
@@ -601,7 +678,7 @@ fn parse_pod_certificate(response: &str) -> Result<Option<PodCertificateResponse
 /// and writes the certificate and key to the identity directory.
 ///
 /// Returns the SPIFFE ID on success.
-pub fn fetch_identity(port: u32) -> Result<String, String> {
+pub fn fetch_identity(port: u32) -> Result<String, FetchError> {
     // Create identity directory
     fs::create_dir_all(IDENTITY_DIR)
         .map_err(|e| format!("failed to create identity directory: {e}"))?;
@@ -620,7 +697,13 @@ pub fn fetch_identity(port: u32) -> Result<String, String> {
 
     // Write private key with restricted permissions
     let key_path = Path::new(IDENTITY_DIR).join("svid.key");
-    write_private_key(&key_path, &svid.private_key)?;
+    // Every node that serves the key at all serves it to the first FETCH_SVID,
+    // so a chain without one means an earlier request took it.
+    let key = svid
+        .private_key
+        .as_deref()
+        .ok_or_else(|| FetchError::Preempted("SVID private key".to_string()))?;
+    write_private_key(&key_path, key)?;
 
     // Fetch trust bundle
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
@@ -766,6 +849,103 @@ mod caller_identity_tests {
     }
 }
 
+/// #2724: the host serves each per-pod value once. If guest-init is told one
+/// was already served, another process in this guest asked first, and the
+/// parsers must say so rather than read it as "none provisioned".
+#[cfg(test)]
+mod preemption_tests {
+    use super::*;
+
+    /// The node's `Refusal::AlreadyServed` wire texts, verbatim (pinned on the
+    /// node by `the_wire_text_of_every_refusal_is_unchanged`).
+    const TASK: &str = r#"{"error":"task token already served"}"#;
+    const CERT: &str = r#"{"error":"pod certificate already served"}"#;
+    const CALLER: &str = r#"{"error":"caller token already served"}"#;
+    const DLC: &str = r#"{"error":"dlc admission already served"}"#;
+
+    fn preempted<T>(r: Result<T, FetchError>) -> bool {
+        matches!(r, Err(FetchError::Preempted(_)))
+    }
+
+    #[test]
+    fn a_preempted_reply_is_named_for_every_one_shot() {
+        assert!(preempted(parse_task_token(TASK)), "task token");
+        assert!(preempted(parse_pod_certificate(CERT)), "pod certificate");
+        assert!(preempted(parse_caller_identity(CALLER)), "caller token");
+        assert!(preempted(parse_dlc_admission(DLC)), "dlc admission");
+        for text in [
+            r#"{"error":"broker secret already served"}"#,
+            r#"{"error":"mediation key already served"}"#,
+            r#"{"error":"audit credentials already served"}"#,
+        ] {
+            let v: serde_json::Value = serde_json::from_str(text).unwrap();
+            assert!(preempted(refuse_if_preempted(&v, "x")), "{text}");
+        }
+    }
+
+    /// The other side of A-2: absence is still absence. A pod the host has
+    /// nothing for boots exactly as before.
+    #[test]
+    fn not_provisioned_is_still_not_a_preemption() {
+        assert!(matches!(
+            parse_task_token(r#"{"error":"no task token was minted for this pod"}"#),
+            Ok(None)
+        ));
+        assert!(matches!(
+            parse_pod_certificate(r#"{"error":"no certificate was issued for this pod"}"#),
+            Ok(None)
+        ));
+        assert!(matches!(
+            parse_dlc_admission(r#"{"error":"no dlc admission provisioned for this pod"}"#),
+            Ok(None)
+        ));
+        // A caller-token refusal was already an error; it stays a plain failure.
+        assert!(matches!(
+            parse_caller_identity(r#"{"error":"no caller token minted for this pod"}"#),
+            Err(FetchError::Failed(_))
+        ));
+        // And a legacy node's unknown-command reply is not a preemption either.
+        assert!(matches!(
+            parse_pod_certificate(r#"{"error":"unknown command: FETCH_POD_CERTIFICATE"}"#),
+            Ok(None)
+        ));
+    }
+
+    /// A served reply, in the exact text every node since #2124 sends, becomes
+    /// the three variables the tool-proxy reads. Literal on purpose: the node
+    /// half is pinned by `the_wire_body_is_the_one_released_guests_parse`, and
+    /// this is the guest half of the same bytes.
+    #[test]
+    fn a_served_dlc_reply_becomes_the_proxy_env() {
+        let reply = r#"{"trusted_keys":"aa","issuer":"bb","credentials":"read_files=cc"}"#;
+        let Ok(Some(m)) = parse_dlc_admission(reply) else {
+            panic!("a served reply must parse")
+        };
+        let env: std::collections::BTreeMap<_, _> = m.env().into_iter().collect();
+        assert_eq!(
+            env,
+            std::collections::BTreeMap::from([
+                ("NUCLEUS_DLC_CREDENTIALS", "read_files=cc"),
+                ("NUCLEUS_DLC_ISSUER", "bb"),
+                ("NUCLEUS_DLC_TRUSTED_KEYS", "aa"),
+            ])
+        );
+    }
+
+    /// The preemption message names the value and never echoes the reply.
+    #[test]
+    fn a_preemption_names_what_was_taken() {
+        let Err(e) = parse_task_token(TASK) else {
+            panic!("must be refused")
+        };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("session task token") && msg.contains("refusing to boot"),
+            "{msg}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod identity_location_tests {
     use super::IDENTITY_DIR;
@@ -774,7 +954,7 @@ mod identity_location_tests {
     fn on_a_tmpfs_mount(dir: &str) -> bool {
         crate::GUEST_MOUNTS
             .iter()
-            .filter(|m| m.fstype == "tmpfs")
+            .filter(|m| m.fs == crate::GuestFs::Tmpfs)
             .any(|m| dir.starts_with(&format!("{}/", m.target)))
     }
 
@@ -814,12 +994,12 @@ mod identity_location_tests {
     fn the_identity_mount_is_declared_in_guest_mounts() {
         let mount = crate::GUEST_MOUNTS
             .iter()
-            .filter(|m| m.fstype == "tmpfs")
+            .filter(|m| m.fs == crate::GuestFs::Tmpfs)
             .find(|m| IDENTITY_DIR.starts_with(&format!("{}/", m.target)))
             .expect("no tmpfs mount covers IDENTITY_DIR");
         // GUEST_MOUNTS is mounted in main() before identity::fetch_identity is
         // called; this pins the entry that ordering depends on.
-        assert_eq!(mount.fstype, "tmpfs");
+        assert_eq!(mount.fs, crate::GuestFs::Tmpfs);
         assert!(
             mount.nosuid && mount.nodev,
             "{} must stay hardened",

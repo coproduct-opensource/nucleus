@@ -35,7 +35,7 @@ pub(crate) fn spawn_sync(
         cmd.stdin(Stdio::null());
     }
 
-    // Host-hardening hook (e.g. `HostSandbox::harden_std`), applied just
+    // Child-confinement hook (`nucleus::ChildConfinement::apply`), applied just
     // before spawn. `None` reproduces the un-hardened spawn.
     if let Some(harden) = harden {
         harden(&mut cmd);

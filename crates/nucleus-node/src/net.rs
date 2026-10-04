@@ -12,6 +12,11 @@
 #[path = "confinement.rs"]
 pub(crate) mod confinement;
 
+/// The rules the node owns in the HOST namespace for a pod's link (#3134). Separate for the same
+/// reason as `confinement`: it is the host side of the boundary, not the namespace's chain.
+#[path = "host_link.rs"]
+pub(crate) mod host_link;
+
 use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
@@ -34,6 +39,24 @@ const NET_POOL_PREFIX: u8 = 24;
 const POD_PREFIX: u8 = 30;
 const POD_STRIDE: u8 = 4;
 const DEFAULT_DNS: Ipv4Addr = Ipv4Addr::new(1, 1, 1, 1);
+
+/// Destinations no pod reaches, whatever its spec allows (#3120). Node-owned denies that
+/// [`egress_chain`] puts ahead of every spec rule, so a spec `allow` cannot reopen them:
+///
+/// - `169.254.0.0/16`, link-local. It holds the cloud instance metadata service, which hands the
+///   HOST's cloud credentials to anything that asks. A spec `allow: ["0.0.0.0/0"]`, or even
+///   `169.254.169.254/32` (non-routable, so it kept the workload identity too), reached it.
+/// - The veth link pool (`NET_BASE`/`NET_POOL_PREFIX`). The host end of every pod's link is an
+///   address in the host namespace, so reaching one reaches host services bound on it.
+///
+/// The host's OTHER addresses (LAN, public, other bridges) are not nameable from here; the
+/// interface-scoped drops in [`host_link`] cover them on the host side of the link (#3134).
+///
+/// `new_assert` in a `const` is checked by the compiler, so a bad prefix is a build error.
+pub(crate) const NODE_DENY_FLOOR: [ipnet::Ipv4Net; 2] = [
+    ipnet::Ipv4Net::new_assert(Ipv4Addr::new(169, 254, 0, 0), 16),
+    ipnet::Ipv4Net::new_assert(NET_BASE, NET_POOL_PREFIX),
+];
 
 /// The addresses a guest sees. **Identical in every pod, by design.**
 ///
@@ -468,6 +491,11 @@ pub async fn apply_default_deny(_netns: &str) -> Result<(), ApiError> {
 
 #[cfg(target_os = "linux")]
 pub async fn cleanup_network(plan: &NetPlan) -> Result<(), ApiError> {
+    // Exactly the list `setup_network` installed. Best-effort like the rest of teardown: a rule
+    // setup never reached is absent, and `-D` on an absent rule is the only failure expected.
+    for rule in host_link::host_link_rules(&plan.host_veth, plan.subnet) {
+        let _ = Command::new("iptables").args(rule.delete_argv()).status();
+    }
     let _ = Command::new("ip")
         .args(["link", "del", &plan.host_veth])
         .status();
@@ -508,6 +536,19 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     let host_cidr = format!("{}/{}", plan.host_ip, POD_PREFIX);
     let peer_cidr = format!("{}/{}", plan.peer_ip, POD_PREFIX);
     let gateway_cidr = format!("{}/{}", plan.gateway_ip, GUEST_PREFIX);
+
+    // The host side of the link, before the link exists: its drops are in force from the first
+    // packet it could carry, and no host address is reachable from it at any point (#3134).
+    // `-i` on an interface that does not exist yet is accepted and matches once it does.
+    for rule in host_link::host_link_rules(&plan.host_veth, plan.subnet) {
+        let add = rule.add_argv();
+        let check = rule.check_argv();
+        ensure_iptables_rule(
+            &add.iter().map(String::as_str).collect::<Vec<_>>(),
+            &check.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await?;
+    }
 
     run_ip(&[
         "link",
@@ -624,61 +665,6 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
     .await?;
 
     run_sysctl(&["-w", "net.ipv4.ip_forward=1"]).await?;
-    ensure_iptables_rule(
-        &[
-            "-t",
-            "nat",
-            "-A",
-            "POSTROUTING",
-            "-s",
-            &subnet_cidr(plan),
-            "-j",
-            "MASQUERADE",
-        ],
-        &[
-            "-t",
-            "nat",
-            "-C",
-            "POSTROUTING",
-            "-s",
-            &subnet_cidr(plan),
-            "-j",
-            "MASQUERADE",
-        ],
-    )
-    .await?;
-    ensure_iptables_rule(
-        &["-A", "FORWARD", "-i", &plan.host_veth, "-j", "ACCEPT"],
-        &["-C", "FORWARD", "-i", &plan.host_veth, "-j", "ACCEPT"],
-    )
-    .await?;
-    ensure_iptables_rule(
-        &[
-            "-A",
-            "FORWARD",
-            "-o",
-            &plan.host_veth,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-        &[
-            "-C",
-            "FORWARD",
-            "-o",
-            &plan.host_veth,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-    )
-    .await?;
 
     Ok(())
 }
@@ -728,8 +714,16 @@ pub fn egress_chain(
     }
 
     // Deny first, then allow — including the DNS-resolved allows, which are
-    // allows like any other and must not outrank a deny.
-    let mut chain: Vec<NetRule> = Vec::with_capacity(parsed.len() + resolved.len());
+    // allows like any other and must not outrank a deny. The node's floor leads
+    // the denies, so no spec rule precedes it.
+    let floor = NODE_DENY_FLOOR.iter().map(|net| NetRule {
+        kind: RuleKind::Deny,
+        net: IpNet::V4(*net),
+        port: None,
+    });
+    let mut chain: Vec<NetRule> =
+        Vec::with_capacity(NODE_DENY_FLOOR.len() + parsed.len() + resolved.len());
+    chain.extend(floor);
     chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Deny).cloned());
     chain.extend(parsed.iter().filter(|r| r.kind == RuleKind::Allow).cloned());
     chain.extend(resolved);
@@ -1379,10 +1373,6 @@ async fn ensure_iptables_rule(add: &[&str], check: &[&str]) -> Result<(), ApiErr
         )));
     }
     Ok(())
-}
-
-fn subnet_cidr(plan: &NetPlan) -> String {
-    plan.subnet.to_string()
 }
 
 fn add_ipv4(base: Ipv4Addr, offset: u32) -> Ipv4Addr {

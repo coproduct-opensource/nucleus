@@ -35,6 +35,15 @@ updates:
       # patch targets 0.10.8 — 0.11 panics the guest. Never auto-bump the major.
       - dependency-name: "sha2"
         update-types: ["version-update:semver-major"]
+      # c2pa 0.91 is a breaking release on a 0.x line, and three ways at once:
+      # it requires rustc 1.96 (above the workspace floor of 1.95, which the
+      # MSRV job enforces); it deprecates the data-hashed signing path
+      # nucleus-envelope's c2pa_export uses (removed in 0.92); and its manifest
+      # validation now refuses an export whose first action is not
+      # `created`/`opened`. That is a deliberate migration, not a group bump.
+      # Hold the 0.90 line until it lands, then delete this entry.
+      - dependency-name: "c2pa"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     commit-message:
       prefix: "deps(rust)"
 

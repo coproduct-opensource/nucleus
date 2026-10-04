@@ -216,10 +216,11 @@ pub enum Binding {
 
 /// Every witness-typed parameter on `line`, in source order.
 ///
-/// A grep, not a resolver, which is why the vocabulary is a closed list. `&`,
-/// `&mut` and a leading `&'a` are all accepted; a generic instantiation such as
-/// `Authorized<A>` matches on the head name, since that is the type whose
-/// discipline is at issue.
+/// A grep, not a resolver, which is why the vocabulary is a closed list. The
+/// type after the colon is read by [`type_name`]: references, lifetimes and
+/// `mut` are skipped, a path is reduced to its last segment (#2986), and a
+/// generic instantiation such as `Authorized<A>` matches on its head name, since
+/// that is the type whose discipline is at issue.
 ///
 /// The scan starts at every identifier, not only at `_`, because the denominator
 /// this feeds — *how many sites accept a witness at all* — needs the bound ones
@@ -256,26 +257,10 @@ pub fn witness_params(line: &str, witness: &[String]) -> Vec<Binding> {
         if rest[colon..].starts_with("::") {
             continue;
         }
-        let ty = rest[colon + 1..]
-            .trim_start()
-            .trim_start_matches('&')
-            .trim_start()
-            .trim_start_matches("mut ")
-            .trim_start();
-        // Skip an explicit lifetime: `&'a Authority`.
-        let ty = if let Some(after) = ty.strip_prefix('\'') {
-            after
-                .split_once(char::is_whitespace)
-                .map_or("", |(_, t)| t)
-                .trim_start()
-        } else {
-            ty
+        let Some(head) = type_name(&rest[colon + 1..]) else {
+            continue;
         };
-        let head: String = ty
-            .chars()
-            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-            .collect();
-        if witness.contains(&head) {
+        if witness.iter().any(|w| w == head) {
             out.push(if name.starts_with('_') {
                 Binding::Dropped
             } else {
@@ -284,6 +269,65 @@ pub fn witness_params(line: &str, witness: &[String]) -> Vec<Binding> {
         }
     }
     out
+}
+
+/// The name of the type a parameter's type expression `ty` denotes, read as
+/// tokens rather than characters.
+///
+/// `&`, `&mut`, `&'a` and `&'a mut` in any spacing are skipped. What follows
+/// must be a path — `X`, `a::X`, `::a::X`, `crate::a::X` — and the answer is
+/// its LAST segment, compared by the caller as a whole identifier. So
+/// `&portcullis::VerifiedPermissions` names `VerifiedPermissions` exactly as the
+/// bare spelling does (#2986: a site that moved and changed spelling read as a
+/// deletion), while `NotVerifiedPermissions` names itself and `Authority::Inner`
+/// names `Inner`. The path ends at the first token that is not `::` followed by
+/// an identifier, so `Authorized<A>` names `Authorized` and `X::new(b)` names
+/// `new` — an expression, not a type.
+///
+/// `None` when `ty` does not start with a path at all.
+fn type_name(ty: &str) -> Option<&str> {
+    let mut rest = ty;
+    // Prefix: any run of `&`, a lifetime, or `mut`.
+    loop {
+        rest = rest.trim_start();
+        if let Some(r) = rest.strip_prefix('&') {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix('\'') {
+            rest = r.trim_start_matches(|c: char| c.is_ascii_alphanumeric() || c == '_');
+        } else if let Some(("mut", r)) = ident(rest) {
+            rest = r;
+        } else {
+            break;
+        }
+    }
+    // Path: `::`? ident (`::` ident)*. The last identifier is the name.
+    if let Some(r) = rest.strip_prefix("::") {
+        rest = r.trim_start();
+    }
+    let (mut name, mut r) = ident(rest)?;
+    loop {
+        let Some(after) = r.trim_start().strip_prefix("::") else {
+            return Some(name);
+        };
+        match ident(after.trim_start()) {
+            Some((next, tail)) => (name, r) = (next, tail),
+            // `X::<T>` and `X::` followed by anything else end the path at `X`.
+            None => return Some(name),
+        }
+    }
+}
+
+/// One identifier token at the start of `s` (no leading whitespace), and what
+/// follows it. Whole tokens only: `NotX` is never `X`.
+fn ident(s: &str) -> Option<(&str, &str)> {
+    let first = s.chars().next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    let end = s
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(s.len());
+    Some((&s[..end], &s[end..]))
 }
 
 /// Is `line` a parameter binding an inert witness — `_name: Type`, where `Type`

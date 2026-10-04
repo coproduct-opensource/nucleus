@@ -51,6 +51,24 @@ enum Command {
     Grammar,
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// Build the nucleus guest layer — `/init`, the `nucleus-*` binaries, the CA
+    /// bundle, and no pod spec — as one deterministic tar, and print its digest as
+    /// `sha-256:<hex>`. See crates/xtask/src/guest_layer.rs.
+    GuestLayer {
+        /// Guest architecture.
+        #[arg(long, value_enum)]
+        arch: guest_layer::Arch,
+        /// Where to write the tar.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// How to cross-build the static musl binaries.
+        #[arg(long, value_enum, default_value = "zigbuild")]
+        builder: guest_layer::Builder,
+        /// Use binaries already built in this directory (a `target/<triple>/release`)
+        /// instead of building them.
+        #[arg(long)]
+        prebuilt: Option<std::path::PathBuf>,
+    },
     /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
     /// defect patched into a scratch worktree at HEAD, every mode run against it.
     /// Exit 0 as the manifest says, 1 a mismatch, 2 could not look or zoo rot.
@@ -97,6 +115,10 @@ enum Command {
         #[arg(long, default_value = ".gatehouse/plan-gates.json")]
         plan: std::path::PathBuf,
     },
+    /// The cheap tree-only gates, before a push: exemplar ratchet, cargo-audit, scorecard,
+    /// line ratchet. Each gets Pass / Fail / CouldNotRun; anything but Pass exits non-zero.
+    /// See crates/xtask/src/prepush.rs.
+    Prepush,
     /// A SHA of this repo pinned by this repo must still match the working tree.
     SelfPin,
     /// One fact written in several files must have one value: the elan release and its
@@ -229,6 +251,14 @@ enum Command {
     /// per family in `.scorecard-ratchet.toml`, two floors each: on the ratio,
     /// so it cannot fall, and on the population, because deleting an obligation
     /// raises the ratio without discharging anything.
+    /// Every agent-reachable entry point of the tool-proxy, by how it is
+    /// mediated: sealed (mints an `Authority`), checked (a runtime decision it
+    /// does not need to act), or unchecked. A report; the `mediate` scorecard
+    /// family gates the number, and `--badge` prints `ci/badges/mediation.json`.
+    Mediation {
+        #[arg(long)]
+        badge: bool,
+    },
     Scorecard {
         #[arg(long)]
         measure: bool,
@@ -320,13 +350,31 @@ enum Command {
         #[command(subcommand)]
         cmd: CiSpecCmd,
     },
+    /// Measure the exemplar scoreboard (formal verification, Rust craft,
+    /// sandboxing) and write scoreboard.json. Replaces
+    /// scripts/exemplar-scoreboard.sh; see crates/xtask/src/exemplar_scoreboard.rs.
+    ExemplarScoreboard {
+        /// Where to write the scoreboard.
+        #[arg(default_value = "scoreboard.json")]
+        out: String,
+    },
+    /// The gate of gates: every gate must RED on a real violation of its own subject and GREEN
+    /// when restored. CI calls it through `scripts/check-gates-can-fail.sh`; the arguments are
+    /// that script's (`--vacuity-only`, `--baseline-only`, `--for-event <event> <base>`, ...).
+    /// See crates/xtask/src/gates_can_fail/mod.rs.
+    #[command(name = "gates-can-fail", disable_help_flag = true)]
+    GatesCanFail {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
     /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
     /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
     ScoreboardRatchet {
-        /// The freshly generated scoreboard.json.
+        /// A scoreboard.json to compare. Omitted, the tree is measured in
+        /// process (`exemplar-scoreboard`), which is how CI runs it.
         #[arg(long)]
-        current: String,
+        current: Option<String>,
         /// The pinned baseline (scripts/exemplar-baseline.json).
         #[arg(long)]
         baseline: String,
@@ -421,9 +469,12 @@ mod command_grammar;
 mod convergence;
 mod coverage_floor;
 mod econ_boundary;
+mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
+mod gates_can_fail;
+mod guest_layer;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
@@ -431,10 +482,12 @@ mod lean_action_builds;
 mod life;
 mod line_ratchet;
 mod local_coverage;
+mod mediate;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
 mod portability;
+mod prepush;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
@@ -451,6 +504,12 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::GuestLayer {
+            arch,
+            out,
+            builder,
+            prebuilt,
+        } => guest_layer::run(&repo_root()?, arch, &out, builder, prebuilt),
         Command::StressZoo { only } => std::process::exit(stress_zoo::run(only.as_deref())?),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
@@ -501,6 +560,11 @@ fn main() -> Result<()> {
                 }
             }
         }
+        // Exit code mapped here, not inside the run, for the SelfPin arm's reason.
+        Command::Prepush => match prepush::run(&repo_root()?)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::Portability => portability::check(&std::env::current_dir()?),
         Command::ActionInputs { network } => {
@@ -545,6 +609,10 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::Mediation { badge } => match mediate::run(badge)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Scorecard {
             measure,
             badge,
@@ -578,8 +646,10 @@ fn main() -> Result<()> {
                 json,
             } => ci_spec::trace_check(&github, since_hours, json),
         },
+        Command::GatesCanFail { args } => std::process::exit(gates_can_fail::run(&args)),
+        Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
-            scoreboard::scoreboard_ratchet(&current, &baseline)
+            scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)
         }
         Command::CiOtel {
             since,
@@ -644,7 +714,6 @@ fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Resu
 /// Matched by path suffix.
 const KEEP_AS_SHELL: &[&str] = &[
     "scripts/firecracker/guest-init.sh",
-    "scripts/firecracker/guest-net.sh",
     "scripts/firecracker/build-rootfs.sh",
     "scripts/firecracker/build-scratch.sh",
     "scripts/container/smoke-test.sh",

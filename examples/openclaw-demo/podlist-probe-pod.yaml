@@ -2,12 +2,14 @@
 # the pod is an ORCHESTRATOR with pod-management enabled — because the probe
 # needs two things an ordinary pod does not get:
 #
-#   * `enable_pod_mgmt: "true"` (+ the orchestrator profile) makes the node mint
-#     this pod a caller token, and `FETCH_POD_CALLER_TOKEN` then serves its
-#     `pod_id` alongside it (G1). `nucleus-guest-init` sets `NUCLEUS_POD_ID` from
-#     that, which the probe requires to self-check its listing.
+#   * `enable_pod_mgmt: "true"` (+ the orchestrator profile) makes this a
+#     management-enabled pod, so the node mints it a caller token and records
+#     its lineage. The token and the pod id are served once, to
+#     `nucleus-guest-init`, never to the probe (#3113); the probe needs neither.
 #   * The probe reaches the workload-API vsock (CID 2, port 15012) and sends
-#     `POD_LIST`; the node answers this pod's lineage-scoped listing (G3).
+#     `POD_LIST`, the one request it can make; the socket says which pod is
+#     asking and the node answers that pod's lineage-scoped listing (G3). The
+#     host checks A's own id is in it.
 #
 # This is pod A of the C2 G4 live scenario. The boot harness also creates a
 # non-lineage sibling B on the node, so A's listing being {A} (B excluded) over

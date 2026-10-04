@@ -80,5 +80,23 @@
 # together: 171/172 -> 173/174, dropped still 1 (CaClient).
 # 2026-09-29, rebuilding the glob/grep branch onto main after #3041 landed: all three moves
 # apply to one tree, so the pin is this tree's measurement.
-floor_bp = 9944
-declared_floor = 180
+# 2026-09-27: declassification became a sealed witness. `VerifiedDeclassification`
+# joins the WITNESS vocabulary (its one site, `FlowGraph::apply_verified`, binds
+# it), and `kernel/declassify_authority.rs` now names `DeclassificationToken`
+# bare instead of path-qualified, so four sites that were always there become
+# visible to the scan (verify, the two fused applies, the witness's own field).
+# All five are bound: D=177, B=176, dropped=1 (still CaClient). A visibility
+# gain, not new enforcement counted twice.
+# 2026-09-29, merging main into the declassification branch: every move above applies to
+# one tree, so the pin is this tree's measurement.
+# 2026-10-01: the execute-on-consume guard splits the executor's synchronous spawn
+# into `spawn_checked` (the guard) and `spawn_unguarded` (the effect), and the
+# effect half takes the `Authority` by name and spends it. One new site, bound:
+# D=186, B=185, dropped=1 (still CaClient), measured on this branch merged with main.
+# 2026-10-01: census correction, not new obligations (#2986). A witness parameter
+# written with its path (`&portcullis::VerifiedPermissions`) was invisible to the
+# scan; it now matches the type's last path segment as a whole identifier. Seven
+# existing bound sites become visible: D=193, B=192, dropped=1 (still CaClient),
+# raw dropped still 33 == INERT_TOTAL.
+floor_bp = 9948
+declared_floor = 193
