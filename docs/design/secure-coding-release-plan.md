@@ -926,3 +926,42 @@ outside container PID 1, refusal of an occupied root, and unchanged forwarding
 of node arguments. Portable and Linux-target strict Clippy and the Linux ARM64
 musl build pass.
 All four prepush gates pass for the entrypoint change.
+
+### Two harnesses packaged and booted (2026-10-04)
+
+Apple Container built an external acceptance image containing Aider 0.86.2
+and Continue CLI 1.5.47, with Python 3.11.2 and Node 22.23.3. Both version
+commands and help commands ran as UID 1000. The base image is pinned to
+`sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c`;
+the resulting harness image index is
+`sha256:4ae98061c558d578e4933db0c6df8865ebc09cc6982b1bf0ce20835b4c9ca3fd`.
+No model credentials were installed. The external recipe is local at
+`/tmp/nucleus-harness-context/Containerfile`; vendor configuration stays out
+of the runtime.
+
+`nucleus image import --oci-archive` verified that image for linux/arm64 and
+produced normalized rootfs tar
+`sha256:9a69ef84f0e880477245528dc850df3df54917665d62e21a5961d3e8495c679c`
+(1,153,532,416 bytes). The existing rootfs builder consumed that imported
+filesystem with current guest binaries and an explicit HTTP-adapter overlay.
+The new 2 GiB ext4 artifact is
+`sha256:253b6ad6336b3d331d2204bbcbbe010a53d31b0d8260201d5dcb051844874b9e`,
+locally at `/tmp/nucleus-apple-acceptance/artifacts/harness.ext4`.
+
+Separate Firecracker pods on the automatically prepared Apple Container host
+ran each harness as UID 1000 with this read-only guest image:
+
+| Harness | Pod | Observed guest output |
+| --- | --- | --- |
+| Aider | `98c40da5-c47b-4c32-979c-0f5f756a55c8` | `aider 0.86.2` |
+| Continue | `87a7e7a1-4abd-4880-9f70-59ff4a4ef4cb` | `1.5.47` |
+
+Both produced exit reports, and the guest external-network denial probes
+passed. Both pods were cancelled; the validation host and builder were stopped.
+This proves packaging and guest startup compatibility only. Full model
+requests, coding/tests, scoped approval, PR creation, and independent evidence
+verification remain open for both harnesses. A model endpoint/model and host
+credential reference have been requested; no secret value is needed in chat.
+The adapter still needs ordinary release-image inclusion rather than the
+explicit acceptance overlay, and the published fresh-install journey remains
+unverified.
