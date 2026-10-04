@@ -1269,7 +1269,6 @@ impl FirecrackerPod {
         }
         Ok(())
     }
-
 }
 
 impl ContainerPod {
