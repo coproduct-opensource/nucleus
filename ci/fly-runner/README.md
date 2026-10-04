@@ -58,7 +58,7 @@ checkout, toolchain or executable); a gate pool Machine has no volume.
 | pool | label | Machine | jobs |
 |---|---|---|---|
 | build | `nucleus-fly-build` | performance-8x, 32 GB, one volume each (7 × 40 GB + 17 × 20 GB); size 24, standby 24 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (24 `runs-on` sites) |
-| gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (40 sites), opt-in |
+| gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (41 sites), opt-in |
 
 Routing is the two repository variables the workflows already read:
 
