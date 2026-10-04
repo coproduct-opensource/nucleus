@@ -30,10 +30,9 @@ use std::fs;
 const REQUIRED: &str = "ci/required-checks.txt";
 const DECIDERS: &str = "ci/local-deciders.txt";
 const PREPUSH: &str = "scripts/prepush.sh";
-/// The gate-of-gates probe table. Since #2990 the gauntlet runs every gate in it through
-/// `--baseline-only` rather than naming each one, so a gate listed here IS in the gauntlet --
-/// provided the gauntlet actually makes that call.
-const PROBES: &str = "scripts/check-gates-can-fail.sh";
+/// The gate-of-gates probe table is `crate::gates_can_fail::table`. Since #2990 the gauntlet
+/// runs every gate in it through `--baseline-only` rather than naming each one, so a gate
+/// listed there IS in the gauntlet -- provided the gauntlet actually makes that call.
 const BASELINE_CALL: &str = "check-gates-can-fail.sh --baseline-only";
 
 fn fail(failures: &mut u32, msg: &str) {
@@ -89,12 +88,12 @@ fn pin(text: &str, key: &str) -> Option<usize> {
         .ok()
 }
 
-/// The gates the probe table names: `probe <gate>.sh …` lines, as `<gate>`.
-fn parse_probed(text: &str) -> BTreeSet<String> {
-    text.lines()
-        .filter_map(|l| l.trim_start().strip_prefix("probe "))
-        .filter_map(|rest| rest.split_whitespace().next())
-        .filter_map(|gate| gate.strip_suffix(".sh"))
+/// The shell gates the probe table names, as `<gate>` (no `.sh`). Read from the table itself:
+/// a parse of the harness's source would be a second decider for the same fact (ADR 0007 G-1).
+fn probed() -> BTreeSet<String> {
+    crate::gates_can_fail::table::probed_shell_gates()
+        .into_iter()
+        .filter_map(|g| g.strip_suffix(".sh"))
         .map(str::to_string)
         .collect()
 }
@@ -229,11 +228,7 @@ pub fn run() -> Result<()> {
         bail!("could not look: {PREPUSH} is not readable");
     };
     let text = fs::read_to_string(DECIDERS)?;
-    // Unreadable is an empty set, not an error: every derived decider then reads as unwired,
-    // which is the fail-closed direction.
-    let probed = fs::read_to_string(PROBES)
-        .map(|t| parse_probed(&t))
-        .unwrap_or_default();
+    let probed = probed();
 
     let found = audit_with(&req, &dec, &prepush, &probed, &text);
     let mut failures = 0u32;
@@ -359,15 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn the_probe_table_names_its_gates_without_the_suffix_or_flags() {
-        let table = "probe check-dep-ceiling.sh    \"\" scripts/x.sh \\\n\
-                     \x20   probe check-kani-proof-count.sh \"--strict\" a.rs \\\n\
-                     # probe check-commented-out.sh is prose, not a probe\n\
-                     not_a_probe check-other.sh\n";
-        assert_eq!(
-            parse_probed(table),
-            set(&["check-dep-ceiling", "check-kani-proof-count"])
-        );
+    fn the_probe_table_names_its_gates_without_the_suffix() {
+        let got = probed();
+        assert!(got.contains("check-kani-divergence"), "{got:?}");
+        assert!(got.contains("check-line-ratchet"), "{got:?}");
+        assert!(!got.iter().any(|g| g.ends_with(".sh")), "{got:?}");
     }
 
     /// A gate the gauntlet runs through the baseline counts as wired, and ONLY while the
