@@ -106,7 +106,7 @@ async fn settle(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-driver"))]
 mod tests {
     use super::*;
     use axum::body::Body;

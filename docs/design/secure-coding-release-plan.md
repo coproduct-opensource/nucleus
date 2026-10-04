@@ -1029,3 +1029,31 @@ Raw streaming approval/replay/taint cases, foreign pod/epoch attempts, durable
 recovery, and the rest of the full conformance matrix remain open. No production
 policy or transport enforcement was disabled; only the disposable guest image
 was replaced to act as the adversary.
+
+### Streaming approval expiry found by the guest probe (2026-10-04)
+
+Compromised Firecracker pod `ac8ca38f-98a1-404f-bed0-6980f9a9a9e9`
+submitted a raw STREAM with `require_approval=false` under a host policy that
+requires WebFetch approval. The host retained the exact 23-byte payload for
+operator review and sent nothing upstream before the grant. After the grant,
+the guest received `not permitted`; its remaining replay cases did not run.
+This is a failed acceptance run, not streaming conformance evidence.
+
+A regression reproduced that refusal by granting after 61 seconds. The
+credential PDP witness expires after 60 seconds, while operator review may
+wait 120 seconds. The stream retained its initial witness across staging and
+review, then tried to retrieve credentials using that expired authorization.
+The fix reruns the existing resolver after staging and review using the same
+immutable request, identity, policy and registry. It does not extend an old
+witness's expiry. Shared host policy is still checked before credential access
+and at final effect commitment, where the exact operator grant is consumed.
+
+The new expiry regression failed before the fix and passed afterward. The
+full node binary suite passed 847 tests (one ignored), Clippy with warnings
+denied completed successfully, and all four tree prepush gates passed. A clean
+default-feature test check also exposed a route-test module that used the
+local-driver fixture without its feature guard; matching that guard restores
+default-feature test compilation.
+
+The updated binary still needs the real compromised-guest streaming run,
+including nonce replay, spent-approval reuse and changed-payload refusal.

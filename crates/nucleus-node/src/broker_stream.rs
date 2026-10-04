@@ -478,18 +478,15 @@ where
         )
         .await;
     }
-    let Some(resolved) = crate::broker_perform::resolve(
-        &Asked {
-            operation: &req.operation,
-            target: &req.target,
-            justification: &req.justification,
-            path: &req.path,
-        },
-        ctx.identity,
-        ctx.policy,
-        ctx.upstreams,
-        now,
-    ) else {
+    let asked = Asked {
+        operation: &req.operation,
+        target: &req.target,
+        justification: &req.justification,
+        path: &req.path,
+    };
+    let Some(resolved) =
+        crate::broker_perform::resolve(&asked, ctx.identity, ctx.policy, ctx.upstreams, now)
+    else {
         return refuse(
             &Refusal::NotPermitted,
             0,
@@ -597,6 +594,19 @@ where
             return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
         }
     }
+    // Staging and operator review can outlive the credential PDP witness.
+    // Re-run its checker (ADR 0007 C-1), never extend a stale grant's expiry.
+    // These immutable inputs resolve the same effect; the shared host policy
+    // was checked above and is checked again when committing below.
+    let Some(resolved) = crate::broker_perform::resolve(
+        &asked,
+        ctx.identity,
+        ctx.policy,
+        ctx.upstreams,
+        current_time(),
+    ) else {
+        return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await;
+    };
     let uploaded = staged.len();
     let open_bytes = req.path.len().saturating_add(req.content_type.len()) as u64;
     let charge = match ctx

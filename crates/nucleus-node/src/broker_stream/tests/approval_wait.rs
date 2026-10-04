@@ -90,6 +90,32 @@ async fn original_stream_waits_for_operator_and_resumes_exactly_once() {
 }
 
 #[tokio::test]
+async fn operator_can_grant_after_credential_authorization_expires() {
+    let (base, seen) = upstream().await;
+    let pod = gated(&base);
+    let mut request = open("model-api", "slow-operator");
+    request.approval_wait_seconds = 120;
+    let control = async {
+        let id = pending(&pod).await;
+        // Cross the credential PDP witness lifetime, not the operator grant's
+        // lifetime. The stream must recheck policy before fetching credentials.
+        tokio::time::sleep(Duration::from_secs(
+            nucleus_cred_broker::APPROVAL_TTL_SECS + 1,
+        ))
+        .await;
+        assert!(seen.lock().unwrap().is_empty());
+        pod.host_policy
+            .lock()
+            .unwrap()
+            .settle_effect_approval(operator(), id, true, now())
+            .unwrap();
+    };
+    let (heard, ()) = tokio::join!(drive(&pod, &request, b"reviewed payload"), control);
+    assert!(heard.head.granted, "{}", heard.head.reason);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn approval_wait_times_out_without_dispatch_or_erasing_the_review() {
     let (base, seen) = upstream().await;
     let pod = gated(&base);
