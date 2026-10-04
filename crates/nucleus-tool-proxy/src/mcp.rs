@@ -1743,6 +1743,7 @@ mod tests {
             AuthMethod::Hmac,
             AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
+            AuthMethod::PodPeer,
             AuthMethod::Ed25519Drand,
             AuthMethod::WorkloadDoor,
         ] {

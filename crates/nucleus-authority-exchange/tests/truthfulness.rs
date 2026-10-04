@@ -21,24 +21,29 @@
 //! perfectly individually rational and completely useless.
 
 use nucleus_authority_exchange::test_support::bid;
-use nucleus_authority_exchange::{Clearing, Round, RoundOutcome, VcgClearing};
+use nucleus_authority_exchange::{Clearing, Round, RoundOutcome, ScarceGood, VcgClearing};
 use nucleus_econ_types::AuctionId;
-use nucleus_permission_market::PermissionDimension;
 use proptest::prelude::*;
-use std::num::NonZeroU32;
 
-const EGRESS: PermissionDimension = PermissionDimension::NetworkEgress;
+/// The good these tests contend for. A function rather than a `const`
+/// because a good owns its label; `PermissionDimension` is the source so
+/// the tests exercise the conversion the in-pod path uses.
+fn egress() -> ScarceGood {
+    ScarceGood::from(nucleus_permission_market::PermissionDimension::NetworkEgress)
+}
+
+use std::num::NonZeroU32;
 
 /// Bidder 0 reports `report`; everyone else reports their true value. Returns
 /// bidder 0's realised utility, `true_value - price` if it wins and `0` if not.
 fn utility_of_first(report: u64, others: &[u64], true_value: u64) -> i128 {
-    let mut round = Round::open(AuctionId::new("r"), EGRESS);
+    let mut round = Round::open(AuctionId::new("r"), egress());
     round
-        .submit(bid("bidder-00", report, EGRESS))
+        .submit(bid("bidder-00", report, egress()))
         .expect("admitted");
     for (i, v) in others.iter().enumerate() {
         round
-            .submit(bid(&format!("bidder-{:02}", i + 1), *v, EGRESS))
+            .submit(bid(&format!("bidder-{:02}", i + 1), *v, egress()))
             .expect("admitted");
     }
     let outcome = VcgClearing.clear(&round).expect("clears");
@@ -145,12 +150,12 @@ fn the_kernel_charges_the_lean_threshold_at_every_slot_count() {
     for slots in 1usize..=5 {
         let mut round = Round::open_with_slots(
             AuctionId::new(format!("r-{slots}")),
-            EGRESS,
+            egress(),
             NonZeroU32::new(u32::try_from(slots).expect("slots fit u32")).expect("slots ≥ 1"),
         );
         for (i, v) in values.iter().enumerate() {
             round
-                .submit(bid(&format!("bidder-{i:02}"), *v, EGRESS))
+                .submit(bid(&format!("bidder-{i:02}"), *v, egress()))
                 .expect("admitted");
         }
         let out = VcgClearing.clear(&round).expect("clears");
@@ -221,13 +226,13 @@ fn no_misreport_beats_the_truth_at_any_slot_count() {
 fn utility_at_slots(slots: usize, report: u64, others: &[u64], true_value: u64) -> i128 {
     let mut round = Round::open_with_slots(
         AuctionId::new("r"),
-        EGRESS,
+        egress(),
         NonZeroU32::new(u32::try_from(slots).expect("slots fit u32")).expect("slots ≥ 1"),
     );
-    round.submit(bid("me", report, EGRESS)).expect("admitted");
+    round.submit(bid("me", report, egress())).expect("admitted");
     for (i, v) in others.iter().enumerate() {
         round
-            .submit(bid(&format!("other-{i}"), *v, EGRESS))
+            .submit(bid(&format!("other-{i}"), *v, egress()))
             .expect("admitted");
     }
     let outcome = VcgClearing.clear(&round).expect("clears");

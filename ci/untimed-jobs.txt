@@ -24,11 +24,13 @@
 #
 # Changes:
 #   2026-09-11 — pinned at the 23 in force, nothing moved.
+#   2026-10-02 — exemplar-scoreboard.yml:scoreboard left (timeout-minutes: 15). It became a
+#                required context, so it now runs under merge_group and must fit the queue
+#                budget (CI-I7).
 
 action-smoke-test.yml:dry-run
 action-smoke-test.yml:live-test
 dependabot-automerge.yml:dependabot
-exemplar-scoreboard.yml:scoreboard
 oidc-gates.yml:vendor-neutrality
 oidc-gates.yml:algorithm-pin
 oidc-keyless-prototype.yml:keyless-oidc-e2e

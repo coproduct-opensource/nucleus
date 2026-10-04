@@ -537,14 +537,14 @@ mod tests {
     /// secrets.
     #[test]
     fn every_cmdline_key_is_classified() {
-        // The audit sink's keys are rendered by `spec_posture::audit_sink_boot_args` (#3120), the
-        // parser admission runs, so that function's body is part of the builder too.
-        let posture = include_str!("spec_posture.rs");
-        let sink_fn = posture
+        // The audit sink's keys are rendered by `audit_sink::audit_sink_boot_args` (#3120, #3131),
+        // from the target admission resolved, so that function's body is part of the builder too.
+        let sink_src = include_str!("audit_sink.rs");
+        let sink_fn = sink_src
             .split("pub(crate) fn audit_sink_boot_args")
             .nth(1)
             .and_then(|rest| rest.split("\n}\n").next())
-            .expect("spec_posture renders the audit sink tokens");
+            .expect("audit_sink renders the audit sink tokens");
         let src = format!("{}\n{sink_fn}", include_str!("firecracker_config.rs"));
         let src = src.as_str();
         let mut emitted: Vec<String> = Vec::new();

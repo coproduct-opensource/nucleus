@@ -222,6 +222,10 @@ population_floor = 278
 # 2026-10-02 (#3119, rebased): the population pin had not followed the three
 # crates above -- the tree measures 31/89 on main and here, while the pin still
 # said 86. Re-pinned to the measurement; the ratio is unchanged.
+# 2026-10-02 (#3002, rebased onto main): nucleus-permission-market declares all
+# seven and goes integer -- the f64 λ curve became a u128 fixed-point
+# exponential, every price a micro-USD u64, `deny(float_arithmetic)` on the
+# shipped build. 32/89, 35.95%.
 # 2026-10-02 (#2702 P7): new crate nucleus-decision-protocol, the decision
 # channel's codec -- it parses every byte a guest writes on that channel --
 # declares all seven from its first commit; 32/90, 35.55%. The ratio rose, so
@@ -232,9 +236,9 @@ population_floor = 278
 # (now `checked_div`). Note the census reads git, not the working tree -- the
 # crate was invisible to this gate until `git add`. A crate that decides whether
 # a probability may be trusted is exactly what this family counts.
-# 2026-10-04 (#3156 integration): both new crates are now in the tree.
-# Measured 33 of 91 = 36.26%; preserve both gains in the combined floor.
-floor_bp = 3626
+# 2026-10-04: integer market, calibration and decision-protocol are all present.
+# Combined 34 of 91 = 37.36%; retain all three lint-adoption gains.
+floor_bp = 3736
 floor_set = "measurement"
 population_floor = 91
 
@@ -540,9 +544,11 @@ population_floor = 23
 # wiring uses the module. Re-measured on the tree rebased onto 02e7aa341
 # (`cargo xtask scorecard --measure`): 22 of 140 = 15.71% -- one more
 # discharged suppression and one more in the population.
-floor_bp = 1571
+# 2026-10-04 (#3155 integration): audit credential helpers add one expiring
+# production suppression. Measured 23 of 141 = 16.31%; tighten both pins.
+floor_bp = 1631
 floor_set = "measurement"
-population_floor = 140
+population_floor = 141
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

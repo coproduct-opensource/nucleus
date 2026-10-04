@@ -138,8 +138,10 @@ pub(crate) enum DelegationAuthority {
 }
 
 /// The delegation authority of an authentication method. Only SPIFFE mTLS
-/// binds an identity; the shared-secret, approval, host-vsock and
-/// workload-door tiers do not, and a certificate on any of them is refused.
+/// binds an identity; the shared-secret, approval, host-vsock, pod-peer and
+/// workload-door tiers do not, and a certificate on any of them is refused. A
+/// pod peer's `(uid, pid)` tells two bidders apart, but a uid is not a SPIFFE
+/// leaf a certificate can be checked against (#2988).
 ///
 /// Exhaustive (ADR 0007 E-2): a new method must say which it is here.
 pub(crate) fn delegation_authority(method: &AuthMethod) -> DelegationAuthority {
@@ -149,6 +151,7 @@ pub(crate) fn delegation_authority(method: &AuthMethod) -> DelegationAuthority {
         | AuthMethod::HmacDrand
         | AuthMethod::HostVsock
         | AuthMethod::Ed25519Drand
+        | AuthMethod::PodPeer
         | AuthMethod::WorkloadDoor => DelegationAuthority::Unbound,
     }
 }
@@ -237,7 +240,7 @@ pub(crate) fn evaluate_request_cert(
     let mut fused =
         client_cert_der.and_then(|der| identity_fusion::extract_fused_identity(der, spiffe_id));
 
-    let bid = cert_bridge::certificate_to_bid(&verified);
+    let bid = nucleus_permission_market::PermissionBid::from_verified(&verified);
     let market = state.permission_market.lock().unwrap();
     let mut grant = market.evaluate_bid(&bid);
     if let Some(ref mut fi) = fused
@@ -250,10 +253,10 @@ pub(crate) fn evaluate_request_cert(
     tracing::info!(
         leaf_identity = %verified.leaf_identity(),
         chain_depth = verified.chain_depth(),
-        trust_tier = ?bid.trust_tier,
+        trust_tier = ?bid.trust_tier(),
         granted = grant.granted.len(),
         denied = grant.denied.len(),
-        total_cost = grant.total_cost,
+        total_cost_micro = grant.total_cost_micro,
         fused_verified = fused.as_ref().is_some_and(|f| f.fingerprint_verified),
         event = "delegation_cert_evaluated",
         "delegation certificate verified and evaluated against market"
@@ -384,6 +387,7 @@ mod tests {
             AuthMethod::Hmac,
             AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
+            AuthMethod::PodPeer,
             AuthMethod::Ed25519Drand,
             AuthMethod::WorkloadDoor,
         ] {

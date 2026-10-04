@@ -17,6 +17,13 @@
 # perturbed on its own — a green from both together would otherwise say nothing
 # about which one is load-bearing.
 #
-# ONE ENTRY, and it should stay that way. A second sanctioned vsock client on the
-# agent path is a second thing that must remember to spend an authority.
+# TWO ENTRIES, and the second is not on the agent path. `broker_client` performs
+# EGRESS for the agent and must spend an authority to do it. `spend_shipper`
+# (#2541) ships clearing evidence and the proxy's signed spend records to the
+# node's receipt collector. It reaches no external upstream and performs no
+# agent-requested operation. Missing or invalid accounting prevents a refund;
+# the node retains the full allocation. This is trusted accounting telemetry.
+# A third entry on the agent path would be a third thing that must remember to
+# spend an authority; this one is not on it.
 file:crates/nucleus-tool-proxy/src/broker_client.rs
+file:crates/nucleus-tool-proxy/src/spend_shipper.rs

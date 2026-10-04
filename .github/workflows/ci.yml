@@ -994,6 +994,11 @@ jobs:
           cargo +nightly fuzz run path_can_access -- -max_total_time=30
           cargo +nightly fuzz run permission_serde -- -max_total_time=30
           cargo +nightly fuzz run workload_api_command -- -max_total_time=30
+      - name: run decision-protocol fuzz targets
+        # Its own cargo-fuzz root (an empty `[workspace]`, like `fuzz/`), so it
+        # runs from its own directory rather than from the list above.
+        working-directory: crates/nucleus-decision-protocol/fuzz
+        run: cargo +nightly fuzz run decision_frame -- -max_total_time=30
 
   verify-strict:
     name: Ed25519 verify_strict gate (M-3)

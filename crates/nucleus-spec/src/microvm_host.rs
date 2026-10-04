@@ -556,6 +556,17 @@ mod tests {
         }
     }
 
+    /// The release the image still downloads while it trails the pin.
+    ///
+    /// The image takes the release's node, mcp and rootfs by digest, and a
+    /// release's digests exist only once its tag has built them, while the pin
+    /// moves BEFORE the tag. So the change that bumps [`GUEST_RELEASE`] cannot
+    /// move the image in the same commit; the image trails by one release
+    /// until the follow-up that copies the new digests in. That follow-up
+    /// deletes this constant and asserts the image is at the pin; the test
+    /// below reds until it does.
+    const IMAGE_TRAILS_THE_PIN_AT: &str = "2.2.0";
+
     #[test]
     fn the_image_pins_the_same_vmm_guest_kernel_and_release() {
         let r = recipe(IMAGE_SOURCE);
@@ -563,7 +574,25 @@ mod tests {
         assert!(r.contains(&format!("/v{fc}/firecracker-v{fc}-aarch64.tgz")));
         assert!(r.contains(&format!("--checksum=sha256:{}", KERNEL_AARCH64.sha256)));
         assert!(r.contains(KERNEL_AARCH64.url));
-        assert!(r.contains(&format!("releases/download/v{GUEST_RELEASE}/")));
+        // Teeth both ways: the trailing release really is older than the pin,
+        // and the image moving to the pin reds this until the trail is removed.
+        let v = IMAGE_TRAILS_THE_PIN_AT;
+        let (pin, trail) = (
+            crate::tier2_artifacts::parse_release(GUEST_RELEASE),
+            crate::tier2_artifacts::parse_release(v),
+        );
+        assert!(
+            trail.is_some() && trail < pin,
+            "{v} does not trail {GUEST_RELEASE}"
+        );
+        assert!(
+            r.contains(&format!("releases/download/v{v}/")),
+            "image moved off v{v}"
+        );
+        assert!(
+            !r.contains(&format!("releases/download/v{GUEST_RELEASE}/")),
+            "the image is at the pin: drop IMAGE_TRAILS_THE_PIN_AT and assert that"
+        );
     }
 
     // ── versions and the Mac ──

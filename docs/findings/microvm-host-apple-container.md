@@ -1,6 +1,9 @@
 # Spike: Firecracker microVMs hosted in an Apple `container`
 
-**Status:** PR0 of the host-tier plan (measurement only; nothing is wired into the CLI).
+**Status:** Historical PR0 measurement report. “This tree”, `main` and release
+compatibility below refer to September 29, not the current checkout. The production
+host backend has since landed in `crates/nucleus-cli/src/microvm_host/`.
+The spike harness remains separate from that backend and from CI acceptance gates.
 **Date:** 2026-09-29. **Machine:** Apple M5 Pro, macOS 26.6.2, `container` CLI 1.4.1.
 **Recommendation: GO.** P1 passes, so the kill criterion does not fire. Before PR4 is
 built on it, three findings change the plan (see [What changes in the plan](#what-changes-in-the-plan)).
@@ -25,7 +28,10 @@ The steps, in order: `build_l1_kernel`, `build_microvm_host_image`,
 `p3_pod_boots`, `p5_exec_stdio`, `p4_workspace_roundtrip`, `p6_lifecycles`
 (`NUCLEUS_SPIKE_P6_LOAD=exec|io` adds guest load), `p6b_forced_death`, `cleanup`.
 Everything the harness creates is named `nucleus-spike-*`, and `remove()` refuses any
-other name.
+other name. The harness prints measurement rows; test-process success does not
+mean every experiment passed. Inspect those rows, including `FAIL` and `SHORT`.
+The shared container image recipe has evolved since these measurements; rebuilding
+it today is a new experiment, not a reproduction of the recorded image bytes.
 
 | File | Role |
 |---|---|
