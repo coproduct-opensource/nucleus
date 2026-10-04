@@ -360,6 +360,20 @@ pub const NODE_PORT: u16 = 8080;
 /// Where the image installs its binaries.
 pub const BIN_DIR: &str = "/usr/local/bin";
 
+/// The host-side helper in the image: `probe` and `relay`.
+pub const HOSTCTL: &str = "nucleus-hostctl";
+
+/// The node binary in the image.
+pub const NODE: &str = "nucleus-node";
+
+/// Container ports reserved for MCP relays, one per concurrent session.
+///
+/// Each is published on the Mac's `127.0.0.1` when the container is created,
+/// because `container` publishes ports only at creation. A pod proxy's own
+/// port is ephemeral and chosen later, so a relay inside the container
+/// bridges the two. Four sessions per host until something needs more.
+pub const RELAY_PORTS: [u16; 4] = [7101, 7102, 7103, 7104];
+
 /// The guest kernel inside the container, as a PodSpec's `image.kernel_path`
 /// names it. The same path a Lima Tier 2 host uses.
 pub fn guest_kernel_path() -> String {
@@ -597,6 +611,14 @@ mod tests {
     fn the_caps_are_the_measured_three() {
         let names: Vec<&str> = REQUIRED_CAPS.iter().map(|c| c.name).collect();
         assert_eq!(names, ["CAP_NET_ADMIN", "CAP_SYS_ADMIN", "CAP_SYS_PTRACE"]);
+    }
+
+    #[test]
+    fn the_image_installs_the_binaries_the_cli_runs() {
+        let r = recipe(IMAGE_SOURCE);
+        assert!(r.contains(&format!("/out/{HOSTCTL} {}", in_container_bin(HOSTCTL))));
+        assert!(r.contains(&format!("ENTRYPOINT [\"{}\"]", in_container_bin(NODE))));
+        assert!(!RELAY_PORTS.contains(&NODE_PORT));
     }
 
     #[test]

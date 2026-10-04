@@ -256,6 +256,155 @@ fn no_allow_reopens_the_node_deny_floor() {
     );
 }
 
+// ── The host side of a pod's link (#3134) ────────────────────────────────
+
+use crate::net::host_link::{HostRule, Placement, host_link_rules};
+
+const POD_LINK: &str = "vethpod0001";
+
+/// A packet on the host, described by what netfilter decides it on.
+#[derive(Clone, Copy, Debug)]
+struct HostPacket {
+    /// Arrived on this interface.
+    in_iface: &'static str,
+    /// Leaves on this interface, when forwarded.
+    out_iface: Option<&'static str>,
+    /// The destination, before NAT, is an address of the host (`addrtype --dst-type LOCAL`).
+    dst_is_host: bool,
+    /// After NAT the host delivers it locally (`INPUT`) rather than forwarding it.
+    delivered_locally: bool,
+    /// Conntrack has seen the other direction.
+    established: bool,
+}
+
+/// Whether `rule` matches `p`, and the verdict it gives. `Masquerade` rewrites, it does not filter.
+fn host_rule_verdict(rule: &HostRule, p: HostPacket) -> Option<bool> {
+    match rule {
+        HostRule::DropToHostBeforeNat { iface } => {
+            (p.in_iface == iface && p.dst_is_host).then_some(false)
+        }
+        HostRule::DropInput { iface } => (p.in_iface == iface).then_some(false),
+        HostRule::Masquerade { source: _ } => None,
+        HostRule::ForwardFrom { iface } => (p.in_iface == iface).then_some(true),
+        HostRule::ForwardRepliesTo { iface } => {
+            (p.out_iface == Some(iface.as_str()) && p.established).then_some(true)
+        }
+    }
+}
+
+/// netfilter over the host's chains, first match wins per chain, with every host policy ACCEPT:
+/// the worst host nucleus can land on, and the default of a stock install. `raw PREROUTING`, then
+/// `INPUT` for a locally delivered packet or `FORWARD` for a forwarded one.
+fn host_admits(rules: &[HostRule], p: HostPacket) -> bool {
+    let chain = |name: &str| -> bool {
+        rules
+            .iter()
+            .filter(|r| r.chain() == name)
+            .find_map(|r| host_rule_verdict(r, p))
+            .unwrap_or(true)
+    };
+    chain("PREROUTING")
+        && chain(if p.delivered_locally {
+            "INPUT"
+        } else {
+            "FORWARD"
+        })
+}
+
+fn from_pod(dst_is_host: bool, delivered_locally: bool) -> HostPacket {
+    HostPacket {
+        in_iface: POD_LINK,
+        out_iface: (!delivered_locally).then_some("eth0"),
+        dst_is_host,
+        delivered_locally,
+        established: false,
+    }
+}
+
+/// #3134: a pod whose spec allows `0.0.0.0/0` does not reach the host it runs on. Its own chain
+/// admits the host's LAN address (that is the gap: the namespace cannot name it), so the host
+/// side of the link is what has to drop it, for every host address and for a host port published
+/// with DNAT. On main nothing filtered the link's INPUT and both arrived.
+#[test]
+fn an_open_allowlist_does_not_reach_the_host() {
+    let spec = spec_from(&[], &["0.0.0.0/0"]);
+    let model = model_chain(&egress_chain(&spec, None).expect("chain")).expect("model");
+    assert!(
+        verdict(&model, dest(192, 0, 2, 10, 22)),
+        "the pod's own chain admits the host's LAN address; this test is about the host side"
+    );
+
+    let rules = host_link_rules(POD_LINK, "10.200.0.0/30".parse().unwrap());
+    for (what, p) in [
+        ("a host address", from_pod(true, true)),
+        (
+            "a host port DNAT'd to a local container",
+            from_pod(true, false),
+        ),
+    ] {
+        assert!(!host_admits(&rules, p), "the pod reached {what}");
+    }
+
+    // What the pod legitimately needs still passes: forwarded egress (the internet, and a public
+    // resolver on 53) and the replies to it. Its DNS proxy is inside its own namespace.
+    assert!(
+        host_admits(&rules, from_pod(false, false)),
+        "egress is forwarded"
+    );
+    let reply = HostPacket {
+        in_iface: "eth0",
+        out_iface: Some(POD_LINK),
+        dst_is_host: false,
+        delivered_locally: false,
+        established: true,
+    };
+    assert!(host_admits(&rules, reply), "replies reach the pod");
+    // Another interface is not this link's business.
+    let other = HostPacket {
+        in_iface: "eth0",
+        out_iface: None,
+        dst_is_host: true,
+        delivered_locally: true,
+        established: false,
+    };
+    assert!(
+        host_admits(&rules, other),
+        "the drops are scoped to the pod's link"
+    );
+}
+
+/// The node-owned drops are installed first and at the head of their chains, so neither the
+/// link's own accepts nor anything the host's firewall put first can precede them.
+#[test]
+fn the_host_drops_lead_and_are_rendered_at_the_head() {
+    let rules = host_link_rules(POD_LINK, "10.200.0.0/30".parse().unwrap());
+    let is_drop = |r: &HostRule| r.add_argv().last().map(String::as_str) == Some("DROP");
+    let last_drop = rules.iter().rposition(is_drop).expect("a drop exists");
+    let first_accept = rules
+        .iter()
+        .position(|r| !is_drop(r))
+        .expect("an accept exists");
+    assert!(last_drop < first_accept, "{rules:?}");
+    for r in rules.iter().filter(|r| is_drop(r)) {
+        assert_eq!(r.placement(), Placement::Head, "{r:?}");
+    }
+    let argv = |r: &HostRule| r.add_argv().join(" ");
+    assert_eq!(
+        argv(&rules[0]),
+        format!("-t raw -I PREROUTING 1 -i {POD_LINK} -m addrtype --dst-type LOCAL -j DROP")
+    );
+    assert_eq!(
+        argv(&rules[1]),
+        format!("-t filter -I INPUT 1 -i {POD_LINK} -j DROP")
+    );
+    // Teardown names the same rule setup installed.
+    for r in &rules {
+        let (add, del) = (r.add_argv(), r.delete_argv());
+        assert_eq!(del[2], "-D", "{del:?}");
+        assert!(add.ends_with(&del[4..]), "{add:?} vs {del:?}");
+    }
+}
+
 /// DNS-resolved allowlist entries are allows like any other, and must not
 /// outrank a deny. If they were appended before the denies, a resolver handing
 /// back a denied address would re-open it.
@@ -893,7 +1042,7 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         &state,
         &spec,
         Uuid::new_v4(),
-        true,
+        crate::container_mediation::ContainerMediation::ToolProxy,
         "test-token-123",
         "",
         None,
@@ -917,7 +1066,7 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         &state,
         &spec,
         Uuid::new_v4(),
-        false,
+        crate::container_mediation::ContainerMediation::Unmediated,
         "test-token-123",
         "",
         None,
@@ -1009,7 +1158,7 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
         &state,
         &spec,
         Uuid::new_v4(),
-        true,
+        crate::container_mediation::ContainerMediation::ToolProxy,
         "test-token-123",
         "",
         Some(&grant),

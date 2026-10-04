@@ -29,6 +29,8 @@ nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
 # `nucleus image`: the one flattener every image source goes through.
 nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
+# One atomic append per audit record (the microVM host supervisor).
+nucleus-jsonl = { path = "../nucleus-jsonl" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
@@ -90,13 +92,18 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 rustls = { workspace = true }
+# `provision`: the identity files are checked block by block before they are
+# installed (#3158) — the same parser `nucleus_identity::node_tls` reads them with.
+pem = "4"
+# `provision`: secrets are staged as owner-only files and copied, never spliced
+# into a shell command (#3158).
+tempfile = { workspace = true }
 
 # macOS Keychain (conditional)
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
 
 [dev-dependencies]
-tempfile = { workspace = true }
 # spike: "call SPIFFE agents anywhere" over iroh (examples/spiffe_iroh_*.rs)
 nucleus-node-binding = { path = "../nucleus-node-binding" }
 ed25519-dalek = { workspace = true }

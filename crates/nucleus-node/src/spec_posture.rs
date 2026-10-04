@@ -32,6 +32,9 @@
 //!   `TimeDelta`'s range panicked the create handler; one inside it minted tokens for centuries.
 //! - **`budget_model`** — the spec priced its own command executions, below the runtime's
 //!   default, so a budget stopped bounding how much a pod could run.
+//! - **[`NODE_OWNED_LABELS`]** — on the container driver, `nucleus.io/proxy-mode` chose whether the
+//!   pod was mediated at all (absent meant not), and `nucleus.io/container-image` chose the image
+//!   the mediating binary came from (#3133). Both are node flags now (`container_mediation`).
 
 use nucleus_spec::{BudgetModelSpec, PodSpec};
 
@@ -50,6 +53,20 @@ pub(crate) const MAX_TIMEOUT_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// task runner, which the orchestrator supplies there (`spawn_container_pod`). Every other name in
 /// the namespace is the runtime's.
 const SPEC_SETTABLE_RESERVED: &[&str] = &["NUCLEUS_TASK_CMD"];
+
+/// Labels that used to choose a pod's mediation and are now node configuration (#3133). A spec
+/// naming one is refused at create rather than ignored, whatever its value, so its author learns
+/// the node no longer reads it. Each entry names the node setting that owns the fact instead.
+pub(crate) const NODE_OWNED_LABELS: &[(&str, &str)] = &[
+    (
+        "nucleus.io/proxy-mode",
+        "whether the pod is mediated is the node's --container-mediation",
+    ),
+    (
+        "nucleus.io/container-image",
+        "the image, and so the binary that mediates the pod, is the node's --container-image",
+    ),
+];
 
 /// Why a spec was refused. Every variant names the field, and the value where showing it is safe.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -105,6 +122,12 @@ pub(crate) enum PostureRefused {
          own network (`{node}`), never a different one such as `host`"
     )]
     ContainerNetwork { value: String, node: String },
+    /// A label naming a fact the node owns.
+    #[error("label {label} is refused: {owner}. A pod spec cannot choose its own mediation.")]
+    NodeOwnedLabel {
+        label: &'static str,
+        owner: &'static str,
+    },
 }
 
 impl From<PostureRefused> for ApiError {
@@ -121,6 +144,11 @@ pub(crate) fn admit(
     spec: &PodSpec,
     sinks: &AuditSinks,
 ) -> Result<Option<AuditTarget>, PostureRefused> {
+    for &(label, owner) in NODE_OWNED_LABELS {
+        if spec.metadata.labels.contains_key(label) {
+            return Err(PostureRefused::NodeOwnedLabel { label, owner });
+        }
+    }
     let inner = &spec.spec;
     let audit = sinks.resolve_for(spec)?;
     if let Some(vsock) = &inner.vsock

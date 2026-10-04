@@ -604,6 +604,8 @@ impl WorkloadApiVsockBridge {
             // — a guest stalling inside a SHIP_RECEIPT body — is aborted, and
             // `JoinSet::shutdown` waits for the abort to land before returning.
             drop(stop_tx);
+            #[cfg(test)]
+            ship_probe::draining(pod_id);
             let drained = tokio::time::timeout(CONNECTION_DRAIN, async {
                 while connections.join_next().await.is_some() {}
             })
@@ -1156,6 +1158,8 @@ where
         Ok(WorkloadApiCommand::ShipReceipt) => {
             // Followed by a second frame (the receipt body), read under its own
             // larger bound. The connection already binds this to `pod_id`.
+            #[cfg(test)]
+            ship_probe::body_read_begun(pod_id);
             handle_ship_receipt(reader, material.receipt_dir.as_deref()).await
         }
         Err(err) => {
@@ -1300,6 +1304,10 @@ fn handle_fetch_bundle(manager: &IdentityManager) -> Reply {
 
     serde_json::to_string(&response).map_err(|e| Refusal::SerializationFailed(e.to_string()))
 }
+
+/// Test-only observation points on the `SHIP_RECEIPT` path (#3144).
+#[cfg(test)]
+pub(crate) mod ship_probe;
 
 #[cfg(test)]
 mod receipt_ack_tests {
