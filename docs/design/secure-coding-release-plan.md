@@ -470,3 +470,31 @@ The strict guest-report parser rejects injected provenance/version fields, while
 a valid report still yields a useful signed receipt labeled `guest_reported`.
 Linux ARM64 musl build and all four prepush gates passed. Clippy completed with
 `-D warnings`, with the existing reqwest blocking-method configuration warnings.
+
+### Retiring guest-authorized allocation credit (2026-10-04)
+
+The reaper no longer supplies a receipt-derived spend number to authority
+release. The release API accepts only the pod identity; an exited pod consumes
+its full allocation until host-authoritative terminal settlement exists. A
+private release-state enum distinguishes this from an unspawned reservation,
+whose owned launch guard can still return the entire unused allocation.
+
+Legacy spend signatures authenticate a key historically held by the guest.
+Even a complete seal and recomputable clearing inputs cannot prove the guest
+reported every charge. Those records remain inspectable as guest-reported
+claims, but cannot restore authority. The regression constructs a valid legacy
+zero-spend seal, confirms that its claimed total verifies, then checks that it
+cannot fund a new sibling beyond the parent's remaining allocation. A smaller
+sibling using the genuinely unallocated balance remains allowed.
+
+This closes the guest-claim credit path. It does not yet compose parent broker
+spending with child reservations, provide variable usage settlement, or recover
+runtime budget history after restart. Those release requirements remain open.
+
+Validation: 826 node unit tests and three integration tests pass (one unit test
+ignored). Reintroducing zero-spend credit from the legacy guest seal makes the
+regression fail at runtime by admitting the oversized sibling; restoring the
+fix passes. Unspawned refunds and restart accounting remain covered. Linux
+ARM64 musl compilation, Clippy with warnings denied, and all four prepush gates
+pass; Clippy retains the existing reqwest configuration diagnostics. The final
+regression also asserts that the guest claim was durably stored before release.

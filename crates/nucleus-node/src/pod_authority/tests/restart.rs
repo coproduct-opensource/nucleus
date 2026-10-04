@@ -57,7 +57,7 @@ async fn a_restart_restores_what_retired_children_consumed() {
         auth.admit_kept(&from_pod(parent), &spec_with(lattice(1)), Uuid::new_v4())
             .await
             .unwrap();
-        auth.release_child(done, None).await;
+        auth.release_child(done).await;
         held_ledgers(&auth).await
     };
     let auth = authority(dir.path(), args());
@@ -88,7 +88,7 @@ async fn a_restart_restores_an_external_chains_ledger() {
         auth.admit_kept(&chain, &spec_with(lattice(3)), done)
             .await
             .unwrap();
-        auth.release_child(done, None).await;
+        auth.release_child(done).await;
         held_ledgers(&auth).await
     };
     let auth = trusting(dir.path(), &ext_root);
@@ -119,7 +119,7 @@ async fn a_child_its_parent_retired_is_not_restored() {
             .await
             .unwrap();
         let kept = std::fs::read(auth.authority_path(child)).unwrap();
-        auth.release_child(child, None).await;
+        auth.release_child(child).await;
         std::fs::write(auth.authority_path(child), kept).unwrap();
         held_ledgers(&auth).await
     };

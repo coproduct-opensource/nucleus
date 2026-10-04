@@ -2933,10 +2933,10 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
                 .await;
 
             pod.cleanup_after_exit().await;
-            // Credit only what the node could verify; see `creditable_spend`.
-            let creditable =
-                clearing_receipt_collector::creditable_spend(pod_dir, &pod.id.to_string());
-            state.authority.release_child(pod.id, creditable).await;
+            let guest_spend =
+                clearing_receipt_collector::guest_reported_spend(pod_dir, &pod.id.to_string());
+            tracing::debug!(pod = %pod.id, ?guest_spend, "guest-reported spend; no budget credit");
+            state.authority.release_child(pod.id).await;
         }
     }
 

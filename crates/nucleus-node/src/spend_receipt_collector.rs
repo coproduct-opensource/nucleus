@@ -1,30 +1,10 @@
-//! Host-side collection and verification of `SpendReceipt`s streamed from pods
-//! over vsock (`SHIP_SPEND`), and the fold the node applies at release.
+//! Collection of legacy guest-signed spend claims over vsock (`SHIP_SPEND`).
 //!
-//! # Why this is separate from the mediation-receipt collector
-//!
-//! [`crate::mediation_receipt_collector`] stores opaque lines and leaves
-//! verification to `nucleus-audit`, because nothing on the node DECIDES on a
-//! mediation receipt. A spend receipt is different: the node decides, at
-//! `release_child`, how much of a pod's allocation to fold into its parent's
-//! consumption (#2541). A decision taken on an unverified number is the guest
-//! deciding its own bill, so every receipt is verified here — against the
-//! node's OWN record of the key it minted for this pod (`mediator-pubkey.hex`),
-//! never a key the guest supplies — and the log holds only what verified.
-//!
-//! # One decider
-//!
-//! [`check`] is the single function that says whether a line is a valid spend
-//! receipt for a pod. The vsock handler calls it to accept or refuse a shipped
-//! line; [`verified_spend`] calls it again over the stored log at release. Two
-//! call sites, one rule (ADR 0007 G-1).
-//!
-//! # What the fold refuses to guess
-//!
-//! `portcullis::spend_receipt::VerifiedSpend` distinguishes `NoReceipts`,
-//! `Unsealed` and `Gapped` all mean "the host could not see every charge".
-//! `release_child` folds the FULL allocation for each. Only `Complete` — all
-//! charges plus a matching signed terminal count and total — can earn credit.
+//! Signatures are checked against the historical `mediator-pubkey.hex` anchor.
+//! That key was held by the guest: a valid signature authenticates its claim,
+//! not actual spending. New pods receive no such key. These records never
+//! authorize allocation credit; a complete sealed chain is still guest-reported.
+//! [`check`] is shared by ingestion and stored-log verification (ADR 0007 G-1).
 
 use std::path::{Path, PathBuf};
 
@@ -118,7 +98,7 @@ pub async fn append_spend(
 ///
 /// Returned as receipts rather than a fold because the caller also has to
 /// resolve each receipt's `basis` against the clearing receipts the host holds
-/// (`clearing_receipt_collector::creditable_spend`), and it cannot do that from
+/// (`clearing_receipt_collector::guest_reported_spend`), and it cannot do that from
 /// a total.
 #[must_use]
 pub fn verified_spend_receipts(pod_dir: &Path, pod_id: &str) -> Vec<SpendReceipt> {
