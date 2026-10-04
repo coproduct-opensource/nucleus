@@ -24,6 +24,32 @@ SIGTERM stops and reaps the direct child. The enclosing pod supervisor remains
 responsible for containment and descendant cleanup. Without a command, the
 adapter runs as a standalone listener until stopped.
 
+In a pod spec, put the adapter in `workload.command` and the managed command
+after `--` in `workload.args`. For example, this fragment launches an installed
+harness with its task argument:
+
+```yaml
+workload:
+  command: /usr/local/bin/nucleus-egress-http
+  args:
+    - --upstream
+    - model-api
+    - --listen
+    - 127.0.0.1:18081
+    - --
+    - /opt/harness/bin/agent
+    - task
+  uid: 1000
+```
+
+The full pod must declare `model-api` in `credentialed_egress`, matching the
+host's upstream registration. Configure the harness to use the listener as
+its API base; the adapter does not rewrite harness configuration. With
+`--listen 127.0.0.1:0`, a launcher can read `NUCLEUS_EGRESS_HTTP_URL` and translate
+it to the harness's own configuration before starting it. Arguments are not
+shell-expanded. Collect logs and declared artifacts with `nucleus node workload`
+before cancelling the pod, then verify the exported evidence independently.
+
 For the legacy rootfs builder, the adapter must be beside `PROXY_BIN` in the
 build directory. A normal package build produces both executables. Image
 assembly copies the adapter after applying overlays and fails if it is absent.

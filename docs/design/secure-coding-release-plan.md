@@ -1059,8 +1059,9 @@ default-feature test check also exposed a route-test module that used the
 local-driver fixture without its feature guard; matching that guard restores
 default-feature test compilation.
 
-The updated binary still needs the real compromised-guest streaming run,
-including nonce replay, spent-approval reuse and changed-payload refusal.
+The live adversarial follow-up was stopped at the operator's request. Current
+work focuses on design implementation and ordinary functional integration;
+the preceding test results do not claim that stopped live run completed.
 
 ### Managed HTTP adapter workload (2026-10-04)
 
@@ -1203,3 +1204,29 @@ All ten workload API tests and the CLI suite (311 unit tests, two ignored, plus
 integration tests) passed. Clippy, Linux ARM64 node/CLI builds and all four
 repository gates passed. Usage and expectation construction are documented in
 `docs/handoffs/nucleus-build-receipts.md`.
+
+### Managed adapter guest integration (2026-10-04)
+
+The current managed adapter was cross-built for Linux ARM64 and installed in a
+disposable copy of the packaged harness rootfs. A Firecracker pod on Apple
+Container launched the adapter at UID 1000 with an ephemeral loopback listener.
+Its Python child started both installed harness version commands successfully,
+then used the supplied listener URL for one ordinary POST through the enforcing
+broker. The fixture recorded the expected request body and host authentication;
+the child wrote the harness versions, response and UID to its declared artifact.
+The adapter and supervised workload exited zero.
+
+The CLI saved admission metadata before collecting the bundle. Expectations
+used the separately pinned executor key and an environment digest derived from
+the declared values plus the runtime's known upstream URL binding. Independent
+artifact verification passed for the program, environment, receipt signature
+and artifact bytes. The pod was cancelled after collection. Evidence is local
+under `/tmp/nucleus-apple-acceptance/managed-{admission,expectations,bundle,verified-report}.json`.
+
+This validates managed launch, harness startup, ordinary brokered HTTP and
+verified output together. It does not establish model compatibility, repository
+editing, a complete coding session, or fresh release-image assembly; the image
+used a disposable binary replacement. Model endpoint configuration remains
+needed for the two complete coding journeys. The tool-proxy README now shows
+the managed workload spec and explains how a launcher passes the local URL into
+its harness configuration.
