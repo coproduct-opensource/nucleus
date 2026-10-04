@@ -12,6 +12,12 @@ use super::{HttpClient, REQUEST_TIMEOUT};
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Save host admission metadata and public signer information for this workload
+    Admission {
+        /// New JSON file to retain separately from execution evidence
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Print the supervisor's workload state as JSON
     Result,
     /// Save exact workload log bytes to a new file
@@ -92,6 +98,7 @@ pub(super) async fn run(
         );
     }
     let (resource, body) = match command {
+        Command::Admission { .. } => ("workload-admission", None),
         Command::Result => ("workload-result", None),
         Command::Logs { stream, output: _ } => (
             match stream {
@@ -133,6 +140,15 @@ pub(super) async fn run(
         bail!("workload request failed (HTTP {status}): {detail}");
     }
     match command {
+        Command::Admission { output } => {
+            let admitted: nucleus_spec::workload_admission::WorkloadAdmission =
+                serde_json::from_slice(&bytes).context("invalid workload admission")?;
+            if admitted.pod_id != pod.to_string() || admitted.session_id != pod.to_string() {
+                bail!("workload admission identifies a different pod");
+            }
+            save(output, &serde_json::to_vec_pretty(&admitted)?)?;
+            println!("Saved workload admission to {}", output.display());
+        }
         Command::Result => {
             let result: WorkloadResult =
                 serde_json::from_slice(&bytes).context("invalid workload result")?;

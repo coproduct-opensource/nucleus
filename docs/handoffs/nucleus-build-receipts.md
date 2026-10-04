@@ -230,6 +230,29 @@ observation, separate from whether the CLI request succeeded.
 
 Verify exported evidence with the shared execution verifier:
 
+First save the host's admission inventory over the authenticated node connection:
+
+```sh
+nucleus node workload "$POD_ID" admission --output admitted.json
+```
+
+This reads the host's effective program digest, source labels, declared artifact
+paths, architecture, session and public executor key without contacting the
+workload or reading its receipt. Admission can replace a requested profile with
+an effective inline policy, so hashing the original request is not sufficient.
+The export contains no workload environment values or private signing material.
+Its trust comes from the authenticated node connection, not the JSON file itself;
+compare the public key with an existing controller pin when one is configured.
+
+Retain this record separately from collected evidence. To form `expected.json`,
+remove `created_at_unix`, add `environment_inputs_sha256` from the independently
+resolved launch environment, and set `issued_not_before_micros` and
+`issued_not_after_micros` to the controller's allowed window. If collecting a
+subset of artifacts, retain only that selection in `artifacts`. Receipt-only
+verification uses an empty artifact map. Admission metadata is not an observation
+of execution or a complete expectation file; it does not supply environment
+identity or choose the controller's freshness policy.
+
 ```sh
 nucleus-audit verify-execution --receipt execution-receipt.json --expectations expected.json
 nucleus-audit verify-artifacts --bundle execution-bundle.json --expectations expected.json

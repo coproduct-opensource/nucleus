@@ -13,6 +13,7 @@ pub mod microvm_host;
 mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod vmm_version;
+pub mod workload_admission;
 pub mod workload_result;
 
 use std::collections::BTreeMap;

@@ -1140,8 +1140,8 @@ allowance. This does not claim swap-free behavior for v1's combined controller.
 All six resource tests and 36 Firecracker configuration tests passed, including
 the actual jailer argument path. A disposable cgroup on the Apple Container host
 accepted and read back `memory.max=671088640` and `memory.swap.max=0`, then was
-removed. Clippy passed. The updated node has not yet been used for a live pod
-launch with these defaults.
+removed. Clippy passed. Subsequent ordinary artifact workloads booted and
+completed on the updated node with these defaults (see admission export below).
 
 ### Development cgroup lifecycle (2026-10-04)
 
@@ -1176,3 +1176,30 @@ other egress paths still need integration into the pod's shared outbound budget.
 All 26 streaming tests passed, including shared staging capacity, body release,
 malformed-upload cleanup and the timed approval lifecycle. Clippy, the Linux
 ARM64 build and all four repository gates passed.
+
+### Admission export and ordinary workflow verification (2026-10-04)
+
+`nucleus node workload <pod> admission --output admitted.json` now saves the
+host's effective program identity, source labels, artifact declarations and
+public executor identity through the authenticated node API. This fills a gap
+between pod creation and independent verification: admission replaces requested
+policy with an effective inline policy, so the requested spec alone does not
+necessarily identify the executed program. The response reads host state without
+contacting the guest and exports neither environment values nor private keys.
+Controllers still supply their expected resolved environment and freshness window,
+and compare the public key with their configured enrollment pin.
+
+A normal shell workload ran at UID 1000 inside Firecracker on Apple Container,
+produced two files and exited zero. The CLI exported admission metadata before
+collecting its bundle. A separately read host public key matched the admission
+key; the environment-input digest was computed from the explicitly declared
+environment, not from the receipt. The existing `nucleus-audit verify-artifacts`
+command then verified the signature, run bindings and both artifacts' bytes.
+The earlier ordinary run also retrieved exact stdout via the CLI. Both pods
+were cancelled after collection. This is a file-producing workflow check, not
+a model-driven repository edit or a completed coding-harness journey.
+
+All ten workload API tests and the CLI suite (311 unit tests, two ignored, plus
+integration tests) passed. Clippy, Linux ARM64 node/CLI builds and all four
+repository gates passed. Usage and expectation construction are documented in
+`docs/handoffs/nucleus-build-receipts.md`.
