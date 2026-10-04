@@ -8,6 +8,7 @@ fn operator() -> Operator {
 }
 fn metadata(body: &[u8]) -> EffectRequest {
     EffectRequest {
+        require_approval: false,
         operation: "GitCommit".into(),
         upstream: "api".into(),
         url: "https://upstream.invalid/commit".into(),
@@ -29,7 +30,8 @@ fn pending(state: &mut PodPolicy, body: &[u8]) -> (ArgsDigest, EffectRequest, uu
                 portcullis::Operation::GitCommit,
                 &request.url,
                 NOW,
-                CallCharge::free()
+                CallCharge::free(),
+                false
             )
             .is_err()
     );

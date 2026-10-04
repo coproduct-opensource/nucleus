@@ -46,6 +46,7 @@ enum Phase {
 struct EffectCheck {
     phase: Phase,
     charge: crate::upstreams::CallCharge,
+    require_approval: bool,
 }
 
 pub(super) struct Approvals {
@@ -104,7 +105,11 @@ impl Approvals {
         now: u64,
         check: EffectCheck,
     ) -> Result<(), String> {
-        let EffectCheck { phase, charge } = check;
+        let EffectCheck {
+            phase,
+            charge,
+            require_approval: _,
+        } = check;
         self.prune(now);
         if let Some(a) = self
             .entries
@@ -215,6 +220,7 @@ impl PodPolicy {
         subject: &str,
         now: u64,
         charge: crate::upstreams::CallCharge,
+        require_approval: bool,
     ) -> Result<(), String> {
         self.check_effect(
             digest,
@@ -224,6 +230,7 @@ impl PodPolicy {
             EffectCheck {
                 phase: Phase::Preflight,
                 charge,
+                require_approval,
             },
         )
         .map(|_| ())
@@ -239,6 +246,7 @@ impl PodPolicy {
         subject: &str,
         now: u64,
         charge: crate::upstreams::CallCharge,
+        require_approval: bool,
     ) -> Result<EffectPermit, String> {
         let tokens = self.check_effect(
             digest,
@@ -248,6 +256,7 @@ impl PodPolicy {
             EffectCheck {
                 phase: Phase::Commit,
                 charge,
+                require_approval,
             },
         )?;
         let record = self.budget.commit(charge.usd(), || {
@@ -268,7 +277,11 @@ impl PodPolicy {
         now: u64,
         check: EffectCheck,
     ) -> Result<Vec<DecisionToken>, String> {
-        let EffectCheck { phase, charge } = check;
+        let EffectCheck {
+            phase,
+            charge,
+            require_approval,
+        } = check;
         self.ensure_live()
             .map_err(|_| "host policy revoked or unavailable")?;
         self.evidence.available()?;
@@ -299,13 +312,17 @@ impl PodPolicy {
                 }
             }
         }
-        if !approval_ops.is_empty() {
+        if require_approval || !approval_ops.is_empty() {
             self.approvals.check_or_request(
                 digest,
                 op,
                 subject,
                 now,
-                EffectCheck { phase, charge },
+                EffectCheck {
+                    phase,
+                    charge,
+                    require_approval,
+                },
             )?;
             for operation in approval_ops
                 .into_iter()
@@ -344,7 +361,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -374,6 +392,7 @@ mod tests {
                     SUBJECT,
                     NOW,
                     crate::upstreams::CallCharge::free(),
+                    false,
                 )
                 .unwrap();
             id
@@ -390,7 +409,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .unwrap_err()
                 .contains("revoked")
@@ -416,6 +436,7 @@ mod tests {
                     SUBJECT,
                     NOW,
                     crate::upstreams::CallCharge::free(),
+                    false,
                 )
                 .unwrap();
         }
@@ -426,7 +447,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -437,6 +459,7 @@ mod tests {
                 SUBJECT,
                 NOW,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         assert!(
@@ -446,7 +469,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -487,7 +511,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW + APPROVAL_TTL,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -502,7 +527,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW + APPROVAL_TTL,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -526,6 +552,7 @@ mod tests {
                 SUBJECT,
                 NOW,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let remaining = policy.budget.available().unwrap();
@@ -537,7 +564,8 @@ mod tests {
                     Operation::GitCommit,
                     SUBJECT,
                     NOW,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .unwrap_err()
                 .contains("budget_exhausted")
@@ -567,7 +595,8 @@ mod tests {
                     Operation::ReadFiles,
                     SUBJECT,
                     NOW,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -593,6 +622,7 @@ mod tests {
                             SUBJECT,
                             NOW,
                             crate::upstreams::CallCharge::free(),
+                            false,
                         )
                         .unwrap();
                     barrier.wait();
@@ -605,6 +635,7 @@ mod tests {
                             SUBJECT,
                             NOW,
                             crate::upstreams::CallCharge::free(),
+                            false,
                         )
                         .is_ok()
                 })

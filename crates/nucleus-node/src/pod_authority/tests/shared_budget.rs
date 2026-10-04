@@ -13,6 +13,7 @@ fn charge(policy: &crate::host_decide::SharedPodPolicy, dollars: u64) -> Result<
         "https://upstream.invalid",
         1000,
         charge,
+        false,
     )?;
     Ok(())
 }
@@ -165,6 +166,7 @@ async fn child_allocation_after_preflight_is_rechecked_before_authorization() {
             "https://upstream.invalid",
             1000,
             tariff,
+            false,
         )
         .unwrap();
     auth.admit_kept(&from_pod(parent), &spec_with(lattice(4)), Uuid::new_v4())

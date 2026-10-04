@@ -33,6 +33,9 @@ pub enum ApprovalDecision {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EffectRequest {
+    /// An additional guest-side approval requirement, bound to this effect.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub require_approval: bool,
     pub operation: String,
     pub upstream: String,
     pub url: String,
@@ -42,6 +45,10 @@ pub struct EffectRequest {
     pub body_sha256: [u8; 32],
     pub body_bytes: u64,
     pub call_charge_micro_usd: Option<u64>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl EffectRequest {
@@ -78,6 +85,7 @@ mod tests {
     #[test]
     fn shared_review_encoding_preserves_the_existing_v3_broker_digest() {
         let request = EffectRequest {
+            require_approval: false,
             operation: "WebFetch".into(),
             upstream: "api".into(),
             url: "https://api.invalid/run".into(),

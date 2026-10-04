@@ -66,8 +66,15 @@ command.
 
 ## Workload pause and resume
 
-After passing the local proxy gates, streamed workload requests pause at the
-host for up to 120 seconds when host approval is required. The complete upload
+Local capability and information-flow denials stop a request at the proxy.
+A local approval deferral is instead carried in the signed broker request as
+`require_approval`; it never becomes a guest execution grant. The host requires
+operator review when either that flag or its own policy requires approval.
+The flag is part of the canonical effect digest and appears in request review
+when set. A guest-side approval cannot substitute for host review.
+
+Streamed workload requests pause at the host for up to 120 seconds when approval
+is required. The complete upload
 has already been staged, so approving resumes the original request without
 re-uploading it or spending a second guest-side authority. The host does not mint
 credentials or call the upstream while waiting. It rechecks policy, taint,

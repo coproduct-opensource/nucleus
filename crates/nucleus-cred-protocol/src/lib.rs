@@ -263,6 +263,10 @@ pub mod stream;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamRequest {
+    /// Additional guest-side deferral. The host must obtain action-bound review
+    /// even when its own policy would allow this effect autonomously.
+    #[serde(default)]
+    pub require_approval: bool,
     /// Optional host-side pause for operator approval. Zero preserves immediate
     /// refusal; the host caps a nonzero request at `stream::MAX_APPROVAL_WAIT_SECONDS`.
     /// Keep the upload half open after END while waiting: EOF cancels the pause.
@@ -468,6 +472,7 @@ mod tests {
 
     fn stream_request() -> StreamRequest {
         StreamRequest {
+            require_approval: false,
             approval_wait_seconds: 0,
             operation: "WebFetch".into(),
             target: "model-api".into(),

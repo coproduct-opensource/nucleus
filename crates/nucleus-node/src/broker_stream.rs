@@ -541,21 +541,28 @@ where
         now.saturating_add(elapsed.as_secs())
             .saturating_add(u64::from(elapsed.subsec_nanos() != 0))
     };
-    let effect = match crate::broker_perform::effect::digest_body(
+    let mut effect_request = crate::broker_perform::effect::describe_body(
         &req.operation,
         &resolved,
         &req.content_type,
         staged.digest(),
         staged.len(),
-    ) {
-        Ok(effect) => effect,
+    );
+    effect_request.require_approval = req.require_approval;
+    let effect = match effect_request.digest() {
+        Ok(effect) => nucleus_decision_protocol::ArgsDigest::new(effect),
         Err(_) => return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await,
     };
     let preflight = || match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-            Some(op) => {
-                policy.preflight_effect(effect, op, resolved.url(), current_time(), call_charge)
-            }
+            Some(op) => policy.preflight_effect(
+                effect,
+                op,
+                resolved.url(),
+                current_time(),
+                call_charge,
+                req.require_approval,
+            ),
             None => Err("unknown operation".into()),
         },
         Err(_) => Err("host policy unavailable".into()),
@@ -628,9 +635,14 @@ where
     // Staging and minting await other work; commit over current shared policy.
     let permit = match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-            Some(op) => {
-                policy.authorize_effect(effect, op, resolved.url(), current_time(), call_charge)
-            }
+            Some(op) => policy.authorize_effect(
+                effect,
+                op,
+                resolved.url(),
+                current_time(),
+                call_charge,
+                req.require_approval,
+            ),
             None => Err("unknown operation".into()),
         },
         Err(_) => Err("host policy unavailable".into()),
@@ -823,13 +835,14 @@ async fn capture_review(
     if !needed {
         return Ok(());
     }
-    let metadata = crate::broker_perform::effect::describe_body(
+    let mut metadata = crate::broker_perform::effect::describe_body(
         &request.operation,
         resolved,
         &request.content_type,
         staged.digest(),
         staged.len(),
     );
+    metadata.require_approval = request.require_approval;
     let body = match staged.review_bytes().await {
         Ok(body) => body,
         Err(error) => {
@@ -1032,6 +1045,7 @@ mod tests {
 
     fn open(target: &str, nonce: &str) -> StreamRequest {
         StreamRequest {
+            require_approval: false,
             approval_wait_seconds: 0,
             operation: "WebFetch".into(),
             target: target.into(),
@@ -1282,6 +1296,7 @@ mod tests {
                 "http://upstream",
                 100,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let (permit, _observation) = permit.observe(policy.clone(), 100);

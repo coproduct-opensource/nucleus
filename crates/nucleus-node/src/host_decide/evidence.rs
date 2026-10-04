@@ -150,6 +150,7 @@ mod tests {
                 "https://upstream.invalid",
                 5,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let path = dir.path().join(LOG_FILE);
@@ -161,6 +162,7 @@ mod tests {
                 "https://upstream.invalid",
                 6,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let _second = policy
@@ -170,6 +172,7 @@ mod tests {
                 "https://upstream.invalid",
                 7,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let records: Vec<SignedAuthorization> = std::fs::read_to_string(&path)
@@ -230,7 +233,8 @@ mod tests {
                     Operation::WebFetch,
                     "https://upstream.invalid",
                     1,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .unwrap_err()
                 .contains("storage failed")
@@ -243,7 +247,8 @@ mod tests {
                     Operation::WebFetch,
                     "https://upstream.invalid",
                     1,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -254,7 +259,8 @@ mod tests {
                     Operation::WebFetch,
                     "https://upstream.invalid",
                     1,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );

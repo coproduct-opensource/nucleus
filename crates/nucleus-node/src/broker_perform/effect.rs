@@ -50,6 +50,7 @@ pub(crate) fn describe_body(
     body_bytes: u64,
 ) -> nucleus_spec::host_effect_approval::EffectRequest {
     nucleus_spec::host_effect_approval::EffectRequest {
+        require_approval: false,
         operation: operation.into(),
         upstream: resolved.entry().spec().name.clone(),
         url: resolved.url().into(),

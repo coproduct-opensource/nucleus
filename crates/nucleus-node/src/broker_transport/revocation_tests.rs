@@ -125,7 +125,8 @@ async fn saturated(revoke_directly: bool) {
                 portcullis::Operation::WebFetch,
                 "https://upstream.invalid/call",
                 100,
-                crate::upstreams::CallCharge::free()
+                crate::upstreams::CallCharge::free(),
+                false
             )
             .is_err()
     );

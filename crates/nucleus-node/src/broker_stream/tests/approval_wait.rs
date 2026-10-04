@@ -39,11 +39,16 @@ fn gated(base: &str) -> Pod {
 
 #[tokio::test]
 async fn original_stream_waits_for_operator_and_resumes_exactly_once() {
-    for grant in [true, false] {
+    for (guest_required, grant) in [(false, true), (false, false), (true, true), (true, false)] {
         let (base, seen) = upstream().await;
-        let pod = gated(&base);
+        let pod = if guest_required {
+            Pod::new(&base, 1 << 30, StreamLimits::DEFAULT)
+        } else {
+            gated(&base)
+        };
         let mut request = open("model-api", "paused");
         request.approval_wait_seconds = 10;
+        request.require_approval = guest_required;
         let body = mebibyte();
         let control = async {
             let id = pending(&pod).await;
@@ -51,6 +56,10 @@ async fn original_stream_waits_for_operator_and_resumes_exactly_once() {
             tokio::time::sleep(Duration::from_millis(20)).await;
             let mut policy = pod.host_policy.lock().unwrap();
             let review = policy.effect_review(operator(), id, now()).unwrap();
+            assert_eq!(review.request.require_approval, guest_required);
+            let mut changed = review.request.clone();
+            changed.require_approval = !guest_required;
+            assert_ne!(changed.digest().unwrap(), review.request.digest().unwrap());
             use base64::Engine as _;
             assert_eq!(
                 base64::engine::general_purpose::STANDARD

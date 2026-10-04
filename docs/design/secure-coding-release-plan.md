@@ -764,3 +764,45 @@ journey. The upstream was a local fixture, not an external provider.
 Validation: 574 proxy unit tests and 51 guest-init unit tests passed, alongside
 their integration/doc tests (existing ignored tests remain ignored). Linux ARM64
 musl builds and strict Clippy passed for the affected crates.
+
+### Guest approval handoff to the enforcing broker (2026-10-04)
+
+Real approval pod `88bf0502-28b5-45c7-b5bc-e66e1583e83e` exposed a second
+integration failure after socket access was fixed: the proxy returned its own
+approval-required 403 before the host saw the request. The host approval list
+stayed empty, so operator approval could not make progress.
+
+Broker mediation now returns a private submission witness, not an approved
+execution token. It records the actual local decision, preserves hard capability
+and IFC denials, and forwards approval deferrals as `require_approval` in the
+signed stream OPEN. Guest-local grants do not discharge that requirement. The
+host applies its own policy and this additional restriction at preflight and
+final commit. Operator review and the canonical effect digest include the flag;
+the false/absent field preserves the existing v3 digest. Older hosts fail closed
+on the new stream field. Buffered PERFORM retains its existing host policy path.
+
+Real enforcing pod `25150e77-e567-41b8-9e67-59a9deaa3a89` staged its request
+and appeared as pending without any upstream call. Review exposed the exact
+fixture payload and the additional approval requirement; independently
+recomputing the canonical digest matched the pending effect. Granting through
+the operator's mTLS API resumed the original request, returned HTTP 200 to the
+UID-1000 workload, and produced exactly one authenticated upstream call. The
+approval became spent. The offline audit CLI verified one host authorization
+and one linked outcome with zero unknown outcomes under the independently pinned
+node public key. Refusal-control pod `a4aeaae0-3f77-49db-a8f6-4bde813dd840`
+returned an explicit host-operator refusal, made no upstream call, and left both
+execution journals empty. Both pods used the isolated local ARM64 image and a
+loopback fixture upstream, not a released image or an external provider.
+
+Regression tests cover submission without a fabricated guest grant, preserved
+capability/poisoned-flow denials, grant/refusal when only the guest requires
+approval, payload review, and digest binding. Dropping the guest deferral or
+ignoring it at the host independently failed the corresponding runtime tests;
+restoring the fixes passed. Full affected suites passed: 846 node, 576 proxy,
+309 CLI, 160 spec, and 24 credential-protocol unit tests, plus integration/doc
+tests; existing ignored tests remain ignored. Strict Clippy, Linux ARM64 musl
+node/proxy builds, and all four prepush gates passed.
+
+This establishes a real approved and refused broker journey with host evidence.
+Fresh installation, the two complete coding harness journeys, full compromised-
+guest validation, and the remaining release workstreams are still required.

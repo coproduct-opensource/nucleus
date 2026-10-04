@@ -261,10 +261,9 @@ pub(crate) async fn credentialed_egress(
         )?;
     }
 
-    // The same gate a tool call gets. A tainted session calling its model API is
-    // exfiltration by the same definition that governs `web_fetch`, and treating
-    // it differently would be the hole this whole module exists to close.
-    let _decision = crate::http_kernel_decide(&state, Operation::WebFetch, &url, None).await?;
+    // Preserve local hard denials, but carry an approval deferral to the host.
+    // Submission does not mint an execution token or satisfy the deferral.
+    let submission = crate::mediation::admit_to_broker(&state, &url).await?;
 
     // ── The credential is NOT read here, and cannot be ─────────────────────
     //
@@ -299,12 +298,9 @@ pub(crate) async fn credentialed_egress(
         }
     };
 
-    // The discharge is minted HERE and spent by `perform_line`. That is the
-    // whole reason the guest half exists: the host applies a coarse capability
-    // check and structurally cannot see the `FlowGraph`, the session taint ceiling
-    // or the lethal-trifecta guard. Those live in this process, and a
-    // `PerformRequest` that was not composed past them would be egress the
-    // kernel never saw.
+    // This discharge covers the guest's flow and scope checks. It permits a
+    // signed broker submission; the host independently authorizes the staged
+    // effect under its shared policy, including any guest approval deferral.
     let authority = portcullis_effects::authority::Authority::new(discharge_bundle)
         .witnessed_by(Arc::clone(&state.receipts));
 
@@ -326,6 +322,7 @@ pub(crate) async fn credentialed_egress(
     // workload retry is a new call with a fresh nonce; the host refuses a nonce
     // it has seen, stopping a captured open frame from being sent twice.
     let request = nucleus_cred_protocol::StreamRequest {
+        require_approval: submission.require_approval(),
         approval_wait_seconds: request_approval_wait(&headers)?,
         operation: "WebFetch".to_string(),
         target: name.clone(),
@@ -792,6 +789,7 @@ mod tests {
                     let host = host.clone();
                     async move {
                         let request = nucleus_cred_protocol::StreamRequest {
+                            require_approval: false,
                             approval_wait_seconds: 0,
                             operation: "WebFetch".into(),
                             target: name,

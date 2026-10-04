@@ -202,6 +202,7 @@ mod tests {
                 "https://upstream.invalid",
                 100,
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let (_call, pending) = permit.observe(policy.clone(), 100);
@@ -313,7 +314,8 @@ mod tests {
                     Operation::WebFetch,
                     "https://upstream.invalid",
                     101,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );

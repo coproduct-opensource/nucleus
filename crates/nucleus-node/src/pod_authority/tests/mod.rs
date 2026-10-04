@@ -990,7 +990,8 @@ async fn release_revokes_policy_references_already_held_by_brokers() {
                 portcullis::Operation::WebFetch,
                 "https://upstream.invalid",
                 100,
-                crate::upstreams::CallCharge::free()
+                crate::upstreams::CallCharge::free(),
+                false
             )
             .is_err()
     );

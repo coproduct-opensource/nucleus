@@ -148,6 +148,7 @@ mod tests {
         use sha2::{Digest, Sha256};
         let payload = b"{\"action\":\"commit\"}";
         let metadata = nucleus_spec::host_effect_approval::EffectRequest {
+            require_approval: false,
             operation: "GitCommit".into(),
             upstream: "api".into(),
             url: "https://upstream.invalid/commit".into(),
@@ -168,7 +169,8 @@ mod tests {
                     portcullis::Operation::GitCommit,
                     "https://upstream.invalid/commit",
                     now().unwrap(),
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    false
                 )
                 .is_err()
         );
@@ -271,6 +273,7 @@ mod tests {
                 "https://upstream.invalid/commit",
                 now().unwrap(),
                 crate::upstreams::CallCharge::free(),
+                false,
             )
             .unwrap();
         let journal = state

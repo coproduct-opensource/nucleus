@@ -295,6 +295,7 @@ fn review_fixture() -> ApprovalReview {
     let body = b"{\"action\":\"commit\"}\x1b";
     let mut approval = approval();
     let request = EffectRequest {
+        require_approval: false,
         operation: "GitCommit".into(),
         upstream: "api".into(),
         url: approval.subject.clone(),
