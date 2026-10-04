@@ -87,7 +87,7 @@ const SIGNATURES: &[Signature] = &[
     // guest from before #2379 booted read-only prints `failed to fetch identity:
     // failed to create identity directory: Read-only file system`, and the
     // generic signature answered "could not reach the workload API over vsock"
-    // — a wrong diagnosis for the pinned 2.2.0 rootfs under `read_only: true`.
+    // — a wrong diagnosis for the 2.2.0 rootfs under `read_only: true`.
     Signature {
         marker: "failed to create identity directory: Read-only file system",
         meaning: Meaning::Predates(GuestCapability::SvidOnTmpfs),
@@ -374,7 +374,7 @@ mod tests {
         );
     }
 
-    /// The pinned 2.2.0 rootfs booted `read_only: true` — what `verify --tier2`
+    /// The 2.2.0 rootfs (the pin until 2.3.0) booted `read_only: true` — what `verify --tier2`
     /// sends — as the microVM-host spike measured it. The line also carries
     /// "failed to fetch identity", which used to win and blame vsock.
     #[test]
