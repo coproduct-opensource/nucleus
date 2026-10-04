@@ -34,6 +34,7 @@ mod audit_sink;
 mod auth;
 mod clearing_receipt_collector;
 mod container_lifecycle;
+mod container_recovery;
 mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
@@ -58,6 +59,7 @@ mod rootfs_source;
 mod sealed_rootfs;
 mod spec_posture;
 mod spend_receipt_collector;
+mod state_lock;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -636,6 +638,7 @@ async fn main() -> Result<(), ApiError> {
     let args = Args::parse();
     broker_rollout::require_supported_driver(args.broker_enforcing, &args.driver)?;
     tokio::fs::create_dir_all(&args.state_dir).await?;
+    let _state_lock = state_lock::acquire(&args.state_dir)?;
     #[cfg(feature = "local-driver")]
     if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
         return Err(ApiError::Driver(
@@ -890,8 +893,12 @@ async fn main() -> Result<(), ApiError> {
         );
     }
 
-    // Pods that outlived a restart get their certificates + holder keys back.
+    // Restore authority before draining, so each completed removal can release
+    // its allocation even if a later removal prevents this startup.
     let restored_authority = state.authority.restore_from_disk().await;
+    if let Some(docker) = state.docker.as_deref() {
+        container_recovery::drain(docker, &state.state_dir, &state.authority).await?;
+    }
     info!("restored certificate authority for {restored_authority} pod(s)");
 
     // Enroll this executor's Ed25519 public key with the trust-service, once,
@@ -1673,6 +1680,7 @@ async fn spawn_container_pod(
     };
 
     let config = bollard::models::ContainerCreateBody {
+        labels: Some(container_recovery::labels(&state.state_dir, id)?),
         image: Some(launch.image),
         entrypoint: launch.entrypoint,
         cmd: launch.cmd,

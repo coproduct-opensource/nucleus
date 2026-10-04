@@ -38,10 +38,23 @@ limits swap separately. The [v1 memory controller](https://docs.kernel.org/admin
 limits memory and swap together, so v1 does not promise that no page is ever
 swapped; it bounds their total.
 
-This pool tracks the node process's admitted pods. Reconciliation of surviving
-external containers after node restart remains separate resource-management work.
-Cancellation during an unfinished Docker create/start also needs reconciliation;
-the registered-pod cleanup guarantee does not yet cover that launch window.
+The state directory is exclusively locked for the node process's lifetime.
+Stop the old node before starting a replacement, including when upgrading from
+a version that did not take this lock. Keep the `node.lock` file in place; an
+unlocked file left after exit is normal.
+
+With the container driver, startup lists containers on the configured Docker
+daemon and removes this state directory's leftovers before serving requests.
+Runtime authorization history is not resumable, so these workloads are stopped,
+not resumed with a new budget. Host bind-mounted workspaces, specs and logs are
+preserved. New containers carry node ownership and pod labels; older containers
+are recognized by their exact `<state>/pods/<uuid>` bind at `/data/pod` and an
+existing `pod.yaml`. Removal errors prevent startup; restart can retry after
+the Docker service recovers. Use the same state directory and Docker daemon for
+recovery. Moving state or switching drivers requires separate reconciliation.
+
+Cancellation during an unfinished Docker create/start still needs cleanup in
+the current process; startup recovery covers leftovers at the next restart.
 
 `--egress-staging-max-bytes` bounds reserved upload payload storage across all
 pods, defaulting to 256 MiB. Each streamed upload reserves its configured

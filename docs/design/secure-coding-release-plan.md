@@ -1248,3 +1248,30 @@ The Linux ARM64 build and all four repository gates passed. Clippy completed
 with the existing configuration warnings about unreachable blocking-client paths.
 This is registered-pod teardown coverage. Cancellation during unfinished Docker
 create/start and discovery of containers surviving a node restart remain open.
+
+### Startup container reconciliation (2026-10-04)
+
+The node now holds an exclusive state-directory file lock from startup until
+exit. This prevents two current node processes from managing the same state.
+The lock file remains on disk; its existence alone does not imply a live owner.
+Upgrades from versions without locking must stop the old process first.
+
+Container startup inventories the configured Docker daemon before API listeners
+are opened. It removes containers labelled for this canonical state directory,
+including unfinished launches with those labels. Older unlabelled containers
+are matched by their exact pod-directory bind and existing spec. Other state
+directories and unrelated containers are left alone. Confirmed removals preserve
+bind-mounted host files, record a recovery event and release restored authority
+allocations. An unconfirmed removal stops startup so capacity is not treated as
+available. Runtime authorization history is not resumed; leftover workloads are
+stopped rather than attached to a new policy and budget.
+
+Three focused tests passed for lock lifetime, owned/legacy container recovery,
+host-file preservation and removal retry. The Linux ARM64 node started on Apple
+Container and answered mTLS health; a second process using the same state
+directory exited with the explicit lock error. Clippy completed with existing
+configuration warnings, and all four repository gates passed. Docker recovery
+was exercised through its real client against an HTTP fixture, not a live daemon.
+In-process interrupted launch cleanup remains open, including remote creates
+that are still in flight when a process exits. Recovery requires the same state
+directory, Docker daemon and container driver.
