@@ -899,3 +899,30 @@ and a patched guest image. It is not fresh-image packaging or either complete
 harness acceptance run. The local dependency image build succeeded after
 reclaiming regenerable incremental Rust cache and restarting the builder;
 disk exhaustion had caused I/O errors and a read-only builder filesystem.
+
+### Automatic container cgroup preparation (2026-10-04)
+
+`nucleus-hostctl run-node` is now the microVM host image's entrypoint. It
+requires Linux PID 1 at the unified cgroup root, moves only itself into
+`nucleus-host`, checks that the root is empty, and consumes that preparation
+witness to exec the fixed node binary with the supplied arguments. It neither
+evacuates other processes nor disables resource controls. Children inherit
+the leaf; the jailer can enable controllers for its sibling pod hierarchy.
+This follows the kernel's [cgroup v2 no-internal-process rule](https://docs.kernel.org/admin-guide/cgroup-v2.html#no-internal-process-constraint).
+
+The preceding direct-start experiment failed with `Resource busy`. A fresh
+Apple Container using this entrypoint launched pod
+`8ebb726b-6e81-4d8b-8b4a-eec21806d651` without manual cgroup writes. PID 1
+was observed in `/nucleus-host`; the root was empty; CPU, memory, and PID
+controllers were enabled after launch. The HTTP adapter probe passed, and
+the independent verifier accepted one authorization and one outcome with
+zero unknown outcomes. The pod was cancelled and its container stopped.
+This validates startup preparation, not aggregate admission or either full
+harness journey. The dedicated host used mounted current binaries and the
+existing patched validation guest image; a fresh packaged release remains open.
+
+The host crate's 44 library tests and two CLI tests pass, including refusal
+outside container PID 1, refusal of an occupied root, and unchanged forwarding
+of node arguments. Portable and Linux-target strict Clippy and the Linux ARM64
+musl build pass.
+All four prepush gates pass for the entrypoint change.

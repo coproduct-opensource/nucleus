@@ -1,5 +1,7 @@
 //! `nucleus-hostctl`: the host side of running nucleus microVMs.
 //!
+//! - `run-node [args...]` is the Linux container PID-1 entrypoint. It moves
+//!   itself into a cgroup leaf before replacing itself with nucleus-node.
 //! - `probe` prints a JSON report of what this host provides and exits non-zero
 //!   when a microVM cannot launch here.
 //! - `seed <tree> <image> --owner UID:GID --jailer-uid UID --jailer-gid GID
@@ -51,6 +53,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Container PID-1 entrypoint: prepare cgroup v2, then exec nucleus-node.
+    RunNode {
+        /// Arguments passed unchanged to nucleus-node.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Report what this host provides; non-zero exit when a microVM cannot launch.
     Probe {
         /// Also require what a pod with a `network` block needs (CAP_NET_ADMIN).
@@ -126,6 +134,10 @@ struct Report {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::RunNode { args } => match nucleus_microvm_host::node_entrypoint::run(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&format!("preparing container node: {e}")),
+        },
         Command::Probe { network } => run_probe(network),
         Command::Seed {
             tree,
@@ -250,6 +262,24 @@ fn fail(msg: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_flags_are_forwarded_without_becoming_hostctl_options() {
+        let cli = Cli::try_parse_from([
+            "nucleus-hostctl",
+            "run-node",
+            "--listen",
+            "127.0.0.1:8080",
+            "--broker-enforcing",
+        ])
+        .expect("node arguments");
+        match cli.command {
+            Command::RunNode { args } => {
+                assert_eq!(args, ["--listen", "127.0.0.1:8080", "--broker-enforcing",])
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// The jail user's uid is the node's `NonRootUid`: seed cannot hand a disk
     /// to root as the "jail" user, which the node never drops to.

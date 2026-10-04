@@ -131,4 +131,6 @@ ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080 \
     RUST_LOG=info
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/nucleus-node"]
+# Move PID 1 into a leaf before the jailer enables domain controllers. Future
+# children inherit the leaf; no other container/host process is moved.
+ENTRYPOINT ["/usr/local/bin/nucleus-hostctl", "run-node"]
