@@ -25,7 +25,9 @@
 #
 # INPUTS (taken as given — built by the caller / CI, like boot-harness.sh). The
 # rootfs MUST bake `nucleus-podlist-probe` and carry `podlist-probe-pod.yaml`
-# (orchestrator + enable_pod_mgmt) as /etc/nucleus/pod.yaml.
+# (orchestrator + enable_pod_mgmt) as /etc/nucleus/pod.yaml. guest-init must
+# be built with the CI-only `ci-podlist-probe` feature; the ordinary workload
+# remains sandboxed and does not open vsock.
 #   KERNEL, ROOTFS, NODE_BIN   (defaults under $FC_DIR=$HOME/fc)
 #
 # Usage: [FC_DIR=… KERNEL=… ROOTFS=… NODE_BIN=…] scripts/firecracker/podlist-boot-check.sh
