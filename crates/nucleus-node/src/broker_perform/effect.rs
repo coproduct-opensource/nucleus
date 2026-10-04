@@ -15,19 +15,6 @@ use super::Resolved;
 pub(crate) const METHOD: reqwest::Method = reqwest::Method::POST;
 pub(crate) const CONTENT_TYPE: &str = "application/json";
 
-#[derive(serde::Serialize)]
-struct Effect<'a> {
-    operation: &'a str,
-    upstream: &'a str,
-    url: &'a str,
-    method: &'a str,
-    credential_header: &'a str,
-    content_type: &'a str,
-    body_sha256: [u8; 32],
-    body_bytes: u64,
-    call_charge_micro_usd: Option<u64>,
-}
-
 pub(super) fn digest(
     request: &PerformRequest,
     resolved: &Resolved<'_>,
@@ -50,13 +37,25 @@ pub(crate) fn digest_body(
     body_sha256: [u8; 32],
     body_bytes: u64,
 ) -> Result<ArgsDigest, serde_json::Error> {
-    let effect = Effect {
-        operation,
-        upstream: &resolved.entry().spec().name,
-        url: resolved.url(),
-        method: METHOD.as_str(),
-        credential_header: &resolved.entry().spec().header,
-        content_type,
+    Ok(ArgsDigest::new(
+        describe_body(operation, resolved, content_type, body_sha256, body_bytes).digest()?,
+    ))
+}
+
+pub(crate) fn describe_body(
+    operation: &str,
+    resolved: &Resolved<'_>,
+    content_type: &str,
+    body_sha256: [u8; 32],
+    body_bytes: u64,
+) -> nucleus_spec::host_effect_approval::EffectRequest {
+    nucleus_spec::host_effect_approval::EffectRequest {
+        operation: operation.into(),
+        upstream: resolved.entry().spec().name.clone(),
+        url: resolved.url().into(),
+        method: METHOD.as_str().into(),
+        credential_header: resolved.entry().spec().header.clone(),
+        content_type: content_type.into(),
         body_sha256,
         body_bytes,
         call_charge_micro_usd: resolved
@@ -64,9 +63,25 @@ pub(crate) fn digest_body(
             .call_charge()
             .ok()
             .map(|charge| charge.micro_usd()),
-    };
-    let mut hash = Sha256::new();
-    hash.update(b"nucleus-broker-effect-v3\0");
-    hash.update(serde_json::to_vec(&effect)?);
-    Ok(ArgsDigest::new(hash.finalize().into()))
+    }
+}
+
+pub(super) fn capture_review(
+    policy: &mut crate::host_decide::PodPolicy,
+    request: &PerformRequest,
+    resolved: &Resolved<'_>,
+    effect: ArgsDigest,
+    now: u64,
+) -> Result<(), String> {
+    if policy.review_requested(effect, now) {
+        let metadata = describe_body(
+            &request.operation,
+            resolved,
+            CONTENT_TYPE,
+            Sha256::digest(&request.body).into(),
+            request.body.len() as u64,
+        );
+        policy.attach_review(effect, metadata, &request.body, now)?;
+    }
+    Ok(())
 }

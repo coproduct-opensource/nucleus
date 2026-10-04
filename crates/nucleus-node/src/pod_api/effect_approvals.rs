@@ -1,7 +1,7 @@
 //! Operator-only approvals stored on the host, never in the guest.
 use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 use uuid::Uuid;
 
@@ -12,7 +12,10 @@ use crate::{ApiError, NodeState};
 pub(crate) fn routes() -> Router<NodeState> {
     Router::new()
         .route("/v1/pods/{id}/effect-approvals", get(list))
-        .route("/v1/pods/{id}/effect-approvals/{approval}", post(settle))
+        .route(
+            "/v1/pods/{id}/effect-approvals/{approval}",
+            get(review).post(settle),
+        )
 }
 
 use nucleus_spec::host_effect_approval::ApprovalDecision as Decision;
@@ -55,6 +58,26 @@ async fn list(
         .lock()
         .map_err(|_| ApiError::SupervisorUnavailable("host policy fault".into()))?;
     Ok(Json(policy.list_effect_approvals(operator, now()?)))
+}
+
+async fn review(
+    State(state): State<NodeState>,
+    Extension(auth): Extension<AuthContext>,
+    Path((id, approval)): Path<(Uuid, Uuid)>,
+) -> Result<Json<nucleus_spec::host_effect_approval::ApprovalReview>, ApiError> {
+    let operator = operator(&auth, &state)?;
+    let policy = state
+        .authority
+        .host_policy(id)
+        .await
+        .map_err(policy_error)?;
+    let mut policy = policy
+        .lock()
+        .map_err(|_| ApiError::SupervisorUnavailable("host policy fault".into()))?;
+    policy
+        .effect_review(operator, approval, now()?)
+        .map(Json)
+        .map_err(|e| ApiError::Body(e.into()))
 }
 
 async fn settle(
@@ -122,7 +145,20 @@ mod tests {
             .await
             .unwrap();
         let policy = state.authority.host_policy(id).await.unwrap();
-        let digest = ArgsDigest::new([3; 32]);
+        use sha2::{Digest, Sha256};
+        let payload = b"{\"action\":\"commit\"}";
+        let metadata = nucleus_spec::host_effect_approval::EffectRequest {
+            operation: "GitCommit".into(),
+            upstream: "api".into(),
+            url: "https://upstream.invalid/commit".into(),
+            method: "POST".into(),
+            credential_header: "authorization".into(),
+            content_type: "application/json".into(),
+            body_sha256: Sha256::digest(payload).into(),
+            body_bytes: payload.len() as u64,
+            call_charge_micro_usd: Some(0),
+        };
+        let digest = ArgsDigest::new(metadata.digest().unwrap());
         assert!(
             policy
                 .lock()
@@ -136,6 +172,11 @@ mod tests {
                 )
                 .is_err()
         );
+        policy
+            .lock()
+            .unwrap()
+            .attach_review(digest, metadata, payload, now().unwrap())
+            .unwrap();
         let path = format!("/v1/pods/{id}/effect-approvals");
         assert_eq!(
             crate::auth::operation_for_route(&Method::GET, &path),
@@ -182,6 +223,33 @@ mod tests {
             crate::auth::operation_for_route(&Method::POST, &settle_path),
             Some(crate::auth::Operation::ApproveEffect)
         );
+        assert_eq!(
+            crate::auth::operation_for_route(&Method::GET, &settle_path),
+            Some(crate::auth::Operation::ApproveEffect)
+        );
+        for (identity, expected) in [(&guest, StatusCode::FORBIDDEN), (&root, StatusCode::OK)] {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, &settle_path, identity, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                let bytes = axum::body::to_bytes(response.into_body(), 65536)
+                    .await
+                    .unwrap();
+                let review: nucleus_spec::host_effect_approval::ApprovalReview =
+                    serde_json::from_slice(&bytes).unwrap();
+                use base64::Engine as _;
+                assert_eq!(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(review.body_base64)
+                        .unwrap(),
+                    payload
+                );
+                assert_eq!(review.request.digest().unwrap(), *digest.as_bytes());
+            }
+        }
         for (identity, expected) in [
             (&guest, StatusCode::FORBIDDEN),
             (&root, StatusCode::NO_CONTENT),

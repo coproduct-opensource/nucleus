@@ -20,7 +20,8 @@
 //! approval mechanism as PERFORM, reserves the full egress charge, retrieves the
 //! credential, and rechecks current policy before committing the effect.
 //!
-//! Only chunks occupy memory. The temporary file is removed on close, including
+//! Allowed uploads keep only chunks in memory. Approval-gated uploads retain
+//! their full payload under the per-pod review limit. The file is removed on close, including
 //! refusal and cancellation. The upstream sees nothing before staging and host
 //! authorization finish. Request streaming therefore incurs local disk I/O and
 //! waits for upload completion; response streaming, including SSE, is preserved.
@@ -560,6 +561,17 @@ where
         Err(_) => Err("host policy unavailable".into()),
     };
     if let Err(reason) = preflight {
+        let reason = capture_review(
+            ctx.host_policy,
+            req,
+            &resolved,
+            staged,
+            effect,
+            current_time(),
+        )
+        .await
+        .err()
+        .unwrap_or(reason);
         return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
     }
     let uploaded = staged.len();
@@ -611,6 +623,17 @@ where
         Ok(permit) => permit,
         Err(reason) => {
             charge.not_sent();
+            let reason = capture_review(
+                ctx.host_policy,
+                req,
+                &resolved,
+                staged,
+                effect,
+                current_time(),
+            )
+            .await
+            .err()
+            .unwrap_or(reason);
             return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
         }
     };
@@ -767,6 +790,44 @@ where
     let _ = write_end(writer).await;
     let _ = write_line(writer, &encode_line(&end)).await;
     record
+}
+
+async fn capture_review(
+    policy: &crate::host_decide::SharedPodPolicy,
+    request: &nucleus_cred_protocol::StreamRequest,
+    resolved: &crate::broker_perform::Resolved<'_>,
+    staged: staged::StagedBody,
+    effect: nucleus_decision_protocol::ArgsDigest,
+    now: u64,
+) -> Result<(), String> {
+    let needed = policy
+        .lock()
+        .map_err(|_| "host policy unavailable")?
+        .review_requested(effect, now);
+    if !needed {
+        return Ok(());
+    }
+    let metadata = crate::broker_perform::effect::describe_body(
+        &request.operation,
+        resolved,
+        &request.content_type,
+        staged.digest(),
+        staged.len(),
+    );
+    let body = match staged.into_review().await {
+        Ok(body) => body,
+        Err(error) => {
+            policy
+                .lock()
+                .map_err(|_| "host policy unavailable")?
+                .refuse_missing_review(effect);
+            return Err(error);
+        }
+    };
+    policy
+        .lock()
+        .map_err(|_| "host policy unavailable")?
+        .attach_review(effect, metadata, &body, now)
 }
 
 #[cfg(test)]
@@ -1393,6 +1454,19 @@ mod tests {
             let pending = policy.list_effect_approvals(operator(), now);
             assert_eq!(pending.len(), 1);
             let id = pending[0].id;
+            let review = policy.effect_review(operator(), id, now).unwrap();
+            use base64::Engine as _;
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&review.body_base64)
+                    .unwrap(),
+                body
+            );
+            assert_eq!(
+                hex::encode(review.request.digest().unwrap()),
+                pending[0].effect_sha256
+            );
+            assert!(!serde_json::to_string(&review).unwrap().contains(TOKEN));
             policy
                 .settle_effect_approval(operator(), id, true, now)
                 .unwrap();

@@ -1,7 +1,10 @@
 //! Operator host approvals. This surface never uses a guest approval secret.
 use anyhow::{Context, Result, bail};
+use base64::Engine as _;
 use clap::Subcommand;
-use nucleus_spec::host_effect_approval::{ApprovalDecision, ApprovalStatus, ApprovalView};
+use nucleus_spec::host_effect_approval::{
+    ApprovalDecision, ApprovalReview, ApprovalStatus, ApprovalView,
+};
 use uuid::Uuid;
 
 use super::{HttpClient, REQUEST_TIMEOUT};
@@ -10,6 +13,8 @@ use super::{HttpClient, REQUEST_TIMEOUT};
 pub enum Command {
     /// Print host review metadata as JSON (payload contents are not included)
     List,
+    /// Inspect and verify the exact host-retained request and payload
+    Review { approval_id: Uuid },
     /// Grant one pending effect matching the reviewed SHA-256 digest
     Grant {
         approval_id: Uuid,
@@ -71,6 +76,28 @@ pub(super) async fn run(
         serde_json::from_slice(&body).context("invalid host approval response")?;
     let (id, decision) = match command {
         Command::List => return Ok(serde_json::to_string_pretty(&approvals)?),
+        Command::Review { approval_id } => {
+            let expected = approvals
+                .iter()
+                .find(|a| a.id == *approval_id)
+                .context("unknown or expired approval")?;
+            let (status, body) = client
+                .send(
+                    reqwest::Method::GET,
+                    &format!("{endpoint}/{approval_id}"),
+                    &[],
+                    &[],
+                    REQUEST_TIMEOUT,
+                )
+                .await?;
+            if status != 200 {
+                bail!("request review unavailable (HTTP {status})");
+            }
+            return render_review(
+                serde_json::from_slice(&body).context("invalid review response")?,
+                expected,
+            );
+        }
         Command::Grant {
             approval_id,
             effect_sha256,
@@ -126,6 +153,27 @@ fn pending(approvals: &[ApprovalView], id: Uuid) -> Result<&ApprovalView> {
         bail!("approval is no longer pending or has expired; refresh the list");
     }
     Ok(approval)
+}
+
+fn render_review(review: ApprovalReview, expected: &ApprovalView) -> Result<String> {
+    let body = base64::engine::general_purpose::STANDARD
+        .decode(&review.body_base64)
+        .context("invalid review payload encoding")?;
+    let digest = hex::encode(review.request.digest()?);
+    if review.approval.id != expected.id
+        || digest != parse_hash(&expected.effect_sha256).map_err(anyhow::Error::msg)?
+        || digest != parse_hash(&review.approval.effect_sha256).map_err(anyhow::Error::msg)?
+        || !review.request.matches_body(&body)
+        || review.request.url != expected.subject
+        || review.approval.operation != expected.operation
+        || review.request.call_charge_micro_usd != Some(expected.call_charge_micro_usd)
+    {
+        bail!("request review does not match the host approval; do not grant it");
+    }
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "approval": review.approval, "request": review.request,
+        "body_base64": review.body_base64, "body_utf8": String::from_utf8(body).ok(),
+    }))?)
 }
 
 #[cfg(test)]

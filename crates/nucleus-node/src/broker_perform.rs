@@ -675,7 +675,15 @@ where
 
     let preflight = match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
-            Some(op) => policy.preflight_effect(effect, op, &url, now_unix, call_charge),
+            Some(op) => {
+                let result = policy.preflight_effect(effect, op, &url, now_unix, call_charge);
+                if result.is_err() {
+                    effect::capture_review(&mut policy, req, &resolved, effect, now_unix)
+                        .and(result)
+                } else {
+                    result
+                }
+            }
             None => Err("unknown operation".into()),
         },
         Err(_) => Err("host policy unavailable".into()),
@@ -717,7 +725,20 @@ where
             let permit = match ctx.host_policy.lock() {
                 Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
                     Some(op) => {
-                        policy.authorize_effect(effect, op, &url, current_time, call_charge)
+                        let result =
+                            policy.authorize_effect(effect, op, &url, current_time, call_charge);
+                        if result.is_err() {
+                            effect::capture_review(
+                                &mut policy,
+                                req,
+                                &resolved,
+                                effect,
+                                current_time,
+                            )
+                            .and(result)
+                        } else {
+                            result
+                        }
                     }
                     None => Err("unknown operation".into()),
                 },
@@ -900,6 +921,56 @@ mod tests {
             idempotency_key: key.into(),
             ..request()
         }
+    }
+
+    #[tokio::test]
+    async fn operator_review_contains_the_exact_buffered_body_without_injected_credentials() {
+        use crate::host_decide::effects::Operator;
+        use base64::Engine as _;
+        let mut policy = PermissionLattice::permissive();
+        policy.obligations.insert(portcullis::Operation::WebFetch);
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream()];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let req = request();
+        let net = Upstream::default();
+        assert!(
+            !handle_perform(&req, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 0);
+        let operator = || Operator::authenticate("operator", "operator").unwrap();
+        {
+            let mut state = context.host_policy.lock().unwrap();
+            let pending = state.list_effect_approvals(operator(), NOW);
+            assert_eq!(pending.len(), 1);
+            let review = state.effect_review(operator(), pending[0].id, NOW).unwrap();
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&review.body_base64)
+                    .unwrap(),
+                req.body
+            );
+            assert_eq!(
+                hex::encode(review.request.digest().unwrap()),
+                pending[0].effect_sha256
+            );
+            assert_eq!(review.request.url, "https://upstream.invalid/v1/messages");
+            assert!(!serde_json::to_string(&review).unwrap().contains(SECRET));
+            state
+                .settle_effect_approval(operator(), pending[0].id, true, NOW)
+                .unwrap();
+        }
+        assert!(
+            handle_perform(&req, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 1);
+        assert_eq!(net.calls.lock().unwrap()[0].body, req.body);
     }
 
     #[tokio::test]

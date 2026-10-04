@@ -60,6 +60,19 @@ impl StagedBody {
         self.digest
     }
 
+    /// Consume a refused upload for operator review; it can no longer dispatch.
+    pub(super) async fn into_review(mut self) -> Result<Vec<u8>, String> {
+        if self.len > crate::host_decide::effects::review::MAX_REVIEW_BYTES {
+            return Err("request exceeds host approval review limit".into());
+        }
+        let mut body = vec![0; self.len as usize];
+        self.file
+            .read_exact(&mut body)
+            .await
+            .map_err(|_| "staged review unreadable")?;
+        Ok(body)
+    }
+
     /// Replay only the owned file. Guest bytes can no longer change the effect.
     pub(super) async fn send(
         mut self,

@@ -7,6 +7,7 @@ use portcullis::kernel::{DecisionToken, Verdict};
 use uuid::Uuid;
 
 use super::PodPolicy;
+pub(crate) mod review;
 
 const MAX_APPROVALS: usize = 1024;
 const APPROVAL_TTL: u64 = 300;
@@ -30,6 +31,7 @@ impl Operator {
 pub(crate) use nucleus_spec::host_effect_approval::{ApprovalStatus, ApprovalView};
 
 struct Approval {
+    review: Option<review::Payload>,
     digest: ArgsDigest,
     view: ApprovalView,
 }
@@ -127,6 +129,7 @@ impl Approvals {
         self.entries.insert(
             id,
             Approval {
+                review: None,
                 digest,
                 view: ApprovalView {
                     id,

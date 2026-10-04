@@ -72,8 +72,8 @@ Implementation sequence:
    legitimate approved work; denying every approval-gated operation is not done.
    **In progress:** operator-only mTLS routes list and grant/refuse pending host
    effects. Approvals expire after five minutes and are consumed at final
-   authorization, not preflight. Failed minting does not consume them. Operator CLI list/grant/refuse commands now expose this path. Complete request
-   review and harness pause/resume remain to be delivered.
+   authorization, not preflight. Failed minting does not consume them. Operator CLI list/grant/refuse commands now expose this path. Exact request review is now available through the operator CLI; harness
+   pause/resume remains to be delivered.
 6. Keep receipt and exit-report authority outside the guest. Distinguish host
    observations from guest assertions in signed evidence.
    **In progress:** no mediation signing seed exists in boot material, and the
@@ -565,3 +565,35 @@ digest matching or enabling redirects independently makes the relevant regressio
 fail at runtime; restored code passes. CLI and node cross-build for Linux ARM64
 musl. Clippy for all three changed crates with warnings denied and all four
 prepush gates pass. The built CLI's help exposes the documented commands.
+
+### Exact host request review (2026-10-04)
+
+Buffered and streamed broker refusals now retain the exact host-owned payload
+for pending action-bound approvals. The review metadata is the same canonical
+v3 request representation used by effect hashing, moved into `nucleus-spec`
+without changing its encoding. Review attachment rechecks the complete body
+hash and length against that request and the approval digest. Incorrect bindings
+or retained-payload exhaustion refuse the approval. Retention is bounded at
+64 MiB per pod; expired entries are inaccessible and pruned on subsequent
+approval access. Streamed allowed requests still
+replay their temporary files without retaining complete bodies in memory.
+
+The operator-only GET approval route returns the request and base64 payload;
+`nucleus node effect-approvals <pod> review <approval>` verifies body length,
+body hash, canonical digest, destination, price, and approval identity before
+rendering JSON. UTF-8 payloads are also JSON-escaped text; binary payloads remain
+base64. Injected credential values are never retained in review metadata.
+These are temporary review data, not durable outcome evidence or a claim about
+the remote API's semantic success. Harness pause/retry integration, both complete
+coding journeys, and Tier-2 validation remain open.
+
+Validation: 838 node unit tests (one ignored), three node integration tests,
+160 specification tests, and all seven operator CLI tests pass. A golden digest
+checks compatibility with the existing v3 encoding. Real buffered and streaming
+broker tests recover exact payloads, exclude injected credentials, and execute
+approved retries. The operator route refuses guest review requests; the CLI's
+real mTLS fixture verifies retrieval and safe text rendering. Removing host body
+verification, the aggregate retention limit, or CLI body verification each makes
+its regression fail at runtime; restored code passes. CLI/node Linux ARM64 musl
+builds, Clippy with warnings denied, and all four prepush gates pass. The built
+CLI help exposes `review`. This remains local evidence, not Tier-2 validation.

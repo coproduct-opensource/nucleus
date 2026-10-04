@@ -653,6 +653,7 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
             Some(Operation::GetReceipt)
         }
         (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals"])
+        | (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals", _])
         | (&axum::http::Method::POST, ["v1", "pods", _id, "effect-approvals", _]) => {
             Some(Operation::ApproveEffect)
         }
