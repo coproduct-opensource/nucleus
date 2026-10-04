@@ -6,13 +6,17 @@ HTTP JSON tool proxy that runs inside a pod (VM) and enforces nucleus policies.
 
 `nucleus-egress-http` exposes one registered broker upstream on guest loopback.
 Build it with `cargo build -p nucleus-tool-proxy --bin nucleus-egress-http` and
-include the executable in the guest image. The release image builders do not
-yet install it automatically. Start and supervise it alongside the harness,
+include the executable in the guest image. Both the guest layer and release
+rootfs builder include it. Start and supervise it alongside the harness,
 under the same workload UID:
 
 ```text
 nucleus-egress-http --upstream model-api --listen 127.0.0.1:18081
 ```
+
+For the legacy rootfs builder, the adapter must be beside `PROXY_BIN` in the
+build directory. A normal package build produces both executables. Image
+assembly copies the adapter after applying overlays and fails if it is absent.
 
 `NUCLEUS_TOOL_PROXY_URL` supplies the runtime's Unix workload door; `--door`
 can also supply an absolute `unix:///...` socket path. Configure the harness's

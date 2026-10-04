@@ -646,7 +646,10 @@ mod tests {
     fn the_image_installs_the_binaries_the_cli_runs() {
         let r = recipe(IMAGE_SOURCE);
         assert!(r.contains(&format!("/out/{HOSTCTL} {}", in_container_bin(HOSTCTL))));
-        assert!(r.contains(&format!("ENTRYPOINT [\"{}\"]", in_container_bin(NODE))));
+        assert!(r.contains(&format!(
+            "ENTRYPOINT [\"{}\", \"run-node\"]",
+            in_container_bin(HOSTCTL)
+        )));
         assert!(!RELAY_PORTS.contains(&NODE_PORT));
     }
 

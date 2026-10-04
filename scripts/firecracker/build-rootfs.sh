@@ -260,7 +260,7 @@ if [ "$VERIFY_ONLY" = true ]; then
     echo "Verifying binaries for $ARCH ($TARGET)..."
     preflight_host_tooling || exit 1
     missing=0
-    for bin in "$PROXY_BIN" "$NET_PROBE_BIN" "$WORKLOAD_PROBE_BIN" "$EGRESS_PROBE_BIN"; do
+    for bin in "$PROXY_BIN" "${PROXY_BIN%/*}/nucleus-egress-http" "$NET_PROBE_BIN" "$WORKLOAD_PROBE_BIN" "$EGRESS_PROBE_BIN"; do
         if [ ! -f "$bin" ]; then
             echo "  MISSING: $bin"
             missing=1
@@ -566,6 +566,10 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
 fi
 
 # Set executable permissions
+# The tool-proxy package also builds this unprivileged companion. Copy it
+# after overlays, from the same build directory; absence fails the build.
+cp "${PROXY_BIN%/*}/nucleus-egress-http" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-http"
+chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-egress-http"
 chmod +x "$ROOTFS_DIR/init"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"

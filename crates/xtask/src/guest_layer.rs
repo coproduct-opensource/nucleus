@@ -117,7 +117,7 @@ impl Builder {
 /// `release.yml` by [`release_coverage`].
 pub fn features(binary: GuestBinary) -> &'static [&'static str] {
     match binary {
-        GuestBinary::ToolProxy => &["remote-audit"],
+        GuestBinary::ToolProxy | GuestBinary::EgressHttp => &["remote-audit"],
         GuestBinary::Init
         | GuestBinary::EgressProbe
         | GuestBinary::NetProbe
@@ -164,7 +164,7 @@ impl GuestBinaries {
     pub fn read(dir: &Path, arch: Arch) -> Result<Self> {
         let mut out = Vec::new();
         for b in GuestBinary::ALL {
-            let path = dir.join(b.package());
+            let path = dir.join(b.binary());
             let bytes = std::fs::read(&path)
                 .with_context(|| format!("reading {} for {}", path.display(), b.path()))?;
             check_static_elf(&bytes, arch)
@@ -258,8 +258,15 @@ pub fn write_layer(binaries: GuestBinaries, ca: Vec<u8>, out: &Path) -> Result<A
 fn build(root: &Path, arch: Arch, builder: Builder) -> Result<()> {
     for b in GuestBinary::ALL {
         let mut cmd = builder.command();
-        cmd.current_dir(root)
-            .args(["-p", b.package(), "--release", "--target", arch.triple()]);
+        cmd.current_dir(root).args([
+            "-p",
+            b.package(),
+            "--bin",
+            b.binary(),
+            "--release",
+            "--target",
+            arch.triple(),
+        ]);
         let feats = features(b);
         if !feats.is_empty() {
             cmd.args(["--features", &feats.join(",")]);
@@ -354,6 +361,18 @@ pub fn release_coverage(needed: &[GuestBinary], rootfs_sh: &str, release_yml: &s
         match steps.iter().find(|l| l.contains(&build)) {
             None => findings.push(format!("release.yml never BUILDS {pkg}")),
             Some(line) => {
+                let words: Vec<_> = line.split_whitespace().collect();
+                let selected: Vec<_> = words
+                    .windows(2)
+                    .filter(|pair| pair[0] == "--bin")
+                    .map(|pair| pair[1])
+                    .collect();
+                if !selected.is_empty() && !selected.contains(&b.binary()) {
+                    findings.push(format!(
+                        "release.yml builds {pkg} but excludes binary {}",
+                        b.binary()
+                    ));
+                }
                 let declared: BTreeSet<&str> = line
                     .split_whitespace()
                     .skip_while(|w| *w != "--features")
@@ -368,13 +387,16 @@ pub fn release_coverage(needed: &[GuestBinary], rootfs_sh: &str, release_yml: &s
                 }
             }
         }
-        let upload = format!("release/{pkg}");
+        let binary = b.binary();
+        let upload = format!("release/{binary}");
         if !steps.iter().any(|l| l.trim_end().ends_with(&upload)) {
             findings.push(format!(
-                "release.yml never UPLOADS {pkg}; the rootfs job runs on another runner"
+                "release.yml never UPLOADS {binary}; the rootfs job runs on another runner"
             ));
         }
     }
+    findings.sort();
+    findings.dedup();
     findings
 }
 
@@ -399,8 +421,8 @@ mod tests {
     fn fake_bins(dir: &Path, arch: Arch, skip: Option<GuestBinary>) {
         for b in GuestBinary::ALL {
             if Some(b) != skip {
-                let bytes = fake_elf(arch.elf_machine(), b.package().as_bytes());
-                std::fs::write(dir.join(b.package()), bytes).unwrap();
+                let bytes = fake_elf(arch.elf_machine(), b.binary().as_bytes());
+                std::fs::write(dir.join(b.binary()), bytes).unwrap();
             }
         }
     }
@@ -528,6 +550,43 @@ mod tests {
         );
         assert!(GuestBinary::ALL.len() >= 5, "vacuous manifest");
         assert!(findings.is_empty(), "{findings:#?}");
+    }
+
+    #[test]
+    fn companion_binary_is_required_even_when_its_package_binary_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        fake_bins(tmp.path(), Arch::Aarch64, Some(GuestBinary::EgressHttp));
+        let err = GuestBinaries::read(tmp.path(), Arch::Aarch64)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("nucleus-egress-http"), "{err}");
+    }
+
+    #[test]
+    fn release_must_build_and_upload_the_companion_not_only_its_package() {
+        let rootfs = repo_file("scripts/firecracker/build-rootfs.sh");
+        let release = repo_file(".github/workflows/release.yml");
+        let missing: String = release
+            .lines()
+            .filter(|l| !l.trim_end().ends_with("release/nucleus-egress-http"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(missing, release);
+        assert_eq!(
+            release_coverage(&GuestBinary::ALL, &rootfs, &missing),
+            [
+                "release.yml never UPLOADS nucleus-egress-http; the rootfs job runs on another runner"
+            ]
+        );
+        let narrowed = release.replace(
+            "cross build -p nucleus-tool-proxy ",
+            "cross build -p nucleus-tool-proxy --bin nucleus-tool-proxy ",
+        );
+        assert_ne!(narrowed, release);
+        assert_eq!(
+            release_coverage(&GuestBinary::ALL, &rootfs, &narrowed),
+            ["release.yml builds nucleus-tool-proxy but excludes binary nucleus-egress-http"]
+        );
     }
 
     // A-19: each finding driven red on the real files.

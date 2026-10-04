@@ -965,3 +965,30 @@ credential reference have been requested; no secret value is needed in chat.
 The adapter still needs ordinary release-image inclusion rather than the
 explicit acceptance overlay, and the published fresh-install journey remains
 unverified.
+
+### HTTP adapter included in guest packaging (2026-10-04)
+
+The guest manifest now distinguishes a Cargo package from its executable
+targets. `nucleus-egress-http` is the ninth guest binary, built by the existing
+tool-proxy package. The release workflow uploads it for rootfs assembly; the
+legacy rootfs builder requires it beside `PROXY_BIN`, includes it in its
+`--verify` input list, and copies it after overlays. The deterministic Rust
+guest-layer builder reads and checks the companion separately from the proxy.
+No new shell branching or gate logic was added: the existing input list was
+extended and assembly uses unconditional copy/chmod commands.
+
+Regression tests refuse a missing companion even when the proxy exists,
+a release omitting its upload, and a release selecting only the proxy binary.
+Changing binary lookup or upload verification back to package-name lookup
+made those tests fail; restored tests pass. Actual rootfs build and `--verify`
+invocations also refuse the missing adapter. A new harness ext4 image built
+without any overlay contains a byte-identical adapter. The deterministic
+guest-layer tar assembled from current prebuilt binaries also contains that
+exact executable (SHA-256
+`96623e9a1243813b255829125647ef2044404faa7b1d0622d716d9c754d97611`).
+
+All 13 guest-layer tests and 160 spec tests pass, as do strict Clippy and the
+existing release-input shell check. The spec suite also exposed and corrected
+an assertion still expecting the pre-cgroup-preparation container entrypoint.
+This completes adapter inclusion in the source packaging paths, not a published
+release, fresh user installation, or either full harness journey.

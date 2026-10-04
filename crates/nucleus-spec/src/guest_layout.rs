@@ -158,9 +158,11 @@ pub enum GuestBinary {
     /// The MCP bridge (`nucleus-mcp`), which an agent run in the pod uses to
     /// reach its tools through the workload door (#2696 P2).
     Mcp,
+    /// Local HTTP compatibility adapter for the credentialed workload door.
+    EgressHttp,
 }
 
-/// `(guest path, cargo package)` for a binary installed under
+/// `(guest path, binary target)` for a binary installed under
 /// [`NUCLEUS_BIN_PREFIX`]: both halves from one name, so they cannot disagree.
 macro_rules! guest_bin {
     ($name:literal) => {
@@ -170,7 +172,7 @@ macro_rules! guest_bin {
 
 impl GuestBinary {
     /// Every binary the guest layer ships.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Init,
         Self::ToolProxy,
         Self::EgressProbe,
@@ -179,10 +181,10 @@ impl GuestBinary {
         Self::PodlistProbe,
         Self::AdversaryProbe,
         Self::Mcp,
+        Self::EgressHttp,
     ];
 
-    /// `(guest path, cargo package)`. Each package's binary target carries the
-    /// package's own name.
+    /// `(guest path, binary target)`.
     const fn parts(self) -> (&'static str, &'static str) {
         match self {
             Self::Init => (INIT, "nucleus-guest-init"),
@@ -193,6 +195,7 @@ impl GuestBinary {
             Self::PodlistProbe => guest_bin!("podlist-probe"),
             Self::AdversaryProbe => guest_bin!("adversary-probe"),
             Self::Mcp => guest_bin!("mcp"),
+            Self::EgressHttp => guest_bin!("egress-http"),
         }
     }
 
@@ -202,10 +205,26 @@ impl GuestBinary {
         self.parts().0
     }
 
-    /// The cargo package (and binary target) that builds it.
+    /// The executable name; a package may produce more than one.
+    #[must_use]
+    pub const fn binary(self) -> &'static str {
+        self.parts().1
+    }
+
+    /// The cargo package that builds the executable.
     #[must_use]
     pub const fn package(self) -> &'static str {
-        self.parts().1
+        match self {
+            Self::EgressHttp => Self::ToolProxy.binary(),
+            Self::Init
+            | Self::ToolProxy
+            | Self::EgressProbe
+            | Self::NetProbe
+            | Self::WorkloadProbe
+            | Self::PodlistProbe
+            | Self::AdversaryProbe
+            | Self::Mcp => self.binary(),
+        }
     }
 }
 
@@ -410,6 +429,7 @@ mod tests {
             GuestBinary::PodlistProbe => 5,
             GuestBinary::AdversaryProbe => 6,
             GuestBinary::Mcp => 7,
+            GuestBinary::EgressHttp => 8,
         };
         for (i, b) in GuestBinary::ALL.iter().enumerate() {
             assert_eq!(slot(*b), i, "{b:?} out of place in ALL");
@@ -431,15 +451,15 @@ mod tests {
     }
 
     /// Every guest binary is reserved, and every one but `/init` sits under the
-    /// binary prefix with its package's name.
+    /// binary prefix with its binary target's name.
     #[test]
-    fn guest_binaries_are_reserved_and_named_by_their_package() {
+    fn guest_binaries_are_reserved_and_named_by_their_binary_target() {
         for b in GuestBinary::ALL {
             assert!(reserved_by(b.path()).is_some(), "{b:?} not reserved");
             if b != GuestBinary::Init {
                 assert_eq!(
                     b.path().strip_prefix("/usr/local/bin/"),
-                    Some(b.package()),
+                    Some(b.binary()),
                     "{b:?}"
                 );
             }
