@@ -11,10 +11,10 @@
   "rust_craft": {
     "permissive_verify": 11,
     "verify_calls_GUARD": 50,
-    "unsafe_blocks": 5,
-    "crates_total": 96,
-    "crates_lints_workspace": 64,
-    "lints_adoption_pct": 66
+    "unsafe_blocks": 8,
+    "crates_total": 97,
+    "crates_lints_workspace": 65,
+    "lints_adoption_pct": 67
   },
   "sandboxing": {
     "mediation_drift": 0,
