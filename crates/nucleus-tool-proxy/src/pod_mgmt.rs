@@ -866,16 +866,14 @@ pub(crate) fn clamp_credentialed_egress(
 
 /// STRIP any audit sink the requester asked for.
 ///
-/// `AuditSinkSpec` is an S3 bucket, prefix, region and a **custom endpoint URL**,
-/// and `nucleus-node` turns it into KERNEL BOOT ARGS for the child VM
-/// (`firecracker_config.rs`: `nucleus.audit_s3_bucket=...`, `..._endpoint=...`).
-/// So an agent-authored sub-pod spec chooses where the child's audit record is
-/// written, which is two things at once: the record of what the child did never
-/// reaches the operator, and the records themselves are shipped to a destination
-/// the agent named.
+/// Since #3131 an `AuditSinkSpec` can only NAME a sink the node's operator
+/// configured, and narrow its prefix: the bucket and endpoint are the node's.
+/// Before that it carried an S3 bucket and a **custom endpoint URL**, so an
+/// agent-authored sub-pod spec chose where the child's audit record was written,
+/// with the operator's credentials. The node now refuses that shape at create.
 ///
-/// That is the same shape as `clamp_credentialed_egress` guards against —
-/// "a request aimed at a URL I choose" — with the payload being the audit trail.
+/// The strip stays, because opting a child into an operator sink, and choosing
+/// which one and under what prefix, is still not something `ManagePods` confers.
 /// It is STRIPPED rather than clamped because, unlike credentialed egress, the
 /// tool-proxy holds no parent sink to narrow against: its own audit goes to
 /// `state.audit` / `state.art12_log`, which are different mechanisms. Where the
@@ -886,8 +884,8 @@ pub(crate) fn clamp_credentialed_egress(
 pub(crate) fn strip_requested_audit_sink(spec: &mut PodSpec) {
     if let Some(sink) = spec.spec.audit_sink.take() {
         tracing::warn!(
-            bucket = %sink.s3_bucket,
-            endpoint = %sink.s3_endpoint.as_deref().unwrap_or("<default>"),
+            sink = %sink.sink,
+            prefix = %sink.prefix.as_deref().unwrap_or("<none>"),
             "sub-pod request specified an audit sink; stripped -- ManagePods does not confer \
              the choice of where a pod's own audit record is written"
         );
@@ -1081,21 +1079,17 @@ metadata:
 spec:
   work_dir: /w
   audit_sink:
-    s3_bucket: attacker-bucket
-    s3_prefix: p/
-    s3_region: us-west-2
-    s3_endpoint: https://attacker.example
+    sink: audit
+    prefix: elsewhere
 "#;
         serde_yaml::from_str(yaml).expect("spec parses")
     }
 
     /// **`ManagePods` must not confer the choice of where audit goes.**
-    /// `nucleus-node` lowers `audit_sink` into the child's KERNEL BOOT ARGS
-    /// (`firecracker_config.rs`: `nucleus.audit_s3_bucket=`, `..._endpoint=`), so
-    /// a surviving sink is two failures at once: the record of what the child did
-    /// never reaches the operator, and the records are shipped to a destination
-    /// the agent named. Same shape as the credentialed-egress clamp guards
-    /// against, with the audit trail as the payload.
+    /// A surviving sink would let the agent opt the child into an operator sink
+    /// and choose its prefix, which is the node's decision (#3131). Same shape
+    /// as the credentialed-egress clamp guards against, with the audit trail as
+    /// the payload.
     #[test]
     fn a_requested_audit_sink_is_stripped() {
         let mut spec = spec_with_audit_sink();

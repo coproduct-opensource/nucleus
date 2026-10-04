@@ -138,5 +138,6 @@ pub(crate) fn sample_config() -> crate::firecracker_config::FirecrackerConfig {
         "",
         None,
         None,
+        None,
     )
 }

@@ -88,8 +88,9 @@ pub enum ContainmentMode {
     /// (the tool-proxy's `--unsandboxed`); without it every spawn is refused
     /// with [`NucleusError::UnsandboxedNotOptedIn`].
     Unsandboxed,
-    /// Linux host hardening via a `pre_exec` hook (no-new-privs + rlimits today;
-    /// seccomp/landlock are a tracked follow-up). Attests a strengthened *file*
+    /// Linux host hardening via a `pre_exec` hook: no-new-privs, rlimits and the
+    /// workload syscall filter ([`SyscallFilter::WorkloadDenylist`](crate::SyscallFilter),
+    /// #2696 P3b); Landlock is a tracked follow-up (P3c). Attests a strengthened *file*
     /// dimension only; on non-Linux this mode fails closed with
     /// `HardeningUnavailable`. Cannot satisfy `sandboxed()`/`microvm()` policies.
     ///
@@ -107,7 +108,8 @@ pub enum ContainmentMode {
     /// its environment. So each child drops to the workload uid
     /// ([`DEFAULT_CHILD_UID`](crate::DEFAULT_CHILD_UID)) and is hardened, by
     /// the same [`ChildConfinement`](crate::ChildConfinement) the workload
-    /// launch uses. It used to get nothing, and ran as guest root.
+    /// launch uses, the workload syscall filter included. It used to get
+    /// nothing, and ran as guest root.
     ///
     /// Only a root runtime can drop. A non-root runtime under this mode
     /// refuses every spawn with

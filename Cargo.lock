@@ -7886,6 +7886,9 @@ dependencies = [
 [[package]]
 name = "nucleus-workload-probe"
 version = "1.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "num-bigint"
@@ -13930,6 +13933,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2 0.11.0",
+ "signal-hook",
  "syn 3.0.6",
  "tar",
  "tempfile",

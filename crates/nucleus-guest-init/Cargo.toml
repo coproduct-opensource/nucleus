@@ -16,6 +16,10 @@ path = "src/lib.rs"
 name = "nucleus-guest-init"
 path = "src/main.rs"
 
+[features]
+# CI-only trusted instrumentation; production guest-init builds omit it.
+ci-podlist-probe = []
+
 [dependencies]
 nix = { version = "0.31", default-features = false, features = ["mount", "fs", "net"] }
 vsock = "0.5"

@@ -116,7 +116,7 @@ fn maximal(policy: &str) -> PodSpec {
             "vsock":{{"guest_cid":3,"port":5005}},
             "seccomp":{{"mode":"custom","filter_path":"/f"}},
             "cgroup":{{"path":"/sys/fs/cgroup/p","settings":[{{"file":"cpu.max","value":"1"}}]}},
-            "audit_sink":{{"s3_bucket":"b","s3_prefix":"p","s3_region":"r","s3_endpoint":"e"}},
+            "audit_sink":{{"sink":"audit","prefix":"p"}},
             "credentials":{{"env":{{"LLM_API_TOKEN":"test-token-123"}}}}
           }}}}"#,
         d0 = D[0],

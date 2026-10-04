@@ -659,6 +659,7 @@ impl Host for Node {
             task_token: None,
             pod_certificate: None,
             broker_serve: serve,
+            audit_creds: None,
             measured: crate::image_identity::Measured::default(),
         })
         .await
