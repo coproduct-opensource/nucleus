@@ -695,3 +695,44 @@ after updating its reference. All three integration tests, the final Linux ARM64
 musl build, strict Clippy, and all four prepush gates pass. The final Linux binary
 was also rechecked against the live enforcing refusal with no VMM or jail left
 behind. Credential-free spec delivery and complete agent journeys remain open.
+
+### Enforced host-spec delivery and a real workload (2026-10-04)
+
+Firecracker enforcing mode now prepares the served spec by stripping every
+`credentials.env` value from a copy. Serialization failure refuses preparation.
+A private withholding witness is retained only after the workload API is ready;
+broker preparation requires that witness before it can claim enforcement. The
+broker still obtains credentials from the operator registry's host environment
+or federation, never by substituting caller-supplied credential values.
+
+The node adds `nucleus.host_spec=required` to enforced boots. Updated guest-init
+requires the fetched spec and selects it even when the image has a baked spec;
+missing delivery and invalid/repeated mode arguments refuse. Legacy/listen mode
+retains its existing precedence. Before admitting an enforcing pod as running,
+the node requires guest-init's compatibility acknowledgment as well as the
+existing health and confinement checks. That guest acknowledgment is not
+independent execution evidence. Unsupported drivers refuse `--broker-enforcing`
+at startup instead of silently using legacy delivery.
+
+The real local VM rejected the previous guest-init for missing acknowledgment.
+With updated guest-init, enforcing pod
+`017817ee-ca7b-4632-b981-a57d0f28ada6` booted from the same image, which still
+contained its old baked spec. Its host-selected generic workload reported
+`HOST_SPEC_WORKLOAD_PASS` after checking the credential environment value was
+absent. It was subsequently cancelled through the mTLS API. This is a useful
+live launch/workload control, not a complete harness journey or host-authoritative
+proof of workload output. The image remains manually assembled for validation.
+
+The workload-API socket regression fails on the previous delivery path because
+the literal canary credential reaches the guest. Restored delivery passes while
+preserving workload command/arguments and legacy behavior. Bypassing required
+host selection makes its regression fail by choosing the baked spec. The full
+node run passes 845 unit tests and three integrations; guest-init passes 50
+unit tests and four doctests, with existing ignored cases retained. Subsequent
+focused checks cover the startup-driver refusal and final preparation witness.
+Linux ARM64 production builds, strict Clippy, and all four prepush gates pass.
+
+The next live milestone is approved and denied broker effects from this guest,
+with independently verified host journals, followed by the two full harness
+journeys. Secrets deliberately baked into an image or placed in arbitrary
+workload arguments/files are not scrubbed by `credentials.env` preparation.

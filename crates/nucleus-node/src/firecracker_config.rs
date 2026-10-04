@@ -785,6 +785,15 @@ impl FirecrackerConfig {
         }
     }
 
+    pub(crate) fn requiring_host_spec(mut self, required: bool) -> Self {
+        if required {
+            let args = self.boot_source.boot_args.get_or_insert_with(String::new);
+            args.push(' ');
+            args.push_str(nucleus_spec::guest_layout::HOST_SPEC_REQUIRED_ARG);
+        }
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_spec(
         spec: &PodSpec,

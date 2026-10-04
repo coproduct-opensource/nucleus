@@ -79,8 +79,13 @@ pub const ETC_NUCLEUS: &str = etc_nucleus!("");
 /// The guest layer's binaries, as a name prefix.
 pub const NUCLEUS_BIN_PREFIX: &str = nucleus_bin!("");
 
-/// The baked pod spec. Wins over the one fetched from the host when present.
+/// The baked pod spec. Wins only in legacy mode; enforced guests require the host spec.
 pub const POD_SPEC_PATH: &str = etc_nucleus!("pod.yaml");
+
+/// Node-owned boot configuration: a sanitized host spec must replace baked specs.
+pub const HOST_SPEC_REQUIRED_ARG: &str = "nucleus.host_spec=required";
+/// Guest compatibility acknowledgment, not host-authoritative execution evidence.
+pub const HOST_SPEC_READY: &str = "NUCLEUS_HOST_SPEC: READY";
 
 /// The legacy location of the baked pod spec, copied to [`POD_SPEC_PATH`] when
 /// that is absent. Reserved because it outranks the host-fetched spec: an image

@@ -42,15 +42,6 @@
 //! rather than a launch refusal. Under `ListenOnly` nothing depends on the
 //! socket yet, so a failure there is a warning.
 
-// The blanket allow this replaced said "not yet reachable from the spawn path
-// itself". That is false: with the allow removed, Linux clippy at `-D warnings`
-// names ZERO dead items in this file. Every function here is on the live path —
-// `start_broker_for_pod` is called from `spawn_firecracker_pod`, and it reaches
-// all of them.
-//
-// NON-LINUX ONLY, because `start_broker_for_pod` is `cfg(target_os = "linux")`
-// and it is the only caller, so a macOS build compiles none of this. On Linux
-// the detector stays live and will report the next thing that stops being wired.
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
 use uuid::Uuid;
@@ -61,36 +52,13 @@ use nucleus_cred_broker::PodIdentity;
 /// Why a launch refused to enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum EnforcementRefused {
-    /// The node does not write this pod's guest spec, so it cannot take
-    /// anything out of it.
-    #[error(
-        "--broker-enforcing was requested, but this driver bakes the pod spec into the image at \
-         build time, so the node has no guest spec to strip credentials from. Enforcing here \
-         would serve a broker socket while the image still carried the credentials — a claim of \
-         withholding that is not true. Use --broker-listen, or supply the spec at launch."
-    )]
+    /// No prepared credential-free host spec is available to this guest.
+    #[error("--broker-enforcing requires a credential-free host spec served by the workload API")]
     NodeDoesNotWriteTheGuestSpec,
 }
 
-/// Refuse to *claim* enforcement the wiring cannot deliver.
-///
-/// # The failure mode this closes
-///
-/// `Enforcing` means two things: serve the socket, and withhold credential
-/// values from the guest spec. On the Firecracker path the second is currently
-/// impossible — `scripts/firecracker/build-rootfs.sh` copies the pod spec into
-/// the rootfs at **image build time**, so the node never writes a guest spec and
-/// [`crate::cred_split::split_credentials`] has nothing to run on.
-///
-/// An operator who passed `--broker-enforcing` there would get a broker socket
-/// and a reasonable belief that credentials had been withheld, while the image
-/// still carried them. That is worse than the feature being absent: it is a
-/// security claim that outruns its wiring.
-///
-/// The available responses are to downgrade silently, to warn, or to refuse.
-/// This refuses. A silent downgrade IS the failure mode — the operator asked for
-/// enforcement, did not get it, and has no way to tell. A warning is a downgrade
-/// that assumes someone is reading logs.
+/// Enforcement is reachable only when the served spec's preparation minted a
+/// withholding witness. A listener or an identity alone proves no such fact.
 pub fn check_enforcement_is_honest(
     rollout: BrokerRollout,
     node_writes_the_guest_spec: bool,
@@ -320,11 +288,11 @@ impl BrokerCapability {
 /// This takes a slice of upstream specs and NOT a `PodSpec`, deliberately, and
 /// that is the whole design rather than a style choice.
 ///
-/// On Firecracker, `scripts/firecracker/build-rootfs.sh` copies the pod spec
-/// into the rootfs **at image build time**. A credential sourced from
-/// `spec.spec.credentials.env` would therefore be written into the guest image —
-/// the precise opposite of the property this broker exists to provide, and
-/// invisible at runtime because the file was baked days earlier.
+/// Broker credentials belong to the operator's registry, not to caller-supplied
+/// `credentials.env`. Enforcing host-spec delivery strips those caller values;
+/// the broker must neither depend on them nor use them to override the operator's
+/// credential source. Legacy images can also carry a baked spec, whose values
+/// are already guest-visible and cannot establish host-held authority.
 ///
 /// A function that cannot name `PodSpec` cannot read `credentials.env` from it.
 /// That beats a test asserting it does not: the test would pass for as long as
@@ -423,15 +391,30 @@ pub async fn pod_credentials(
 /// error case is deliberately narrow: a launch fails only when enforcement was
 /// requested dishonestly, or when the socket could not be created *and*
 /// credentials had already been withheld in exchange for it.
-pub async fn start_broker_for_pod(
-    state: &crate::NodeState,
-    spec: &nucleus_spec::PodSpec,
-    vsock_path: &std::path::Path,
-    registered: Option<&nucleus_identity::Identity>,
-    id: uuid::Uuid,
-    capability: VerifyToken,
-    jail_owner: Option<(u32, u32)>,
+pub(crate) struct BrokerInputs<'a> {
+    pub state: &'a crate::NodeState,
+    pub spec: &'a nucleus_spec::PodSpec,
+    pub vsock_path: &'a std::path::Path,
+    pub registered: Option<&'a nucleus_identity::Identity>,
+    pub id: uuid::Uuid,
+    pub capability: VerifyToken,
+    pub jail_owner: Option<(u32, u32)>,
+    pub withheld: Option<&'a crate::cred_split::Withheld>,
+}
+
+pub(crate) async fn start_broker_for_pod(
+    inputs: BrokerInputs<'_>,
 ) -> Result<Option<crate::broker_transport::BrokerListener>, crate::ApiError> {
+    let BrokerInputs {
+        state,
+        spec,
+        vsock_path,
+        registered,
+        id,
+        capability,
+        jail_owner,
+        withheld,
+    } = inputs;
     let transport = if spec.spec.vsock.is_some() {
         crate::broker_rollout::BrokerTransport::Vsock
     } else {
@@ -442,11 +425,8 @@ pub async fn start_broker_for_pod(
         state.broker_listen,
         transport,
     );
-    // The Firecracker rootfs carries the pod spec from image build time, so the
-    // node writes no guest spec and can withhold nothing from it. Passing `false`
-    // here is what turns `--broker-enforcing` into a refusal rather than a false
-    // claim; it becomes `true` when the split gains a call site.
-    let rollout = check_enforcement_is_honest(rollout, false)
+    // Only preparation of the actually served spec can mint this witness.
+    let rollout = check_enforcement_is_honest(rollout, withheld.is_some())
         .map_err(|e| crate::ApiError::Driver(e.to_string()))?;
 
     let Some(identity) = broker_identity(rollout, registered) else {
@@ -493,15 +473,8 @@ pub async fn start_broker_for_pod(
             .unwrap_or_default(),
     );
 
-    // The comment here used to read "Empty until `cred_split` has a call site on
-    // this driver", and a `CredentialStore::new()` sat under it refusing
-    // everything. It is populated now — from the NODE's environment, never from
-    // the pod spec, for the reason `store_from_node_environment` gives at
-    // length: on Firecracker the pod spec is baked into the guest rootfs, so a
-    // credential taken from it would ship inside the image.
-    //
-    // Federated entries are minted per exchange instead, in this pod's name as
-    // its certificate records it (`pod_credentials`).
+    // The operator's host environment or per-exchange federation supplies the
+    // credentials. Values stripped from the caller's spec are not substituted.
     let credentials =
         std::sync::Arc::new(pod_credentials(&state.authority, id, &identity, &upstreams).await);
 
@@ -871,10 +844,8 @@ mod store_population {
     /// **The structural guarantee, checked against the signature.**
     ///
     /// `store_from_node_environment` takes upstream specs and NOT a `PodSpec`,
-    /// so it CANNOT read `spec.spec.credentials.env`. That matters because on
-    /// Firecracker the pod spec is baked into the guest rootfs at image build
-    /// time — a credential sourced from it would ship inside the image, which is
-    /// the exact property the broker exists to provide, inverted.
+    /// so it CANNOT read `spec.spec.credentials.env` or substitute the caller's
+    /// supplied values for the operator's credential source.
     ///
     /// Scanning the signature rather than the behaviour is deliberate: a
     /// behavioural test ("it did not read the spec") passes for as long as
@@ -890,9 +861,7 @@ mod store_population {
             .expect("store_from_node_environment signature");
         assert!(
             !sig.contains("PodSpec") && !sig.contains("credentials"),
-            "the store builder can now reach the pod spec, and on Firecracker the pod \
-             spec is baked into the guest rootfs — a credential read from it would ship \
-             inside the image. Signature was: {sig}"
+            "the store builder can now reach caller-supplied credential values: {sig}"
         );
     }
 }

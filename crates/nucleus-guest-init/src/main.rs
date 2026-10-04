@@ -341,6 +341,7 @@ fn run() -> Result<(), String> {
 
     // Read secrets from kernel command line (preferred) or files (legacy/fallback)
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let host_spec_required = boot::requires_host_spec(&cmdline).map_err(|e| e.to_string())?;
 
     let net_config = net::parse_cmdline(&cmdline);
 
@@ -407,39 +408,26 @@ fn run() -> Result<(), String> {
                 // dispatched a different job.
                 Err(e) => return Err(e.to_string()),
             },
-            // The host having nothing to say is every pod today.
+            // Enforcing guests may not substitute the baked workload on any fetch failure.
+            Err(e) if host_spec_required => {
+                return Err(format!("required host spec fetch failed: {e}"));
+            }
             Err(e) => eprintln!("no pod spec over vsock (keeping the baked one): {e}"),
         }
     }
 
-    // Never a shell: a missing spec is a named boot error.
-    // THE BAKED SPEC WINS WHEN THERE IS ONE, and the fetched one is the fallback.
-    //
-    // This was the other way round — host wins — and it broke every existing
-    // pod: `NUCLEUS_WORKLOAD_PROBE: PASS` stopped appearing because the node
-    // serves a spec for EVERY pod, so every pod switched to the fetched path at
-    // once. A new mechanism made the default for everything is not additive, it
-    // is a migration nobody asked for.
-    //
-    // The fetched spec exists for the case that has NO baked one: a snapshot
-    // base, whose whole point is a rootfs that names no command. There the
-    // resolution below fails and this is the only spec there is. A pod with a
-    // baked spec keeps it, and behaves exactly as it did before.
-    let spec_path = if !Path::new(POD_SPEC_PATH).exists()
-        && !Path::new(FALLBACK_POD_SPEC).exists()
-        && Path::new(HOST_POD_SPEC).exists()
-    {
-        eprintln!("no baked pod spec; using the one fetched from the host");
-        HOST_POD_SPEC.to_string()
-    } else {
-        boot::resolve_pod_spec(
-            POD_SPEC_PATH,
-            FALLBACK_POD_SPEC,
-            |p| Path::new(p).exists(),
-            |from, to| fs::copy(from, to).is_ok(),
-        )
-        .map_err(|e| e.to_string())?
-    };
+    let spec_path = boot::resolve_launch_spec(
+        host_spec_required,
+        HOST_POD_SPEC,
+        POD_SPEC_PATH,
+        FALLBACK_POD_SPEC,
+        |p| Path::new(p).exists(),
+        |from, to| fs::copy(from, to).is_ok(),
+    )
+    .map_err(|e| e.to_string())?;
+    if host_spec_required {
+        eprintln!("{}", nucleus_spec::guest_layout::HOST_SPEC_READY);
+    }
     if let Some(port) = workload_api_port {
         // Announce the barrier before asking for anything. After the first fetch below this VM
         // is one particular pod, and a snapshot of it would hand that pod's identity to every

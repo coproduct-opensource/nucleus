@@ -137,7 +137,7 @@ async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
         )
         .await;
     assert!(
-        matches!(result, Err(crate::ApiError::Driver(ref e)) if e.contains("bakes the pod spec"))
+        matches!(result, Err(crate::ApiError::Driver(ref e)) if e.contains("this node issued the pod no certificate"))
     );
     let api = dir.path().join(format!("vsock_{}", st.identity_vsock_port));
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -214,6 +214,56 @@ async fn ask(st: &NodeState, dir: &std::path::Path, line: &[u8]) -> String {
         .await
         .unwrap();
     response
+}
+
+#[tokio::test]
+async fn enforced_host_spec_withholds_values_but_preserves_the_workload() {
+    for enforcing in [false, true] {
+        let dir = tempfile::tempdir_in("/tmp").unwrap();
+        let mut st = state(&dir);
+        st.broker_enforcing = enforcing;
+        st.identity_manager = Some(
+            crate::identity::IdentityManager::new(
+                "test.local",
+                std::time::Duration::from_secs(3600),
+            )
+            .unwrap(),
+        );
+        let socket = dir.path().join("vsock");
+        let _ready = prepare_pod_for_test(
+            &st,
+            dir.path(),
+            uuid::Uuid::new_v4(),
+            &socket,
+            serde_json::json!({
+                "credentials": {"env": {"LLM_API_TOKEN": "test-secret-not-for-guest"}},
+                "workload": {"command": "/usr/bin/build-agent", "args": ["fix", "issue-7"]},
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+        let response = ask(&st, dir.path(), b"FETCH_POD_SPEC\n").await;
+        let value: serde_json::Value = serde_json::from_str(&response).unwrap();
+        let served: nucleus_spec::PodSpec =
+            serde_yaml::from_str(value["spec"].as_str().expect("spec served")).unwrap();
+        let credentials = served.spec.credentials.unwrap();
+        if enforcing {
+            assert!(
+                !response.contains("test-secret-not-for-guest"),
+                "credential reached the guest"
+            );
+            assert_eq!(credentials.env["LLM_API_TOKEN"], "");
+        } else {
+            assert_eq!(
+                credentials.env["LLM_API_TOKEN"],
+                "test-secret-not-for-guest"
+            );
+        }
+        let workload = served.spec.workload.unwrap();
+        assert_eq!(workload.command, "/usr/bin/build-agent");
+        assert_eq!(workload.args, ["fix", "issue-7"]);
+    }
 }
 
 /// #3160, the microVM driver. guest-init asks for the audit-sink credentials once, before the

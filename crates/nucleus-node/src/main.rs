@@ -309,14 +309,10 @@ struct Args {
     identity_workload_api_vsock_port: u32,
     /// Serve the per-pod credential broker socket.
     ///
-    /// Off by default. On, the socket exists and answers; credential delivery is
-    /// unchanged, because the guest has no client yet. See `broker_rollout`.
+    /// Off by default; listen mode preserves legacy credential delivery.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_LISTEN", default_value_t = false)]
     broker_listen: bool,
-    /// Serve the broker AND withhold credential values from the guest spec.
-    ///
-    /// Refused on drivers that bake the pod spec into the image, where nothing
-    /// can be withheld — see `broker_launch::check_enforcement_is_honest`.
+    /// Withhold spec credentials; requires Firecracker and compatible guest-init.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_ENFORCING", default_value_t = false)]
     broker_enforcing: bool,
     /// Vsock port the guest uses to reach the credential broker.
@@ -627,6 +623,7 @@ async fn main() -> Result<(), ApiError> {
     let _tracing_guard = boot_trace::init_tracing().map_err(ApiError::Driver)?;
 
     let args = Args::parse();
+    broker_rollout::require_supported_driver(args.broker_enforcing, &args.driver)?;
     tokio::fs::create_dir_all(&args.state_dir).await?;
     #[cfg(feature = "local-driver")]
     if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
@@ -2201,7 +2198,8 @@ async fn spawn_firecracker_pod(
             workload_api_port,
             audit.map(audit_sink::credentials::AuditGrant::target),
             jail_layout.as_ref(),
-        );
+        )
+        .requiring_host_spec(state.broker_enforcing);
         let config_json = match serde_json::to_vec_pretty(&config) {
             Ok(data) => data,
             Err(err) => {
@@ -2683,7 +2681,10 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
-        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id, &mut child).await {
+        if let Err(err) = prepared_pod
+            .gate(health_addr, pod_dir, spec, id, &mut child)
+            .await
+        {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }

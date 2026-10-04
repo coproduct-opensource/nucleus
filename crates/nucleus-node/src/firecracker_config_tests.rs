@@ -532,7 +532,7 @@ fn the_workload_api_bridge_starts_before_the_health_check() {
         // also requires the guest's egress attestation. The ordering this
         // guards is unchanged — the bridge must still come first — so the
         // needle follows the call site rather than the function name.
-        .find("confinement::gate(health_addr")
+        .find(".gate(health_addr")
         .expect("the health/attestation gate site");
     assert!(
         bridge < health,
