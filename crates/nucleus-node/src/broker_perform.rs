@@ -25,7 +25,8 @@
 //! The per-pod frame secret authenticates the channel; it is not evidence that
 //! a compromised guest performed its own policy checks. Host observations raise
 //! taint independently of guest reports. Trusted mapping of remote API semantics,
-//! revocation, cost settlement and host-only evidence signing remain open.
+//! revocation and cost settlement remain open. Host-signed records distinguish
+//! authorization from transport observations; neither proves remote action success.
 
 pub(crate) mod effect;
 
@@ -186,7 +187,7 @@ fn check_fields(fields: &[(&'static str, &String)]) -> Result<(), FrameError> {
 /// which refuses a path that tries to leave the configured base.
 #[derive(Debug)]
 pub struct UpstreamCall {
-    _permit: crate::host_decide::effects::EffectPermit,
+    _permit: crate::host_decide::effects::ExecutingEffect,
     /// Absolute URL, already resolved against the pod spec's fixed base.
     pub url: String,
     /// Header the credential goes in, from the spec.
@@ -726,6 +727,7 @@ where
             };
             // Charged as sent whatever the outcome: a transport failure is
             // ambiguous about whether the upstream saw the body.
+            let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time);
             charge.sent();
             let outcome = call(UpstreamCall {
                 _permit: permit,
@@ -735,30 +737,44 @@ where
                 body: req.body.clone(),
             })
             .await;
-            match outcome {
-                // The upstream refused the minted token. Holding on to it would
-                // only fail the next call the same way, so it is evicted and the
-                // next call mints afresh. NOT retried here: the call is a POST
-                // that may have had an effect, and the key settles below as it
-                // would for any other outcome.
-                Ok(resp) if federated && resp.status == 401 => {
-                    ctx.credentials.evict(&spec.name);
-                    refused("upstream call failed")
+            use nucleus_spec::host_effect::outcome::Termination;
+            let termination = match &outcome {
+                Ok(resp) => {
+                    observation.response(resp.status);
+                    observation.bytes(&resp.body);
+                    // This caller's response type does not attest that it read EOF.
+                    Termination::ResponseRead
                 }
-                Ok(mut resp) => {
-                    resp.body.truncate(MAX_UPSTREAM_BODY_BYTES);
-                    PerformReply {
-                        granted: true,
-                        reason: "granted".to_string(),
-                        status: resp.status,
-                        body: resp.body,
+                Err(_) => Termination::TransportFailure,
+            };
+            if observation.finish(termination).is_err() {
+                refused("host outcome evidence unavailable")
+            } else {
+                match outcome {
+                    // The upstream refused the minted token. Holding on to it would
+                    // only fail the next call the same way, so it is evicted and the
+                    // next call mints afresh. NOT retried here: the call is a POST
+                    // that may have had an effect, and the key settles below as it
+                    // would for any other outcome.
+                    Ok(resp) if federated && resp.status == 401 => {
+                        ctx.credentials.evict(&spec.name);
+                        refused("upstream call failed")
                     }
+                    Ok(mut resp) => {
+                        resp.body.truncate(MAX_UPSTREAM_BODY_BYTES);
+                        PerformReply {
+                            granted: true,
+                            reason: "granted".to_string(),
+                            status: resp.status,
+                            body: resp.body,
+                        }
+                    }
+                    // Coarse, and carrying nothing of the error: a transport error
+                    // string can contain the URL, and a resolver error can contain
+                    // the upstream host. Neither is the guest's to learn from a
+                    // failure it caused.
+                    Err(_) => refused("upstream call failed"),
                 }
-                // Coarse, and carrying nothing of the error: a transport error
-                // string can contain the URL, and a resolver error can contain
-                // the upstream host. Neither is the guest's to learn from a
-                // failure it caused.
-                Err(_) => refused("upstream call failed"),
             }
         }
         // Same reason a policy refusal gives, so a guest cannot probe which

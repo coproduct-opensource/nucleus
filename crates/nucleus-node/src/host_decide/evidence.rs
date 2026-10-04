@@ -12,6 +12,7 @@ use portcullis::Operation;
 use uuid::Uuid;
 
 const MAX_RECORDS: u64 = 65_536;
+pub(crate) mod outcomes;
 
 pub(crate) struct Evidence {
     key: Arc<SigningKey>,
@@ -20,6 +21,7 @@ pub(crate) struct Evidence {
     previous: String,
     sink: Sink,
     faulted: bool,
+    outcomes: outcomes::Journal,
 }
 
 enum Sink {
@@ -38,6 +40,7 @@ impl Evidence {
             .open(dir.join(LOG_FILE))?;
         file.sync_all()?;
         std::fs::File::open(dir)?.sync_all()?;
+        let outcomes = outcomes::Journal::create(dir)?;
         Ok(Self {
             key,
             pod,
@@ -45,6 +48,7 @@ impl Evidence {
             previous: String::new(),
             sink: Sink::Durable(dir.join(LOG_FILE)),
             faulted: false,
+            outcomes,
         })
     }
 
@@ -57,6 +61,7 @@ impl Evidence {
             previous: String::new(),
             sink: Sink::Memory(Vec::new()),
             faulted: false,
+            outcomes: outcomes::Journal::memory(),
         }
     }
 
@@ -107,8 +112,10 @@ impl Evidence {
             Sink::Memory(records) => records.push(record),
         }
         self.sequence += 1;
-        self.previous = hash;
-        Ok(Recorded { _effect: effect })
+        self.previous = hash.clone();
+        Ok(Recorded {
+            authorization: hash,
+        })
     }
 }
 
@@ -116,7 +123,7 @@ impl Evidence {
 #[derive(Debug)]
 #[must_use]
 pub(super) struct Recorded {
-    _effect: ArgsDigest,
+    authorization: String,
 }
 
 #[cfg(test)]

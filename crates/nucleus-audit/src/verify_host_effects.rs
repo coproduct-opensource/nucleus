@@ -3,6 +3,7 @@ use crate::AuditError;
 use ed25519_dalek::{Signature, VerifyingKey};
 use nucleus_spec::host_effect::{SignedAuthorization, VERSION, record_hash, signing_bytes};
 use std::path::PathBuf;
+mod outcomes;
 
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum Command {
@@ -10,6 +11,9 @@ pub(crate) enum Command {
     VerifyHostEffects {
         #[arg(long)]
         log: PathBuf,
+        /// Optional host outcome journal; missing outcomes remain unknown.
+        #[arg(long)]
+        outcomes: Option<PathBuf>,
         /// Independently pinned node certificate-root key (32-byte hex).
         #[arg(long)]
         host_pubkey: String,
@@ -30,6 +34,7 @@ impl Command {
     pub(crate) fn run(self) -> Result<(), AuditError> {
         let Self::VerifyHostEffects {
             log,
+            outcomes,
             host_pubkey,
             pod,
         } = self;
@@ -41,10 +46,12 @@ impl Command {
             VerifyingKey::from_bytes(&bytes).map_err(|_| invalid(0, "invalid host public key"))?;
         let mut lines = crate::record_lines::open(&log)?;
         let mut chain = Chain::new(&pod, &key);
+        let mut authorizations = std::collections::BTreeSet::new();
         for line in &mut lines {
             let (number, text) = line?;
             let record = crate::record_lines::parse(number, &text)?;
             chain.accept(number, &record)?;
+            authorizations.insert(chain.previous.clone());
         }
         lines.finish(chain.count)?;
         if chain.count == 0 {
@@ -54,6 +61,16 @@ impl Command {
             "Verified {} host authorizations for pod {}; head {}",
             chain.count, pod, chain.previous
         );
+        if let Some(path) = outcomes {
+            let count = outcomes::verify(&path, &pod, &key, &authorizations)?;
+            println!(
+                "Verified {count} host transport outcomes; {} authorizations have unknown outcomes.",
+                authorizations.len() - count
+            );
+            println!(
+                "Response observations do not prove remote action success, guest-claim truth, or session completeness."
+            );
+        }
         println!(
             "Establishes an authorized prefix, not execution success, guest-claim truth, or session completeness."
         );
@@ -174,6 +191,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[7; 32]);
         let command = || Command::VerifyHostEffects {
             log: log.clone(),
+            outcomes: None,
             host_pubkey: hex::encode(key.verifying_key().to_bytes()),
             pod: "pod-a".into(),
         };

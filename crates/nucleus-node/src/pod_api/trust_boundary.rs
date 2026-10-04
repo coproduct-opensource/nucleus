@@ -978,12 +978,34 @@ async fn host_signed_evidence_survives_guest_key_refusal_and_forged_receipt_uplo
     let path = pod.pod_dir.join(nucleus_spec::host_effect::LOG_FILE);
     let before = std::fs::read_to_string(&path).unwrap();
     let record: SignedAuthorization = serde_json::from_str(before.trim()).unwrap();
+    let outcome_path = pod
+        .pod_dir
+        .join(nucleus_spec::host_effect::outcome::LOG_FILE);
+    let outcome_before = std::fs::read_to_string(&outcome_path).unwrap();
+    let outcome: nucleus_spec::host_effect::outcome::SignedOutcome =
+        serde_json::from_str(outcome_before.trim()).unwrap();
+    assert_eq!(
+        outcome.outcome.authorization_record_sha256,
+        nucleus_spec::host_effect::record_hash(&record).unwrap()
+    );
+    assert_eq!(
+        outcome.outcome.termination,
+        nucleus_spec::host_effect::outcome::Termination::ResponseRead
+    );
+    assert!(outcome.outcome.response.is_some());
     let key: [u8; 32] = hex::decode(&pod.host_pubkey).unwrap().try_into().unwrap();
     let key = ed25519_dalek::VerifyingKey::from_bytes(&key).unwrap();
     let signature =
         ed25519_dalek::Signature::from_slice(&hex::decode(&record.signature).unwrap()).unwrap();
     key.verify_strict(&signing_bytes(&record.authorization).unwrap(), &signature)
         .unwrap();
+    let outcome_signature =
+        ed25519_dalek::Signature::from_slice(&hex::decode(&outcome.signature).unwrap()).unwrap();
+    key.verify_strict(
+        &nucleus_spec::host_effect::outcome::signing_bytes(&outcome.outcome).unwrap(),
+        &outcome_signature,
+    )
+    .unwrap();
     let guest_key = SigningKey::from_bytes(&[42; 32]);
     assert!(
         guest_key
@@ -997,6 +1019,10 @@ async fn host_signed_evidence_survives_guest_key_refusal_and_forged_receipt_uplo
         Probe::Refused(_)
     ));
     assert_eq!(std::fs::read_to_string(path).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(outcome_path).unwrap(),
+        outcome_before
+    );
     assert!(matches!(
         pod.fetch_mediation_key().await,
         KeyFetch::Withheld(_)

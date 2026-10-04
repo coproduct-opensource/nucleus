@@ -162,6 +162,34 @@ pub(crate) struct EffectPermit {
     _record: super::evidence::Recorded,
 }
 
+#[derive(Debug)]
+#[must_use]
+pub(crate) struct ExecutingEffect {
+    _decisions: Vec<DecisionToken>,
+    _effect: ArgsDigest,
+}
+
+impl EffectPermit {
+    pub(crate) fn observe(
+        self,
+        policy: super::SharedPodPolicy,
+        now: u64,
+    ) -> (ExecutingEffect, super::evidence::outcomes::Pending) {
+        let Self {
+            _decisions,
+            _effect,
+            _record,
+        } = self;
+        (
+            ExecutingEffect {
+                _decisions,
+                _effect,
+            },
+            _record.observe(policy, now),
+        )
+    }
+}
+
 impl PodPolicy {
     pub(crate) fn list_effect_approvals(
         &mut self,

@@ -76,7 +76,9 @@ Implementation sequence:
    legacy fetch command always refuses. Uploaded mediation claims have a separate
    log and an explicit guest provenance acknowledgment. Plain and legacy-signed
    exit reports become typed guest claims; neither is independent outcome
-   evidence. Host-signed execution outcomes and terminal completeness remain open.
+   evidence. Host-signed broker transport observations are implemented in the
+   working tree; remote action semantics, guest execution outcomes, and terminal
+   completeness remain open.
 7. Exercise the compromised-guest conformance harness, genuine allowed effects,
    reconnects, concurrency and real Tier-2 guest traffic. Promote each gap only
    when the corresponding live host property holds. Retire shadow-only behavior
@@ -151,6 +153,42 @@ guest-init cross-build for Linux ARM64 musl. Clippy for all five affected crates
 passes with warnings denied; all four prepush gates pass. Reintroducing key
 delivery and removing guest provenance independently make their regression tests
 fail at runtime, rather than at compilation. Real Tier-2 validation remains open.
+
+### Host broker transport outcomes (2026-10-04)
+
+PERFORM and streaming consume the authorization permit into an executable right
+and a non-cloneable outcome observer. The observer signs a separate, durable
+`host-effect-outcomes.jsonl` record linked to the exact authorization record hash.
+It records response status, observed body hash/length, completeness, and the
+termination category. No credential or response body is written to this log.
+Cancellation records interruption with any partial observations. Host death can
+leave no outcome; absence remains unknown. A storage failure latches refusal of
+subsequent effects, and an explicit finish cannot be reported as successful when
+its evidence write failed. Appends currently synchronize under the pod mutex.
+
+Streaming completion requires an explicit EOF from the upstream reader, not
+merely closure of its channel. PERFORM's response interface does not attest EOF,
+so its observed body is conservatively marked incomplete. Neither HTTP status nor
+body completeness establishes the requested remote action's semantic success.
+
+`nucleus-audit verify-host-effects --log <authorizations> --outcomes <outcomes>
+--pod <id> --host-pubkey <independent-pin>` checks both chains, the host signatures,
+pod, and authorization linkage. Duplicate/foreign outcomes, tampering, and torn
+records refuse. It explicitly reports authorizations with missing outcomes. A
+valid prefix remains a prefix: terminal session checkpoints, guest process and
+artifact evidence, and recovery are still required.
+
+Validation: the full node suite passes 815 unit tests (one ignored) and three
+integration tests; audit passes 129 unit tests and four integration tests,
+including the shipped CLI with an independent key. Actual broker socket tests
+check host-signed outcome linkage and reject guest uploads as outcome evidence.
+Real local HTTP/SSE tests cover complete and truncated responses, cancellation,
+and a disappeared reader. Storage failure latches refusal after repair. Bypassing
+outcome signature verification and accepting channel closure as EOF each make
+their regression fail. Linux ARM64 musl compilation and all four prepush gates
+pass. Clippy completes with `-D warnings`, retaining the existing configuration
+warnings about unreachable reqwest blocking methods. This is local evidence;
+real Tier-2 execution remains unverified.
 
 ### Action-binding evidence (2026-10-04)
 

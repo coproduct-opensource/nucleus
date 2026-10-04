@@ -183,7 +183,7 @@ impl StreamNonces {
 /// where this goes. `body` yields the authorized file's chunks,
 /// and an `Err` in it aborts the request.
 pub struct StreamCall {
-    _permit: crate::host_decide::effects::EffectPermit,
+    _permit: crate::host_decide::effects::ExecutingEffect,
     /// Absolute URL, already resolved against the operator's fixed base.
     pub url: String,
     /// Header the credential goes in, from the operator's entry.
@@ -203,7 +203,13 @@ pub struct StreamResponse {
     /// The upstream's `content-type`, or empty.
     pub content_type: String,
     /// The reply, chunk by chunk. An `Err` is an upstream failure part way.
-    pub body: mpsc::Receiver<Result<Vec<u8>, String>>,
+    pub body: mpsc::Receiver<Result<ResponseChunk, String>>,
+}
+
+pub enum ResponseChunk {
+    Data(Vec<u8>),
+    /// The upstream reader observed EOF; channel closure alone is not evidence.
+    End,
 }
 
 /// How the host makes a streamed outbound call. Injected for the reason
@@ -259,8 +265,11 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
                 let mut resp = resp;
                 loop {
                     let next = match resp.chunk().await {
-                        Ok(Some(bytes)) => Ok(bytes.to_vec()),
-                        Ok(None) => break,
+                        Ok(Some(bytes)) => Ok(ResponseChunk::Data(bytes.to_vec())),
+                        Ok(None) => {
+                            let _ = tx.send(Ok(ResponseChunk::End)).await;
+                            break;
+                        }
                         Err(e) => Err(e.to_string()),
                     };
                     let failed = next.is_err();
@@ -589,6 +598,8 @@ where
     };
     let spec = resolved.entry().spec();
     let (tx, rx) = mpsc::channel(4);
+    use nucleus_spec::host_effect::outcome::Termination;
+    let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
     charge.sent(); // Once handed to HTTP, a transport failure is ambiguous.
     let call = (ctx.streams.caller)(StreamCall {
         _permit: permit,
@@ -606,6 +617,7 @@ where
     .await;
     let remaining = Remaining::Ended;
     let Ok((Ok(()), Ok(mut response))) = result else {
+        let _ = observation.finish(Termination::TransportFailure);
         return refuse(
             &Refusal::UpstreamFailed,
             uploaded,
@@ -616,9 +628,12 @@ where
         .await;
     };
 
+    observation.response(response.status);
+
     // The upstream refused a minted token: evict it so the next call mints
     // afresh. Not retried; see `handle_perform`.
     if federated && response.status == 401 {
+        let _ = observation.finish(Termination::ResponseRejected);
         ctx.credentials.evict(&spec.name);
         return refuse(
             &Refusal::UpstreamFailed,
@@ -662,20 +677,22 @@ where
     };
     if write_line(writer, &encode_line(&head)).await.is_err() {
         record.outcome = "guest_gone";
+        let _ = observation.finish(Termination::GuestDisconnected);
         return record;
     }
     let max = ctx.streams.limits.max_response_bytes();
-    let end = loop {
+    let mut end = loop {
         let next = tokio::time::timeout(UPSTREAM_IDLE_TIMEOUT, response.body.recv()).await;
         let bytes = match next {
-            Ok(None) => {
+            Ok(Some(Ok(ResponseChunk::End))) => {
+                observation.body_complete();
                 break StreamEnd {
                     complete: true,
                     reason: String::new(),
                 };
             }
-            Ok(Some(Ok(bytes))) => bytes,
-            Ok(Some(Err(_))) => {
+            Ok(Some(Ok(ResponseChunk::Data(bytes)))) => bytes,
+            Ok(Some(Err(_))) | Ok(None) => {
                 break StreamEnd {
                     complete: false,
                     reason: "upstream call failed".to_string(),
@@ -691,12 +708,14 @@ where
                 };
             }
         };
+        observation.bytes(&bytes);
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let room = max.saturating_sub(record.download_bytes);
         let over = len > room;
         let keep = usize::try_from(room.min(len)).unwrap_or(bytes.len());
         if write_chunks(writer, &bytes[..keep]).await.is_err() {
             record.outcome = "guest_gone";
+            let _ = observation.finish(Termination::GuestDisconnected);
             return record;
         }
         record.download_bytes = record
@@ -714,6 +733,15 @@ where
     };
     // Dropping the receiver stops the upstream read when the reply was cut.
     drop(response);
+    let termination = if end.complete {
+        Termination::ResponseRead
+    } else {
+        Termination::ResponseTruncated
+    };
+    if observation.finish(termination).is_err() {
+        end.complete = false;
+        end.reason = "host outcome evidence unavailable".into();
+    }
     if !end.complete {
         record.outcome = "truncated";
         record.reason.clone_from(&end.reason);
@@ -988,6 +1016,143 @@ mod tests {
 
     fn mebibyte() -> Vec<u8> {
         (0..MIB).map(|i| b"0123456789abcdef"[i % 16]).collect()
+    }
+
+    #[tokio::test]
+    async fn streamed_outcomes_are_host_signed_and_distinguish_truncation() {
+        use nucleus_spec::host_effect::{self, outcome};
+        for truncated in [false, true] {
+            let (base, _) = upstream().await;
+            let limits = if truncated {
+                StreamLimits::new(1024, 2).unwrap()
+            } else {
+                StreamLimits::DEFAULT
+            };
+            let mut pod = Pod::new(&base, 1 << 30, limits);
+            let key = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+            let evidence = crate::host_decide::evidence::Evidence::create(
+                uuid::Uuid::new_v4(),
+                pod.dir.path(),
+                Arc::new(key.clone()),
+            )
+            .unwrap();
+            pod.host_policy = crate::host_decide::PodPolicy::new(
+                portcullis::kernel::Kernel::new(pod.policy.clone()),
+                evidence,
+            );
+            let heard = drive(&pod, &open("model-api", "observed"), b"request").await;
+            assert!(heard.head.granted);
+            assert_eq!(heard.end.unwrap().complete, !truncated);
+            let record: outcome::SignedOutcome = serde_json::from_str(
+                std::fs::read_to_string(pod.dir.path().join(outcome::LOG_FILE))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap();
+            let auth: host_effect::SignedAuthorization = serde_json::from_str(
+                std::fs::read_to_string(pod.dir.path().join(host_effect::LOG_FILE))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap();
+            assert_eq!(
+                record.outcome.authorization_record_sha256,
+                host_effect::record_hash(&auth).unwrap()
+            );
+            let response = record.outcome.response.as_ref().unwrap();
+            assert_eq!(response.status, 200);
+            assert_eq!(response.body_complete, !truncated);
+            if truncated {
+                assert_eq!(
+                    record.outcome.termination,
+                    outcome::Termination::ResponseTruncated
+                );
+                assert!(response.body_bytes > heard.body.len() as u64);
+            } else {
+                assert_eq!(
+                    record.outcome.termination,
+                    outcome::Termination::ResponseRead
+                );
+                assert_eq!(
+                    response.body_sha256,
+                    hex::encode(Sha256::digest(&heard.body))
+                );
+            }
+            let signature =
+                ed25519_dalek::Signature::from_slice(&hex::decode(&record.signature).unwrap())
+                    .unwrap();
+            key.verifying_key()
+                .verify_strict(
+                    &outcome::signing_bytes(&record.outcome).unwrap(),
+                    &signature,
+                )
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_stream_leaves_an_interrupted_host_outcome() {
+        use nucleus_spec::host_effect::outcome;
+        let (base, _) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        let evidence = crate::host_decide::evidence::Evidence::create(
+            uuid::Uuid::new_v4(),
+            pod.dir.path(),
+            Arc::new(ed25519_dalek::SigningKey::from_bytes(&[37; 32])),
+        )
+        .unwrap();
+        pod.host_policy = crate::host_decide::PodPolicy::new(
+            portcullis::kernel::Kernel::new(pod.policy.clone()),
+            evidence,
+        );
+        let (entered, mut observed) = mpsc::channel(1);
+        pod.streams.caller = Arc::new(move |_call| {
+            let entered = entered.clone();
+            Box::pin(async move {
+                entered.send(()).await.unwrap();
+                std::future::pending().await
+            })
+        });
+        let request = open("model-api", "cancelled");
+        let mut serving = Box::pin(drive(&pod, &request, b"request"));
+        tokio::select! {
+            _ = &mut serving => panic!("upstream must remain pending"),
+            signal = observed.recv() => assert_eq!(signal, Some(())),
+        }
+        // Drop the actual serving future, rather than inventing a terminal event.
+        drop(serving);
+        let record: outcome::SignedOutcome = serde_json::from_str(
+            std::fs::read_to_string(pod.dir.path().join(outcome::LOG_FILE))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.outcome.termination,
+            outcome::Termination::Interrupted
+        );
+        assert!(record.outcome.response.is_none());
+    }
+
+    #[tokio::test]
+    async fn upstream_reader_disappearance_is_not_a_complete_response() {
+        let (base, _) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        pod.streams.caller = Arc::new(|mut call| {
+            Box::pin(async move {
+                while call.body.recv().await.is_some() {}
+                let (tx, rx) = mpsc::channel(1);
+                drop(tx); // A stopped reader never observed or sent an EOF witness.
+                Ok(StreamResponse {
+                    status: 200,
+                    content_type: String::new(),
+                    body: rx,
+                })
+            })
+        });
+        let heard = drive(&pod, &open("model-api", "reader-gone"), b"request").await;
+        assert!(heard.head.granted);
+        assert!(!heard.end.unwrap().complete);
     }
 
     #[tokio::test]

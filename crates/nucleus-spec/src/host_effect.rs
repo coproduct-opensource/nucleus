@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod outcome;
+
 pub const VERSION: u32 = 1;
 pub const LOG_FILE: &str = "host-effect-authorizations.jsonl";
 const DOMAIN: &[u8] = b"nucleus.host-effect-authorization.v1\n";
