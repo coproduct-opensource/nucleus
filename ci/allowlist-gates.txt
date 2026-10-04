@@ -45,7 +45,10 @@
 
 mediation/spawn=1
 mediation/net=4
-mediation/vsock=2
+# 2026-10-04: 2 -> 3 after #3002 adds signed accounting telemetry alongside
+# #3177 shadow decisions. Only broker_client performs egress; spend_shipper and
+# host_decide retain their separate protocol justifications in the vsock allowlist.
+mediation/vsock=3
 sealed-home/spawn=7
 sealed-home/net=7
 ingest-hashed=5
