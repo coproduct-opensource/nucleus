@@ -15,12 +15,7 @@ pub(crate) fn routes() -> Router<NodeState> {
         .route("/v1/pods/{id}/effect-approvals/{approval}", post(settle))
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Decision {
-    Grant,
-    Refuse,
-}
+use nucleus_spec::host_effect_approval::ApprovalDecision as Decision;
 
 fn operator(auth: &AuthContext, state: &NodeState) -> Result<Operator, ApiError> {
     Operator::authenticate(&auth.spiffe_id, state.authority.root_minter())

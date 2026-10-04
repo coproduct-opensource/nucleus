@@ -72,8 +72,8 @@ Implementation sequence:
    legitimate approved work; denying every approval-gated operation is not done.
    **In progress:** operator-only mTLS routes list and grant/refuse pending host
    effects. Approvals expire after five minutes and are consumed at final
-   authorization, not preflight. Failed minting does not consume them. CLI UX and
-   complete request review remain to be delivered.
+   authorization, not preflight. Failed minting does not consume them. Operator CLI list/grant/refuse commands now expose this path. Complete request
+   review and harness pause/resume remain to be delivered.
 6. Keep receipt and exit-report authority outside the guest. Distinguish host
    observations from guest assertions in signed evidence.
    **In progress:** no mediation signing seed exists in boot material, and the
@@ -533,3 +533,35 @@ the implementation passes. Four ledger tests cover failed evidence, checkpoint
 failure, malformed/missing history, and poison. Linux ARM64 musl compilation,
 Clippy with warnings denied, and all four prepush gates pass. Clippy retains
 the existing reqwest configuration diagnostics. Real Tier-2 evidence is pending.
+
+### Operator CLI for host approvals (2026-10-04)
+
+`nucleus node effect-approvals <pod> list|grant|refuse` exposes the host approval
+routes through the configured operator's mTLS identity. Grants require an
+explicit expected effect SHA-256. The CLI fetches current review metadata before
+settlement and refuses unknown, expired, already-decided, duplicated, or
+hash-mismatched entries before posting. The server still decides expiry, status,
+and operator identity. HTTP errors cannot report a successful grant; the CLI
+requires the server's 204 acknowledgment. HMAC credentials cannot substitute for
+mTLS, and node mTLS management requests no longer follow redirects.
+
+Node and CLI share the approval wire types in `nucleus-spec`. List output is
+JSON, including operation, resolved destination, effect digest, fixed charge,
+expiry, and status. UUID parsing prevents path substitution. The command and
+its limitations are documented in `docs/host-effect-approvals.md`.
+
+This enables operator settlement but is not complete request review: the host's
+current API does not expose payload contents. A hash alone cannot explain remote
+semantics. Full payload review and harness retry/pause integration remain part
+of the supported coding workflow, as do both end-to-end harness demonstrations.
+
+Validation: 307 CLI unit tests and 16 integration tests pass; hardware-dependent
+and explicitly ignored tests remain skipped. All 159 specification tests, the
+host operator-route test, and six host effect-approval tests pass. Five new CLI
+regressions cover real mTLS list/grant/refuse traffic, exact route and body
+selection, stale/expired/ambiguous/digest-mismatched reviews, redirect refusal,
+server errors, parser requirements, and rejection of HMAC-only clients. Removing
+digest matching or enabling redirects independently makes the relevant regression
+fail at runtime; restored code passes. CLI and node cross-build for Linux ARM64
+musl. Clippy for all three changed crates with warnings denied and all four
+prepush gates pass. The built CLI's help exposes the documented commands.

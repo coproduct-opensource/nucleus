@@ -27,25 +27,7 @@ impl Operator {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct ApprovalView {
-    pub id: Uuid,
-    pub operation: &'static str,
-    pub subject: String,
-    pub effect_sha256: String,
-    pub call_charge_micro_usd: u64,
-    pub expires_unix: u64,
-    pub status: ApprovalStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ApprovalStatus {
-    Pending,
-    Granted,
-    Refused,
-    Spent,
-}
+pub(crate) use nucleus_spec::host_effect_approval::{ApprovalStatus, ApprovalView};
 
 struct Approval {
     digest: ArgsDigest,
@@ -148,7 +130,7 @@ impl Approvals {
                 digest,
                 view: ApprovalView {
                     id,
-                    operation: portcullis::grant_usage::operation_name(op),
+                    operation: portcullis::grant_usage::operation_name(op).into(),
                     subject: subject.to_string(),
                     effect_sha256: hex::encode(digest.as_bytes()),
                     call_charge_micro_usd: charge.micro_usd(),

@@ -2,6 +2,8 @@
 //!
 //! Test utilities for nucleus-node HTTP and gRPC APIs.
 
+mod effect_approvals;
+
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 use nucleus_client::sign_http_headers;
@@ -98,6 +100,13 @@ pub enum NodeCommand {
         offset: u64,
     },
 
+    /// Review and settle host approvals using the operator's mTLS identity
+    EffectApprovals {
+        pod_id: uuid::Uuid,
+        #[command(subcommand)]
+        command: effect_approvals::Command,
+    },
+
     /// Generate a signed request (for debugging)
     Sign {
         /// HTTP method
@@ -157,9 +166,19 @@ fn provisioned_identity_paths_in(dir: &std::path::Path) -> Option<(PathBuf, Path
 pub async fn execute(mut args: NodeArgs) -> Result<()> {
     apply_provisioned_identity_defaults(&mut args);
     let agent = create_client(&args)?;
-    let auth_secret = resolve_auth(&args)?;
+    let auth_secret = match &args.command {
+        NodeCommand::EffectApprovals { .. } => None,
+        _ => resolve_auth(&args)?,
+    };
 
     match args.command {
+        NodeCommand::EffectApprovals { pod_id, command } => {
+            println!(
+                "{}",
+                effect_approvals::run(&agent, &args.url, pod_id, &command).await?
+            );
+            Ok(())
+        }
         NodeCommand::Health => health(&agent, &args.url, auth_secret.as_deref(), &args.actor).await,
         NodeCommand::Pods => {
             list_pods(&agent, &args.url, auth_secret.as_deref(), &args.actor).await
@@ -377,6 +396,7 @@ fn create_client(args: &NodeArgs) -> Result<HttpClient> {
 
             let builder = reqwest::Client::builder()
                 .timeout(REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
                 .tls_backend_preconfigured(tls);
 
             Ok(HttpClient::Mtls(
