@@ -51,6 +51,10 @@
 //! produce a gate that cannot be satisfied rather than one that catches
 //! anything. The discharge happens in the guest, where the session lives.
 
+mod effect;
+
+pub(crate) use effect::{CONTENT_TYPE, METHOD};
+use nucleus_decision_protocol::ArgsDigest;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Mutex;
@@ -268,20 +272,33 @@ enum Entry {
     InFlight {
         /// When the reservation was taken, for TTL eviction.
         since: u64,
+        effect: ArgsDigest,
     },
     /// A call under this key finished, and this is what it returned.
     Settled {
         /// When it settled, for TTL eviction.
         at: u64,
+        effect: ArgsDigest,
         /// The reply to hand back to a repeat.
         reply: PerformReply,
     },
 }
 
 impl Entry {
+    fn effect(&self) -> ArgsDigest {
+        match self {
+            Self::InFlight { since: _, effect }
+            | Self::Settled {
+                at: _,
+                effect,
+                reply: _,
+            } => *effect,
+        }
+    }
+
     fn stamp(&self) -> u64 {
         match self {
-            Entry::InFlight { since } => *since,
+            Entry::InFlight { since, effect: _ } => *since,
             Entry::Settled { at, .. } => *at,
         }
     }
@@ -296,6 +313,8 @@ pub enum Reservation {
     Replay(Box<PerformReply>),
     /// Seen and still running. A concurrent duplicate.
     InFlight,
+    /// This key names a different effect; it is not a retry.
+    Conflict,
     /// The ledger is full of unexpired keys.
     Full,
 }
@@ -335,7 +354,7 @@ impl IdempotencyLedger {
     ///
     /// Expired entries are dropped first, so the capacity bound is on
     /// *unexpired* keys and a quiet pod never fills.
-    pub fn reserve(&self, key: &str, now_unix: u64) -> Reservation {
+    pub fn reserve(&self, key: &str, effect: ArgsDigest, now_unix: u64) -> Reservation {
         let Ok(mut entries) = self.entries.lock() else {
             // A poisoned lock means a previous holder panicked mid-update. The
             // ledger's contents cannot be trusted, and the fail-open reading —
@@ -345,25 +364,33 @@ impl IdempotencyLedger {
         entries.retain(|_, e| now_unix.saturating_sub(e.stamp()) < IDEMPOTENCY_TTL_SECS);
 
         match entries.get(key) {
+            Some(entry) if entry.effect() != effect => Reservation::Conflict,
             Some(Entry::Settled { reply, .. }) => Reservation::Replay(Box::new(reply.clone())),
             Some(Entry::InFlight { .. }) => Reservation::InFlight,
             None => {
                 if entries.len() >= IDEMPOTENCY_CAPACITY {
                     return Reservation::Full;
                 }
-                entries.insert(key.to_string(), Entry::InFlight { since: now_unix });
+                entries.insert(
+                    key.to_string(),
+                    Entry::InFlight {
+                        since: now_unix,
+                        effect,
+                    },
+                );
                 Reservation::Fresh
             }
         }
     }
 
     /// Record what a reserved key returned, so a repeat gets the same answer.
-    pub fn settle(&self, key: &str, now_unix: u64, reply: PerformReply) {
+    pub fn settle(&self, key: &str, effect: ArgsDigest, now_unix: u64, reply: PerformReply) {
         if let Ok(mut entries) = self.entries.lock() {
             entries.insert(
                 key.to_string(),
                 Entry::Settled {
                     at: now_unix,
+                    effect,
                     reply,
                 },
             );
@@ -610,10 +637,14 @@ where
     };
     let spec = resolved.entry.spec();
     let url = resolved.url.clone();
+    // Hash the checked destination and exact bytes, never a guest digest.
+    let Ok(effect) = effect::digest(req, &resolved) else {
+        return refused("could not bind effect");
+    };
 
     // 4. Claim the key. Everything above could refuse without an effect, so
     //    nothing above is recorded.
-    match ctx.ledger.reserve(&req.idempotency_key, now_unix) {
+    match ctx.ledger.reserve(&req.idempotency_key, effect, now_unix) {
         Reservation::Fresh => {}
         Reservation::Replay(prior) => return *prior,
         // Distinguishable from "not permitted" ON PURPOSE. It says nothing about
@@ -621,6 +652,7 @@ where
         // key the GUEST chose, which the guest already knows. Collapsing it into
         // the policy refusal would tell an agent its request was denied when it
         // was in fact running.
+        Reservation::Conflict => return refused("idempotency key names a different effect"),
         Reservation::InFlight => return refused("already in progress"),
         Reservation::Full => return refused("too many outstanding requests"),
     }
@@ -702,7 +734,7 @@ where
     };
 
     ctx.ledger
-        .settle(&req.idempotency_key, now_unix, reply.clone());
+        .settle(&req.idempotency_key, effect, now_unix, reply.clone());
     reply
 }
 
@@ -806,6 +838,106 @@ mod tests {
         PerformRequest {
             idempotency_key: key.into(),
             ..request()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_retry_key_cannot_name_a_different_effect() {
+        let (policy, credentials, ledger, identity) = (
+            PermissionLattice::permissive(),
+            store(),
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let mut alias = upstream().spec().clone();
+        alias.name = "another-api".into();
+        let upstreams = vec![upstream(), RegistryEntry::env(alias)];
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let net = Upstream::default();
+        let original = request();
+        let reply = handle_perform(&original, &context, NOW, net.caller()).await;
+        assert!(reply.granted);
+        let mut body = original.clone();
+        body.body.push(0);
+        let mut path = original.clone();
+        path.path = "/other-resource".into();
+        let mut operation = original.clone();
+        operation.operation = "WriteFiles".into();
+        let mut target = original.clone();
+        target.target = "another-api".into();
+        for changed in [body, path, operation, target] {
+            let rejected = handle_perform(&changed, &context, NOW, net.caller()).await;
+            assert!(!rejected.granted);
+            assert_eq!(rejected.reason, "idempotency key names a different effect");
+        }
+        // Audit rationale is not authority, and does not change the effect.
+        let mut retry = original;
+        retry.justification = "retry after losing the response".into();
+        assert_eq!(
+            handle_perform(&retry, &context, NOW, net.caller()).await,
+            reply
+        );
+        assert_eq!(
+            net.count(),
+            1,
+            "only the original request reached the upstream"
+        );
+    }
+
+    #[test]
+    fn an_in_flight_key_cannot_be_substituted_or_overwritten() {
+        let ledger = IdempotencyLedger::new();
+        let original = ArgsDigest::new([1; 32]);
+        let changed = ArgsDigest::new([2; 32]);
+        assert_eq!(ledger.reserve("key", original, NOW), Reservation::Fresh);
+        assert_eq!(ledger.reserve("key", changed, NOW), Reservation::Conflict);
+        assert_eq!(ledger.reserve("key", original, NOW), Reservation::InFlight);
+        ledger.settle("key", original, NOW, refused("upstream call failed"));
+        assert_eq!(ledger.reserve("key", changed, NOW), Reservation::Conflict);
+        assert!(matches!(
+            ledger.reserve("key", original, NOW),
+            Reservation::Replay(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_binding_includes_the_host_resolved_destination_and_header() {
+        for change_header in [false, true] {
+            let (policy, credentials, ledger, identity) = (
+                PermissionLattice::permissive(),
+                store(),
+                IdempotencyLedger::new(),
+                who(),
+            );
+            let original = vec![upstream()];
+            let net = Upstream::default();
+            assert!(
+                handle_perform(
+                    &request(),
+                    &ctx(&policy, &credentials, &original, &ledger, &identity),
+                    NOW,
+                    net.caller(),
+                )
+                .await
+                .granted
+            );
+            let mut spec = upstream().spec().clone();
+            if change_header {
+                spec.header = "x-api-key".into();
+            } else {
+                spec.upstream = "https://replacement.invalid/v1".into();
+            }
+            let changed = vec![RegistryEntry::env(spec)];
+            let reply = handle_perform(
+                &request(),
+                &ctx(&policy, &credentials, &changed, &ledger, &identity),
+                NOW,
+                net.caller(),
+            )
+            .await;
+            assert_eq!(reply.reason, "idempotency key names a different effect");
+            assert!(!reply.granted);
+            assert_eq!(net.count(), 1);
         }
     }
 
@@ -1186,9 +1318,12 @@ mod tests {
     #[tokio::test]
     async fn a_concurrent_duplicate_does_not_reach_the_upstream() {
         let ledger = IdempotencyLedger::new();
-        assert_eq!(ledger.reserve("k", NOW), Reservation::Fresh);
         assert_eq!(
-            ledger.reserve("k", NOW),
+            ledger.reserve("k", ArgsDigest::new([0; 32]), NOW),
+            Reservation::Fresh
+        );
+        assert_eq!(
+            ledger.reserve("k", ArgsDigest::new([0; 32]), NOW),
             Reservation::InFlight,
             "a second caller was told to go ahead while the first was running"
         );
@@ -1198,13 +1333,22 @@ mod tests {
     #[test]
     fn a_key_is_forgotten_after_its_ttl() {
         let ledger = IdempotencyLedger::new();
-        ledger.settle("k", NOW, refused("upstream call failed"));
+        ledger.settle(
+            "k",
+            ArgsDigest::new([0; 32]),
+            NOW,
+            refused("upstream call failed"),
+        );
         assert!(matches!(
-            ledger.reserve("k", NOW + IDEMPOTENCY_TTL_SECS - 1),
+            ledger.reserve(
+                "k",
+                ArgsDigest::new([0; 32]),
+                NOW + IDEMPOTENCY_TTL_SECS - 1
+            ),
             Reservation::Replay(_)
         ));
         assert_eq!(
-            ledger.reserve("k", NOW + IDEMPOTENCY_TTL_SECS),
+            ledger.reserve("k", ArgsDigest::new([0; 32]), NOW + IDEMPOTENCY_TTL_SECS),
             Reservation::Fresh,
             "the key was remembered past its window"
         );
@@ -1216,9 +1360,15 @@ mod tests {
     fn a_full_ledger_refuses_a_new_key() {
         let ledger = IdempotencyLedger::new();
         for i in 0..IDEMPOTENCY_CAPACITY {
-            assert_eq!(ledger.reserve(&format!("k{i}"), NOW), Reservation::Fresh);
+            assert_eq!(
+                ledger.reserve(&format!("k{i}"), ArgsDigest::new([0; 32]), NOW),
+                Reservation::Fresh
+            );
         }
-        assert_eq!(ledger.reserve("one-more", NOW), Reservation::Full);
+        assert_eq!(
+            ledger.reserve("one-more", ArgsDigest::new([0; 32]), NOW),
+            Reservation::Full
+        );
         assert_eq!(
             ledger.len(),
             IDEMPOTENCY_CAPACITY,
@@ -1226,7 +1376,10 @@ mod tests {
         );
         // And an EXISTING key still replays — full must not break the pod's
         // outstanding requests, only refuse new ones.
-        assert_eq!(ledger.reserve("k0", NOW), Reservation::InFlight);
+        assert_eq!(
+            ledger.reserve("k0", ArgsDigest::new([0; 32]), NOW),
+            Reservation::InFlight
+        );
     }
 
     /// Expiry frees capacity, so a long-lived pod under the rate limit never
@@ -1235,11 +1388,18 @@ mod tests {
     fn expiry_frees_capacity() {
         let ledger = IdempotencyLedger::new();
         for i in 0..IDEMPOTENCY_CAPACITY {
-            ledger.reserve(&format!("k{i}"), NOW);
+            ledger.reserve(&format!("k{i}"), ArgsDigest::new([0; 32]), NOW);
         }
-        assert_eq!(ledger.reserve("later", NOW), Reservation::Full);
         assert_eq!(
-            ledger.reserve("later", NOW + IDEMPOTENCY_TTL_SECS),
+            ledger.reserve("later", ArgsDigest::new([0; 32]), NOW),
+            Reservation::Full
+        );
+        assert_eq!(
+            ledger.reserve(
+                "later",
+                ArgsDigest::new([0; 32]),
+                NOW + IDEMPOTENCY_TTL_SECS
+            ),
             Reservation::Fresh
         );
     }

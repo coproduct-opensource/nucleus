@@ -445,9 +445,9 @@ pub fn http_caller(client: reqwest::Client) -> UpstreamCaller {
         let client = client.clone();
         Box::pin(async move {
             let resp = client
-                .post(&call.url)
+                .request(crate::broker_perform::METHOD, &call.url)
                 .header(&call.header_name, &call.header_value)
-                .header("content-type", "application/json")
+                .header("content-type", crate::broker_perform::CONTENT_TYPE)
                 .body(call.body)
                 .send()
                 .await

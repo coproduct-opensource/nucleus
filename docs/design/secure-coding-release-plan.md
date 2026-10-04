@@ -21,13 +21,21 @@ Implementation sequence:
 1. Bind host-issued decisions and approval reservations to the checked action.
    Consume by value against the host-computed digest of the effect. Cover
    argument substitution, approval redemption, replay and foreign epochs.
-   **Implemented and locally verified:** ledger binding and shadow-channel callers; the shadow digest
-   still covers operation and subject only, not the complete effect arguments.
+   **Implemented and locally verified:** ledger binding and shadow-channel
+   callers; the shadow digest still covers operation and subject only, not the
+   complete effect arguments.
 2. Define the complete canonical effect representation shared by decision and
    execution. Include upstream, method, path and payload for credentialed calls;
    streamed payload authorization must explicitly account for what is known at
    admission and what is checked while forwarding. Never trust a guest-supplied
    digest without recomputing it from the effect.
+   **In progress:** non-streamed PERFORM has a derived canonical binding over
+   operation, resolved upstream name/URL, HTTP method, credential header name,
+   content type and exact body bytes. Method and content type are shared with
+   the HTTP caller. The retry ledger rejects substitutions both while a call
+   is in flight and after settlement; audit justification is deliberately not
+   part of the effect. This binding is not yet connected to host decision
+   consumption, and stream payload binding remains open.
 3. Move enforceable state to the pod lifetime. Connection replacement cannot
    reset observed taint, spent budget or revocation. Concurrent channels must
    share the applicable limits. Host-delivered observations raise host taint
@@ -108,3 +116,13 @@ unrelated protocol or proof breadth are deferred; existing proof gates remain.
 These checks establish action binding within the current shadow protocol. They
 do not establish host-enforced effects, full-argument authorization, host-owned
 signing, or real Tier-2 execution; those remain required above.
+
+### Non-streamed effect-binding evidence (2026-10-04)
+
+The broker suite passes 92 tests with all features, including real local socket
+transport and streaming regressions. New controls reject changed operation,
+upstream, resolved URL, header, path and payload under an existing retry key;
+genuine retries still return the original result without another upstream call.
+In-flight and settled bindings are both checked. Removing the effect comparison
+makes `a_retry_key_cannot_name_a_different_effect` fail; restoring it passes.
+These are retry-integrity results, not proof of host-authoritative policy.
