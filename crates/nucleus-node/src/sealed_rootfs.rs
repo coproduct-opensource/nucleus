@@ -358,20 +358,19 @@ impl SealedRootfs {
 /// untouched, which is what lets the caller fall back to verifying it.
 #[cfg(target_os = "linux")]
 fn clone_to(sealed: &std::fs::File, dest: &Path, (uid, gid): (u32, u32)) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
+    use crate::jail_placement::{BornInJail, JailUser};
+    use std::os::unix::fs::PermissionsExt;
     let tmp = dest.with_extension("sealed-clone");
-    let _ = std::fs::remove_file(&tmp);
     let result = (|| {
-        let f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            // Read-only for its owner: Firecracker opens a read-only drive O_RDONLY.
-            .mode(0o400)
-            .open(&tmp)
-            .map_err(|e| format!("create {}: {e}", tmp.display()))?;
-        sys::clone_into(sealed, &f).map_err(|e| format!("FICLONE: {e}"))?;
-        drop(f);
-        std::os::unix::fs::chown(&tmp, Some(uid), Some(gid)).map_err(|e| format!("chown: {e}"))?;
+        let clone = BornInJail::create(&tmp)?;
+        sys::clone_into(sealed, clone.file()).map_err(|e| format!("FICLONE: {e}"))?;
+        clone
+            .file()
+            .set_permissions(std::fs::Permissions::from_mode(0o400))
+            .map_err(|e| format!("chmod clone: {e}"))?;
+        // The clone is private: hand over only the freshly created, single-link inode,
+        // through its descriptor. A replaced pathname can never chown a shared artifact.
+        clone.give_to_jail(JailUser { uid, gid })?;
         std::fs::rename(&tmp, dest).map_err(|e| format!("rename: {e}"))
     })();
     if result.is_err() {
