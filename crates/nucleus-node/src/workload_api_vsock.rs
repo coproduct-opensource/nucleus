@@ -515,7 +515,7 @@ impl WorkloadApiVsockBridge {
 
         // Hand the socket to the jailed uid, or the guest cannot reach it.
         //
-        // `prepare_jail` chowns everything it places, and its comment says the
+        // `prepare_jail` gives the jail user what it creates, and its comment says the
         // vsock socket is "deliberately absent" because Firecracker creates it.
         // That is true of `vsock.sock` — and NOT of this one. `vsock.sock_<port>`
         // is created HERE, by the node, running as root, so it lands

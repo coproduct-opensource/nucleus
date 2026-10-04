@@ -32,6 +32,8 @@
 //!   `TimeDelta`'s range panicked the create handler; one inside it minted tokens for centuries.
 //! - **`budget_model`** — the spec priced its own command executions, below the runtime's
 //!   default, so a budget stopped bounding how much a pod could run.
+//! - **`resources`, `cgroup.settings`** — a pod's memory and vCPUs had no node ceiling, and its
+//!   only cgroup limit was optional spec input (#3130). See `pod_resources`.
 //! - **`image.read_only`** — `false` attached the rootfs writable, and the rootfs a spec can name
 //!   is the node's shared artifact (#3070/#3071 confine it there), hard-linked into the jail. One
 //!   pod's writes were the next pod's boot image (#3132). The lowering no longer reads the field
@@ -44,6 +46,7 @@ use nucleus_spec::{BudgetModelSpec, PodSpec};
 
 use crate::ApiError;
 use crate::audit_sink::{AuditSinks, AuditTarget};
+use crate::pod_resources::{PodCeilings, ResourceRefused};
 
 /// The only guest vsock CID the node configures. The guest binds this CID (#2395), and the host
 /// is CID 2, so the two can never coincide.
@@ -133,6 +136,9 @@ pub(crate) enum PostureRefused {
          own network (`{node}`), never a different one such as `host`"
     )]
     ContainerNetwork { value: String, node: String },
+    /// A size above the node's per-pod ceilings, or a cgroup setting above the node's limit.
+    #[error(transparent)]
+    Resources(#[from] ResourceRefused),
     /// A label naming a fact the node owns.
     #[error("label {label} is refused: {owner}. A pod spec cannot choose its own mediation.")]
     NodeOwnedLabel {
@@ -154,7 +160,9 @@ impl From<PostureRefused> for ApiError {
 pub(crate) fn admit(
     spec: &PodSpec,
     sinks: &AuditSinks,
+    ceilings: &PodCeilings,
 ) -> Result<Option<AuditTarget>, PostureRefused> {
+    crate::pod_resources::admit(spec, ceilings)?;
     for &(label, owner) in NODE_OWNED_LABELS {
         if spec.metadata.labels.contains_key(label) {
             return Err(PostureRefused::NodeOwnedLabel { label, owner });
