@@ -28,6 +28,58 @@
 use crate::{Error, Result};
 use std::fmt;
 
+/// The SPIFFE ID specification's bound on a whole ID, in bytes.
+pub(crate) const MAX_SPIFFE_ID_LEN: usize = 2048;
+
+/// The SPIFFE ID specification's bound on a trust domain, in bytes.
+pub(crate) const MAX_TRUST_DOMAIN_LEN: usize = 255;
+
+/// A trust domain as this taxonomy admits it: 1..=255 bytes of `[a-z0-9.-]`.
+///
+/// The SPIFFE grammar, lowercase only (an uppercase trust domain is refused,
+/// not folded), less `_`: every trust domain nucleus issues for is also a DNS
+/// name. No port, no userinfo, nothing else.
+pub(crate) fn validate_trust_domain(trust_domain: &str) -> Result<()> {
+    if trust_domain.is_empty() || trust_domain.len() > MAX_TRUST_DOMAIN_LEN {
+        return Err(Error::InvalidSpiffeUri(format!(
+            "trust domain must be 1..={MAX_TRUST_DOMAIN_LEN} bytes, got {}",
+            trust_domain.len()
+        )));
+    }
+    if !trust_domain
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'.')
+    {
+        return Err(Error::InvalidSpiffeUri(format!(
+            "invalid trust domain characters (only a-z, 0-9, '.', '-'): {trust_domain}"
+        )));
+    }
+    Ok(())
+}
+
+/// One SPIFFE path segment: non-empty `[A-Za-z0-9._-]`, never `.` or `..`.
+pub(crate) fn validate_spiffe_segment(segment: &str) -> Result<()> {
+    if segment.is_empty() {
+        return Err(Error::InvalidSpiffeUri(
+            "empty path segment (a doubled or trailing '/')".to_string(),
+        ));
+    }
+    if segment == "." || segment == ".." {
+        return Err(Error::InvalidSpiffeUri(format!(
+            "dot segment {segment:?}: SPIFFE IDs never contain '.' or '..'"
+        )));
+    }
+    if !segment
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
+    {
+        return Err(Error::InvalidSpiffeUri(format!(
+            "path segment {segment:?} has characters outside [A-Za-z0-9._-]"
+        )));
+    }
+    Ok(())
+}
+
 /// A SPIFFE identity representing a workload.
 ///
 /// Contains the trust domain, namespace, and service account that uniquely
@@ -98,18 +150,7 @@ impl Identity {
         let namespace = namespace.into();
         let service_account = service_account.into();
 
-        // Validate trust domain
-        if trust_domain.is_empty() {
-            return Err(Error::InvalidSpiffeUri("empty trust domain".to_string()));
-        }
-        if !trust_domain
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
-        {
-            return Err(Error::InvalidSpiffeUri(format!(
-                "invalid trust domain characters: {trust_domain}"
-            )));
-        }
+        validate_trust_domain(&trust_domain)?;
 
         // Validate namespace
         if namespace.is_empty() {
@@ -223,63 +264,50 @@ impl Identity {
     ///
     /// Returns an error if the URI is malformed or doesn't follow the expected format.
     pub fn from_spiffe_uri(uri: &str) -> Result<Self> {
-        // Must start with spiffe://
+        // The one SPIFFE ID grammar (`docs/spiffe-taxonomy.md`): every spelling
+        // other than the canonical one is refused, never normalised, so no two
+        // URIs can name one `Identity`.
+        if uri.len() > MAX_SPIFFE_ID_LEN {
+            return Err(Error::InvalidSpiffeUri(format!(
+                "SPIFFE ID is {} bytes; at most {MAX_SPIFFE_ID_LEN} allowed",
+                uri.len()
+            )));
+        }
         let path = uri
             .strip_prefix("spiffe://")
             .ok_or_else(|| Error::InvalidSpiffeUri("must start with spiffe://".to_string()))?;
 
-        // Split trust domain from path
         let (trust_domain, workload_path) = path
             .split_once('/')
             .ok_or_else(|| Error::InvalidSpiffeUri("missing workload path".to_string()))?;
+        validate_trust_domain(trust_domain)?;
 
-        if trust_domain.is_empty() {
-            return Err(Error::InvalidSpiffeUri("empty trust domain".to_string()));
-        }
-
-        // Validate trust domain (no special chars except hyphen and dot)
-        if !trust_domain
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
-        {
-            return Err(Error::InvalidSpiffeUri(format!(
-                "invalid trust domain: {trust_domain}"
-            )));
-        }
-
-        // Parse workload path: ns/<namespace>/sa/<service-account>
         let parts: Vec<&str> = workload_path.split('/').collect();
+        for part in &parts {
+            validate_spiffe_segment(part)?;
+        }
 
-        if parts.len() >= 4 && parts[0] == "ns" && parts[2] == "sa" {
-            let namespace = parts[1];
-            let service_account = parts[3..].join("/"); // Allow slashes in SA name
-
-            if namespace.is_empty() {
-                return Err(Error::InvalidSpiffeUri("empty namespace".to_string()));
-            }
-            if service_account.is_empty() {
-                return Err(Error::InvalidSpiffeUri("empty service account".to_string()));
-            }
-
-            Ok(Self {
-                trust_domain: trust_domain.to_string(),
-                namespace: namespace.to_string(),
-                service_account,
-            })
-        } else {
-            // Try alternative format: just a path identifier
-            // spiffe://trust-domain/workload-id
-            if parts.len() == 1 && !parts[0].is_empty() {
+        // `ns/<namespace>/sa/<account>[/<segment>...]`: segments below the
+        // account belong to it (a CI identity's `owner/repo/refs/<ref>`, a
+        // lineage `/call/...`). Any other shape is not a workload identity
+        // here, and is refused rather than given a namespace: an `Identity`
+        // is a function of exactly one URI.
+        match parts.as_slice() {
+            ["ns", namespace, "sa", account, below @ ..] => {
+                let mut service_account = (*account).to_string();
+                for segment in below {
+                    service_account.push('/');
+                    service_account.push_str(segment);
+                }
                 Ok(Self {
                     trust_domain: trust_domain.to_string(),
-                    namespace: "default".to_string(),
-                    service_account: parts[0].to_string(),
+                    namespace: (*namespace).to_string(),
+                    service_account,
                 })
-            } else {
-                Err(Error::InvalidSpiffeUri(format!(
-                    "unexpected path format: {workload_path}"
-                )))
             }
+            _ => Err(Error::InvalidSpiffeUri(format!(
+                "not a workload identity: the path must be ns/<namespace>/sa/<account>, got {workload_path:?}"
+            ))),
         }
     }
 
@@ -437,11 +465,47 @@ mod tests {
     }
 
     #[test]
-    fn test_from_spiffe_uri_simple_path() {
-        let id = Identity::from_spiffe_uri("spiffe://nucleus.local/my-workload").unwrap();
-        assert_eq!(id.trust_domain(), "nucleus.local");
-        assert_eq!(id.namespace(), "default");
-        assert_eq!(id.service_account(), "my-workload");
+    fn a_path_that_is_not_ns_sa_is_refused() {
+        // One Identity per URI: a path of another shape is not given a
+        // namespace it does not spell.
+        for uri in [
+            "spiffe://nucleus.local/my-workload",
+            "spiffe://nucleus.local/workload/my-service",
+            "spiffe://nucleus.local/ns/default",
+            "spiffe://nucleus.local/ns/default/sa",
+        ] {
+            assert!(Identity::from_spiffe_uri(uri).is_err(), "{uri}");
+        }
+    }
+
+    #[test]
+    fn non_canonical_spellings_are_refused() {
+        for uri in [
+            "spiffe://Nucleus.local/ns/default/sa/x",
+            "SPIFFE://nucleus.local/ns/default/sa/x",
+            "spiffe://nucleus.local:443/ns/default/sa/x",
+            "spiffe://u@nucleus.local/ns/default/sa/x",
+            "spiffe://nucleus.local/ns/default/sa/x/",
+            "spiffe://nucleus.local/ns/default/sa//x",
+            "spiffe://nucleus.local/ns/default/sa/x/../y",
+            "spiffe://nucleus.local/ns/./sa/x",
+            "spiffe://nucleus.local/ns/default/sa/x%2Fy",
+            "spiffe://nucleus.local/ns/default/sa/x?q",
+            "spiffe://nucleus.local/ns/default/sa/x#f",
+            "spiffe://nucleus.local/ns/default/sa/x;p",
+            "spiffe://nucleus.local/ns/default/sa/x\0",
+            "spiffe://nucleus.local/ns/default/sa/\u{0445}",
+        ] {
+            assert!(Identity::from_spiffe_uri(uri).is_err(), "{uri:?}");
+        }
+        // Segments below the account are the account's.
+        let id =
+            Identity::from_spiffe_uri("spiffe://nucleus.local/ns/github/sa/o/r/refs/x").unwrap();
+        assert_eq!(id.service_account(), "o/r/refs/x");
+        assert_eq!(
+            id.to_spiffe_uri(),
+            "spiffe://nucleus.local/ns/github/sa/o/r/refs/x"
+        );
     }
 
     #[test]

@@ -11,10 +11,16 @@
 //! [`admit`] asks the same question at pod create, for every driver and before anything is
 //! spawned. The image store (a later change) plugs in at `resolve`: it is the one place an OCI
 //! source becomes a file.
+//!
+//! The same resolution parses the spec's `boot_args` (#3124). The node owns the guest kernel
+//! command line, and a spec may add only what [`SpecBootArgs::parse`] admits. `admit` refuses the
+//! rest at create, and `HostImage` carries the parsed tokens, so the command line is built from
+//! checked tokens and never from the raw string.
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
+use nucleus_spec::boot_args::{BootArgRefused, SpecBootArgs};
 use nucleus_spec::{ImageSpec, PodSpec, RootfsSource};
 
 use crate::ApiError;
@@ -36,12 +42,44 @@ impl std::fmt::Display for NoImageStore {
     }
 }
 
-impl From<NoImageStore> for ApiError {
-    fn from(e: NoImageStore) -> Self {
-        // The spec is well-formed; this node cannot serve it. InvalidSpec is still the honest
-        // category: nothing was attempted, and the caller changes the spec to proceed.
+/// Why this node will not boot an image as given. The spec has to change in both cases, so both
+/// are `InvalidSpec`, but they are different facts and each keeps its own payload (A-6).
+#[derive(Debug)]
+pub(crate) enum Unbootable {
+    NoImageStore(NoImageStore),
+    BootArgs(BootArgRefused),
+}
+
+impl std::fmt::Display for Unbootable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoImageStore(e) => e.fmt(f),
+            Self::BootArgs(e) => e.fmt(f),
+        }
+    }
+}
+
+impl From<Unbootable> for ApiError {
+    // A missing image store means the spec is well-formed and this node cannot serve it.
+    // InvalidSpec is still the honest category: nothing was attempted, and the caller changes the
+    // spec to proceed.
+    fn from(e: Unbootable) -> Self {
         ApiError::InvalidSpec(e.to_string())
     }
+}
+
+impl From<NoImageStore> for ApiError {
+    fn from(e: NoImageStore) -> Self {
+        Unbootable::NoImageStore(e).into()
+    }
+}
+
+/// The one check behind both [`admit`] and [`HostImage::resolve`]: the rootfs file, and the spec's
+/// command line tokens, parsed.
+fn check(image: &ImageSpec) -> Result<(&Path, SpecBootArgs), Unbootable> {
+    let rootfs = host_path(image).map_err(Unbootable::NoImageStore)?;
+    let boot_args = SpecBootArgs::of(image).map_err(Unbootable::BootArgs)?;
+    Ok((rootfs, boot_args))
 }
 
 /// The rootfs file on this host, or the refusal. Exhaustive: a new source is a compile error here.
@@ -54,11 +92,12 @@ pub(crate) fn host_path(image: &ImageSpec) -> Result<&Path, NoImageStore> {
     }
 }
 
-/// Refuse at create a pod whose rootfs this node cannot place. A pod with no image has no
-/// rootfs to refuse; whether it may run without one is the driver's question, not this one.
+/// Refuse at create a pod whose rootfs this node cannot place, or whose `boot_args` include anything
+/// a spec may not add. A pod with no image has neither to refuse; whether it may run without one is
+/// the driver's question, not this one.
 pub(crate) fn admit(spec: &PodSpec) -> Result<(), ApiError> {
     match &spec.spec.image {
-        Some(image) => host_path(image).map(|_| ()).map_err(ApiError::from),
+        Some(image) => check(image).map(|_| ()).map_err(ApiError::from),
         None => Ok(()),
     }
 }
@@ -72,16 +111,19 @@ pub(crate) fn admit(spec: &PodSpec) -> Result<(), ApiError> {
 pub(crate) struct HostImage {
     image: ImageSpec,
     rootfs: PathBuf,
+    boot_args: SpecBootArgs,
 }
 
 impl HostImage {
-    /// Resolve the rootfs to a host file, or refuse. The launch path is Linux-only, so this is too.
+    /// Resolve the rootfs to a host file and parse the spec's command line tokens, or refuse. The
+    /// launch path is Linux-only, so this is too.
     #[cfg(any(target_os = "linux", test))]
-    pub(crate) fn resolve(image: &ImageSpec) -> Result<Self, NoImageStore> {
-        let rootfs = host_path(image)?.to_path_buf();
+    pub(crate) fn resolve(image: &ImageSpec) -> Result<Self, Unbootable> {
+        let (rootfs, boot_args) = check(image)?;
         Ok(Self {
+            rootfs: rootfs.to_path_buf(),
             image: image.clone(),
-            rootfs,
+            boot_args,
         })
     }
 
@@ -100,6 +142,13 @@ impl HostImage {
     /// The rootfs file that will boot.
     pub(crate) fn rootfs_path(&self) -> &Path {
         &self.rootfs
+    }
+
+    /// The tokens the spec added to the guest command line, every one of them admitted. The
+    /// command line is built from these and never from `image.boot_args` itself.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn spec_boot_args(&self) -> &SpecBootArgs {
+        &self.boot_args
     }
 
     /// Attach the scratch disk the node provisioned for this pod.
@@ -162,6 +211,48 @@ mod tests {
         let host = HostImage::of_spec(&s).expect("a path rootfs resolves");
         assert_eq!(host.rootfs_path(), Path::new("/r"));
         assert_eq!(host.kernel_path, Path::new("/k"), "derefs to the spec");
+    }
+
+    /// #3124: a spec may not write the guest command line. Main accepted each of these. Each is now
+    /// refused at create, before anything is spawned, with a message that names the token.
+    #[test]
+    fn a_spec_that_writes_the_guest_command_line_is_refused_at_create() {
+        for (args, token) in [
+            ("init=/bin/sh", "init=/bin/sh"),
+            (
+                "NUCLEUS_TOOL_PROXY_POLICY=permissive",
+                "NUCLEUS_TOOL_PROXY_POLICY=permissive",
+            ),
+            (
+                "nucleus.net=10.9.9.2/30,gw=10.9.9.1",
+                "nucleus.net=10.9.9.2/30,gw=10.9.9.1",
+            ),
+            ("ipv6.disable=0", "ipv6.disable=0"),
+            (
+                "quiet nucleus.approval_pubkeys=00",
+                "nucleus.approval_pubkeys=00",
+            ),
+        ] {
+            let s = spec(&format!(
+                r#"{{"kernel_path":"/k","rootfs_path":"/r","boot_args":"{args}"}}"#
+            ));
+            let Err(ApiError::InvalidSpec(msg)) = admit(&s) else {
+                panic!("`{args}` must be refused at create");
+            };
+            assert!(msg.contains(token), "{args}: {msg}");
+            assert!(msg.contains("refused"), "{args}: {msg}");
+            let Err(ApiError::InvalidSpec(_)) = HostImage::of_spec(&s) else {
+                panic!("`{args}` must not resolve to a bootable image either");
+            };
+        }
+    }
+
+    #[test]
+    fn an_allowlisted_token_is_admitted_and_carried_parsed() {
+        let s = spec(r#"{"kernel_path":"/k","rootfs_path":"/r","boot_args":"quiet loglevel=3"}"#);
+        assert!(admit(&s).is_ok());
+        let host = HostImage::of_spec(&s).expect("allowlisted tokens resolve");
+        assert_eq!(host.spec_boot_args().tokens().len(), 2);
     }
 
     #[test]

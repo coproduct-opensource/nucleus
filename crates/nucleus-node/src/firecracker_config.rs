@@ -738,11 +738,10 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
 /// `jailer_argv_never_enables_the_pci_transport` pins. Neither half should be
 /// reachable from spec input.
 ///
-/// A spec-supplied `pci=` is **stripped**, not honoured and not an error:
-/// `from_spec` returns `Self` with no error channel, and silently keeping a
-/// weaker value would be the worst of the three options. In nucleus's model no
-/// PodSpec has a legitimate reason to want guest PCI — the VMM is not started
-/// with the PCI transport at all.
+/// A spec-supplied `pci=` used to be **stripped** here because `from_spec` had
+/// no error channel. Since #3124 it is **refused at admission**
+/// (`nucleus_spec::boot_args`): the node builds the whole line, so this strip
+/// is a closure over the node's own assembly and never edits spec input.
 /// Ungated although its only caller is Linux-only, so the logic is compiled and
 /// unit-tested on a macOS dev host rather than only in CI.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -851,37 +850,31 @@ impl FirecrackerConfig {
             .unwrap_or(512) as i64;
 
         let huge_pages = spec.spec.resources.as_ref().and_then(|r| r.huge_pages);
-        let default_args = format!("console=ttyS0 reboot=k panic=1 pci=off init={INIT}");
-        let mut boot_args = match image.boot_args.clone() {
-            Some(args) => {
-                if args.contains("init=") {
-                    Some(args)
-                } else {
-                    Some(format!("{args} init={INIT}"))
-                }
-            }
-            None => Some(default_args),
+        // The node owns the command line (#3124), and this is its one builder: the node's base,
+        // then the tokens the spec was admitted to add, then the node's own keys, then the audit
+        // sink as rendered by the parser admission ran (#3120). The spec's tokens come from
+        // `HostImage::spec_boot_args`, which admission parsed against the allowlist, and never
+        // from the raw `image.boot_args` string. So no branch here asks what the spec wrote, and
+        // no spec token can stand in for `init=`, `nucleus.net=` or `ipv6.disable=`, or precede
+        // a `nucleus.*` key the guest reads first-match.
+        let mut base = vec![
+            "console=ttyS0".to_string(),
+            "reboot=k".to_string(),
+            "panic=1".to_string(),
+            format!("init={INIT}"),
+        ];
+        let admitted = image.spec_boot_args().tokens();
+        base.extend(admitted.iter().map(ToString::to_string));
+        base.extend(net_plan.map(net::NetPlan::kernel_arg));
+        base.push("ipv6.disable=1".to_string());
+        // A spec can no longer supply `pci=`, so this strips nothing. It stays as the
+        // Lean-modelled closure (`GuestDeviceSurfaceProofs`): every line the node builds ends in
+        // exactly one `pci=off`. See `enforce_pci_off`.
+        let mut line = enforce_pci_off(&base.join(" "));
+        let mut push = |token: &str| {
+            line.push(' ');
+            line.push_str(token);
         };
-
-        if let Some(plan) = net_plan {
-            let extra = plan.kernel_arg();
-            boot_args = match boot_args.take() {
-                Some(args) if args.contains("nucleus.net=") => Some(args),
-                Some(args) => Some(format!("{args} {extra}")),
-                None => Some(extra),
-            };
-        }
-
-        boot_args = match boot_args.take() {
-            Some(args) if args.contains("ipv6.disable=") => Some(args),
-            Some(args) => Some(format!("{args} ipv6.disable=1")),
-            None => Some("ipv6.disable=1".to_string()),
-        };
-
-        // Applied AFTER every branch that can build a command line, so no path
-        // — default, spec-supplied, or net-augmented — can reach the guest
-        // without it. See `enforce_pci_off`.
-        boot_args = boot_args.map(|args| enforce_pci_off(&args));
 
         // OS assumption: KB-VSOCK-PEER-CID; docs/assumptions/kernel-behaviour.md.
         // `nucleus.auth_secret` is NO LONGER EMITTED.
@@ -911,19 +904,11 @@ impl FirecrackerConfig {
         // nothing else with the key — reading it grants no forging power, so
         // it is safe on a world-readable channel, and it is per-node config,
         // so it does not block a snapshot base (see `SHARED_CONFIG_KEYS`).
-        boot_args = match boot_args.take() {
-            Some(args) => Some(format!(
-                "{args} nucleus.approval_pubkeys={approval_pubkeys}"
-            )),
-            None => Some(format!("nucleus.approval_pubkeys={approval_pubkeys}")),
-        };
+        push(&format!("nucleus.approval_pubkeys={approval_pubkeys}"));
 
         // Inject workload API port if identity management is enabled
         if let Some(port) = workload_api_port {
-            boot_args = match boot_args.take() {
-                Some(args) => Some(format!("{args} nucleus.workload_api_port={port}")),
-                None => Some(format!("nucleus.workload_api_port={port}")),
-            };
+            push(&format!("nucleus.workload_api_port={port}"));
         }
 
         // Inject audit S3 sink config via kernel args. Rendered by the same parser admission ran
@@ -933,14 +918,7 @@ impl FirecrackerConfig {
         // a closure over that, like `enforce_pci_off`, and emits no sink rather than a raw value.
         if let Some(ref sink) = spec.spec.audit_sink {
             match crate::spec_posture::audit_sink_boot_args(sink) {
-                Ok(tokens) => {
-                    for token in tokens {
-                        boot_args = match boot_args.take() {
-                            Some(args) => Some(format!("{args} {token}")),
-                            None => Some(token),
-                        };
-                    }
-                }
+                Ok(tokens) => tokens.iter().map(String::as_str).for_each(&mut push),
                 Err(refused) => tracing::error!(%refused, "audit sink not rendered"),
             }
             // The AWS credentials are NO LONGER EMITTED here.
@@ -956,9 +934,7 @@ impl FirecrackerConfig {
             // stays: it is per-fleet configuration, not a secret, and the
             // snapshot guard classifies it as shared.
             if let Ok(region) = std::env::var("AWS_DEFAULT_REGION") {
-                if let Some(ref mut args) = boot_args {
-                    args.push_str(&format!(" nucleus.aws_default_region={region}"));
-                }
+                push(&format!("nucleus.aws_default_region={region}"));
             }
         }
 
@@ -1016,7 +992,7 @@ impl FirecrackerConfig {
                 } else {
                     image.kernel_path.display().to_string()
                 },
-                boot_args,
+                boot_args: Some(line),
             },
             drives: lower_drives(image, jailed),
             machine_config: MachineConfig {

@@ -13,8 +13,10 @@
 //! - [`scratch_readback`]: reading files out of a guest's ext4 image from the
 //!   host, unprivileged, after replaying its journal.
 //!
-//! The `nucleus-hostctl` binary exposes the three as `probe`, `seed` and
-//! `harvest`, for the process that hosts the node.
+//! - [`relay`]: forward a published container port to a pod's loopback proxy.
+//!
+//! The `nucleus-hostctl` binary exposes them as `probe`, `seed`, `harvest` and
+//! `relay`, for the process that hosts the node.
 
 #![cfg_attr(
     not(test),
@@ -32,5 +34,6 @@
 pub mod ext4;
 pub mod jail_user;
 pub mod probe;
+pub mod relay;
 pub mod scratch_readback;
 pub mod workspace;

@@ -195,6 +195,13 @@ pub enum GuestCapability {
     /// through the workload door with no secret (#2696 P2). An older guest has
     /// no bridge, so an agent started in the pod (P5) has no tools at all.
     McpBridge,
+    /// The tool-proxy relays a workload's credentialed egress to the host as a
+    /// STREAM: the body goes up in bounded chunks, each charged to the pod's
+    /// egress ceiling, and the reply comes back as the upstream sends it
+    /// (#2696 P4). An older proxy sends the whole call in one perform frame,
+    /// which the host refuses above 256 KiB and which cannot carry a streamed
+    /// (server-sent-event) reply, so a model call from the pod fails or stalls.
+    StreamingEgress,
 }
 
 /// Which published release first carried a [`GuestCapability`].
@@ -210,7 +217,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 7] = [
+    pub const ALL: [GuestCapability; 8] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -218,6 +225,7 @@ impl GuestCapability {
         GuestCapability::SvidOnTmpfs,
         GuestCapability::WorkloadDoor,
         GuestCapability::McpBridge,
+        GuestCapability::StreamingEgress,
     ];
 
     /// The first release whose rootfs has this.
@@ -231,6 +239,7 @@ impl GuestCapability {
             GuestCapability::SvidOnTmpfs => FirstShipped::NotYet,
             GuestCapability::WorkloadDoor => FirstShipped::NotYet,
             GuestCapability::McpBridge => FirstShipped::NotYet,
+            GuestCapability::StreamingEgress => FirstShipped::NotYet,
         }
     }
 
@@ -270,6 +279,12 @@ impl GuestCapability {
             GuestCapability::McpBridge => {
                 "#2696 (P2) put the MCP bridge in the guest at /usr/local/bin/nucleus-mcp; \
                  an older guest has none, so an agent run in the pod has no way to call its tools"
+            }
+            GuestCapability::StreamingEgress => {
+                "#2696 (P4) made the tool-proxy stream a workload's credentialed egress to the \
+                 host in bounded, metered chunks; an older proxy sends the whole call in one \
+                 perform frame, which the host refuses above 256 KiB and which cannot carry a \
+                 streamed reply"
             }
         }
     }
@@ -388,7 +403,8 @@ fn skew_against(
 ///
 /// **2.2.0 does not serve this tree.** It predates
 /// [`GuestCapability::EgressAttestation`], [`GuestCapability::SvidOnTmpfs`],
-/// [`GuestCapability::WorkloadDoor`] and [`GuestCapability::McpBridge`], so
+/// [`GuestCapability::WorkloadDoor`], [`GuestCapability::McpBridge`] and
+/// [`GuestCapability::StreamingEgress`], so
 /// `setup` refuses to install it (see
 /// [`guest_skew`]) and says to build the guest locally instead. The change that
 /// bumps this constant to the next release must also turn those entries into
@@ -550,6 +566,7 @@ mod tests {
                 GuestCapability::SvidOnTmpfs,
                 GuestCapability::WorkloadDoor,
                 GuestCapability::McpBridge,
+                GuestCapability::StreamingEgress,
             ]
         );
         let msg = skew.to_string();
@@ -594,7 +611,8 @@ mod tests {
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
                 GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
                 GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
-                GuestCapability::McpBridge => GuestCapability::CaBundle,
+                GuestCapability::McpBridge => GuestCapability::StreamingEgress,
+                GuestCapability::StreamingEgress => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
