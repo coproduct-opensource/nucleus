@@ -336,42 +336,22 @@ pub struct WorkloadApiVsockBridge {
 // writes the labels.
 use nucleus_spec::dlc_admission::DlcProvisioning;
 
-/// Cloud credentials for the pod's S3 audit sink, served over
+/// The credential for the pod's audit uploader, served over
 /// `FETCH_AUDIT_CREDENTIALS` exactly once per pod.
 ///
-/// Deliberately NO `Debug` derive: these are long-lived cloud credentials, and
-/// a derived `Debug` would put them one `{material:?}` away from a log line.
+/// Minted for this pod's resolved sink and nothing wider
+/// (`audit_sink::credentials::AuditGrant::served_credentials`). It used to be
+/// read from the node's own ambient environment, which served the node's key
+/// to every guest whose spec named a sink (#3160).
+///
+/// Deliberately NO `Debug` derive: a derived `Debug` would put the secret one
+/// `{material:?}` away from a log line.
 #[derive(Clone)]
 pub struct AuditCredentials {
     pub access_key_id: String,
     pub secret_access_key: String,
-    /// Present only for temporary (STS) credentials.
+    /// The session token, for credentials that carry one.
     pub session_token: Option<String>,
-}
-
-impl AuditCredentials {
-    /// The credentials for a pod's audit sink, from the node's ambient AWS
-    /// environment — the same source the kernel-cmdline emission used to read.
-    ///
-    /// `None` unless the pod has an audit sink, and only ever a PAIR: an access
-    /// key id without its secret (or the reverse) is not a credential, so
-    /// `None` beats half of one. The session token alone is optional (absent
-    /// for long-lived keys).
-    // The only caller is inside spawn_firecracker_pod's target_os = "linux"
-    // block; on Linux the dead-code detector stays live for it.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn from_node_env(pod_has_audit_sink: bool) -> Option<Self> {
-        if !pod_has_audit_sink {
-            return None;
-        }
-        let access_key_id = std::env::var("AWS_ACCESS_KEY_ID").ok()?;
-        let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").ok()?;
-        Some(Self {
-            access_key_id,
-            secret_access_key,
-            session_token: std::env::var("AWS_SESSION_TOKEN").ok(),
-        })
-    }
 }
 
 impl std::fmt::Debug for WorkloadApiVsockBridge {
@@ -418,7 +398,8 @@ pub struct PodMaterial {
     /// per-connection record would make "once" mean "once per connection",
     /// which is not a restriction.
     pub served: ServedLedger,
-    /// The S3 audit-sink credentials, off the kernel command line at last.
+    /// The audit uploader's credential, off the kernel command line at last,
+    /// and minted for this pod's resolved sink rather than the node's own (#3160).
     /// `None` when the pod has no audit sink or the node holds no credentials.
     pub audit_creds: Option<AuditCredentials>,
     /// The per-pod ed25519 signing seed (64 hex chars) the tool-proxy signs

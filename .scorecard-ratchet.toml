@@ -526,9 +526,11 @@ population_floor = 23
 # wiring uses the module. Re-measured on the tree rebased onto 02e7aa341
 # (`cargo xtask scorecard --measure`): 22 of 140 = 15.71% -- one more
 # discharged suppression and one more in the population.
-floor_bp = 1571
+# 2026-10-04 (#3155 integration): audit credential helpers add one expiring
+# production suppression. Measured 23 of 141 = 16.31%; tighten both pins.
+floor_bp = 1631
 floor_set = "measurement"
-population_floor = 140
+population_floor = 141
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

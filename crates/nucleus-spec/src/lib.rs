@@ -912,31 +912,31 @@ impl Default for IdentitySource {
     }
 }
 
-/// Remote audit sink configuration for deletion-resistant log shipping.
+/// A request to ship this pod's audit log to one of the node's audit sinks.
 ///
-/// When configured, audit entries are written to an S3-compatible object store
+/// When admitted, audit entries are written to an S3-compatible object store
 /// in addition to the local HMAC-signed JSONL log. Each entry is a separate
 /// object with `if_none_match("*")` to enforce append-only semantics.
 ///
-/// Compatible with: any S3-compatible object store (e.g. AWS S3, MinIO).
-///
-/// The node writes these values onto the guest kernel command line, so it
-/// refuses at create any value that is not exactly one token of its grammar
-/// (#3120): a bucket name, a key prefix, a region, an http(s) URL.
+/// **The destination belongs to the node operator, not to the spec (#3131).**
+/// The node writes with the operator's cloud credentials. A spec that chose
+/// the bucket or endpoint would choose where the operator's key signs writes,
+/// which is a confused deputy, and it could point that key at a server it runs.
+/// So a spec names a sink the operator configured on the node (`nucleus-node
+/// --audit-sinks`), and may narrow that sink's key prefix. A spec cannot carry
+/// a bucket, region or endpoint, because this type has no field for one. The
+/// earlier `s3_*` fields are refused as unknown fields. The node refuses at
+/// create a sink name it does not configure.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuditSinkSpec {
-    /// S3 bucket name.
-    pub s3_bucket: String,
-    /// Key prefix for audit objects (e.g. "audit/pod-name/").
+    /// The name of an audit sink configured on the node.
+    pub sink: String,
+    /// A key prefix UNDER the operator's prefix for that sink, e.g. `team-a/run-7`.
+    /// It only narrows: the node appends it to the operator's prefix and never
+    /// lets it replace that prefix.
     #[serde(default)]
-    pub s3_prefix: Option<String>,
-    /// AWS region (defaults to us-east-1 if not set).
-    #[serde(default)]
-    pub s3_region: Option<String>,
-    /// Custom S3 endpoint URL (for MinIO, R2, Tigris, etc.).
-    #[serde(default)]
-    pub s3_endpoint: Option<String>,
+    pub prefix: Option<String>,
 }
 
 /// Compute SHA-256 of a byte slice and return the hex string.
