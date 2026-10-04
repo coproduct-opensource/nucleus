@@ -38,6 +38,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::ExitReport;
 
+/// What a node signature establishes about exit-report content. Neither variant
+/// claims that a host independently measured the workspace, usage or audit data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportProvenance {
+    /// Older receipts omitted provenance; absence cannot imply host measurement.
+    #[default]
+    Unspecified,
+    /// Content asserted by the guest/supervisor, including guest-signed reports.
+    GuestReported,
+}
+
+impl ReportProvenance {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::GuestReported => "guest_reported",
+        }
+    }
+}
+
 /// Where the supervisor writes the report, relative to the pod's work dir.
 pub const EXIT_REPORT_FILE: &str = ".nucleus-exit-report.json";
 

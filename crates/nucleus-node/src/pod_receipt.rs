@@ -1,4 +1,4 @@
-//! The execution receipt: what a pod did, as a value both transports serve.
+//! A node-signed guest report plus host metadata, served by both transports.
 //!
 //! # Why this exists as a module
 //!
@@ -29,6 +29,7 @@
 use nucleus_microvm_host::scratch_readback;
 use std::sync::Arc;
 
+use nucleus_spec::exit_report_auth::ReportProvenance;
 use serde::Serialize;
 
 use crate::{NodeState, PodHandle, PodState};
@@ -46,6 +47,8 @@ pub(crate) struct Receipt {
     pub sandbox_tier: String,
     pub spiffe_id: String,
     pub version: u32,
+    /// Signed provenance of report-derived hashes, counters, usage and time.
+    pub report_provenance: ReportProvenance,
     pub v1_content_hash: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -83,6 +86,7 @@ impl Receipt {
             sandbox_tier,
             spiffe_id,
             version,
+            report_provenance,
             v1_content_hash,
             input_tokens,
             output_tokens,
@@ -108,6 +112,7 @@ impl Receipt {
         absorb("sandbox_tier", sandbox_tier.as_bytes());
         absorb("spiffe_id", spiffe_id.as_bytes());
         absorb("version", &version.to_be_bytes());
+        absorb("report_provenance", report_provenance.as_str().as_bytes());
         absorb("v1_content_hash", v1_content_hash.as_bytes());
         absorb("input_tokens", &input_tokens.to_be_bytes());
         absorb("output_tokens", &output_tokens.to_be_bytes());
@@ -227,7 +232,8 @@ pub(crate) async fn build(
         // and is the natural follow-up; it is new behaviour, not a deletion.
         sandbox_tier: String::new(),
         spiffe_id,
-        version: 1,
+        version: 2,
+        report_provenance: ReportProvenance::GuestReported,
         v1_content_hash,
         input_tokens: report.input_tokens,
         output_tokens: report.output_tokens,
@@ -267,7 +273,7 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
         tool_call_count: r.audit_entry_count,
         workspace_hash: r.workspace_hash.clone(),
         audit_tail_hash: r.audit_tail_hash.clone(),
-        // Verified exposure from the tool proxy's GradedExposureGuard, written to
+        // Guest-reported exposure from the tool proxy's guard, written to
         // .nucleus-exit-report.json at shutdown.
         observed_exposure_labels: r.observed_exposure_labels.clone(),
         observed_risk_tier: if r.observed_risk_tier.is_empty() {
@@ -297,6 +303,7 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
             built.receipt.spiffe_id.clone()
         },
         v1_content_hash: built.receipt.v1_content_hash.clone(),
+        report_provenance: built.receipt.report_provenance,
     };
     let trust_config = state.trust_gate.clone();
     let http_client = state.http_client.clone();
@@ -329,6 +336,7 @@ impl From<Receipt> for crate::proto::ExecutionReceipt {
             sandbox_tier: r.sandbox_tier,
             spiffe_id: r.spiffe_id,
             version: r.version,
+            report_provenance: r.report_provenance.as_str().to_string(),
             v1_content_hash: r.v1_content_hash,
             extensions: std::collections::HashMap::new(),
             input_tokens: r.input_tokens,
@@ -503,7 +511,8 @@ mod tests {
             manifest_hash: "mf".into(),
             sandbox_tier: "restricted".into(),
             spiffe_id: "spiffe://nucleus.local/ns/pods/sa/1".into(),
-            version: 1,
+            version: 2,
+            report_provenance: ReportProvenance::GuestReported,
             v1_content_hash: "v1".into(),
             input_tokens: 10,
             output_tokens: 20,
@@ -541,6 +550,7 @@ mod tests {
             "sandbox_tier",
             "spiffe_id",
             "version",
+            "report_provenance",
             "v1_content_hash",
             "input_tokens",
             "output_tokens",
@@ -620,6 +630,35 @@ mod tests {
             .expect("no registry to fail to load")
         }
 
+        #[tokio::test]
+        async fn a_guest_report_cannot_choose_host_provenance() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
+            report["report_provenance"] = "host_observed".into();
+            report["version"] = 999.into();
+            write_report(dir.path(), &serde_json::to_string(&report).unwrap());
+            assert!(
+                matches!(
+                    build(&pod(dir.path(), true, &[]).await, &authority(dir.path())).await,
+                    Err(ReceiptError::Malformed(_))
+                ),
+                "guest-authored provenance is not a report field"
+            );
+            write_report(dir.path(), REPORT);
+            let built = build(&pod(dir.path(), true, &[]).await, &authority(dir.path()))
+                .await
+                .unwrap();
+            assert_eq!(built.receipt.version, 2);
+            assert_eq!(
+                built.receipt.report_provenance,
+                ReportProvenance::GuestReported
+            );
+            assert_eq!(
+                built.receipt.workspace_hash,
+                report["workspace_hash"].as_str().unwrap()
+            );
+        }
+
         /// **The claim, end to end.** Every other signature test builds a `Receipt`
         /// by hand and signs a preimage itself, which tests the primitives and not
         /// the composition: until this existed, nothing checked that a receipt
@@ -643,6 +682,10 @@ mod tests {
                 !r.signature.is_empty(),
                 "build produced an unsigned receipt"
             );
+            assert_eq!(r.version, 2);
+            assert_eq!(r.report_provenance, ReportProvenance::GuestReported);
+            let wire: crate::proto::ExecutionReceipt = r.clone().into();
+            assert_eq!(wire.report_provenance, "guest_reported");
             assert_eq!(
                 r.signer_pubkey,
                 auth.root_pubkey_hex(),
@@ -798,7 +841,8 @@ mod tests {
             assert_eq!(r.output_tokens, 22);
             assert_eq!(r.cache_read_tokens, 33);
             assert!((r.cost_usd - 1.5).abs() < f64::EPSILON);
-            assert_eq!(r.version, 1);
+            assert_eq!(r.version, 2);
+            assert_eq!(r.report_provenance, ReportProvenance::GuestReported);
             assert_eq!(built.exit_code, 0, "/bin/true exits 0");
             assert!(!r.manifest_hash.is_empty(), "the spec must be hashed");
             assert!(
@@ -901,7 +945,8 @@ mod signature_tests {
             manifest_hash: "mh".into(),
             sandbox_tier: "tier2".into(),
             spiffe_id: "spiffe://nucleus.local/ns/default/sa/x".into(),
-            version: 1,
+            version: 2,
+            report_provenance: ReportProvenance::GuestReported,
             v1_content_hash: "v1".into(),
             input_tokens: 10,
             output_tokens: 20,
@@ -978,7 +1023,14 @@ mod signature_tests {
             (
                 "version",
                 Receipt {
-                    version: 2,
+                    version: 3,
+                    ..sample()
+                },
+            ),
+            (
+                "report_provenance",
+                Receipt {
+                    report_provenance: ReportProvenance::Unspecified,
                     ..sample()
                 },
             ),

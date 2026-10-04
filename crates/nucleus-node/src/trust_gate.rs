@@ -208,6 +208,7 @@ pub struct ReceiptReport {
     /// session-complete in secure mode; without it the handler returns 422
     /// when observed_exposure_labels are present.
     pub v1_content_hash: String,
+    pub report_provenance: nucleus_spec::exit_report_auth::ReportProvenance,
 }
 
 // `Art12Attestation` and `art12_attestation_preimage` live in
@@ -425,6 +426,7 @@ pub(crate) fn build_session_complete_body(report: &ReceiptReport) -> serde_json:
         // holding the pod's HMAC secret — which is the whole point.
         "art12_attestation": report.art12_attestation,
         "v1_content_hash": report.v1_content_hash,
+        "report_provenance": report.report_provenance,
     })
 }
 
@@ -451,6 +453,7 @@ pub async fn register_receipt_hash(
     let url = format!("{}/api/trust/receipts/register", config.trust_api_url);
     let body = serde_json::json!({
         "v1_content_hash": report.v1_content_hash,
+        "report_provenance": report.report_provenance,
         "session_id": report.session_id,
         "agent_id": report.agent_id,
     });
@@ -1003,6 +1006,7 @@ mod tests {
             art12_attestation: None,
             sandbox_identity: "spiffe://nucleus/test-agent".to_string(),
             v1_content_hash: "cafebabe11223344556677889900aabbccddeeff".to_string(),
+            report_provenance: nucleus_spec::exit_report_auth::ReportProvenance::GuestReported,
         }
     }
 
@@ -1146,6 +1150,7 @@ mod tests {
         report.uninhabitable_reached = false;
 
         let body = build_session_complete_body(&report);
+        assert_eq!(body["report_provenance"], "guest_reported");
         // Score: failure(0.20) + medium(0.00) - 0 - 2_labels(0.04) = 0.16
         let score = body["score"].as_f64().unwrap();
         assert!(

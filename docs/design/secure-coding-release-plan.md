@@ -298,3 +298,33 @@ persistence refusal was removed; the four restored evidence tests passed.
 Linux ARM64 musl cross-build and all four prepush gates passed. Clippy completed
 with `-D warnings`; the combined feature graph emitted existing configuration
 warnings about unreachable reqwest blocking-method entries in `clippy.toml`.
+
+### Signed exit-report provenance (2026-10-04)
+
+Pod receipts now emit version 2 with `report_provenance = guest_reported`.
+The label is included in the node signature's tagged preimage and applies to
+report-derived workspace/audit hashes, counters, usage, cost and report time.
+The node assigns it independently of fields a guest includes in its report.
+The node-observed pod identity and manifest remain separate host metadata.
+
+HTTP and gRPC carry the same signed provenance. gRPC adds field 18, without
+renumbering existing fields; the Rust SDK preserves provenance, signature and
+signer public key. An absent provenance value from an older node remains
+unspecified. The legacy content hash remains available for compatibility, but
+recomputing that hash is not authentication or proof of the report's truth.
+Trust-report payloads and hash registration also carry the provenance label;
+external consumers must honor it before treating report fields as observations.
+
+This separates claims while preserving useful receipts. It does not retire
+`FETCH_MEDIATION_KEY`, replace the guest exit-report producer, or close either
+#3114 conformance gap. Host authorization journals are already independent of
+that guest key; host outcome evidence and guest-key removal remain required.
+
+Validation: the full node suite passed 814 unit tests (one ignored) and three
+integration tests; the SDK passed 33 tests and seven doc tests. After adding the
+injected-provenance regression, all 24 receipt tests passed. Removing provenance
+from the signed preimage made the tamper regression fail; restoration passed.
+The strict guest-report parser rejects injected provenance/version fields, while
+a valid report still yields a useful signed receipt labeled `guest_reported`.
+Linux ARM64 musl build and all four prepush gates passed. Clippy completed with
+`-D warnings`, with the existing reqwest blocking-method configuration warnings.

@@ -47,13 +47,14 @@ impl From<nucleus_node::PodInfo> for PodInfo {
     }
 }
 
-/// Execution receipt — cryptographic proof of pod execution outcome.
+/// Node-signed receipt containing report-derived claims, not independent proof
+/// that those claims are true. Check version, provenance and a pinned host key.
 ///
 /// ## Versioning
 ///
 /// v1 fields (pod_id through spiffe_id) are FROZEN. The `v1_content_hash`
-/// is a SHA-256 of the canonical serialization of these fields, allowing
-/// v1-only verifiers to validate receipts even when extensions are present.
+/// is a SHA-256 of the legacy canonical content. Recomputing it is not
+/// signature verification and does not establish the truth of guest claims.
 ///
 /// New fields in v2+ go into `extensions` or as named fields with schema
 /// version bumps.
@@ -77,8 +78,13 @@ pub struct ExecutionReceipt {
     /// SPIFFE ID of the pod's workload identity.
     pub spiffe_id: String,
     // === v1.0 versioning ===
-    /// Schema version. v1 = 1.
+    /// Schema version. v2 binds report provenance.
     pub version: u32,
+    /// "guest_reported" means guest/supervisor assertions. Empty is unspecified.
+    pub report_provenance: String,
+    /// Node signature and claimed public key; verification requires an independent pin.
+    pub signature: String,
+    pub signer_pubkey: String,
     /// SHA-256 of canonical v1 fields — verifiable even by v1-only verifiers.
     pub v1_content_hash: String,
     /// Forward-compatible extension data.
@@ -97,6 +103,9 @@ impl From<nucleus_node::ExecutionReceipt> for ExecutionReceipt {
             sandbox_tier: r.sandbox_tier,
             spiffe_id: r.spiffe_id,
             version: r.version,
+            report_provenance: r.report_provenance,
+            signature: r.signature,
+            signer_pubkey: r.signer_pubkey,
             v1_content_hash: r.v1_content_hash,
             extensions: r.extensions.into_iter().collect(),
         }
@@ -287,5 +296,31 @@ impl NodeClient {
             .receipt
             .ok_or_else(|| Error::Other(format!("no receipt for pod: {}", pod_id)))?;
         Ok(ExecutionReceipt::from(receipt))
+    }
+}
+
+#[cfg(test)]
+mod receipt_provenance_tests {
+    use super::*;
+
+    #[test]
+    fn report_provenance_and_signature_survive_the_sdk_conversion() {
+        let wire = nucleus_node::ExecutionReceipt {
+            version: 2,
+            report_provenance: "guest_reported".into(),
+            signature: "signed-claims".into(),
+            signer_pubkey: "claimed-key".into(),
+            ..Default::default()
+        };
+        let receipt = ExecutionReceipt::from(wire);
+        assert_eq!(receipt.version, 2);
+        assert_eq!(receipt.report_provenance, "guest_reported");
+        assert_eq!(receipt.signature, "signed-claims");
+        assert_eq!(receipt.signer_pubkey, "claimed-key");
+        let legacy = ExecutionReceipt::from(nucleus_node::ExecutionReceipt::default());
+        assert!(
+            legacy.report_provenance.is_empty(),
+            "missing provenance must not become host evidence"
+        );
     }
 }
