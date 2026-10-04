@@ -10,13 +10,17 @@
 //!   0x01 Decide     op:u8 subject_len:u16be subject[subject_len] args_digest[32]
 //!   0x02 Observe    label
 //!   0x03 Redeem     approval_id
+//!   0x04 Shadow     decided:u64be outcome                (P8 shadow mode only)
 //! host tags
 //!   0x81 Allowed            decision_id
 //!   0x82 Denied             reason:u8
 //!   0x83 ApprovalRequired   approval_id
 //!   0x84 Observed           (empty)
+//!   0x85 Compared           agreement:u8                 (P8 shadow mode only)
 //!
 //! decision_id = approval_id = epoch:u64be number:u64be
+//!
+//! outcome = kind:u8 [reason:u8 iff kind is Denied]
 //!
 //! label  = confidentiality:u8 integrity:u8 provenance:u8
 //!          observed_at:u64be ttl_secs:u64be authority:u8 derivation:u8
@@ -38,8 +42,8 @@ use nucleus_ifc_kernel::{
 };
 
 use crate::frame::{
-    ApprovalId, ArgsDigest, DecisionId, DenyReason, GuestFrame, HostFrame, LabelRaise,
-    MAX_SUBJECT_LEN, Seq, Subject, SubjectError, Verdict,
+    Agreement, ApprovalId, ArgsDigest, DecisionId, DenyReason, GuestFrame, HostFrame, LabelRaise,
+    MAX_SUBJECT_LEN, Outcome, Seq, Subject, SubjectError, Verdict,
 };
 
 /// The protocol version this crate speaks. Any other version byte is refused.
@@ -83,6 +87,9 @@ pub enum Field {
     DecisionId,
     ApprovalId,
     DenyReason,
+    Decided,
+    Outcome,
+    Agreement,
 }
 
 /// Where unconsumed bytes were found.
@@ -215,16 +222,23 @@ pub(crate) enum GuestTag {
     Decide,
     Observe,
     Redeem,
+    Shadow,
 }
 
 impl GuestTag {
-    pub(crate) const ALL: [GuestTag; 3] = [GuestTag::Decide, GuestTag::Observe, GuestTag::Redeem];
+    pub(crate) const ALL: [GuestTag; 4] = [
+        GuestTag::Decide,
+        GuestTag::Observe,
+        GuestTag::Redeem,
+        GuestTag::Shadow,
+    ];
 
     pub(crate) const fn wire(self) -> u8 {
         match self {
             GuestTag::Decide => 0x01,
             GuestTag::Observe => 0x02,
             GuestTag::Redeem => 0x03,
+            GuestTag::Shadow => 0x04,
         }
     }
 }
@@ -235,14 +249,16 @@ pub(crate) enum HostTag {
     Denied,
     ApprovalRequired,
     Observed,
+    Compared,
 }
 
 impl HostTag {
-    pub(crate) const ALL: [HostTag; 4] = [
+    pub(crate) const ALL: [HostTag; 5] = [
         HostTag::Allowed,
         HostTag::Denied,
         HostTag::ApprovalRequired,
         HostTag::Observed,
+        HostTag::Compared,
     ];
 
     pub(crate) const fn wire(self) -> u8 {
@@ -251,7 +267,37 @@ impl HostTag {
             HostTag::Denied => 0x82,
             HostTag::ApprovalRequired => 0x83,
             HostTag::Observed => 0x84,
+            HostTag::Compared => 0x85,
         }
+    }
+}
+
+/// An [`Outcome`]'s variant without its payload: what its leading byte names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutcomeKind {
+    Allowed,
+    Denied,
+    ApprovalRequired,
+}
+
+pub(crate) const OUTCOME_KIND_ALL: [OutcomeKind; 3] = [
+    OutcomeKind::Allowed,
+    OutcomeKind::Denied,
+    OutcomeKind::ApprovalRequired,
+];
+
+pub(crate) const fn outcome_kind_wire(k: OutcomeKind) -> u8 {
+    match k {
+        OutcomeKind::Allowed => 0,
+        OutcomeKind::Denied => 1,
+        OutcomeKind::ApprovalRequired => 2,
+    }
+}
+
+pub(crate) const fn agreement_wire(a: Agreement) -> u8 {
+    match a {
+        Agreement::Agree => 0,
+        Agreement::Disagree => 1,
     }
 }
 
@@ -529,6 +575,42 @@ fn read_approval(r: &mut Reader<'_>) -> Result<ApprovalId, FrameError> {
     Ok(ApprovalId::mint(epoch, number))
 }
 
+fn put_outcome(out: &mut Vec<u8>, outcome: Outcome) {
+    match outcome {
+        Outcome::Allowed => out.push(outcome_kind_wire(OutcomeKind::Allowed)),
+        Outcome::Denied { reason } => {
+            out.push(outcome_kind_wire(OutcomeKind::Denied));
+            out.push(deny_wire(reason));
+        }
+        Outcome::ApprovalRequired => out.push(outcome_kind_wire(OutcomeKind::ApprovalRequired)),
+    }
+}
+
+fn read_reason(r: &mut Reader<'_>) -> Result<DenyReason, FrameError> {
+    from_wire(
+        &DenyReason::ALL,
+        deny_wire,
+        r.u8(Field::DenyReason)?,
+        Field::DenyReason,
+    )
+}
+
+fn read_outcome(r: &mut Reader<'_>) -> Result<Outcome, FrameError> {
+    let kind = from_wire(
+        &OUTCOME_KIND_ALL,
+        outcome_kind_wire,
+        r.u8(Field::Outcome)?,
+        Field::Outcome,
+    )?;
+    Ok(match kind {
+        OutcomeKind::Allowed => Outcome::Allowed,
+        OutcomeKind::Denied => Outcome::Denied {
+            reason: read_reason(r)?,
+        },
+        OutcomeKind::ApprovalRequired => Outcome::ApprovalRequired,
+    })
+}
+
 fn put_label(out: &mut Vec<u8>, label: IFCLabel) {
     // No `..`: a field added to IFCLabel is a build error here (ADR 0007 E-1).
     let IFCLabel {
@@ -604,6 +686,16 @@ impl GuestFrame {
                 put_id(&mut body, approval_id.epoch(), approval_id.number());
                 body
             }
+            GuestFrame::Shadow {
+                seq,
+                decided,
+                local,
+            } => {
+                let mut body = header(GuestTag::Shadow.wire(), *seq);
+                put_u64(&mut body, decided.get());
+                put_outcome(&mut body, *local);
+                body
+            }
         };
         frame(body)
     }
@@ -647,6 +739,11 @@ impl GuestFrame {
                 seq,
                 approval_id: read_approval(&mut r)?,
             },
+            GuestTag::Shadow => GuestFrame::Shadow {
+                seq,
+                decided: Seq::new(r.u64(Field::Decided)?),
+                local: read_outcome(&mut r)?,
+            },
         };
         r.finish(Region::Body)?;
         Ok(frame)
@@ -657,7 +754,8 @@ impl GuestFrame {
         match self {
             GuestFrame::Decide { seq, .. }
             | GuestFrame::Observe { seq, .. }
-            | GuestFrame::Redeem { seq, .. } => *seq,
+            | GuestFrame::Redeem { seq, .. }
+            | GuestFrame::Shadow { seq, .. } => *seq,
         }
     }
 }
@@ -684,6 +782,11 @@ impl HostFrame {
                 }
             },
             HostFrame::Observed { seq } => header(HostTag::Observed.wire(), *seq),
+            HostFrame::Compared { seq, agreement } => {
+                let mut body = header(HostTag::Compared.wire(), *seq);
+                body.push(agreement_wire(*agreement));
+                body
+            }
         };
         frame(body)
     }
@@ -715,12 +818,7 @@ impl HostFrame {
             HostTag::Denied => HostFrame::Verdict {
                 seq,
                 verdict: Verdict::Denied {
-                    reason: from_wire(
-                        &DenyReason::ALL,
-                        deny_wire,
-                        r.u8(Field::DenyReason)?,
-                        Field::DenyReason,
-                    )?,
+                    reason: read_reason(&mut r)?,
                 },
             },
             HostTag::ApprovalRequired => HostFrame::Verdict {
@@ -730,6 +828,15 @@ impl HostFrame {
                 },
             },
             HostTag::Observed => HostFrame::Observed { seq },
+            HostTag::Compared => HostFrame::Compared {
+                seq,
+                agreement: from_wire(
+                    &Agreement::ALL,
+                    agreement_wire,
+                    r.u8(Field::Agreement)?,
+                    Field::Agreement,
+                )?,
+            },
         };
         r.finish(Region::Body)?;
         Ok(frame)
@@ -738,7 +845,9 @@ impl HostFrame {
     /// The number of the guest frame this answers.
     pub fn seq(&self) -> Seq {
         match self {
-            HostFrame::Verdict { seq, .. } | HostFrame::Observed { seq } => *seq,
+            HostFrame::Verdict { seq, .. }
+            | HostFrame::Observed { seq }
+            | HostFrame::Compared { seq, .. } => *seq,
         }
     }
 }
@@ -747,7 +856,8 @@ impl HostFrame {
 pub(crate) mod wire_tables {
     //! The codec's private tables, for the tests' exhaustiveness checks.
     pub(crate) use super::{
-        AUTHORITY_ALL, CONF_ALL, DERIVATION_ALL, GuestTag, HostTag, INTEG_ALL, authority_wire,
-        conf_wire, deny_wire, derivation_wire, integ_wire, op_wire,
+        AUTHORITY_ALL, CONF_ALL, DERIVATION_ALL, GuestTag, HostTag, INTEG_ALL, OUTCOME_KIND_ALL,
+        agreement_wire, authority_wire, conf_wire, deny_wire, derivation_wire, integ_wire, op_wire,
+        outcome_kind_wire,
     };
 }

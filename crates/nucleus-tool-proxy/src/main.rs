@@ -44,6 +44,7 @@ mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
+mod host_decide;
 mod host_socket;
 mod identity_fusion;
 mod ingest;
@@ -649,6 +650,9 @@ pub(crate) struct AppState {
     /// RunBash-gating PR to DENY. Consumed by that later PR, hence unused today.
     #[allow(dead_code)]
     pub(crate) session_task_token: session_token::SessionTaskToken,
+    /// The host's shadow decision service (#2702, P8): every kernel decision is
+    /// also put to the host, whose answer is counted and never enforced.
+    pub(crate) host_decide: Arc<host_decide::HostDecide>,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -1656,6 +1660,9 @@ async fn main() -> Result<(), ApiError> {
         declassify_trusted_keys,
         declassify_threshold,
         session_task_token,
+        host_decide: Arc::new(host_decide::HostDecide::for_transport(
+            vsock_binding.is_some(),
+        )),
     };
 
     st.mark("state_build");
@@ -2268,7 +2275,8 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
             "violations": state.trace_monitor.violations().len(),
             "violations_dropped": state.trace_monitor.violations_dropped(),
         },
-        "art12": art12_sink::health_json(state.art12_log.as_ref())
+        "art12": art12_sink::health_json(state.art12_log.as_ref()),
+        "host_decide": state.host_decide.health_json(),
     }))
 }
 
@@ -2375,6 +2383,7 @@ async fn http_kernel_decide(
             actor: actor_from_auth(auth_ctx),
             transport: "http",
             grants: state.approvals.as_ref(),
+            shadow: &state.host_decide,
         },
         &mut kernel,
         &graph,

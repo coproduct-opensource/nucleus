@@ -3,8 +3,9 @@
 use proptest::prelude::*;
 
 use crate::codec::wire_tables::{
-    AUTHORITY_ALL, CONF_ALL, DERIVATION_ALL, GuestTag, HostTag, INTEG_ALL, authority_wire,
-    conf_wire, deny_wire, derivation_wire, integ_wire, op_wire,
+    AUTHORITY_ALL, CONF_ALL, DERIVATION_ALL, GuestTag, HostTag, INTEG_ALL, OUTCOME_KIND_ALL,
+    agreement_wire, authority_wire, conf_wire, deny_wire, derivation_wire, integ_wire, op_wire,
+    outcome_kind_wire,
 };
 use crate::host::{DecisionLedger, LedgerError, Redemption, SeqError, SeqGate};
 use crate::*;
@@ -44,9 +45,16 @@ fn decide(seq: u64, subject: &str) -> GuestFrame {
     }
 }
 
+/// Every outcome a `Shadow` report can carry.
+fn every_outcome() -> Vec<Outcome> {
+    let mut v = vec![Outcome::Allowed, Outcome::ApprovalRequired];
+    v.extend(DenyReason::ALL.map(|reason| Outcome::Denied { reason }));
+    v
+}
+
 /// One of every frame, both directions.
 fn every_guest_frame() -> Vec<GuestFrame> {
-    vec![
+    let mut v = vec![
         decide(0, "https://example.test/path"),
         GuestFrame::Observe {
             seq: Seq::new(1),
@@ -56,7 +64,15 @@ fn every_guest_frame() -> Vec<GuestFrame> {
             seq: Seq::new(u64::MAX),
             approval_id: ApprovalId::mint(EPOCH, 7),
         },
-    ]
+    ];
+    for local in every_outcome() {
+        v.push(GuestFrame::Shadow {
+            seq: Seq::new(5),
+            decided: Seq::new(4),
+            local,
+        });
+    }
+    v
 }
 
 fn every_host_frame() -> Vec<HostFrame> {
@@ -75,6 +91,12 @@ fn every_host_frame() -> Vec<HostFrame> {
         },
         HostFrame::Observed { seq: Seq::new(1) },
     ];
+    for agreement in Agreement::ALL {
+        v.push(HostFrame::Compared {
+            seq: Seq::new(6),
+            agreement,
+        });
+    }
     for reason in DenyReason::ALL {
         v.push(HostFrame::Verdict {
             seq: Seq::new(3),
@@ -144,6 +166,8 @@ fn every_enum_value_round_trips() {
     check(&AUTHORITY_ALL, authority_wire);
     check(&DERIVATION_ALL, derivation_wire);
     check(&DenyReason::ALL, deny_wire);
+    check(&OUTCOME_KIND_ALL, outcome_kind_wire);
+    check(&Agreement::ALL, agreement_wire);
 
     // Every operation, through a real frame.
     for op in Operation::ALL {
@@ -167,6 +191,84 @@ fn every_enum_value_round_trips() {
                     assert_eq!(GuestFrame::decode(&enc_g(&f)).unwrap(), f);
                 }
             }
+        }
+    }
+}
+
+/// The shadow frames' enum bytes are checked like every other enum's: an
+/// outcome kind or an agreement no variant encodes to is named, not misread.
+#[test]
+fn shadow_discriminants_are_named() {
+    let shadow = enc_g(&GuestFrame::Shadow {
+        seq: Seq::FIRST,
+        decided: Seq::FIRST,
+        local: Outcome::Allowed,
+    });
+    // version, tag, seq (8), decided (8), then the outcome kind.
+    let mut k = body_of(&shadow);
+    k[18] = 9;
+    assert_eq!(
+        GuestFrame::decode(&reframe(&k)),
+        Err(FrameError::UnknownDiscriminant {
+            field: Field::Outcome,
+            got: 9
+        })
+    );
+    // A Denied outcome must carry its reason: cut it off and it is truncated.
+    let denied = enc_g(&GuestFrame::Shadow {
+        seq: Seq::FIRST,
+        decided: Seq::FIRST,
+        local: Outcome::Denied {
+            reason: DenyReason::FlowRefused,
+        },
+    });
+    let body = body_of(&denied);
+    assert!(matches!(
+        GuestFrame::decode(&reframe(&body[..body.len() - 1])),
+        Err(FrameError::Truncated {
+            field: Field::DenyReason,
+            ..
+        })
+    ));
+    let compared = enc_h(&HostFrame::Compared {
+        seq: Seq::FIRST,
+        agreement: Agreement::Agree,
+    });
+    let mut a = body_of(&compared);
+    a[10] = 2;
+    assert_eq!(
+        HostFrame::decode(&reframe(&a)),
+        Err(FrameError::UnknownDiscriminant {
+            field: Field::Agreement,
+            got: 2
+        })
+    );
+}
+
+/// A verdict's outcome forgets the id and nothing else, and agreement is
+/// equality of outcomes, the reason included.
+#[test]
+fn outcome_and_agreement() {
+    let allowed = Verdict::Allowed {
+        decision_id: DecisionId::mint(EPOCH, 1),
+    };
+    assert_eq!(allowed.outcome(), Outcome::Allowed);
+    let pending = Verdict::ApprovalRequired {
+        approval_id: ApprovalId::mint(EPOCH, 1),
+    };
+    assert_eq!(pending.outcome(), Outcome::ApprovalRequired);
+    for reason in DenyReason::ALL {
+        let denied = Verdict::Denied { reason };
+        assert_eq!(denied.outcome(), Outcome::Denied { reason });
+    }
+    for a in every_outcome() {
+        for b in every_outcome() {
+            let expected = if a == b {
+                Agreement::Agree
+            } else {
+                Agreement::Disagree
+            };
+            assert_eq!(Agreement::of(a, b), expected, "{a:?} vs {b:?}");
         }
     }
 }
@@ -699,6 +801,16 @@ fn arb_guest_frame() -> impl Strategy<Value = GuestFrame> {
             seq: Seq::new(s),
             approval_id: ApprovalId::mint(e, a),
         }),
+        (
+            any::<u64>(),
+            any::<u64>(),
+            prop::sample::select(every_outcome())
+        )
+            .prop_map(|(s, d, local)| GuestFrame::Shadow {
+                seq: Seq::new(s),
+                decided: Seq::new(d),
+                local,
+            }),
     ]
 }
 
@@ -723,6 +835,12 @@ fn arb_host_frame() -> impl Strategy<Value = HostFrame> {
             },
         }),
         any::<u64>().prop_map(|s| HostFrame::Observed { seq: Seq::new(s) }),
+        (any::<u64>(), prop::sample::select(Agreement::ALL.to_vec())).prop_map(|(s, agreement)| {
+            HostFrame::Compared {
+                seq: Seq::new(s),
+                agreement,
+            }
+        }),
     ]
 }
 

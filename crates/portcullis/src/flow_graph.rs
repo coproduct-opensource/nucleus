@@ -820,6 +820,14 @@ impl FlowGraph {
         self.session_taint_ceiling
     }
 
+    /// The current monotonic session confidentiality ceiling — the highest
+    /// confidentiality any observation carried. Mirrors
+    /// `FlowTracker::session_conf_ceiling`. Read by the guest's shadow taint
+    /// report (#2702, P8), which carries it to the host as a raise.
+    pub fn session_conf_ceiling(&self) -> ConfLevel {
+        self.session_conf_ceiling
+    }
+
     /// `true` if any observation in this session carried `Adversarial`
     /// integrity. Mirrors `FlowTracker::is_tainted`; ratchet-backed so
     /// compaction cannot launder a past adversarial ingest.

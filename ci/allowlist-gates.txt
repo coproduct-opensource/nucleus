@@ -37,10 +37,18 @@
 # What keeps it honest instead is named in the gate: the A-19 probe in
 # scripts/check-gates-can-fail.sh that drives it red on a cofactored ring verify. A gate exempt
 # from the non-vacuity rule owes that sentence.
+#
+# 2026-10-02: `mediation/vsock` 1 -> 2. The second entry is the host decision channel (#2702, P8,
+# `crates/nucleus-tool-proxy/src/host_decide.rs`). It is a vsock client on the agent path that asks
+# the host for a VERDICT and performs nothing, so it holds no authority to spend; the reason is
+# written beside the entry in scripts/mediation-vsock-allowlist.txt.
 
 mediation/spawn=1
 mediation/net=4
-mediation/vsock=2
+# 2026-10-04: 2 -> 3 after #3002 adds signed accounting telemetry alongside
+# #3177 shadow decisions. Only broker_client performs egress; spend_shipper and
+# host_decide retain their separate protocol justifications in the vsock allowlist.
+mediation/vsock=3
 sealed-home/spawn=7
 sealed-home/net=7
 ingest-hashed=5

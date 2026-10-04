@@ -202,6 +202,17 @@ pub(crate) struct Admission {
     pub header_cert: Option<String>,
 }
 
+/// Why the host could not build a kernel for a pod. Two causes, two variants:
+/// "issued nothing" is not "issued something that no longer holds" (ADR 0007
+/// A-8).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum HostKernelError {
+    #[error("this node issued the pod no certificate")]
+    NoCertificate,
+    #[error("the pod's certificate does not verify against this node's root: {0}")]
+    DoesNotVerify(String),
+}
+
 /// What the node delivers to a pod at boot: its certificate and the anchor.
 #[derive(Debug, Clone)]
 pub(crate) struct BootCertificate {
@@ -1283,6 +1294,37 @@ impl PodAuthority {
     pub async fn certificate_fingerprint(&self, pod_id: Uuid) -> Option<[u8; 32]> {
         let inner = self.inner.lock().await;
         Some(inner.pods.get(&pod_id)?.cert.fingerprint())
+    }
+
+    /// A kernel deciding as `pod_id`'s certificate says, for the host's own
+    /// decision service (#2702, P8).
+    ///
+    /// Built the way the guest builds its own: the certificate is verified
+    /// against this node's root and handed to `Kernel::from_certificate` with
+    /// its fingerprint. The host verifies a certificate it issued itself
+    /// because `VerifiedPermissions` is minted only by verification — there is
+    /// no other way to hold one, and a kernel built from an unverified lattice
+    /// is the shortcut that type exists to refuse.
+    pub async fn host_kernel(
+        &self,
+        pod_id: Uuid,
+    ) -> Result<portcullis::kernel::Kernel, HostKernelError> {
+        let inner = self.inner.lock().await;
+        let entry = inner
+            .pods
+            .get(&pod_id)
+            .ok_or(HostKernelError::NoCertificate)?;
+        let verified = verify_certificate(
+            &entry.cert,
+            &self.root_pubkey,
+            Utc::now(),
+            DEFAULT_MAX_CHAIN_DEPTH,
+        )
+        .map_err(|e| HostKernelError::DoesNotVerify(e.to_string()))?;
+        Ok(portcullis::kernel::Kernel::from_certificate(
+            verified,
+            entry.cert.fingerprint(),
+        ))
     }
 
     /// `admit`, with the reservation committed: for tests about what admission
