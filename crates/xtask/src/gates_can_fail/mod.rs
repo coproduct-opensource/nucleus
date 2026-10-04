@@ -56,6 +56,8 @@
 //! has a merge base, that red is measured there too — see `main_red.rs` for the split and why
 //! "could not evaluate main" is never "main is red".
 
+#[cfg(test)]
+mod lifecycle_tests;
 mod inputs;
 mod main_red;
 mod perturb;
