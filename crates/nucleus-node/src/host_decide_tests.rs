@@ -819,12 +819,12 @@ async fn policy_history_and_faults_survive_channel_replacement() {
     .unwrap();
     let mut original = decide.open().await.unwrap();
     let _id = allowed_id(&decide_step(&mut original, 0, Operation::ReadFiles, "a"));
-    // Simulate a host charge. Broker cost settlement remains separate work;
-    // this test proves that reopening does not replace the charged kernel.
+    // Simulate a host charge to the authority-owned balance. Reopening must
+    // retain the charge in the kernel's derived decision view.
     {
-        let mut state = decide.policy.lock().unwrap();
-        let remaining = state.kernel.remaining_usd();
-        state.kernel.charge(remaining).unwrap();
+        let state = decide.policy.lock().unwrap();
+        let remaining = state.budget.available().unwrap();
+        state.budget.commit(remaining, || Ok(())).unwrap();
     }
     drop(original);
     let mut replacement = decide.open().await.unwrap();

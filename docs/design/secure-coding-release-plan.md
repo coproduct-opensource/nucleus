@@ -55,7 +55,7 @@ Implementation sequence:
    in memory; restored certificates without recovered runtime history cannot
    obtain a clean policy or start a broker. Teardown and authority release now
    revoke shared policy and cancel live broker requests. Fixed operator tariffs
-   now debit this shared kernel for both broker paths. Variable usage charging,
+   now debit the shared authority ledger for both broker paths and delegation. Variable usage charging,
    broader certificate/fleet revocation, and durable runtime recovery remain open.
 4. Connect host decisions to both PERFORM and streaming effects. The executable
    effect requires a consumed, matching host decision. Missing, stale, foreign,
@@ -66,7 +66,7 @@ Implementation sequence:
    requested operation before credential access and again after async minting,
    immediately before execution. Private non-cloneable permits are required to
    construct either upstream call. Pod-lifetime revocation now vetoes final
-   authorization; fixed tariffs debit under the same lock. Broader certificate
+   authorization; fixed tariffs debit the conserved authority ledger. Broader certificate
    revocation and variable/terminal cost settlement remain.
 5. Wire authenticated host approval, expiry and one-shot consumption. Preserve
    legitimate approved work; denying every approval-gated operation is not done.
@@ -498,3 +498,38 @@ fix passes. Unspawned refunds and restart accounting remain covered. Linux
 ARM64 musl compilation, Clippy with warnings denied, and all four prepush gates
 pass; Clippy retains the existing reqwest configuration diagnostics. The final
 regression also asserts that the guest claim was durably stored before release.
+
+### Shared budget for effects and delegation (2026-10-04)
+
+A pod's authority ledger is now shared with its runtime policy. Child admission
+and final broker charging serialize against the same available balance. The
+kernel receives a derived budget view for decisions; it no longer maintains an
+independent runtime-spending balance. Final charging rechecks affordability after
+preflight, so a child admitted during credential retrieval can cause refusal
+before dispatch. Both broker transports use this path.
+
+The host persists a pod-bound consumption checkpoint after authorization evidence
+and before releasing the executable permit. On restart, the greater consumption
+from that checkpoint and the authority record is restored before allocating live
+children. This prevents stale authority snapshots from refunding runtime charges
+and avoids counting the same consumption twice. Missing checkpoints alongside
+legacy runtime history, corrupt checkpoints, and unreconstructable child
+allocations refuse delegated admission. This restores the budget only; runtime
+taint and approval history still cannot be recovered for renewed broker service.
+
+Checkpoint storage failure latches refusal for spending and child admission.
+Failed evidence writes do not debit. Unspawned reservations return their balance;
+exited children continue to consume their entire allocation. Durable checkpoint
+writes currently synchronize under the budget mutex, adding disk latency to
+broker authorization. Variable provider billing, trusted terminal refunds,
+broader revocation, and real Tier-2 validation remain open.
+
+Validation: the full node suite passes 834 unit tests (one ignored) and three
+integration tests. The final five conservation regressions also pass, including
+the subsequently added preflight/admission case and both checkpoint-versus-
+authority snapshot orderings. Detaching the runtime balance and suppressing
+checkpoint recovery each cause their regression to fail at runtime; restoring
+the implementation passes. Four ledger tests cover failed evidence, checkpoint
+failure, malformed/missing history, and poison. Linux ARM64 musl compilation,
+Clippy with warnings denied, and all four prepush gates pass. Clippy retains
+the existing reqwest configuration diagnostics. Real Tier-2 evidence is pending.

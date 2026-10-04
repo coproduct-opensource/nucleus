@@ -261,16 +261,9 @@ impl PodPolicy {
                 charge,
             },
         )?;
-        self.kernel
-            .charge(charge.usd())
-            .map_err(|_| "host budget exhausted")?;
-        let record = match self.evidence.commit(digest, op, subject, now, charge) {
-            Ok(record) => record,
-            Err(error) => {
-                self.kernel.refund(charge.usd());
-                return Err(error);
-            }
-        };
+        let record = self.budget.commit(charge.usd(), || {
+            self.evidence.commit(digest, op, subject, now, charge)
+        })?;
         Ok(EffectPermit {
             _decisions: tokens,
             _effect: digest,
@@ -290,7 +283,7 @@ impl PodPolicy {
         self.ensure_live()
             .map_err(|_| "host policy revoked or unavailable")?;
         self.evidence.available()?;
-        if charge.usd() > self.kernel.remaining_usd() {
+        if charge.usd() > self.budget.available()? {
             return Err("host budget exhausted for operator call charge".into());
         }
         let mut tokens = Vec::new();
@@ -546,8 +539,8 @@ mod tests {
                 crate::upstreams::CallCharge::free(),
             )
             .unwrap();
-        let remaining = policy.kernel.remaining_usd();
-        policy.kernel.charge(remaining).unwrap();
+        let remaining = policy.budget.available().unwrap();
+        policy.budget.commit(remaining, || Ok(())).unwrap();
         assert!(
             policy
                 .authorize_effect(

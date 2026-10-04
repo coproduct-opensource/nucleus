@@ -568,7 +568,10 @@ async fn a_pod_caller_is_refused_an_upstream_its_parent_lacks() {
         .expect_err("a retargeted entry refuses the pod");
     assert_eq!(err.to_string(), refused("model-api"));
     assert_eq!(
-        auth.inner.lock().await.pods[&parent].ledger.live_children(),
+        auth.inner.lock().await.pods[&parent]
+            .ledger
+            .live_children()
+            .unwrap(),
         0,
         "a refused child holds no reservation against its parent"
     );
@@ -992,3 +995,5 @@ async fn release_revokes_policy_references_already_held_by_brokers() {
             .is_err()
     );
 }
+
+mod shared_budget;

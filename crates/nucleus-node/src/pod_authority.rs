@@ -47,7 +47,8 @@
 //! Stateless credentials cannot conserve a counter, so conservation lives
 //! here, at the one enforcement point that creates pods: a
 //! [`BudgetLedger`] per parent (per external caller chain, for case 2)
-//! enforces `Σ live child allocations + consumed ≤ parent max`. A child's
+//! shared with broker effects enforces `Σ live child allocations + consumed
+//! ≤ parent max`. Own charges checkpoint consumption before dispatch. A child's
 //! allocation is its certificate's `max_cost_usd`; it is released when the
 //! reaper sees the child exit. The full allocation becomes consumed until
 //! host-authoritative terminal settlement exists. Legacy guest-signed receipts
@@ -130,7 +131,9 @@ use portcullis::certificate::{
     DEFAULT_MAX_CHAIN_DEPTH, LatticeCertificate, SinkScope, verify_certificate,
 };
 use portcullis::token::AttenuationToken;
-use portcullis::{BudgetError, BudgetLedger, PermissionLattice};
+use portcullis::{BudgetLedger, PermissionLattice};
+pub(crate) mod budget;
+use budget::SharedBudget;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -472,7 +475,7 @@ struct PodCert {
     cert: LatticeCertificate,
     holder: Ed25519KeyPair,
     holder_pkcs8: Vec<u8>,
-    ledger: BudgetLedger,
+    ledger: SharedBudget,
     /// Children whose release is already in `ledger`'s consumption but whose
     /// authority file may not be removed yet. See [`retain_unremoved`].
     retired: Vec<Uuid>,
@@ -1032,10 +1035,10 @@ impl PodAuthority {
                     "calling pod {parent_id} holds no certificate on this node"
                 ))
             })?;
-            if parent.ledger.live_children() >= self.max_children {
+            if parent.ledger.live_children().map_err(ledger_denial)? >= self.max_children {
                 return Err(ApiError::Authority(format!(
                     "pod {parent_id} already has {} live children (cap {})",
-                    parent.ledger.live_children(),
+                    parent.ledger.live_children().map_err(ledger_denial)?,
                     self.max_children
                 )));
             }
@@ -1210,7 +1213,11 @@ impl PodAuthority {
         let root_identity = cert.root_identity().to_string();
         let entry = PodCert {
             host_policy: crate::host_decide::PolicyHistory::Fresh,
-            ledger: BudgetLedger::for_parent(&effective.budget),
+            ledger: SharedBudget::new(
+                BudgetLedger::for_parent(&effective.budget),
+                child_id,
+                &self.state_dir.join("pods").join(child_id.to_string()),
+            ),
             retired: Vec::new(),
             cert,
             holder: child_key,
@@ -1331,13 +1338,17 @@ impl PodAuthority {
             PolicyHistory::Live(policy) => Ok(std::sync::Arc::clone(policy)),
             PolicyHistory::UnavailableAfterRestart => Err(HostKernelError::HistoryUnavailable),
             PolicyHistory::Fresh => {
+                entry
+                    .ledger
+                    .checkpoint()
+                    .map_err(HostKernelError::EvidenceUnavailable)?;
                 let evidence = crate::host_decide::evidence::Evidence::create(
                     pod_id,
                     &self.state_dir.join("pods").join(pod_id.to_string()),
                     std::sync::Arc::clone(&self.authorization_signer),
                 )
                 .map_err(|e| HostKernelError::EvidenceUnavailable(e.to_string()))?;
-                let policy = PodPolicy::new(kernel, evidence);
+                let policy = PodPolicy::with_budget(kernel, evidence, entry.ledger.clone());
                 entry.host_policy = PolicyHistory::Live(std::sync::Arc::clone(&policy));
                 Ok(policy)
             }
@@ -1364,7 +1375,7 @@ impl PodAuthority {
     #[cfg(test)]
     pub(crate) async fn live_children(&self, pod_id: Uuid) -> Option<usize> {
         let inner = self.inner.lock().await;
-        Some(inner.pods.get(&pod_id)?.ledger.live_children())
+        inner.pods.get(&pod_id)?.ledger.live_children().ok()
     }
 
     /// Everything this authority holds: each pod's certificate, budget parent
@@ -1384,7 +1395,7 @@ impl PodAuthority {
                         cert: e.cert.clone(),
                         #[cfg(feature = "local-driver")]
                         parent: e.parent,
-                        ledger: LedgerView::of(&e.ledger),
+                        ledger: LedgerView::of(&e.ledger.snapshot().expect("healthy test ledger")),
                         #[cfg(feature = "local-driver")]
                         upstreams: e.upstreams.clone(),
                     };
@@ -1437,7 +1448,7 @@ impl PodAuthority {
                         continue;
                     }
                 };
-                match restored_pod(&bytes) {
+                match restored_pod(&bytes, id, &entry.path()) {
                     Ok(cert) => loaded.push((id, cert)),
                     Err(why) => {
                         tracing::error!(
@@ -1515,9 +1526,11 @@ impl PodAuthority {
                         retired: Vec::new(),
                     })
                     .ledger
-                    .try_allocate(child.as_u128(), amount),
+                    .try_allocate(child.as_u128(), amount)
+                    .map_err(|e| e.to_string()),
             };
             if let Err(e) = result {
+                inner.unreadable_pod = true;
                 tracing::warn!(pod = %child, error = %e, "restored child exceeds its parent's ledger");
             }
         }
@@ -1532,13 +1545,22 @@ impl PodAuthority {
 
 /// Undo a reservation made for `child_id` that will not be issued.
 fn unreserve(inner: &mut Inner, parent: Parent, child_id: Uuid) {
-    let ledger = match parent {
-        Parent::Root => None,
-        Parent::Pod(p) => inner.pods.get_mut(&p).map(|p| &mut p.ledger),
-        Parent::External(fp) => inner.external.get_mut(&fp).map(|c| &mut c.ledger),
-    };
-    if let Some(ledger) = ledger {
-        let _ = ledger.release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+    match parent {
+        Parent::Root => {}
+        Parent::Pod(p) => {
+            if let Some(p) = inner.pods.get(&p) {
+                let _ = p
+                    .ledger
+                    .release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+            }
+        }
+        Parent::External(fp) => {
+            if let Some(c) = inner.external.get_mut(&fp) {
+                let _ = c
+                    .ledger
+                    .release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+            }
+        }
     }
 }
 
@@ -1570,7 +1592,7 @@ fn chain_path(state_dir: &Path, fp: &[u8; 32]) -> PathBuf {
 
 /// A pod's record, verified as far as it can be: the holder key must be the
 /// one its certificate names.
-fn restored_pod(bytes: &[u8]) -> Result<PodCert, &'static str> {
+fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static str> {
     let persisted: PersistedAuthority =
         serde_json::from_slice(bytes).map_err(|_| "does not parse")?;
     let holder_pkcs8 =
@@ -1583,7 +1605,7 @@ fn restored_pod(bytes: &[u8]) -> Result<PodCert, &'static str> {
     let ledger = BudgetLedger::for_parent(&persisted.certificate.effective_permissions().budget);
     Ok(PodCert {
         host_policy: crate::host_decide::PolicyHistory::UnavailableAfterRestart,
-        ledger: charged(ledger, persisted.ledger.consumed_micro),
+        ledger: SharedBudget::restore(charged(ledger, persisted.ledger.consumed_micro), pod, dir)?,
         retired: persisted.ledger.retired,
         cert: persisted.certificate,
         holder,
@@ -1641,7 +1663,10 @@ async fn persist_pod(state_dir: &Path, pod_id: Uuid, entry: &PodCert) -> std::io
         holder_pkcs8_b64: base64_encode(&entry.holder_pkcs8),
         parent: entry.parent,
         upstreams: entry.upstreams.clone(),
-        ledger: LedgerRecord::of(&entry.ledger, &entry.retired),
+        ledger: LedgerRecord::of(
+            &entry.ledger.snapshot().map_err(std::io::Error::other)?,
+            &entry.retired,
+        ),
     };
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
     write_whole(&authority_path(state_dir, pod_id), &bytes).await
@@ -1667,34 +1692,36 @@ async fn persist_external(
 async fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let path = path.to_path_buf();
     let bytes = bytes.to_vec();
-    tokio::task::spawn_blocking(move || {
-        use std::io::Write as _;
-        let dir = path
-            .parent()
-            .ok_or_else(|| std::io::Error::other("no parent dir"))?;
-        std::fs::create_dir_all(dir)?;
-        let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o400);
-        }
-        let written = (|| {
-            let mut f = options.open(&tmp)?;
-            f.write_all(&bytes)?;
-            f.sync_all()?;
-            std::fs::rename(&tmp, &path)?;
-            std::fs::File::open(dir)?.sync_all()
-        })();
-        if written.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-        }
-        written
-    })
-    .await
-    .map_err(std::io::Error::other)?
+    tokio::task::spawn_blocking(move || write_whole_sync(&path, &bytes))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+fn write_whole_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no parent dir"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension(format!("tmp-{}", Uuid::new_v4().simple()));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o400);
+    }
+    let written = (|| {
+        let mut f = options.open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        std::fs::File::open(dir)?.sync_all()
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// The node's federation issuer, if one is configured — and a refusal to
@@ -1731,7 +1758,7 @@ fn federation_source(
     Ok(Some(std::sync::Arc::new(source)))
 }
 
-fn ledger_denial(e: BudgetError) -> ApiError {
+fn ledger_denial(e: impl std::fmt::Display) -> ApiError {
     ApiError::Authority(format!("budget conservation: {e}"))
 }
 

@@ -357,6 +357,7 @@ pub(crate) struct Step {
 /// Access is serialized with observation and decision in one critical section.
 pub(crate) struct PodPolicy {
     kernel: Kernel,
+    budget: crate::pod_authority::budget::SharedBudget,
     taint: HostTaint,
     approvals: effects::Approvals,
     evidence: evidence::Evidence,
@@ -404,9 +405,22 @@ impl PodPolicy {
             .ensure_live()
     }
 
+    #[cfg(test)]
     pub(crate) fn new(kernel: Kernel, evidence: evidence::Evidence) -> SharedPodPolicy {
+        let budget = crate::pod_authority::budget::SharedBudget::memory(
+            portcullis::BudgetLedger::for_parent(&kernel.effective().budget),
+        );
+        Self::with_budget(kernel, evidence, budget)
+    }
+
+    pub(crate) fn with_budget(
+        kernel: Kernel,
+        evidence: evidence::Evidence,
+        budget: crate::pod_authority::budget::SharedBudget,
+    ) -> SharedPodPolicy {
         Arc::new(Mutex::new(Self {
             kernel,
+            budget,
             taint: HostTaint::clean(),
             approvals: effects::Approvals::new(),
             evidence,
@@ -435,6 +449,16 @@ impl PodPolicy {
         portcullis::kernel::Decision,
         Option<portcullis::kernel::DecisionToken>,
     ) {
+        // The kernel's budget is a derived projection, never an independent
+        // spending counter. Missing budget state projects to exhausted.
+        let max = self.kernel.effective().budget.max_cost_usd;
+        let available = self
+            .budget
+            .available()
+            .unwrap_or(rust_decimal::Decimal::ZERO)
+            .min(max);
+        self.kernel.refund(self.kernel.consumed_usd());
+        let _ = self.kernel.charge(max - available);
         self.kernel
             .decide_term_with_flow(ActionTerm::from_operation(op, subject), Some(&self.taint))
     }
@@ -469,13 +493,7 @@ impl Channel {
     pub fn open(pod: Uuid, kernel: Kernel, epoch: u64) -> Self {
         Self::with_policy(
             pod,
-            Arc::new(Mutex::new(PodPolicy {
-                kernel,
-                taint: HostTaint::clean(),
-                approvals: effects::Approvals::new(),
-                evidence: evidence::Evidence::memory(),
-                revoked: tokio::sync::watch::channel(false).0,
-            })),
+            PodPolicy::new(kernel, evidence::Evidence::memory()),
             epoch,
         )
     }
