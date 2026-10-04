@@ -1,4 +1,4 @@
-//! Binding for the actual non-streamed effect, computed after host resolution.
+//! Shared binding for buffered and staged effects, after host resolution.
 //!
 //! The canonical representation is derived (ADR 0007 F-1). The identity and
 //! credential authority are fixed by the per-pod broker; secrets never enter
@@ -23,24 +23,44 @@ struct Effect<'a> {
     method: &'a str,
     credential_header: &'a str,
     content_type: &'a str,
-    body: &'a [u8],
+    body_sha256: [u8; 32],
+    body_bytes: u64,
 }
 
 pub(super) fn digest(
     request: &PerformRequest,
     resolved: &Resolved<'_>,
 ) -> Result<ArgsDigest, serde_json::Error> {
+    digest_body(
+        &request.operation,
+        resolved,
+        CONTENT_TYPE,
+        Sha256::digest(&request.body).into(),
+        request.body.len() as u64,
+    )
+}
+
+/// Shared canonical effect for buffered and staged streaming requests.
+/// `body_sha256` is calculated by the host from bytes it owns, never from OPEN.
+pub(crate) fn digest_body(
+    operation: &str,
+    resolved: &Resolved<'_>,
+    content_type: &str,
+    body_sha256: [u8; 32],
+    body_bytes: u64,
+) -> Result<ArgsDigest, serde_json::Error> {
     let effect = Effect {
-        operation: &request.operation,
+        operation,
         upstream: &resolved.entry().spec().name,
         url: resolved.url(),
         method: METHOD.as_str(),
         credential_header: &resolved.entry().spec().header,
-        content_type: CONTENT_TYPE,
-        body: &request.body,
+        content_type,
+        body_sha256,
+        body_bytes,
     };
     let mut hash = Sha256::new();
-    hash.update(b"nucleus-broker-perform-effect-v1\0");
+    hash.update(b"nucleus-broker-effect-v2\0");
     hash.update(serde_json::to_vec(&effect)?);
     Ok(ArgsDigest::new(hash.finalize().into()))
 }

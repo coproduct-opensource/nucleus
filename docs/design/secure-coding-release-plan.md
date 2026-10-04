@@ -11,10 +11,10 @@ repository.
 
 Issues: #2702, #3114, #3115, #3116, #3117.
 
-Current baseline: the decision-channel protocol remains shadow-only. Non-streamed
-broker PERFORM now requires a host decision over shared pod policy, with operator
-approval bound to the resolved effect when required. Streaming still lacks this
-execution gate. The compromised-guest socket conformance table now holds for
+Current baseline: the decision-channel protocol remains shadow-only. Broker
+PERFORM and streaming now require host decisions over shared pod policy, with
+operator approval bound to the resolved effect when required. Streams stage the
+complete bounded upload before authorization and upstream I/O. The compromised-guest socket conformance table now holds for
 observed taint, absent/reused approval, and zero remaining budget. Its two signing
 key properties remain gaps. These are local host tests, not Tier-2 evidence.
 
@@ -31,13 +31,17 @@ Implementation sequence:
    streamed payload authorization must explicitly account for what is known at
    admission and what is checked while forwarding. Never trust a guest-supplied
    digest without recomputing it from the effect.
-   **In progress:** non-streamed PERFORM has a derived canonical binding over
-   operation, resolved upstream name/URL, HTTP method, credential header name,
-   content type and exact body bytes. Method and content type are shared with
+   **Implemented locally for credentialed broker calls:** PERFORM and streaming
+   share a derived canonical binding over operation, resolved upstream name/URL,
+   HTTP method, credential header name, content type, payload SHA-256 and length.
+   The hash is computed from the complete host-owned payload; never from a
+   guest assertion. Method and content type are shared with
    the HTTP caller. The retry ledger rejects substitutions both while a call
    is in flight and after settlement; audit justification is deliberately not
    part of the effect. This binding now names the one-shot host approval and
-   execution permit; stream payload binding remains open.
+   execution permit. Streams upload into anonymous temporary files bounded by
+   the operator's per-call limit, then replay only that owned payload. Response
+   streaming is unchanged; upload staging adds local disk I/O and latency.
 3. Move enforceable state to the pod lifetime. Connection replacement cannot
    reset observed taint, spent budget or revocation. Concurrent channels must
    share the applicable limits. Host-delivered observations raise host taint
@@ -55,10 +59,10 @@ Implementation sequence:
    replayed and mismatched decisions refuse before credentials or upstream I/O.
    Recheck current pod taint, expiry, revocation and budget when committing the
    effect: another channel may change them after an earlier decision was issued.
-   **In progress:** PERFORM checks actual WebFetch authority plus the requested
-   operation before credential access and again after async minting, immediately
-   before upstream execution. A private non-cloneable permit is required to
-   construct an upstream call. Streaming, revocation and cost settlement remain.
+   **In progress:** both broker paths check actual WebFetch authority plus the
+   requested operation before credential access and again after async minting,
+   immediately before execution. Private non-cloneable permits are required to
+   construct either upstream call. Revocation and cost settlement remain.
 5. Wire authenticated host approval, expiry and one-shot consumption. Preserve
    legitimate approved work; denying every approval-gated operation is not done.
    **In progress:** operator-only mTLS routes list and grant/refuse pending host
@@ -186,7 +190,8 @@ durable runtime recovery and host-only signing remain required.
 The host checks WebFetch for the real HTTP effect even when a guest labels it
 ReadFiles. It also checks the declared operation. This does not infer remote API
 semantics: trusted upstream action mapping is still needed before claiming that
-a guest cannot mislabel a remote write. Streaming authorization is still open.
+a guest cannot mislabel a remote write. Streaming authorization was completed
+locally in the following increment.
 
 Operator routes are `GET /v1/pods/{id}/effect-approvals` and
 `POST /v1/pods/{id}/effect-approvals/{approval}` with JSON `"grant"` or `"refuse"`.
@@ -209,3 +214,39 @@ controls: disabling approval consumption or the real WebFetch capability check
 made the corresponding regression fail. Clippy with warnings denied, the Linux
 ARM64 musl cross-build, and all four `cargo xtask prepush` gates passed. Socket
 fixtures require an execution environment that permits local listener binding.
+
+### Staged streaming authorization (2026-10-04)
+
+Streaming now reads the complete request into an anonymous temporary file,
+checks its per-call bound, and hashes the bytes before requesting any credential
+or calling an upstream. Only fixed-size chunks occupy memory. Final policy and
+approval checks run after token retrieval; the executable call consumes the same
+host permit type as PERFORM. The file is closed on all exits and has no guest
+pathname. The upstream receives only bytes replayed from that owned file.
+
+Canonical effect version 2 is shared across PERFORM and streaming and includes
+the payload SHA-256 and byte count. HTTP method is shared with both real callers.
+Changing a late payload byte, path or media type cannot use an existing approval.
+A new stream nonce permits retrying an approved effect, but cannot reuse the
+spent grant. Nonces and retry keys do not alter the effect's identity.
+
+The full upload plus guest-controlled path/media-type bytes are reserved on the
+pod's shared egress meter before token retrieval. A policy refusal or insufficient
+balance sends no upstream request and charges no bytes. After committing to HTTP,
+all reserved bytes count as sent because transport failure or an early upstream
+response is ambiguous. This is conservative accounting, not an observed wire-byte
+measurement. Responses remain bounded, streamed and observed by host taint before
+delivery, including SSE. Aggregate staging-disk admission remains part of #3153.
+
+Validation: the full node suite passed 809 unit tests (one ignored) plus three
+integration tests. After adding cross-transport approval coverage and updating
+the response observation timestamp, all 100 broker tests passed. Removing the
+payload hash from the canonical binding made the late-byte substitution test
+fail; restoring it passed. The Linux ARM64 musl build passed.
+
+Paced egress admission currently treats the complete staged upload as one batch;
+a body larger than the configured rate window is refused instead of replayed at
+a throttled rate. Preserve this limitation in the P1 egress work: useful large
+uploads under a paced policy need explicit paced replay with conserved total
+reservations. Default unpaced uploads remain bounded by per-call and pod ceilings.
+Clippy with warnings denied and all four repository prepush gates also passed.

@@ -16,41 +16,18 @@
 //! is no credential in the guest to steal, so guest compromise does not yield
 //! one. The guest receives the RESULT of the call, which is what it needed.
 //!
-//! Fine-grained authorization still runs in the guest. The host now records
-//! broker responses in the pod's shared policy history before delivering them,
-//! but this path does not yet consume that policy's decisions. Its
-//! [PDP decision](crate::broker::pdp_decide) remains a coarse capability check,
-//! alongside the host egress budget and policy-state health checks.
+//! The host evaluates its own shared pod kernel before credential access and
+//! immediately before execution, including WebFetch authority for the actual
+//! HTTP request. Required operator approvals name the resolved URL, method,
+//! media type, credential header, operation and host-computed payload hash.
+//! The upstream call requires a private, non-cloneable execution permit.
 //!
-//! So the property that makes this safe is not stated in this file:
-//!
-//! > every frame that reaches the broker came from the mediating proxy
-//!
-//! and it holds because of the broker secret. The host refuses any frame not
-//! signed under a per-pod secret delivered once, before any workload exists, to
-//! a process the workload cannot read (`frame_is_authentic`). Without that,
-//! routing egress through the host would let a workload skip the kernel by
-//! opening a socket — weakening security while appearing to strengthen it. That
-//! is why the capability landed first and this landed second.
-//!
-//! **The other half of that argument is not yet built.** Nothing today proves
-//! the proxy preflights before it asks, because the proxy cannot yet ask at all.
-//! When the guest side lands, its obligation is that a `PerformRequest` is only
-//! ever composed past a minted `DischargedBundle` — the same discharge
-//! `credentialed_egress` already takes before it forwards in-process. Recorded
-//! here as a stated debt, not an assumption.
-//!
-//! # Why `nucleus-node` making an outbound call does not re-scope the gate
-//!
-//! `check-mediation.sh` excludes this crate as "operator/host authority, outside
-//! the agent threat model", and a call whose path and body come from an agent
-//! visibly strains that description. The exclusion still holds, for the reason
-//! the script itself gives for `nucleus-mcp-guard`: there is no agent session or
-//! task token here to mint a `DischargedBundle` against, so re-scoping would
-//! produce a gate that cannot be satisfied rather than one that catches
-//! anything. The discharge happens in the guest, where the session lives.
+//! The per-pod frame secret authenticates the channel; it is not evidence that
+//! a compromised guest performed its own policy checks. Host observations raise
+//! taint independently of guest reports. Trusted mapping of remote API semantics,
+//! revocation, cost settlement and host-only evidence signing remain open.
 
-mod effect;
+pub(crate) mod effect;
 
 pub(crate) use effect::{CONTENT_TYPE, METHOD};
 use nucleus_decision_protocol::ArgsDigest;
