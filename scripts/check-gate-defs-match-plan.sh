@@ -111,6 +111,37 @@ for path in sorted(gates_dir.glob("*.json")):
         if a != b:
             bad.append(f"{name}: cap.{field} is {b!r} in the gate definition and {a!r} in the plan")
 
+    # The image each lane runs the gate in, per platform (gatehouse#201). The plan's pins are what
+    # `ci.toolsPinned_b` holds a lane to; the JSON's `env.pins` is what the executor receives and
+    # asks `Env::image_for` about. Compared in ORDER, as lists of {platform, image}: both sides
+    # are lists precisely so a platform named twice is visible rather than collapsed by a parser.
+    a = want.get("pins", [])
+    b = (got.get("env") or {}).get("pins", [])
+    if a != b:
+        bad.append(f"{name}: env.pins is {b!r} in the gate definition and {a!r} in the plan")
+
+    # The machine the gate runs on, and the image it runs in THERE. `platform` is inside the env
+    # digest and so inside `gate_def`: the JSON's value is the one controld hashes and the executor
+    # holds to its own machine, the plan's is the one `ci.platformMatches_b` was proved about. They
+    # are one fact written twice, and this compared neither until the lane moved to x86_64 -- the
+    # platform field is how four of five gates were moved by hand once and the fifth was not.
+    # The image a pinned gate runs in is `Env::image_for(platform)`, which is `None` unless the
+    # JSON's own `image` is the pin for its `platform` (`Env::pins_coherent`); checked here so a
+    # move that edits the platform and forgets the image reds in a millisecond, not in a lane.
+    env_ = got.get("env") or {}
+    if want.get("platform") != env_.get("platform"):
+        bad.append(
+            f"{name}: env.platform is {env_.get('platform')!r} in the gate definition "
+            f"and {want.get('platform')!r} in the plan"
+        )
+    if a:
+        here = [p.get("image") for p in a if p.get("platform") == want.get("platform")]
+        if here != [env_.get("image")]:
+            bad.append(
+                f"{name}: env.image is {env_.get('image')!r} and the plan pins {here!r} "
+                f"for {want.get('platform')!r}"
+            )
+
     # The writ `Gate` carries scope as a flat list of globs; the JSON carries an object whose
     # other fields (exclude, external, git_history) the writ term has no room for. The INCLUDE
     # list is the part both spell, so it is the part compared.
@@ -128,5 +159,5 @@ if bad:
         print(f"  {b}", file=sys.stderr)
     sys.exit(1)
 
-print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs, scope, timeout and capability the plan declares")
+print(f"OK: {len(plan)} gate(s) carry the cmd, tools, seeds, outputs, platform, pins, image, scope, timeout and capability the plan declares")
 PY

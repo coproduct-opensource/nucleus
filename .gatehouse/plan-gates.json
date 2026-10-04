@@ -1,8 +1,19 @@
 [
   {
+    "name": "text-gates",
+    "scope": [
+      ".github/workflows/**",
+      ".sandbox-unpinned-ceiling",
+      "crates/**",
+      "docs/**",
+      "kani-divergence.toml",
+      "sandbox-trusted-base.txt",
+      "scripts/**",
+      "tests/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 1800000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         ".github/workflows/**",
         ".sandbox-unpinned-ceiling",
@@ -14,21 +25,29 @@
         "tests/**"
       ],
       "fs_write": [],
+      "exec": "scoped",
+      "wall_ms": 1800000,
+      "cpu_ms": 1800000,
       "mem_mb": 2048,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 1800000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 4096,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 874000,
-    "mem_mb": 2048,
-    "name": "text-gates",
+    "timeout_ms": 1800000,
     "outputs": [],
-    "platform": "linux/arm64",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "git@2.39.5",
+      "rg@13.0.0",
+      "awk@mawk-1.3.4",
+      "python3@3.11.2"
+    ],
+    "disk_mb": 4096,
+    "mem_mb": 2048,
+    "platform": "linux/amd64",
     "reads": [],
+    "seeds": [],
+    "measured_ms": 874000,
     "replaces": [
       "Ed25519 verify_strict gate (M-3)",
       "Sandbox trusted-base gate",
@@ -42,22 +61,10 @@
       "Sealed-home integrity gate (North Star)",
       "Governor trusted-key set is not workload-writable"
     ],
-    "scope": [
-      ".github/workflows/**",
-      ".sandbox-unpinned-ceiling",
-      "crates/**",
-      "docs/**",
-      "kani-divergence.toml",
-      "sandbox-trusted-base.txt",
-      "scripts/**",
-      "tests/**"
-    ],
-    "seeds": [],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-verify-strict.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -68,13 +75,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-sandbox-trusted-base.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -85,13 +92,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-failclosed-verifiers.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -102,13 +109,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-mediation.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -119,13 +126,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-north-star-ledger.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -136,13 +143,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-extracted-callsites.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -153,13 +160,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-task-compiler-offline.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -170,13 +177,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-ingest-hashed.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -187,13 +194,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-kani-divergence.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -204,13 +211,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-sealed-home.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -221,13 +228,13 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       },
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-declassify-governor-keys-sealed.sh",
+        "args": [],
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -238,23 +245,45 @@
           "scripts/**",
           "tests/**"
         ],
-        "uid": 0,
-        "writes": []
+        "writes": [],
+        "loopback": 0,
+        "uid": 0
       }
     ],
-    "timeout_ms": 1800000,
-    "tools": [
-      "sh@0.5.12",
-      "git@2.39.5",
-      "rg@13.0.0",
-      "awk@mawk-1.3.4",
-      "python3@3.11.2"
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
     ]
   },
   {
+    "name": "fmt",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 600000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "Cargo.toml",
         "Cargo.lock",
@@ -278,53 +307,38 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 600000,
+      "cpu_ms": 600000,
       "mem_mb": 4096,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 600000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 4096,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 208000,
-    "mem_mb": 4096,
-    "name": "fmt",
+    "timeout_ms": 450000,
     "outputs": [],
-    "platform": "linux/arm64",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "cargo@1.96.1",
+      "rustfmt@1.9.0"
+    ],
+    "disk_mb": 4096,
+    "mem_mb": 4096,
+    "platform": "linux/amd64",
     "reads": [],
+    "seeds": [],
+    "measured_ms": 208000,
     "replaces": [
       "Rustfmt"
     ],
-    "scope": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "rust-toolchain.toml",
-      "crates/**",
-      "tests/**",
-      "benchmarks/**",
-      "scripts/**",
-      "sdks/verifier-js/Cargo.toml",
-      "sdks/verifier-js/Cargo.lock",
-      "sdks/verifier-js/package.json",
-      "sdks/verifier-js/index.js",
-      "sdks/verifier-js/index.d.ts",
-      "sdks/verifier-js/src/**",
-      "sdks/verifier-js/test/**",
-      "sdks/verifier-js/tests/**",
-      "sdks/verifier-js/demo-fixtures/**"
-    ],
-    "seeds": [],
     "steps": [
       {
+        "program": "cargo",
         "args": [
           "fmt",
           "--all",
           "--",
           "--check"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -343,24 +357,52 @@
           "sdks/verifier-js/tests/**",
           "sdks/verifier-js/demo-fixtures/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
     ],
-    "timeout_ms": 450000,
-    "tools": [
-      "cargo@1.96.1",
-      "rustfmt@1.9.0"
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
     ]
   },
   {
+    "name": "clippy",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/independent-conformance/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 3000000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "Cargo.toml",
         "Cargo.lock",
@@ -387,53 +429,40 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 3000000,
+      "cpu_ms": 3000000,
       "mem_mb": 8192,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 3000000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 8192,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 1152000,
-    "mem_mb": 8192,
-    "name": "clippy",
+    "timeout_ms": 2600000,
     "outputs": [],
-    "platform": "linux/arm64",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "clippy-driver@0.1.96",
+      "wasm-pack@0.13.1",
+      "wasm-bindgen@0.2.122",
+      "unshare@2.38.1"
+    ],
+    "disk_mb": 8192,
+    "mem_mb": 8192,
+    "platform": "linux/amd64",
     "reads": [],
+    "seeds": [
+      "main-e8cb8d499-x86_64-l@sha256:ca42d85168c61fdb73a90a9665ca1adf435d7b437629493c2ab5fd52cdc1bfa4"
+    ],
+    "measured_ms": 1152000,
     "replaces": [
       "Clippy"
     ],
-    "scope": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "rust-toolchain.toml",
-      ".cargo/config.toml",
-      "clippy.toml",
-      "crates/**",
-      "tests/**",
-      "benchmarks/**",
-      "scripts/**",
-      "sdks/verifier-js/Cargo.toml",
-      "sdks/verifier-js/Cargo.lock",
-      "sdks/verifier-js/package.json",
-      "sdks/verifier-js/index.js",
-      "sdks/verifier-js/index.d.ts",
-      "sdks/verifier-js/src/**",
-      "sdks/verifier-js/test/**",
-      "sdks/verifier-js/tests/**",
-      "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**"
-    ],
-    "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
-    ],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/gatehouse-verifier-sdk.sh",
+        "args": [],
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -455,14 +484,16 @@
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       },
       {
+        "program": "cargo",
         "args": [
           "clippy",
           "--offline",
@@ -473,8 +504,6 @@
           "-D",
           "warnings"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -496,14 +525,16 @@
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       },
       {
+        "program": "cargo",
         "args": [
           "clippy",
           "--offline",
@@ -515,8 +546,6 @@
           "-D",
           "warnings"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -538,29 +567,35 @@
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
     ],
-    "timeout_ms": 2600000,
-    "tools": [
-      "sh@0.5.12",
-      "cargo@1.96.1",
-      "rustc@1.96.1",
-      "clippy-driver@0.1.96",
-      "wasm-pack@0.13.1",
-      "wasm-bindgen@0.2.122",
-      "unshare@2.38.1"
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
     ]
   },
   {
+    "name": "test-node",
+    "scope": [
+      "**",
+      "scripts/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 3600000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "**",
         "scripts/**"
@@ -568,88 +603,714 @@
       "fs_write": [
         "target/**",
         "sdks/verifier-js/pkg/**",
-        "sdks/verifier-js/target/**"
+        "sdks/verifier-js/target/**",
+        "crates/*/src/lib.rs",
+        "crates/*/src/main.rs",
+        "crates/*/src/bin/*"
       ],
+      "exec": "scoped",
+      "wall_ms": 1800000,
+      "cpu_ms": 1800000,
       "mem_mb": 8192,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 3600000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 8192,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 1660000,
-    "mem_mb": 8192,
-    "name": "test",
+    "timeout_ms": 1800000,
     "outputs": [],
-    "platform": "linux/arm64",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "cargo-nextest@0.9.145",
+      "unshare@2.38.1",
+      "ip@6.1.0",
+      "python3@3.11.2",
+      "git@2.39.5"
+    ],
+    "disk_mb": 8192,
+    "mem_mb": 8192,
+    "platform": "linux/amd64",
     "reads": [],
-    "replaces": [],
-    "scope": [
-      "**",
-      "scripts/**"
-    ],
     "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
+      "main-e8cb8d499-x86_64-t@sha256:fb0c1c307911f8448d4195cab94f739adba39a955c9a21be3c96ede0a32d0218"
     ],
+    "measured_ms": 360000,
+    "replaces": [],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/gatehouse-verifier-sdk.sh",
-        "reads": [
-          "**",
-          "scripts/**"
-        ],
-        "uid": 0,
-        "writes": [
-          "target/**",
-          "sdks/verifier-js/pkg/**",
-          "sdks/verifier-js/target/**"
-        ]
-      },
-      {
+        "program": "scripts/test-shard.py",
         "args": [
+          "--workspace-features",
+          "cargo",
           "nextest",
           "run",
           "--offline",
           "--locked",
           "--all-features",
           "--no-fail-fast",
-          "--no-tests=fail"
+          "--no-tests=fail",
+          "-p",
+          "nucleus",
+          "-p",
+          "nucleus-audit",
+          "-p",
+          "nucleus-cli",
+          "-p",
+          "nucleus-guest-init",
+          "-p",
+          "nucleus-mcp",
+          "-p",
+          "nucleus-node",
+          "-p",
+          "nucleus-oidc-provider",
+          "-p",
+          "nucleus-perf",
+          "-p",
+          "nucleus-sdk",
+          "-p",
+          "nucleus-spec",
+          "-p",
+          "nucleus-tool-proxy",
+          "-p",
+          "portcullis-effects",
+          "-p",
+          "xtask",
+          "-p",
+          "nucleus-action-key",
+          "-p",
+          "nucleus-delivery-conformance",
+          "-E",
+          "not (package(nucleus-action-key) | package(nucleus-delivery-conformance)) | binary_id(nucleus-action-key::escapes_population) | binary_id(nucleus-delivery-conformance::claim_honesty)"
         ],
-        "loopback": 1,
-        "program": "cargo",
         "reads": [
           "**",
           "scripts/**"
         ],
-        "uid": 1001,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
-          "sdks/verifier-js/target/**"
-        ]
+          "sdks/verifier-js/target/**",
+          "crates/*/src/lib.rs",
+          "crates/*/src/main.rs",
+          "crates/*/src/bin/*"
+        ],
+        "loopback": 1,
+        "uid": 1001
       }
     ],
-    "timeout_ms": 3600000,
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
+    ]
+  },
+  {
+    "name": "test-libs",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/**",
+      ".config/**",
+      "crates/*/Cargo.toml",
+      "scripts/test-shard.py",
+      "crates/ci-fly-runner/**",
+      "crates/ci-spec/**",
+      "crates/ck-kernel/**",
+      "crates/ck-policy/**",
+      "crates/ck-types/**",
+      "crates/ctf-engine/**",
+      "crates/ctf-mcp/**",
+      "crates/ctf-server/**",
+      "crates/exposure-playground/**",
+      "crates/nucleus-action-key/**",
+      "crates/nucleus-adversary-probe/**",
+      "crates/nucleus-agent-card/**",
+      "crates/nucleus-authority-exchange/**",
+      "crates/nucleus-blast-radius/**",
+      "crates/nucleus-bundle-cas/**",
+      "crates/nucleus-ci-verdict/**",
+      "crates/nucleus-client/**",
+      "crates/nucleus-commerce-conformance/**",
+      "crates/nucleus-control-plane-server/**",
+      "crates/nucleus-control-plane/**",
+      "crates/nucleus-cred-broker/**",
+      "crates/nucleus-cred-protocol/**",
+      "crates/nucleus-creditworthiness/**",
+      "crates/nucleus-delivery-conformance/**",
+      "crates/nucleus-econ-kernels/**",
+      "crates/nucleus-econ-types/**",
+      "crates/nucleus-egress-probe/**",
+      "crates/nucleus-envelope-adversarial-corpus/**",
+      "crates/nucleus-envelope/**",
+      "crates/nucleus-eval/**",
+      "crates/nucleus-externality/**",
+      "crates/nucleus-federation/**",
+      "crates/nucleus-flow-replay/**",
+      "crates/nucleus-fly-oidc/**",
+      "crates/nucleus-github-oidc/**",
+      "crates/nucleus-identity/**",
+      "crates/nucleus-ifc-kernel/**",
+      "crates/nucleus-ifc/**",
+      "crates/nucleus-jsonl/**",
+      "crates/nucleus-lineage/**",
+      "crates/nucleus-machine/**",
+      "crates/nucleus-marketplace-dashboard/**",
+      "crates/nucleus-mcp-guard/**",
+      "crates/nucleus-memory/**",
+      "crates/nucleus-microvm-host/**",
+      "crates/nucleus-net-probe/**",
+      "crates/nucleus-node-binding/**",
+      "crates/nucleus-oci-rootfs/**",
+      "crates/nucleus-oidc-core/**",
+      "crates/nucleus-oracle/**",
+      "crates/nucleus-otel-bootstrap/**",
+      "crates/nucleus-pca/**",
+      "crates/nucleus-permission-market/**",
+      "crates/nucleus-podlist-probe/**",
+      "crates/nucleus-policy-cert/**",
+      "crates/nucleus-policy-kernel/**",
+      "crates/nucleus-proto/**",
+      "crates/nucleus-provenance-memory/**",
+      "crates/nucleus-provenance/**",
+      "crates/nucleus-receipt-store/**",
+      "crates/nucleus-receipt/**",
+      "crates/nucleus-recompute/**",
+      "crates/nucleus-rubric-olog/**",
+      "crates/nucleus-rubric/**",
+      "crates/nucleus-spec/**",
+      "crates/nucleus-spiffe-hail/**",
+      "crates/nucleus-task-compiler/**",
+      "crates/nucleus-trust-registry/**",
+      "crates/nucleus-verifier-service/**",
+      "crates/nucleus-verify-commerce/**",
+      "crates/nucleus-witness-gossip/**",
+      "crates/nucleus-witness-olog/**",
+      "crates/nucleus-witness/**",
+      "crates/nucleus-workload-probe/**",
+      "crates/portcullis-core/**",
+      "crates/portcullis-profiles/**",
+      "crates/portcullis-wasi/**",
+      "crates/portcullis/**",
+      "lib.rs",
+      "main.rs",
+      "crates/lib.rs",
+      "crates/main.rs",
+      "PolicyManifest.toml",
+      "examples/independent-conformance/vectors.json",
+      "crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem",
+      "docs/architecture/mediated-set.md",
+      "crates/nucleus-control-plane/proto/job_service.proto",
+      "crates/nucleus-identity/proto/workload.proto",
+      "crates/nucleus-node/proto/nucleus_node.proto",
+      ".env",
+      ".ssh",
+      "crates/.env",
+      "crates/escape",
+      "examples/policies/**",
+      "profiles/**",
+      "scripts/gatehouse-verifier-sdk.sh",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "cap": {
+      "net": "none",
+      "fs_read": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/**",
+        ".config/**",
+        "crates/*/Cargo.toml",
+        "scripts/test-shard.py",
+        "crates/ci-fly-runner/**",
+        "crates/ci-spec/**",
+        "crates/ck-kernel/**",
+        "crates/ck-policy/**",
+        "crates/ck-types/**",
+        "crates/ctf-engine/**",
+        "crates/ctf-mcp/**",
+        "crates/ctf-server/**",
+        "crates/exposure-playground/**",
+        "crates/nucleus-action-key/**",
+        "crates/nucleus-adversary-probe/**",
+        "crates/nucleus-agent-card/**",
+        "crates/nucleus-authority-exchange/**",
+        "crates/nucleus-blast-radius/**",
+        "crates/nucleus-bundle-cas/**",
+        "crates/nucleus-ci-verdict/**",
+        "crates/nucleus-client/**",
+        "crates/nucleus-commerce-conformance/**",
+        "crates/nucleus-control-plane-server/**",
+        "crates/nucleus-control-plane/**",
+        "crates/nucleus-cred-broker/**",
+        "crates/nucleus-cred-protocol/**",
+        "crates/nucleus-creditworthiness/**",
+        "crates/nucleus-delivery-conformance/**",
+        "crates/nucleus-econ-kernels/**",
+        "crates/nucleus-econ-types/**",
+        "crates/nucleus-egress-probe/**",
+        "crates/nucleus-envelope-adversarial-corpus/**",
+        "crates/nucleus-envelope/**",
+        "crates/nucleus-eval/**",
+        "crates/nucleus-externality/**",
+        "crates/nucleus-federation/**",
+        "crates/nucleus-flow-replay/**",
+        "crates/nucleus-fly-oidc/**",
+        "crates/nucleus-github-oidc/**",
+        "crates/nucleus-identity/**",
+        "crates/nucleus-ifc-kernel/**",
+        "crates/nucleus-ifc/**",
+        "crates/nucleus-jsonl/**",
+        "crates/nucleus-lineage/**",
+        "crates/nucleus-machine/**",
+        "crates/nucleus-marketplace-dashboard/**",
+        "crates/nucleus-mcp-guard/**",
+        "crates/nucleus-memory/**",
+        "crates/nucleus-microvm-host/**",
+        "crates/nucleus-net-probe/**",
+        "crates/nucleus-node-binding/**",
+        "crates/nucleus-oci-rootfs/**",
+        "crates/nucleus-oidc-core/**",
+        "crates/nucleus-oracle/**",
+        "crates/nucleus-otel-bootstrap/**",
+        "crates/nucleus-pca/**",
+        "crates/nucleus-permission-market/**",
+        "crates/nucleus-podlist-probe/**",
+        "crates/nucleus-policy-cert/**",
+        "crates/nucleus-policy-kernel/**",
+        "crates/nucleus-proto/**",
+        "crates/nucleus-provenance-memory/**",
+        "crates/nucleus-provenance/**",
+        "crates/nucleus-receipt-store/**",
+        "crates/nucleus-receipt/**",
+        "crates/nucleus-recompute/**",
+        "crates/nucleus-rubric-olog/**",
+        "crates/nucleus-rubric/**",
+        "crates/nucleus-spec/**",
+        "crates/nucleus-spiffe-hail/**",
+        "crates/nucleus-task-compiler/**",
+        "crates/nucleus-trust-registry/**",
+        "crates/nucleus-verifier-service/**",
+        "crates/nucleus-verify-commerce/**",
+        "crates/nucleus-witness-gossip/**",
+        "crates/nucleus-witness-olog/**",
+        "crates/nucleus-witness/**",
+        "crates/nucleus-workload-probe/**",
+        "crates/portcullis-core/**",
+        "crates/portcullis-profiles/**",
+        "crates/portcullis-wasi/**",
+        "crates/portcullis/**",
+        "lib.rs",
+        "main.rs",
+        "crates/lib.rs",
+        "crates/main.rs",
+        "PolicyManifest.toml",
+        "examples/independent-conformance/vectors.json",
+        "crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem",
+        "docs/architecture/mediated-set.md",
+        "crates/nucleus-control-plane/proto/job_service.proto",
+        "crates/nucleus-identity/proto/workload.proto",
+        "crates/nucleus-node/proto/nucleus_node.proto",
+        ".env",
+        ".ssh",
+        "crates/.env",
+        "crates/escape",
+        "examples/policies/**",
+        "profiles/**",
+        "scripts/gatehouse-verifier-sdk.sh",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**"
+      ],
+      "fs_write": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**",
+        "crates/*/src/lib.rs",
+        "crates/*/src/main.rs",
+        "crates/*/src/bin/*"
+      ],
+      "exec": "scoped",
+      "wall_ms": 1800000,
+      "cpu_ms": 1800000,
+      "mem_mb": 8192,
+      "secrets": []
+    },
+    "cmd": [],
+    "timeout_ms": 1800000,
+    "outputs": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "tools": [
       "sh@0.5.12",
       "cargo@1.96.1",
       "rustc@1.96.1",
       "cargo-nextest@0.9.145",
-      "wasm-pack@0.13.1",
-      "wasm-bindgen@0.2.122",
       "unshare@2.38.1",
       "ip@6.1.0",
-      "git@2.39.5"
+      "python3@3.11.2",
+      "wasm-pack@0.13.1",
+      "wasm-bindgen@0.2.122"
+    ],
+    "disk_mb": 8192,
+    "mem_mb": 8192,
+    "platform": "linux/amd64",
+    "reads": [],
+    "seeds": [
+      "main-e8cb8d499-x86_64-t@sha256:fb0c1c307911f8448d4195cab94f739adba39a955c9a21be3c96ede0a32d0218"
+    ],
+    "measured_ms": 480000,
+    "replaces": [],
+    "steps": [
+      {
+        "program": "scripts/gatehouse-verifier-sdk.sh",
+        "args": [],
+        "reads": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".cargo/**",
+          ".config/**",
+          "crates/*/Cargo.toml",
+          "scripts/test-shard.py",
+          "crates/ci-fly-runner/**",
+          "crates/ci-spec/**",
+          "crates/ck-kernel/**",
+          "crates/ck-policy/**",
+          "crates/ck-types/**",
+          "crates/ctf-engine/**",
+          "crates/ctf-mcp/**",
+          "crates/ctf-server/**",
+          "crates/exposure-playground/**",
+          "crates/nucleus-action-key/**",
+          "crates/nucleus-adversary-probe/**",
+          "crates/nucleus-agent-card/**",
+          "crates/nucleus-authority-exchange/**",
+          "crates/nucleus-blast-radius/**",
+          "crates/nucleus-bundle-cas/**",
+          "crates/nucleus-ci-verdict/**",
+          "crates/nucleus-client/**",
+          "crates/nucleus-commerce-conformance/**",
+          "crates/nucleus-control-plane-server/**",
+          "crates/nucleus-control-plane/**",
+          "crates/nucleus-cred-broker/**",
+          "crates/nucleus-cred-protocol/**",
+          "crates/nucleus-creditworthiness/**",
+          "crates/nucleus-delivery-conformance/**",
+          "crates/nucleus-econ-kernels/**",
+          "crates/nucleus-econ-types/**",
+          "crates/nucleus-egress-probe/**",
+          "crates/nucleus-envelope-adversarial-corpus/**",
+          "crates/nucleus-envelope/**",
+          "crates/nucleus-eval/**",
+          "crates/nucleus-externality/**",
+          "crates/nucleus-federation/**",
+          "crates/nucleus-flow-replay/**",
+          "crates/nucleus-fly-oidc/**",
+          "crates/nucleus-github-oidc/**",
+          "crates/nucleus-identity/**",
+          "crates/nucleus-ifc-kernel/**",
+          "crates/nucleus-ifc/**",
+          "crates/nucleus-jsonl/**",
+          "crates/nucleus-lineage/**",
+          "crates/nucleus-machine/**",
+          "crates/nucleus-marketplace-dashboard/**",
+          "crates/nucleus-mcp-guard/**",
+          "crates/nucleus-memory/**",
+          "crates/nucleus-microvm-host/**",
+          "crates/nucleus-net-probe/**",
+          "crates/nucleus-node-binding/**",
+          "crates/nucleus-oci-rootfs/**",
+          "crates/nucleus-oidc-core/**",
+          "crates/nucleus-oracle/**",
+          "crates/nucleus-otel-bootstrap/**",
+          "crates/nucleus-pca/**",
+          "crates/nucleus-permission-market/**",
+          "crates/nucleus-podlist-probe/**",
+          "crates/nucleus-policy-cert/**",
+          "crates/nucleus-policy-kernel/**",
+          "crates/nucleus-proto/**",
+          "crates/nucleus-provenance-memory/**",
+          "crates/nucleus-provenance/**",
+          "crates/nucleus-receipt-store/**",
+          "crates/nucleus-receipt/**",
+          "crates/nucleus-recompute/**",
+          "crates/nucleus-rubric-olog/**",
+          "crates/nucleus-rubric/**",
+          "crates/nucleus-spec/**",
+          "crates/nucleus-spiffe-hail/**",
+          "crates/nucleus-task-compiler/**",
+          "crates/nucleus-trust-registry/**",
+          "crates/nucleus-verifier-service/**",
+          "crates/nucleus-verify-commerce/**",
+          "crates/nucleus-witness-gossip/**",
+          "crates/nucleus-witness-olog/**",
+          "crates/nucleus-witness/**",
+          "crates/nucleus-workload-probe/**",
+          "crates/portcullis-core/**",
+          "crates/portcullis-profiles/**",
+          "crates/portcullis-wasi/**",
+          "crates/portcullis/**",
+          "lib.rs",
+          "main.rs",
+          "crates/lib.rs",
+          "crates/main.rs",
+          "PolicyManifest.toml",
+          "examples/independent-conformance/vectors.json",
+          "crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem",
+          "docs/architecture/mediated-set.md",
+          "crates/nucleus-control-plane/proto/job_service.proto",
+          "crates/nucleus-identity/proto/workload.proto",
+          "crates/nucleus-node/proto/nucleus_node.proto",
+          ".env",
+          ".ssh",
+          "crates/.env",
+          "crates/escape",
+          "examples/policies/**",
+          "profiles/**",
+          "scripts/gatehouse-verifier-sdk.sh",
+          "sdks/verifier-js/Cargo.toml",
+          "sdks/verifier-js/Cargo.lock",
+          "sdks/verifier-js/package.json",
+          "sdks/verifier-js/index.js",
+          "sdks/verifier-js/index.d.ts",
+          "sdks/verifier-js/src/**",
+          "sdks/verifier-js/test/**",
+          "sdks/verifier-js/tests/**",
+          "sdks/verifier-js/demo-fixtures/**"
+        ],
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**",
+          "crates/*/src/lib.rs",
+          "crates/*/src/main.rs",
+          "crates/*/src/bin/*"
+        ],
+        "loopback": 0,
+        "uid": 0
+      },
+      {
+        "program": "scripts/test-shard.py",
+        "args": [
+          "--workspace-features",
+          "cargo",
+          "nextest",
+          "run",
+          "--offline",
+          "--locked",
+          "--all-features",
+          "--no-fail-fast",
+          "--no-tests=fail",
+          "--workspace",
+          "--exclude",
+          "nucleus",
+          "--exclude",
+          "nucleus-audit",
+          "--exclude",
+          "nucleus-cli",
+          "--exclude",
+          "nucleus-guest-init",
+          "--exclude",
+          "nucleus-mcp",
+          "--exclude",
+          "nucleus-node",
+          "--exclude",
+          "nucleus-oidc-provider",
+          "--exclude",
+          "nucleus-perf",
+          "--exclude",
+          "nucleus-sdk",
+          "--exclude",
+          "nucleus-spec",
+          "--exclude",
+          "nucleus-tool-proxy",
+          "--exclude",
+          "portcullis-effects",
+          "--exclude",
+          "xtask",
+          "-E",
+          "not (binary_id(nucleus-action-key::escapes_population) | binary_id(nucleus-delivery-conformance::claim_honesty))"
+        ],
+        "reads": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".cargo/**",
+          ".config/**",
+          "crates/*/Cargo.toml",
+          "scripts/test-shard.py",
+          "crates/ci-fly-runner/**",
+          "crates/ci-spec/**",
+          "crates/ck-kernel/**",
+          "crates/ck-policy/**",
+          "crates/ck-types/**",
+          "crates/ctf-engine/**",
+          "crates/ctf-mcp/**",
+          "crates/ctf-server/**",
+          "crates/exposure-playground/**",
+          "crates/nucleus-action-key/**",
+          "crates/nucleus-adversary-probe/**",
+          "crates/nucleus-agent-card/**",
+          "crates/nucleus-authority-exchange/**",
+          "crates/nucleus-blast-radius/**",
+          "crates/nucleus-bundle-cas/**",
+          "crates/nucleus-ci-verdict/**",
+          "crates/nucleus-client/**",
+          "crates/nucleus-commerce-conformance/**",
+          "crates/nucleus-control-plane-server/**",
+          "crates/nucleus-control-plane/**",
+          "crates/nucleus-cred-broker/**",
+          "crates/nucleus-cred-protocol/**",
+          "crates/nucleus-creditworthiness/**",
+          "crates/nucleus-delivery-conformance/**",
+          "crates/nucleus-econ-kernels/**",
+          "crates/nucleus-econ-types/**",
+          "crates/nucleus-egress-probe/**",
+          "crates/nucleus-envelope-adversarial-corpus/**",
+          "crates/nucleus-envelope/**",
+          "crates/nucleus-eval/**",
+          "crates/nucleus-externality/**",
+          "crates/nucleus-federation/**",
+          "crates/nucleus-flow-replay/**",
+          "crates/nucleus-fly-oidc/**",
+          "crates/nucleus-github-oidc/**",
+          "crates/nucleus-identity/**",
+          "crates/nucleus-ifc-kernel/**",
+          "crates/nucleus-ifc/**",
+          "crates/nucleus-jsonl/**",
+          "crates/nucleus-lineage/**",
+          "crates/nucleus-machine/**",
+          "crates/nucleus-marketplace-dashboard/**",
+          "crates/nucleus-mcp-guard/**",
+          "crates/nucleus-memory/**",
+          "crates/nucleus-microvm-host/**",
+          "crates/nucleus-net-probe/**",
+          "crates/nucleus-node-binding/**",
+          "crates/nucleus-oci-rootfs/**",
+          "crates/nucleus-oidc-core/**",
+          "crates/nucleus-oracle/**",
+          "crates/nucleus-otel-bootstrap/**",
+          "crates/nucleus-pca/**",
+          "crates/nucleus-permission-market/**",
+          "crates/nucleus-podlist-probe/**",
+          "crates/nucleus-policy-cert/**",
+          "crates/nucleus-policy-kernel/**",
+          "crates/nucleus-proto/**",
+          "crates/nucleus-provenance-memory/**",
+          "crates/nucleus-provenance/**",
+          "crates/nucleus-receipt-store/**",
+          "crates/nucleus-receipt/**",
+          "crates/nucleus-recompute/**",
+          "crates/nucleus-rubric-olog/**",
+          "crates/nucleus-rubric/**",
+          "crates/nucleus-spec/**",
+          "crates/nucleus-spiffe-hail/**",
+          "crates/nucleus-task-compiler/**",
+          "crates/nucleus-trust-registry/**",
+          "crates/nucleus-verifier-service/**",
+          "crates/nucleus-verify-commerce/**",
+          "crates/nucleus-witness-gossip/**",
+          "crates/nucleus-witness-olog/**",
+          "crates/nucleus-witness/**",
+          "crates/nucleus-workload-probe/**",
+          "crates/portcullis-core/**",
+          "crates/portcullis-profiles/**",
+          "crates/portcullis-wasi/**",
+          "crates/portcullis/**",
+          "lib.rs",
+          "main.rs",
+          "crates/lib.rs",
+          "crates/main.rs",
+          "PolicyManifest.toml",
+          "examples/independent-conformance/vectors.json",
+          "crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem",
+          "docs/architecture/mediated-set.md",
+          "crates/nucleus-control-plane/proto/job_service.proto",
+          "crates/nucleus-identity/proto/workload.proto",
+          "crates/nucleus-node/proto/nucleus_node.proto",
+          ".env",
+          ".ssh",
+          "crates/.env",
+          "crates/escape",
+          "examples/policies/**",
+          "profiles/**",
+          "scripts/gatehouse-verifier-sdk.sh",
+          "sdks/verifier-js/Cargo.toml",
+          "sdks/verifier-js/Cargo.lock",
+          "sdks/verifier-js/package.json",
+          "sdks/verifier-js/index.js",
+          "sdks/verifier-js/index.d.ts",
+          "sdks/verifier-js/src/**",
+          "sdks/verifier-js/test/**",
+          "sdks/verifier-js/tests/**",
+          "sdks/verifier-js/demo-fixtures/**"
+        ],
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**",
+          "crates/*/src/lib.rs",
+          "crates/*/src/main.rs",
+          "crates/*/src/bin/*"
+        ],
+        "loopback": 1,
+        "uid": 1001
+      }
+    ],
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
     ]
   },
   {
+    "name": "lean-build",
+    "scope": [
+      "crates/portcullis-core/lean/*.lean",
+      "crates/portcullis-core/lean/lean-toolchain",
+      "crates/portcullis-core/lean/lake-manifest.json",
+      "crates/portcullis-core/lean/generated/**",
+      "crates/portcullis-core/lean/generated-attenuation/**",
+      "crates/portcullis-core/lean/generated-cap-quantale/**",
+      "crates/portcullis-core/lean/generated-certchain/**",
+      "crates/portcullis-core/lean/generated-channel/**",
+      "crates/portcullis-core/lean/generated-credential/**",
+      "crates/portcullis-core/lean/generated-decide/**",
+      "crates/portcullis-core/lean/generated-declass/**",
+      "crates/portcullis-core/lean/generated-egress/**",
+      "crates/portcullis-core/lean/generated-identity/**",
+      "crates/portcullis-core/lean/generated-ifc/**",
+      "crates/portcullis-core/lean/generated-mediation/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 3600000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "crates/portcullis-core/lean/*.lean",
         "crates/portcullis-core/lean/lean-toolchain",
@@ -670,48 +1331,34 @@
       "fs_write": [
         "crates/portcullis-core/lean/.lake/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 3600000,
+      "cpu_ms": 3600000,
       "mem_mb": 16384,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 3600000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 16384,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 145000,
-    "mem_mb": 8192,
-    "name": "lean-build",
+    "timeout_ms": 400000,
     "outputs": [],
-    "platform": "linux/arm64",
-    "reads": [],
-    "replaces": [],
-    "scope": [
-      "crates/portcullis-core/lean/*.lean",
-      "crates/portcullis-core/lean/lean-toolchain",
-      "crates/portcullis-core/lean/lake-manifest.json",
-      "crates/portcullis-core/lean/generated/**",
-      "crates/portcullis-core/lean/generated-attenuation/**",
-      "crates/portcullis-core/lean/generated-cap-quantale/**",
-      "crates/portcullis-core/lean/generated-certchain/**",
-      "crates/portcullis-core/lean/generated-channel/**",
-      "crates/portcullis-core/lean/generated-credential/**",
-      "crates/portcullis-core/lean/generated-decide/**",
-      "crates/portcullis-core/lean/generated-declass/**",
-      "crates/portcullis-core/lean/generated-egress/**",
-      "crates/portcullis-core/lean/generated-identity/**",
-      "crates/portcullis-core/lean/generated-ifc/**",
-      "crates/portcullis-core/lean/generated-mediation/**"
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "lake@4.30.0",
+      "lean@4.30.0"
     ],
+    "disk_mb": 16384,
+    "mem_mb": 8192,
+    "platform": "linux/amd64",
+    "reads": [],
     "seeds": [],
+    "measured_ms": 145000,
+    "replaces": [],
     "steps": [
       {
+        "program": "lake",
         "args": [
           "build",
           "PortcullisCoreBridge"
         ],
-        "loopback": 0,
-        "program": "lake",
         "reads": [
           "crates/portcullis-core/lean/*.lean",
           "crates/portcullis-core/lean/lean-toolchain",
@@ -729,22 +1376,31 @@
           "crates/portcullis-core/lean/generated-ifc/**",
           "crates/portcullis-core/lean/generated-mediation/**"
         ],
-        "uid": 0,
         "writes": [
           "crates/portcullis-core/lean/.lake/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
     ],
-    "timeout_ms": 400000,
-    "tools": [
-      "lake@4.30.0",
-      "lean@4.30.0"
-    ]
+    "pins": []
   },
   {
+    "name": "ci-spec",
+    "scope": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".github/workflows/**",
+      "ci/**",
+      "crates/**",
+      "scripts/**",
+      "docs/assurance/**",
+      ".gatehouse/**"
+    ],
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "cap": {
-      "cpu_ms": 1200000,
-      "exec": "scoped",
+      "net": "none",
       "fs_read": [
         "Cargo.toml",
         "Cargo.lock",
@@ -761,66 +1417,38 @@
         "sdks/verifier-js/pkg/**",
         "sdks/verifier-js/target/**"
       ],
+      "exec": "scoped",
+      "wall_ms": 1200000,
+      "cpu_ms": 1200000,
       "mem_mb": 4096,
-      "net": "none",
-      "secrets": [],
-      "wall_ms": 1200000
+      "secrets": []
     },
     "cmd": [],
-    "disk_mb": 4096,
-    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 448000,
-    "mem_mb": 4096,
-    "name": "ci-spec",
+    "timeout_ms": 950000,
     "outputs": [],
-    "platform": "linux/arm64",
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "tools": [
+      "sh@0.5.12",
+      "cargo@1.96.1",
+      "rustc@1.96.1",
+      "git@2.39.5"
+    ],
+    "disk_mb": 4096,
+    "mem_mb": 4096,
+    "platform": "linux/amd64",
     "reads": [],
+    "seeds": [
+      "main-e8cb8d499-x86_64-l@sha256:ca42d85168c61fdb73a90a9665ca1adf435d7b437629493c2ab5fd52cdc1bfa4"
+    ],
+    "measured_ms": 448000,
     "replaces": [
       "CI configuration is sound (CI-1)",
       "The CI assurance ledger cannot outrun its wiring"
     ],
-    "scope": [
-      "Cargo.toml",
-      "Cargo.lock",
-      "rust-toolchain.toml",
-      ".github/workflows/**",
-      "ci/**",
-      "crates/**",
-      "scripts/**",
-      "docs/assurance/**",
-      ".gatehouse/**"
-    ],
-    "seeds": [
-      "main-ebebf53cd-u@sha256:e8191022be27ef4b3b274d6ff9d9c6496ba3992be62506829997711efa0e50f0"
-    ],
     "steps": [
       {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-ci-spec.sh",
-        "reads": [
-          "Cargo.toml",
-          "Cargo.lock",
-          "rust-toolchain.toml",
-          ".github/workflows/**",
-          "ci/**",
-          "crates/**",
-          "scripts/**",
-          "docs/assurance/**",
-          ".gatehouse/**"
-        ],
-        "uid": 0,
-        "writes": [
-          "target/**",
-          "sdks/verifier-js/pkg/**",
-          "sdks/verifier-js/target/**"
-        ]
-      },
-      {
         "args": [],
-        "loopback": 0,
-        "program": "scripts/check-ci-assurance-ledger.sh",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -832,14 +1460,38 @@
           "docs/assurance/**",
           ".gatehouse/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       },
       {
+        "program": "scripts/check-ci-assurance-ledger.sh",
+        "args": [],
+        "reads": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust-toolchain.toml",
+          ".github/workflows/**",
+          "ci/**",
+          "crates/**",
+          "scripts/**",
+          "docs/assurance/**",
+          ".gatehouse/**"
+        ],
+        "writes": [
+          "target/**",
+          "sdks/verifier-js/pkg/**",
+          "sdks/verifier-js/target/**"
+        ],
+        "loopback": 0,
+        "uid": 0
+      },
+      {
+        "program": "cargo",
         "args": [
           "run",
           "-q",
@@ -849,8 +1501,6 @@
           "--",
           "assurance-required"
         ],
-        "loopback": 0,
-        "program": "cargo",
         "reads": [
           "Cargo.toml",
           "Cargo.lock",
@@ -862,20 +1512,24 @@
           "docs/assurance/**",
           ".gatehouse/**"
         ],
-        "uid": 0,
         "writes": [
           "target/**",
           "sdks/verifier-js/pkg/**",
           "sdks/verifier-js/target/**"
-        ]
+        ],
+        "loopback": 0,
+        "uid": 0
       }
     ],
-    "timeout_ms": 950000,
-    "tools": [
-      "sh@0.5.12",
-      "cargo@1.96.1",
-      "rustc@1.96.1",
-      "git@2.39.5"
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
     ]
   }
 ]
