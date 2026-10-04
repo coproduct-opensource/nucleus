@@ -6,14 +6,16 @@
 //! composition KVM-free over the local-driver env path. What none of that checks
 //! is that a *booted* pod, calling the scoped `POD_LIST` over its OWN real
 //! workload-API vsock socket, is served a listing confined to its lineage. This
-//! binary converts that from *documented* to *runtime-observed*: it runs as the
-//! workload inside pod A and reports, from a process running as the workload uid
-//! in the guest, the pod set A can actually see.
+//! binary converts that from *documented* to *runtime-observed*: CI guest-init
+//! launches it as trusted instrumentation inside pod A. It reports the view
+//! authenticated by A's vsock, not a workload permission to open that socket.
+//! Production guest-init omits the `ci-podlist-probe` feature. Workload seccomp
+//! independently denies AF_VSOCK; the workload probe measures that denial.
 //!
 //! It is the cross-pod twin of `nucleus-egress-probe`: a static binary baked into
 //! the rootfs, whose verdict is a sentinel line on BOTH stdout and stderr plus
-//! the exit code — the tool-proxy drains the child's stderr into the guest
-//! console log, where the boot harness greps it back on the host.
+//! the exit code. Its inherited stderr reaches the guest console log, where
+//! the boot harness reads it back on the host.
 //!
 //! # The probe reports; the HOST decides the security property
 //!

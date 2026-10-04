@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Minimal in-guest probe: asserts the FM-5 workload posture on the real child (empty of identity material, no leaked fds, dropped groups, read-only root)"
+description = "Minimal in-guest probe: asserts the FM-5 workload posture on the real child (empty of identity material, no leaked fds, dropped groups, read-only root, the workload syscall filter)"
 repository = "https://github.com/coproduct-opensource/nucleus"
 readme = "README.md"
 
@@ -12,4 +12,8 @@ readme = "README.md"
 name = "nucleus-workload-probe"
 path = "src/main.rs"
 
-[dependencies]
+# Raw syscalls for the syscall-filter stage (AF_VSOCK, unshare, ptrace): std
+# has no binding for them. Linux-only, like the probe; already in the guest
+# rootfs build through nucleus-guest-init and nucleus-tool-proxy.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"

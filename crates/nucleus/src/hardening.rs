@@ -65,17 +65,17 @@
 //!
 //! # What the child gets
 //!
-//! | Mode | runtime root | runtime not root |
-//! |---|---|---|
-//! | `Unconfigured` | refused | refused |
-//! | `Unsandboxed`, `/v1/run` child, opted in | drop to 65534 | bare: runtime's uid |
-//! | `Unsandboxed`, `/v1/run` child, no opt-in | drop to 65534 | **refused** |
-//! | `Unsandboxed`, workload, no `workload.uid`, opted in | drop to 65534 | bare: runtime's uid |
-//! | `Unsandboxed`, workload, no `workload.uid`, no opt-in | drop to 65534 | **refused** |
-//! | `Unsandboxed`, workload, explicit `workload.uid` | drop to it | **refused** |
-//! | `HostHardened`, `/v1/run` child | drop to 65534 | restricted, runtime's uid |
-//! | `HostHardened`, workload | drop | **refused** |
-//! | `MicroVM` (child or workload) | drop | **refused** |
+//! | Mode | runtime root | runtime not root | syscall filter |
+//! |---|---|---|---|
+//! | `Unconfigured` | refused | refused | — |
+//! | `Unsandboxed`, `/v1/run` child, opted in | drop to 65534 | bare: runtime's uid | none |
+//! | `Unsandboxed`, `/v1/run` child, no opt-in | drop to 65534 | **refused** | none |
+//! | `Unsandboxed`, workload, no `workload.uid`, opted in | drop to 65534 | bare: runtime's uid | none |
+//! | `Unsandboxed`, workload, no `workload.uid`, no opt-in | drop to 65534 | **refused** | none |
+//! | `Unsandboxed`, workload, explicit `workload.uid` | drop to it | **refused** | none |
+//! | `HostHardened`, `/v1/run` child | drop to 65534 | restricted, runtime's uid | denylist |
+//! | `HostHardened`, workload | drop | **refused** | denylist |
+//! | `MicroVM` (child or workload) | drop | **refused** | denylist |
 //!
 //! "Bare" = no fd closing, no `no_new_privs`, no rlimits. "Restricted" = fds
 //! above 2 close-on-exec, `no_new_privs`, rlimits, no uid change. "Drop" =
@@ -89,12 +89,34 @@
 //! never selects it — its containment comes only from `SandboxProof`, which
 //! yields `MicroVM` or `Unsandboxed`.
 //!
+//! # The syscall filter (#2696 P3b)
+//!
+//! Every posture that confines installs the workload denylist
+//! (`hardening/seccomp.rs`): no AF_VSOCK socket, no new namespace, no
+//! `clone3` (answered `ENOSYS` so libc falls back to the `clone` the filter
+//! can read), no ptrace-class access to a sibling, and no io_uring, bpf, perf,
+//! keyring, mount or module calls. The P3 spike (#3148) measured a non-root
+//! workload opening AF_VSOCK and creating a user namespace on the guest
+//! kernel. The uid drop does not take those away, because every uid has them.
+//!
+//! Which mode gets it is decided once, by `ChildConfinement::syscall_filter_for`,
+//! an exhaustive match. `MicroVM` and `HostHardened` get the denylist.
+//! `Unsandboxed` gets none, even when a root runtime drops its uid, because
+//! that tier is declared to mean "no namespace or seccomp confinement" (owner
+//! decision 2). The program is compiled in the parent and installed by the
+//! `pre_exec` hook after the uid drop and `no_new_privs`. A program that
+//! cannot be compiled or installed fails the spawn; it is never skipped
+//! (ADR 0007 A-1).
+//!
 //! [`apply`]: ChildConfinement::apply
 
 use std::path::Path;
 
 use crate::command::ContainmentMode;
 use crate::error::{NucleusError, Result};
+
+#[cfg(target_os = "linux")]
+mod seccomp;
 
 /// The uid a separated child runs as when nothing more specific is
 /// configured: `nobody`. A high, unprivileged, non-root value — the guest
@@ -120,12 +142,30 @@ enum Posture {
     /// The child is a plain host process at the runtime's uid, and can read
     /// everything the runtime can, its environment included. Reachable ONLY
     /// from `ContainmentMode::Unsandboxed` — never as the fallback of a
-    /// separation that could not happen.
+    /// separation that could not happen. It carries no filter: a filter needs
+    /// `no_new_privs`, which this posture does not set.
     Unsandboxed,
     /// Self-restriction without a uid change (`ContainmentMode::HostHardened`).
-    Restricted,
+    Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
-    DropTo(u32),
+    DropTo(u32, SyscallFilter),
+}
+
+/// Which syscall filter a confined child installs (#2696 P3b).
+///
+/// Two named cases rather than an `Option` (ADR 0007 B-2: `None` may not mean
+/// "unrestricted"), and no `Default` (B-1). Decided per [`ContainmentMode`] in
+/// one exhaustive match; see the module docs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyscallFilter {
+    /// The workload denylist. It refuses AF_VSOCK sockets, new namespaces,
+    /// `clone3` (with `ENOSYS`), ptrace-class calls, io_uring, bpf, perf,
+    /// keyrings, mounts and kernel modules. It is installed after the uid drop
+    /// and `no_new_privs`, and failing to install it fails the spawn.
+    WorkloadDenylist,
+    /// No filter: the declared bare tier, `ContainmentMode::Unsandboxed`,
+    /// whose contract is "no namespace or seccomp confinement".
+    Unfiltered,
 }
 
 /// The operator's explicit acceptance that a child -- a `/v1/run` command or
@@ -188,26 +228,50 @@ impl ChildConfinement {
         runtime_uid: u32,
         opt_in: UnsandboxedOptIn,
     ) -> Result<Self> {
+        let syscalls = Self::syscall_filter_for(mode)?;
         // Exhaustive and `_`-free on purpose (ADR 0007 B-3): a new mode does
         // not compile until its children's confinement is written here.
         match mode {
             ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
             // Owner decision 2 (2026-10-02): a root runtime's child is never
-            // root, whatever the mode. The bare and self-restricted tiers
-            // still mean "no namespace or seccomp confinement", but a root
-            // runtime can always drop, so it does.
+            // root, whatever the mode. The bare tier still means "no
+            // namespace or seccomp confinement" (its `syscalls` is
+            // `Unfiltered`), but a root runtime can always drop, so it does.
             ContainmentMode::Unsandboxed | ContainmentMode::HostHardened if runtime_uid == 0 => {
-                Self::separate(DEFAULT_CHILD_UID, runtime_uid)
+                Self::separate(DEFAULT_CHILD_UID, runtime_uid, syscalls)
             }
             ContainmentMode::Unsandboxed => Self::bare(runtime_uid, opt_in),
             ContainmentMode::HostHardened => Ok(Self {
-                posture: Posture::Restricted,
+                posture: Posture::Restricted(syscalls),
             }),
             // The VM is the boundary against the HOST; inside it, the
             // tool-proxy is PID 1 and root, and holds every pod secret. A
             // command it runs for the agent is separated from it exactly as
             // the workload is — or not run.
-            ContainmentMode::MicroVM => Self::separate(DEFAULT_CHILD_UID, runtime_uid),
+            ContainmentMode::MicroVM => Self::separate(DEFAULT_CHILD_UID, runtime_uid, syscalls),
+        }
+    }
+
+    /// The ONE answer to "which syscall filter do this mode's children get"
+    /// (ADR 0007 G-1), for the `/v1/run` child and the workload alike.
+    /// Exhaustive with no `_` arm (B-3, E): a new mode does not compile until
+    /// its filter is stated here.
+    fn syscall_filter_for(mode: ContainmentMode) -> Result<SyscallFilter> {
+        match mode {
+            ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
+            // The declared bare tier. "No namespace or seccomp confinement"
+            // is its documented contract (owner decision 2), and a non-root
+            // child here sets no `no_new_privs`, without which the kernel
+            // would refuse the filter anyway. A root runtime still drops the
+            // uid but adds no filter: the operator opted in to this tier's
+            // stated meaning, and the mode attests nothing about syscalls.
+            ContainmentMode::Unsandboxed => Ok(SyscallFilter::Unfiltered),
+            // Self-restriction on a Linux host: the filter is the syscall
+            // half of what this mode attests ("reduces syscall surface").
+            ContainmentMode::HostHardened => Ok(SyscallFilter::WorkloadDenylist),
+            // The guest, where the exposure was measured (#3148). Every child
+            // of the root tool-proxy gets it: the workload and `/v1/run`.
+            ContainmentMode::MicroVM => Ok(SyscallFilter::WorkloadDenylist),
         }
     }
 
@@ -244,6 +308,7 @@ impl ChildConfinement {
         opt_in: UnsandboxedOptIn,
     ) -> Result<Self> {
         let uid = requested.unwrap_or(DEFAULT_CHILD_UID);
+        let syscalls = Self::syscall_filter_for(mode)?;
         match mode {
             ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
             // The bare host tier, declared. A root runtime still drops (a
@@ -256,10 +321,10 @@ impl ChildConfinement {
             // mode is not, by itself, consent to a same-uid workload.
             ContainmentMode::Unsandboxed => match requested {
                 None if runtime_uid != 0 => Self::bare(runtime_uid, opt_in),
-                None | Some(_) => Self::separate(uid, runtime_uid),
+                None | Some(_) => Self::separate(uid, runtime_uid, syscalls),
             },
             ContainmentMode::HostHardened | ContainmentMode::MicroVM => {
-                Self::separate(uid, runtime_uid)
+                Self::separate(uid, runtime_uid, syscalls)
             }
         }
     }
@@ -280,7 +345,7 @@ impl ChildConfinement {
     /// "This child must not share the runtime's authority" — the one rule the
     /// workload and the MicroVM `/v1/run` child share. A drop, or a named
     /// refusal; there is no third outcome.
-    fn separate(uid: u32, runtime_uid: u32) -> Result<Self> {
+    fn separate(uid: u32, runtime_uid: u32, syscalls: SyscallFilter) -> Result<Self> {
         if uid == runtime_uid {
             Err(NucleusError::ChildSharesRuntimeUid { uid })
         } else if runtime_uid != 0 {
@@ -290,7 +355,7 @@ impl ChildConfinement {
             })
         } else {
             Ok(Self {
-                posture: Posture::DropTo(uid),
+                posture: Posture::DropTo(uid, syscalls),
             })
         }
     }
@@ -299,8 +364,17 @@ impl ChildConfinement {
     #[must_use]
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
-            Posture::DropTo(uid) => ChildUid::Distinct(uid),
-            Posture::Unsandboxed | Posture::Restricted => ChildUid::SharedWithRuntime,
+            Posture::DropTo(uid, _) => ChildUid::Distinct(uid),
+            Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
+        }
+    }
+
+    /// The syscall filter the child installs.
+    #[must_use]
+    pub fn syscall_filter(&self) -> SyscallFilter {
+        match self.posture {
+            Posture::Unsandboxed => SyscallFilter::Unfiltered,
+            Posture::Restricted(filter) | Posture::DropTo(_, filter) => filter,
         }
     }
 
@@ -320,7 +394,7 @@ impl ChildConfinement {
     pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
             Posture::Unsandboxed => true,
-            Posture::Restricted | Posture::DropTo(_) => false,
+            Posture::Restricted(_) | Posture::DropTo(..) => false,
         }
     }
 
@@ -328,7 +402,7 @@ impl ChildConfinement {
     #[must_use]
     pub fn restricts(&self) -> bool {
         match self.posture {
-            Posture::Restricted | Posture::DropTo(_) => true,
+            Posture::Restricted(_) | Posture::DropTo(..) => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -337,7 +411,7 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::Restricted | Posture::DropTo(_) => true,
+            Posture::Restricted(_) | Posture::DropTo(..) => true,
             Posture::Unsandboxed => false,
         }
     }
@@ -356,14 +430,20 @@ impl ChildConfinement {
     /// traversable by the dropped uid; [`Self::hand_over`] is the ergonomic
     /// half of that.
     ///
+    /// The syscall filter, when this confinement has one, is compiled HERE,
+    /// in the parent, and moved into the hook. The child only hands it to
+    /// `prctl`, after the uid drop and `no_new_privs`. A filter that cannot be
+    /// compiled or installed fails the spawn (`Unsupported`, or the kernel's
+    /// errno); it is never skipped.
+    ///
     /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         match self.posture {
             Posture::Unsandboxed => {}
-            Posture::Restricted => imp::install(cmd, true),
-            Posture::DropTo(uid) => {
+            Posture::Restricted(filter) => imp::install(cmd, filter),
+            Posture::DropTo(uid, filter) => {
                 imp::drop_to(cmd, uid);
-                imp::install(cmd, true);
+                imp::install(cmd, filter);
             }
         }
     }
@@ -428,17 +508,44 @@ mod uid {
     }
 }
 
+// The crate denies `unsafe_code` globally. This module and `imp` (Linux) are
+// the audited exceptions, with one `unsafe` block each: the hook install here,
+// and the child-side syscall sequence there.
+#[cfg(unix)]
+#[allow(unsafe_code)]
+mod hook {
+    use std::os::unix::process::CommandExt;
+
+    /// The ONE place this module installs a `pre_exec` hook.
+    ///
+    /// Contract, which every caller in this file honours: `hook` runs in the
+    /// forked child before exec, so it must be async-signal-safe: raw
+    /// syscalls only, no allocation, no locks. Its callers are
+    /// `imp::harden_child` (Linux) and the non-Linux refusal, which returns a
+    /// constant error.
+    pub(super) fn pre_exec<F>(cmd: &mut std::process::Command, hook: F)
+    where
+        F: FnMut() -> std::io::Result<()> + Send + Sync + 'static,
+    {
+        // SAFETY: per the contract above, `hook` performs only
+        // async-signal-safe syscalls and does not allocate.
+        unsafe {
+            cmd.pre_exec(hook);
+        }
+    }
+}
+
 #[cfg(target_os = "linux")]
-// The crate denies `unsafe_code` globally; this module is the single, audited
+// The crate denies `unsafe_code` globally; this module is an audited
 // exception. Child-side hardening is intrinsically `unsafe` FFI: it calls
-// `close_range`/`prctl`/`setrlimit` and installs a `pre_exec` hook, which must
-// be async-signal-safe. Two `unsafe` blocks: the syscall sequence and the hook
-// install.
+// `close_range`/`prctl`/`setrlimit`, which must be async-signal-safe. One
+// `unsafe` block: the syscall sequence. The hook install is `hook::pre_exec`.
 #[allow(unsafe_code)]
 mod imp {
     use std::io;
-    use std::os::unix::process::CommandExt;
 
+    use super::SyscallFilter;
+    use super::seccomp::Program;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
 
     // Generous-but-bounded: contain abuse without breaking build/test work.
@@ -458,10 +565,24 @@ mod imp {
     /// Local because the `libc` crate's binding varies by target.
     const CLOSE_RANGE_CLOEXEC: libc::c_long = 1 << 2;
 
+    /// The syscall filter as the hook sees it: decided AND compiled in the
+    /// parent, so the child neither decides nor allocates. Three cases, not an
+    /// `Option` (ADR 0007 A-1, B-2): "the filter could not be built" is a
+    /// refusal, not "no filter".
+    enum Seccomp {
+        /// `SyscallFilter::Unfiltered`.
+        NotRequested,
+        /// The compiled denylist, installed after `no_new_privs`.
+        Install(Program),
+        /// The denylist was required and could not be compiled, so the spawn
+        /// fails. The reason was logged in the parent.
+        Refuse,
+    }
+
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
-    fn harden_child(restrict: bool) -> io::Result<()> {
+    fn harden_child(seccomp: &mut Seccomp) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
         // scalars or a pointer to a fully-initialized local `rlimit`; none
         // allocates or takes a lock, satisfying the `pre_exec` contract.
@@ -506,24 +627,43 @@ mod imp {
                     _ => return Err(err),
                 }
             }
-            if restrict {
-                // What any process may do to itself — the uid, if it was to
-                // change, already has.
-                // No new privileges: defeats setuid/file-capability escalation.
-                if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            // What any process may do to itself — the uid, if it was to
+            // change, already has.
+            // No new privileges: defeats setuid/file-capability escalation,
+            // and is what lets an unprivileged process install the filter
+            // below (without it the kernel answers EACCES).
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            for (resource, max) in [
+                (libc::RLIMIT_NPROC, RLIMIT_NPROC_MAX),
+                (libc::RLIMIT_NOFILE, RLIMIT_NOFILE_MAX),
+                (libc::RLIMIT_FSIZE, RLIMIT_FSIZE_MAX),
+                (libc::RLIMIT_CPU, RLIMIT_CPU_SECS),
+            ] {
+                let rl = libc::rlimit {
+                    rlim_cur: max,
+                    rlim_max: max,
+                };
+                if libc::setrlimit(resource as RlimitResource, &rl) != 0 {
                     return Err(io::Error::last_os_error());
                 }
-                for (resource, max) in [
-                    (libc::RLIMIT_NPROC, RLIMIT_NPROC_MAX),
-                    (libc::RLIMIT_NOFILE, RLIMIT_NOFILE_MAX),
-                    (libc::RLIMIT_FSIZE, RLIMIT_FSIZE_MAX),
-                    (libc::RLIMIT_CPU, RLIMIT_CPU_SECS),
-                ] {
-                    let rl = libc::rlimit {
-                        rlim_cur: max,
-                        rlim_max: max,
-                    };
-                    if libc::setrlimit(resource as RlimitResource, &rl) != 0 {
+            }
+            // The syscall filter, LAST: after the uid drop (std did it before
+            // this hook ran) and after `no_new_privs`. `fprog` borrows the
+            // parent-compiled instructions, and `ErrorKind` errors do not
+            // allocate.
+            match seccomp {
+                Seccomp::NotRequested => {}
+                Seccomp::Refuse => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
+                Seccomp::Install(program) => {
+                    let fprog = program.fprog();
+                    if libc::prctl(
+                        libc::PR_SET_SECCOMP,
+                        libc::SECCOMP_MODE_FILTER,
+                        &raw const fprog,
+                    ) != 0
+                    {
                         return Err(io::Error::last_os_error());
                     }
                 }
@@ -532,27 +672,69 @@ mod imp {
         Ok(())
     }
 
-    pub(super) fn install(cmd: &mut std::process::Command, restrict: bool) {
-        // SAFETY: `harden_child` only invokes async-signal-safe syscalls and
-        // does not allocate.
-        unsafe {
-            cmd.pre_exec(move || harden_child(restrict));
-        }
+    /// Install the self-restriction hook, with `filter` compiled here, in the
+    /// parent.
+    pub(super) fn install(cmd: &mut std::process::Command, filter: SyscallFilter) {
+        let mut seccomp = match filter {
+            SyscallFilter::Unfiltered => Seccomp::NotRequested,
+            SyscallFilter::WorkloadDenylist => match Program::workload_denylist() {
+                Ok(program) => Seccomp::Install(program),
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        "the workload syscall filter could not be built; refusing the confined spawn"
+                    );
+                    Seccomp::Refuse
+                }
+            },
+        };
+        super::hook::pre_exec(cmd, move || harden_child(&mut seccomp));
     }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
 mod imp {
+    use super::SyscallFilter;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
 
-    /// No `close_range`/`prctl` off Linux. `HostHardened` is refused before
-    /// any spawn there (`attest_containment`), and the guest is Linux.
-    pub(super) fn install(_cmd: &mut std::process::Command, _restrict: bool) {}
+    /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
+    /// before any spawn there (`attest_containment`), and the guest is Linux.
+    /// A posture that requires the syscall filter cannot have it here, so its
+    /// spawn fails rather than running unfiltered (ADR 0007 A-1).
+    pub(super) fn install(cmd: &mut std::process::Command, filter: SyscallFilter) {
+        match filter {
+            SyscallFilter::Unfiltered => {}
+            SyscallFilter::WorkloadDenylist => {
+                // std transports a pre_exec error by errno; a bare ErrorKind loses
+                // its identity and arrives in the parent as EINVAL.
+                super::hook::pre_exec(cmd, || {
+                    Err(std::io::Error::from_raw_os_error(libc::EOPNOTSUPP))
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(unix, not(target_os = "linux")))]
+    #[test]
+    fn a_required_syscall_filter_refuses_the_spawn_off_linux() {
+        let confinement = ChildConfinement::decide(
+            ContainmentMode::HostHardened,
+            1000,
+            UnsandboxedOptIn::Absent,
+        )
+        .expect("the posture requires a filter");
+        let mut cmd = std::process::Command::new("/bin/true");
+        confinement.apply(&mut cmd);
+        let err = cmd
+            .status()
+            .expect_err("an unavailable filter must prevent exec");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+    }
 
     /// Owner decision 2 (2026-10-02): a root runtime's `/v1/run` child drops
     /// to the workload uid in every mode, not only `MicroVM`. Red before the
@@ -773,6 +955,65 @@ mod tests {
         .unwrap();
         assert_eq!(c.child_uid(), ChildUid::Distinct(4242));
         assert!(c.restricts());
+    }
+
+    /// #2696 P3b: the syscall filter per mode, at every runtime uid that
+    /// confines, for the `/v1/run` child and the workload alike. `MicroVM` and
+    /// `HostHardened` filter; `Unsandboxed` does not, even when a root runtime
+    /// drops it (owner decision 2: the bare tier means no seccomp). Red before
+    /// P3b: there was no filter in any posture.
+    #[test]
+    fn every_confining_mode_filters_syscalls_and_the_bare_tier_does_not() {
+        for runtime in [0, 1000] {
+            for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
+                for (mode, want) in [
+                    (ContainmentMode::MicroVM, SyscallFilter::WorkloadDenylist),
+                    (
+                        ContainmentMode::HostHardened,
+                        SyscallFilter::WorkloadDenylist,
+                    ),
+                    (ContainmentMode::Unsandboxed, SyscallFilter::Unfiltered),
+                ] {
+                    let run_child = ChildConfinement::decide(mode, runtime, opt_in);
+                    let workload = ChildConfinement::decide_workload(mode, None, runtime, opt_in);
+                    for (what, got) in [("run child", run_child), ("workload", workload)] {
+                        // A refusal (non-root MicroVM, unopted bare tier) has
+                        // no filter to check; every posture that runs does.
+                        if let Ok(c) = got {
+                            assert_eq!(
+                                c.syscall_filter(),
+                                want,
+                                "{what}: {mode:?} at uid {runtime}, {opt_in:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        // Non-vacuity: the filtering rows above were actually reached.
+        assert_eq!(
+            ChildConfinement::decide(ContainmentMode::MicroVM, 0, UnsandboxedOptIn::Absent)
+                .unwrap()
+                .syscall_filter(),
+            SyscallFilter::WorkloadDenylist
+        );
+        assert_eq!(
+            ChildConfinement::decide(
+                ContainmentMode::HostHardened,
+                1000,
+                UnsandboxedOptIn::Absent
+            )
+            .unwrap()
+            .syscall_filter(),
+            SyscallFilter::WorkloadDenylist
+        );
+        // A root runtime's Unsandboxed child drops its uid and is still
+        // unfiltered.
+        let root_bare =
+            ChildConfinement::decide(ContainmentMode::Unsandboxed, 0, UnsandboxedOptIn::Absent)
+                .unwrap();
+        assert_eq!(root_bare.drop_uid(), Some(DEFAULT_CHILD_UID));
+        assert_eq!(root_bare.syscall_filter(), SyscallFilter::Unfiltered);
     }
 
     #[test]

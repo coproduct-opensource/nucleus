@@ -12,11 +12,17 @@
 //!     structural closure — the runc CVE-2024-21626 shape),
 //!   - if it was given a distinct uid, its supplementary groups were dropped,
 //!   - its root filesystem is mounted read-only,
+//!   - it runs under the workload syscall filter (#2696 P3b): AF_VSOCK, a user
+//!     namespace and ptrace are refused with the filter's `EPERM`, while an
+//!     ordinary socket, fork and exec still work. Also a stage of its own,
+//!     `--syscall-filter`, for a `/v1/run` child.
 //!   - if it runs under a non-root uid, PID 1 (the tool-proxy, guest root) is
 //!     invisible in its `/proc` (`hidepid=invisible`, #2696 P3d).
 //!
-//! Zero dependencies (it is baked into the musl rootfs as a static binary,
-//! exactly like `nucleus-net-probe`); everything is a `std::fs` read of procfs.
+//! It is baked into the musl rootfs as a static binary, exactly like
+//! `nucleus-net-probe`. Everything but the syscall-filter stage is a
+//! `std::fs` read of procfs; that stage needs raw syscalls, so `libc` is the
+//! one dependency.
 //! The verdict is a sentinel line on BOTH stdout and stderr plus the exit code
 //! — the tool-proxy drains the child's stderr into the guest console log, where
 //! `nucleus verify --tier2` reads it back on the host.
@@ -58,6 +64,19 @@ const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 const RUN_CHILD_PASS: &str = "NUCLEUS_RUN_CHILD_PROBE: PASS";
 const RUN_CHILD_FAIL: &str = "NUCLEUS_RUN_CHILD_PROBE: FAIL";
 
+/// The syscall-filter stage's sentinels. Not `NUCLEUS_CONFINEMENT_PROBE`: that
+/// name is reserved for guest-init's boot verdict (#3148, P3d).
+const SYSCALL_FILTER_PASS: &str = "NUCLEUS_SYSCALL_FILTER_PROBE: PASS";
+const SYSCALL_FILTER_FAIL: &str = "NUCLEUS_SYSCALL_FILTER_PROBE: FAIL";
+const SYSCALL_FILTER_OP_FLAG: &str = "--syscall-filter-op";
+const SYSCALL_FILTER_OP_LINE: &str = "NUCLEUS_SYSCALL_FILTER_OP: ";
+
+/// The errno the workload filter answers (`nucleus::hardening::seccomp`'s
+/// `DENIED_ERRNO`). `EPERM` is 1 on every Linux architecture
+/// (`asm-generic/errno-base.h`); restated because this binary is
+/// dependency-light and runs only in the guest.
+const FILTER_ERRNO: i32 = 1;
+
 /// The contention probe's per-request line and its summary line, read back off
 /// the guest console by whoever ran the pod.
 const CONTEND_SENTINEL: &str = "NUCLEUS_CONTEND";
@@ -80,6 +99,35 @@ fn main() {
             let reason = fails.join("; ");
             println!("{RUN_CHILD_FAIL}: {reason}");
             eprintln!("{RUN_CHILD_FAIL}: {reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Internal: one syscall-filter operation, in a subprocess of its own (a
+    // successful `unshare` or `ptrace(TRACEME)` changes the caller).
+    if std::env::args().nth(1).as_deref() == Some(SYSCALL_FILTER_OP_FLAG) {
+        let result = std::env::args()
+            .nth(2)
+            .as_deref()
+            .and_then(FilterOp::from_name)
+            .map_or_else(|| "unknown-op".to_string(), |op| op.run().render());
+        println!("{SYSCALL_FILTER_OP_LINE}{result}");
+        return;
+    }
+
+    // Stage 3: the workload syscall filter alone, e.g. as a `/v1/run` command
+    // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--syscall-filter"]}`).
+    if std::env::args().nth(1).as_deref() == Some("--syscall-filter") {
+        let mut fails = Vec::new();
+        check_syscall_filter(&mut fails);
+        if fails.is_empty() {
+            println!("{SYSCALL_FILTER_PASS}");
+            eprintln!("{SYSCALL_FILTER_PASS}");
+        } else {
+            let reason = fails.join("; ");
+            println!("{SYSCALL_FILTER_FAIL}: {reason}");
+            eprintln!("{SYSCALL_FILTER_FAIL}: {reason}");
             std::process::exit(1);
         }
         return;
@@ -110,6 +158,7 @@ fn main() {
     check_file_descriptors(&mut fails);
     check_groups(&mut fails);
     check_root_readonly(&mut fails);
+    check_syscall_filter(&mut fails);
     check_pid1_invisible(&mut fails);
     check_credential_absence();
 
@@ -323,6 +372,245 @@ fn check_root_readonly(fails: &mut Vec<String>) {
         Some(false) => fails.push("root filesystem is mounted read-write".to_string()),
         None => fails.push("no root (/) mount found in /proc/self/mountinfo".to_string()),
     }
+}
+
+/// What one syscall-filter operation returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Ok,
+    Errno(i32),
+}
+
+impl Outcome {
+    fn render(self) -> String {
+        match self {
+            Outcome::Ok => "ok".to_string(),
+            Outcome::Errno(e) => format!("errno={e}"),
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "ok" => Some(Outcome::Ok),
+            other => other
+                .strip_prefix("errno=")
+                .and_then(|e| e.parse().ok())
+                .map(Outcome::Errno),
+        }
+    }
+}
+
+/// The operations the syscall-filter stage tries, each in its own
+/// subprocess. That subprocess is a fork and exec of this binary, so the stage
+/// running at all is the "fork and exec still work" check for std's spawn
+/// (whose `clone3` the filter answers `ENOSYS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterOp {
+    /// `socket(AF_VSOCK)`: measured OPEN to the workload in #3148.
+    Vsock,
+    /// `unshare(CLONE_NEWUSER)`: measured OPEN in #3148.
+    UnshareUserns,
+    /// `clone(CLONE_NEWUSER | SIGCHLD)`, the other door to a user namespace.
+    CloneNewuser,
+    /// `ptrace(PTRACE_TRACEME)`.
+    Ptrace,
+    /// `socket(AF_INET, SOCK_STREAM)`: must still work.
+    InetSocket,
+    /// A raw fork (`clone(SIGCHLD)`): must still work.
+    Fork,
+}
+
+impl FilterOp {
+    const ALL: [FilterOp; 6] = [
+        FilterOp::Vsock,
+        FilterOp::UnshareUserns,
+        FilterOp::CloneNewuser,
+        FilterOp::Ptrace,
+        FilterOp::InetSocket,
+        FilterOp::Fork,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            FilterOp::Vsock => "vsock",
+            FilterOp::UnshareUserns => "unshare-userns",
+            FilterOp::CloneNewuser => "clone-newuser",
+            FilterOp::Ptrace => "ptrace",
+            FilterOp::InetSocket => "inet-socket",
+            FilterOp::Fork => "fork",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.name() == name)
+    }
+
+    /// What the workload filter must answer.
+    fn expected(self) -> Outcome {
+        match self {
+            FilterOp::Vsock
+            | FilterOp::UnshareUserns
+            | FilterOp::CloneNewuser
+            | FilterOp::Ptrace => Outcome::Errno(FILTER_ERRNO),
+            FilterOp::InetSocket | FilterOp::Fork => Outcome::Ok,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run(self) -> Outcome {
+        use libc::c_long;
+        let outcome = |r: Result<c_long, i32>| match r {
+            Ok(_) => Outcome::Ok,
+            Err(e) => Outcome::Errno(e),
+        };
+        // A fork-like clone whose child exits at once; the parent reaps it.
+        let clone_and_reap = |flags: c_long| {
+            let r = sys(libc::SYS_clone, [flags, 0, 0, 0, 0]);
+            match r {
+                Ok(0) => {
+                    let _ = sys(libc::SYS_exit_group, [0, 0, 0, 0, 0]);
+                    unreachable!("exit_group returned")
+                }
+                Ok(pid) => {
+                    let _ = sys(libc::SYS_wait4, [pid, 0, 0, 0, 0]);
+                }
+                Err(_) => {}
+            }
+            outcome(r)
+        };
+        match self {
+            FilterOp::Vsock | FilterOp::InetSocket => {
+                let family = if self == FilterOp::Vsock {
+                    libc::AF_VSOCK
+                } else {
+                    libc::AF_INET
+                };
+                let r = sys(
+                    libc::SYS_socket,
+                    [
+                        c_long::from(family),
+                        c_long::from(libc::SOCK_STREAM | libc::SOCK_CLOEXEC),
+                        0,
+                        0,
+                        0,
+                    ],
+                );
+                if let Ok(fd) = r {
+                    let _ = sys(libc::SYS_close, [fd, 0, 0, 0, 0]);
+                }
+                outcome(r)
+            }
+            FilterOp::UnshareUserns => outcome(sys(
+                libc::SYS_unshare,
+                [c_long::from(libc::CLONE_NEWUSER), 0, 0, 0, 0],
+            )),
+            FilterOp::CloneNewuser => {
+                clone_and_reap(c_long::from(libc::CLONE_NEWUSER | libc::SIGCHLD))
+            }
+            FilterOp::Ptrace => outcome(sys(
+                libc::SYS_ptrace,
+                [c_long::from(libc::PTRACE_TRACEME), 0, 0, 0, 0],
+            )),
+            FilterOp::Fork => clone_and_reap(c_long::from(libc::SIGCHLD)),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn run(self) -> Outcome {
+        // No seccomp off Linux; the guest is Linux. ENOSYS reads as a FAIL.
+        Outcome::Errno(38)
+    }
+}
+
+/// The one raw-syscall door of this binary. Every caller passes scalars only
+/// (no pointer the kernel would read or write), so nothing here touches this
+/// process's memory.
+#[cfg(target_os = "linux")]
+fn sys(nr: libc::c_long, a: [libc::c_long; 5]) -> Result<libc::c_long, i32> {
+    // SAFETY: a raw syscall with scalar arguments only (see the doc comment);
+    // `wait4` is passed NULL for both of its out-pointers.
+    let rc = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4]) };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1))
+    } else {
+        Ok(rc)
+    }
+}
+
+/// Run every [`FilterOp`] in its own subprocess and check the answers, plus
+/// `/proc/self/status`'s `Seccomp:` mode.
+fn check_syscall_filter(fails: &mut Vec<String>) {
+    let mode = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Seccomp:"))
+                .map(|v| v.trim().to_string())
+        });
+    let observed: Vec<(FilterOp, Result<Outcome, String>)> = FilterOp::ALL
+        .into_iter()
+        .map(|op| (op, observe(op)))
+        .collect();
+    for (op, seen) in &observed {
+        let line = match seen {
+            Ok(o) => o.render(),
+            Err(e) => format!("not observed: {e}"),
+        };
+        eprintln!("NUCLEUS_SYSCALL_FILTER {}: {line}", op.name());
+    }
+    fails.extend(syscall_filter_failures(mode.as_deref(), &observed));
+}
+
+/// Spawn this binary to run `op`. A spawn that fails, or a child that prints
+/// no result, is "could not look", which is reported as such (ADR 0007 A-1).
+fn observe(op: FilterOp) -> Result<Outcome, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let out = std::process::Command::new(exe)
+        .args([SYSCALL_FILTER_OP_FLAG, op.name()])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("spawn (fork+exec under the filter): {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix(SYSCALL_FILTER_OP_LINE))
+        .and_then(Outcome::parse)
+        .ok_or_else(|| format!("no result line (exit {})", out.status))
+}
+
+/// The syscall-filter verdict, pure so it is testable off-guest.
+///
+/// * `Seccomp:` in `/proc/self/status` must be `2` (filter mode);
+/// * each [`FilterOp`] must answer exactly [`FilterOp::expected`]. A denial
+///   with any other errno is not the filter's, and an op that could not be
+///   run is not a pass.
+fn syscall_filter_failures(
+    seccomp_mode: Option<&str>,
+    observed: &[(FilterOp, Result<Outcome, String>)],
+) -> Vec<String> {
+    let mut fails = Vec::new();
+    match seccomp_mode {
+        Some("2") => {}
+        Some(m) => fails.push(format!(
+            "the workload runs without a seccomp filter (Seccomp: {m}); the workload syscall \
+             filter was not installed"
+        )),
+        None => fails.push("could not read Seccomp: from /proc/self/status".to_string()),
+    }
+    for op in FilterOp::ALL {
+        match observed.iter().find(|(o, _)| *o == op).map(|(_, r)| r) {
+            Some(Ok(seen)) if *seen == op.expected() => {}
+            Some(Ok(seen)) => fails.push(format!(
+                "{}: expected {}, got {}",
+                op.name(),
+                op.expected().render(),
+                seen.render()
+            )),
+            Some(Err(e)) => fails.push(format!("{}: not observed ({e})", op.name())),
+            None => fails.push(format!("{}: never run", op.name())),
+        }
+    }
+    fails
 }
 
 // ── contend: the authority exchange's composition probe (#2988) ─────────────
@@ -670,6 +958,76 @@ fn run_child_failures(
     }
     fails.extend(pid1_failure(pid1));
     fails
+}
+
+#[cfg(test)]
+mod syscall_filter_tests {
+    use super::{FILTER_ERRNO, FilterOp, Outcome, syscall_filter_failures};
+
+    fn filtered() -> Vec<(FilterOp, Result<Outcome, String>)> {
+        FilterOp::ALL
+            .into_iter()
+            .map(|op| (op, Ok(op.expected())))
+            .collect()
+    }
+
+    #[test]
+    fn the_filtered_workload_passes() {
+        assert!(syscall_filter_failures(Some("2"), &filtered()).is_empty());
+    }
+
+    /// What #3148 measured on the unfiltered guest: AF_VSOCK, both user
+    /// namespace doors and ptrace succeed, and there is no filter.
+    #[test]
+    fn the_unfiltered_guest_fails_on_every_measured_exposure() {
+        let unfiltered: Vec<_> = FilterOp::ALL
+            .into_iter()
+            .map(|op| (op, Ok(Outcome::Ok)))
+            .collect();
+        let fails = syscall_filter_failures(Some("0"), &unfiltered);
+        assert_eq!(fails.len(), 5, "{fails:#?}");
+    }
+
+    /// A denial with another errno (DAC, a host policy) is not the filter's.
+    #[test]
+    fn a_denial_with_another_errno_is_not_the_filter() {
+        let mut seen = filtered();
+        seen[0].1 = Ok(Outcome::Errno(97)); // EAFNOSUPPORT
+        assert_eq!(syscall_filter_failures(Some("2"), &seen).len(), 1);
+    }
+
+    /// Could not look is not a pass (ADR 0007 A-1).
+    #[test]
+    fn an_op_that_could_not_run_or_a_missing_mode_fails() {
+        let mut seen = filtered();
+        seen[4].1 = Err("spawn failed".to_string());
+        assert_eq!(syscall_filter_failures(Some("2"), &seen).len(), 1);
+        assert_eq!(syscall_filter_failures(None, &filtered()).len(), 1);
+        assert_eq!(
+            syscall_filter_failures(Some("2"), &[]).len(),
+            FilterOp::ALL.len()
+        );
+    }
+
+    #[test]
+    fn ops_round_trip_by_name_and_outcomes_by_rendering() {
+        for op in FilterOp::ALL {
+            assert_eq!(FilterOp::from_name(op.name()), Some(op));
+        }
+        for o in [
+            Outcome::Ok,
+            Outcome::Errno(FILTER_ERRNO),
+            Outcome::Errno(97),
+        ] {
+            assert_eq!(Outcome::parse(&o.render()), Some(o));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_restated_errno_is_eperm() {
+        assert_eq!(FILTER_ERRNO, libc::EPERM);
+    }
 }
 
 #[cfg(test)]

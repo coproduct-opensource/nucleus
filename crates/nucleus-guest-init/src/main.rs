@@ -1288,6 +1288,9 @@ enum GuestBin {
     Proxy,
     /// The egress confinement probe, spawned beside it.
     EgressProbe,
+    /// CI-only lineage probe; workloads cannot open AF_VSOCK.
+    #[cfg(feature = "ci-podlist-probe")]
+    PodlistProbe,
 }
 
 impl GuestBin {
@@ -1295,6 +1298,8 @@ impl GuestBin {
         match self {
             Self::Proxy => PROXY_BIN,
             Self::EgressProbe => EGRESS_PROBE_BIN,
+            #[cfg(feature = "ci-podlist-probe")]
+            Self::PodlistProbe => guest_layout::PODLIST_PROBE_BIN,
         }
     }
 
@@ -1321,6 +1326,13 @@ fn exec_proxy(
     // audit secret is configured — weaker than an operator secret, but present.
     // Scoped to this child: see `child_env` above.
     attest_egress_confinement();
+    // Trusted instrumentation uses the sealed guest-layer binary. It is not
+    // a workload exception, and is absent from default/release builds.
+    #[cfg(feature = "ci-podlist-probe")]
+    if let Err(err) = GuestBin::PodlistProbe.command().spawn() {
+        // Missing PASS fails the host harness; never invent a successful probe.
+        eprintln!("nucleus-podlist-probe could not start: {err}");
+    }
 
     GuestBin::Proxy
         .command()

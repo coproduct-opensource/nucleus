@@ -538,10 +538,9 @@ pub(crate) struct JailerPlan<'a> {
     pub gid: u32,
     /// Network namespace path, replacing the `ip netns exec` wrapper.
     pub netns: Option<&'a str>,
-    /// Limits applied BEFORE exec — the whole reason for the jailer.
-    pub cgroup: Option<&'a nucleus_spec::CgroupSpec>,
-    /// Which cgroup hierarchy the host uses. See `detect_cgroup_version`.
-    pub cgroup_version: u8,
+    /// Limits applied BEFORE exec — the whole reason for the jailer. Node-derived and never
+    /// absent: a spec without a `cgroup` used to run with no limit at all (#3130).
+    pub cgroup: &'a crate::pod_resources::NodeCgroup,
     /// Config path as seen from INSIDE the jail.
     /// The in-jail config file to boot from, or `None` to leave the VMM idle in its API loop.
     ///
@@ -549,28 +548,6 @@ pub(crate) struct JailerPlan<'a> {
     /// why it can never be snapshotted — there is no moment at which to ask it to pause. `None`
     /// means the caller will build the machine over the API socket instead.
     pub config_file_in_jail: Option<&'a str>,
-}
-
-/// Which cgroup hierarchy this host presents: `2` for the unified v2 tree, else `1`.
-///
-/// `/sys/fs/cgroup/cgroup.controllers` exists if and only if the unified v2
-/// hierarchy is mounted there — it is the file the kernel documents for exactly
-/// this test, and it is cheaper and more direct than parsing `/proc/mounts`.
-///
-/// Defaults to 2 when the path cannot be read at all. That is the deliberate
-/// direction: v2 is the modern default, and being wrong toward v2 fails loudly
-/// at launch (the jailer refuses) rather than silently placing a workload in a
-/// hierarchy nobody is enforcing.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub(crate) fn detect_cgroup_version() -> u8 {
-    if std::path::Path::new("/sys/fs/cgroup/cgroup.controllers").exists() {
-        return 2;
-    }
-    // A v1 host has per-controller directories and no unified controllers file.
-    if std::path::Path::new("/sys/fs/cgroup/cpu").is_dir() {
-        return 1;
-    }
-    2
 }
 
 /// One call on Firecracker's HTTP API: what to send, where, and with what body.
@@ -657,7 +634,6 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
         gid,
         netns,
         cgroup,
-        cgroup_version,
         config_file_in_jail,
     } = *plan;
     let mut args: Vec<String> = vec![
@@ -678,33 +654,18 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
         args.push(ns.to_string());
     }
 
-    // THE JAILER DEFAULTS TO CGROUP V1, AND MODERN LINUX IS V2-ONLY.
-    //
-    // Found by driving the real jailer (v1.16.1) with this exact argv against a
-    // `cgroup2fs` host: it refuses outright with
-    //
-    //     Error: CgroupHierarchyMissing("No hierarchy found for this cgroup version.")
-    //
-    // and no VM is launched. `--cgroup-version` is documented as
-    // `[default: "1"]`, the unified v2 hierarchy has been the distro default
-    // since ~2021, and nothing in the cutover passed this flag — so every pod
-    // carrying a cgroup spec would have failed to start on any current host.
-    //
-    // Emitted only alongside `--cgroup`, because that is the only path the
-    // jailer needs a hierarchy for: with no cgroup settings it launches fine on
-    // a v2 host regardless (verified the same way).
-    if cgroup.is_some() {
-        args.push("--cgroup-version".to_string());
-        args.push(cgroup_version.to_string());
-    }
+    // THE JAILER DEFAULTS TO CGROUP V1, AND MODERN LINUX IS V2-ONLY. Driving the real jailer
+    // (v1.16.1) against a `cgroup2fs` host without `--cgroup-version 2` refused outright with
+    // `CgroupHierarchyMissing("No hierarchy found for this cgroup version.")`. Every pod now
+    // carries the node's limits (#3130), so the version is always declared.
+    args.push("--cgroup-version".to_string());
+    args.push(cgroup.version().as_arg().to_string());
 
     // Each setting becomes a `--cgroup file=value`, which the jailer applies
     // BEFORE exec. This is the whole point: the limit exists before the guest.
-    if let Some(spec) = cgroup {
-        for setting in &spec.settings {
-            args.push("--cgroup".to_string());
-            args.push(format!("{}={}", setting.file, setting.value));
-        }
+    for setting in cgroup.settings() {
+        args.push("--cgroup".to_string());
+        args.push(format!("{}={}", setting.file, setting.value));
     }
 
     // Everything after the separator is Firecracker's own argv.
@@ -836,20 +797,11 @@ impl FirecrackerConfig {
         // When jailed, every path emitted below is IN-JAIL, not host.
         jail: Option<&JailLayout>,
     ) -> Self {
-        let vcpu_count = spec
-            .spec
-            .resources
-            .as_ref()
-            .and_then(|r| r.cpu_cores)
-            .unwrap_or(1) as i64;
-        let mem_size_mib = spec
-            .spec
-            .resources
-            .as_ref()
-            .and_then(|r| r.memory_mib)
-            .unwrap_or(512) as i64;
-
-        let huge_pages = spec.spec.resources.as_ref().and_then(|r| r.huge_pages);
+        // The size `spec_posture::admit` held to the node's ceilings, defaults applied in one place.
+        let size = crate::pod_resources::PodSize::of(spec);
+        let vcpu_count = i64::from(size.vcpus());
+        let mem_size_mib = i64::try_from(size.memory_mib()).unwrap_or(i64::MAX);
+        let huge_pages = size.huge_pages();
         // The node owns the command line (#3124), and this is its one builder: the node's base,
         // then the tokens the spec was admitted to add, then the node's own keys, then the audit
         // sink as rendered by the parser admission ran (#3120). The spec's tokens come from
