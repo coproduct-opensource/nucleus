@@ -1474,6 +1474,7 @@ fn a_spec_without_a_cgroup_still_launches_under_node_limits() {
     assert_eq!(pair("--cgroup-version").map(String::as_str), Some("2"));
     for limit in [
         "memory.max=671088640",
+        "memory.swap.max=0",
         "cpu.max=100000 100000",
         "pids.max=64",
     ] {

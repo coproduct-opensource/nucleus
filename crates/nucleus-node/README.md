@@ -19,9 +19,21 @@ available parallelism. `--host-reserve-memory-mib` defaults to 512 and
 An empty resulting pool prevents startup. Configure capacity explicitly when
 other services share the host or memory restrictions are imposed by cgroup v1.
 
+Firecracker cgroup v2 pods receive `memory.swap.max=0`; v1 pods receive a combined
+`memory.memsw.limit_in_bytes` ceiling equal to the VMM memory ceiling, written
+after the memory limit. Pod settings may lower these ceilings but cannot raise
+them. The host must expose the corresponding swap-accounting control; a failed
+limit write prevents launch. Container pods already set their combined
+memory-plus-swap allowance equal to their memory allowance.
+
+The [v2 swap control](https://docs.kernel.org/admin-guide/cgroup-v2.html)
+limits swap separately. The [v1 memory controller](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)
+limits memory and swap together, so v1 does not promise that no page is ever
+swapped; it bounds their total.
+
 This pool tracks the node process's admitted pods. Reconciliation of surviving
-external containers after node restart, aggregate staging-disk limits, and
-additional swap policy remain separate resource-management work.
+external containers after node restart and aggregate staging-disk limits remain
+separate resource-management work.
 
 ## Production confinement
 

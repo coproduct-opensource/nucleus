@@ -74,6 +74,7 @@ fn a_spec_with_no_resources_and_no_cgroup_still_gets_finite_limits() {
         )
     );
     assert_eq!(value_of(&v2, "cpu.max"), Some("100000 100000"));
+    assert_eq!(value_of(&v2, "memory.swap.max"), Some("0"));
     assert_eq!(value_of(&v2, "pids.max"), Some("64"));
     assert_eq!(
         value_of(&v2, "hugetlb.2MB.max"),
@@ -84,6 +85,7 @@ fn a_spec_with_no_resources_and_no_cgroup_still_gets_finite_limits() {
     let v1 = node_cgroup(&spec("{}"), CgroupVersion::V1).expect("node cgroup");
     for file in [
         "memory.limit_in_bytes",
+        "memory.memsw.limit_in_bytes",
         "cpu.cfs_period_us",
         "cpu.cfs_quota_us",
         "pids.max",
@@ -100,6 +102,19 @@ fn a_spec_with_no_resources_and_no_cgroup_still_gets_finite_limits() {
         .iter()
         .position(|s| s.file == "cpu.cfs_quota_us");
     assert!(period < quota, "the period is written before the quota");
+    assert_eq!(
+        value_of(&v1, "memory.memsw.limit_in_bytes"),
+        value_of(&v1, "memory.limit_in_bytes")
+    );
+    let memory = v1
+        .settings()
+        .iter()
+        .position(|s| s.file == "memory.limit_in_bytes");
+    let combined = v1
+        .settings()
+        .iter()
+        .position(|s| s.file == "memory.memsw.limit_in_bytes");
+    assert!(memory < combined, "memory precedes the combined limit");
 }
 
 #[test]
@@ -130,6 +145,8 @@ fn a_spec_cgroup_setting_may_only_lower_a_node_limit() {
         ("memory.max", (node_mem + 1).to_string()),
         ("memory.max", "8G".to_string()),
         ("memory.limit_in_bytes", "-1".to_string()),
+        ("memory.swap.max", "1".to_string()),
+        ("memory.memsw.limit_in_bytes", (node_mem + 1).to_string()),
         ("cpu.max", "max 100000".to_string()),
         ("cpu.max", "200000 100000".to_string()),
         ("cpu.max", "1 0".to_string()),

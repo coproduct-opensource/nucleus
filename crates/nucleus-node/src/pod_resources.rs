@@ -364,6 +364,7 @@ pub(crate) fn node_cgroup(
     let mut settings = match version {
         CgroupVersion::V2 => vec![
             set("memory.max", size.vmm_memory_bytes()),
+            set("memory.swap.max", 0),
             CgroupSetting {
                 file: "cpu.max".to_string(),
                 value: format!("{} {CPU_PERIOD_US}", size.cpu_quota_us()),
@@ -373,6 +374,8 @@ pub(crate) fn node_cgroup(
         // The period is written before the quota: the kernel checks the quota against it.
         CgroupVersion::V1 => vec![
             set("memory.limit_in_bytes", size.vmm_memory_bytes()),
+            // v1 bounds memory+swap together; memory must be set first.
+            set("memory.memsw.limit_in_bytes", size.vmm_memory_bytes()),
             set("cpu.cfs_period_us", CPU_PERIOD_US),
             set("cpu.cfs_quota_us", size.cpu_quota_us()),
             set("pids.max", VMM_PIDS_MAX),
@@ -409,7 +412,10 @@ enum NodeLimit {
 
 fn node_limit(file: &str, size: PodSize) -> Option<NodeLimit> {
     Some(match file {
-        "memory.max" | "memory.limit_in_bytes" => NodeLimit::AtMost(size.vmm_memory_bytes()),
+        "memory.max" | "memory.limit_in_bytes" | "memory.memsw.limit_in_bytes" => {
+            NodeLimit::AtMost(size.vmm_memory_bytes())
+        }
+        "memory.swap.max" => NodeLimit::AtMost(0),
         "pids.max" => NodeLimit::AtMost(VMM_PIDS_MAX),
         "cpu.max" => NodeLimit::CpuMax(size.vcpus),
         "cpu.cfs_quota_us" => NodeLimit::AtMost(size.cpu_quota_us()),

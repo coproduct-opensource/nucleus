@@ -1125,5 +1125,20 @@ The full node suite passed 850 tests (one ignored). Linux ARM64 builds, Clippy
 and all four repository gates passed.
 
 This implements process-lifetime aggregate admission, not the entire resource
-priority. Swap policy, aggregate staging-disk capacity, and reconciling external
+priority. Aggregate staging-disk capacity and reconciling external
 containers surviving a node restart remain open.
+
+### Pod swap bounds (2026-10-04)
+
+Firecracker cgroup v2 limits now include `memory.swap.max=0`; v1 includes a
+combined memory-plus-swap ceiling equal to the VMM memory allowance, with the
+required memory-before-combined write order. Spec overrides cannot increase
+either bound. Hosts must expose the applicable control; unsuccessful writes
+prevent launch. Container memory/swap settings already bound their combined
+allowance. This does not claim swap-free behavior for v1's combined controller.
+
+All six resource tests and 36 Firecracker configuration tests passed, including
+the actual jailer argument path. A disposable cgroup on the Apple Container host
+accepted and read back `memory.max=671088640` and `memory.swap.max=0`, then was
+removed. Clippy passed. The updated node has not yet been used for a live pod
+launch with these defaults.
