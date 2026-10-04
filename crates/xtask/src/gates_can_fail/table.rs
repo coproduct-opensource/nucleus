@@ -519,11 +519,14 @@ pub fn probes() -> Vec<Probe> {
 /// stated obstacle named the gate's SUBJECT and not its DETECTION) is in the git log of
 /// `scripts/check-gates-can-fail.sh`.
 pub const UNCOVERED: &[&str] = &[
+    "xtask prepush                 a local aggregator CI never runs (only scripts/prepush.sh calls it, so no workflow invocation exists to probe); each gate it wraps is decided in CI on its own -- scoreboard-ratchet and scorecard probed, line-ratchet via check-line-ratchet.sh, cargo audit in audit.yml -- and its fold is unit-tested in crates/xtask/src/prepush.rs. Remove when the domain is derived from CI-reachable sources only",
     "xtask ci-spec                 reads live branch protection; a perturbation needs the GitHub API, not a file",
     "xtask line-ratchet            probed through scripts/check-line-ratchet.sh, which is the same decision procedure",
 ];
 
-pub const UNCOVERED_CEILING: usize = 2;
+// 2026-10-04: preserve main's #3165 local-prepush exemption during the Rust port.
+// The domain still includes local scripts; no additional CI gate is exempted.
+pub const UNCOVERED_CEILING: usize = 3;
 
 /// Gates that PROVE they can fail, on a toolchain this job does not have, in their OWN workflow
 /// job. Not "uncovered": each has a live falsifier that fails CI if the gate stops detecting its

@@ -1,0 +1,98 @@
+[
+  {
+    "configuration": {
+      "capAdd": [],
+      "capDrop": [],
+      "creationDate": "2026-09-28T23:26:20Z",
+      "dns": {
+        "nameservers": [],
+        "options": [],
+        "searchDomains": []
+      },
+      "id": "relay-clean",
+      "image": {
+        "descriptor": {
+          "digest": "sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3",
+          "mediaType": "application/vnd.oci.image.index.v1+json",
+          "size": 6688
+        },
+        "reference": "docker.io/library/ubuntu:24.04"
+      },
+      "initProcess": {
+        "arguments": [
+          "infinity"
+        ],
+        "environment": [
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        ],
+        "executable": "sleep",
+        "rlimits": [],
+        "supplementalGroups": [],
+        "terminal": false,
+        "user": {
+          "raw": {
+            "userString": ""
+          }
+        },
+        "workingDirectory": ""
+      },
+      "labels": {},
+      "mounts": [
+        {
+          "destination": "/share",
+          "options": [
+            "ro"
+          ],
+          "source": "/private/tmp/share",
+          "type": {
+            "virtiofs": {}
+          }
+        }
+      ],
+      "networks": [
+        {
+          "network": "default",
+          "options": {
+            "hostname": "relay-clean",
+            "mtu": 1280
+          }
+        }
+      ],
+      "platform": {
+        "architecture": "arm64",
+        "os": "linux"
+      },
+      "publishedPorts": [],
+      "publishedSockets": [],
+      "readOnly": false,
+      "resources": {
+        "cpuOverhead": 1,
+        "cpus": 4,
+        "memoryInBytes": 8589934592
+      },
+      "rosetta": false,
+      "runtimeHandler": "container-runtime-linux",
+      "ssh": false,
+      "sysctls": {},
+      "useInit": false,
+      "virtualization": false
+    },
+    "id": "relay-clean",
+    "status": {
+      "networks": [
+        {
+          "hostname": "relay-clean",
+          "ipv4Address": "192.168.64.219/24",
+          "ipv4Gateway": "192.168.64.1",
+          "ipv6Address": "fdef:5eb4:acb8:4aeb:f051:65ff:fe30:ba13/64",
+          "macAddress": "f2:51:65:30:ba:13",
+          "mtu": 1280,
+          "network": "default",
+          "variant": "reserved"
+        }
+      ],
+      "startedDate": "2026-09-28T23:26:21Z",
+      "state": "running"
+    }
+  }
+]
