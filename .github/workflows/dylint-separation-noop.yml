@@ -1,0 +1,47 @@
+name: Dylint (mediation + CB4A separation + identity isolation)
+
+# The requireable twin of dylint-separation.yml (2026-10-02, when `Dylint passes
+# (one pod)` became a required context): same workflow `name:`, same job NAME,
+# runs only on pull_request events whose changed paths are OUTSIDE the real
+# twin's declared inputs, and passes vacuously. `paths-ignore` below is the real
+# twin's `pull_request.paths` VERBATIM -- `cargo xtask ci-spec check` (CI-I1-PATHS)
+# reds on any difference, because a missing entry fires both twins under one
+# context and an extra one can leave a PR with neither.
+#
+# It does NOT run in the merge queue (CI-I1-NOOP-MG): there the real workflow
+# runs on every group, so a red pass shows as red, never as this twin's green.
+on:
+  pull_request:
+    paths-ignore:
+      - "crates/**"
+      - "tools/nucleus-mediation-lint/**"
+      - "tools/nucleus-cb4a-lint/**"
+      - "tools/nucleus-identity-lint/**"
+      - "tools/nucleus-egress-lint/**"
+      - "tools/nucleus-observed-lint/**"
+      - ".observed-ratchet.toml"
+      - "scripts/check-observed-dylint.sh"
+      - "tools/nucleus-rest-pattern-lint/**"
+      - "scripts/check-rest-pattern-dylint.sh"
+      - "tools/nucleus-preimage-lint/**"
+      - "scripts/check-preimage-dylint.sh"
+      - ".github/workflows/dylint-separation.yml"
+
+concurrency:
+  # A literal prefix distinct from the real twin's `dylint-separation-`: when both
+  # fire (a PR touching a filtered and an unfiltered path) they must not cancel
+  # each other (CI-I1-GROUP, #2399).
+  group: dylint-separation-noop-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  dylint:
+    name: Dylint passes (one pod)
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    steps:
+      - name: No-op (dylint inputs not touched)
+        run: echo "no dylint inputs changed - gate vacuously green; the real passes run in the merge queue"

@@ -28,18 +28,18 @@
 //!
 //! # Where the dimension comes from
 //!
-//! The receipt's declared proposal id, via [`crate::slot_dimension`]. That
+//! The receipt's declared proposal id, via [`crate::slot_good`]. That
 //! field is under the receipt's content hash, so a reader recovers *what was
 //! sold* from the signed bytes and from nothing else.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use nucleus_econ_types::MicroUsd;
-use nucleus_permission_market::PermissionDimension;
 use nucleus_recompute::{ClearingReceipt, RecomputeOutcome, content_hash_hex, verify_receipt};
 use serde::{Deserialize, Serialize};
 
-use crate::clearing::slot_dimension;
+use crate::clearing::slot_good;
+use crate::good::ScarceGood;
 
 /// Why a receipt set could not be indexed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -147,9 +147,9 @@ impl PriceIndex {
             by_hash.entry(content_hash_hex(r)).or_insert(r);
         }
 
-        let mut rounds: BTreeMap<PermissionDimension, Vec<u64>> = BTreeMap::new();
-        let mut contested: BTreeMap<PermissionDimension, u64> = BTreeMap::new();
-        let mut bidders: BTreeMap<PermissionDimension, u64> = BTreeMap::new();
+        let mut rounds: BTreeMap<ScarceGood, Vec<u64>> = BTreeMap::new();
+        let mut contested: BTreeMap<ScarceGood, u64> = BTreeMap::new();
+        let mut bidders: BTreeMap<ScarceGood, u64> = BTreeMap::new();
 
         for (hash, receipt) in &by_hash {
             let outcome = verify_receipt(receipt);
@@ -167,7 +167,7 @@ impl PriceIndex {
                 .first()
                 .map(|p| p.id.clone())
                 .unwrap_or_default();
-            let Some(dimension) = slot_dimension(&proposal) else {
+            let Some(dimension) = slot_good(&proposal) else {
                 return Err(IndexError::UnknownGood {
                     hash: hash.clone(),
                     proposal,
@@ -188,13 +188,13 @@ impl PriceIndex {
             }
 
             let n_bids = u64::try_from(claim.bids.len()).unwrap_or(u64::MAX);
-            let entry = bidders.entry(dimension).or_insert(0);
+            let entry = bidders.entry(dimension.clone()).or_insert(0);
             *entry = entry.saturating_add(n_bids);
             // The Clarke pivot is zero exactly when nobody was displaced, so
             // price > 0 is the contested test — read from the receipt, not
             // from a flag someone set.
             if price > 0 {
-                rounds.entry(dimension).or_default().push(price);
+                rounds.entry(dimension.clone()).or_default().push(price);
                 let c = contested.entry(dimension).or_insert(0);
                 *c = c.saturating_add(1);
             } else {
@@ -203,18 +203,18 @@ impl PriceIndex {
         }
 
         // Rounds per dimension, contested or not.
-        let mut round_counts: BTreeMap<PermissionDimension, u64> = BTreeMap::new();
+        let mut round_counts: BTreeMap<ScarceGood, u64> = BTreeMap::new();
         for (hash, receipt) in &by_hash {
             let _ = hash;
             if let ClearingReceipt::Vcg(claim) = receipt
-                && let Some(d) = claim.proposals.first().and_then(|p| slot_dimension(&p.id))
+                && let Some(d) = claim.proposals.first().and_then(|p| slot_good(&p.id))
             {
                 let c = round_counts.entry(d).or_insert(0);
                 *c = c.saturating_add(1);
             }
         }
 
-        let dims: BTreeSet<PermissionDimension> = rounds.keys().copied().collect();
+        let dims: BTreeSet<ScarceGood> = rounds.keys().cloned().collect();
         let mut dimensions = BTreeMap::new();
         for d in dims {
             let mut prices = rounds.remove(&d).unwrap_or_default();
@@ -254,12 +254,13 @@ mod tests {
     use crate::round::Round;
     use crate::test_support::bid;
     use nucleus_econ_types::AuctionId;
+    use nucleus_permission_market::PermissionDimension;
 
     const EGRESS: PermissionDimension = PermissionDimension::NetworkEgress;
     const EXEC: PermissionDimension = PermissionDimension::CommandExec;
 
     fn cleared(dim: PermissionDimension, id: &str, values: &[u64]) -> ClearingReceipt {
-        let mut r = Round::open(AuctionId::new(id), dim);
+        let mut r = Round::open(AuctionId::new(id), dim.into());
         for (i, v) in values.iter().enumerate() {
             r.submit(bid(&format!("{id}-{i}"), *v, dim))
                 .expect("admitted");

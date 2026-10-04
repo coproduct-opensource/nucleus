@@ -17,10 +17,16 @@
 # perturbed on its own — a green from both together would otherwise say nothing
 # about which one is load-bearing.
 #
-# ONE EGRESS ENTRY, and it should stay that way. A second sanctioned vsock client
-# that asks the host to PERFORM something is a second thing that must remember to
-# spend an authority.
+# ONE EGRESS ENTRY and two other protocols. `broker_client` performs
+# EGRESS for the agent and must spend an authority to do it. `spend_shipper`
+# (#2541) ships clearing evidence and the proxy's signed spend records to the
+# node's receipt collector. It reaches no external upstream and performs no
+# agent-requested operation. Missing or invalid accounting prevents a refund;
+# the node retains the full allocation. This is trusted accounting telemetry.
+# Another entry on the agent egress path would also have to spend authority;
+# the accounting and shadow-decision protocols do not perform egress.
 file:crates/nucleus-tool-proxy/src/broker_client.rs
+file:crates/nucleus-tool-proxy/src/spend_shipper.rs
 #
 # 2026-10-02 (#2702, P8): the decision channel. It is not egress: it carries a
 # question (operation, subject, digest), a taint raise and the guest's own

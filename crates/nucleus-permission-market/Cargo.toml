@@ -11,10 +11,20 @@ readme = "README.md"
 keywords = ["ai", "security", "permissions", "pricing", "lagrange"]
 categories = ["algorithms", "development-tools"]
 
+[features]
+default = ["certificate"]
+# `PermissionBid::from_verified` — the only way to construct a bid (#2526).
+# Off, the market and dimensions remain and no bid can be built at all.
+certificate = ["dep:portcullis", "dep:rust_decimal"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# Default features off: `VerifiedPermissions` is ring-free, and this crate
+# verifies nothing — it reads a value that verification already produced.
+portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, optional = true }
+rust_decimal = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -49,3 +49,5 @@ rustls = { workspace = true }
 # Hermetic mock token endpoint and discovery/JWKS server, same version the
 # rest of the workspace uses.
 wiremock = "0.6"
+# Key-directory tests (`keyring`): real files, real permissions, real renames.
+tempfile = { workspace = true }

@@ -49,10 +49,13 @@
 //! [`BudgetLedger`] per parent (per external caller chain, for case 2)
 //! enforces `Σ live child allocations + consumed ≤ parent max`. A child's
 //! allocation is its certificate's `max_cost_usd`; it is released when the
-//! reaper sees the child exit. Until a child can report what it actually
-//! spent, release folds the WHOLE allocation into the parent's consumption —
-//! conservative, documented, and the reason the invariant cannot be violated
-//! by a parent that spawns and reaps in a loop.
+//! reaper sees the child exit. What is folded into the parent's consumption is
+//! `min(allocation, verified spend)` when the node could verify every charge,
+//! and the WHOLE allocation otherwise — so a parent that spawns and reaps in a
+//! loop still cannot violate the invariant, and a pod only gets credit for
+//! spend it shipped evidence for. The verification is NOT done here: this file
+//! decides authority, so it receives the number
+//! (`clearing_receipt_collector::creditable_spend` computes it).
 //!
 //! # Credentialed upstreams are admitted here too
 //!
@@ -320,12 +323,20 @@ impl Reservation {
         self.release = None;
     }
 
-    /// The pod will not run: hand the reservation back NOW, so a caller that
-    /// retries on the error sees its budget. (Dropping it releases too, but on
-    /// a task of its own.)
+    /// The pod's driver never started it: hand the WHOLE reservation back NOW,
+    /// so a caller that retries on the error sees its budget. Nothing ran, so
+    /// the spend is exactly zero (owner decision 2026-09-27). This is not the
+    /// `None` arm of [`PodAuthority::release_child`], which means "could not see
+    /// every charge" and folds the full allocation into the parent.
     pub async fn release(mut self) {
         if let Some(r) = self.release.take() {
-            release(&r.inner, &r.state_dir, r.pod_id).await;
+            release(
+                &r.inner,
+                &r.state_dir,
+                r.pod_id,
+                Some(rust_decimal::Decimal::ZERO),
+            )
+            .await;
         }
     }
 }
@@ -338,9 +349,22 @@ impl Drop for Reservation {
         // Drop cannot await, and the ledger lock is async: the release runs
         // as its own task. Outside a runtime there is nothing left to release
         // against, so there is nothing to do.
+        //
+        // An uncommitted reservation is a pod the node never registered: it
+        // was never reaped, so no spend receipt of its can be collected, and
+        // it hands the whole reservation back exactly as `release` does
+        // (#3032's definition of done, #3105).
         match tokio::runtime::Handle::try_current() {
             Ok(rt) => {
-                rt.spawn(async move { release(&r.inner, &r.state_dir, r.pod_id).await });
+                rt.spawn(async move {
+                    release(
+                        &r.inner,
+                        &r.state_dir,
+                        r.pod_id,
+                        Some(rust_decimal::Decimal::ZERO),
+                    )
+                    .await
+                });
             }
             Err(_) => tracing::warn!(pod = %r.pod_id, "reservation dropped outside a runtime"),
         }
@@ -355,13 +379,42 @@ impl Drop for Reservation {
 /// only then is the child's file removed; see the module docs. If the parent's
 /// record cannot be written the child's file is KEPT, so a restart restores
 /// the child as a live allocation: the same budget held, never handed back.
-async fn release(inner: &tokio::sync::Mutex<Inner>, state_dir: &Path, pod_id: Uuid) {
+///
+/// `creditable` is what the pod is known to have spent; see
+/// [`PodAuthority::release_child`] for its two arms.
+async fn release(
+    inner: &tokio::sync::Mutex<Inner>,
+    state_dir: &Path,
+    pod_id: Uuid,
+    creditable: Option<rust_decimal::Decimal>,
+) {
     let mut guard = inner.lock().await;
     let inner = &mut *guard;
     let Some(entry) = inner.pods.remove(&pod_id) else {
         return;
     };
-    let consumed = entry.cert.effective_permissions().budget.max_cost_usd;
+    let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
+    let consumed = match creditable {
+        Some(spent) => {
+            let charged = spent.min(allocation);
+            tracing::info!(
+                pod = %pod_id,
+                verified_usd = %spent,
+                charged_usd = %charged,
+                allocation_usd = %allocation,
+                "verified spend decides the released budget"
+            );
+            charged
+        }
+        None => {
+            tracing::debug!(
+                pod = %pod_id,
+                allocation_usd = %allocation,
+                "no verifiable spend; the full allocation is consumed"
+            );
+            allocation
+        }
+    };
     let recorded = match entry.parent {
         Parent::Root => Ok(()),
         Parent::Pod(p) => match inner.pods.get_mut(&p) {
@@ -1330,10 +1383,24 @@ impl PodAuthority {
     }
 
     /// Retire a pod's certificate and return its budget allocation to the
-    /// parent's ledger. Until children report actual spend, the whole
-    /// allocation is folded into the parent's consumption (no refund).
-    pub async fn release_child(&self, pod_id: Uuid) {
-        release(&self.inner, &self.state_dir, pod_id).await;
+    /// parent's ledger.
+    ///
+    /// `creditable` is what the node was able to VERIFY the pod spent, and it
+    /// is computed by the caller — `clearing_receipt_collector::creditable_spend`
+    /// — never here. This file decides authority, and
+    /// `docs/econ-layer-boundary.md` keeps economics out of it: the evidence
+    /// chain (signed spend receipts, their sequence, and the clearing receipts
+    /// their basis names) is read on the economic side, and what arrives here
+    /// is a number.
+    ///
+    /// `None` means the node could not see every charge — no receipts, a gap
+    /// in the sequence, or a basis naming a clearing receipt the host does not
+    /// hold — and then the WHOLE allocation is folded into the parent's
+    /// consumption. `Some(spent)` is clamped to the allocation, because a pod
+    /// cannot spend more than it was delegated however many receipts it signs.
+    /// Neither case is a refund.
+    pub async fn release_child(&self, pod_id: Uuid, creditable: Option<rust_decimal::Decimal>) {
+        release(&self.inner, &self.state_dir, pod_id, creditable).await;
     }
 
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart,

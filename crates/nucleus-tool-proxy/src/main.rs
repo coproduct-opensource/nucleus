@@ -17,9 +17,7 @@ use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
 use nucleus_authority_exchange::{Charger, RoundScheduler};
-use nucleus_permission_market::{
-    PermissionBid, PermissionDimension, PermissionGrant, PermissionMarket,
-};
+use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
@@ -65,6 +63,7 @@ mod proposal;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
+mod spend_shipper;
 mod startup_trace;
 mod telemetry;
 #[allow(dead_code)]
@@ -526,6 +525,11 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// The same chain as a sealed `VerifiedPermissions`: the ceiling a process
+    /// inside this pod bids under in the authority exchange (#2988). A pod
+    /// peer holds no certificate of its own; it acts under the pod's, and a
+    /// pod without one cannot bid at all.
+    pod_verified: Option<Arc<portcullis::certificate::VerifiedPermissions>>,
     /// What a denial needs to explain itself: the grant a person approved, the
     /// ceiling they chose, and the effect catalog. `None` for a profile run,
     /// and then refusals read exactly as they did before.
@@ -546,6 +550,11 @@ pub(crate) struct AppState {
     /// Where cleared rounds are recorded. Present exactly when
     /// `authority_exchange` is.
     authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
+    /// Signs and ships a `SpendReceipt` for every charge the exchange makes, so
+    /// the node — not this guest — decides how much of the allocation was spent
+    /// (#2541). `None` when the exchange is off or the plumbing is absent; the
+    /// node then folds the full allocation, which is the conservative default.
+    spend_shipper: Option<Arc<spend_shipper::SpendShipper>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
     sandbox_proof: Arc<sandbox_proof::SandboxProof>,
     /// Root authority Ed25519 public key for delegation certificate verification.
@@ -1146,8 +1155,10 @@ async fn main() -> Result<(), ApiError> {
     st.mark("runtime_build");
 
     // Split the verified certificate: the sealed permissions go into the
-    // kernel, the summary into AppState.
-    let (mut pod_cert_verified, pod_cert) = match pod_cert {
+    // kernel, the summary into AppState — and a second handle on the sealed
+    // permissions stays in AppState as the ceiling a pod peer bids under
+    // (#2988). Same verified value; nothing is re-derived.
+    let (mut pod_cert_verified, pod_cert, pod_verified) = match pod_cert {
         Some((verified, summary)) => {
             tracing::info!(
                 leaf = %summary.leaf_identity,
@@ -1156,9 +1167,14 @@ async fn main() -> Result<(), ApiError> {
                 "pod certificate verified; kernel and delegation ceiling derive from it"
             );
             let fingerprint = summary.fingerprint;
-            (Some((verified, fingerprint)), Some(Arc::new(summary)))
+            let pod_verified = Arc::new(verified.clone());
+            (
+                Some((verified, fingerprint)),
+                Some(Arc::new(summary)),
+                Some(pod_verified),
+            )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let auth = AuthConfig::new(
@@ -1380,6 +1396,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions,
         scheduler: authority_exchange,
         ledger: authority_ledger,
+        spend_shipper,
     } = authority_round::build(
         &args.clearing,
         args.clearing_window_ms,
@@ -1562,11 +1579,7 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
-    let unix_binding = host_socket::resolve_unix(
-        args.listen_unix.as_deref(),
-        &args.peer_uids,
-        vsock_binding.as_ref(),
-    )?;
+    let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
@@ -1618,6 +1631,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions: clearing_dimensions.clone(),
         authority_exchange,
         authority_ledger,
+        spend_shipper,
         sandbox_proof: Arc::new(sandbox_proof),
         cert_root_pubkey: args
             .cert_root_pubkey
@@ -1626,6 +1640,7 @@ async fn main() -> Result<(), ApiError> {
             .map(Arc::new),
         effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
+        pod_verified,
         proposals,
         exposure_guard,
         kernel_exposure: kernel_exposure.clone(),
@@ -1766,6 +1781,7 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Keep references for the exit report after shutdown
+    let exit_spend = state.spend_shipper.clone();
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
@@ -1822,14 +1838,17 @@ async fn main() -> Result<(), ApiError> {
             containment,
             args.unsandboxed,
             completion_writer,
-            Some(exit_report::on_workload_exit(
-                exit_audit.clone(),
-                exit_work_dir.clone(),
-                exit_exposure.clone(),
-                exit_monitor.clone(),
-                exit_art12.clone(),
-                exit_kernel.clone(),
-                exit_grant.clone(),
+            Some(spend_shipper::SpendShipper::before_exit(
+                exit_spend.clone(),
+                exit_report::on_workload_exit(
+                    exit_audit.clone(),
+                    exit_work_dir.clone(),
+                    exit_exposure.clone(),
+                    exit_monitor.clone(),
+                    exit_art12.clone(),
+                    exit_kernel.clone(),
+                    exit_grant.clone(),
+                ),
             )),
         )?;
         st.report();
@@ -1866,14 +1885,17 @@ async fn main() -> Result<(), ApiError> {
         containment,
         args.unsandboxed,
         completion_writer,
-        Some(exit_report::on_workload_exit(
-            exit_audit.clone(),
-            exit_work_dir.clone(),
-            exit_exposure.clone(),
-            exit_monitor.clone(),
-            exit_art12.clone(),
-            exit_kernel.clone(),
-            exit_grant.clone(),
+        Some(spend_shipper::SpendShipper::before_exit(
+            exit_spend.clone(),
+            exit_report::on_workload_exit(
+                exit_audit.clone(),
+                exit_work_dir.clone(),
+                exit_exposure.clone(),
+                exit_monitor.clone(),
+                exit_art12.clone(),
+                exit_kernel.clone(),
+                exit_grant.clone(),
+            ),
         )),
     )?;
 
@@ -2018,8 +2040,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
     )
 }
 
-const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
-
 async fn auth_middleware(
     State(state): State<AppState>,
     request: axum::http::Request<Body>,
@@ -2068,12 +2088,15 @@ async fn auth_middleware(
     // the SPIFFE-before-approval order and so could not catch it. Now there is
     // one.
     let spiffe_id = auth::extract_spiffe_id_from_extensions(&parts.extensions);
+    // The one per-connection fact, stamped by the kernel at accept (#2988).
+    let pod_peer = host_socket::pod_peer_of(&parts.extensions);
     let tier = auth::tier_of(
         evidence.ingress(),
         spiffe_id.is_some(),
         parts.uri.path() == APPROVE_PATH,
         state.approval_verifier.is_some(),
         state.host_verified_transport,
+        pod_peer.is_some(),
     );
     let mut context = match (tier, spiffe_id) {
         (auth::AuthTier::SpiffeMtls, Some(spiffe_id)) => {
@@ -2107,6 +2130,16 @@ async fn auth_middleware(
             }
             ctx
         }
+        // A process inside the pod, over the peer-verified Unix socket: the
+        // kernel named it at accept. No secret and no certificate (#2988).
+        (auth::AuthTier::PodPeer, _) => match pod_peer {
+            Some(peer) => auth::verify_pod_peer(peer),
+            None => {
+                return Err(ApiError::Spec(
+                    "pod-peer tier selected without a pod peer".to_string(),
+                ));
+            }
+        },
         // The listener already dropped every non-host peer, so this request
         // provably came from the host. No shared secret is involved, which
         // is the point: the HMAC key it replaces was readable by the agent
@@ -2160,14 +2193,38 @@ async fn auth_middleware(
         }
         (Some(grant), Some(certified))
     } else {
-        (evaluate_permission_bid(&parts.headers, &state), None)
+        // No certificate, no grant. This arm used to parse a self-declared
+        // `x-nucleus-permission-bid` header — value estimate and trust tier
+        // included — and evaluate it as if it were a bid (#2526). A
+        // `PermissionBid` is now constructible only from a
+        // `VerifiedPermissions`, so the honest answer here is none, and the
+        // gates downstream that need a grant refuse.
+        (None, None)
     };
 
     // ── The authority exchange ───────────────────────────────────────────
     // An auctioned dimension is decided by a round, BEFORE the posted-price
     // screen below: the two are alternative mechanisms for the same decision
     // and running both would price the slot twice. See `authority_round`.
-    authority_round::join_if_auctioned(&state, parts.uri.path(), certified_perms.as_ref()).await?;
+    // Who bids is decided here, from facts the request cannot claim: a verified
+    // certificate chain (mTLS), or a kernel-attributed process inside the pod.
+    let bidder = match (certified_perms.as_ref(), pod_peer) {
+        (Some(c), _) => authority_round::Bidder::Certified(c),
+        (None, Some(peer)) => authority_round::Bidder::PodPeer(peer),
+        (None, None) => authority_round::Bidder::Nobody,
+    };
+    let auction =
+        authority_round::join_if_auctioned(&state, parts.uri.path(), bidder, &parts.headers)
+            .await?;
+    if let authority_round::AuctionOutcome::Outbid { message } = &auction {
+        return Ok(auction.stamp(
+            ApiError::KernelDenied {
+                message: message.clone(),
+                code: None,
+            }
+            .into_response(),
+        ));
+    }
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
@@ -2198,37 +2255,7 @@ async fn auth_middleware(
     if let Some(certified) = certified_perms {
         req.extensions_mut().insert(certified);
     }
-    Ok(next.run(req).await)
-}
-
-/// Parse and evaluate a permission bid from request headers.
-///
-/// Returns `Some(PermissionGrant)` if a valid bid was present, `None` otherwise.
-/// Invalid bid JSON is silently ignored (logged at warn level).
-fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<PermissionGrant> {
-    let bid_header = headers.get(HEADER_PERMISSION_BID)?;
-    let bid_str = bid_header.to_str().ok()?;
-    let bid: PermissionBid = match serde_json::from_str(bid_str) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "invalid permission bid header");
-            return None;
-        }
-    };
-
-    let market = state.permission_market.lock().unwrap();
-    let grant = market.evaluate_bid(&bid);
-
-    tracing::info!(
-        skill_id = %bid.skill_id,
-        granted = grant.granted.len(),
-        denied = grant.denied.len(),
-        total_cost = grant.total_cost,
-        event = "permission_bid_evaluated",
-        "permission market evaluated bid"
-    );
-
-    Some(grant)
+    Ok(auction.stamp(next.run(req).await))
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {

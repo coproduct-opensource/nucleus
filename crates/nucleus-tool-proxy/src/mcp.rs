@@ -41,8 +41,7 @@
 //! Neither needed an identity: the effect gate is a boot-time object built
 //! from the pod's own certificate, not from a per-request one.
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use portcullis::action_term::ActionTerm;
 use portcullis::flow_graph::FlowGraph;
@@ -1746,6 +1745,7 @@ mod tests {
             AuthMethod::Hmac,
             AuthMethod::HmacDrand,
             AuthMethod::HostVsock,
+            AuthMethod::PodPeer,
             AuthMethod::Ed25519Drand,
             AuthMethod::WorkloadDoor,
         ] {

@@ -65,7 +65,22 @@ on:
       - "tools/nucleus-preimage-lint/**"
       - "scripts/check-preimage-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
+  # REQUIRED since 2026-10-02 (owner decision): `Dylint passes (one pod)` merged
+  # red that day, and the required `Gates must fail on their own subject` re-runs
+  # every gate before perturbing it, so one advisory red on main failed every
+  # later merge group. Being required costs three things, each checked by
+  # `cargo xtask ci-spec check`:
+  #
+  #   * `merge_group:` below -- `paths:` is ignored there, so the queue runs the
+  #     pass on every group (CI-I3-NOMG);
+  #   * dylint-separation-noop.yml, whose `paths-ignore` is THIS list verbatim and
+  #     whose job carries the same name, so a PR outside these paths still
+  #     reports the context (CI-I1-PATHS / CI-I1-JOBS);
+  #   * `ready_for_review` -- the job skips drafts, and that event is not in the
+  #     default set, so without it a draft marked ready would keep its SKIPPED
+  #     (which a required check counts as passed) until the next push.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - "crates/**"
       - "tools/nucleus-mediation-lint/**"
@@ -82,6 +97,7 @@ on:
       - "tools/nucleus-preimage-lint/**"
       - "scripts/check-preimage-dylint.sh"
       - ".github/workflows/dylint-separation.yml"
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -104,7 +120,9 @@ jobs:
   # build pool, ~12 pool-minutes per PR. Here the nightly is installed once
   # and the driver's target dir is shared, so the dependency graph compiles
   # once. The four passes are sequential steps with their original names;
-  # none of them is a required status check, so no context is lost.
+  # none of them is a required status check, so no context is lost. The ONE
+  # context this job reports is required (2026-10-02); its `if:` is true under
+  # merge_group (there is no pull_request payload, so `draft` is not `true`).
   dylint:
     name: Dylint passes (one pod)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}

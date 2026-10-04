@@ -84,7 +84,7 @@ impl ReplayCache {
     /// signatures would let anyone fill the cache with garbage and trip the
     /// capacity refusal -- turning a replay defence into a denial of service.
     fn remember(&self, signature: &str, timestamp: i64, window: Duration) -> Result<(), AuthError> {
-        let now = unix_now();
+        let now = now_secs();
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
 
         // Anything `ensure_skew` would already refuse can never be replayed, so
@@ -206,6 +206,13 @@ pub enum AuthMethod {
     /// an admitted peer" is enforced below the application rather than
     /// asserted by it. See `pod_mgmt::peer_is_host` and `host_socket`.
     HostVsock,
+    /// The request arrived over the peer-verified Unix socket from a process
+    /// INSIDE the pod (#2988): the kernel reported its uid and an in-namespace
+    /// pid (`host_socket::PodPeer`). No secret and no certificate — like
+    /// `HostVsock`, the transport is the proof — but unlike it, the peer is a
+    /// distinct, kernel-attributed identity, which is what lets two sub-agents
+    /// be two bidders in the authority exchange.
+    PodPeer,
     /// Ed25519 signature against a configured PUBLIC key, drand-anchored.
     ///
     /// The signature-based approval tier: the guest holds only verification
@@ -632,6 +639,19 @@ fn verify_ed25519_any(
     }
 }
 
+/// Seconds since the epoch, saturating rather than wrapping. One definition for
+/// every caller that stamps or checks a time, which otherwise each cast the
+/// same duration (ADR 0007 G-1: one decider per fact).
+fn now_secs() -> i64 {
+    i64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
 /// Authenticate a request purely from the transport it arrived on.
 ///
 /// # Why this needs no secret
@@ -652,10 +672,7 @@ fn verify_ed25519_any(
 /// mechanism.
 /// OS assumption: KB-VSOCK-PEER-CID (docs/assumptions/kernel-behaviour.md).
 pub fn verify_host_vsock() -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now_secs();
 
     AuthContext {
         actor: Some("host".to_string()),
@@ -676,10 +693,32 @@ pub fn verify_host_vsock() -> AuthContext {
 pub fn verify_workload_door(uid: u32) -> AuthContext {
     AuthContext {
         actor: Some(format!("workload:uid={uid}")),
-        timestamp: unix_now(),
+        timestamp: now_secs(),
         drand_round: None,
         spiffe_id: None,
         auth_method: AuthMethod::WorkloadDoor,
+        identity_binding: IdentityBinding::PolicyOnly,
+    }
+}
+
+/// Authenticate a request that arrived over the peer-verified Unix socket from
+/// a process inside the pod (#2988). Like [`verify_host_vsock`], nothing in the
+/// request is checked: the identity is the kernel's report of the peer, read at
+/// accept and carried as connect-info, and `actor` names it so the audit record
+/// says which process asked.
+pub fn verify_pod_peer(peer: crate::host_socket::PodPeer) -> AuthContext {
+    let now = now_secs();
+
+    AuthContext {
+        actor: Some(format!(
+            "pod-peer:uid={}:pid={}",
+            peer.uid,
+            peer.pid.unwrap_or(-1)
+        )),
+        timestamp: now,
+        drand_round: None,
+        spiffe_id: None,
+        auth_method: AuthMethod::PodPeer,
         identity_binding: IdentityBinding::PolicyOnly,
     }
 }
@@ -705,10 +744,7 @@ pub fn verify_workload_door(uid: u32) -> AuthContext {
 /// 2. Identity is attested by the CA, not self-declared
 /// 3. Certificates auto-rotate, limiting compromise window
 pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
+    let now = now_secs();
 
     AuthContext {
         actor: Some(spiffe_id.to_string()),
@@ -743,6 +779,10 @@ pub enum AuthTier {
     /// legacy tier, for pods provisioned with a secret instead of keys (the
     /// env-delivered container path).
     ApprovalHmacDrand,
+    /// An in-pod process over the peer-verified Unix socket (#2988). Ranked
+    /// under the certificate and approval tiers and above `HostVsock`: the
+    /// connect-info names a specific process, which is more than "the host".
+    PodPeer,
     /// The transport already proved the peer is the host.
     HostVsock,
     /// Shared-secret HMAC. The residual path, for transports that prove nothing.
@@ -773,6 +813,7 @@ pub fn tier_of(
     is_approval_path: bool,
     has_approval_pubkeys: bool,
     host_verified_transport: bool,
+    in_pod_peer: bool,
 ) -> AuthTier {
     match ingress {
         Ingress::WorkloadDoor { uid } => AuthTier::WorkloadDoor { uid },
@@ -781,6 +822,7 @@ pub fn tier_of(
             is_approval_path,
             has_approval_pubkeys,
             host_verified_transport,
+            in_pod_peer,
         ),
     }
 }
@@ -790,6 +832,9 @@ pub fn tier_of(
 /// `host_verified_transport` is a property of how the server was STARTED, never
 /// of the request — see `AppState::host_verified_transport`. Likewise
 /// `has_approval_pubkeys` is startup configuration, not request content.
+/// `in_pod_peer` is the one per-CONNECTION fact: the Unix listener stamped this
+/// request with an in-namespace peer (`host_socket::PodPeer::is_in_pod`), which
+/// the kernel reported and no request can claim.
 ///
 /// The approval path is decided FIRST, before the certificate. An approval
 /// tier is not a stronger or weaker way to say who is calling; it is the only
@@ -802,6 +847,7 @@ pub fn select_auth_tier(
     is_approval_path: bool,
     has_approval_pubkeys: bool,
     host_verified_transport: bool,
+    in_pod_peer: bool,
 ) -> AuthTier {
     if is_approval_path && has_approval_pubkeys {
         AuthTier::ApprovalEd25519Drand
@@ -809,6 +855,8 @@ pub fn select_auth_tier(
         AuthTier::ApprovalHmacDrand
     } else if has_spiffe_identity {
         AuthTier::SpiffeMtls
+    } else if in_pod_peer {
+        AuthTier::PodPeer
     } else if host_verified_transport {
         AuthTier::HostVsock
     } else {
@@ -842,15 +890,8 @@ fn parse_timestamp(ts: &str) -> Result<i64, AuthError> {
         .map_err(|_| AuthError::InvalidHeader(HEADER_TIMESTAMP))
 }
 
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 fn ensure_skew(timestamp: i64, max_skew: Duration) -> Result<(), AuthError> {
-    let now = unix_now();
+    let now = now_secs();
     let skew = (now - timestamp).unsigned_abs();
     if skew > max_skew.as_secs() {
         return Err(AuthError::Skew);
@@ -1183,22 +1224,26 @@ mod auth_tier_precedence_tests {
             for approval in [false, true] {
                 for pubkeys in [false, true] {
                     for host in [false, true] {
-                        assert_eq!(
-                            tier_of(
-                                Ingress::WorkloadDoor { uid: 65534 },
-                                spiffe,
-                                approval,
-                                pubkeys,
-                                host
-                            ),
-                            AuthTier::WorkloadDoor { uid: 65534 },
-                            "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host={host}"
-                        );
-                        assert_eq!(
-                            tier_of(Ingress::Listener, spiffe, approval, pubkeys, host),
-                            select_auth_tier(spiffe, approval, pubkeys, host),
-                            "the main listener is still decided by select_auth_tier alone"
-                        );
+                        for peer in [false, true] {
+                            assert_eq!(
+                                tier_of(
+                                    Ingress::WorkloadDoor { uid: 65534 },
+                                    spiffe,
+                                    approval,
+                                    pubkeys,
+                                    host,
+                                    peer
+                                ),
+                                AuthTier::WorkloadDoor { uid: 65534 },
+                                "spiffe={spiffe} approval={approval} pubkeys={pubkeys} \
+                                 host={host} pod_peer={peer}"
+                            );
+                            assert_eq!(
+                                tier_of(Ingress::Listener, spiffe, approval, pubkeys, host, peer),
+                                select_auth_tier(spiffe, approval, pubkeys, host, peer),
+                                "the main listener is still decided by select_auth_tier alone"
+                            );
+                        }
                     }
                 }
             }
@@ -1222,9 +1267,37 @@ mod auth_tier_precedence_tests {
     #[test]
     fn a_host_verified_transport_skips_the_shared_secret_hmac() {
         assert_eq!(
-            select_auth_tier(false, false, false, true),
+            select_auth_tier(false, false, false, true, false),
             AuthTier::HostVsock,
             "a request on a host-only vsock listener must not need the HMAC key"
+        );
+    }
+
+    /// An in-pod peer over the Unix socket is its own tier (#2988): above the
+    /// host transport, below a certificate and below the approval tiers.
+    #[test]
+    fn an_in_pod_peer_is_named_as_such_and_outranks_only_the_host_tier() {
+        assert_eq!(
+            select_auth_tier(false, false, false, true, true),
+            AuthTier::PodPeer
+        );
+        assert_eq!(
+            select_auth_tier(true, false, false, true, true),
+            AuthTier::SpiffeMtls
+        );
+        assert_eq!(
+            select_auth_tier(false, true, false, true, true),
+            AuthTier::ApprovalHmacDrand
+        );
+        assert_eq!(
+            select_auth_tier(false, true, true, true, true),
+            AuthTier::ApprovalEd25519Drand
+        );
+        // A peer without a host-verified transport cannot arise (the socket IS
+        // one), but the tier is decided by the peer, not by the flag.
+        assert_eq!(
+            select_auth_tier(false, false, false, false, true),
+            AuthTier::PodPeer
         );
     }
 
@@ -1232,7 +1305,10 @@ mod auth_tier_precedence_tests {
     /// a secret where the transport replaces it, it does not remove auth.
     #[test]
     fn other_transports_still_require_the_hmac() {
-        assert_eq!(select_auth_tier(false, false, false, false), AuthTier::Hmac);
+        assert_eq!(
+            select_auth_tier(false, false, false, false, false),
+            AuthTier::Hmac
+        );
     }
 
     /// A certificate outranks the transport: mTLS identifies WHO, the transport
@@ -1242,11 +1318,11 @@ mod auth_tier_precedence_tests {
     #[test]
     fn mtls_outranks_the_transport() {
         assert_eq!(
-            select_auth_tier(true, false, false, true),
+            select_auth_tier(true, false, false, true, false),
             AuthTier::SpiffeMtls
         );
         assert_eq!(
-            select_auth_tier(true, false, true, false),
+            select_auth_tier(true, false, true, false, false),
             AuthTier::SpiffeMtls
         );
     }
@@ -1261,15 +1337,17 @@ mod auth_tier_precedence_tests {
     #[test]
     fn the_approval_path_outranks_spiffe() {
         for (pubkeys, host) in [(false, false), (false, true), (true, false), (true, true)] {
-            let tier = select_auth_tier(true, true, pubkeys, host);
-            assert!(
-                matches!(
-                    tier,
-                    AuthTier::ApprovalEd25519Drand | AuthTier::ApprovalHmacDrand
-                ),
-                "an SVID on /v1/approve must still need the approver's signature \
-                 (pubkeys={pubkeys} host_verified={host}), got {tier:?}"
-            );
+            for peer in [false, true] {
+                let tier = select_auth_tier(true, true, pubkeys, host, peer);
+                assert!(
+                    matches!(
+                        tier,
+                        AuthTier::ApprovalEd25519Drand | AuthTier::ApprovalHmacDrand
+                    ),
+                    "an SVID on /v1/approve must still need the approver's signature \
+                     (pubkeys={pubkeys} host_verified={host} pod_peer={peer}), got {tier:?}"
+                );
+            }
         }
     }
 
@@ -1279,7 +1357,7 @@ mod auth_tier_precedence_tests {
     #[test]
     fn the_approval_path_keeps_drand_even_on_a_host_verified_transport() {
         assert_eq!(
-            select_auth_tier(false, true, false, true),
+            select_auth_tier(false, true, false, true, false),
             AuthTier::ApprovalHmacDrand,
             "origin is not freshness — approvals must stay drand-anchored"
         );
@@ -1292,11 +1370,11 @@ mod auth_tier_precedence_tests {
     #[test]
     fn configured_pubkeys_make_the_hmac_approval_tier_unreachable() {
         assert_eq!(
-            select_auth_tier(false, true, true, false),
+            select_auth_tier(false, true, true, false, false),
             AuthTier::ApprovalEd25519Drand
         );
         assert_eq!(
-            select_auth_tier(false, true, true, true),
+            select_auth_tier(false, true, true, true, false),
             AuthTier::ApprovalEd25519Drand,
             "the signature tier must win even on a host-verified transport"
         );
@@ -1307,13 +1385,18 @@ mod auth_tier_precedence_tests {
     #[test]
     fn approval_pubkeys_do_not_leak_into_other_paths() {
         assert_eq!(
-            select_auth_tier(false, false, true, true),
+            select_auth_tier(false, false, true, true, false),
             AuthTier::HostVsock
         );
-        assert_eq!(select_auth_tier(false, false, true, false), AuthTier::Hmac);
+        assert_eq!(
+            select_auth_tier(false, false, true, false, false),
+            AuthTier::Hmac
+        );
     }
 
-    /// Exhaustive over all sixteen inputs, so no combination is unconsidered.
+    /// Exhaustive over all thirty-two inputs, so no combination is
+    /// unconsidered. An in-pod peer replaces exactly the two transport tiers
+    /// (`Hmac`, `HostVsock`); every identity and approval tier outranks it.
     #[test]
     fn every_combination_is_pinned() {
         let cases = [
@@ -1336,9 +1419,18 @@ mod auth_tier_precedence_tests {
         ];
         for ((spiffe, approval, pubkeys, host), expected) in cases {
             assert_eq!(
-                select_auth_tier(spiffe, approval, pubkeys, host),
+                select_auth_tier(spiffe, approval, pubkeys, host, false),
                 expected,
                 "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host_verified={host}"
+            );
+            let with_peer = match expected {
+                AuthTier::Hmac | AuthTier::HostVsock => AuthTier::PodPeer,
+                other => other,
+            };
+            assert_eq!(
+                select_auth_tier(spiffe, approval, pubkeys, host, true),
+                with_peer,
+                "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host_verified={host} pod_peer"
             );
         }
     }
@@ -1605,7 +1697,7 @@ mod hmac_nonce_and_replay_tests {
     #[test]
     fn a_nonceless_signature_verifies_once() {
         let body = b"body";
-        let ts = unix_now();
+        let ts = now_secs();
         let sig = sign_message(SECRET, format!("{ts}.a.body").as_bytes());
         let mut headers = HeaderMap::new();
         headers.insert(

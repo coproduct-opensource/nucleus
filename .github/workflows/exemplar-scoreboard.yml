@@ -19,8 +19,19 @@ on:
   push:
     branches: [main]
     paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-baseline.json']
+  # REQUIRED since 2026-10-02 (owner decision), so the pull_request trigger is
+  # UNFILTERED and `merge_group:` is present. A required context must be
+  # reported on every PR and on every queue group: a path filter here would
+  # leave a docs-only PR waiting forever, and without `merge_group:` the queue
+  # never sees the context. The filter was dropped rather than paired with a
+  # `-noop` twin because the job is cheap (tree parsing + one small xtask build) and a
+  # twin is a second copy of the path list (G: one decider per fact).
+  #
+  # Why it is required at all: the ratchet merged red on 2026-10-02, and the
+  # required `Gates must fail on their own subject` re-runs every gate before
+  # perturbing it, so one advisory red on main failed every later merge group.
   pull_request:
-    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-baseline.json']
+  merge_group:
   workflow_dispatch:
 
 concurrency:
@@ -38,6 +49,8 @@ jobs:
   scoreboard:
     name: exemplar metrics ratchet
     runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    # Required, so it must fit the merge queue's check budget (CI-I7).
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 

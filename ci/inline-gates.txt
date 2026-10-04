@@ -11,7 +11,16 @@
 # Regenerate with `cargo xtask ci-spec inline-gates > ci/inline-gates.txt`
 # (annotations are carried forward).
 #
-# UNCOVERED_CEILING = 91
+# UNCOVERED_CEILING = 93
+#
+# 2026-10-02: 91 → 93. The two podlist-probe steps that 2026-09-11 left out as
+# pre-existing drift (below) come in now, because the job they belong to became
+# a REQUIRED context the same day (ci/required-checks.txt, owner decision). While
+# the job was advisory ci-spec reported them at info; on a required job I8 is
+# High and fails, which is the point of requiring it. Both are refusals on the
+# runner's own environment (no /dev/kvm, no vmlinux after `nucleus setup`): a
+# falsifier would need a runner WITHOUT KVM to run on, so "no falsifier yet" is
+# the true statement, not a placeholder. No debt is new; it is now counted.
 #
 # 2026-09-11: 80 → 90. The grep-only consolidation folds eleven single-script
 # gate jobs into `ci.yml`'s `text-gates` and relays each outcome back to its own
@@ -109,6 +118,8 @@ kani-spawn-boundary.yml::kani-argv::The harness and both call sites are still th
 line-ratchet.yml::ratchet-down::Ratchet down | UNCOVERED: no falsifier yet
 manifest-guards.yml::manifest-guards::Cargo metadata smoke (whole workspace parses, empty stderr) | UNCOVERED: no falsifier yet
 oidc-keyless-prototype.yml::keyless-oidc-e2e::Confirm the OIDC request env vars are present | UNCOVERED: no falsifier yet
+podlist-probe.yml::podlist-probe::This runner must actually have KVM and vsock (refuse, never skip) | UNCOVERED: no falsifier yet
+podlist-probe.yml::podlist-probe::Install this build as the Tier 2 host (firecracker, jailer, kernel) | UNCOVERED: no falsifier yet
 portcullis-core-proven-lean.yml::portcullis-core-proven-lean::Proof-hole scan (no sorry/admit outside the research manifest) | UNCOVERED: no falsifier yet
 portcullis-core-proven-lean.yml::portcullis-core-proven-lean::Per-theorem axiom audit (every declaration under every proven-tier root) | UNCOVERED: no falsifier yet
 quickstart-boot.yml::pins-resolve::Kernels must resolve and match their baked digest | UNCOVERED: no falsifier yet
