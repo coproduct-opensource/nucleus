@@ -6581,12 +6581,15 @@ name = "nucleus-audit"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "c2pa",
  "chrono",
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
  "hmac 0.13.0",
+ "nucleus-ci-verdict",
+ "nucleus-receipt",
  "nucleus-spec",
  "portcullis",
  "portcullis-core",

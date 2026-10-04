@@ -228,6 +228,28 @@ surfaces the node's error with a failing CLI exit status. `result` reports the
 workload state as JSON; a completed workload's nonzero exit code is data in that
 observation, separate from whether the CLI request succeeded.
 
+Verify exported evidence with the shared execution verifier:
+
+```sh
+nucleus-audit verify-execution --receipt execution-receipt.json --expectations expected.json
+nucleus-audit verify-artifacts --bundle execution-bundle.json --expectations expected.json
+```
+
+`expected.json` uses the existing `RecordedExecution` schema from
+`nucleus-ci-verdict::execution`: pod ID, source commit/tree, gate, program digest,
+architecture, environment-input digest, selected artifact name/path map, session
+ID, issuer key ID, the pinned 32-byte public key as a JSON byte array, and the
+issuance window in Unix microseconds. Obtain these expectations from the trusted
+admission/controller record; copying them from the supplied receipt would not
+establish the intended run or signer. The verifier checks the issuance window
+and requires its deadline to remain valid when verification completes.
+
+The JSON report includes the authenticated execution claim and its observed exit
+code. `artifact_bytes_verified` is the number of verified artifacts for a bundle
+and null for receipt-only verification. A zero verifier exit status authenticates
+the evidence; it does not mean the workload's tests passed. This verifier requires
+protected Firecracker execution and refuses local/container execution receipts.
+
 Live mTLS/local-driver evidence: binary output containing NUL and invalid UTF-8
 survived collection unchanged. OpenSSL independently verified the host signature,
 and independently computed size/hash matched the signed descriptor. Symlink

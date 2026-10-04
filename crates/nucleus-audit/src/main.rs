@@ -10,6 +10,7 @@ mod suggest;
 mod tool_pattern;
 mod verify_art12;
 mod verify_build;
+mod verify_execution;
 mod verify_host_effects;
 mod verify_mediation_receipts;
 mod verify_tool_proxy;
@@ -40,6 +41,8 @@ struct Cli {
 enum Command {
     #[command(flatten)]
     HostEffects(verify_host_effects::Command),
+    #[command(flatten)]
+    Execution(verify_execution::Command),
     /// Verify a tool-proxy JSONL audit log (HMAC signatures + hash chain).
     #[command(mut_args = |a| a.hide_env_values(true))]
     Verify {
@@ -378,6 +381,7 @@ fn main() -> Result<(), AuditError> {
 
     match cli.command {
         Command::HostEffects(command) => command.run()?,
+        Command::Execution(command) => command.run()?,
         Command::Verify {
             log,
             secret,

@@ -1092,3 +1092,18 @@ are documented in `docs/handoffs/nucleus-build-receipts.md`.
 The CLI suite passed 311 tests (two ignored), including binary output
 preservation and artifact selection, and Clippy and all four prepush gates
 passed. These checks do not complete the two live coding-harness journeys.
+
+### Execution evidence verification CLI (2026-10-04)
+
+`nucleus-audit verify-execution` and `verify-artifacts` now consume exported
+receipts/bundles and a separate trusted `RecordedExecution` file. They call the
+existing shared verifier for signer, run binding, protected Firecracker execution,
+issuance window and artifact identities, and recheck the deadline at consumption.
+The JSON report preserves the observed workload exit code; verification success
+does not claim a successful build. Receipt-only verification explicitly reports
+no artifact-byte verification. Usage and expectation provenance are documented
+alongside collection in `docs/handoffs/nucleus-build-receipts.md`.
+
+All 134 audit tests passed, including a CLI integration that verifies a signed
+receipt and binary artifact while preserving nonzero workload exit status.
+Clippy and all four repository gates passed. The full coding journeys remain open.
