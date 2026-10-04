@@ -286,20 +286,10 @@ const EEXIST: i32 = 17;
 /// The first step the kernel refused.
 #[cfg(target_os = "linux")]
 pub fn configure(cfg: &NetConfig) -> Result<(), NetError> {
-    use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
-
     let ifindex = nix::net::if_::if_nametoindex(GUEST_IFACE).map_err(|e| NetError {
         step: NetStep::Ifindex,
         source: e.into(),
     })?;
-    let socket = Socket::new(NETLINK_ROUTE)
-        .and_then(|mut s| s.bind_auto().map(|_| s))
-        .map_err(|source| NetError {
-            step: NetStep::Socket,
-            source,
-        })?;
-    let kernel = SocketAddr::new(0, 0);
-
     let mut steps = vec![
         (NetStep::LinkUp, link_up(ifindex, 1)),
         (
@@ -310,6 +300,31 @@ pub fn configure(cfg: &NetConfig) -> Result<(), NetError> {
     if let Some(gw) = cfg.gw {
         steps.push((NetStep::Route, default_route(gw, 3)));
     }
+    apply_steps(steps)
+}
+
+/// Enable only the guest's local TCP/IP interface, without an external route.
+/// Workload HTTP adapters need this even when all outbound traffic uses vsock.
+#[cfg(target_os = "linux")]
+pub fn configure_loopback() -> Result<(), NetError> {
+    let ifindex = nix::net::if_::if_nametoindex("lo").map_err(|e| NetError {
+        step: NetStep::Ifindex,
+        source: e.into(),
+    })?;
+    apply_steps([(NetStep::LinkUp, link_up(ifindex, 1))])
+}
+
+#[cfg(target_os = "linux")]
+fn apply_steps(steps: impl IntoIterator<Item = (NetStep, Vec<u8>)>) -> Result<(), NetError> {
+    use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_ROUTE};
+    let socket = Socket::new(NETLINK_ROUTE)
+        .and_then(|mut s| s.bind_auto().map(|_| s))
+        .map_err(|source| NetError {
+            step: NetStep::Socket,
+            source,
+        })?;
+    let kernel = SocketAddr::new(0, 0);
+
     for (step, msg) in steps {
         let fail = |source| NetError { step, source };
         socket.send_to(&msg, &kernel, 0).map_err(fail)?;

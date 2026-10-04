@@ -343,6 +343,10 @@ fn run() -> Result<(), String> {
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
     let host_spec_required = boot::requires_host_spec(&cmdline).map_err(|e| e.to_string())?;
 
+    // Local HTTP adapters are useful even in a vsock-only pod. This enables
+    // loopback only; external routes and the egress fence are configured below.
+    #[cfg(target_os = "linux")]
+    timed("loopback", net::configure_loopback).map_err(|e| e.to_string())?;
     let net_config = net::parse_cmdline(&cmdline);
 
     if let Some(net) = net_config.as_ref() {
@@ -786,27 +790,6 @@ fn run() -> Result<(), String> {
         .seal(remount_root_ro)
         .map_err(|e| e.to_string())?;
 
-    // NOTE: the loopback interface is DOWN here. Measured in a booted guest —
-    // `/sys/class/net/lo/flags` reads `0x8` (LOOPBACK without IFF_UP) and
-    // `operstate` is `down`. Nothing in this image brings it up, and the rootfs
-    // is Debian slim, so it has neither `ip` nor `ifconfig`.
-    //
-    // That is harmless TODAY, and the reason is worth recording because it is
-    // not obvious: the tool-proxy's `--listen` defaults to `127.0.0.1:0`, but it
-    // serves vsock EXCLUSIVELY when the spec declares one, and
-    // `spawn_firecracker_pod` REFUSES a spec without vsock. So the TCP listener
-    // is unreachable on every path this init serves and `bind()` never touches
-    // loopback.
-    //
-    // A fix was written and then removed. It worked — flags went 0x8 to 0x9 in a
-    // booted guest — but building a rootfs WITHOUT it and booting produced an
-    // identical result, because the condition it guarded cannot occur here. The
-    // real cause of the bind failure that prompted it was a test config with no
-    // vsock DEVICE.
-    //
-    // Anything that makes the guest bind a TCP socket — a spec without vsock, a
-    // second listener, a health endpoint on 127.0.0.1 — reintroduces the need,
-    // and `EADDRNOTAVAIL` from PID 1 panics the kernel rather than logging.
     let err = boot.exec(|proof| exec_proxy(proof, &spec_path, child_env));
     Err(format!("failed to exec {PROXY_BIN}: {err}"))
 }

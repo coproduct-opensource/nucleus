@@ -81,7 +81,23 @@ const FILTER_ERRNO: i32 = 1;
 /// the guest console by whoever ran the pod.
 const CONTEND_SENTINEL: &str = "NUCLEUS_CONTEND";
 
+mod loopback;
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--loopback") {
+        match loopback::round_trip() {
+            Ok(()) => {
+                println!("NUCLEUS_LOOPBACK_PROBE: PASS");
+                eprintln!("NUCLEUS_LOOPBACK_PROBE: PASS");
+            }
+            Err(error) => {
+                eprintln!("NUCLEUS_LOOPBACK_PROBE: FAIL: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     // Stage 2: invoked as a `/v1/run` command
     // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--run-child"]}`)
     // rather than as the pod workload. A command the tool-proxy runs for the

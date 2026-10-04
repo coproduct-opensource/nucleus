@@ -806,3 +806,34 @@ node/proxy builds, and all four prepush gates passed.
 This establishes a real approved and refused broker journey with host evidence.
 Fresh installation, the two complete coding harness journeys, full compromised-
 guest validation, and the remaining release workstreams are still required.
+
+### Preparing ordinary HTTP harness clients (2026-10-04)
+
+The existing generic workload spec and in-guest MCP bridge provide the launch
+and tool surfaces. `nucleus run` still launches its selected assistant on the
+host; it is not the path for the two in-pod acceptance runs. Aider and Continue
+are provisional external harness candidates. Their official documentation
+supports configurable API bases and noninteractive coding runs:
+[Aider endpoint configuration](https://aider.chat/docs/llms/openai-compat.html),
+[Continue headless mode](https://docs.continue.dev/cli/headless-mode), and
+[Continue configuration](https://docs.continue.dev/reference). Provider-specific
+configuration belongs in the external harness, not the runtime.
+
+Ordinary HTTP clients need an adapter to the Unix workload door. Before adding
+that adapter, a real UID-1000 TCP loopback round trip in pod
+`41d40570-5546-4afe-af13-c2f1017d8180` failed with `Network unreachable`:
+guest-init never brought up `lo`. The same probe passed in pod
+`4a0a11d5-92d2-4e98-94bc-f8a3b0fcc904` after enabling loopback through the
+existing Rust netlink encoder and acknowledgement handling. This adds no external
+address or route. The boot's external egress probes still refused both public
+IPv4 destinations and reported PASS. Loopback setup failure aborts boot before
+workloads launch. The shipped workload probe now exposes `--loopback` for
+repeating a bounded TCP round trip without a custom probe binary. That shipped
+stage passed in real pod `9ab0450f-42ec-4225-9867-b55a7b2fd1b5`, alongside
+the external egress denials. All probe pods were cancelled after validation.
+
+Guest-init's existing unit/doc tests and the workload probe's 17 tests pass.
+Portable strict Clippy and Linux-only guest-init Clippy pass; production
+Linux ARM64 musl builds pass. This establishes localhost availability only.
+The ordinary HTTP adapter, fresh image installation, and both coding-to-PR
+acceptance runs remain to be implemented and demonstrated.

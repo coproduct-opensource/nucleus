@@ -7,3 +7,9 @@ The syscall-filter stage opens AF_VSOCK and attempts namespace and ptrace operat
 2026-10-04 (#3162): the measured exemplar unsafe-block count changes from 4 to 5 for this probe's single Linux `libc::syscall` wrapper. Its callers pass scalar arguments and null output pointers; socket descriptors are closed and forked children are reaped. The production hardening path retains its existing two unsafe blocks. The baseline also records workspace-lint adoption improving from 63 to 64 crates (96 total).
 
 The C2 lineage probe is separate trusted instrumentation: CI enables guest-init's `ci-podlist-probe` feature to query the host over real vsock while ordinary workloads remain filtered. Release builds omit that feature.
+
+`--loopback` checks a real bounded TCP round trip over `127.0.0.1` as the
+workload UID. It reports `NUCLEUS_LOOPBACK_PROBE: PASS` or `FAIL` and exits
+unsuccessfully on failure. This checks the local transport needed by workload
+HTTP adapters; it does not assert that any external network destination is
+allowed. Use the separate egress probe to check external denials.
