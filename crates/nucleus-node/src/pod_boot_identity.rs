@@ -76,6 +76,9 @@ pub(crate) struct Inputs<'a> {
     pub task_token: Option<session_mint::MintedTaskToken>,
     pub pod_certificate: Option<pod_authority::BootCertificate>,
     pub broker_serve: broker_launch::ServeToken,
+    /// The audit uploader's credential, minted for this pod's resolved sink (#3160). `None` when
+    /// the pod has no audit sink.
+    pub audit_creds: Option<workload_api_vsock::AuditCredentials>,
     /// What `image_identity::verify` read for this pod, so the attestation reports the bytes
     /// that were held to the pin rather than a second read of the same file.
     pub measured: crate::image_identity::Measured,
@@ -94,6 +97,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         task_token,
         pod_certificate,
         broker_serve,
+        audit_creds,
         measured,
     } = inputs;
     let identity_source = net::identity_registration(state.identity_manager.as_ref(), grant);
@@ -201,12 +205,11 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // of a VM past that point would give every clone this pod's identity.
                 personalized: std::sync::Arc::default(),
                 at_snapshot_barrier: std::sync::Arc::default(),
-                // The S3 audit-sink credentials, served once over this
+                // The audit uploader's credential, served once over this
                 // socket instead of riding the world-readable kernel
-                // command line (the C1 exposure).
-                audit_creds: workload_api_vsock::AuditCredentials::from_node_env(
-                    spec.spec.audit_sink.is_some(),
-                ),
+                // command line (the C1 exposure). Minted for this pod's
+                // resolved sink; the node's own key is never served (#3160).
+                audit_creds,
                 // A per-pod ed25519 seed the guest proxy signs receipts with,
                 // served ONCE before the workload exists. See `mediation`.
                 mediation_signing_key: mediation::new_seed_hex(pod_dir),

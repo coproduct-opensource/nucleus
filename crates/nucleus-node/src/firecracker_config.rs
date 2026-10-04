@@ -794,6 +794,8 @@ impl FirecrackerConfig {
         net_plan: Option<&net::NetPlan>,
         approval_pubkeys: &str,
         workload_api_port: Option<u32>,
+        // The pod's audit sink as admission resolved it (`spec_posture::admit`).
+        audit_sink: Option<&crate::audit_sink::AuditTarget>,
         // When jailed, every path emitted below is IN-JAIL, not host.
         jail: Option<&JailLayout>,
     ) -> Self {
@@ -863,15 +865,10 @@ impl FirecrackerConfig {
             push(&format!("nucleus.workload_api_port={port}"));
         }
 
-        // Inject audit S3 sink config via kernel args. Rendered by the same parser admission ran
-        // (`spec_posture::audit_sink_boot_args`), never from the raw strings: those were appended
-        // verbatim, so a bucket of `b init=/bin/sh` was a second token and the kernel takes the
-        // last `init=` (#3120). Admission refused any spec this parse rejects, so the `Err` arm is
-        // a closure over that, like `enforce_pci_off`, and emits no sink rather than a raw value.
-        if let Some(ref sink) = spec.spec.audit_sink {
-            match crate::spec_posture::audit_sink_boot_args(sink) {
-                Ok(tokens) => tokens.iter().map(String::as_str).for_each(&mut push),
-                Err(refused) => tracing::error!(%refused, "audit sink not rendered"),
+        // Render only the target resolved against the operator's configured sinks.
+        if let Some(target) = audit_sink {
+            for token in crate::audit_sink::audit_sink_boot_args(target) {
+                push(&token);
             }
             // The AWS credentials are NO LONGER EMITTED here.
             //
