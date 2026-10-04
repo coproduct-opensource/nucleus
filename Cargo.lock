@@ -7874,6 +7874,9 @@ dependencies = [
 [[package]]
 name = "nucleus-workload-probe"
 version = "1.0.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "num-bigint"

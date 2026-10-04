@@ -1169,6 +1169,7 @@ mod tests {
 
     /// Spawn `/bin/sh -c 'id -u; cat /proc/<this pid>/environ | wc -c'` as a
     /// workload admitted under `mode`; `Err` is the admission's refusal.
+    #[cfg(target_os = "linux")]
     async fn spawn_uid_probe(
         mode: nucleus::ContainmentMode,
         opt_in: nucleus::UnsandboxedOptIn,
@@ -1203,6 +1204,7 @@ mod tests {
     /// `uid_boundary=distinct`, `id -u` printed 1001, and the workload read
     /// 2006 bytes of the runtime's environ. Each runtime uid asserts its own
     /// exact outcome.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_guest_workload_never_runs_at_the_runtimes_uid() {
         let runtime = nix_getuid();
@@ -1236,6 +1238,7 @@ mod tests {
     /// so: the receipt records `shared_unsandboxed`, not `distinct`, and the
     /// workload really can read the runtime's environ — the posture is what it
     /// claims, in both directions. A root runtime drops even here.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn the_bare_tier_runs_at_the_runtimes_uid_and_says_so() {
         let runtime = nix_getuid();
