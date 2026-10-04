@@ -60,8 +60,8 @@ impl StagedBody {
         self.digest
     }
 
-    /// Consume a refused upload for operator review; it can no longer dispatch.
-    pub(super) async fn into_review(mut self) -> Result<Vec<u8>, String> {
+    /// Read review bytes, then rewind the owned upload for a possible approved resume.
+    pub(super) async fn review_bytes(&mut self) -> Result<Vec<u8>, String> {
         if self.len > crate::host_decide::effects::review::MAX_REVIEW_BYTES {
             return Err("request exceeds host approval review limit".into());
         }
@@ -70,6 +70,10 @@ impl StagedBody {
             .read_exact(&mut body)
             .await
             .map_err(|_| "staged review unreadable")?;
+        self.file
+            .rewind()
+            .await
+            .map_err(|_| "staged review cannot rewind")?;
         Ok(body)
     }
 

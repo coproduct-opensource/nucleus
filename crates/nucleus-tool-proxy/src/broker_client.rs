@@ -684,6 +684,7 @@ mod tests {
         use std::sync::Arc;
 
         let request = nucleus_cred_protocol::StreamRequest {
+            approval_wait_seconds: 0,
             operation: "WebFetch".to_string(),
             target: "model-api".to_string(),
             justification: "routine".to_string(),

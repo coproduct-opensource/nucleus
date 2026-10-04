@@ -322,10 +322,11 @@ pub(crate) async fn credentialed_egress(
     // A STREAMED call (#2696 P4): the body goes up as it arrives from the
     // workload and the reply comes back as the upstream sends it, so a model
     // call larger than a perform frame's 256 KiB, and a server-sent-event
-    // reply, both fit. Unique per call: a streamed body cannot be replayed, so
-    // a workload's retry is a new call, and the host refuses a nonce it has
-    // seen, which is what stops a captured open frame being sent twice.
+    // reply, both fit. The host can pause its staged upload for approval. A
+    // workload retry is a new call with a fresh nonce; the host refuses a nonce
+    // it has seen, stopping a captured open frame from being sent twice.
     let request = nucleus_cred_protocol::StreamRequest {
+        approval_wait_seconds: request_approval_wait(&headers)?,
         operation: "WebFetch".to_string(),
         target: name.clone(),
         justification: "credentialed egress".to_string(),
@@ -354,6 +355,25 @@ pub(crate) async fn credentialed_egress(
         .await;
 
     Ok(relayed_response(relayed))
+}
+
+/// A workload can request immediate refusal or a bounded operator-review pause.
+fn request_approval_wait(headers: &axum::http::HeaderMap) -> Result<u64, crate::ApiError> {
+    let max = nucleus_cred_protocol::stream::MAX_APPROVAL_WAIT_SECONDS;
+    let Some(value) = headers.get("x-nucleus-approval-wait-seconds") else {
+        return Ok(max);
+    };
+    let seconds = value
+        .to_str()
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|s| *s <= max)
+        .ok_or_else(|| {
+            crate::ApiError::Spec(format!(
+                "x-nucleus-approval-wait-seconds must be between 0 and {max}"
+            ))
+        })?;
+    Ok(seconds)
 }
 
 /// The media type the workload declared for its request body, if it is one
@@ -413,6 +433,25 @@ pub(crate) fn relayed_response(relayed: crate::broker_client::Relayed) -> axum::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workload_approval_wait_defaults_to_bounded_pause_and_can_be_disabled() {
+        let mut headers = axum::http::HeaderMap::new();
+        assert_eq!(
+            request_approval_wait(&headers).unwrap(),
+            nucleus_cred_protocol::stream::MAX_APPROVAL_WAIT_SECONDS
+        );
+        for (value, expected) in [
+            ("0", Some(0)),
+            ("30", Some(30)),
+            ("121", None),
+            ("-1", None),
+            ("bad", None),
+        ] {
+            headers.insert("x-nucleus-approval-wait-seconds", value.parse().unwrap());
+            assert_eq!(request_approval_wait(&headers).ok(), expected);
+        }
+    }
 
     fn spec() -> CredentialedEgressSpec {
         spec_named("NUCLEUS_TEST_EGRESS_CRED_DEFAULT")
@@ -753,6 +792,7 @@ mod tests {
                     let host = host.clone();
                     async move {
                         let request = nucleus_cred_protocol::StreamRequest {
+                            approval_wait_seconds: 0,
                             operation: "WebFetch".into(),
                             target: name,
                             justification: "credentialed egress".into(),

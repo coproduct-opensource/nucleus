@@ -531,7 +531,7 @@ where
     };
     // No credentials or upstream I/O until the complete bounded upload is owned.
     let started = std::time::Instant::now();
-    let staged =
+    let mut staged =
         match staged::StagedBody::read(reader, ctx.streams.limits.max_request_bytes()).await {
             Ok(body) => body,
             Err(reason) => return refuse(&reason, 0, Remaining::MayFollow, reader, writer).await,
@@ -551,7 +551,7 @@ where
         Ok(effect) => effect,
         Err(_) => return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await,
     };
-    let preflight = match ctx.host_policy.lock() {
+    let preflight = || match ctx.host_policy.lock() {
         Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
             Some(op) => {
                 policy.preflight_effect(effect, op, resolved.url(), current_time(), call_charge)
@@ -560,19 +560,35 @@ where
         },
         Err(_) => Err("host policy unavailable".into()),
     };
-    if let Err(reason) = preflight {
-        let reason = capture_review(
+    if let Err(reason) = preflight() {
+        let review = capture_review(
             ctx.host_policy,
             req,
             &resolved,
-            staged,
+            &mut staged,
             effect,
             current_time(),
         )
-        .await
-        .err()
-        .unwrap_or(reason);
-        return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
+        .await;
+        let pause = match review {
+            Err(error) => Err(error),
+            Ok(()) if req.approval_wait_seconds == 0 => Err(reason),
+            Ok(()) => {
+                use tokio::io::AsyncReadExt as _;
+                let mut extra = [0u8; 1];
+                tokio::select! {
+                    result = crate::host_decide::effects::wait::for_effect(ctx.host_policy, effect, current_time(), req.approval_wait_seconds) => match result {
+                        Ok(crate::host_decide::effects::wait::WaitOutcome::Granted) => Ok(()),
+                        Ok(crate::host_decide::effects::wait::WaitOutcome::NoPendingApproval) => Err(reason),
+                        Err(error) => Err(error),
+                    },
+                    _ = reader.read(&mut extra) => Err("approval wait ended: guest disconnected or sent unexpected data".into()),
+                }
+            }
+        };
+        if let Err(reason) = pause.and_then(|()| preflight()) {
+            return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
+        }
     }
     let uploaded = staged.len();
     let open_bytes = req.path.len().saturating_add(req.content_type.len()) as u64;
@@ -627,7 +643,7 @@ where
                 ctx.host_policy,
                 req,
                 &resolved,
-                staged,
+                &mut staged,
                 effect,
                 current_time(),
             )
@@ -796,7 +812,7 @@ async fn capture_review(
     policy: &crate::host_decide::SharedPodPolicy,
     request: &nucleus_cred_protocol::StreamRequest,
     resolved: &crate::broker_perform::Resolved<'_>,
-    staged: staged::StagedBody,
+    staged: &mut staged::StagedBody,
     effect: nucleus_decision_protocol::ArgsDigest,
     now: u64,
 ) -> Result<(), String> {
@@ -814,7 +830,7 @@ async fn capture_review(
         staged.digest(),
         staged.len(),
     );
-    let body = match staged.into_review().await {
+    let body = match staged.review_bytes().await {
         Ok(body) => body,
         Err(error) => {
             policy
@@ -838,6 +854,8 @@ mod tests {
     //! upstream that is a real HTTP server. Nothing here is vendor-specific:
     //! the upstream is a generic SSE endpoint and the credential is a
     //! placeholder.
+
+    mod approval_wait;
 
     use super::*;
     use crate::broker_perform::IdempotencyLedger;
@@ -1014,6 +1032,7 @@ mod tests {
 
     fn open(target: &str, nonce: &str) -> StreamRequest {
         StreamRequest {
+            approval_wait_seconds: 0,
             operation: "WebFetch".into(),
             target: target.into(),
             justification: "credentialed egress".into(),

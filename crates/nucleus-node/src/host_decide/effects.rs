@@ -8,6 +8,7 @@ use uuid::Uuid;
 
 use super::PodPolicy;
 pub(crate) mod review;
+pub(crate) mod wait;
 
 const MAX_APPROVALS: usize = 1024;
 const APPROVAL_TTL: u64 = 300;
@@ -49,12 +50,14 @@ struct EffectCheck {
 
 pub(super) struct Approvals {
     entries: HashMap<Uuid, Approval>,
+    changed: tokio::sync::watch::Sender<()>,
 }
 
 impl Approvals {
     pub(super) fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            changed: tokio::sync::watch::channel(()).0,
         }
     }
 
@@ -89,6 +92,7 @@ impl Approvals {
         } else {
             ApprovalStatus::Refused
         };
+        self.changed.send_replace(());
         Ok(())
     }
 

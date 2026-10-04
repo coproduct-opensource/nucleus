@@ -256,13 +256,18 @@ pub mod stream;
 ///
 /// # No idempotency key, and why that is honest
 ///
-/// A streamed body is consumed as it is sent, so there is nothing a host could
-/// replay a retry from; a guest that retries opens a new stream. What a key did
-/// for [`PerformRequest`] beyond deduplication, refusing a replayed signed
-/// frame, `nonce` does here: the host refuses a nonce it has already seen.
+/// Each OPEN names one connection. The host stages its upload and can pause
+/// that original request for approval, but never re-executes an upstream call
+/// for a reconnecting guest. A guest retry opens a fresh stream. `nonce`
+/// refuses replayed OPEN frames; it is not remote-effect idempotency.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StreamRequest {
+    /// Optional host-side pause for operator approval. Zero preserves immediate
+    /// refusal; the host caps a nonzero request at `stream::MAX_APPROVAL_WAIT_SECONDS`.
+    /// Keep the upload half open after END while waiting: EOF cancels the pause.
+    #[serde(default, skip_serializing_if = "zero_approval_wait")]
+    pub approval_wait_seconds: u64,
     /// The operation, as the policy layer names it.
     pub operation: String,
     /// The configured upstream this targets, by name. NOT a URL.
@@ -276,6 +281,10 @@ pub struct StreamRequest {
     /// The body's media type, forwarded as `content-type`. Guest-chosen, so
     /// the host counts it as upload bytes like the path.
     pub content_type: String,
+}
+
+fn zero_approval_wait(seconds: &u64) -> bool {
+    *seconds == 0
 }
 
 /// The host's first answer on a stream: refused, or the upstream's status.
@@ -432,8 +441,34 @@ mod tests {
             .join("\n")
     }
 
+    #[test]
+    fn approval_wait_is_explicit_and_legacy_stream_frames_remain_immediate() {
+        let mut request = stream_request();
+        let legacy = serde_json::to_string(&request).unwrap();
+        assert!(!legacy.contains("approval_wait_seconds"));
+        assert_eq!(
+            serde_json::from_str::<StreamRequest>(&legacy)
+                .unwrap()
+                .approval_wait_seconds,
+            0
+        );
+        request.approval_wait_seconds = stream::MAX_APPROVAL_WAIT_SECONDS;
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            serde_json::from_str::<StreamRequest>(&encoded)
+                .unwrap()
+                .approval_wait_seconds,
+            stream::MAX_APPROVAL_WAIT_SECONDS
+        );
+        assert!(
+            stream::GUEST_HEAD_WAIT.as_secs()
+                > stream::MAX_APPROVAL_WAIT_SECONDS + stream::UPSTREAM_IDLE.as_secs()
+        );
+    }
+
     fn stream_request() -> StreamRequest {
         StreamRequest {
+            approval_wait_seconds: 0,
             operation: "WebFetch".into(),
             target: "model-api".into(),
             justification: "credentialed egress".into(),

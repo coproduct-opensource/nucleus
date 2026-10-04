@@ -72,8 +72,9 @@ Implementation sequence:
    legitimate approved work; denying every approval-gated operation is not done.
    **In progress:** operator-only mTLS routes list and grant/refuse pending host
    effects. Approvals expire after five minutes and are consumed at final
-   authorization, not preflight. Failed minting does not consume them. Operator CLI list/grant/refuse commands now expose this path. Exact request review is now available through the operator CLI; harness
-   pause/resume remains to be delivered.
+   authorization, not preflight. Failed minting does not consume them. Operator CLI list/grant/refuse commands now expose this path. Exact request review is available through the operator CLI. Streamed workload
+   requests can now pause for operator approval and resume the staged request;
+   complete harness journeys remain to be demonstrated.
 6. Keep receipt and exit-report authority outside the guest. Distinguish host
    observations from guest assertions in signed evidence.
    **In progress:** no mediation signing seed exists in boot material, and the
@@ -597,3 +598,38 @@ verification, the aggregate retention limit, or CLI body verification each makes
 its regression fail at runtime; restored code passes. CLI/node Linux ARM64 musl
 builds, Clippy with warnings denied, and all four prepush gates pass. The built
 CLI help exposes `review`. This remains local evidence, not Tier-2 validation.
+
+### Bounded workload approval pause and resume (2026-10-04)
+
+Stream requests can explicitly request a host approval wait, capped at 120
+seconds and the approval's remaining lifetime. The workload proxy defaults to
+that pause after its own gates pass; `x-nucleus-approval-wait-seconds` can select
+0–120 seconds. Zero/omitted protocol values preserve immediate refusal. This
+requires coordinated proxy/host versions because older strict decoders reject
+the new nonzero field.
+
+The host retains the original staged upload, exposes its review, and awaits
+operator settlement without holding the policy mutex. Grant resumes that upload
+through fresh preflight and final authorization, consuming one approval and one
+upstream dispatch. Refusal, timeout, revocation, and broker disconnect stop the
+pending call. No credentials or upstream I/O occur while it waits. Other policy
+failures retain their original refusal messages. A timed-out request's review
+remains available until expiry for a later explicit retry.
+
+This is an approval pause on an undispatched request, not automatic retry after
+an ambiguous remote effect. Buffered PERFORM calls keep explicit retry behavior.
+Local proxy permission/IFC gates still apply. Client timeouts must accommodate
+the pause; complete demonstrations with both supported harnesses and real Tier-2
+execution are still required.
+
+Validation: 842 node unit tests, 573 proxy unit tests with all features (including
+MCP), 24 credential-protocol tests, and 22 integration tests pass; existing ignored
+cases remain skipped. Four real broker/upstream wait tests cover grant, refusal,
+exact resumed payload hash/length, single dispatch, timeout, review retention,
+broker disconnect, revocation, and preservation of unrelated policy refusals.
+Protocol tests retain legacy zero/omitted behavior; proxy tests cover the default,
+immediate refusal, and invalid wait settings. Bypassing the pause or omitting the
+staged-file rewind makes the resume regression fail at runtime; restored code
+passes. Node/proxy Linux ARM64 musl builds, strict Clippy for all three changed
+crates, and all four prepush gates pass. Broker clients opting into this pause
+must keep the upload half open after END; EOF is cancellation.
