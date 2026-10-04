@@ -54,6 +54,7 @@ WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucle
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
 PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
 ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-adversary-probe}"
+MCP_BIN="${MCP_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-mcp}"
 NET_ALLOW="${NET_ALLOW:-}"
 NET_DENY="${NET_DENY:-}"
 # NOTE: Secrets are now injected at runtime via kernel command line (nucleus.auth_secret, nucleus.approval_secret)
@@ -84,8 +85,8 @@ Environment:
   OVERLAY_DIR             Directory copied over the rootfs after the nucleus
                           binaries, for a workload runtime or agent CLI. Opaque
                           to nucleus. Paths that would shadow the mediating
-                          runtime (/init, nucleus-tool-proxy, nucleus-net-probe,
-                          guest-net.sh) are restored and the attempt reported.
+                          runtime (/init, nucleus-tool-proxy, the probes) are
+                          restored and the attempt reported.
     --verify                Verify required binaries exist without building
     -h, --help              Show this help message
 
@@ -156,6 +157,7 @@ WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucle
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
 PODLIST_PROBE_BIN="${PODLIST_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-podlist-probe}"
 ADVERSARY_PROBE_BIN="${ADVERSARY_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-adversary-probe}"
+MCP_BIN="${MCP_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-mcp}"
             shift 2
             ;;
         --output)
@@ -332,11 +334,6 @@ if [ ! -f "$GUEST_INIT_BIN" ] && [ ! -f "$INIT_SRC" ]; then
     exit 1
 fi
 
-if [ ! -f "$SCRIPT_DIR/guest-net.sh" ]; then
-    echo "Missing $SCRIPT_DIR/guest-net.sh" >&2
-    exit 1
-fi
-
 # Legacy secrets mode validation
 if [ "$LEGACY_SECRETS" = true ]; then
     if [ -z "$TOOL_PROXY_AUTH_SECRET" ]; then
@@ -443,6 +440,10 @@ if [ -n "$CA_BUNDLE_SRC" ]; then
         exit 1
     fi
     echo "Installed CA bundle from build host: $CA_BUNDLE_SRC ($ca_count certificates)"
+    # The guest layer's own copy (nucleus_spec::guest_layout::CA_BUNDLE), which
+    # the runtime reads first. The Debian path above stays for workloads that
+    # expect it; the runtime no longer depends on the image providing one.
+    cp "$ROOTFS_DIR/etc/ssl/certs/ca-certificates.crt" "$ROOTFS_DIR/etc/nucleus/ca-bundle.pem"
 elif [ "${ALLOW_NO_CA_BUNDLE:-0}" = "1" ]; then
     echo "WARNING: no CA bundle found; ALLOW_NO_CA_BUNDLE=1 so continuing." >&2
     echo "         The guest tool-proxy will refuse to start with drand enabled." >&2
@@ -496,6 +497,9 @@ cp "$EGRESS_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
 # runs it as the workload); guarded like podlist so lanes that do not build it
 # skip cleanly rather than error.
 [ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
+# The MCP bridge an agent in the pod uses (#2696 P2); the release builds it,
+# boot lanes that do not are skipped like the probes above.
+[ -f "$MCP_BIN" ] && cp "$MCP_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-mcp"
 
 # Copy init binary (prefer Rust binary, fall back to shell script)
 if [ -f "$GUEST_INIT_BIN" ]; then
@@ -505,9 +509,6 @@ else
     cp "$INIT_SRC" "$ROOTFS_DIR/init"
     echo "Using shell script init (fallback)"
 fi
-
-# Copy network setup script
-cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
 
 # Overlay: an operator-supplied directory copied over the rootfs.
 #
@@ -535,8 +536,7 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
         "usr/local/bin/nucleus-tool-proxy" \
         "usr/local/bin/nucleus-net-probe" \
         "usr/local/bin/nucleus-workload-probe" \
-        "usr/local/bin/nucleus-egress-probe" \
-        "usr/local/bin/guest-net.sh"; do
+        "usr/local/bin/nucleus-egress-probe"; do
         if [ -e "$OVERLAY_DIR/$guarded" ]; then
             echo "WARNING: overlay shadowed $guarded; restoring the nucleus binary" >&2
         fi
@@ -552,7 +552,9 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
 # runs it as the workload); guarded like podlist so lanes that do not build it
 # skip cleanly rather than error.
 [ -f "$ADVERSARY_PROBE_BIN" ] && cp "$ADVERSARY_PROBE_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
-    cp "$SCRIPT_DIR/guest-net.sh" "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
+# The MCP bridge an agent in the pod uses (#2696 P2); the release builds it,
+# boot lanes that do not are skipped like the probes above.
+[ -f "$MCP_BIN" ] && cp "$MCP_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-mcp"
     if [ -e "$OVERLAY_DIR/init" ]; then
         echo "WARNING: overlay shadowed /init; restoring the nucleus init" >&2
     fi
@@ -570,7 +572,7 @@ chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-workload-probe"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-egress-probe"
 [ -f "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe" ] && chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-adversary-probe"
-chmod +x "$ROOTFS_DIR/usr/local/bin/guest-net.sh"
+[ -f "$ROOTFS_DIR/usr/local/bin/nucleus-mcp" ] && chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-mcp"
 
 # Build ext4 image from directory
 rm -f "$ROOTFS_IMG"

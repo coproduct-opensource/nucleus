@@ -5,8 +5,12 @@ CLI for running AI agents under Nucleus permission enforcement.
 ## Install
 
 ```bash
-cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli
+cargo install --git https://github.com/coproduct-opensource/nucleus nucleus-cli --locked
 ```
+
+Not from crates.io: the name `nucleus-cli` there belongs to an unrelated project.
+See the canonical [install section](../../README.md#install) for the host-side
+helpers and the prebuilt release binary.
 
 ## Interactive Shell
 

@@ -5,11 +5,15 @@
 //! Beside it runs a model of what the host must do, and every step is checked
 //! against the model. Two laws from the design are asserted here:
 //!
-//! - **A2, one-shot absorption.** `v ; v = v ; Refusal(AlreadyServed)` for the
-//!   broker secret, the mediation key and the audit credentials, and the refusal
-//!   carries **none of the secret's bytes**. A walk that only checked "the second
+//! - **A2, one-shot absorption.** `v ; v = v ; Refusal(AlreadyServed)` for
+//!   every [`OneShot`] — the broker secret, the mediation key, the audit
+//!   credentials, and (#2724) the pod certificate, the task token, the caller
+//!   token and the DLC admission provisioning — and the refusal carries **none
+//!   of the value's bytes**. A walk that only checked "the second
 //!   call errors" would miss the failure that matters: a refusal that leaks the
-//!   value in its diagnostic.
+//!   value in its diagnostic. The SVID private key is the same law served
+//!   inside a success: the first `FETCH_SVID` carries it, every later one the
+//!   public chain alone.
 //! - **A5, personalisation and snapshot do not commute.** After any command that
 //!   personalises the VM, `clone_safety` must say `PersonalizedSince`, whatever
 //!   else happened; before it, the verdict follows `SNAPSHOT_READY`.
@@ -27,6 +31,7 @@
 //! (ADR 0007 G). What the walk checks is that `serve_frame` *records* it, for
 //! every command, in every order. Everything else the model decides itself.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -41,7 +46,74 @@ use crate::workload_api_protocol::{CommandParseError, WorkloadApiCommand as Cmd}
 const BROKER_SECRET: &str = "walk-broker-secret-5d1f0c";
 const MEDIATION_KEY: &str = "walk-mediation-key-a93b27";
 const AUDIT_SECRET: &str = "walk-audit-secret-7e40d8";
-const LEAKABLE: [&str; 3] = [BROKER_SECRET, MEDIATION_KEY, AUDIT_SECRET];
+const TASK_TOKEN: &str = "walk-task-token-31c9a0";
+const POD_CERT: &str = "d2Fsay1wb2QtY2VydC02YjE=";
+const CALLER_TOKEN: &str = "walk-caller-token-e2f415";
+const DLC_CREDENTIALS: &str = "op=walk-dlc-credential-904d";
+const LEAKABLE: [&str; 7] = [
+    BROKER_SECRET,
+    MEDIATION_KEY,
+    AUDIT_SECRET,
+    TASK_TOKEN,
+    POD_CERT,
+    CALLER_TOKEN,
+    DLC_CREDENTIALS,
+];
+
+/// The seed whose public half the walk writes as the pod's `mediator-pubkey.hex`
+/// anchor when a mediation key is provisioned, and signs `SHIP_SPEND` bodies
+/// with. Distinct from `MEDIATION_KEY`, which is served as opaque material and
+/// never used to sign anything here.
+const SPEND_SEED: [u8; 32] = [0x5a; 32];
+
+/// A valid `ClearingReceipt` line: a real two-bid round issued by the proven
+/// kernel, so it RECOMPUTES and the host stores it.
+///
+/// Fed to `SHIP_CLEARING` for the same reason `spend_body` is fed to
+/// `SHIP_SPEND`: the host verifies before it writes, so a body it refuses would
+/// leave the write path unwalked — and then the command would measure as
+/// idempotent while the census declares it mutating.
+pub(super) fn clearing_body() -> String {
+    let bids = vec![
+        nucleus_recompute::IntegerBid {
+            bidder: "walk-a".into(),
+            proposal_id: "walk-slot".into(),
+            effective_value_micro_usd: 3_000_000,
+        },
+        nucleus_recompute::IntegerBid {
+            bidder: "walk-b".into(),
+            proposal_id: "walk-slot".into(),
+            effective_value_micro_usd: 2_000_000,
+        },
+    ];
+    let proposals = vec![nucleus_recompute::IntegerProposal {
+        id: "walk-slot".into(),
+        cost_micro_usd: 1,
+    }];
+    let receipt = nucleus_recompute::issue_vcg(bids, proposals, 1).expect("the kernel clears this");
+    let mut line = serde_json::to_string(&receipt).expect("a receipt serializes");
+    line.push('\n');
+    line
+}
+
+/// A valid `SpendReceipt` line for `pod_id`, signed by [`SPEND_SEED`]. The walk
+/// ships a REAL receipt for `SHIP_SPEND` — unlike the opaque `SHIP_RECEIPT`
+/// body — because the host verifies it before storing, and a body it refuses
+/// would leave the write path unwalked.
+pub(super) fn spend_body(pod_id: uuid::Uuid) -> String {
+    let key = ed25519_dalek::SigningKey::from_bytes(&SPEND_SEED);
+    let receipt = portcullis::spend_receipt::SpendReceipt::issue(
+        "spiffe://walk.local/mediator",
+        &pod_id.to_string(),
+        1,
+        1,
+        "walk",
+        &key,
+    );
+    let mut line = serde_json::to_string(&receipt).expect("a receipt serializes");
+    line.push('\n');
+    line
+}
 
 /// A kernel command line `snapshot_safety` accepts, so the verdict turns only
 /// on what the walk changes.
@@ -49,7 +121,7 @@ const CLEAN_BOOT_ARGS: &str = "console=ttyS0 reboot=k panic=1 pci=off init=/init
 
 /// Every command. [`ordinal`] is an exhaustive match, so adding a command to the
 /// protocol stops this file compiling until the walk can draw it.
-const COMMANDS: [Cmd; 14] = [
+const COMMANDS: [Cmd; 16] = [
     Cmd::FetchSvid,
     Cmd::FetchBundle,
     Cmd::Ping,
@@ -64,6 +136,8 @@ const COMMANDS: [Cmd; 14] = [
     Cmd::FetchPodSpec,
     Cmd::ShipReceipt,
     Cmd::SnapshotReady,
+    Cmd::ShipSpend,
+    Cmd::ShipClearing,
 ];
 
 fn ordinal(c: Cmd) -> usize {
@@ -82,6 +156,8 @@ fn ordinal(c: Cmd) -> usize {
         Cmd::FetchPodSpec => 11,
         Cmd::ShipReceipt => 12,
         Cmd::SnapshotReady => 13,
+        Cmd::ShipSpend => 14,
+        Cmd::ShipClearing => 15,
     }
 }
 
@@ -100,6 +176,8 @@ fn wire_name(c: Cmd) -> &'static str {
         Cmd::PodList => "POD_LIST",
         Cmd::FetchPodSpec => "FETCH_POD_SPEC",
         Cmd::ShipReceipt => "SHIP_RECEIPT",
+        Cmd::ShipSpend => "SHIP_SPEND",
+        Cmd::ShipClearing => "SHIP_CLEARING",
         Cmd::SnapshotReady => "SNAPSHOT_READY",
     }
 }
@@ -137,9 +215,8 @@ enum Expect {
 #[derive(Debug, Clone)]
 struct Model {
     provision: Provision,
-    broker_served: bool,
-    mediation_key_served: bool,
-    audit_served: bool,
+    /// The one-shots served so far.
+    served: BTreeSet<OneShot>,
     personalized: bool,
     at_barrier: bool,
 }
@@ -148,9 +225,7 @@ impl Model {
     fn new(provision: Provision) -> Self {
         Model {
             provision,
-            broker_served: false,
-            mediation_key_served: false,
-            audit_served: false,
+            served: BTreeSet::new(),
             personalized: false,
             at_barrier: false,
         }
@@ -168,7 +243,7 @@ impl Model {
         // A refusal for absence comes BEFORE the one-shot check, and so never
         // spends it: a pod with nothing to serve must not be able to burn the
         // capability before a real provision exists.
-        let once = |held: bool, served: bool, m: Material, o: OneShot| match (held, served) {
+        let once = |held: bool, m: Material, o: OneShot| match (held, self.served.contains(&o)) {
             (false, _) => Expect::Refused(Refusal::NotProvisioned(m)),
             (true, true) => Expect::Refused(Refusal::AlreadyServed(o)),
             (true, false) => Expect::Served,
@@ -182,32 +257,63 @@ impl Model {
                 Cmd::SnapshotReady => Expect::Served,
                 Cmd::FetchBrokerSecret => once(
                     p.broker_secret,
-                    self.broker_served,
                     Material::BrokerSecret,
                     OneShot::BrokerSecret,
                 ),
                 Cmd::FetchMediationKey => once(
                     p.mediation_key && p.mediation_spiffe_id,
-                    self.mediation_key_served,
                     Material::MediationKey,
                     OneShot::MediationKey,
                 ),
                 Cmd::FetchAuditCredentials => once(
                     p.audit_creds,
-                    self.audit_served,
                     Material::AuditCredentials,
                     OneShot::AuditCredentials,
                 ),
                 Cmd::FetchPodSpec => present(p.pod_spec, Material::PodSpec),
-                Cmd::FetchDlcAdmission => present(p.dlc_admission, Material::DlcAdmission),
-                Cmd::FetchPodCertificate => present(p.pod_certificate, Material::PodCertificate),
-                Cmd::FetchTaskToken => present(p.task_token, Material::TaskToken),
-                Cmd::FetchPodCallerToken => present(p.caller_token, Material::CallerToken),
+                Cmd::FetchDlcAdmission => once(
+                    p.dlc_admission,
+                    Material::DlcAdmission,
+                    OneShot::DlcAdmission,
+                ),
+                Cmd::FetchPodCertificate => once(
+                    p.pod_certificate,
+                    Material::PodCertificate,
+                    OneShot::PodCertificate,
+                ),
+                Cmd::FetchTaskToken => once(p.task_token, Material::TaskToken, OneShot::TaskToken),
+                Cmd::FetchPodCallerToken => {
+                    once(p.caller_token, Material::CallerToken, OneShot::CallerToken)
+                }
                 Cmd::ShipReceipt => {
                     if p.receipts {
                         Expect::Served
                     } else {
                         Expect::Refused(Refusal::ReceiptCollectionNotConfigured)
+                    }
+                }
+                // The walk ships a VALID receipt (`spend_body`), so the outcome
+                // is decided by host state alone: no collection dir, no anchor
+                // (no key was minted, so `material_for` wrote none), or served.
+                // A clearing receipt is verified by RECOMPUTATION, so it needs
+                // no minted key: the only question is whether this pod
+                // collects at all.
+                Cmd::ShipClearing => {
+                    if p.receipts {
+                        Expect::Served
+                    } else {
+                        Expect::Refused(Refusal::ReceiptCollectionNotConfigured)
+                    }
+                }
+                Cmd::ShipSpend => {
+                    if !p.receipts {
+                        Expect::Refused(Refusal::ReceiptCollectionNotConfigured)
+                    } else if !p.mediation_key {
+                        Expect::Refused(Refusal::SpendRejected(
+                            crate::spend_receipt_collector::SpendRejection::NoAnchor,
+                        ))
+                    } else {
+                        Expect::Served
                     }
                 }
             },
@@ -222,22 +328,33 @@ impl Model {
         if c.personalizes_the_vm() {
             self.personalized = true;
         }
-        let served = *expect == Expect::Served;
-        match c {
-            Cmd::FetchBrokerSecret => self.broker_served |= served,
-            Cmd::FetchMediationKey => self.mediation_key_served |= served,
-            Cmd::FetchAuditCredentials => self.audit_served |= served,
-            Cmd::SnapshotReady => self.at_barrier = true,
-            Cmd::FetchSvid
-            | Cmd::FetchBundle
+        // The one-shot a served command spends. The model's own table, not
+        // production's: deciding it is what the walk checks.
+        let spends = match c {
+            Cmd::FetchBrokerSecret => Some(OneShot::BrokerSecret),
+            Cmd::FetchMediationKey => Some(OneShot::MediationKey),
+            Cmd::FetchAuditCredentials => Some(OneShot::AuditCredentials),
+            Cmd::FetchSvid => Some(OneShot::SvidKey),
+            Cmd::FetchTaskToken => Some(OneShot::TaskToken),
+            Cmd::FetchDlcAdmission => Some(OneShot::DlcAdmission),
+            Cmd::FetchPodCallerToken => Some(OneShot::CallerToken),
+            Cmd::FetchPodCertificate => Some(OneShot::PodCertificate),
+            Cmd::SnapshotReady => {
+                self.at_barrier = true;
+                None
+            }
+            Cmd::FetchBundle
             | Cmd::Ping
-            | Cmd::FetchTaskToken
-            | Cmd::FetchDlcAdmission
-            | Cmd::FetchPodCallerToken
-            | Cmd::FetchPodCertificate
             | Cmd::PodList
             | Cmd::FetchPodSpec
-            | Cmd::ShipReceipt => {}
+            | Cmd::ShipReceipt
+            | Cmd::ShipSpend
+            | Cmd::ShipClearing => None,
+        };
+        if let Some(o) = spends
+            && *expect == Expect::Served
+        {
+            self.served.insert(o);
         }
     }
 
@@ -259,33 +376,43 @@ const UNKNOWN_TOKEN: &str = "FETCH_EVERYTHING";
 /// added to `PodMaterial` stops this compiling until the walk decides whether it
 /// is provisioned (ADR 0007 E).
 fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
+    // The node writes the anchor exactly when it mints a mediation key
+    // (`mediation::new_seed_hex`), so the walk does the same: a pod with a
+    // receipt dir but no key has no anchor, and its spend receipts are refused.
+    if p.receipts && p.mediation_key {
+        let pubkey = ed25519_dalek::SigningKey::from_bytes(&SPEND_SEED).verifying_key();
+        std::fs::write(
+            receipt_dir.join("mediator-pubkey.hex"),
+            format!("{}\n", hex::encode(pubkey.to_bytes())),
+        )
+        .expect("anchor");
+    }
     PodMaterial {
         task_token: p.task_token.then(|| crate::session_mint::MintedTaskToken {
-            token_json: r#"{"task":"walk"}"#.to_string(),
+            token_json: TASK_TOKEN.to_string(),
             nonce_hex: "00".repeat(16),
             issuer_hex: "11".repeat(32),
         }),
         pod_certificate: p
             .pod_certificate
             .then(|| crate::pod_authority::BootCertificate {
-                token_b64: "d2Fsaw==".to_string(),
+                token_b64: POD_CERT.to_string(),
                 root_pubkey_hex: "22".repeat(32),
             }),
-        caller_token: p.caller_token.then(|| "walk-caller-token".to_string()),
-        dlc_admission: p.dlc_admission.then(|| DlcAdmissionMaterial {
+        caller_token: p.caller_token.then(|| CALLER_TOKEN.to_string()),
+        dlc_admission: p.dlc_admission.then(|| DlcProvisioning {
             trusted_keys: "33".repeat(32),
             issuer: "44".repeat(32),
-            credentials: String::new(),
+            credentials: DLC_CREDENTIALS.to_string(),
         }),
         broker_secret: p.broker_secret.then(|| BROKER_SECRET.to_string()),
         broker_port: 1027,
-        broker_secret_served: Arc::default(),
+        served: ServedLedger::new(),
         audit_creds: p.audit_creds.then(|| AuditCredentials {
             access_key_id: "walk-access-key-id".to_string(),
             secret_access_key: AUDIT_SECRET.to_string(),
             session_token: None,
         }),
-        audit_creds_served: Arc::default(),
         pod_spec_yaml: p.pod_spec.then(|| "kind: Pod".to_string()),
         mediation_signing_key: p.mediation_key.then(|| MEDIATION_KEY.to_string()),
         mediation_spiffe_id: p
@@ -293,7 +420,6 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
             .then(|| "spiffe://walk.local/mediator".to_string()),
         at_snapshot_barrier: Arc::default(),
         personalized: Arc::default(),
-        mediation_key_served: Arc::default(),
         receipt_dir: p.receipts.then(|| receipt_dir.to_path_buf()),
         pod_registry: crate::pod_api::PodRegistry::default(),
     }
@@ -343,15 +469,32 @@ fn walk(provision: Provision, ops: &[Op]) -> Result<(), String> {
                 Op::Command(c) => format!("{}\n", wire_name(*c)),
                 Op::Unknown => format!("{UNKNOWN_TOKEN}\n"),
             };
-            // SHIP_RECEIPT reads its body from the same connection.
-            let mut rest: &[u8] = b"{\"receipt\":\"walk\"}\n";
+            // SHIP_RECEIPT and SHIP_SPEND read their body from the same connection.
+            let body = match op {
+                Op::Command(Cmd::ShipSpend) => spend_body(pod_id),
+                Op::Command(Cmd::ShipClearing) => clearing_body(),
+                _ => "{\"receipt\":\"walk\"}\n".to_string(),
+            };
+            let mut rest: &[u8] = body.as_bytes();
             let reply = serve_frame(frame.as_bytes(), &mut rest, &manager, pod_id, &material).await;
             let at = || format!("step {step} {op:?} (expected {expect:?})");
 
             match (&expect, &reply) {
                 (Expect::Served, Ok(body)) => {
-                    serde_json::from_str::<serde_json::Value>(body)
+                    let v = serde_json::from_str::<serde_json::Value>(body)
                         .map_err(|e| format!("{}: served a non-JSON body: {e}", at()))?;
+                    // The SVID key is a one-shot served INSIDE a success: the first
+                    // FETCH_SVID carries it, every later one the chain alone.
+                    let key_spent = model.served.contains(&OneShot::SvidKey);
+                    if matches!(op, Op::Command(Cmd::FetchSvid))
+                        && v.get("private_key").is_some() == key_spent
+                    {
+                        return Err(format!(
+                            "{}: key present={} after the key was served={key_spent}",
+                            at(),
+                            v.get("private_key").is_some(),
+                        ));
+                    }
                 }
                 (Expect::Refused(want), Err(got)) if want == got => {}
                 (_, _) => return Err(format!("{}: host replied {reply:?}", at())),
@@ -366,6 +509,18 @@ fn walk(provision: Provision, ops: &[Op]) -> Result<(), String> {
             }
 
             model.eff(op, &expect);
+
+            // The host's ledger and the model agree on what has been served.
+            for o in OneShot::ALL {
+                if material.served.is_served(o) != model.served.contains(&o) {
+                    return Err(format!(
+                        "{}: host ledger says {o:?} served={}, model says {}",
+                        at(),
+                        material.served.is_served(o),
+                        model.served.contains(&o)
+                    ));
+                }
+            }
 
             // A5: the host's own record, and the snapshot decision made from it.
             let personalized = material.personalized.load(Ordering::SeqCst);
@@ -449,11 +604,13 @@ fn the_walk_reaches_every_outcome_it_asserts() {
         }
         model.eff(op, &expect);
     }
-    for o in [
-        OneShot::BrokerSecret,
-        OneShot::MediationKey,
-        OneShot::AuditCredentials,
-    ] {
+    for o in OneShot::ALL {
+        // The SVID key is absorbed inside a success (the chain alone), so it is
+        // never a refusal; the walk's FETCH_SVID check covers it.
+        if o == OneShot::SvidKey {
+            assert!(model.served.contains(&o), "the SVID key was never served");
+            continue;
+        }
         assert!(
             refused.contains(&Refusal::AlreadyServed(o)),
             "{o:?} never absorbed"
@@ -486,10 +643,10 @@ fn racing_requests_for_a_one_shot_serve_exactly_one() {
             mediation_spiffe_id: true,
             audit_creds: true,
             pod_spec: false,
-            dlc_admission: false,
-            pod_certificate: false,
-            task_token: false,
-            caller_token: false,
+            dlc_admission: true,
+            pod_certificate: true,
+            task_token: true,
+            caller_token: true,
             receipts: false,
         };
         let material = Arc::new(material_for(all, dir.path()));
@@ -499,6 +656,10 @@ fn racing_requests_for_a_one_shot_serve_exactly_one() {
             "FETCH_BROKER_SECRET\n",
             "FETCH_MEDIATION_KEY\n",
             "FETCH_AUDIT_CREDENTIALS\n",
+            "FETCH_POD_CERTIFICATE\n",
+            "FETCH_TASK_TOKEN\n",
+            "FETCH_POD_CALLER_TOKEN\n",
+            "FETCH_DLC_ADMISSION\n",
         ] {
             let tasks: Vec<_> = (0..16)
                 .map(|_| {

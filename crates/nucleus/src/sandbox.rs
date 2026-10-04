@@ -40,6 +40,39 @@ use portcullis::{
 };
 use portcullis_effects::authority::Authority;
 
+/// Whether a [`GlobListing`] holds every match or stopped at its bound.
+///
+/// Two values, not a `bool` (ADR 0007 A-rule): the HTTP response used to carry
+/// `truncated: Option<bool>`, where `None` and `Some(false)` meant the same
+/// thing and a reader had to know which one the producer wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Completeness {
+    /// The walk finished; every entry the policy lets this sandbox see and the
+    /// pattern matches is in `matches`.
+    Complete,
+    /// At least one more match exists beyond `max`. Whatever else is out
+    /// there was not counted.
+    Truncated,
+}
+
+/// The result of [`Sandbox::glob`].
+///
+/// Paths are relative to the sandbox root, whatever `dir` the caller searched
+/// under, so a listing can be fed straight back into `read_to_string`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GlobListing {
+    /// Matching entries, relative to the sandbox root, in directory-sorted
+    /// walk order.
+    pub matches: Vec<PathBuf>,
+    /// Whether `matches` is the whole answer.
+    pub completeness: Completeness,
+    /// Entries the walk refused to report: symlinks (never followed, never
+    /// listed), matches withheld by the path policy, and entries it could not
+    /// read. A non-zero count says the listing is honest about its gaps
+    /// without naming what is in them.
+    pub skipped: usize,
+}
+
 /// A capability-based file sandbox.
 ///
 /// All file operations go through this sandbox, which holds a directory handle
@@ -72,9 +105,45 @@ pub struct Sandbox {
     /// `Authority::spend` now refuses that outright; this is the log that makes
     /// the refusal unnecessary.
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
+    /// The uid that files and directories this sandbox CREATES are handed to:
+    /// the executor's dropped child uid, when it has one.
+    ///
+    /// Under MicroVM the runtime writes as root and the commands it runs drop
+    /// to the workload uid. Without this, a file written through the sandbox
+    /// would be root's, and the agent's next command — a formatter rewriting
+    /// it in place, a build writing into a directory the sandbox made — would
+    /// be refused. `None` keeps the runtime's ownership: the restrictive
+    /// direction, not a grant.
+    child_owner: Option<u32>,
 }
 
 impl Sandbox {
+    /// Hand what this sandbox creates to the children `confinement` describes.
+    /// A no-op for a confinement that does not drop uid.
+    #[must_use]
+    pub fn owned_for(mut self, confinement: crate::ChildConfinement) -> Self {
+        self.child_owner = confinement.drop_uid();
+        self
+    }
+
+    /// Give a just-created entry to the child uid. Called on the creating
+    /// handle where there is one, so nothing can be swapped in between.
+    fn hand_over_fd(&self, fd: impl std::os::fd::AsFd) -> std::io::Result<()> {
+        match self.child_owner {
+            Some(uid) => std::os::unix::fs::fchown(fd, Some(uid), Some(uid)),
+            None => Ok(()),
+        }
+    }
+
+    /// Give a just-created directory (relative to the root) to the child uid.
+    fn hand_over_dir(&self, path: &Path) -> std::io::Result<()> {
+        if self.child_owner.is_none() {
+            return Ok(());
+        }
+        let dir = self.root.open_dir(path)?;
+        self.hand_over_fd(&dir)
+    }
+
     /// The receipts for authorities spent through this sandbox.
     pub fn receipts(&self) -> &portcullis_effects::receipt::ReceiptLog {
         &self.receipts
@@ -102,6 +171,7 @@ impl Sandbox {
             obligations: normalized.obligations,
             approver: None,
             permissions,
+            child_owner: None,
         })
     }
 
@@ -494,9 +564,29 @@ impl Sandbox {
         self.check_policy(path)?;
         self.check_write_or_edit_capability(path, approval)?;
 
-        self.root
-            .write(path, contents)
+        self.write_owned(path, contents.as_ref())
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
+    }
+
+    /// `Dir::write`, except that a file this call CREATES is handed to the
+    /// child uid on the creating handle. An existing file is truncated in
+    /// place and keeps its owner, as before.
+    pub(crate) fn write_owned(&self, path: &Path, contents: &[u8]) -> std::io::Result<()> {
+        if self.child_owner.is_none() {
+            return self.root.write(path, contents);
+        }
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        match self.root.open_with(path, &options) {
+            Ok(mut file) => {
+                self.hand_over_fd(&file)?;
+                std::io::Write::write_all(&mut file, contents)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                self.root.write(path, contents)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Create a directory.
@@ -531,6 +621,7 @@ impl Sandbox {
 
         self.root
             .create_dir(path)
+            .and_then(|()| self.hand_over_dir(path))
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
@@ -564,8 +655,22 @@ impl Sandbox {
         self.check_write_capability(path, approval)?;
         self.check_policy(path)?;
 
+        // Only the components THIS call creates are handed over; a directory
+        // that already existed keeps whatever owner it had.
+        let created: Vec<PathBuf> = if self.child_owner.is_some() {
+            path.ancestors()
+                .filter(|p| !p.as_os_str().is_empty() && !self.root.exists(p))
+                .map(Path::to_path_buf)
+                .collect()
+        } else {
+            Vec::new()
+        };
         self.root
             .create_dir_all(path)
+            .and_then(|()| {
+                // Outermost first, so each is handed over before what it holds.
+                created.iter().rev().try_for_each(|p| self.hand_over_dir(p))
+            })
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
     }
 
@@ -710,6 +815,13 @@ impl Sandbox {
         &self.root_path
     }
 
+    /// The capability handle on the sandbox root, for the executor's
+    /// execute-on-consume guard: it walks and restores through this, so it can
+    /// no more follow a symlink out of the workspace than the sandbox can.
+    pub(crate) fn root_dir(&self) -> &Dir {
+        &self.root
+    }
+
     /// Read a file for search/grep operations (#1273).
     ///
     /// Uses the cap-std sandbox directory for I/O, bypassing raw `std::fs`.
@@ -729,6 +841,124 @@ impl Sandbox {
         self.root
             .read_to_string(path)
             .map_err(|e| classify_path_io(path.to_path_buf(), &e))
+    }
+
+    /// List entries under `dir` whose path matches `pattern`.
+    ///
+    /// **Why this exists (2026-09-27).** Both glob transports in the tool proxy
+    /// walked the host filesystem through `glob::glob` on an absolute pattern
+    /// built by joining the request onto the root path: `std::fs`, following
+    /// symlinks, and then canonicalizing each hit to see whether it had left the
+    /// root. The decision token was dropped on the floor (`let _ =` over HTTP,
+    /// `Ok(_decision_token) => {}` over MCP) and no discharge was minted, so
+    /// the walk did not need the decision that preceded it — it was Checked,
+    /// not Sealed, and one refactor from being neither. `RealEffects::glob` is
+    /// not a substitute: it discards its authority and walks the process CWD.
+    ///
+    /// Here the order is fixed by the body, not by the caller:
+    ///
+    /// 1. the `DecisionToken` is redeemed for `GlobSearch` under this sandbox's
+    ///    permissions;
+    /// 2. the `Authority` is spent as `(GlobSearch, AuditLogAppend)`, so a
+    ///    bundle earned for a read, a grep or a write cannot pay for a listing;
+    /// 3. `glob_search` at `Never` refuses;
+    /// 4. `pattern` is refused if absolute or if it contains `..`; `dir` is
+    ///    passed through `root_relative` (an absolute spelling under the root
+    ///    is the same directory, #2787) and then refused if anything but plain
+    ///    names remain;
+    /// 5. the walk runs over the cap-std `Dir` handle — never `std::fs` —
+    ///    does not follow or list symlinks, opens each subdirectory with
+    ///    `O_NOFOLLOW` so a directory swapped for a link mid-walk is refused
+    ///    rather than entered, and runs `check_policy` on every entry it would
+    ///    report.
+    ///
+    /// `pattern` is matched against the path relative to `dir`; the listing is
+    /// relative to the root. Directories the policy withholds are still
+    /// descended, because a policy of `src/**` does not match `src` itself;
+    /// their contents face the same per-entry check. Approval obligations stay
+    /// with the caller, as they do for the transports today; only the
+    /// capability level is checked here.
+    ///
+    /// The pattern language is the `glob` crate's with a literal separator —
+    /// `*` does not cross `/`, `**/` spans directories — which is what the
+    /// transports' `glob::glob` gave agents before.
+    pub fn glob(
+        &self,
+        dir: Option<&Path>,
+        pattern: &str,
+        max: std::num::NonZeroUsize,
+        decision: DecisionToken,
+        authority: Authority,
+    ) -> Result<GlobListing> {
+        decision.redeem(&self.permissions, Operation::GlobSearch)?;
+        self.spend_as(authority, Operation::GlobSearch, SinkClass::AuditLogAppend)?;
+        if self.capabilities.glob_search == CapabilityLevel::Never {
+            return Err(NucleusError::InsufficientCapability {
+                capability: "glob_search".into(),
+                actual: CapabilityLevel::Never,
+                required: CapabilityLevel::LowRisk,
+            });
+        }
+
+        let pattern_path = Path::new(pattern);
+        if pattern_path.is_absolute()
+            || pattern.starts_with('/')
+            || pattern.split(['/', '\\']).any(|c| c == "..")
+        {
+            return Err(NucleusError::SandboxEscape {
+                path: pattern_path.to_path_buf(),
+            });
+        }
+        let dir = match dir {
+            Some(d) => self.root_relative(d)?,
+            None => PathBuf::new(),
+        };
+        if dir.components().any(|c| {
+            !matches!(
+                c,
+                std::path::Component::Normal(_) | std::path::Component::CurDir
+            )
+        }) {
+            return Err(NucleusError::SandboxEscape { path: dir });
+        }
+
+        let matcher = glob::Pattern::new(pattern).map_err(|e| {
+            NucleusError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid glob pattern: {e}"),
+            ))
+        })?;
+        // Without `**` a pattern cannot match deeper than it has components,
+        // so `*.rs` reads one directory rather than the whole tree.
+        let depth_bound = if pattern.contains("**") {
+            None
+        } else {
+            Some(pattern.split('/').filter(|c| !c.is_empty()).count())
+        };
+
+        let start = if dir.as_os_str().is_empty() {
+            self.root.try_clone()?
+        } else {
+            self.root
+                .open_dir(&dir)
+                .map_err(|e| classify_path_io(dir.clone(), &e))?
+        };
+
+        let mut walk = GlobWalk {
+            sandbox: self,
+            matcher,
+            depth_bound,
+            max: max.get(),
+            matches: Vec::new(),
+            completeness: Completeness::Complete,
+            skipped: 0,
+        };
+        walk.visit(&start, &dir, Path::new(""), 1);
+        Ok(GlobListing {
+            matches: walk.matches,
+            completeness: walk.completeness,
+            skipped: walk.skipped,
+        })
     }
 
     /// Interpret a caller-supplied path against the sandbox root.
@@ -845,7 +1075,12 @@ impl Sandbox {
             });
         }
 
-        if self.obligations.requires(op) {
+        // A write to a file some host tool executes on reading it needs an
+        // approval whatever the capability level says (`EXECUTE_ON_CONSUME`).
+        // Keyed by the path, so approving one hook approves that hook only.
+        let executes_on_consume = matches!(op, Operation::WriteFiles | Operation::EditFiles)
+            && portcullis::executes_on_consume(&subject.to_string_lossy()).is_some();
+        if self.obligations.requires(op) || executes_on_consume {
             if let Some(token) = approval {
                 if token.matches(operation) {
                     Ok(())
@@ -914,7 +1149,112 @@ impl Sandbox {
             // path narrows, the policy does not — so a token redeemable here is
             // redeemable there.
             permissions: self.permissions.clone(),
+            // And the same children: what it creates goes to the same uid.
+            child_owner: self.child_owner,
         })
+    }
+}
+
+/// The recursive state of one [`Sandbox::glob`] call.
+struct GlobWalk<'a> {
+    sandbox: &'a Sandbox,
+    matcher: glob::Pattern,
+    depth_bound: Option<usize>,
+    max: usize,
+    matches: Vec<PathBuf>,
+    completeness: Completeness,
+    skipped: usize,
+}
+
+impl GlobWalk<'_> {
+    /// `rel_root` is `here`'s path from the sandbox root (for the policy and
+    /// the listing); `rel_pattern` is its path from the search directory (for
+    /// the pattern). Stops once a match past `max` has been seen.
+    fn visit(&mut self, here: &Dir, rel_root: &Path, rel_pattern: &Path, depth: usize) {
+        let Ok(entries) = here.entries() else {
+            self.skipped += 1;
+            return;
+        };
+        let mut entries: Vec<_> = entries
+            .filter_map(|e| match e {
+                Ok(e) => Some(e),
+                Err(_) => {
+                    self.skipped += 1;
+                    None
+                }
+            })
+            .collect();
+        entries.sort_by_key(cap_std::fs::DirEntry::file_name);
+
+        for entry in entries {
+            if self.completeness == Completeness::Truncated {
+                return;
+            }
+            // `DirEntry::file_type` is the entry's own type (lstat), so a
+            // symlink reads as a symlink and is neither listed nor entered.
+            let Ok(file_type) = entry.file_type() else {
+                self.skipped += 1;
+                continue;
+            };
+            if file_type.is_symlink() {
+                self.skipped += 1;
+                continue;
+            }
+            let name = entry.file_name();
+            let from_root = rel_root.join(&name);
+            let from_pattern = rel_pattern.join(&name);
+
+            if self.matcher.matches_path_with(&from_pattern, GLOB_OPTIONS) {
+                if self.sandbox.check_policy(&from_root).is_err() {
+                    self.skipped += 1;
+                } else if self.matches.len() == self.max {
+                    self.completeness = Completeness::Truncated;
+                    return;
+                } else {
+                    self.matches.push(from_root.clone());
+                }
+            }
+
+            let descend = file_type.is_dir() && self.depth_bound.is_none_or(|b| depth < b);
+            if descend {
+                match open_dir_nofollow(&entry) {
+                    Ok(sub) => self.visit(&sub, &from_root, &from_pattern, depth + 1),
+                    Err(_) => self.skipped += 1,
+                }
+            }
+        }
+    }
+}
+
+/// `*` does not cross `/`, as it did not under `glob::glob`'s per-component
+/// walk; a leading dot is matched like any other character, as before.
+const GLOB_OPTIONS: glob::MatchOptions = glob::MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
+/// Open a directory entry without following a symlink at its final component.
+///
+/// The walk has already refused entries whose type is a symlink; this closes
+/// the window between that check and the open, in which the directory could be
+/// replaced by a link. cap-std would still refuse a link that leaves the root,
+/// but a link to elsewhere INSIDE the root would be entered and its contents
+/// reported under the wrong name.
+fn open_dir_nofollow(entry: &cap_std::fs::DirEntry) -> std::io::Result<Dir> {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::OpenOptionsExt;
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW);
+        let file = entry.open_with(&options)?;
+        Ok(Dir::from_std_file(file.into_std()))
+    }
+    #[cfg(not(unix))]
+    {
+        entry.open_dir()
     }
 }
 
@@ -1387,6 +1727,46 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// A file a host tool runs on reading it needs an approval even under a
+    /// policy with no obligations, and the approval names that path. The
+    /// control is an ordinary file under the same policy, written freely.
+    #[test]
+    #[allow(deprecated)] // Migration to decide_term tracked in #1194
+    fn writing_a_file_a_host_tool_executes_needs_an_approval() {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".github/workflows")).unwrap();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let hook = ".github/workflows/ci.yml";
+        let dt = token(&mut kernel, Operation::WriteFiles, hook);
+        let refused = sandbox.write(
+            hook,
+            "on: push",
+            dt,
+            Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)),
+        );
+        match refused {
+            Err(NucleusError::ApprovalRequired { operation }) => assert_eq!(
+                operation,
+                Sandbox::approval_key(Operation::WriteFiles, std::path::Path::new(hook))
+            ),
+            other => panic!("expected ApprovalRequired naming the path, got {other:?}"),
+        }
+        assert!(!tmp.path().join(hook).exists(), "refused before the write");
+
+        let dt = token(&mut kernel, Operation::WriteFiles, "src.rs");
+        sandbox
+            .write(
+                "src.rs",
+                "fn main() {}",
+                dt,
+                Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite)),
+            )
+            .expect("the control: an ordinary file needs no approval");
+    }
+
     #[test]
     fn test_escape_via_absolute_path() {
         let tmp = tempdir().unwrap();
@@ -1572,6 +1952,265 @@ mod tests {
             Path::new("")
         );
         assert!(sandbox.root_relative(Path::new("/etc/passwd")).is_err());
+    }
+
+    // ── Sandbox::glob (2026-09-27) ───────────────────────────────────────
+
+    fn glob_authority() -> Authority {
+        Authority::new(bundle_for(Operation::GlobSearch, SinkClass::AuditLogAppend))
+    }
+
+    fn glob_max(n: usize) -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::new(n).expect("test bounds are non-zero")
+    }
+
+    /// A tree with files at three depths, for the walk tests. The directory is
+    /// `pkg`, not `src`: `PathLattice` canonicalizes a relative path against
+    /// the process CWD, and the test CWD has its own `src`.
+    fn glob_tree() -> tempfile::TempDir {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("pkg/nested")).unwrap();
+        std::fs::write(tmp.path().join("top.rs"), b"").unwrap();
+        std::fs::write(tmp.path().join("notes.txt"), b"").unwrap();
+        std::fs::write(tmp.path().join("pkg/lib.rs"), b"").unwrap();
+        std::fs::write(tmp.path().join("pkg/nested/deep.rs"), b"").unwrap();
+        tmp
+    }
+
+    fn listed(listing: &GlobListing) -> Vec<String> {
+        listing
+            .matches
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect()
+    }
+
+    /// The authority is spent — and a wrong one refused — before the pattern
+    /// is parsed or the directory opened. Both inputs here would fail on their
+    /// own (a `..` pattern, a directory that does not exist), so a
+    /// `ScopeMismatch` can only come from a spend that ran first; and the
+    /// right authority leaves exactly one receipt.
+    ///
+    /// A-19: with the `spend_as` line removed from `Sandbox::glob`, the first
+    /// call returns `SandboxEscape` and this test reds.
+    #[test]
+    fn glob_spends_before_walking() {
+        let tmp = glob_tree();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let read_bundle =
+            Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
+        let e = sandbox
+            .glob(
+                None,
+                "../*",
+                glob_max(10),
+                token(&mut kernel, Operation::GlobSearch, "../*"),
+                read_bundle,
+            )
+            .expect_err("a ReadFiles authority must not pay for a glob");
+        assert!(
+            matches!(e, NucleusError::ScopeMismatch { .. }),
+            "the spend must refuse before the pattern is looked at: {e:?}"
+        );
+        let e = sandbox
+            .glob(
+                Some(Path::new("missing")),
+                "*",
+                glob_max(10),
+                token(&mut kernel, Operation::GlobSearch, "*"),
+                Authority::new(bundle_for(Operation::GrepSearch, SinkClass::AuditLogAppend)),
+            )
+            .expect_err("a GrepSearch authority must not pay for a glob");
+        assert!(
+            matches!(e, NucleusError::ScopeMismatch { .. }),
+            "the spend must refuse before the directory is opened: {e:?}"
+        );
+
+        let before = sandbox.receipts().len();
+        let listing = sandbox
+            .glob(
+                None,
+                "*.rs",
+                glob_max(10),
+                token(&mut kernel, Operation::GlobSearch, "*.rs"),
+                glob_authority(),
+            )
+            .expect("a GlobSearch authority pays for a glob");
+        assert_eq!(listed(&listing), vec!["top.rs"]);
+        assert_eq!(
+            sandbox.receipts().len(),
+            before + 1,
+            "one listing spends one authority and leaves one receipt"
+        );
+    }
+
+    /// A symlink is neither listed nor entered, whether it points out of the
+    /// root or back into it.
+    #[cfg(unix)]
+    #[test]
+    fn glob_does_not_follow_symlinks_out() {
+        let tmp = glob_tree();
+        let outside = tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.rs"), b"").unwrap();
+        std::os::unix::fs::symlink(outside.path(), tmp.path().join("escape")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secret.rs"), tmp.path().join("link.rs"))
+            .unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("pkg"), tmp.path().join("loop")).unwrap();
+
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let listing = sandbox
+            .glob(
+                None,
+                "**/*",
+                glob_max(100),
+                token(&mut kernel, Operation::GlobSearch, "**/*"),
+                glob_authority(),
+            )
+            .unwrap();
+        let names = listed(&listing);
+        assert!(
+            names.iter().all(|n| !n.contains("secret")
+                && !n.starts_with("escape")
+                && !n.starts_with("loop")
+                && n != "link.rs"),
+            "no symlink, and nothing behind one, may be listed: {names:?}"
+        );
+        // Non-vacuity: the real tree was walked.
+        assert!(
+            names.contains(&"pkg/nested/deep.rs".to_string()),
+            "{names:?}"
+        );
+        assert_eq!(listing.skipped, 3, "the three links are counted as skipped");
+    }
+
+    /// `..` in the pattern or the directory, and an absolute pattern, are
+    /// refused outright rather than walked and filtered.
+    #[test]
+    fn glob_rejects_parent_dir_pattern() {
+        let tmp = glob_tree();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        for (dir, pattern) in [
+            (None, "../*"),
+            (None, "pkg/../../*"),
+            (None, "/etc/*"),
+            (Some(Path::new("pkg/../..")), "*"),
+            (Some(Path::new("/etc")), "*"),
+        ] {
+            let e = sandbox
+                .glob(
+                    dir,
+                    pattern,
+                    glob_max(10),
+                    token(&mut kernel, Operation::GlobSearch, pattern),
+                    glob_authority(),
+                )
+                .expect_err("an escaping glob must be refused");
+            assert!(
+                matches!(e, NucleusError::SandboxEscape { .. }),
+                "{dir:?} / {pattern} refused for the wrong reason: {e:?}"
+            );
+        }
+    }
+
+    /// The path policy decides per entry: a blocked file matching the pattern
+    /// is withheld and counted, its unblocked siblings are listed.
+    #[test]
+    fn glob_respects_path_policy() {
+        let tmp = glob_tree();
+        std::fs::write(tmp.path().join(".env"), b"LLM_API_TOKEN=test-token-123").unwrap();
+        std::fs::write(tmp.path().join("server.pem"), b"").unwrap();
+        let policy = sensitive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+
+        let listing = sandbox
+            .glob(
+                None,
+                "*",
+                glob_max(100),
+                token(&mut kernel, Operation::GlobSearch, "*"),
+                glob_authority(),
+            )
+            .unwrap();
+        let names = listed(&listing);
+        assert!(
+            !names.contains(&".env".to_string()) && !names.contains(&"server.pem".to_string()),
+            "blocked entries must not be listed: {names:?}"
+        );
+        assert!(names.contains(&"top.rs".to_string()), "{names:?}");
+        assert_eq!(
+            listing.skipped, 2,
+            "the two blocked matches are counted: {names:?}"
+        );
+    }
+
+    /// `max` bounds the listing, and `Truncated` means a further match exists
+    /// — a listing of exactly `max` with nothing more is `Complete`.
+    #[test]
+    fn glob_truncates_at_max() {
+        let tmp = glob_tree();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let mut run = |max| {
+            sandbox
+                .glob(
+                    None,
+                    "**/*.rs",
+                    glob_max(max),
+                    token(&mut kernel, Operation::GlobSearch, "**/*.rs"),
+                    glob_authority(),
+                )
+                .unwrap()
+        };
+
+        let full = run(10);
+        assert_eq!(full.completeness, Completeness::Complete);
+        assert_eq!(
+            listed(&full),
+            vec!["pkg/lib.rs", "pkg/nested/deep.rs", "top.rs"],
+            "`**/` spans zero or more directories, in sorted walk order"
+        );
+        let exact = run(3);
+        assert_eq!(exact.completeness, Completeness::Complete);
+        assert_eq!(exact.matches.len(), 3);
+        let cut = run(2);
+        assert_eq!(cut.completeness, Completeness::Truncated);
+        assert_eq!(listed(&cut), vec!["pkg/lib.rs", "pkg/nested/deep.rs"]);
+    }
+
+    /// An absolute directory under the root names the same directory as its
+    /// relative spelling (#2787), and results are root-relative either way.
+    #[test]
+    fn glob_absolute_dir_under_root_equals_relative() {
+        let tmp = glob_tree();
+        let policy = permissive_policy();
+        let mut kernel = Kernel::new(policy.clone());
+        let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+        let absolute = sandbox.root_path().join("pkg");
+        let mut run = |dir: &Path| {
+            sandbox
+                .glob(
+                    Some(dir),
+                    "*.rs",
+                    glob_max(10),
+                    token(&mut kernel, Operation::GlobSearch, "*.rs"),
+                    glob_authority(),
+                )
+                .unwrap()
+        };
+        let relative = run(Path::new("pkg"));
+        let by_absolute = run(&absolute);
+        assert_eq!(listed(&relative), vec!["pkg/lib.rs"]);
+        assert_eq!(relative, by_absolute);
     }
 }
 

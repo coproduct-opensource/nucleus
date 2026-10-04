@@ -2,10 +2,17 @@
 //!
 //! A [`ClearingReceipt`] bundles a cleared outcome's **declared inputs** with its
 //! **claimed outputs**. [`verify_receipt`] re-derives the outputs from the inputs
-//! using the *proven* kernels in `nucleus-econ-kernels` (`classify` /
-//! `seller_gross` / `refund` — pinned to `SettlementDecision.lean`;
-//! `route_to_commons` — pinned to `Commons.lean`'s `routed_conserves`; `run_vcg` —
-//! truthful/IR-proven) and compares them field-by-field to what was claimed.
+//! using the kernels in `nucleus-econ-kernels` (`classify` / `seller_gross` /
+//! `refund` — pinned to `SettlementDecision.lean`; `route_to_commons` — pinned to
+//! `Commons.lean`'s `routed_conserves`; VCG via `clear_vcg`) and compares them
+//! field-by-field to what was claimed.
+//!
+//! What is PROVED of the VCG kernels is narrower than "truthful and IR". The
+//! homogeneous `run_vcg` (one proposal) is single-good Vickrey, and its dominant-
+//! strategy truthfulness and individual rationality are proved in
+//! `IntegerVcgTruthful.lean`. Heterogeneous input goes to the exact enumerator
+//! (`clear_heterogeneous_exact`), whose IR is property-tested, not proved; the
+//! greedy heterogeneous allocator it replaced had an IR counterexample.
 //!
 //! This is the centerpiece of "verify, don't trust": a relying party who never saw
 //! the auction can take a receipt and confirm — by *recomputing* — that the
@@ -34,9 +41,9 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use nucleus_econ_kernels::{
-    Clearing, CommonsAllocation, CommonsError, CommonsShare, IntegerBid, IntegerProposal, VcgError,
-    Verdict, classify, refund, route_to_commons, run_vcg, seller_gross,
+pub use nucleus_econ_kernels::{
+    Clearing, CommonsAllocation, CommonsError, CommonsShare, HeteroError, IntegerBid,
+    IntegerProposal, Verdict, classify, clear_vcg, refund, route_to_commons, seller_gross,
 };
 // The Aeneas-extracted integrity primitives the D1 non-interference theorem is
 // proven over. `verify_ifc_trace`'s anti-laundering check is the runtime witness
@@ -201,7 +208,7 @@ pub fn verify_receipt(receipt: &ClearingReceipt) -> RecomputeOutcome {
             }
             Err(e) => RecomputeOutcome::Invalid(e.to_string()),
         },
-        ClearingReceipt::Vcg(c) => match run_vcg(&c.bids, &c.proposals, c.budget_micro_usd) {
+        ClearingReceipt::Vcg(c) => match clear_vcg(&c.bids, &c.proposals, c.budget_micro_usd) {
             Ok(clearing) => {
                 if clearing != c.clearing {
                     mismatch("clearing", &c.clearing, &clearing)
@@ -254,14 +261,22 @@ pub fn issue_commons(
     }))
 }
 
-/// Issue a VCG-clearing receipt by running the proven `run_vcg` kernel
-/// (truthful / individually-rational). Errors if VCG input validation fails.
+/// Issue a VCG-clearing receipt through `clear_vcg`, which routes to whichever
+/// kernel is sound for the input: the homogeneous `run_vcg` for one proposal,
+/// the exact enumerator for more (#2521). Errors if input validation fails, or
+/// if the input is heterogeneous and above the exact kernel's bid cap — there
+/// is no sound kernel for that shape, so no receipt is issued for it.
+///
+/// Returns `HeteroError` rather than `VcgError` because the routing can now
+/// fail for reasons that are not the homogeneous kernel's: `NotHeterogeneous`
+/// and `TooManyBidsForExact`. Collapsing them into `VcgError` would lose which
+/// refusal happened.
 pub fn issue_vcg(
     bids: Vec<IntegerBid>,
     proposals: Vec<IntegerProposal>,
     budget_micro_usd: u64,
-) -> Result<ClearingReceipt, VcgError> {
-    let clearing = run_vcg(&bids, &proposals, budget_micro_usd)?;
+) -> Result<ClearingReceipt, HeteroError> {
+    let clearing = clear_vcg(&bids, &proposals, budget_micro_usd)?;
     Ok(ClearingReceipt::Vcg(VcgClaim {
         bids,
         proposals,
@@ -310,7 +325,9 @@ pub enum ReceiptKind {
     Settlement,
     /// `route_to_commons` — `Commons.lean`'s `routed_conserves`.
     Commons,
-    /// `run_vcg` — truthful/IR-proven.
+    /// `clear_vcg` — the homogeneous `run_vcg` (truthful and IR, proved in
+    /// `IntegerVcgTruthful.lean`) or the heterogeneous exact enumerator (IR
+    /// property-tested, not proved).
     Vcg,
 }
 
@@ -1389,7 +1406,7 @@ mod tests {
 
     fn honest_vcg() -> ClearingReceipt {
         let (bids, proposals, budget) = vcg_inputs();
-        let clearing = run_vcg(&bids, &proposals, budget).unwrap();
+        let clearing = clear_vcg(&bids, &proposals, budget).unwrap();
         ClearingReceipt::Vcg(VcgClaim {
             bids,
             proposals,
@@ -2377,98 +2394,20 @@ mod budget_flow_tests {
 }
 
 #[cfg(test)]
-mod ifc_flow_tests {
-    use super::*;
+mod ifc_flow_tests;
 
-    #[test]
-    fn non_egress_hop_is_not_gated() {
-        assert_eq!(verify_ifc_flow(None), IfcFlowOutcome::NotGated);
-        assert!(verify_ifc_flow(None).is_consistent());
-    }
+// Why the kernel types near the top of this file are `pub use`: they are part
+// of THIS crate's public API. `VcgClaim` holds `Vec<IntegerBid>`, so a caller
+// that builds or reads a receipt has to name them. Without the re-export every
+// consumer needed a direct dependency on `nucleus-econ-kernels` just to spell a
+// field's type, which pulls an economic crate into graphs that only wanted to
+// CHECK a receipt, and the right to check is meant to reach further than the
+// economics does.
+//
+// This note sits at the END of the file on purpose. `sdks/verifier-js` embeds
+// this crate, the wasm records panic locations as `file:line`, and its digest is
+// pinned in `nucleus-verifier-service/embedded-wasm.pins`. A comment above any
+// code shifts every line below it and moves the pinned artifact with no change
+// in behaviour; one after all code moves nothing.
 
-    #[test]
-    fn allowed_clean_egress_is_consistent() {
-        // anti-vacuity: the verifier must ACCEPT legitimate allowed egress, not
-        // reject everything.
-        assert_eq!(verify_ifc_flow(Some("trusted")), IfcFlowOutcome::Allow);
-        assert_eq!(verify_ifc_flow(Some("untrusted")), IfcFlowOutcome::Allow);
-    }
-
-    #[test]
-    fn allowed_adversarial_egress_is_inconsistent() {
-        // A signed edge claiming an allowed egress under adversarial integrity is
-        // self-inconsistent — the gateway would have denied before signing.
-        match verify_ifc_flow(Some("adversarial")) {
-            IfcFlowOutcome::Inconsistent {
-                effective_integrity,
-            } => {
-                assert_eq!(effective_integrity, "adversarial");
-            }
-            other => panic!("expected Inconsistent, got {other:?}"),
-        }
-        assert!(!verify_ifc_flow(Some("adversarial")).is_consistent());
-    }
-
-    #[test]
-    fn unrecognized_token_is_inconsistent_fail_closed() {
-        assert!(!verify_ifc_flow(Some("garbage_token")).is_consistent());
-        assert!(!verify_ifc_flow(Some("")).is_consistent());
-    }
-
-    #[test]
-    fn matches_the_single_source_predicate() {
-        // verify_ifc_flow's Allow/Inconsistent split is EXACTLY the gateway's
-        // predicate — proving producer and verifier share one rule.
-        for tok in ["trusted", "untrusted", "adversarial", "secret", "weird"] {
-            let blocked = nucleus_ifc::egress_blocked_by_integrity(tok);
-            let consistent = verify_ifc_flow(Some(tok)).is_consistent();
-            assert_eq!(consistent, !blocked, "drift for token {tok:?}");
-        }
-    }
-
-    // ── cross-check: gate output (child) vs runner-signed input (parent) ──
-
-    #[test]
-    fn cross_check_non_egress_child_is_not_gated() {
-        assert_eq!(
-            verify_ifc_flow_consistent(None, Some("trusted")),
-            IfcFlowOutcome::NotGated
-        );
-    }
-
-    #[test]
-    fn cross_check_matching_signed_input_is_allow() {
-        // anti-vacuity: an honest hop (gate allowed "trusted", parent signed
-        // "trusted") must be accepted.
-        assert_eq!(
-            verify_ifc_flow_consistent(Some("trusted"), Some("trusted")),
-            IfcFlowOutcome::Allow
-        );
-    }
-
-    #[test]
-    fn cross_check_rejects_input_output_mismatch() {
-        // The gate co-committed "trusted" but the runner signed "adversarial"
-        // upstream — the gate evaluated a downgraded value. Reject.
-        match verify_ifc_flow_consistent(Some("trusted"), Some("adversarial")) {
-            IfcFlowOutcome::Inconsistent {
-                effective_integrity,
-            } => {
-                assert_eq!(effective_integrity, "trusted");
-            }
-            other => panic!("expected Inconsistent, got {other:?}"),
-        }
-        // Also reject when the parent didn't sign an effective integrity at all
-        // (can't confirm the gate input).
-        assert!(!verify_ifc_flow_consistent(Some("trusted"), None).is_consistent());
-    }
-
-    #[test]
-    fn cross_check_inherits_allow_rule() {
-        // A child gated on "adversarial" is rejected by the allow-rule before the
-        // input/output comparison even matters.
-        assert!(
-            !verify_ifc_flow_consistent(Some("adversarial"), Some("adversarial")).is_consistent()
-        );
-    }
-}
+pub mod authority_spend;

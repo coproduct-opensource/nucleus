@@ -28,10 +28,13 @@ mod constants;
 mod doctor;
 mod envelope;
 mod envelope_verify;
+mod federation;
 mod goal;
 mod grant;
 mod guard;
+mod host_tier;
 mod identity;
+mod image;
 mod keychain;
 mod lima_boot;
 mod lineage;
@@ -39,12 +42,20 @@ mod lineage_verify;
 mod lockdown;
 mod manifest;
 mod mediation;
+// The Apple `container` microVM host. It compiles everywhere so its tests run
+// in CI; the change that wires it into `shell` and `run` gates it to macOS.
+#[expect(
+    dead_code,
+    reason = "not wired into shell/run until the host-tier wiring lands"
+)]
+mod microvm_host;
 mod node;
 mod observe;
 mod profiles;
 mod provision;
 mod replay;
 mod run;
+mod session_token;
 mod setup;
 mod shell;
 mod start;
@@ -61,7 +72,7 @@ mod verify_attestation;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
-#[command(name = "nucleus")]
+#[command(name = "nucleus", mut_args = |a| a.hide_env_values(true))]
 #[command(version, about, long_about = None)]
 struct Cli {
     /// Configuration file path
@@ -139,6 +150,9 @@ enum Commands {
     /// JWT-SVID inspection + OP token-exchange affordances (#48)
     Identity(identity::IdentityArgs),
 
+    /// Publish, inspect and rotate a node's federation issuer key (ADR 0010)
+    Federation(federation::FederationArgs),
+
     /// Interact with a running nucleus-node (test utilities)
     Node(node::NodeArgs),
 
@@ -156,6 +170,9 @@ enum Commands {
 
     /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
     Bundle(bundle::BundleArgs),
+
+    /// Import an OCI image, pinned by digest, as a verified rootfs (import/resolve)
+    Image(image::ImageArgs),
 
     /// Verify an attested SVID against expected measurements (relying party, C9)
     VerifyAttestation(verify_attestation::VerifyAttestationArgs),
@@ -217,15 +234,20 @@ async fn main() -> Result<()> {
         Commands::Grant(args) => grant::execute(args),
         Commands::Trust(args) => trust::execute(args),
         Commands::Identity(args) => identity::execute(args),
+        Commands::Federation(args) => federation::execute(args),
         Commands::Node(args) => node::execute(args).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
+        Commands::Image(args) => image::execute(args),
         Commands::VerifyAttestation(args) => verify_attestation::execute(args),
         // The hook's whole contract is its exit status; nothing else may
         // reach stdout/stderr after the decision is printed.
         Commands::MediationHook => std::process::exit(i32::from(mediation::run_hook())),
     }
 }
+
+#[cfg(test)]
+mod help_env_tests;

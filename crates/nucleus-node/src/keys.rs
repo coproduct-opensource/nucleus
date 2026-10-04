@@ -1,7 +1,7 @@
 //! The node's role-separated signing keys.
 //!
-//! Four persisted Ed25519 identities, each a DISTINCT trust role, and the
-//! shared load-or-create machinery behind them:
+//! Four persisted Ed25519 identities and one P-256 key, each a DISTINCT trust
+//! role, and the shared load-or-create machinery behind them:
 //!
 //! | key | role |
 //! |---|---|
@@ -9,6 +9,7 @@
 //! | task issuer | signs live-path session capability tokens at pod spawn |
 //! | approval | signs `/v1/approve`, verified in-guest by the tool proxy |
 //! | certificate root | the anchor every pod's `LatticeCertificate` chains to |
+//! | federation issuer (P-256) | signs the ES256 assertions a pod's upstream credential is exchanged for (ADR 0010) |
 //!
 //! # Why this is its own module (#2512)
 //!
@@ -61,6 +62,22 @@ const APPROVAL_SIGNING_KEY_FILE: &str = "approval_signing_key.der";
 /// authority that says what a pod MAY do must not double as the executor's
 /// receipt identity, the task-token root, or the approval authority.
 const CERT_ROOT_KEY_FILE: &str = "cert_root_signing_key.der";
+
+/// Filename (under `state_dir`) holding the persisted **federation issuer**
+/// key: P-256, PKCS#8 DER, signing the ES256 assertions `federated_credential`
+/// exchanges for upstream tokens.
+///
+/// A different CURVE from the four keys above, not only a different file,
+/// because the relying parties are different: model providers' token endpoints
+/// accept RSA or ECDSA and refuse EdDSA, so this issuer cannot share the
+/// Ed25519 machinery — and must not share a key with any of those roles
+/// regardless, since its signatures are presented OFF the node.
+///
+/// The name is `nucleus_federation::keyring`'s, not restated here: that module
+/// owns this file and its rotation siblings (`.next.der`, `.prev.der`), and the
+/// operator's `nucleus federation` CLI reads the same constant.
+#[cfg(test)]
+const JWT_SVID_P256_KEY_FILE: &str = nucleus_federation::keyring::CURRENT_KEY_FILE;
 
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
@@ -132,6 +149,57 @@ pub fn load_or_create_cert_root_signing_key(state_dir: &Path) -> SigningKey {
         CERT_ROOT_KEY_FILE,
         "certificate root signing key",
     )
+}
+
+/// Load the **federation issuer** P-256 key from `state_dir`, creating and
+/// persisting a fresh one on first run, as a signer that follows rotation.
+///
+/// Persistence is what keeps the `kid` stable: upstreams register this
+/// issuer's JWKS, some of them inline, so a node that minted a new key per
+/// restart would be refused by every such upstream until someone re-registered
+/// it. A present-but-unparseable key is logged and replaced, as for the
+/// Ed25519 role keys, with the cost stated in the warning.
+///
+/// # Rotation, and why no restart is needed
+///
+/// The returned [`KeyDirSigner`] signs with whatever key is in the current
+/// file at the moment of each assertion, reloading it when an operator's
+/// `nucleus federation rotate --promote` renames the staged key into place.
+/// It never reads the staged (`next`) key. See `nucleus_federation::keyring`.
+///
+/// # Errors
+/// * the key cannot be generated, or cannot be PERSISTED. P3 treated a
+///   persist failure as a warning; with rotation it is fatal, because the JWKS
+///   an operator publishes (`nucleus federation issuer --jwks`) is read from
+///   this file — a key that exists only in memory is a key no provider can
+///   ever be told about.
+/// * the file exists with group/other permission bits, a foreign owner, or as
+///   a symlink. That key may have been read by someone else; the node refuses
+///   to sign with it rather than regenerate over the evidence.
+pub fn load_or_create_jwt_svid_signing_key(
+    state_dir: &Path,
+) -> Result<nucleus_federation::keyring::KeyDirSigner, String> {
+    use nucleus_federation::keyring::{KeyDir, KeyDirSigner, KeyringError};
+    let label = "federation issuer signing key";
+    let keys = KeyDir::new(state_dir);
+
+    match keys.load_current() {
+        Ok(Some(_)) => debug!(dir = %state_dir.display(), "loaded persisted {label}"),
+        Ok(None) => {
+            keys.create_current().map_err(|e| format!("{label}: {e}"))?;
+            info!(dir = %state_dir.display(), "generated and persisted new {label}");
+        }
+        Err(e @ KeyringError::Key { .. }) => {
+            warn!(
+                error = %e,
+                "{label} file is unreadable; regenerating — every upstream that registered \
+                 the old key (by kid) will refuse this node's assertions until updated"
+            );
+            keys.create_current().map_err(|e| format!("{label}: {e}"))?;
+        }
+        Err(e) => return Err(format!("{label}: {e}")),
+    }
+    KeyDirSigner::open(keys).map_err(|e| format!("{label}: {e}"))
 }
 
 /// Shared implementation for the persisted per-node Ed25519 keys. `filename` is
@@ -265,6 +333,85 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
+    }
+
+    /// The kid the node would sign its next assertion with.
+    fn signing_kid(signer: nucleus_federation::keyring::KeyDirSigner) -> String {
+        use nucleus_federation::CurrentSigner as _;
+        std::sync::Arc::new(signer)
+            .current()
+            .expect("signs")
+            .kid()
+            .to_string()
+    }
+
+    /// The federation issuer key persists at 0400 and reloads as the SAME key —
+    /// the same `kid` — across a restart, which is what an upstream that
+    /// registered this node's JWKS depends on.
+    #[test]
+    fn the_federation_issuer_key_persists_read_only_with_a_stable_kid() {
+        let dir = tempfile::tempdir().unwrap();
+        let first =
+            signing_kid(load_or_create_jwt_svid_signing_key(dir.path()).expect("generates"));
+        let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
+        assert!(path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
+        }
+        let restarted =
+            signing_kid(load_or_create_jwt_svid_signing_key(dir.path()).expect("reloads"));
+        assert_eq!(first, restarted, "the kid changed across a restart");
+
+        // And it is its own key, not one of the Ed25519 role keys' files.
+        let other = tempfile::tempdir().unwrap();
+        let elsewhere = signing_kid(load_or_create_jwt_svid_signing_key(other.path()).unwrap());
+        assert_ne!(first, elsewhere, "two nodes share a federation key");
+    }
+
+    /// The node's signer — the object `federation_source` hands the broker —
+    /// follows an operator's promote without a restart, and never signs with
+    /// the staged key before it.
+    #[test]
+    fn the_running_node_signs_with_a_promoted_key_without_restart() {
+        use nucleus_federation::CurrentSigner as _;
+        use nucleus_federation::keyring::{KeyDir, RotationPolicy};
+        let dir = tempfile::tempdir().unwrap();
+        let node = std::sync::Arc::new(load_or_create_jwt_svid_signing_key(dir.path()).unwrap());
+        let old = std::sync::Arc::clone(&node)
+            .current()
+            .unwrap()
+            .kid()
+            .to_string();
+
+        let operator = KeyDir::new(dir.path());
+        let t0 = 1_790_000_000;
+        let staged = operator.stage(t0).unwrap().after.next.unwrap().jwk.kid;
+        assert_eq!(std::sync::Arc::clone(&node).current().unwrap().kid(), old);
+
+        let policy = RotationPolicy::default();
+        operator
+            .promote(t0 + policy.promote_overlap().as_secs(), &policy)
+            .unwrap();
+        assert_eq!(
+            std::sync::Arc::clone(&node).current().unwrap().kid(),
+            staged
+        );
+    }
+
+    /// A key someone else could read is refused, not silently replaced.
+    #[cfg(unix)]
+    #[test]
+    fn a_federation_key_readable_by_others_stops_the_node() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create_jwt_svid_signing_key(dir.path()).unwrap();
+        let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        let err = load_or_create_jwt_svid_signing_key(dir.path()).unwrap_err();
+        assert!(err.contains("mode"), "{err}");
     }
 
     #[test]

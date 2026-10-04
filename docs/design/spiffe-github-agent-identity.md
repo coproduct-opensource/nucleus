@@ -38,6 +38,10 @@ new subsystems.
 
 ### 1.1 The OIDC ↔ SPIFFE bridge — and its *direction* (the load-bearing correction)
 
+- *(Since deleted: this route was unreachable behind the node's mTLS listener. The
+  vendor-neutral replacement is `POST /v1/federation/exchange` on its own server-auth TLS
+  listener, `crates/nucleus-node/src/federation_ingress.rs`, where this provider is one
+  `[[caller]]` binding in operator config.)*
 - `crates/nucleus-node/src/oidc.rs` — `POST /v1/oidc/github`. This exchanges a **GitHub
   Actions OIDC token + client-generated CSR** for a **nucleus X.509 SVID**
   (`spiffe://<trust-domain>/ns/github/sa/{org}/{repo}`), with JWKS validation, `jti` replay

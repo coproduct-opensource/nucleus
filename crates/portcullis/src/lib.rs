@@ -100,6 +100,7 @@ pub mod budget_ledger;
 mod capability;
 #[cfg(feature = "cedar")]
 pub mod cedar_bridge;
+pub mod egress_budget;
 // Always compiled: the certificate DATA types (LatticeCertificate, SinkScope,
 // VerifiedPermissions, …) and non-crypto logic are ring-free; only the
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
@@ -231,6 +232,7 @@ pub mod says_admission;
 /// Requires the `spec` feature; sealing and verifying need `crypto` too.
 #[cfg(all(feature = "spec", not(kani)))]
 pub mod sealed_grant;
+pub mod spend_receipt;
 /// Requires the `spec` feature: it imports `effect_catalog`, which is itself
 /// `#[cfg(feature = "spec")]`. This gate was dropped when `exposure_mechanism`
 /// was added below, and `spec` is NOT a default feature, so the module then
@@ -291,6 +293,11 @@ pub use effect_catalog::{
     EffectAdmission, EffectCatalog, EffectCatalogError, EffectId, EffectRisk, EffectSpec,
     HttpMatch, LoweredAuthority,
 };
+pub use egress_budget::{
+    EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
+    EgressObservation, EgressPace, EgressRefusal, EgressSettleError, EgressSettlement,
+    DEFAULT_EGRESS_MAX_BYTES,
+};
 #[cfg(all(feature = "spec", not(kani)))]
 pub use escalation_proposal::{
     denials_in_trace, propose as propose_escalation, render_proposal, Attempt, Blocked,
@@ -325,7 +332,9 @@ pub use lattice::{
     DelegationError, EffectivePermissions, PermissionLattice, PermissionLatticeBuilder,
 };
 pub use modal::{CapabilityModal, EscalationPath, EscalationStep, ModalContext, ModalPermissions};
-pub use path::{PathDenial, PathLattice, AGENT_HARNESS_CONFIG};
+pub use path::{
+    executes_on_consume, PathDenial, PathLattice, AGENT_HARNESS_CONFIG, EXECUTE_ON_CONSUME,
+};
 pub use permissive::{
     ExecutionDenied, PermissiveExecution, PermissiveExecutionResult, PermissiveExecutor,
     PermissiveExecutorBuilder,

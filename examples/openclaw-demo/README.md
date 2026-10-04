@@ -75,10 +75,17 @@ cargo run -p nucleus-node -- \
   --driver firecracker \
   --listen 127.0.0.1:8081 \
   --proxy-auth-secret demo-secret \
+  --artifacts-root ./build/firecracker \
+  --scratch-root ./build/firecracker \
   --firecracker-netns
 ```
 
 (`--firecracker-netns` is default; pass `--firecracker-netns=false` to disable.)
+
+The node admits a pod's `kernel_path`/`rootfs_path` only from `--artifacts-root`
+and its `scratch_path` only from `--scratch-root` (default: the provisioned
+`/var/lib/nucleus/artifacts` and `<state-dir>/scratch`), so the two flags point
+both at the dev build directory the example specs name.
 
 ### Create a Firecracker pod
 

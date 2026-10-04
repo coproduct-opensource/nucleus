@@ -74,14 +74,32 @@ valuation stays hidden until reveal.
   Lean proof; sealed-bid commitment + timelock reveal; `required_bond(standing)`
   in `nucleus-creditworthiness`; recompute-verified standing inputs.
 - **Proposed (this RFC):** the exact `required_bond` schedule and admission-tier
-  thresholds (policy parameters, not theorems); the claim that channels (1)–(3)
-  are jointly truthfulness-preserving — this needs a Lean statement
-  (*payment rule is independent of standing ⟹ truthful-bidding equilibrium is
-  unchanged*), which is the natural next proof obligation, **not yet discharged**.
+  thresholds (policy parameters, not theorems).
+- **Discharged 2026-09-20:** the claim that channels (1)–(3) are truthfulness-
+  preserving now has its Lean statement, in
+  `crates/nucleus-econ-kernels/lean/Nucleus/Auctions/ThresholdTruthful.lean`.
+  The general fact is `threshold_truthful`: against any price threshold that does
+  not depend on the bid, truthful reporting weakly dominates. `bonded_truthful`
+  instantiates it at a bid-independent participation cost (channel 1),
+  `admitted_truthful` at a bid-independent participation predicate (channel 2),
+  and `bonded_and_admitted_truthful` at both together — a mechanism is what
+  ships, so the composition is stated, not just each channel alone. The
+  falsifier in the same file shows what a standing-weighted *price* would do.
 
 ## Honesty boundary
 
-This RFC keeps reputation out of the deductive truthfulness core on purpose. Any
-implementation must preserve that separation, and the "channels are
-truthfulness-preserving" claim is an **analogy to the existing proof until it has
-its own Lean theorem** — do not describe it as proven before then.
+This RFC keeps reputation out of the deductive truthfulness core on purpose, and
+any implementation must preserve that separation.
+
+The "channels are truthfulness-preserving" claim **is now proven** for channels
+(1) and (2) — see the entry above. Two limits on what that buys:
+
+- It is proven *under the hypothesis* that the bond and the admission predicate
+  do not depend on the bid. `nucleus-authority-exchange` earns that for admission
+  structurally — `Admission::admits` is handed an `AgentId` and nothing else, so
+  an implementation cannot see a bid to condition on — and the bond channel is
+  **not wired at all**, because a bond that cannot be slashed is theatre while
+  condition 3 of `receipt-provenance-defection.md` is unmet.
+- Channel (3), the deterministic tie-break, is argued rather than proved. Ties
+  are measure-zero in price terms, but that is an argument about equilibrium, not
+  a `Nat` inequality, and it is not stated in Lean.

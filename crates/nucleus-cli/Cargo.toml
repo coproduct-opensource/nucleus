@@ -6,7 +6,6 @@ rust-version.workspace = true
 license.workspace = true
 description = "CLI for running AI agents with nucleus enforcement"
 repository = "https://github.com/coproduct-opensource/nucleus"
-documentation = "https://docs.rs/nucleus-cli"
 readme = "README.md"
 keywords = ["ai", "security", "cli", "agents", "sandbox"]
 categories = ["command-line-utilities", "development-tools"]
@@ -18,6 +17,8 @@ path = "src/main.rs"
 [dependencies]
 # Core enforcement
 portcullis = { path = "../portcullis", features = ["spec", "dlc"] }
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+ed25519-dalek = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-task-compiler = { path = "../nucleus-task-compiler" }
 nucleus-client = { path = "../nucleus-client" }
@@ -26,10 +27,17 @@ nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
 nucleus-bundle-cas = { path = "../nucleus-bundle-cas" }
+# `nucleus federation`: the issuer key's files, rotation and discovery document
+# are defined once there and shared with the node's signer.
+nucleus-federation = { path = "../nucleus-federation" }
+# `nucleus image`: the one flattener every image source goes through.
+nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
+# One atomic append per audit record (the microVM host supervisor).
+nucleus-jsonl = { path = "../nucleus-jsonl" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
-iroh = "=1.2.0"
+iroh = "=1.3.0"
 iroh-blobs = "=0.103.0"
 
 # gRPC client
@@ -87,19 +95,27 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 hmac = { workspace = true }
 rustls = { workspace = true }
+# `provision`: the identity files are checked block by block before they are
+# installed (#3158) — the same parser `nucleus_identity::node_tls` reads them with.
+pem = "4"
+# `provision`: secrets are staged as owner-only files and copied, never spliced
+# into a shell command (#3158).
+tempfile = { workspace = true }
 
 # macOS Keychain (conditional)
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
 
 [dev-dependencies]
-tempfile = { workspace = true }
 # spike: "call SPIFFE agents anywhere" over iroh (examples/spiffe_iroh_*.rs)
 nucleus-node-binding = { path = "../nucleus-node-binding" }
 ed25519-dalek = { workspace = true }
 serde_json = { workspace = true }
 rcgen = "0.14"
 x509-parser = { workspace = true }
+# `nucleus image` tests: an in-process fake registry, and layers built in-test.
+axum = { workspace = true }
+tar = { version = "0.4", default-features = false }
 
 [lints]
 workspace = true

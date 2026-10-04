@@ -34,14 +34,24 @@
 //! # Status
 //!
 //! Types, the separation invariant, and credential *storage* with its
-//! containment properties. No minting and no injection yet — the structure and
-//! its enforcement land before the material they are meant to contain, the same
-//! way `nucleus_node::snapshot` refused unsafe snapshots before the snapshot
-//! path existed.
+//! containment properties. This said "no minting and no injection yet" and
+//! "nothing is wired into `nucleus-node`"; both have stopped being true.
 //!
-//! Nothing is wired into `nucleus-node` yet, which is why cargo-deny reports an
-//! accurate `unused-wrapper` warning for the entry in `deny.toml`: the
-//! permission is declared ahead of its first use.
+//! * **Wired.** `nucleus-node` is this crate's one dependent, as `deny.toml`'s
+//!   `wrappers` entry permits: `broker_launch::store_from_node_environment`
+//!   builds a [`CredentialStore`] per pod from the node's environment, for the
+//!   upstreams the node's operator registry defines and admission granted that
+//!   pod, and `broker_perform` fetches from it after the PDP decides.
+//! * **Injected, host-side.** The host performs the call and puts the value in
+//!   the request header itself; the guest receives the upstream's reply, never
+//!   the credential.
+//! * **Held for a bounded time, never minted here.** A registry upstream may
+//!   now be `federated`: the node mints an assertion per exchange and trades it
+//!   for a short-lived token (`nucleus-node/src/federated_credential.rs`), then
+//!   hands the token to this store with [`CredentialStore::insert_expiring`].
+//!   The minting, the signing and the network call all stay in the node. This
+//!   crate still makes no request and holds no key: it is told a value and an
+//!   instant, and refuses the value from that instant on.
 
 // ADR 0007 totality: a function whose signature says it returns is lying if it
 // panics. Denied for the shipped build only — `assert!` IS a panic, so denying
@@ -218,6 +228,21 @@ pub enum BrokerError {
     #[error("approval expired at {expires_at_unix}, now {now_unix}")]
     ApprovalExpired {
         /// When it lapsed.
+        expires_at_unix: u64,
+        /// The instant it was checked against.
+        now_unix: u64,
+    },
+    /// A credential is held for the target, but its lifetime is over.
+    ///
+    /// Distinct from [`BrokerError::NoCredentialForTarget`] for the HOST's logs
+    /// only — an operator debugging a refusal needs to know a token lapsed
+    /// rather than was never there. The node collapses both into the same
+    /// coarse refusal before anything reaches a guest.
+    #[error("credential for target {target} expired at {expires_at_unix}, now {now_unix}")]
+    CredentialExpired {
+        /// The target whose credential lapsed.
+        target: String,
+        /// The first instant it was no longer good.
         expires_at_unix: u64,
         /// The instant it was checked against.
         now_unix: u64,
@@ -473,9 +498,34 @@ impl std::fmt::Debug for Credential {
 ///
 /// Keys are targets, not pods: a credential belongs to the service it opens,
 /// and which pod may use it is a *policy* question this crate cannot answer.
+///
+/// # Some credentials have a lifetime, and the store enforces it
+///
+/// A static credential an operator placed in the node's environment is good
+/// until someone changes it, so [`CredentialStore::insert`] records none. A
+/// token minted by a federated exchange is not: it was issued for minutes, and
+/// a store that kept serving it past that would turn every expired token into
+/// a confusing upstream 401 at best — and, if the node's own bound is tighter
+/// than the token's (it is: the pod's certificate can lapse first), into a
+/// credential used for a pod whose authority has ended.
+///
+/// So [`CredentialStore::insert_expiring`] records the instant, and
+/// [`CredentialStore::for_request`] refuses the entry from that instant on. The
+/// check lives HERE, in the one function every fetch goes through, rather than
+/// in the node's cache that decided the instant: a cache bug then produces an
+/// extra exchange, never a stale credential.
 #[derive(Debug, Default)]
 pub struct CredentialStore {
-    entries: std::collections::BTreeMap<String, Credential>,
+    entries: std::collections::BTreeMap<String, Held>,
+}
+
+/// One held credential and, for a minted one, when it stops being good.
+#[derive(Debug)]
+struct Held {
+    credential: Credential,
+    /// The first Unix second at which this credential is NOT served. `None` for
+    /// a credential with no lifetime of its own.
+    expires_at_unix: Option<u64>,
 }
 
 impl CredentialStore {
@@ -484,9 +534,43 @@ impl CredentialStore {
         Self::default()
     }
 
-    /// Register a credential for a target.
+    /// Register a credential for a target, with no lifetime of its own.
     pub fn insert(&mut self, target: impl Into<String>, credential: Credential) {
-        self.entries.insert(target.into(), credential);
+        self.entries.insert(
+            target.into(),
+            Held {
+                credential,
+                expires_at_unix: None,
+            },
+        );
+    }
+
+    /// Register a credential that is served only while `now < expires_at_unix`.
+    ///
+    /// An instant rather than a duration, for the reason `AuthorizedRequest`
+    /// gives: a duration means nothing once the moment it was measured from is
+    /// lost. Replaces whatever was held for `target`.
+    pub fn insert_expiring(
+        &mut self,
+        target: impl Into<String>,
+        credential: Credential,
+        expires_at_unix: u64,
+    ) {
+        self.entries.insert(
+            target.into(),
+            Held {
+                credential,
+                expires_at_unix: Some(expires_at_unix),
+            },
+        );
+    }
+
+    /// Forget the credential held for `target`, if any. Returns whether one was.
+    ///
+    /// For a credential the upstream has just refused: holding on to it would
+    /// only make the next request fail the same way.
+    pub fn remove(&mut self, target: &str) -> bool {
+        self.entries.remove(target).is_some()
     }
 
     /// Look up the credential for an **already-approved** request.
@@ -494,6 +578,11 @@ impl CredentialStore {
     /// Takes an [`AuthorizedRequest`], not a [`TaskRequestEnvelope`]: there is
     /// no way to reach a credential from an unapproved ask, because the type
     /// that unlocks the store can only be built from a PDP verdict.
+    ///
+    /// Three checks, in this order: the approval's expiry, the lookup, the
+    /// credential's own expiry. An expired credential is refused exactly as
+    /// hard as a missing one — a `>=`, so the stated instant is the first one
+    /// at which it is not served.
     pub fn for_request(
         &self,
         req: &AuthorizedRequest,
@@ -511,11 +600,22 @@ impl CredentialStore {
                 now_unix,
             });
         }
-        self.entries
-            .get(&req.target)
-            .ok_or_else(|| BrokerError::NoCredentialForTarget {
-                target: req.target.clone(),
-            })
+        let held =
+            self.entries
+                .get(&req.target)
+                .ok_or_else(|| BrokerError::NoCredentialForTarget {
+                    target: req.target.clone(),
+                })?;
+        match held.expires_at_unix {
+            Some(expires_at_unix) if now_unix >= expires_at_unix => {
+                Err(BrokerError::CredentialExpired {
+                    target: req.target.clone(),
+                    expires_at_unix,
+                    now_unix,
+                })
+            }
+            Some(_) | None => Ok(&held.credential),
+        }
     }
 }
 
@@ -612,6 +712,63 @@ mod credential_tests {
                 target: "evil.test".to_string()
             }
         );
+    }
+
+    /// **A minted credential is not served past its lifetime.** Good through
+    /// the second before `expires_at`, refused from it on — including for a
+    /// fresh approval, since the approval's lifetime and the credential's are
+    /// separate facts and the shorter one wins.
+    #[test]
+    fn an_expiring_credential_is_refused_from_its_expiry_on() {
+        let mut store = CredentialStore::new();
+        store.insert_expiring("api.example.test", Credential::new("minted"), NOW + 30);
+        assert_eq!(
+            store
+                .for_request(&approved("api.example.test"), NOW + 29)
+                .expect("still good")
+                .expose(),
+            "minted"
+        );
+        match store.for_request(&approved("api.example.test"), NOW + 30) {
+            Err(BrokerError::CredentialExpired {
+                expires_at_unix, ..
+            }) => assert_eq!(expires_at_unix, NOW + 30),
+            other => panic!("an expired credential was served: {other:?}"),
+        }
+    }
+
+    /// A plain `insert` has no lifetime, so it is not caught by the check above
+    /// — the control that shows the refusal is about the recorded instant, not
+    /// about time passing.
+    #[test]
+    fn a_static_credential_does_not_expire() {
+        let mut store = CredentialStore::new();
+        store.insert("api.example.test", Credential::new("static"));
+        let late = AuthorizedRequest {
+            expires_at_unix: u64::MAX,
+            ..approved("api.example.test")
+        };
+        assert!(store.for_request(&late, u64::MAX - 1).is_ok());
+    }
+
+    /// Replacing and removing: a re-minted token replaces the old one, and a
+    /// removed one is gone — the node relies on both for refresh and for
+    /// evicting a token the upstream refused.
+    #[test]
+    fn insert_expiring_replaces_and_remove_forgets() {
+        let mut store = CredentialStore::new();
+        store.insert_expiring("t", Credential::new("first"), NOW + 10);
+        store.insert_expiring("t", Credential::new("second"), NOW + 10);
+        assert_eq!(
+            store.for_request(&approved("t"), NOW).unwrap().expose(),
+            "second"
+        );
+        assert!(store.remove("t"));
+        assert!(!store.remove("t"), "removing twice reports nothing held");
+        assert!(matches!(
+            store.for_request(&approved("t"), NOW),
+            Err(BrokerError::NoCredentialForTarget { .. })
+        ));
     }
 
     /// The store's own Debug must not leak either — it holds Credentials, and

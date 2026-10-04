@@ -51,6 +51,24 @@ enum Command {
     Grammar,
     /// Inventory repo shell scripts and flag which are xtask port candidates.
     Scripts,
+    /// Build the nucleus guest layer — `/init`, the `nucleus-*` binaries, the CA
+    /// bundle, and no pod spec — as one deterministic tar, and print its digest as
+    /// `sha-256:<hex>`. See crates/xtask/src/guest_layer.rs.
+    GuestLayer {
+        /// Guest architecture.
+        #[arg(long, value_enum)]
+        arch: guest_layer::Arch,
+        /// Where to write the tar.
+        #[arg(long)]
+        out: std::path::PathBuf,
+        /// How to cross-build the static musl binaries.
+        #[arg(long, value_enum, default_value = "zigbuild")]
+        builder: guest_layer::Builder,
+        /// Use binaries already built in this directory (a `target/<triple>/release`)
+        /// instead of building them.
+        #[arg(long)]
+        prebuilt: Option<std::path::PathBuf>,
+    },
     /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
     /// defect patched into a scratch worktree at HEAD, every mode run against it.
     /// Exit 0 as the manifest says, 1 a mismatch, 2 could not look or zoo rot.
@@ -58,6 +76,11 @@ enum Command {
         /// Run only the defect with this name.
         #[arg(long)]
         only: Option<String>,
+    },
+    /// Compare executor gate definitions with the elaborated plan snapshot.
+    GateDefs {
+        /// An alternative elaborated gates JSON; defaults to the committed snapshot.
+        elaborated: Option<std::path::PathBuf>,
     },
     /// The two pins naming gatehouse must agree: `.gatehouse/pipeline.writ`'s import
     /// digest must be the SHA-256 of `prelude/ci.writ` at `gatehouse-plan.yml`'s
@@ -83,6 +106,24 @@ enum Command {
         #[arg(long)]
         entries: bool,
     },
+    /// A declared `measuredMs` that a real run has already beaten is not a measurement.
+    /// `ci.timeoutMeasured_b` proves a relation between two DECLARATIONS; nothing compares
+    /// either to what the builder did. On 2026-09-22 `test-audit` declared 776241 ms and a
+    /// run took 1493565 ms within two hours, putting the timeout under the 2x floor while
+    /// `admissible` went on proving. Lane-side: it reads the builder's own `gate_measured`
+    /// events, so it cannot be one of the tree-side required gates.
+    PlanMeasurements {
+        /// JSONL carrying the builder's `gate_measured` events (`/var/log/gatehouse/gates.log`).
+        #[arg(long)]
+        events: std::path::PathBuf,
+        /// The committed elaboration that declares each gate's `measured_ms`.
+        #[arg(long, default_value = ".gatehouse/plan-gates.json")]
+        plan: std::path::PathBuf,
+    },
+    /// The cheap tree-only gates, before a push: exemplar ratchet, cargo-audit, scorecard,
+    /// line ratchet. Each gets Pass / Fail / CouldNotRun; anything but Pass exits non-zero.
+    /// See crates/xtask/src/prepush.rs.
+    Prepush,
     /// A SHA of this repo pinned by this repo must still match the working tree.
     SelfPin,
     /// One fact written in several files must have one value: the elan release and its
@@ -138,6 +179,10 @@ enum Command {
         #[arg(long)]
         network: bool,
     },
+    /// Economics never widens authority (#2514): the authority crates reach no economic
+    /// crate in the resolved graph, the decision functions in run_gate.rs and all of
+    /// pod_authority.rs name none, and the one permitted meet is still in cert_bridge.rs.
+    EconBoundary,
     /// ADR 0008: nucleus depends on nothing private. Refuses any git dependency, alternate
     /// registry, or path dependency escaping the repository — in the resolved graph per
     /// `cargo metadata`, and in every manifest's own declarations including the satellites.
@@ -211,6 +256,14 @@ enum Command {
     /// per family in `.scorecard-ratchet.toml`, two floors each: on the ratio,
     /// so it cannot fall, and on the population, because deleting an obligation
     /// raises the ratio without discharging anything.
+    /// Every agent-reachable entry point of the tool-proxy, by how it is
+    /// mediated: sealed (mints an `Authority`), checked (a runtime decision it
+    /// does not need to act), or unchecked. A report; the `mediate` scorecard
+    /// family gates the number, and `--badge` prints `ci/badges/mediation.json`.
+    Mediation {
+        #[arg(long)]
+        badge: bool,
+    },
     Scorecard {
         #[arg(long)]
         measure: bool,
@@ -302,13 +355,31 @@ enum Command {
         #[command(subcommand)]
         cmd: CiSpecCmd,
     },
+    /// Measure the exemplar scoreboard (formal verification, Rust craft,
+    /// sandboxing) and write scoreboard.json. Replaces
+    /// scripts/exemplar-scoreboard.sh; see crates/xtask/src/exemplar_scoreboard.rs.
+    ExemplarScoreboard {
+        /// Where to write the scoreboard.
+        #[arg(default_value = "scoreboard.json")]
+        out: String,
+    },
+    /// The gate of gates: every gate must RED on a real violation of its own subject and GREEN
+    /// when restored. CI calls it through `scripts/check-gates-can-fail.sh`; the arguments are
+    /// that script's (`--vacuity-only`, `--baseline-only`, `--for-event <event> <base>`, ...).
+    /// See crates/xtask/src/gates_can_fail/mod.rs.
+    #[command(name = "gates-can-fail", disable_help_flag = true)]
+    GatesCanFail {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        args: Vec<String>,
+    },
     /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
     /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
     /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
     ScoreboardRatchet {
-        /// The freshly generated scoreboard.json.
+        /// A scoreboard.json to compare. Omitted, the tree is measured in
+        /// process (`exemplar-scoreboard`), which is how CI runs it.
         #[arg(long)]
-        current: String,
+        current: Option<String>,
         /// The pinned baseline (scripts/exemplar-baseline.json).
         #[arg(long)]
         baseline: String,
@@ -340,6 +411,9 @@ enum CiSpecCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Every required context is decided by the fast gauntlet, or declared NOT-LOCAL with a
+    /// reason. Both directions, plus: a declared `prepush:` command must be IN prepush.
+    LocalCoverage,
     /// Print the inline-gate inventory (ci/inline-gates.txt shape).
     /// Every check context a workflow produces that ci/required-checks.txt does
     /// NOT list. Advisory contexts block nothing, so one can be red on main
@@ -399,18 +473,27 @@ mod clippy_config;
 mod command_grammar;
 mod convergence;
 mod coverage_floor;
+mod econ_boundary;
+mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
+mod gate_defs;
 mod gatehouse_pin;
+mod gates_can_fail;
+mod guest_layer;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod lean_action_builds;
 mod life;
 mod line_ratchet;
+mod local_coverage;
+mod mediate;
 mod pin_parity;
 mod pipefail;
+mod plan_measurements;
 mod portability;
+mod prepush;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
@@ -427,6 +510,12 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::GuestLayer {
+            arch,
+            out,
+            builder,
+            prebuilt,
+        } => guest_layer::run(&repo_root()?, arch, &out, builder, prebuilt),
         Command::StressZoo { only } => std::process::exit(stress_zoo::run(only.as_deref())?),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
         Command::CheckIsolation => check_isolation(),
@@ -461,11 +550,33 @@ fn main() -> Result<()> {
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),
         Command::GateBudget => gate_budget::check(&std::env::current_dir()?),
+        Command::PlanMeasurements { events, plan } => {
+            // Exit 2 is "could not look", which is never a pass AND never a finding. Mapped
+            // here rather than exited from inside the check, so a unit test calling it
+            // survives -- the same shape as `SelfPin` above.
+            match plan_measurements::check(&events, &plan) {
+                plan_measurements::Outcome::Clean => Ok(()),
+                plan_measurements::Outcome::Overtaken(why) => {
+                    println!("VIOLATION: {why}");
+                    std::process::exit(1)
+                }
+                plan_measurements::Outcome::CouldNotLook(why) => {
+                    println!("COULD NOT LOOK: {why}");
+                    std::process::exit(2)
+                }
+            }
+        }
+        // Exit code mapped here, not inside the run, for the SelfPin arm's reason.
+        Command::Prepush => match prepush::run(&repo_root()?)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::Portability => portability::check(&std::env::current_dir()?),
         Command::ActionInputs { network } => {
             action_inputs::check(&std::env::current_dir()?, network)
         }
+        Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
         Command::Visibility => visibility::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
@@ -504,6 +615,10 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::Mediation { badge } => match mediate::run(badge)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Scorecard {
             measure,
             badge,
@@ -512,6 +627,9 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::GateDefs { elaborated } => {
+            gate_defs::check(&std::env::current_dir()?, elaborated.as_deref())
+        }
         Command::GatehousePin { gatehouse } => {
             gatehouse_pin::check(&std::env::current_dir()?, gatehouse)
         }
@@ -525,6 +643,7 @@ fn main() -> Result<()> {
         Command::CiSpec { cmd } => match cmd {
             CiSpecCmd::Check { repo, json } => ci_spec::check(repo, json),
             CiSpecCmd::Advisory { repo } => ci_spec::advisory(repo),
+            CiSpecCmd::LocalCoverage => local_coverage::run(),
             CiSpecCmd::InlineGates { repo } => ci_spec::inline_gates(repo),
             CiSpecCmd::LiveParity { repo, github, json } => {
                 ci_spec::live_parity(repo, &github, json)
@@ -536,8 +655,10 @@ fn main() -> Result<()> {
                 json,
             } => ci_spec::trace_check(&github, since_hours, json),
         },
+        Command::GatesCanFail { args } => std::process::exit(gates_can_fail::run(&args)),
+        Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
-            scoreboard::scoreboard_ratchet(&current, &baseline)
+            scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)
         }
         Command::CiOtel {
             since,
@@ -602,7 +723,6 @@ fn policy_gate(base: &str, candidate: &str, changed_files: Option<&str>) -> Resu
 /// Matched by path suffix.
 const KEEP_AS_SHELL: &[&str] = &[
     "scripts/firecracker/guest-init.sh",
-    "scripts/firecracker/guest-net.sh",
     "scripts/firecracker/build-rootfs.sh",
     "scripts/firecracker/build-scratch.sh",
     "scripts/container/smoke-test.sh",

@@ -9,10 +9,11 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use axum::Json;
-use axum::Router;
 use axum::extract::State;
 use axum::http::HeaderMap;
+use axum::{Extension, Json, Router};
+use nucleus_ifc_kernel::discharge::PreflightResult;
+use portcullis_effects::authority::Authority;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "linux")]
 use tracing::info;
@@ -26,7 +27,8 @@ use portcullis::verdict_sink::{VerdictContext, VerdictOutcome};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
-use crate::node_client;
+use crate::node_client::{self, acts};
+use crate::pod_cert::CertifiedPermissions;
 use crate::{ApiError, AppState, PodRuntime, actor_from_auth};
 
 // ---------------------------------------------------------------------------
@@ -133,10 +135,28 @@ fn narrow_to_ceiling(
 // Handlers
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Pod handlers spend a preflight (2026-09-27)
+// ---------------------------------------------------------------------------
+//
+// Each handler below discharges `run_gate::preflight_pod` for the exact
+// `node_client::acts` value it is about to perform and hands the resulting
+// `Authority` to the node client BY VALUE, which spends it before building the
+// request. Before this, all five ran `check_manage_pods` and called the node
+// directly: a decision ran and the request did not need it. The kernel decides
+// what each act costs from its pair — create is Acting (a tainted session
+// cannot spawn), list/status/logs are pure reads, cancel is authority-reducing
+// (a tainted session CAN still stop its children; the node admits a cancel only
+// for the caller and its direct children). `check_manage_pods` and
+// `sub_pod_ifc_gate` stay: the first gives the capability refusal its own
+// message, the second refuses a POISONED session, which the discharge does not
+// see.
+
 pub(crate) async fn create_sub_pod(
     State(state): State<AppState>,
     _headers: HeaderMap,
-    auth: Option<axum::Extension<crate::auth::AuthContext>>,
+    auth: Option<Extension<crate::auth::AuthContext>>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<CreateSubPodRequest>,
 ) -> Result<Json<CreateSubPodResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -277,6 +297,27 @@ pub(crate) async fn create_sub_pod(
         task_grant_id: _task_grant_id, // child-asserted task grant
     } = &spec.metadata;
 
+    // 5a. Serialize the child spec — the exact bytes the node will receive — and
+    //     discharge the create FOR THOSE BYTES (their SHA-256 is the subject).
+    //     Before the reservation, so a refusal here has nothing to hand back.
+    let spec_yaml = serde_yaml::to_string(&spec)
+        .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
+    let authority = {
+        let act = acts::create(&spec_yaml);
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&act, scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+
     // 5b. Reserve the child's budget from THIS pod's live budget (#2426):
     //     the child's max_cost is debited here, atomically, before the node
     //     call, and mirrored into the kernel so its own BudgetExhausted arm
@@ -302,9 +343,7 @@ pub(crate) async fn create_sub_pod(
     }
 
     // 6. Forward to nucleus-node; a refusal hands the reservation back.
-    let spec_yaml = serde_yaml::to_string(&spec)
-        .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
-    let result = match node.create_pod(&spec_yaml).await {
+    let result = match node.create_pod(&spec_yaml, authority).await {
         Ok(r) => r,
         Err(e) => {
             state.runtime.budget().release(reservation);
@@ -341,6 +380,7 @@ pub(crate) async fn create_sub_pod(
 pub(crate) async fn list_sub_pods(
     State(state): State<AppState>,
     _headers: HeaderMap,
+    certified: Option<Extension<CertifiedPermissions>>,
 ) -> Result<Json<Vec<node_client::PodInfo>>, ApiError> {
     check_manage_pods(&state)?;
 
@@ -349,16 +389,33 @@ pub(crate) async fn list_sub_pods(
         .as_ref()
         .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
 
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::list(), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
     let pods = node
-        .list_pods()
+        .list_pods(authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
 
     Ok(Json(pods))
 }
 
+/// Spends the LIST act (`*`), because what it sends the node is a listing;
+/// the filter to one pod happens here, after the bytes are back.
 pub(crate) async fn get_pod_status(
     State(state): State<AppState>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<Vec<node_client::PodInfo>>, ApiError> {
     check_manage_pods(&state)?;
@@ -368,8 +425,22 @@ pub(crate) async fn get_pod_status(
         .as_ref()
         .ok_or_else(|| ApiError::Spec("pod management not enabled".to_string()))?;
 
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::list(), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
     let pods = node
-        .list_pods()
+        .list_pods(authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node list_pods failed: {e}")))?;
 
@@ -383,6 +454,7 @@ pub(crate) async fn get_pod_status(
 
 pub(crate) async fn get_pod_logs(
     State(state): State<AppState>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     check_manage_pods(&state)?;
@@ -397,8 +469,22 @@ pub(crate) async fn get_pod_logs(
         .parse()
         .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
 
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::logs(pod_id), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
     let logs = node
-        .pod_logs(pod_id)
+        .pod_logs(pod_id, authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node pod_logs failed: {e}")))?;
 
@@ -410,7 +496,8 @@ pub(crate) async fn get_pod_logs(
 pub(crate) async fn cancel_sub_pod(
     State(state): State<AppState>,
     _headers: HeaderMap,
-    auth: Option<axum::Extension<crate::auth::AuthContext>>,
+    auth: Option<Extension<crate::auth::AuthContext>>,
+    certified: Option<Extension<CertifiedPermissions>>,
     Json(req): Json<PodIdRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let sink = &state.verdict_sink;
@@ -429,7 +516,23 @@ pub(crate) async fn cancel_sub_pod(
         .parse()
         .map_err(|e| ApiError::Spec(format!("invalid pod_id: {e}")))?;
 
-    node.cancel_pod(pod_id)
+    // Authority-reducing: a tainted session still discharges this (see the
+    // section comment above), and still needs ManagePods in its task scope.
+    let authority = {
+        let levels = state.ceiling(Operation::ManagePods, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let scope = state.session_task_token.verified_scope();
+        match crate::run_gate::preflight_pod(&acts::cancel(pod_id), scope, levels, &flow) {
+            PreflightResult::Allowed(b) => {
+                Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
+            }
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
+        }
+    };
+    node.cancel_pod(pod_id, authority)
         .await
         .map_err(|e| ApiError::Spec(format!("node cancel_pod failed: {e}")))?;
 
@@ -453,24 +556,28 @@ pub(crate) async fn cancel_sub_pod(
 // Runtime / Budget helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn build_runtime(spec: &PodSpec) -> Result<PodRuntime, ApiError> {
+/// Build the proxy's executor runtime — the one every tool call runs through.
+///
+/// `containment` is an input, and the only caller passes
+/// `SandboxProof::containment()`, the single decider (ADR 0007 G). Until
+/// 2026-09-29 this function set `Unsandboxed` itself, for every pod: honest
+/// while tier 1 could be forged, but it meant that inside a real Firecracker
+/// guest a `minimum_isolation = microvm()` policy refused every command. Now a
+/// verified launch attests `MicroVM`, and everything short of one still attests
+/// `localhost()` and fails closed under a microVM policy.
+pub(crate) fn build_runtime(
+    spec: &PodSpec,
+    containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
+) -> Result<PodRuntime, ApiError> {
     let policy = spec
         .spec
         .resolve_policy()
         .map_err(|e| ApiError::Spec(e.to_string()))?;
     let timeout = std::time::Duration::from_secs(spec.spec.timeout_seconds);
     let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout)
-        // Containment posture (most-paranoid #2). We declare the *honest* minimum:
-        // `Unsandboxed`. The proxy only starts inside a verified managed sandbox
-        // (it exits 78 without a `SandboxProof`), but a SPIFFE-tier proof does not
-        // by itself prove a microVM boundary — so we do NOT over-claim `MicroVM`.
-        // Consequence (fail-closed, by design): a policy that sets
-        // `minimum_isolation = microvm()` will REFUSE to execute here until real
-        // VM attestation (the SandboxProof DICE/Tier-1 launch measurement) is
-        // threaded in to upgrade this to `ContainmentMode::MicroVM`.
-        // TODO(most-paranoid #2 follow-up): derive containment from the verified
-        // SandboxProof tier (Attested/DICE => MicroVM) instead of this constant.
-        .with_containment(nucleus::ContainmentMode::Unsandboxed);
+        .with_containment(containment)
+        .with_unsandboxed_opt_in(opt_in);
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }
@@ -537,25 +644,14 @@ pub(crate) fn resolve_vsock(
 
 /// A vsock listener that is already bound (and announced). Split from
 /// [`serve_vsock`] so `main` can start the pod's workload BETWEEN bind and
-/// serve: the workload's `NUCLEUS_TOOL_PROXY_URL` is derived from this
-/// listener's local address, which keeps "the workload starts only once its
-/// proxy's socket exists" true on the vsock path the same way the TCP path's
-/// `local_addr()` does.
+/// serve. The workload does not use this listener (nothing inside the guest
+/// can connect to it, and it admits only the host); it reaches the proxy
+/// through its own door, `workload_door`.
 #[cfg(target_os = "linux")]
 pub(crate) struct BoundVsock {
     listener: tokio_vsock::VsockListener,
     cid: u32,
     port: u32,
-}
-
-#[cfg(target_os = "linux")]
-impl BoundVsock {
-    pub(crate) fn cid(&self) -> u32 {
-        self.cid
-    }
-    pub(crate) fn port(&self) -> u32 {
-        self.port
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -593,16 +689,6 @@ pub(crate) async fn serve_vsock(app: Router, bound: BoundVsock) -> Result<(), Ap
 /// (it is unreachable there — `resolve_vsock` refuses vsock configs off Linux).
 #[cfg(not(target_os = "linux"))]
 pub(crate) struct BoundVsock;
-
-#[cfg(not(target_os = "linux"))]
-impl BoundVsock {
-    pub(crate) fn cid(&self) -> u32 {
-        0
-    }
-    pub(crate) fn port(&self) -> u32 {
-        0
-    }
-}
 
 #[cfg(not(target_os = "linux"))]
 pub(crate) async fn bind_vsock(
@@ -750,6 +836,15 @@ impl axum::serve::Listener for VsockAxumListener {
 /// Entries are dropped rather than rejected, matching `strip_requested_workload`
 /// so a spec that carries an extra upstream is still usable, and each drop is
 /// logged by NAME (never by `credential_env` value) so the attempt is visible.
+///
+/// # This is the second gate, not the only one
+///
+/// The node now applies the same clamp when it admits the sub-pod
+/// (`nucleus_node::pod_authority`), against the upstreams it recorded for this
+/// pod, because a caller that reaches `POST /v1/pods` directly never passes
+/// through here. The comparison is ONE function in `nucleus-spec`,
+/// `CredentialedEgressSpec::admitted_by`, so the two gates cannot disagree about
+/// what "the parent holds it" means.
 pub(crate) fn clamp_credentialed_egress(
     spec: &mut PodSpec,
     parent_upstreams: &[nucleus_spec::CredentialedEgressSpec],
@@ -758,39 +853,27 @@ pub(crate) fn clamp_credentialed_egress(
         return;
     }
     let requested = std::mem::take(&mut spec.spec.credentialed_egress);
-    let mut kept = Vec::with_capacity(requested.len());
-    for up in requested {
-        // WHOLE-STRUCT equality, not a hand-listed field set. `CredentialedEgressSpec`
-        // derives PartialEq, so a field added later (another header, a prefix, a
-        // timeout) is covered automatically. Enumerating fields here would mean a
-        // new one silently widens what a child may inherit — the failure this
-        // codebase has already had with hand-maintained lists standing in for a
-        // computable domain.
-        if parent_upstreams.iter().any(|p| p == &up) {
-            kept.push(up);
-        } else {
-            tracing::warn!(
-                upstream = %up.name,
-                "sub-pod request named a credentialed upstream the parent does not hold; \
-                 dropped -- ManagePods does not confer the node's credentials"
-            );
-        }
+    let (kept, dropped) = nucleus_spec::CredentialedEgressSpec::clamp(requested, parent_upstreams);
+    for up in dropped {
+        tracing::warn!(
+            upstream = %up.name,
+            "sub-pod request named a credentialed upstream the parent does not hold; \
+             dropped -- ManagePods does not confer the node's credentials"
+        );
     }
     spec.spec.credentialed_egress = kept;
 }
 
 /// STRIP any audit sink the requester asked for.
 ///
-/// `AuditSinkSpec` is an S3 bucket, prefix, region and a **custom endpoint URL**,
-/// and `nucleus-node` turns it into KERNEL BOOT ARGS for the child VM
-/// (`firecracker_config.rs`: `nucleus.audit_s3_bucket=...`, `..._endpoint=...`).
-/// So an agent-authored sub-pod spec chooses where the child's audit record is
-/// written, which is two things at once: the record of what the child did never
-/// reaches the operator, and the records themselves are shipped to a destination
-/// the agent named.
+/// Since #3131 an `AuditSinkSpec` can only NAME a sink the node's operator
+/// configured, and narrow its prefix: the bucket and endpoint are the node's.
+/// Before that it carried an S3 bucket and a **custom endpoint URL**, so an
+/// agent-authored sub-pod spec chose where the child's audit record was written,
+/// with the operator's credentials. The node now refuses that shape at create.
 ///
-/// That is the same shape as `clamp_credentialed_egress` guards against —
-/// "a request aimed at a URL I choose" — with the payload being the audit trail.
+/// The strip stays, because opting a child into an operator sink, and choosing
+/// which one and under what prefix, is still not something `ManagePods` confers.
 /// It is STRIPPED rather than clamped because, unlike credentialed egress, the
 /// tool-proxy holds no parent sink to narrow against: its own audit goes to
 /// `state.audit` / `state.art12_log`, which are different mechanisms. Where the
@@ -801,8 +884,8 @@ pub(crate) fn clamp_credentialed_egress(
 pub(crate) fn strip_requested_audit_sink(spec: &mut PodSpec) {
     if let Some(sink) = spec.spec.audit_sink.take() {
         tracing::warn!(
-            bucket = %sink.s3_bucket,
-            endpoint = %sink.s3_endpoint.as_deref().unwrap_or("<default>"),
+            sink = %sink.sink,
+            prefix = %sink.prefix.as_deref().unwrap_or("<none>"),
             "sub-pod request specified an audit sink; stripped -- ManagePods does not confer \
              the choice of where a pod's own audit record is written"
         );
@@ -996,21 +1079,17 @@ metadata:
 spec:
   work_dir: /w
   audit_sink:
-    s3_bucket: attacker-bucket
-    s3_prefix: p/
-    s3_region: us-west-2
-    s3_endpoint: https://attacker.example
+    sink: audit
+    prefix: elsewhere
 "#;
         serde_yaml::from_str(yaml).expect("spec parses")
     }
 
     /// **`ManagePods` must not confer the choice of where audit goes.**
-    /// `nucleus-node` lowers `audit_sink` into the child's KERNEL BOOT ARGS
-    /// (`firecracker_config.rs`: `nucleus.audit_s3_bucket=`, `..._endpoint=`), so
-    /// a surviving sink is two failures at once: the record of what the child did
-    /// never reaches the operator, and the records are shipped to a destination
-    /// the agent named. Same shape as the credentialed-egress clamp guards
-    /// against, with the audit trail as the payload.
+    /// A surviving sink would let the agent opt the child into an operator sink
+    /// and choose its prefix, which is the node's decision (#3131). Same shape
+    /// as the credentialed-egress clamp guards against, with the audit trail as
+    /// the payload.
     #[test]
     fn a_requested_audit_sink_is_stripped() {
         let mut spec = spec_with_audit_sink();
@@ -1326,5 +1405,91 @@ spec:
 
         // An unrepresentable spend fails closed.
         assert!(narrow_to_ceiling(&ceiling, &request, f64::NAN, "spawn").is_err());
+    }
+}
+
+#[cfg(test)]
+mod containment_tests {
+    //! The proxy's runtime under a policy that demands a microVM. Pre-fix,
+    //! `build_runtime` hardcoded `Unsandboxed`, so the `MicroVM` case below was
+    //! red (`IsolationInsufficient`, achieved `process=shared`) no matter what
+    //! the sandbox proof said.
+    use super::*;
+    use nucleus::portcullis::kernel::Kernel;
+    use nucleus_ifc_kernel::SinkClass;
+    use nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject;
+    use portcullis::{CommandLattice, IsolationLattice, Obligations};
+
+    fn microvm_policy() -> PermissionLattice {
+        let mut policy = PermissionLattice::default();
+        policy.capabilities.run_bash = CapabilityLevel::LowRisk;
+        policy.commands = CommandLattice::permissive();
+        // No approval obligation, and no read/web leg for the trifecta
+        // normalisation to add one back: the containment gate is the only
+        // thing that should decide these two tests.
+        policy.capabilities.read_files = CapabilityLevel::Never;
+        policy.capabilities.web_fetch = CapabilityLevel::Never;
+        policy.capabilities.web_search = CapabilityLevel::Never;
+        policy.obligations = Obligations::default();
+        policy.with_minimum_isolation(IsolationLattice::microvm())
+    }
+
+    fn run_echo(containment: nucleus::ContainmentMode) -> nucleus::Result<std::process::Output> {
+        let tmp = tempfile::tempdir().unwrap();
+        let policy = microvm_policy();
+        let mut spec: PodSpec = serde_yaml::from_str(
+            "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n\
+             spec:\n  work_dir: /w\n  policy:\n    type: profile\n    name: default\n",
+        )
+        .expect("spec parses");
+        spec.spec.work_dir = tmp.path().to_path_buf();
+        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(policy.clone()),
+        };
+        let runtime = build_runtime(&spec, containment, nucleus::UnsandboxedOptIn::Explicit)
+            .expect("runtime builds");
+        // The kernel is built WITH microvm isolation so it mints a token; the
+        // executor's containment gate is the thing under test.
+        let mut kernel = Kernel::with_isolation(policy, IsolationLattice::microvm());
+        #[allow(deprecated)] // `decide` is the shortest way to a real token
+        let (_, token) = kernel.decide(Operation::RunBash, "echo hi");
+        let authority = Authority::new(bundle_for_subject(
+            Operation::RunBash,
+            SinkClass::BashExec,
+            "echo hi",
+        ));
+        runtime
+            .executor()
+            .run("echo hi", token.expect("kernel allows"), authority)
+    }
+
+    /// A proxy on a bare host (tier 2/3 proof) under a microVM policy refuses.
+    #[test]
+    fn unsandboxed_runtime_refuses_a_microvm_policy() {
+        let err = run_echo(nucleus::ContainmentMode::Unsandboxed).unwrap_err();
+        assert!(
+            matches!(err, NucleusError::IsolationInsufficient { .. }),
+            "expected IsolationInsufficient, got {err:?}"
+        );
+    }
+
+    /// A proxy with a verified launch (tier 1) passes the isolation gate under
+    /// the same policy. A root runtime (the guest) then runs the command; any
+    /// other runtime cannot separate the child from itself and refuses BY NAME
+    /// after the gate (#3120) — so the refusal is not `IsolationInsufficient`.
+    #[test]
+    fn microvm_runtime_executes_a_microvm_policy() {
+        let result = run_echo(nucleus::ContainmentMode::MicroVM);
+        match nucleus::runtime_uid() {
+            0 => {
+                let out = result.expect("microVM containment runs");
+                assert!(out.status.success());
+                assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "hi");
+            }
+            _ => assert!(
+                matches!(result, Err(NucleusError::ChildSeparationUnavailable { .. })),
+                "a non-root MicroVM runtime must refuse by name, got {result:?}"
+            ),
+        }
     }
 }

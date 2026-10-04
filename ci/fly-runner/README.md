@@ -57,8 +57,8 @@ checkout, toolchain or executable); a gate pool Machine has no volume.
 
 | pool | label | Machine | jobs |
 |---|---|---|---|
-| build | `nucleus-fly-build` | performance-8x, 32 GB, one volume each (8 × 40 GB + 8 × 20 GB); size 16, standby 16 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (24 `runs-on` sites) |
-| gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (40 sites), opt-in |
+| build | `nucleus-fly-build` | performance-8x, 32 GB, one volume each (7 × 40 GB + 17 × 20 GB); size 24, standby 24 | everything on `CI_BUILD_RUNNER`: workspace tests, clippy, live-path gates, hack, llvm-cov, dylint, the A2A example (24 `runs-on` sites) |
+| gate | `nucleus-fly-gate` | shared-cpu-8x, 16 GB, no volume; size 40, standby 40 | everything on `CI_RUNNER` (41 sites), opt-in |
 
 Routing is the two repository variables the workflows already read:
 
@@ -129,8 +129,12 @@ command line or in a tracked file:
   (runner registration) and `actions: read` (queue polling), nothing else.
 - `FLY_API_TOKEN`: an app-scoped deploy token for `nucleus-fly-build` only.
 - `RUNNER_IMAGE`: the built image by digest, `registry.fly.io/nucleus-fly-build@sha256:…`.
-- `POOLS`: the tracked default from `manager.toml` with the four volume ids added to the
-  build pool as `"volumes": ["vol_…", …]` (one per Machine, in index order).
+
+`POOLS` is **not** a secret. It lives whole in `manager.toml`, volume ids included, and the
+secret of that name must stay unset. It used to be a secret that overrode the file, and it went
+stale: four build slots named volumes that had been replaced, every create for them failed with
+HTTP 400 (logged without its body, on purpose), and nothing in a checkout could show why. See the
+comment above `POOLS` in `manager.toml`.
 
 ```sh
 # from the repository root: the manager is a workspace member, so its build context is the tree

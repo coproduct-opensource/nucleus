@@ -1,0 +1,59 @@
+[package]
+name = "nucleus-authority-exchange"
+license.workspace = true
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Truthful clearing of scarce agent authority: one contended slot, one round, a Clarke-pivot price from the proven VCG kernel, and a receipt anyone can recompute."
+publish = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["certificate"]
+# The only public way to mint a `CertifiedCeiling` — and therefore the only way
+# to build a `SignedBid` outside this crate's own tests. Off means the crate can
+# still VERIFY a round's outcome (leaf/wasm-friendly) but cannot originate one.
+certificate = ["dep:portcullis", "dep:rust_decimal"]
+# Fixtures for doctests and downstream tests. NOT in `default`: it is the only
+# way to mint a `CertifiedCeiling` without a verified certificate, so a
+# production dependency must not be able to reach it.
+test-support = []
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+nucleus-econ-types = { path = "../nucleus-econ-types", version = "1.0.0" }
+nucleus-econ-kernels = { path = "../nucleus-econ-kernels", version = "1.0.0" }
+# The clearing receipt: `issue_vcg` runs the proven kernel and records the
+# declared inputs beside the claimed outputs, so the outcome recomputes.
+nucleus-recompute = { path = "../nucleus-recompute", version = "1.0.0" }
+# The dimension vocabulary. ONE name per scarce good across the two mechanisms
+# (G-1): `PostedPriceClearing` is an adapter over this crate's live Lagrangian
+# screen, so both must agree on what is being priced. Its `f64` is confined to
+# `compute_lambda`, which this crate never calls arithmetic on.
+nucleus-permission-market = { path = "../nucleus-permission-market", version = "1.0.0" }
+# Standing that gates ROUND ENTRY (never authority): `StandingAdmission`
+# composes `CreditFile::deters`/`required_bond`, which compose the proven
+# `nucleus-witness-olog` functions. Econ-to-econ, which the boundary permits.
+nucleus-creditworthiness = { path = "../nucleus-creditworthiness", version = "1.0.0" }
+nucleus-witness-olog = { path = "../nucleus-witness-olog", version = "1.0.0" }
+# `default-features = false` drops ring/cedar: only the always-compiled data
+# types (VerifiedPermissions / PermissionLattice) are needed to read a verified
+# certificate's budget ceiling.
+portcullis = { path = "../portcullis", version = "1.0.0", default-features = false, optional = true }
+rust_decimal = { workspace = true, optional = true }
+# The scheduler holds a request for a collection window and closes the round
+# from a detached task. `sync` for the oneshot, `time` for the window, `rt` to
+# spawn the closer.
+tokio = { workspace = true, features = ["sync", "time", "rt"] }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+# Self-dependency so `test-support` is on for this crate's own tests,
+# examples and doctests, and off for everyone who depends on it.
+nucleus-authority-exchange = { path = ".", features = ["test-support"] }

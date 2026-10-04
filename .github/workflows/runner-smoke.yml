@@ -1,6 +1,6 @@
 name: Self-hosted runner smoke
 
-# A probe of the `nucleus-k3s` runner scale set (k8s/ci-runner/): architecture,
+# A probe of the `nucleus-k3s` runner scale set (deploy/k8s/ci-runner/): architecture,
 # cores, the persistent toolchains, and a timed build against the sccache store.
 # Runs when the runner setup itself changes, and on demand. Never required.
 on:
@@ -12,7 +12,7 @@ on:
         default: nucleus-k3s
   pull_request:
     paths:
-      - "k8s/ci-runner/**"
+      - "deploy/k8s/ci-runner/**"
       - "ci/fly-runner/**"
       - "docker/Dockerfile.runner"
       - ".github/workflows/runner-smoke.yml"

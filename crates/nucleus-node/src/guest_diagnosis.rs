@@ -41,16 +41,39 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
+use nucleus_spec::tier2_artifacts::{GuestCapability, REBUILD_THE_GUEST};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{ApiError, PROXY_HEALTH_TIMEOUT_SECS_DEFAULT};
+
+/// What a signature means.
+enum Meaning {
+    /// The guest rootfs lacks something this node requires. The words come from
+    /// the capability table in `nucleus-spec`, which is also what `setup` refuses
+    /// a release with, so the two cannot describe one skew differently.
+    Predates(GuestCapability),
+    /// Anything else, in its own words.
+    Other(&'static str),
+}
+
+impl Meaning {
+    fn explain(&self) -> String {
+        match self {
+            Meaning::Predates(cap) => format!(
+                "the guest rootfs PREDATES this node. {}. {REBUILD_THE_GUEST}.",
+                cap.change()
+            ),
+            Meaning::Other(text) => (*text).to_string(),
+        }
+    }
+}
 
 /// A known failure signature and what it means.
 struct Signature {
     /// Substring to look for in the guest console.
     marker: &'static str,
     /// What the operator should be told.
-    explanation: &'static str,
+    meaning: Meaning,
 }
 
 /// Ordered most-specific first: the first match wins, so a precise cause beats
@@ -58,38 +81,48 @@ struct Signature {
 const SIGNATURES: &[Signature] = &[
     Signature {
         marker: "missing approval secret",
-        explanation: "the guest rootfs PREDATES this node. #2214 (2026-08-08) replaced the guest's \
-             shared approval secret with Ed25519 verification against the node's public key, \
-             so this node sends `nucleus.approval_pubkeys` and no longer sends \
-             `nucleus.approval_secret` — which this rootfs's guest-init still requires. \
-             Rebuild the rootfs from this checkout: `bash \
-             scripts/firecracker/build-rootfs.sh` (or `just guest-rootfs`). It preflights \
-             the host tooling first and, on macOS, prints how to run it in the Linux VM. \
-             Or run a nucleus-node from the same release as the rootfs.",
+        meaning: Meaning::Predates(GuestCapability::ApprovalByPublicKey),
+    },
+    // Before "failed to fetch identity", which is on the same console line. A
+    // guest from before #2379 booted read-only prints `failed to fetch identity:
+    // failed to create identity directory: Read-only file system`, and the
+    // generic signature answered "could not reach the workload API over vsock"
+    // — a wrong diagnosis for the 2.2.0 rootfs under `read_only: true`.
+    Signature {
+        marker: "failed to create identity directory: Read-only file system",
+        meaning: Meaning::Predates(GuestCapability::SvidOnTmpfs),
     },
     Signature {
         marker: "failed to fetch identity",
-        explanation: "the guest could not reach the workload API over vsock. Either the node's \
+        meaning: Meaning::Other(
+            "the guest could not reach the workload API over vsock. Either the node's \
              WorkloadApiVsockBridge did not start before the guest connected, or the \
              per-pod socket (vsock.sock_<port>) is missing — check the pod directory for a \
              `vsock.sock_*` entry alongside `vsock.sock`.",
+        ),
     },
     Signature {
         marker: "failed to exec",
-        explanation: "guest-init could not start the tool-proxy: the binary is missing from the \
+        meaning: Meaning::Other(
+            "guest-init could not start the tool-proxy: the binary is missing from the \
              rootfs at /usr/local/bin/nucleus-tool-proxy, or is built for the wrong \
              architecture or libc.",
+        ),
     },
     Signature {
         marker: "panicked at",
-        explanation: "a guest process panicked. As PID 1 that takes the kernel with it, so the \
+        meaning: Meaning::Other(
+            "a guest process panicked. As PID 1 that takes the kernel with it, so the \
              panic message above is the real failure, not the health-check timeout.",
+        ),
     },
     // Least specific: always present when init dies, so it must sort last.
     Signature {
         marker: "Attempted to kill init",
-        explanation: "PID 1 exited, so the guest kernel panicked. The lines immediately above this \
+        meaning: Meaning::Other(
+            "PID 1 exited, so the guest kernel panicked. The lines immediately above this \
              in the console are the actual cause.",
+        ),
     },
 ];
 
@@ -114,7 +147,7 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
 
     Some(format!(
         "guest console says: \"{evidence}\" — {}",
-        hit.explanation
+        hit.meaning.explain()
     ))
 }
 
@@ -134,10 +167,25 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
 /// attributes bind to the following item regardless of the blank line between
 /// them, so this compiled, ran, and mislabelled a long-lived task as a boot
 /// stage while the real stage went unmeasured.
+///
+/// # Why it takes the VMM
+///
+/// A guest whose PID 1 exits panics its kernel, and with `panic=1 reboot=k` the VMM
+/// exits a second later. Everything the health probe can then see is a refused
+/// connection, the same thing it sees from a guest still booting, so it used to
+/// spend the whole budget polling a machine that no longer existed. That is #2904:
+/// every boot stage done, then `proxy.health_wait=29790ms` of `Connection refused`,
+/// and the caller's own 30 s clock expiring first, so the console's reason was never
+/// read by anyone.
+///
+/// The VMM process is a parameter rather than an option so there is no way to wait
+/// on a guest's health without also watching whether the guest still exists. Its
+/// exit ends the wait at once, with the exit status and the console diagnosis.
 #[tracing::instrument(skip_all, fields(boot.stage = "proxy.health_wait"))]
 pub(crate) async fn wait_for_proxy_health(
     addr: SocketAddr,
     console: &Path,
+    vmm: &mut tokio::process::Child,
 ) -> Result<(), ApiError> {
     // An EXPLICIT setting is honoured as-is: an operator who names a number is
     // not asking to have it scaled behind their back.
@@ -151,7 +199,7 @@ pub(crate) async fn wait_for_proxy_health(
             live_microvms(),
         )),
     };
-    wait_for_proxy_health_within(addr, budget)
+    wait_while_the_vmm_lives(addr, budget, vmm)
         .await
         .map_err(|e| {
             // The console the node already captured usually says exactly why.
@@ -215,6 +263,34 @@ impl std::fmt::Display for HealthProbe {
                  end and the guest is refusing, so this is an authorization or routing \
                  question, not a liveness one"
             ),
+        }
+    }
+}
+
+/// The health wait, ended early by the VMM's exit.
+///
+/// `Child::wait` is cancel-safe, so losing the race to a healthy guest leaves the
+/// child exactly as it was for the caller's later `status`, `kill` and teardown.
+async fn wait_while_the_vmm_lives(
+    addr: SocketAddr,
+    budget: Duration,
+    vmm: &mut tokio::process::Child,
+) -> Result<(), ApiError> {
+    let started = std::time::Instant::now();
+    tokio::select! {
+        healthy = wait_for_proxy_health_within(addr, budget) => healthy,
+        exited = vmm.wait() => {
+            let status = match exited {
+                Ok(status) => status.to_string(),
+                Err(e) => format!("status unreadable: {e}"),
+            };
+            Err(ApiError::Driver(format!(
+                "the VMM exited ({status}) {}ms into the {}s health wait, before the \
+                 guest's tool-proxy answered. The guest is gone, so the wait was ended \
+                 rather than run out; its console says why.",
+                started.elapsed().as_millis(),
+                budget.as_secs()
+            )))
         }
     }
 }
@@ -298,6 +374,24 @@ mod tests {
         );
     }
 
+    /// The 2.2.0 rootfs (the pin until 2.3.0) booted `read_only: true` — what `verify --tier2`
+    /// sends — as the microVM-host spike measured it. The line also carries
+    /// "failed to fetch identity", which used to win and blame vsock.
+    #[test]
+    fn a_read_only_guest_from_before_2379_is_named_not_blamed_on_vsock() {
+        let f = console(
+            "[    1.47] Run /init as init process\n\
+             failed to fetch identity: failed to create identity directory: \
+             Read-only file system (os error 30)\n\
+             [    1.58] Kernel panic - not syncing: Attempted to kill init!\n",
+        );
+        let d = diagnose(f.path()).expect("a known signature must be recognised");
+        assert!(d.contains("PREDATES this node"), "{d}");
+        assert!(d.contains("#2379"), "{d}");
+        assert!(d.contains("build-rootfs.sh"), "{d}");
+        assert!(!d.contains("vsock"), "this is not a vsock failure: {d}");
+    }
+
     /// Specificity: the kernel panic accompanies every init death, so a precise
     /// cause must win over it. Without this ordering the module would always
     /// report "PID 1 exited", which the operator can already see.
@@ -344,6 +438,85 @@ mod tests {
         }
         assert!(SIGNATURES.len() >= 4, "the table has shrunk unexpectedly");
     }
+
+    /// An address nothing listens on: what the node's probe met for thirty
+    /// seconds in #2904, after the guest had died.
+    async fn refused_addr() -> SocketAddr {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        l.local_addr().expect("addr")
+    }
+
+    /// #2904, host side. The guest's PID 1 died, the VMM exited, and the node went
+    /// on probing a refused port for its whole budget while the caller's clock ran
+    /// out first. A dead VMM must end the wait at once, carrying the exit status
+    /// and the console's reason.
+    ///
+    /// Driven red: with the `vmm.wait()` arm removed, this runs the full 30 s
+    /// budget and fails on the elapsed-time assertion.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dead_vmm_ends_the_health_wait_with_the_consoles_reason() {
+        let addr = refused_addr().await;
+        let f = console("[  0.9] Kernel panic - not syncing: Attempted to kill init!\n");
+        let mut vmm = tokio::process::Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("spawn a stand-in VMM");
+
+        let started = std::time::Instant::now();
+        let err = wait_for_proxy_health(addr, f.path(), &mut vmm)
+            .await
+            .expect_err("a guest whose VMM is gone cannot become healthy");
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(10),
+            "the wait ran {elapsed:?} against a VMM that had already exited"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("VMM exited"), "{msg}");
+        assert!(msg.contains('7'), "the exit status is evidence: {msg}");
+        assert!(
+            msg.contains("PID 1 exited"),
+            "the console diagnosis must still reach the caller: {msg}"
+        );
+    }
+
+    /// Non-vacuity: watching the VMM must not cut short a guest that is alive and
+    /// answers, nor disturb the child the caller keeps using afterwards.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_live_vmm_leaves_a_healthy_wait_alone() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let mut buf = [0u8; 512];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let mut vmm = tokio::process::Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a stand-in VMM");
+
+        let f = console("");
+        wait_for_proxy_health(addr, f.path(), &mut vmm)
+            .await
+            .expect("a live VMM with a healthy proxy is healthy");
+        assert!(
+            matches!(vmm.try_wait(), Ok(None)),
+            "the health wait must leave a live VMM running and unreaped"
+        );
+    }
 }
 
 /// How many microVMs are already running on this host.
@@ -369,13 +542,14 @@ fn live_microvms() -> usize {
         .count()
 }
 
-/// Cap on how far contention may stretch the health budget.
-///
-/// Without it a host with fifty live pods would give each new one a 25-minute
-/// budget, so a genuinely broken guest would hang the caller instead of
-/// failing. The point is to stop punishing slow-because-busy, not to wait
-/// forever.
-const HEALTH_BUDGET_MAX_MULTIPLIER: u64 = 8;
+// Cap on how far contention may stretch the health budget.
+//
+// Without it a host with fifty live pods would give each new one a 25-minute
+// budget, so a genuinely broken guest would hang the caller instead of
+// failing. The point is to stop punishing slow-because-busy, not to wait
+// forever. Stated in `nucleus_spec::boot_budget`, where a client's deadline is
+// derived from it.
+use nucleus_spec::boot_budget::HEALTH_BUDGET_MAX_MULTIPLIER;
 
 /// Scale the health budget by how many microVMs are already running.
 ///

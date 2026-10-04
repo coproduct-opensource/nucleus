@@ -631,7 +631,7 @@ async fn hash_file(path: &Path) -> Result<Hash256> {
 }
 
 /// Computes SHA-256 hash of bytes.
-fn hash_bytes(data: &[u8]) -> Hash256 {
+pub fn hash_bytes(data: &[u8]) -> Hash256 {
     let digest = digest(&SHA256, data);
     let mut hash = [0u8; 32];
     hash.copy_from_slice(digest.as_ref());

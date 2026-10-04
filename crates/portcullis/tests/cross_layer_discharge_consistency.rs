@@ -164,3 +164,100 @@ fn empty_scope_is_intentionally_stricter_in_discharge() {
         "discharge treats an empty verified scope as fail-closed (deny)"
     );
 }
+
+/// Documented, intentional divergence: a pure read on a tainted session
+/// (2026-09-27).
+///
+/// The discharge layer charges `NoAdversarialAncestry` only to
+/// `ActionKind::Acting` pairs; a read verb at `AuditLogAppend` is a `PureRead`
+/// and mints on a tainted session. The upstream checker has no notion of kind
+/// yet, so it still charges the obligation to a read with a tainted input. That
+/// is two deciders for one fact — a known G-1 residue, pinned here so it is
+/// visible rather than silent: when upstream learns the kind, the read half of
+/// this test flips and should become an agreement assertion.
+///
+/// The Acting half is an agreement: `WebFetch` with a tainted input is refused
+/// by `NoAdversarialAncestry` in BOTH layers.
+#[test]
+fn a_tainted_pure_read_is_intentionally_looser_in_discharge() {
+    use portcullis::action_term::{ActionInput, ProofObligation};
+
+    let adversarial = IFCLabel {
+        confidentiality: ConfLevel::Public,
+        integrity: IntegLevel::Adversarial,
+        authority: AuthorityLevel::NoAuthority,
+        provenance: ProvenanceSet::WEB,
+        freshness: Freshness {
+            observed_at: 1_000,
+            ttl_secs: 0,
+        },
+        derivation: DerivationClass::OpaqueExternal,
+    };
+    let perms = PermissionLattice::permissive();
+    let ctx = PreflightContext::new(&perms);
+
+    // Upstream: does the checker charge NoAdversarialAncestry, and fail it?
+    let upstream_fails_ancestry = |op: Operation, subject: &str, tainted: bool| {
+        let mut term = UpstreamTerm::from_operation(op, subject);
+        if tainted {
+            term.inputs.push(ActionInput::new(
+                "web-page",
+                "sha256:feed",
+                DerivationClass::OpaqueExternal,
+            ));
+        }
+        upstream_preflight(&term, &ctx)
+            .failures
+            .iter()
+            .any(|f| f.obligation == ProofObligation::NoAdversarialAncestry)
+    };
+    // Discharge: the same op at its sink, trusted artifact, one adversarial
+    // source label — so NoAdversarialAncestry is the only gate that can fire.
+    let discharge = |op: Operation, sink: SinkClass| {
+        discharge_preflight(&DischargeTerm {
+            operation: op,
+            sink_class: sink,
+            source_labels: vec![trusted_deterministic(), adversarial],
+            artifact_label: trusted_deterministic(),
+            subject: "subject".to_string(),
+            estimated_cost_micro_usd: 0,
+            capability_ceiling: Some(CapabilityLevel::LowRisk),
+            requested_capability: Some(CapabilityLevel::LowRisk),
+            verified_scope: Some(VerifiedScope {
+                allowed_operations: vec![op],
+                allowed_paths: vec![],
+            }),
+            content_addressed_inputs: Some(vec![]),
+        })
+    };
+
+    // Non-vacuity: without the tainted input upstream charges nothing.
+    assert!(!upstream_fails_ancestry(
+        Operation::ReadFiles,
+        "/workspace/README.md",
+        false
+    ));
+
+    // The divergence: upstream refuses the tainted read, discharge admits it.
+    assert!(
+        upstream_fails_ancestry(Operation::ReadFiles, "/workspace/README.md", true),
+        "upstream has no kind yet and still charges a tainted read"
+    );
+    assert!(
+        discharge(Operation::ReadFiles, SinkClass::AuditLogAppend).is_allowed(),
+        "discharge admits a pure read on a tainted session"
+    );
+
+    // The agreement: an Acting pair is refused for ancestry by both.
+    assert!(upstream_fails_ancestry(
+        Operation::WebFetch,
+        "https://api.example",
+        true
+    ));
+    let web = discharge(Operation::WebFetch, SinkClass::HTTPEgress);
+    assert!(
+        web.denial_reason()
+            .is_some_and(|r| r.contains("NoAdversarialAncestry")),
+        "discharge must refuse tainted egress by #4: {web:?}"
+    );
+}

@@ -61,6 +61,9 @@ pub struct SpiffeWorkloadApiService<C: CaClient> {
     manager: Arc<SecretManager<C>>,
     identity: Identity,
     trust_bundle: TrustBundle,
+    /// When set, the private key is served at most once across every listener
+    /// sharing this flag. See [`SpiffeWorkloadApiService::key_served_once`].
+    key_served: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl<C: CaClient + 'static> SpiffeWorkloadApiService<C> {
@@ -73,7 +76,20 @@ impl<C: CaClient + 'static> SpiffeWorkloadApiService<C> {
             manager,
             identity,
             trust_bundle,
+            key_served: None,
         }
+    }
+
+    /// Serve the SVID — which the specification says always carries its private
+    /// key — only while `served` is unset, and set it on the first serve.
+    ///
+    /// For a socket whose peers cannot be told apart (a guest's vsock listener:
+    /// virtio-vsock carries no peer credentials), "whoever asked first" is the
+    /// only separation there is. Share the flag with every other channel that
+    /// serves the same key, or "once" means once per channel.
+    pub fn key_served_once(mut self, served: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.key_served = Some(served);
+        self
     }
 
     /// The trust bundle as the wire format wants it: DER, keyed by the SPIFFE
@@ -96,6 +112,16 @@ impl<C: CaClient + 'static> SpiffeWorkloadApiService<C> {
             .fetch_certificate(&self.identity)
             .await
             .map_err(|e| Status::internal(format!("could not obtain an SVID: {e}")))?;
+
+        // Spent only once there is a certificate to go with it. `swap`, so two
+        // concurrent calls cannot both see "not yet served".
+        if let Some(served) = &self.key_served
+            && served.swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Err(Status::permission_denied(
+                "this workload's SVID key has already been served",
+            ));
+        }
 
         // "ASN.1 DER encoded certificate chain. MAY include intermediates, the
         // leaf certificate (or SVID itself) MUST come first." `chain()` is

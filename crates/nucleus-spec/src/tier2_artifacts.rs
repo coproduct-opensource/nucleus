@@ -34,6 +34,30 @@
 //! because "sha256 verified" reads like a supply-chain guarantee and this half
 //! of it is not one.
 
+/// Where nucleus's artifacts live inside a Tier 2 host.
+///
+/// This is *guest-VM* path space on macOS, which is the distinction the config
+/// previously lost: `Config::artifacts_dir()` resolves under the host's
+/// `~/Library/Application Support`, and a PodSpec built from it named paths the
+/// node — running inside the Lima VM — cannot see.
+///
+/// Lives here rather than in `nucleus-cli::provision` because two hosts now
+/// install into it: the Lima VM `provision` builds, and the Apple `container`
+/// image described by [`crate::microvm_host`]. One constant for both, so a
+/// PodSpec written for one names paths the other has (ADR 0007 G-1).
+///
+/// The node reads it too: it is the default of `nucleus-node --artifacts-root`,
+/// the only directory a pod's `kernel_path` and `rootfs_path` may name
+/// (2026-09-29). One constant, so the directory `setup` installs into and the one
+/// the node admits from cannot drift apart.
+pub const HOST_ARTIFACTS_DIR: &str = "/var/lib/nucleus/artifacts";
+
+/// The guest kernel's file name under [`HOST_ARTIFACTS_DIR`].
+pub const GUEST_KERNEL_FILE: &str = "vmlinux";
+
+/// The guest root filesystem's file name under [`HOST_ARTIFACTS_DIR`].
+pub const GUEST_ROOTFS_FILE: &str = "rootfs.ext4";
+
 /// A kernel image pinned by URL and content digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Kernel {
@@ -70,37 +94,359 @@ pub fn kernel_for(arch: &str) -> Option<Kernel> {
     }
 }
 
+/// Where a host gets the guest layer an imported image is booted with: the tar
+/// `cargo xtask guest-layer` writes (`/init`, the `nucleus-*` binaries, the CA
+/// bundle — see [`crate::guest_layout`]).
+///
+/// Two cases, not an `Option`: "no pin" is a decision (build it here), and it
+/// is spelled as one rather than as the absence of a digest (ADR 0007 B-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestLayerSource {
+    /// No published layer: the host builds one from this checkout. Its digest
+    /// is whatever that build prints, and nothing here vouches for it.
+    LocalBuild,
+    /// A published layer, checked against this digest (`sha-256:<hex>`, the
+    /// [`ArtifactDigest`](crate::ArtifactDigest) spelling) before it is used.
+    Pinned {
+        /// The layer tar's digest.
+        digest: &'static str,
+    },
+}
+
+/// The guest layer for aarch64 hosts. `LocalBuild` until a release publishes one.
+pub const GUEST_LAYER_AARCH64: GuestLayerSource = GuestLayerSource::LocalBuild;
+
+/// The guest layer for x86_64 hosts. `LocalBuild` until a release publishes one.
+pub const GUEST_LAYER_X86_64: GuestLayerSource = GuestLayerSource::LocalBuild;
+
+/// The guest layer for a Linux architecture name as `uname -m` reports it.
+pub fn guest_layer_for(arch: &str) -> Option<GuestLayerSource> {
+    match arch {
+        "aarch64" | "arm64" => Some(GUEST_LAYER_AARCH64),
+        "x86_64" | "amd64" => Some(GUEST_LAYER_X86_64),
+        _ => None,
+    }
+}
+
 /// The repository guest artifacts are published from.
 pub const RELEASE_REPO: &str = "coproduct-opensource/nucleus";
 
-/// The oldest release whose rootfs can actually boot a nucleus pod.
+/// Something this tree's node or CLI requires the guest rootfs to do.
 ///
-/// This is a **floor on the artifact, not a preference**. Every published
-/// release up to and including 2.0.2 ships a rootfs with no CA bundle anywhere
-/// in it — verified by mounting `nucleus-rootfs-2.0.2-aarch64.ext4`, and by
-/// `git show v2.0.2:scripts/firecracker/build-rootfs.sh | grep -c ca-cert` → 0.
-/// On such a rootfs `DrandClient::new` used to `.expect()` on the missing store
-/// and the tool-proxy panicked **as PID 1**, taking the guest kernel with it:
-/// "the tool-proxy panicked as PID 1 on every pod this repo can build" (#2110).
-/// Both halves of that fix — the fallible constructor and `build-rootfs.sh`
-/// installing a bundle — landed after 2.0.2.
+/// # Why a table and not a floor
 ///
-/// The same thing has now happened a second time, one release up. #2214
-/// (2026-08-08) replaced the guest's shared approval secret with Ed25519
-/// verification against the node's public key: a current `nucleus-node` sends
-/// `nucleus.approval_pubkeys` and no longer sends `nucleus.approval_secret`,
-/// which the 2.1.0 rootfs's guest-init still requires. It exits, and because it
-/// is PID 1 the kernel panics — the identical failure shape as #2110, from a
-/// different cause. So 2.1.0 joins 2.0.2 below the floor.
+/// This used to be one constant, `GUEST_RELEASE_FLOOR`, a version with the
+/// reasons for it in a comment. It was right twice and then wrong for four
+/// weeks. #2110 (the CA bundle) and #2214 (approval by public key) each raised
+/// it. Then #2365 made the node require the guest's egress attestation and
+/// #2379 moved the SVID to tmpfs, the day after 2.2.0 was tagged, and the floor
+/// stayed at 2.2.0 because nothing forced anyone to ask whether it still held.
+/// It did not: a node built from `main` refuses every confined pod on the 2.2.0
+/// rootfs (no `NUCLEUS_EGRESS_PROBE:` line), and a read-only 2.2.0 rootfs dies
+/// creating `/etc/nucleus/identity`. `verify --tier2` has asked for a read-only
+/// rootfs since #2786, so on the pinned release it cannot pass either.
 ///
-/// So a quickstart pinned below this floor would hand a new user a pod that
-/// cannot boot. `setup` refuses rather than installing one, and says why.
-pub const GUEST_RELEASE_FLOOR: &str = "2.2.0";
+/// A requirement is now a variant, and whether a release meets it is derived
+/// from when each one first shipped ([`GuestCapability::first_shipped`]). The
+/// floor is no longer something to keep up to date; it is what the table says.
+/// Adding a guest-side requirement means adding a variant, and the match in
+/// `first_shipped` will not compile until someone states which release has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GuestCapability {
+    /// The rootfs carries a CA bundle (#2110). Without it the tool-proxy's
+    /// drand client failed and, as PID 1, took the guest kernel with it. Every
+    /// release through 2.0.2 lacks it — verified by mounting
+    /// `nucleus-rootfs-2.0.2-aarch64.ext4`.
+    CaBundle,
+    /// guest-init verifies approvals against the node's Ed25519 public key
+    /// (#2214). The node sends `nucleus.approval_pubkeys` and no longer sends
+    /// `nucleus.approval_secret`, which the 2.1.0 guest-init requires, so it
+    /// exits as PID 1.
+    ApprovalByPublicKey,
+    /// guest-init fetches the pod's DLC-D admission provisioning over the
+    /// workload API (`FETCH_DLC_ADMISSION`) and hands it to the tool-proxy as
+    /// `NUCLEUS_DLC_*`, and the proxy reports `dlc_admission` in its health
+    /// (#2124). `verify --tier2` provisions its pod this way and checks that
+    /// field; a guest without it answers health with no `dlc_admission` at all,
+    /// which is what #2903 reported as `dlc_admission=None`. Verified present in
+    /// `nucleus-rootfs-2.2.0-aarch64.ext4` (`/init` sends `FETCH_DLC_ADMISSION`,
+    /// the proxy carries the health field); absent from v2.1.0's source.
+    DlcAdmission,
+    /// guest-init runs `nucleus-egress-probe` and prints its
+    /// `NUCLEUS_EGRESS_PROBE:` verdict (#2365). The node refuses a confined pod
+    /// whose console has no verdict, and it must: the probe is the only evidence
+    /// that the netns/iptables fence drops traffic rather than just applied
+    /// cleanly. A guest that predates it is refused, never waved through.
+    EgressAttestation,
+    /// The SVID is written to `/run/nucleus/identity` on tmpfs (#2379). Before
+    /// that it went to `/etc/nucleus/identity` on the rootfs, so a pod with
+    /// `image.read_only: true` — the configured default, and what
+    /// `verify --tier2` sends — dies creating the directory.
+    SvidOnTmpfs,
+    /// The tool-proxy serves the workload on its own Unix socket, the workload
+    /// door at `guest_layout::WORKLOAD_DOOR`, and the workload's environment
+    /// carries no proxy credential (#3031 option B, #2696 P1). An older guest
+    /// points the workload at the proxy's vsock listener, which a process inside
+    /// the guest cannot connect to, so an agent run in the pod (P5) reaches no
+    /// tool and no egress at all.
+    WorkloadDoor,
+    /// The guest carries the MCP bridge at `guest_layout::MCP_BIN`, which an
+    /// agent run in the pod speaks MCP to and which reaches the tool-proxy
+    /// through the workload door with no secret (#2696 P2). An older guest has
+    /// no bridge, so an agent started in the pod (P5) has no tools at all.
+    McpBridge,
+    /// The tool-proxy puts every decision its kernel takes to the host's shadow
+    /// decision service as well, on `nucleus_decision_protocol::DECISION_VSOCK_PORT`
+    /// (#2702, P8). [`Demand::Optional`]: the guest still enforces its own
+    /// decisions, so a guest without the client loses only the host's
+    /// measurement — the node serves the port and simply hears nothing. P9,
+    /// which makes the host's verdict the enforced one, turns this into
+    /// [`Demand::Required`].
+    HostDecideShadow,
+    /// The tool-proxy relays a workload's credentialed egress to the host as a
+    /// STREAM: the body goes up in bounded chunks, each charged to the pod's
+    /// egress ceiling, and the reply comes back as the upstream sends it
+    /// (#2696 P4). An older proxy sends the whole call in one perform frame,
+    /// which the host refuses above 256 KiB and which cannot carry a streamed
+    /// (server-sent-event) reply, so a model call from the pod fails or stalls.
+    StreamingEgress,
+}
+
+/// Whether the node refuses a guest that lacks a [`GuestCapability`].
+///
+/// Two answers, as a type rather than a `bool`, because "the node cannot work
+/// without it" and "the node works without it and learns less" have different
+/// consequences for an operator holding an older guest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Demand {
+    /// The node's behaviour depends on it; a guest without it is refused.
+    Required,
+    /// The node uses it when present and runs without it. Never refuses a guest.
+    Optional,
+}
+
+/// Which published release first carried a [`GuestCapability`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FirstShipped {
+    /// This release and every later one carry it.
+    Release(&'static str),
+    /// It is in this tree and in no published release. No pin can satisfy it
+    /// until one is cut, and the change that bumps [`GUEST_RELEASE`] to that
+    /// release is the one that turns this into [`FirstShipped::Release`].
+    NotYet,
+}
+
+impl GuestCapability {
+    /// Every capability, for the callers that check all of them.
+    pub const ALL: [GuestCapability; 9] = [
+        GuestCapability::CaBundle,
+        GuestCapability::ApprovalByPublicKey,
+        GuestCapability::DlcAdmission,
+        GuestCapability::EgressAttestation,
+        GuestCapability::SvidOnTmpfs,
+        GuestCapability::WorkloadDoor,
+        GuestCapability::McpBridge,
+        GuestCapability::HostDecideShadow,
+        GuestCapability::StreamingEgress,
+    ];
+
+    /// Whether a guest without it is refused. Exhaustive, so a new capability
+    /// states its demand when it is added.
+    pub const fn demand(self) -> Demand {
+        match self {
+            GuestCapability::CaBundle
+            | GuestCapability::ApprovalByPublicKey
+            | GuestCapability::DlcAdmission
+            | GuestCapability::EgressAttestation
+            | GuestCapability::SvidOnTmpfs
+            | GuestCapability::WorkloadDoor
+            | GuestCapability::McpBridge
+            | GuestCapability::StreamingEgress => Demand::Required,
+            // Shadow mode: nothing the node does depends on the guest asking.
+            GuestCapability::HostDecideShadow => Demand::Optional,
+        }
+    }
+
+    /// The first release whose rootfs has this.
+    pub const fn first_shipped(self) -> FirstShipped {
+        match self {
+            GuestCapability::CaBundle => FirstShipped::Release("2.1.0"),
+            GuestCapability::ApprovalByPublicKey => FirstShipped::Release("2.2.0"),
+            GuestCapability::DlcAdmission => FirstShipped::Release("2.2.0"),
+            // #2365 and #2379 merged on 2026-09-02, after `v2.2.0` (8a452030b)
+            // was tagged; #3122 (the door) and #3135 (the bridge) on
+            // 2026-10-02. 2.3.0 is the first release cut from a tree carrying
+            // all four; #3178 added streaming egress before the tag as well.
+            GuestCapability::EgressAttestation => FirstShipped::Release("2.3.0"),
+            GuestCapability::SvidOnTmpfs => FirstShipped::Release("2.3.0"),
+            GuestCapability::WorkloadDoor => FirstShipped::Release("2.3.0"),
+            GuestCapability::McpBridge => FirstShipped::Release("2.3.0"),
+            GuestCapability::StreamingEgress => FirstShipped::Release("2.3.0"),
+            GuestCapability::HostDecideShadow => FirstShipped::NotYet,
+        }
+    }
+
+    /// The change that introduced it and what a guest without it does, in one
+    /// sentence an operator can look up.
+    pub const fn change(self) -> &'static str {
+        match self {
+            GuestCapability::CaBundle => {
+                "#2110 put a CA bundle in the rootfs; without one the tool-proxy panics as PID 1"
+            }
+            GuestCapability::ApprovalByPublicKey => {
+                "#2214 (2026-08-08) replaced the guest's shared approval secret with Ed25519 \
+                 verification against the node's public key, so this node sends \
+                 `nucleus.approval_pubkeys` and no longer sends `nucleus.approval_secret`, \
+                 which an older guest-init still requires"
+            }
+            GuestCapability::DlcAdmission => {
+                "#2124 delivers a pod's DLC-D admission provisioning to the guest over the \
+                 workload API (FETCH_DLC_ADMISSION) and has the tool-proxy report \
+                 `dlc_admission` in its health; an older guest never fetches it, so the \
+                 admission gate stays unarmed whatever the pod's dlc_* labels say"
+            }
+            GuestCapability::EgressAttestation => {
+                "#2365 made the node require the guest's `NUCLEUS_EGRESS_PROBE:` verdict \
+                 before it calls a confined pod up; an older guest-init never runs the probe, \
+                 so every confined pod is refused"
+            }
+            GuestCapability::SvidOnTmpfs => {
+                "#2379 moved the guest's SVID to tmpfs; an older guest-init writes it to \
+                 /etc/nucleus/identity, which a read-only rootfs cannot create"
+            }
+            GuestCapability::WorkloadDoor => {
+                "#3031 gave the workload its own door, a Unix socket the tool-proxy \
+                 serves to the workload's uid alone; an older guest points the workload at \
+                 the proxy's vsock listener, which nothing inside the guest can connect to"
+            }
+            GuestCapability::McpBridge => {
+                "#2696 (P2) put the MCP bridge in the guest at /usr/local/bin/nucleus-mcp; \
+                 an older guest has none, so an agent run in the pod has no way to call its tools"
+            }
+            GuestCapability::HostDecideShadow => {
+                "#2702 (P8) has the tool-proxy shadow every decision to the host's decision \
+                 service; an older guest never asks, so the host records no comparisons for it \
+                 (shadow mode: the node does not require it)"
+            }
+            GuestCapability::StreamingEgress => {
+                "#2696 (P4) made the tool-proxy stream a workload's credentialed egress to the \
+                 host in bounded, metered chunks; an older proxy sends the whole call in one \
+                 perform frame, which the host refuses above 256 KiB and which cannot carry a \
+                 streamed reply"
+            }
+        }
+    }
+}
+
+/// What to do about a guest that lacks a capability. The same for every one of
+/// them, which is why it is not per-variant.
+pub const REBUILD_THE_GUEST: &str = "Build the guest from this checkout: \
+     `bash scripts/firecracker/build-rootfs.sh` (or `just guest-rootfs`), which \
+     preflights its tooling and, on macOS, prints how to run it in the Linux VM; \
+     then install it with `nucleus setup --artifacts local`";
+
+/// Why a guest release cannot serve this tree's node and CLI.
+///
+/// Two cases, not one: "we could not order the version" is not "we ordered it
+/// and it was too old" (ADR 0007 A-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GuestSkew {
+    /// The version string has no three-part numeric core. A pin nobody can
+    /// order is a pin nobody is checking, so it is refused.
+    Unorderable {
+        /// The string as given.
+        release: String,
+    },
+    /// The release predates at least one capability. Never empty: it is only
+    /// built by [`guest_skew`] after finding one.
+    Lacks {
+        /// The release as given.
+        release: String,
+        /// What it lacks, in declaration order.
+        missing: Vec<GuestCapability>,
+    },
+}
+
+impl std::fmt::Display for GuestSkew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GuestSkew::Unorderable { release } => write!(
+                f,
+                "guest release {release:?} is not a version this build can order, so it \
+                 cannot tell what the guest supports"
+            ),
+            GuestSkew::Lacks { release, missing } => {
+                writeln!(
+                    f,
+                    "guest release v{} cannot serve this build of nucleus. It predates:",
+                    release.trim_start_matches('v')
+                )?;
+                for cap in missing {
+                    let when = match cap.first_shipped() {
+                        FirstShipped::Release(v) => format!("first released in v{v}"),
+                        FirstShipped::NotYet => "in no published release yet".to_string(),
+                    };
+                    writeln!(f, "  - {} ({when})", cap.change())?;
+                }
+                write!(f, "{REBUILD_THE_GUEST}.")
+            }
+        }
+    }
+}
+
+/// Whether the guest artifacts of `version` meet every [`GuestCapability`] the
+/// node [requires](Demand::Required). An [optional](Demand::Optional) one is
+/// never a reason to refuse a guest.
+pub fn guest_skew(version: &str) -> Result<(), GuestSkew> {
+    skew_against(version, GuestCapability::first_shipped)
+}
+
+/// [`guest_skew`] with the table as a parameter, so the ordering rules can be
+/// tested on releases the real table does not (yet) contain.
+fn skew_against(
+    version: &str,
+    first_shipped: impl Fn(GuestCapability) -> FirstShipped,
+) -> Result<(), GuestSkew> {
+    let Some(found) = parse_release(version) else {
+        return Err(GuestSkew::Unorderable {
+            release: version.to_string(),
+        });
+    };
+    let mut missing = Vec::new();
+    for cap in GuestCapability::ALL {
+        match cap.demand() {
+            Demand::Required => {}
+            Demand::Optional => continue,
+        }
+        let has = match first_shipped(cap) {
+            // An unparseable table entry is a table nobody can check against:
+            // it counts as missing, never as present.
+            FirstShipped::Release(v) => parse_release(v).is_some_and(|since| found >= since),
+            FirstShipped::NotYet => false,
+        };
+        if !has {
+            missing.push(cap);
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(GuestSkew::Lacks {
+            release: version.to_string(),
+            missing,
+        })
+    }
+}
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.2.0` is the first release whose rootfs matches a post-#2214 node. 2.1.0
-/// was the first release containing everything a pod needed to boot at the time
+/// `2.3.0` is the first release whose rootfs meets every [`GuestCapability`]:
+/// it runs the egress probe (#2365), keeps its SVID on tmpfs (#2379), serves
+/// the workload its own door (#3122), carries the MCP bridge (#3135), and
+/// streams credentialed egress (#3178). 2.2.0
+/// was the first release matching a post-#2214 node, and it stopped serving
+/// `main` the day after it was tagged. 2.1.0 was the first release containing
+/// everything a pod needed to boot at the time
 /// — the CA bundle in the rootfs (#2110), the `ip netns exec` separator fix
 /// without which no pod launches on a default install, and the workload-API
 /// socket chown without which the guest cannot fetch its SVID — and it stayed
@@ -108,15 +454,20 @@ pub const GUEST_RELEASE_FLOOR: &str = "2.2.0";
 ///
 /// Bumped BEFORE the tag is cut, matching how `2.1.0` was bumped from its RC in
 /// the change that was released as `2.1.0`. The ordering is deliberate and it
-/// has a cost worth naming: between this landing and the `v2.2.0` assets being
+/// has a cost worth naming: between this landing and the `v2.3.0` assets being
 /// built, `setup` points at a release that does not exist yet. That window is
 /// inherent to pinning your own next version, and the alternative — tag first,
 /// bump after — ships a release whose CLI pins the *previous* release's guest,
 /// which is precisely the skew being closed.
 ///
-/// `pinned_release_is_at_or_above_the_floor` fails if this ever drops below the
-/// floor; `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.2.0";
+/// The change that bumps this constant must also turn every
+/// [`FirstShipped::NotYet`] entry whose behaviour is in the tagged tree into
+/// [`FirstShipped::Release`]: `the_pinned_release_serves_this_tree` fails until
+/// it does, and `no_capability_claims_a_release_after_the_pin` stops an entry
+/// naming a release the pin has not reached.
+///
+/// `parse_release` explains why an RC compares equal to its own version.
+pub const GUEST_RELEASE: &str = "2.3.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,11 +526,10 @@ impl Tier2Artifact {
 /// # Why the suffix is dropped rather than ordered
 ///
 /// Semver sorts `2.1.0-rc.1` **before** `2.1.0`, so a strict semver comparison
-/// would reject an RC against a floor of `2.1.0`. That is the wrong answer for
-/// what this floor is *for*: it exists to exclude releases whose rootfs has no CA
-/// bundle and therefore panics as PID 1, and a release candidate **of** an
-/// acceptable version contains those fixes. Comparing the numeric core is the
-/// deliberate choice, not an oversight.
+/// would reject an RC of the very release a [`GuestCapability`] first shipped
+/// in. That is the wrong answer for what the comparison is *for*: a release
+/// candidate **of** an acceptable version contains the fixes. Comparing the
+/// numeric core is the deliberate choice, not an oversight.
 ///
 /// It is still a floor: `2.0.2-rc.1` has core `(2, 0, 2)` and is refused, because
 /// a prerelease of a broken version is still broken.
@@ -195,17 +545,6 @@ pub fn parse_release(raw: &str) -> Option<(u32, u32, u32)> {
         return None;
     }
     Some((major, minor, patch))
-}
-
-/// Whether `version` is new enough to contain a bootable rootfs.
-///
-/// An unparseable version is **not** acceptable: a pin nobody can order is a pin
-/// nobody is checking.
-pub fn release_is_acceptable(version: &str) -> bool {
-    match (parse_release(version), parse_release(GUEST_RELEASE_FLOOR)) {
-        (Some(found), Some(floor)) => found >= floor,
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -244,60 +583,210 @@ mod tests {
         assert_ne!(KERNEL_AARCH64.sha256, KERNEL_X86_64.sha256);
     }
 
+    /// A pinned guest layer must be a digest the spec parser accepts, or the
+    /// check against it could never pass (or, worse, compare against garbage).
     #[test]
-    fn pinned_release_is_at_or_above_the_floor() {
-        assert!(
-            release_is_acceptable(GUEST_RELEASE),
-            "GUEST_RELEASE {GUEST_RELEASE} is below the floor {GUEST_RELEASE_FLOOR}"
-        );
+    fn guest_layer_pins_are_artifact_digests() {
+        for arch in ["aarch64", "x86_64"] {
+            match guest_layer_for(arch) {
+                Some(GuestLayerSource::LocalBuild) => {}
+                Some(GuestLayerSource::Pinned { digest }) => {
+                    assert!(
+                        crate::ArtifactDigest::parse(digest).is_ok(),
+                        "{arch}: {digest}"
+                    );
+                }
+                None => panic!("{arch} has no guest layer slot"),
+            }
+        }
+        assert_eq!(guest_layer_for("riscv64"), None);
     }
 
-    /// The floor exists because 2.0.2 and everything before it ships a rootfs
-    /// with no CA store, on which the tool-proxy panics as PID 1. If this ever
-    /// starts passing, the floor has been lowered past the fix.
+    /// The pin must serve the tree that pins it. From 2.2.0's tag until 2.3.0 it
+    /// did not, and `setup --artifacts release` refused the pinned guest.
     #[test]
-    fn the_known_broken_releases_are_refused() {
-        for broken in ["2.0.2", "2.0.0", "1.1.0", "1.0.9"] {
-            assert!(
-                !release_is_acceptable(broken),
-                "{broken} predates the PID-1 CA-store fix and must be refused"
-            );
+    fn the_pinned_release_serves_this_tree() {
+        assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
+    }
+
+    /// THE FINDING, as a refusal. A node built from this tree cannot boot the
+    /// 2.2.0 guest: it never prints `NUCLEUS_EGRESS_PROBE:`, and read-only it
+    /// dies creating `/etc/nucleus/identity`. Before this table the floor said
+    /// 2.2.0 was fine, `setup` installed it, and the failure surfaced mid-boot.
+    #[test]
+    fn the_previous_release_is_refused_and_the_refusal_names_why() {
+        let skew = guest_skew("2.2.0")
+            .expect_err("2.2.0 predates #2365 and #2379; a node from this tree cannot boot it");
+        let GuestSkew::Lacks { missing, .. } = &skew else {
+            panic!("2.2.0 is orderable: {skew:?}");
+        };
+        assert_eq!(
+            missing,
+            &[
+                GuestCapability::EgressAttestation,
+                GuestCapability::SvidOnTmpfs,
+                GuestCapability::WorkloadDoor,
+                GuestCapability::McpBridge,
+                GuestCapability::StreamingEgress,
+            ]
+        );
+        let msg = skew.to_string();
+        for needle in [
+            "v2.2.0",
+            "#2365",
+            "#2379",
+            "#3031",
+            "#2696",
+            "first released in v2.3.0",
+            "build-rootfs.sh",
+            "--artifacts local",
+        ] {
+            assert!(msg.contains(needle), "missing {needle:?} in: {msg}");
         }
     }
 
+    /// A table entry naming a release the pin has not reached would be a claim
+    /// about an artifact nobody has checked. The change that cuts the next
+    /// release moves the pin, then the entries.
+    #[test]
+    fn no_capability_claims_a_release_after_the_pin() {
+        let pin = parse_release(GUEST_RELEASE).expect("the pin parses");
+        for cap in GuestCapability::ALL {
+            if let FirstShipped::Release(v) = cap.first_shipped() {
+                let since = parse_release(v).unwrap_or_else(|| panic!("{cap:?}: {v:?}"));
+                assert!(since <= pin, "{cap:?} claims v{v}, past the pin");
+            }
+        }
+    }
+
+    /// `ALL` is what `guest_skew` iterates. A variant left out of it would be a
+    /// requirement nobody checks; this match stops compiling when one is added,
+    /// and the assertion proves it was listed.
+    #[test]
+    fn every_capability_is_in_all() {
+        for c in GuestCapability::ALL {
+            let next = match c {
+                GuestCapability::CaBundle => GuestCapability::ApprovalByPublicKey,
+                GuestCapability::ApprovalByPublicKey => GuestCapability::DlcAdmission,
+                GuestCapability::DlcAdmission => GuestCapability::EgressAttestation,
+                GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
+                GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
+                GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
+                GuestCapability::McpBridge => GuestCapability::StreamingEgress,
+                GuestCapability::StreamingEgress => GuestCapability::HostDecideShadow,
+                GuestCapability::HostDecideShadow => GuestCapability::CaBundle,
+            };
+            assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
+        }
+    }
+
+    /// 2.0.2 and everything before it ship a rootfs with no CA store, on which
+    /// the tool-proxy panics as PID 1; 2.1.0 predates #2214; 2.2.0 predates
+    /// #2365, #2379, #3031 and #2696 P2. If any starts passing, an entry has
+    /// been moved back past its fix.
+    #[test]
+    fn the_known_broken_releases_are_refused() {
+        for (broken, lacks) in [
+            ("2.0.2", GuestCapability::CaBundle),
+            ("2.0.0", GuestCapability::CaBundle),
+            ("1.0.9", GuestCapability::CaBundle),
+            ("2.1.0", GuestCapability::ApprovalByPublicKey),
+            ("2.1.0", GuestCapability::DlcAdmission),
+            ("2.2.0", GuestCapability::EgressAttestation),
+            ("2.2.0", GuestCapability::SvidOnTmpfs),
+            ("2.2.0", GuestCapability::WorkloadDoor),
+            ("2.2.0", GuestCapability::McpBridge),
+            ("2.2.0", GuestCapability::StreamingEgress),
+        ] {
+            match guest_skew(broken) {
+                Err(GuestSkew::Lacks { missing, .. }) => {
+                    assert!(missing.contains(&lacks), "{broken}: {missing:?}")
+                }
+                other => panic!("{broken} must be refused for {lacks:?}: {other:?}"),
+            }
+        }
+    }
+
+    /// The node does not require the shadow client (P8 is not enforcing), so a
+    /// release that has every REQUIRED capability is accepted without it — and
+    /// the same release missing one required capability is still refused.
+    #[test]
+    fn an_optional_capability_never_refuses_a_guest() {
+        let all_but_shadow = |c: GuestCapability| match c.demand() {
+            Demand::Required => FirstShipped::Release("2.2.0"),
+            Demand::Optional => FirstShipped::NotYet,
+        };
+        assert_eq!(GuestCapability::HostDecideShadow.demand(), Demand::Optional);
+        assert_eq!(skew_against("2.2.0", all_but_shadow), Ok(()));
+        let all_but_door = |c: GuestCapability| match c {
+            GuestCapability::WorkloadDoor => FirstShipped::NotYet,
+            _ => FirstShipped::Release("2.2.0"),
+        };
+        assert_eq!(
+            skew_against("2.2.0", all_but_door),
+            Err(GuestSkew::Lacks {
+                release: "2.2.0".to_string(),
+                missing: vec![GuestCapability::WorkloadDoor],
+            })
+        );
+        // And the refusal of the pinned release never names it.
+        if let Err(GuestSkew::Lacks { missing, .. }) = guest_skew(GUEST_RELEASE) {
+            assert!(!missing.contains(&GuestCapability::HostDecideShadow));
+        }
+    }
+
+    /// A table in which everything shipped by 2.2.0, to test the ordering rules
+    /// independently of where the real table's entries sit.
+    fn all_by_2_2_0(_: GuestCapability) -> FirstShipped {
+        FirstShipped::Release("2.2.0")
+    }
+
     /// A release CANDIDATE of an acceptable version must be acceptable: it
-    /// contains the fixes the floor exists to require. Strict semver would sort
-    /// it below `2.1.0` and refuse it — which is why the parser compares the
-    /// numeric core.
+    /// contains the fixes. Strict semver would sort it below `2.2.0` and refuse
+    /// it — which is why the parser compares the numeric core.
     #[test]
     fn a_prerelease_of_an_acceptable_version_is_accepted() {
         for rc in ["2.2.0-rc.1", "v2.2.0-rc.1", "2.2.0-rc1", "2.2.0+build.7"] {
             assert_eq!(parse_release(rc), Some((2, 2, 0)), "{rc} core");
-            assert!(release_is_acceptable(rc), "{rc} should be accepted");
+            assert_eq!(skew_against(rc, all_by_2_2_0), Ok(()), "{rc}");
         }
     }
 
     /// The other half, and the one that keeps the above from being a hole: a
-    /// prerelease of a BROKEN version is still broken. Without this the suffix
-    /// handling would be a way to smuggle a pre-CA-bundle rootfs past the floor.
+    /// prerelease of a BROKEN version is still broken.
     #[test]
     fn a_prerelease_of_a_refused_version_is_still_refused() {
-        // `2.1.0` joined this list when the floor rose to 2.2.0: #2214 left its
-        // rootfs unable to boot a current node. If the floor is ever lowered
-        // back, this is the assertion that fails.
         for rc in ["2.1.0-rc.1", "2.0.2-rc.1", "1.1.0-rc.1", "v2.0.0-beta"] {
-            assert!(
-                !release_is_acceptable(rc),
-                "{rc} predates the PID-1 CA-store fix and must stay refused"
+            assert!(skew_against(rc, all_by_2_2_0).is_err(), "{rc}");
+            assert!(guest_skew(rc).is_err(), "{rc}");
+        }
+        // 2.3.0 raised the floor past 2.2.0: a prerelease of 2.2.0 is refused by
+        // the real table, while one of 2.3.0 itself is accepted.
+        for rc in ["2.2.0-rc.1", "v2.2.0-rc.2", "2.2.0+build.7"] {
+            assert!(guest_skew(rc).is_err(), "{rc}");
+        }
+        assert_eq!(guest_skew("2.3.0-rc.1"), Ok(()));
+    }
+
+    /// "Could not order it" is its own answer, not a refusal for being old.
+    #[test]
+    fn an_unparseable_release_is_refused_rather_than_ordered_as_zero() {
+        for bad in ["", "2.1", "2.1.0.1", "latest", "v2.x.0"] {
+            assert_eq!(
+                skew_against(bad, all_by_2_2_0),
+                Err(GuestSkew::Unorderable {
+                    release: bad.to_string()
+                }),
+                "{bad:?}"
             );
         }
     }
 
+    /// An entry nobody can parse counts as missing, never as present.
     #[test]
-    fn an_unparseable_release_is_refused_rather_than_ordered_as_zero() {
-        for bad in ["", "2.1", "2.1.0.1", "latest", "v2.x.0"] {
-            assert!(!release_is_acceptable(bad), "{bad:?} should be refused");
-        }
+    fn an_unparseable_table_entry_is_missing_not_present() {
+        let unparseable = |_: GuestCapability| FirstShipped::Release("2.x");
+        assert!(skew_against("9.9.9", unparseable).is_err());
     }
 
     /// A `v` prefix is what a git tag looks like, and it must order the same as
@@ -305,7 +794,7 @@ mod tests {
     #[test]
     fn a_tag_style_version_parses() {
         assert_eq!(parse_release("v2.2.0"), parse_release("2.2.0"));
-        assert!(release_is_acceptable("v2.2.0"));
+        assert_eq!(skew_against("v2.2.0", all_by_2_2_0), Ok(()));
     }
 
     #[test]

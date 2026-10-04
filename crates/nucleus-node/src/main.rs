@@ -7,8 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes, to_bytes};
 use axum::extract::{Extension, State};
-use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response as AxumResponse};
+use axum::response::Response as AxumResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use clap::Parser;
@@ -17,6 +16,7 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 #[cfg(target_os = "linux")]
 use nucleus_spec::NetworkSpec;
 use nucleus_spec::PodSpec;
+use nucleus_spec::dlc_admission::DlcProvisioning;
 use tokio::io::{AsyncBufReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 #[cfg(any(feature = "local-driver", target_os = "linux"))]
 use tokio::process::Command;
@@ -30,7 +30,9 @@ use uuid::Uuid;
 
 mod api_error;
 mod art12_collector;
+mod audit_sink;
 mod auth;
+mod clearing_receipt_collector;
 mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
@@ -38,24 +40,34 @@ mod guest_diagnosis;
 mod http_serve;
 mod identity;
 mod image_identity;
+mod jail_placement;
 mod keys;
 mod lockdown;
 mod mediation;
 mod mediation_receipt_collector;
-mod oidc;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
 mod pod_caller_identity;
 mod pod_receipt;
+mod pod_resources;
 mod pod_view;
 mod production_confinement;
+mod rootfs_source;
+mod sealed_rootfs;
+mod spec_posture;
+mod spend_receipt_collector;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
 mod workload_result;
 use api_error::ApiError;
+use container_mediation::container_driver_reject_unsupported_network_policy;
+#[cfg(feature = "local-driver")]
+mod bare_tier_opt_in;
 mod boot_trace;
+#[cfg(feature = "local-driver")]
+use bare_tier_opt_in::{local_driver_opt_in, unsandboxed_proxy_flag};
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
 // binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
@@ -64,17 +76,22 @@ mod broker;
 mod broker_launch;
 mod broker_perform;
 mod broker_rollout;
+mod broker_stream;
 mod broker_transport;
 mod cgroup;
+mod container_mediation;
 mod container_transport;
 mod cred_split;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
+mod egress_meter;
 mod envelope_frame;
+mod federated_credential;
+mod federation_ingress;
 mod guest_socket;
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-mod host_requirements;
+mod host_decide;
+mod host_paths;
 mod lifecycle;
 mod net;
 mod posture;
@@ -84,15 +101,20 @@ mod snapshot;
 mod snapshot_restore;
 mod snapshot_store;
 mod snapshot_vmm;
+#[cfg(test)]
+mod spiffe_walk;
 mod trust_gate;
+mod upstreams;
 mod vsock_bridge;
 
+#[cfg(target_os = "linux")]
+use nucleus_microvm_host::probe as host_requirements;
 pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-node")]
+#[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
@@ -106,6 +128,12 @@ struct Args {
     state_dir: PathBuf,
     #[command(flatten)]
     authority: pod_authority::AuthorityArgs,
+    #[command(flatten)]
+    host_paths: host_paths::HostPathArgs,
+    #[command(flatten)]
+    audit_sinks: audit_sink::AuditSinkArgs,
+    #[command(flatten)]
+    pod_ceilings: pod_resources::PodCeilingArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -202,21 +230,37 @@ struct Args {
         default_value = "/srv/jailer"
     )]
     jailer_chroot_base: PathBuf,
-    /// Unprivileged uid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_UID", default_value = "123")]
+    /// Unprivileged uid the jailed VMM drops to. `nucleus-hostctl seed` reads the same variable,
+    /// so a disk it seeds is handed to this uid.
+    #[arg(long, env = nucleus_microvm_host::jail_user::UID_ENV, default_value = "123")]
     jailer_uid: production_confinement::NonRootUid,
     /// Unprivileged gid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_GID", default_value_t = 100)]
+    #[arg(long, env = nucleus_microvm_host::jail_user::GID_ENV, default_value_t = 100)]
     jailer_gid: u32,
+    /// Seal each pinned read-only rootfs once per node life and boot every pod from a reflink
+    /// clone of it, instead of reading the whole file before each boot (`sealed_rootfs.rs`).
+    /// Needs reflink on the jailer chroot base's filesystem; without it pods are read as before.
+    #[arg(long, env = "NUCLEUS_SEAL_PINNED_ROOTFS")]
+    seal_pinned_rootfs: bool,
 
     // Container driver configuration
-    /// Container image for pod execution (container driver).
+    /// Container image every container pod runs, and in mediated mode the image whose
+    /// `nucleus-tool-proxy` mediates it. Node-owned: a spec cannot choose it (#3133).
     #[arg(
         long,
         env = "NUCLEUS_CONTAINER_IMAGE",
         default_value = "nucleus-tool-proxy:latest"
     )]
     container_image: String,
+    /// Whether container pods run under the tool-proxy. `unmediated` runs the image's entrypoint
+    /// with no reference monitor; it is an operator opt-in, never a spec choice (#3133).
+    #[arg(
+        long,
+        env = "NUCLEUS_CONTAINER_MEDIATION",
+        value_enum,
+        default_value = "tool-proxy"
+    )]
+    container_mediation: container_mediation::ContainerMediation,
     /// Network mode for containers ("none", "bridge", or a custom network name).
     #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
     container_network: String,
@@ -279,6 +323,22 @@ struct Args {
     /// Vsock port the guest uses to reach the credential broker.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
     broker_vsock_port: u32,
+    /// Largest request body one streamed credentialed-egress call may upload
+    /// (#2696 P4). Every byte is also charged to the pod's egress ceiling.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_EGRESS_STREAM_MAX_REQUEST_BYTES",
+        default_value_t = broker_stream::DEFAULT_MAX_STREAM_REQUEST_BYTES
+    )]
+    egress_stream_max_request_bytes: u64,
+    /// Largest reply one streamed credentialed-egress call may relay back to
+    /// the guest. A longer reply is cut and the guest told why.
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_EGRESS_STREAM_MAX_RESPONSE_BYTES",
+        default_value_t = broker_stream::DEFAULT_MAX_STREAM_RESPONSE_BYTES
+    )]
+    egress_stream_max_response_bytes: u64,
     /// Enable drand anchoring for approval signatures.
     #[arg(long, env = "NUCLEUS_NODE_DRAND_ENABLED", default_value_t = true)]
     drand_enabled: bool,
@@ -307,44 +367,25 @@ struct Args {
     /// When set, clients must present valid certificates signed by this CA.
     #[arg(long, env = "NUCLEUS_NODE_GRPC_TLS_CA")]
     grpc_tls_ca: Option<PathBuf>,
-
-    // GitHub OIDC configuration
-    /// Enable GitHub OIDC token exchange for CI/CD authentication.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_ENABLED",
-        default_value_t = false
-    )]
-    oidc_github_enabled: bool,
-    /// Expected audience in GitHub OIDC tokens.
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_AUDIENCE",
-        default_value = "nucleus"
-    )]
-    oidc_github_audience: String,
-    /// Comma-separated list of allowed GitHub repositories (e.g., "org/repo1,org/repo2").
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_REPOS")]
-    oidc_github_allowed_repos: Option<String>,
-    /// Comma-separated list of allowed GitHub organizations (all repos in these orgs are allowed).
-    #[arg(long, env = "NUCLEUS_NODE_OIDC_GITHUB_ALLOWED_ORGS")]
-    oidc_github_allowed_orgs: Option<String>,
-    /// Certificate TTL in seconds for GitHub OIDC-issued certificates (default: 1 hour).
-    #[arg(
-        long,
-        env = "NUCLEUS_NODE_OIDC_GITHUB_CERT_TTL_SECS",
-        default_value_t = 3600
-    )]
-    oidc_github_cert_ttl_secs: u64,
 }
 
 #[derive(Clone)]
 struct NodeState {
     pods: pod_api::PodRegistry,
     state_dir: PathBuf,
+    host_roots: host_paths::Roots,
+    /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
+    pod_ceilings: pod_resources::PodCeilings,
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
+    /// Whether this node's local driver deliberately runs its tool-proxies
+    /// on the bare host tier, decided once at startup by
+    /// [`local_driver_opt_in`]. It is what puts `--unsandboxed` on a proxy's
+    /// command line, so the flag traces to the operator's
+    /// `--driver local --allow-local-driver` and to nothing else.
+    #[cfg(feature = "local-driver")]
+    local_driver_opt_in: nucleus::UnsandboxedOptIn,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -372,6 +413,8 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_gid: u32,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    sealed_rootfs: Option<Arc<sealed_rootfs::SealedRootfs>>,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
     /// Node HTTP listen address (for orchestrator pod management back-references).
     #[cfg(feature = "local-driver")]
@@ -398,6 +441,12 @@ struct NodeState {
     /// Operator-configured registry of proof-carrying postures a trusted builder
     /// has proven. Consulted fail-closed at pod admission (`posture.rs`).
     trusted_postures: posture::PostureRegistry,
+    /// The operator's audit sinks (`--audit-sinks`): the only destinations a pod's audit log is
+    /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
+    audit_sinks: Arc<audit_sink::AuditSinks>,
+    /// Mints each pod's uploader a credential limited to its resolved sink (#3160). `None`: every
+    /// audit sink is refused at create, by name; the node's own key is never the fallback.
+    audit_minter: Option<Arc<dyn audit_sink::credentials::ScopedCredentialMinter>>,
     /// Drand configuration for anchoring approval signatures.
     drand_config: Option<DrandConfig>,
     /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
@@ -415,13 +464,16 @@ struct NodeState {
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
-    /// GitHub OIDC validator for CI/CD authentication.
-    github_oidc: Option<Arc<oidc::GitHubOidcValidator>>,
+    /// Per-call bounds on a streamed credentialed-egress call.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    egress_stream_limits: broker_stream::StreamLimits,
     /// Authorization policy for SPIFFE-based access control.
     authz_policy: auth::AuthorizationPolicy,
     // Container driver state
-    /// Default container image for pods.
+    /// The image every container pod runs (`--container-image`).
     container_image: String,
+    /// Whether container pods run under the tool-proxy (`--container-mediation`).
+    container_mediation: container_mediation::ContainerMediation,
     /// Default network mode for containers.
     container_network: String,
     container_proxy_unix: bool,
@@ -437,10 +489,16 @@ struct NodeState {
     /// Per-pod certificate authority: proof of caller authority at
     /// pod-create, budget conserved across spawn (pod_authority.rs).
     authority: Arc<pod_authority::PodAuthority>,
+    /// Epochs for the pods' shadow decision channels (#2702, P8): one counter
+    /// for the whole node, so no two channels' ledgers share an epoch.
+    #[cfg(target_os = "linux")]
+    decision_epochs: Arc<host_decide::EpochSource>,
     /// HTTP client for trust API calls.
     http_client: reqwest::Client,
     /// Broadcast channel for streaming lockdown commands to connected tool-proxies.
     lockdown_tx: tokio::sync::broadcast::Sender<proto::LockdownCommand>,
+    /// The lockdowns in force (`lockdown::Active`).
+    lockdowns: Arc<std::sync::Mutex<lockdown::Active>>,
 }
 
 #[derive(Debug)]
@@ -459,6 +517,10 @@ struct PodHandle {
     /// the pod carried no claim. Surfaced in `PodInfo` so an operator can see the
     /// claim was checked, not merely present. See `posture.rs`.
     posture_stamp: Option<String>,
+    /// Root identity of the certificate this node issued the pod, recorded at
+    /// creation and never re-derived: its trust domain is the pod's tenant
+    /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
+    owner: Option<String>,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -527,6 +589,9 @@ struct FirecrackerPod {
     /// the pod's vsock path, so a listener outliving its pod would still be bound
     /// to the dead pod's identity when a later pod reused that path.
     broker: Mutex<Option<broker_transport::BrokerListener>>,
+    /// The shadow decision service for this pod (#2702, P8), owned for the same
+    /// reason the broker is: its socket path is derived from the pod's vsock path.
+    decide: Mutex<Option<host_decide::DecideListener>>,
     /// The jail this pod runs in, when launched via the jailer. Held so teardown
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
@@ -537,16 +602,13 @@ struct FirecrackerPod {
 
 /// Container-based pod execution via Docker API (Colima, Docker Desktop, Podman).
 ///
-/// The container image can be either:
-///   - `nucleus-tool-proxy:latest` (proxy mode: audit + policy enforcement)
-///   - An LLM/agent CLI image like `gt-executor:latest` (direct mode)
-///
-/// The mode is determined by the PodSpec label `nucleus.io/proxy-mode`.
+/// The image and whether the tool-proxy mediates the pod are node configuration
+/// (`--container-image`, `--container-mediation`); see `container_mediation` (#3133).
 #[derive(Debug)]
 struct ContainerPod {
     container_id: String,
     docker: bollard::Docker,
-    /// Only present in proxy mode (when PodSpec label `nucleus.io/proxy-mode` = "true").
+    /// Only present when the node mediates its container pods.
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
     /// Semaphore permit for concurrency limiting.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
@@ -670,6 +732,11 @@ async fn main() -> Result<(), ApiError> {
                 )));
             }
         }
+        if !args.container_mediation.runs_tool_proxy() {
+            tracing::warn!(
+                "--container-mediation=unmediated: container pods run with NO reference monitor"
+            );
+        }
         Some(Arc::new(docker))
     } else {
         None
@@ -682,14 +749,26 @@ async fn main() -> Result<(), ApiError> {
             None
         };
 
-    let authority = Arc::new(pod_authority::PodAuthority::from_args(&args));
+    let authority = pod_authority::PodAuthority::from_args(&args).map_err(ApiError::Driver)?;
+
+    // A zero bound is refused at start-up, not discovered as a refusal of
+    // every streamed call later (ADR 0007 B).
+    let egress_stream_limits = broker_stream::StreamLimits::new(
+        args.egress_stream_max_request_bytes,
+        args.egress_stream_max_response_bytes,
+    )
+    .map_err(ApiError::Driver)?;
 
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
+        host_roots: args.host_paths.ensure(&args.state_dir)?,
+        pod_ceilings: args.pod_ceilings.ceilings(),
         driver: args.driver.clone(),
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
+        #[cfg(feature = "local-driver")]
+        local_driver_opt_in: local_driver_opt_in(&args.driver, args.allow_local_driver),
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_api_boot: args.firecracker_api_boot,
@@ -704,6 +783,10 @@ async fn main() -> Result<(), ApiError> {
         jailer_chroot_base: args.jailer_chroot_base.clone(),
         jailer_uid: args.jailer_uid,
         jailer_gid: args.jailer_gid,
+        sealed_rootfs: sealed_rootfs::from_flags(
+            args.seal_pinned_rootfs && args.firecracker_jailer,
+            &args.jailer_chroot_base,
+        ),
         network_allocator: Arc::new(net::NetworkAllocator::new()),
         #[cfg(feature = "local-driver")]
         listen_addr: args.listen.clone(),
@@ -727,27 +810,37 @@ async fn main() -> Result<(), ApiError> {
         )),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
+        audit_sinks: Arc::new(args.audit_sinks.load().map_err(ApiError::Driver)?),
+        // No minter ships in this crate: a scoped credential is a provider's protocol, and an
+        // embedding that runs audit sinks supplies one. Until then a spec that names a sink is
+        // refused at create rather than given the node's own key.
+        audit_minter: None,
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
         broker_listen: args.broker_listen,
         broker_enforcing: args.broker_enforcing,
         broker_vsock_port: args.broker_vsock_port,
-        github_oidc: build_github_oidc(&args),
+        egress_stream_limits,
         authz_policy: auth::AuthorizationPolicy::new(&args.identity_trust_domain)
-            .with_operator_identity(authority.root_minter()),
+            .with_operator_identity(authority.root_minter())
+            .with_federated_trust_domains(authority.caller_bindings().trust_domains()),
         container_image: args.container_image.clone(),
+        container_mediation: args.container_mediation,
         container_network: args.container_network.clone(),
         container_proxy_unix: args.container_proxy_unix,
         container_pool,
         docker,
         trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
-        authority,
+        authority: Arc::new(authority),
+        #[cfg(target_os = "linux")]
+        decision_epochs: Arc::new(host_decide::EpochSource::seeded()),
         http_client: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap_or_default(),
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
+        lockdowns: Arc::default(),
     };
 
     // Release what the previous life of this node acquired, BEFORE serving anything: a pod
@@ -763,6 +856,23 @@ async fn main() -> Result<(), ApiError> {
         if n > 0 {
             info!(count = n, "reclaimed jail(s) stranded by a previous node");
         }
+    }
+
+    // Refuse, by name, an installed artifact the jailed VMM cannot read or could rewrite, rather
+    // than chowning it at the first pod: it is hard-linked into every jail (#3152).
+    #[cfg(target_os = "linux")]
+    if args.firecracker_jailer && matches!(&args.driver, DriverKind::Firecracker) {
+        let who = jail_placement::JailUser {
+            uid: args.jailer_uid.get(),
+            gid: args.jailer_gid,
+        };
+        let checked =
+            jail_placement::check_installed_artifacts(&args.host_paths.artifacts_root, who)
+                .map_err(|refusal| ApiError::Driver(refusal.to_string()))?;
+        info!(
+            checked,
+            "installed artifacts: readable and not writable by the jail user"
+        );
     }
 
     // Pods that outlived a restart get their certificates + holder keys back.
@@ -790,14 +900,14 @@ async fn main() -> Result<(), ApiError> {
             auth_middleware,
         ));
 
-    // Routes that don't require auth (OIDC has its own token validation)
+    // Routes that don't require auth. The federation exchange is NOT here: it
+    // is served on its own server-auth-only listener (`federation_ingress`).
     let public_routes = Router::new()
         .route(
             "/v1/art12/{session_id}",
             post(art12_collector::art12_append),
         )
         .route("/v1/health", get(health))
-        .route("/v1/oidc/github", post(oidc_github_exchange))
         .with_state(state.clone());
 
     let app = public_routes.merge(authenticated_routes);
@@ -858,6 +968,7 @@ async fn main() -> Result<(), ApiError> {
 
     start_pod_reaper(state.clone());
 
+    federation_ingress::spawn(&state, &args.authority.ingress).await?;
     http_serve::serve(&state, &args.listen, app).await?;
 
     Ok(())
@@ -867,195 +978,9 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({"status": "ok"}))
 }
 
-/// GitHub OIDC token exchange endpoint.
-///
-/// Accepts a GitHub OIDC token and a client-generated CSR.
-/// Returns a signed X.509 certificate with a SPIFFE identity based on the repository.
-///
-/// # Security
-///
-/// The client generates and keeps its private key locally - it is never sent to
-/// or stored by the server. Only the CSR (containing the public key) is transmitted.
-///
-/// The workflow is:
-/// 1. Client generates a key pair
-/// 2. Client creates a CSR with the SPIFFE ID they expect to receive
-/// 3. Client sends GitHub OIDC token + CSR to this endpoint
-/// 4. Server validates token, verifies CSR's SPIFFE ID matches token claims
-/// 5. Server returns only the certificate chain (no private key)
-async fn oidc_github_exchange(
-    State(state): State<NodeState>,
-    headers: axum::http::HeaderMap,
-    Json(request): Json<oidc::OidcExchangeRequest>,
-) -> Result<Json<oidc::OidcExchangeResponse>, OidcApiError> {
-    // Check if OIDC is enabled
-    let validator = state.github_oidc.as_ref().ok_or(OidcApiError::NotEnabled)?;
-
-    // Extract token from Authorization header
-    let auth_header = headers
-        .get("Authorization")
-        .and_then(|h| h.to_str().ok())
-        .ok_or(OidcApiError::MissingToken)?;
-
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(OidcApiError::InvalidFormat)?;
-
-    // Validate the token (includes replay protection)
-    let claims = validator
-        .validate(token)
-        .await
-        .map_err(OidcApiError::Oidc)?;
-
-    // Get the SPIFFE ID for this identity based on token claims
-    let spiffe_id = validator.spiffe_id(&claims);
-
-    // Issue a certificate using the identity manager
-    let identity_mgr = state
-        .identity_manager
-        .as_ref()
-        .ok_or_else(|| OidcApiError::Internal("Identity manager not configured".to_string()))?;
-
-    // Parse SPIFFE ID into Identity
-    let identity = parse_spiffe_to_identity(&spiffe_id)?;
-
-    // Sign the client's CSR (CSR must contain matching SPIFFE ID)
-    let cert_ttl = validator.cert_ttl();
-    let certificate_pem = identity_mgr
-        .ca()
-        .sign_csr_only(&request.csr, &identity, cert_ttl)
-        .await
-        .map_err(|e| OidcApiError::Internal(format!("Certificate signing failed: {e}")))?;
-
-    // Get trust bundle
-    let trust_bundle_pem = identity_mgr
-        .ca()
-        .trust_bundle()
-        .roots()
-        .iter()
-        .map(|c| c.to_pem())
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    // Calculate expiration
-    let expires_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-        + cert_ttl.as_secs();
-
-    info!(
-        repository = %claims.repository,
-        actor = %claims.actor,
-        spiffe_id = %spiffe_id,
-        expires_at = expires_at,
-        "Issued certificate for GitHub OIDC identity (client-side key)"
-    );
-
-    Ok(Json(oidc::OidcExchangeResponse {
-        certificate: certificate_pem,
-        spiffe_id,
-        expires_at,
-        trust_bundle: trust_bundle_pem,
-    }))
-}
-
-/// Parse a SPIFFE ID into a nucleus Identity.
-fn parse_spiffe_to_identity(spiffe_id: &str) -> Result<nucleus_identity::Identity, OidcApiError> {
-    // Format: spiffe://trust-domain/ns/github/sa/{org}/{repo}
-    let rest = spiffe_id
-        .strip_prefix("spiffe://")
-        .ok_or_else(|| OidcApiError::Internal("Invalid SPIFFE URI".to_string()))?;
-
-    let parts: Vec<&str> = rest.split('/').collect();
-    if parts.len() < 5 || parts[1] != "ns" || parts[3] != "sa" {
-        return Err(OidcApiError::Internal(
-            "Invalid SPIFFE path format".to_string(),
-        ));
-    }
-
-    let trust_domain = parts[0];
-    let namespace = parts[2];
-    // Combine org and repo for service account name (repo already sanitized)
-    let service_account = if parts.len() >= 6 {
-        format!("{}-{}", parts[4], parts[5])
-    } else {
-        parts[4].to_string()
-    };
-
-    Ok(nucleus_identity::Identity::new(
-        trust_domain,
-        namespace,
-        &service_account,
-    ))
-}
-
-/// Error type for OIDC API endpoint.
-#[derive(Debug)]
-enum OidcApiError {
-    NotEnabled,
-    MissingToken,
-    InvalidFormat,
-    Oidc(oidc::OidcError),
-    Internal(String),
-}
-
-impl IntoResponse for OidcApiError {
-    fn into_response(self) -> AxumResponse {
-        let (status, error, description) = match &self {
-            OidcApiError::NotEnabled => (
-                StatusCode::NOT_FOUND,
-                "not_enabled",
-                Some("GitHub OIDC is not enabled on this server"),
-            ),
-            OidcApiError::MissingToken => (
-                StatusCode::UNAUTHORIZED,
-                "missing_token",
-                Some("Authorization header with Bearer token required"),
-            ),
-            OidcApiError::InvalidFormat => (
-                StatusCode::UNAUTHORIZED,
-                "invalid_format",
-                Some("Authorization header must be 'Bearer <token>'"),
-            ),
-            OidcApiError::Oidc(e) => {
-                let (status, desc) = match e {
-                    oidc::OidcError::RepoNotAllowed(_) => (StatusCode::FORBIDDEN, e.to_string()),
-                    oidc::OidcError::ValidationFailed(_) => {
-                        (StatusCode::UNAUTHORIZED, e.to_string())
-                    }
-                    _ => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-                };
-                return (
-                    status,
-                    Json(oidc::OidcErrorResponse {
-                        error: "oidc_error".to_string(),
-                        error_description: Some(desc),
-                    }),
-                )
-                    .into_response();
-            }
-            OidcApiError::Internal(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                Some(msg.as_str()),
-            ),
-        };
-
-        (
-            status,
-            Json(oidc::OidcErrorResponse {
-                error: error.to_string(),
-                error_description: description.map(|s| s.to_string()),
-            }),
-        )
-            .into_response()
-    }
-}
-
 async fn create_pod(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<auth::CallerScope>,
     Extension(auth_ctx): Extension<auth::AuthContext>,
     headers: axum::http::HeaderMap,
     body: Bytes,
@@ -1079,14 +1004,10 @@ async fn create_pod(
     // caller: the per-pod caller token, or the caller's own pod SVID.
     // `x-nucleus-parent-pod-id` is unauthenticated, so lineage built on it is
     // forgeable in both directions -- see `pod_api::resolve_parent_pod_id`.
+    let named = headers.get(PARENT_HEADER).and_then(|v| v.to_str().ok());
     let admission =
-        pod_authority::Admission::from_http(&state.authz_policy, caller, &auth_ctx, &headers);
-    let parent_pod_id = pod_api::resolve_parent_pod_id(
-        admission.caller_pod,
-        headers
-            .get("x-nucleus-parent-pod-id")
-            .and_then(|v| v.to_str().ok()),
-    );
+        pod_authority::Admission::from_http(&state.authz_policy, caller.pod(), &auth_ctx, &headers);
+    let parent_pod_id = pod_api::parent_for_create(&state, &caller, named).await?;
 
     let raw = String::from_utf8_lossy(&body).to_string();
     let (id, proxy_addr) =
@@ -1108,17 +1029,19 @@ async fn auth_middleware(
         .map_err(|e| ApiError::Body(e.to_string()))?;
     let context = auth::resolve_http_auth(&state, &parts)?;
 
-    // WHICH POD is calling, when the caller can prove it. See
-    // `pod_caller_identity::identify_from_headers` for why this cannot change a
-    // verdict.
-    let caller =
-        pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), &parts.headers);
+    // WHICH POD is calling: its caller token, else its own pod SVID. Unscoped
+    // only for an identity the policy grants node-wide reach, never by default
+    // (`AuthorizationPolicy::caller_scope`, which gRPC resolves through too).
+    let caller = auth::resolve_http_caller(&state, &context, &parts.headers)?;
 
     let mut req = axum::http::Request::from_parts(parts, Body::from(bytes));
     req.extensions_mut().insert(context);
-    req.extensions_mut().insert(caller.ok());
+    req.extensions_mut().insert(caller);
     Ok(next.run(req).await)
 }
+
+/// The unauthenticated parent header; read only by `pod_api::parent_for_create`.
+const PARENT_HEADER: &str = "x-nucleus-parent-pod-id";
 
 #[tracing::instrument(skip_all, fields(boot.stage = "pod.create", pod_id = tracing::field::Empty, chain_depth = tracing::field::Empty))]
 async fn create_pod_internal(
@@ -1130,6 +1053,14 @@ async fn create_pod_internal(
 ) -> Result<(Uuid, Option<String>), ApiError> {
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
+    rootfs_source::admit(&spec)?; // OCI needs an image store; boot_args are allowlisted (#3124)
+    host_paths::admit(&mut spec, &state.driver, &state.host_roots)?;
+    // Posture fields a spec may not weaken (#3120), and where its audit log goes (#3131). A sink
+    // this node cannot mint a scoped credential for is refused here, by name (#3160).
+    let audit_mint = audit_sink::credentials::admit(
+        spec_posture::admit(&spec, &state.audit_sinks, &state.pod_ceilings)?,
+        state.audit_minter.as_ref(),
+    )?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1138,8 +1069,9 @@ async fn create_pod_internal(
     // deleted in #2512: it wrote labels and authorised nothing, and what a pod
     // MAY do comes from the certificate below. ───────────────────────────────
     driver::clamp_isolation_to_backend(&state.driver, &mut spec)?;
+    admission.stamp_ci_principal(&state.authz_policy, &mut spec)?;
 
-    let pod_dir = state.state_dir.join("pods").join(id.to_string());
+    let pod_dir = lifecycle::pod_dir(&state.state_dir, id);
     tokio::fs::create_dir_all(&pod_dir).await?;
 
     // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
@@ -1155,26 +1087,48 @@ async fn create_pod_internal(
     // ── Authority Gate: proof of caller authority, budget conserved ──
     // The caller's certificate decides what this pod may do; the spec's policy
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
+    lockdown::admits(state, admission.caller_pod).await?;
     let issued = state.authority.admit(&admission, &spec, id).await?;
     tracing::Span::current().record("chain_depth", issued.chain_depth);
-    spec.spec.policy = nucleus_spec::PolicySpec::Inline {
-        lattice: Box::new(issued.effective),
+    // The issued lattice AND the admitted credentialed upstreams replace what
+    // the spec requested, in one call so neither can be applied without the other.
+    // The pod's owner is the issued root identity (ADR 0001: its tenant).
+    let owner = issued.root_identity.clone();
+    let reservation = issued.apply_to(&mut spec);
+
+    // The uploader's credential, minted only now that the caller's authority is admitted: one
+    // limited to this pod's resolved bucket and prefix, for the pod's lifetime (#3160).
+    let audit = match audit_mint {
+        None => None,
+        Some(mint) => {
+            let ttl = audit_sink::credentials::credential_ttl(spec.spec.timeout_seconds);
+            match mint.mint(ttl).await {
+                Ok(grant) => Some(grant),
+                Err(refused) => {
+                    reservation.release().await;
+                    return Err(refused.into());
+                }
+            }
+        }
     };
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
-        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id).await,
-        DriverKind::Firecracker => spawn_firecracker_pod(state, &pod_dir, &spec, id).await,
+        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id, audit.as_ref()).await,
+        DriverKind::Firecracker => {
+            spawn_firecracker_pod(state, &pod_dir, &spec, id, audit.as_ref()).await
+        }
         DriverKind::Container => {
-            spawn_container_pod(state, &pod_dir, &spec, id, raw_yaml.as_deref()).await
+            let raw = raw_yaml.as_deref();
+            spawn_container_pod(state, &pod_dir, &spec, id, raw, audit.as_ref()).await
         }
         DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await,
     };
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
         Err(e) => {
-            // Nothing runs: hand the budget reservation back to the parent.
-            state.authority.release_child(id).await;
+            // Nothing ran, so nothing was spent: the reservation goes back whole.
+            reservation.release().await;
             return Err(e);
         }
     };
@@ -1198,10 +1152,11 @@ async fn create_pod_internal(
         driver_state,
         parent_pod_id,
         posture_stamp,
+        owner: Some(owner),
     });
 
     state.pods.lock().await.insert(id, handle);
-
+    reservation.commit(); // registered: the reaper releases it from here (a drop before, #3032)
     Ok((id, proxy_addr))
 }
 
@@ -1324,38 +1279,6 @@ impl FirecrackerPod {
         }
         Ok(())
     }
-
-    /// Cleans up identity resources (unregister from VM registry, forget certificate).
-    async fn cleanup_identity(&self) {
-        // Shut down workload API bridge
-        if let Some(bridge) = self.workload_api_bridge.lock().await.take() {
-            bridge.shutdown().await;
-        }
-
-        // Stop the credential broker and unlink its socket. Both halves matter:
-        // see `BrokerListener::shutdown`.
-        if let Some(listener) = self.broker.lock().await.take() {
-            let path = listener.socket_path().to_path_buf();
-            if listener.shutdown().await == broker_transport::ShutdownOutcome::Aborted {
-                tracing::warn!(
-                    socket = %path.display(),
-                    "credential broker had to be aborted at teardown — a connection outlived the \
-                     shutdown signal"
-                );
-            }
-        }
-
-        // A let-chain (edition 2024) rather than a tuple of Options: it says the
-        // same thing without building a throwaway tuple, and the explicit `ref`
-        // bindings the tuple form needed are gone.
-        if let Some(identity) = &self.identity
-            && let Some(manager) = &self.identity_manager
-        {
-            manager
-                .release_pod(self.identity_registry_key.as_deref(), identity)
-                .await;
-        }
-    }
 }
 
 impl ContainerPod {
@@ -1428,12 +1351,32 @@ impl ContainerPod {
     }
 }
 
+/// The local tool-proxy's audit uploader environment (#3131, #3160).
+///
+/// The tool-proxy inherits the node's environment (`Command` does not `env_clear`), so every name
+/// the uploader's credential chain reads is removed first, pod with a sink or not: the node's own
+/// key reaches no pod by inheritance. Then, for a pod with a sink, the destination admission
+/// resolved and the credential minted for exactly that destination.
+#[cfg(feature = "local-driver")]
+fn provision_local_audit_env(
+    command: &mut Command,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
+) {
+    for key in audit_sink::credentials::UPLOADER_CREDENTIAL_ENV {
+        command.env_remove(key);
+    }
+    if let Some(grant) = audit {
+        command.envs(grant.proxy_env());
+    }
+}
+
 #[cfg(feature = "local-driver")]
 async fn spawn_local_pod(
     state: &NodeState,
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
@@ -1472,12 +1415,18 @@ async fn spawn_local_pod(
 
     let mut command = Command::new(&state.tool_proxy_path);
     command
+        .args(unsandboxed_proxy_flag(state.local_driver_opt_in))
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
         .arg("127.0.0.1:0")
         .arg("--announce-path")
-        .arg(&announce_path);
+        .arg(&announce_path)
+        // The workload door, in the pod's own directory: the guest default
+        // (`guest_layout::WORKLOAD_DOOR`, under /run) is not writable by a
+        // host-side proxy. Bound only when the pod has a workload.
+        .arg("--workload-door")
+        .arg(std::path::absolute(pod_dir.join("workload.sock"))?);
     command.env(
         "NUCLEUS_TOOL_PROXY_AUTH_SECRET",
         state.proxy_auth_secret.as_str(),
@@ -1494,31 +1443,7 @@ async fn spawn_local_pod(
 
     art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
 
-    // Pass audit sink config from PodSpec for deletion-resistant remote storage
-    if let Some(ref sink) = spec.spec.audit_sink {
-        command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET", &sink.s3_bucket);
-        if let Some(ref prefix) = sink.s3_prefix {
-            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX", prefix);
-        }
-        if let Some(ref region) = sink.s3_region {
-            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION", region);
-        }
-        if let Some(ref endpoint) = sink.s3_endpoint {
-            command.env("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT", endpoint);
-        }
-        // Forward ambient AWS credentials so the tool-proxy's aws_config chain works.
-        // Operators set these on nucleus-node; they flow through to the S3 sink.
-        for key in [
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
-            "AWS_SESSION_TOKEN",
-            "AWS_DEFAULT_REGION",
-        ] {
-            if let Ok(val) = std::env::var(key) {
-                command.env(key, val);
-            }
-        }
-    }
+    provision_local_audit_env(&mut command, audit);
 
     // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
     let sandbox_token = nucleus_client::generate_sandbox_token(
@@ -1544,20 +1469,15 @@ async fn spawn_local_pod(
     }
 
     // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
-    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads
-    // (crates/nucleus-tool-proxy/src/dlc_admission.rs). Node-global env still
-    // inherits (Command does not env_clear); labels let a single pod — e.g.
-    // `nucleus verify --tier2`'s — run under admission without touching host
-    // config. Values are NOT validated here: the proxy's parser owns that and
-    // fails CLOSED (partial/garbage config provisions deny-all).
-    for (label, env) in [
-        ("dlc_trusted_keys", "NUCLEUS_DLC_TRUSTED_KEYS"),
-        ("dlc_issuer", "NUCLEUS_DLC_ISSUER"),
-        ("dlc_credentials", "NUCLEUS_DLC_CREDENTIALS"),
-    ] {
-        if let Some(value) = spec.metadata.labels.get(label) {
-            command.env(env, value);
-        }
+    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads. The
+    // label->env mapping is `nucleus_spec::dlc_admission`'s, the same one the
+    // container driver and the Firecracker workload API use. Node-global env
+    // still inherits (Command does not env_clear); labels let a single pod —
+    // e.g. `nucleus verify --tier2`'s — run under admission without touching
+    // host config. Values are NOT validated here: the proxy's parser owns that
+    // and fails CLOSED (partial/garbage config provisions deny-all).
+    if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+        command.envs(dlc.env());
     }
 
     // Detect orchestrator pod: inject pod management env vars
@@ -1666,22 +1586,80 @@ async fn spawn_local_pod(
     Ok((DriverState::Local(Box::new(handle)), proxy_addr, log_path))
 }
 
-/// Fail-closed parity with `spawn_local_pod` (which rejects) and firecracker's
-/// `reject_unsupported_policy` (which enforces or rejects): the container driver
-/// sets only a coarse docker `network_mode` and CANNOT enforce a structured
-/// network egress policy (`spec.spec.network`). Silently ignoring one fails OPEN
-/// — the pod would run with unrestricted egress while believing its policy is in
-/// force — so reject it instead. Network policy requires the firecracker driver.
-fn container_driver_reject_unsupported_network_policy(spec: &PodSpec) -> Result<(), ApiError> {
-    if spec.spec.network.is_some() {
-        return Err(ApiError::Driver(
-            "network policy requires the firecracker driver — the container driver cannot enforce \
-             a structured egress policy (it would run with unrestricted egress); \
-             run with --driver firecracker"
-                .to_string(),
+/// The environment a container pod is started with.
+///
+/// Split out of [`spawn_container_pod`] so what reaches the container's
+/// tool-proxy can be read by a test without a Docker daemon: every other half
+/// of that function needs one.
+async fn container_env(
+    state: &NodeState,
+    spec: &PodSpec,
+    id: Uuid,
+    mediation: container_mediation::ContainerMediation,
+    sandbox_token: &str,
+    spec_yaml: &str,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
+) -> Vec<String> {
+    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+    let proxy_mode = mediation.runs_tool_proxy();
+
+    if proxy_mode {
+        env.extend(container_transport::proxy_env(state));
+        env.push(format!(
+            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
+            state.proxy_approval_secret
         ));
+        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
+        art12_collector::provision_container_env(&mut env);
+
+        // The audit sink admission resolved against the operator's `--audit-sinks` (#3131), and
+        // the credential minted for exactly that destination (#3160). A container inherits
+        // nothing from the node, so this is the only credential its uploader holds.
+        if let Some(grant) = audit {
+            for (key, value) in grant.proxy_env() {
+                env.push(format!("{key}={value}"));
+            }
+        }
+
+        // Live-path session capability token (see spawn_local_pod). Injected in
+        // proxy mode — the only container mode that runs the tool-proxy sidecar.
+        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
+            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
+            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
+            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
+        }
+        for (key, value) in state.authority.boot_env(id).await {
+            env.push(format!("{key}={value}"));
+        }
+        // DLC-D verified admission from the PodSpec labels, through the same
+        // declaration the local driver and the Firecracker workload API use.
+        // This driver used to have no copy of the mapping at all, so a
+        // container pod's dlc_* labels were accepted, listed by `nucleus node
+        // pods`, and never reached the tool-proxy that enforces them (#2903).
+        if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+            env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
+        }
     }
-    Ok(())
+
+    // Pass credentials from PodSpec (if any)
+    if let Some(ref creds) = spec.spec.credentials {
+        for (key, val) in &creds.env {
+            env.push(format!("{key}={val}"));
+        }
+    }
+
+    // In direct mode, extract the task from the raw YAML (task is not in the typed
+    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
+    if !proxy_mode
+        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(spec_yaml)
+        && let Some(task) = raw
+            .get("spec")
+            .and_then(|s| s.get("task"))
+            .and_then(|t| t.as_str())
+    {
+        env.push(format!("NUCLEUS_TASK={task}"));
+    }
+    env
 }
 
 async fn spawn_container_pod(
@@ -1690,6 +1668,7 @@ async fn spawn_container_pod(
     spec: &PodSpec,
     id: Uuid,
     raw_yaml: Option<&str>,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Fail-closed: reject a network egress policy the container driver cannot
     // enforce (parity with spawn_local_pod / firecracker reject_unsupported_policy)
@@ -1735,172 +1714,60 @@ async fn spawn_container_pod(
         &spec_yaml_hash,
     );
 
-    // Determine mode: proxy (tool-proxy entrypoint) vs direct (image-defined entrypoint)
-    let proxy_mode = spec
-        .metadata
-        .labels
-        .get("nucleus.io/proxy-mode")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-
-    // Resolve container image: per-pod label override or node default
-    let image = spec
-        .metadata
-        .labels
-        .get("nucleus.io/container-image")
-        .cloned()
-        .unwrap_or_else(|| state.container_image.clone());
-
-    // Build environment variables
-    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
-
-    if proxy_mode {
-        env.extend(container_transport::proxy_env(state));
-        env.push(format!(
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
-            state.proxy_approval_secret
-        ));
-        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
-        art12_collector::provision_container_env(&mut env);
-
-        // Pass audit sink config from PodSpec for deletion-resistant remote storage
-        if let Some(ref sink) = spec.spec.audit_sink {
-            env.push(format!(
-                "NUCLEUS_TOOL_PROXY_AUDIT_S3_BUCKET={}",
-                sink.s3_bucket
-            ));
-            if let Some(ref prefix) = sink.s3_prefix {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX={prefix}"));
-            }
-            if let Some(ref region) = sink.s3_region {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_REGION={region}"));
-            }
-            if let Some(ref endpoint) = sink.s3_endpoint {
-                env.push(format!("NUCLEUS_TOOL_PROXY_AUDIT_S3_ENDPOINT={endpoint}"));
-            }
-            // Forward ambient AWS credentials for the S3 sink
-            for key in [
-                "AWS_ACCESS_KEY_ID",
-                "AWS_SECRET_ACCESS_KEY",
-                "AWS_SESSION_TOKEN",
-                "AWS_DEFAULT_REGION",
-            ] {
-                if let Ok(val) = std::env::var(key) {
-                    env.push(format!("{key}={val}"));
-                }
-            }
-        }
-
-        // Live-path session capability token (see spawn_local_pod). Injected in
-        // proxy mode — the only container mode that runs the tool-proxy sidecar.
-        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
-            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
-            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
-            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
-        }
-        for (key, value) in state.authority.boot_env(id).await {
-            env.push(format!("{key}={value}"));
-        }
-    }
-
-    // Pass credentials from PodSpec (if any)
-    if let Some(ref creds) = spec.spec.credentials {
-        for (key, val) in &creds.env {
-            env.push(format!("{key}={val}"));
-        }
-    }
-
-    // In direct mode, extract the task from the raw YAML (task is not in the typed
-    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
-    if !proxy_mode
-        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(&spec_yaml)
-        && let Some(task) = raw
-            .get("spec")
-            .and_then(|s| s.get("task"))
-            .and_then(|t| t.as_str())
-    {
-        env.push(format!("NUCLEUS_TASK={task}"));
-    }
+    // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
+    let mediation = state.container_mediation;
+    let proxy_mode = mediation.runs_tool_proxy();
+    let env = container_env(
+        state,
+        spec,
+        id,
+        mediation,
+        &sandbox_token,
+        &spec_yaml,
+        audit,
+    )
+    .await;
+    let launch = container_mediation::launch(mediation, &state.container_image, &env);
+    let image = launch.image.clone();
 
     let pod_dir_abs = pod_dir
         .canonicalize()
         .unwrap_or_else(|_| pod_dir.to_path_buf());
 
-    // Bind mounts: pod_dir → /data/pod (always), workspace dir if specified
-    let mut binds = vec![format!("{}:/data/pod:rw", pod_dir_abs.display())];
-    let work_dir_str = spec.spec.work_dir.to_string_lossy();
-    if !work_dir_str.is_empty() && work_dir_str != "/" {
-        binds.push(format!("{work_dir_str}:/workspace:rw"));
-    }
+    // Bind mounts: pod_dir → /data/pod, work_dir → /workspace. `host_paths::admit`
+    // resolved work_dir to a directory strictly inside --workspace-root.
+    let binds = vec![
+        format!("{}:/data/pod:rw", pod_dir_abs.display()),
+        format!("{}:/workspace:rw", spec.spec.work_dir.display()),
+    ];
 
-    // Network mode: per-pod label override or node default
-    let network_mode = spec
-        .metadata
-        .labels
-        .get("nucleus.io/network")
-        .cloned()
-        .unwrap_or_else(|| state.container_network.clone());
+    // Network mode: the node's, or `none` if the pod asks for it; any other label is refused.
+    let network_mode = spec_posture::container_network(
+        spec.metadata
+            .labels
+            .get("nucleus.io/network")
+            .map(String::as_str),
+        &state.container_network,
+    )?;
 
+    let size = pod_resources::PodSize::of(spec);
+    let container_memory = i64::try_from(size.memory_bytes()).unwrap_or(i64::MAX);
     let host_config = bollard::models::HostConfig {
         network_mode: Some(network_mode),
         binds: Some(binds),
-        memory: spec
-            .spec
-            .resources
-            .as_ref()
-            .and_then(|r| r.memory_mib)
-            .map(|m| (m as i64) * 1024 * 1024),
+        // Always the admitted size (#3130); an absent spec field is the node's default, never
+        // unlimited. Swap equal to memory means none beyond it.
+        memory: Some(container_memory),
+        memory_swap: Some(container_memory),
+        nano_cpus: Some(i64::from(size.vcpus()) * 1_000_000_000),
+        pids_limit: Some(pod_resources::CONTAINER_PIDS_MAX),
         ..Default::default()
     };
 
-    // In proxy mode: override entrypoint + cmd so we control the full command,
-    // regardless of the image's ENTRYPOINT/CMD. This avoids double-binary issues
-    // when the image has ENTRYPOINT ["nucleus-tool-proxy", "--listen", "..."].
-    // In direct mode with NUCLEUS_TASK: override entrypoint to run a shell that
-    // invokes the task via the orchestrator-supplied runner command.
-    // In direct mode without NUCLEUS_TASK: use the image's default entrypoint/cmd.
-    let has_task = env.iter().any(|e| e.starts_with("NUCLEUS_TASK="));
-    let (entrypoint, cmd) = if proxy_mode {
-        (
-            Some(vec!["nucleus-tool-proxy".to_string()]),
-            Some(vec![
-                "--spec".to_string(),
-                "/data/pod/pod.yaml".to_string(),
-                "--listen".to_string(),
-                "0.0.0.0:0".to_string(),
-                "--announce-path".to_string(),
-                "/data/pod/proxy.addr".to_string(),
-            ]),
-        )
-    } else if has_task {
-        // Direct task execution. The runner command — and any vendor-specific
-        // credential bootstrap it needs — is supplied by the orchestrator via
-        // the generic NUCLEUS_TASK_CMD env var, keeping nucleus vendor-agnostic:
-        // it executes an opaque operator-supplied command rather than a specific
-        // LLM CLI (see the project vendor-neutrality guidelines, "Integration
-        // Pattern"). Nucleus only wraps it in its own task_start/task_complete
-        // artifact markers. When no runner is
-        // supplied, fall through to the image's default entrypoint/cmd with
-        // NUCLEUS_TASK left in the environment for the image to consume.
-        match env.iter().find_map(|e| e.strip_prefix("NUCLEUS_TASK_CMD=")) {
-            Some(runner) => (
-                Some(vec!["/bin/bash".to_string(), "-c".to_string()]),
-                Some(vec![format!(
-                    "echo \"NUCLEUS_ARTIFACT type=task_start\" && \
-                     {runner} 2>&1 && \
-                     echo \"NUCLEUS_ARTIFACT type=task_complete\""
-                )]),
-            ),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
-
     let config = bollard::models::ContainerCreateBody {
-        image: Some(image.clone()),
-        entrypoint,
-        cmd,
+        image: Some(launch.image),
+        entrypoint: launch.entrypoint,
+        cmd: launch.cmd,
         env: Some(env),
         host_config: Some(host_config),
         working_dir: Some("/workspace".to_string()),
@@ -2010,7 +1877,7 @@ async fn spawn_container_pod(
         cached_exit: Mutex::new(None),
     };
 
-    info!(pod_id = %id, %image, proxy_mode, "spawned container pod");
+    info!(pod_id = %id, %image, ?mediation, "spawned container pod");
     Ok((
         DriverState::Container(Box::new(handle)),
         proxy_addr,
@@ -2103,10 +1970,11 @@ async fn spawn_firecracker_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
+    audit: Option<&audit_sink::credentials::AuditGrant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (state, pod_dir, spec, id);
+        let _ = (state, pod_dir, spec, id, audit);
         let why = "firecracker requires Linux; run nucleus-node inside Colima on macOS";
         Err(ApiError::Driver(why.to_string()))
     }
@@ -2125,14 +1993,11 @@ async fn spawn_firecracker_pod(
         //
         // See `host_requirements` for the table and why the decision is split
         // from the observation.
-        let needs_network = spec.spec.network.is_some();
-        let missing = host_requirements::unmet(
-            &host_requirements::requirements(needs_network),
-            host_requirements::observe,
-        );
-        if !missing.is_empty() {
-            return Err(ApiError::Driver(host_requirements::explain(&missing)));
-        }
+        host_requirements::preflight(spec.spec.network.is_some()).map_err(ApiError::Driver)?;
+        // The node's limits for this pod, merged with what the spec may lower (#3130). Admitted
+        // at create by the same function, so an error here is a node fault, not a spec one.
+        let node_cgroup = pod_resources::node_cgroup(spec, pod_resources::CgroupVersion::detect())
+            .map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
 
         // REFUSE A VMM WITH A KNOWN GUEST ESCAPE.
         //
@@ -2164,11 +2029,8 @@ async fn spawn_firecracker_pod(
             None => None,
         };
 
-        let image = spec
-            .spec
-            .image
-            .as_ref()
-            .ok_or_else(|| ApiError::Driver("missing spec.image".to_string()))?;
+        // Resolved once: every consumer below takes a rootfs that is a host file by construction.
+        let image = rootfs_source::HostImage::of_spec(spec)?;
         let vsock_spec = spec
             .spec
             .vsock
@@ -2317,7 +2179,7 @@ async fn spawn_firecracker_pod(
         // declares the drive, so a disk that cannot be made means no drive
         // rather than a dead boot.
         let (effective_image, scratch_is_node_provisioned) = firecracker_config::scratch_for_pod(
-            image,
+            &image,
             jail_layout.as_ref(),
             state.jailer_uid.get(),
             state.jailer_gid,
@@ -2338,6 +2200,7 @@ async fn spawn_firecracker_pod(
             // The PUBLIC half only — the signing half stays in this process.
             &hex::encode(state.approval_signer.verifying_key().to_bytes()),
             workload_api_port,
+            audit.map(audit_sink::credentials::AuditGrant::target),
             jail_layout.as_ref(),
         );
         let config_json = match serde_json::to_vec_pretty(&config) {
@@ -2396,18 +2259,31 @@ async fn spawn_firecracker_pod(
         }
 
         // Hold the artifacts to what the spec pinned, AFTER placement: in the jail these are the
-        // hard-linked inodes that will boot, so there is no window between measuring and using.
-        if let Err(err) = image_identity::verify(image, jail_layout.as_ref()).await {
-            cleanup_net_resources(
-                &state.network_allocator,
-                &mut net_plan,
-                &mut netns_name,
-                &mut dns_proxy,
-                jail_layout.as_ref(),
-            )
-            .await;
-            return Err(ApiError::Driver(err));
-        }
+        // inodes that will boot (hard links, or a clone of a sealed copy for the rootfs).
+        // A pinned read-only rootfs is swapped for a clone of the node's sealed copy, measured
+        // once per node life (`sealed_rootfs.rs`); `None` leaves it to `verify` to read.
+        let sealed = match (&state.sealed_rootfs, &jail_layout, &image.rootfs_digest) {
+            (Some(store), Some(jail), Some(pin)) if image.read_only => {
+                let dest = jail.host_path(firecracker_config::in_jail::ROOTFS);
+                let owner = (state.jailer_uid.get(), state.jailer_gid);
+                store.place(image.rootfs_path(), pin, &dest, owner).await
+            }
+            _ => None,
+        };
+        let measured = match image_identity::verify(image, jail_layout.as_ref(), sealed).await {
+            Ok(measured) => measured,
+            Err(err) => {
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                    jail_layout.as_ref(),
+                )
+                .await;
+                return Err(ApiError::Driver(err));
+            }
+        };
 
         #[expect(
             clippy::disallowed_methods,
@@ -2451,8 +2327,7 @@ async fn spawn_firecracker_pod(
                 uid: state.jailer_uid,
                 gid: state.jailer_gid,
                 netns: netns_path.as_deref(),
-                cgroup: spec.spec.cgroup.as_ref(),
-                cgroup_version: firecracker_config::detect_cgroup_version(),
+                cgroup: &node_cgroup,
                 config_file_in_jail: (!state.firecracker_api_boot)
                     .then_some(firecracker_config::in_jail::CONFIG),
             };
@@ -2507,6 +2382,7 @@ async fn spawn_firecracker_pod(
         firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
         let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
         let prepared_identity = match pod_boot_identity::prepare(pod_boot_identity::Inputs {
+            measured,
             state,
             pod_dir,
             spec,
@@ -2520,6 +2396,9 @@ async fn spawn_firecracker_pod(
             task_token: task_token.clone(),
             pod_certificate: pod_certificate.clone(),
             broker_serve,
+            // Served once over FETCH_AUDIT_CREDENTIALS: the credential minted for this pod's
+            // resolved sink, never the node's own (#3160).
+            audit_creds: audit.map(audit_sink::credentials::AuditGrant::served_credentials),
         })
         .await
         {
@@ -2644,14 +2523,7 @@ async fn spawn_firecracker_pod(
         let mut netns_pid: Option<u32> = None;
 
         if state.firecracker_netns {
-            let default_policy = NetworkSpec {
-                allow: Vec::new(),
-                deny: Vec::new(),
-                dns_allow: Vec::new(),
-                url_allow: Vec::new(),
-                mime_allow: None,
-                max_response_bytes: None,
-            };
+            let default_policy = NetworkSpec::nothing_listed();
             let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
             let pid = match pid {
                 Some(pid) => pid,
@@ -2736,14 +2608,29 @@ async fn spawn_firecracker_pod(
         // late — the guest runs briefly before its limits exist. That is the window
         // the jailer closes, and the reason `--firecracker-jailer` defaults on.
         if jail_layout.is_none() {
-            if let Some(ref cgroup_spec) = spec.spec.cgroup {
-                if let Some(pid) = pid {
-                    cgroup::apply_cgroup(pid, cgroup_spec).await?;
-                } else {
-                    return Err(ApiError::Driver(
-                        "firecracker process id unavailable for cgroup placement".to_string(),
-                    ));
-                }
+            // Always placed (#3130): in the spec's directory if it names one, else the node's.
+            let dir = spec
+                .spec
+                .cgroup
+                .as_ref()
+                .map_or_else(|| cgroup::node_dir(&jail_id), |c| c.path.clone());
+            let placed = match pid {
+                Some(pid) => cgroup::apply_cgroup(pid, &dir, &node_cgroup).await,
+                None => Err(ApiError::Driver(
+                    "firecracker process id unavailable for cgroup placement".to_string(),
+                )),
+            };
+            if let Err(err) = placed {
+                let _ = child.kill().await;
+                cleanup_net_resources(
+                    &state.network_allocator,
+                    &mut net_plan,
+                    &mut netns_name,
+                    &mut dns_proxy,
+                    jail_layout.as_ref(),
+                )
+                .await;
+                return Err(err);
             }
         }
 
@@ -2782,7 +2669,7 @@ async fn spawn_firecracker_pod(
         let health_addr = proxy.listen_addr();
         let signed_proxy = Some(proxy);
 
-        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id).await {
+        if let Err(err) = net::confinement::gate(health_addr, pod_dir, spec, id, &mut child).await {
             if let Some(proxy) = signed_proxy {
                 proxy.shutdown().await;
             }
@@ -2853,13 +2740,23 @@ async fn spawn_firecracker_pod(
             prepared_identity.identity(),
             id,
             broker_verify,
-            // The SAME expression the workload API bridge uses. That socket was
-            // chowned and this one was not, which is why no guest could have
-            // reached the broker under the jailer.
+            // The SAME expression the workload API bridge uses. That socket was chowned and this
+            // one was not, which is why no guest could have reached the broker under the jailer.
             jail_layout
                 .as_ref()
                 .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-        )?;
+        )
+        .await?;
+        let decide = host_decide::start_for_pod(
+            state,
+            id,
+            &vsock_path,
+            pod_dir,
+            jail_layout
+                .as_ref()
+                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+        )
+        .await;
 
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
@@ -2886,6 +2783,7 @@ async fn spawn_firecracker_pod(
             identity_manager,
             workload_api_bridge: Mutex::new(workload_api_bridge),
             broker: Mutex::new(broker),
+            decide: Mutex::new(decide),
             snapshot: verdict.found().map(|v| config.snapshot_inputs(v)),
         };
 
@@ -2983,42 +2881,6 @@ fn build_firecracker_pool(args: &Args) -> Option<Arc<Semaphore>> {
     Some(Arc::new(Semaphore::new(args.firecracker_max_pods)))
 }
 
-fn build_github_oidc(args: &Args) -> Option<Arc<oidc::GitHubOidcValidator>> {
-    if !args.oidc_github_enabled {
-        return None;
-    }
-
-    let mut config = oidc::GitHubOidcConfig::new(&args.identity_trust_domain)
-        .enabled()
-        .with_audience(&args.oidc_github_audience)
-        .with_cert_ttl(Duration::from_secs(args.oidc_github_cert_ttl_secs));
-
-    if let Some(ref repos) = args.oidc_github_allowed_repos {
-        config = config.with_allowed_repos(repos);
-    }
-    if let Some(ref orgs) = args.oidc_github_allowed_orgs {
-        config = config.with_allowed_orgs(orgs);
-    }
-
-    // Require at least one allowed repo or org
-    if config.allowed_repos.is_empty() && config.allowed_orgs.is_empty() {
-        error!(
-            "GitHub OIDC enabled but no repos or orgs allowed. Set --oidc-github-allowed-repos or --oidc-github-allowed-orgs"
-        );
-        return None;
-    }
-
-    info!(
-        repos = ?config.allowed_repos,
-        orgs = ?config.allowed_orgs,
-        audience = %config.audience,
-        cert_ttl_secs = config.cert_ttl.as_secs(),
-        "GitHub OIDC enabled"
-    );
-
-    Some(Arc::new(oidc::GitHubOidcValidator::new(config)))
-}
-
 fn start_pod_reaper(state: NodeState) {
     tokio::spawn(async move {
         let mut reaped = std::collections::HashSet::new();
@@ -3063,12 +2925,8 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
             }
             // Write lifecycle audit for pod exit
             let detail = match &pod_state {
-                PodState::Exited { code } => {
-                    format!("exit_code={}", code.unwrap_or(-1))
-                }
-                PodState::Error { message } => {
-                    format!("error={}", message)
-                }
+                PodState::Exited { code } => format!("exit_code={}", code.unwrap_or(-1)),
+                PodState::Error { message } => format!("error={message}"),
                 _ => "unknown".to_string(),
             };
             let pod_dir = pod.log_path.parent().unwrap_or(Path::new("."));
@@ -3076,8 +2934,10 @@ async fn reap_once(state: &NodeState, reaped: &mut std::collections::HashSet<Uui
                 .await;
 
             pod.cleanup_after_exit().await;
-            // Hand the child's budget allocation back to its parent.
-            state.authority.release_child(pod.id).await;
+            // Credit only what the node could verify; see `creditable_spend`.
+            let creditable =
+                clearing_receipt_collector::creditable_spend(pod_dir, &pod.id.to_string());
+            state.authority.release_child(pod.id, creditable).await;
         }
     }
 
@@ -3150,7 +3010,7 @@ async fn wait_for_vsock_socket(path: &Path) -> Result<(), ApiError> {
 /// host round-trips during startup, and would be wrong even once the host chain
 /// is fixed. It is not a workaround for that defect and should not be read as
 /// one.
-pub(crate) const PROXY_HEALTH_TIMEOUT_SECS_DEFAULT: u64 = 30;
+pub(crate) use nucleus_spec::boot_budget::PROXY_HEALTH_TIMEOUT_SECS_DEFAULT;
 
 async fn serve_grpc(
     state: NodeState,
@@ -3229,13 +3089,18 @@ impl NodeService for GrpcService {
             .ok_or_else(|| Status::unauthenticated("no authenticated peer"))?;
         let admission =
             pod_authority::Admission::from_grpc(&self.state.authz_policy, &auth_ctx, &request);
-        let parent_pod_id = pod_api::resolve_parent_pod_id(
-            admission.caller_pod,
-            request
-                .metadata()
-                .get("x-nucleus-parent-pod-id")
-                .and_then(|v| v.to_str().ok()),
-        );
+        // The resolver HTTP uses, on the peer `admission` read: no token here.
+        let policy = &self.state.authz_policy;
+        let scope = policy
+            .caller_scope(None, &auth_ctx.spiffe_id)
+            .map_err(|e| Status::permission_denied(e.to_string()))?;
+        let named = request
+            .metadata()
+            .get(PARENT_HEADER)
+            .and_then(|v| v.to_str().ok());
+        let parent_pod_id = pod_api::parent_for_create(&self.state, &scope, named)
+            .await
+            .map_err(|e| Status::not_found(e.to_string()))?;
 
         let yaml = request.into_inner().yaml;
         if yaml.trim().is_empty() {
@@ -3277,8 +3142,8 @@ impl NodeService for GrpcService {
         )?;
 
         // Scoped to the calling pod exactly as the HTTP listing is (#2475).
-        let caller = pod_api::grpc_caller(self.state.caller_secret.as_ref(), request.metadata());
-        let infos = pod_api::collect_pod_infos(&self.state, caller).await;
+        let caller = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())?;
+        let infos = pod_api::collect_pod_infos(&self.state, &caller).await;
         let pods = infos.into_iter().map(pod_info_to_grpc).collect();
         Ok(GrpcResponse::new(proto::ListPodsResponse { pods }))
     }
@@ -3294,8 +3159,8 @@ impl NodeService for GrpcService {
             auth::Operation::StreamLogs,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
         let logs = tokio::fs::read_to_string(&pod.log_path)
             .await
             .unwrap_or_default();
@@ -3313,8 +3178,8 @@ impl NodeService for GrpcService {
             auth::Operation::CancelPod,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
         pod.cancel()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -3334,8 +3199,8 @@ impl NodeService for GrpcService {
             auth::Operation::GetPod,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let (md, ext, req) = request.into_parts();
+        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.pod_id).await?;
         let info = handle.info().await;
         Ok(GrpcResponse::new(proto::GetPodResponse {
             pod: Some(pod_info_to_grpc(info)),
@@ -3355,8 +3220,8 @@ impl NodeService for GrpcService {
             auth::Operation::StreamLogs,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.pod_id).await?;
 
         let log_path = pod.log_path.clone();
         let follow = req.follow;
@@ -3387,8 +3252,8 @@ impl NodeService for GrpcService {
             auth::Operation::GetPod,
         )?;
 
-        let (md, _, req) = request.into_parts();
-        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &req.pod_id).await?;
+        let (md, ext, req) = request.into_parts();
+        let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.pod_id).await?;
         let id = pod.id;
 
         let include_initial = req.include_initial;
@@ -3416,9 +3281,9 @@ impl NodeService for GrpcService {
             auth::Operation::GetReceipt,
         )?;
 
-        let (md, _, req) = request.into_parts();
+        let (md, ext, req) = request.into_parts();
         let pod_id_str = req.pod_id;
-        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &pod_id_str).await?;
+        let handle = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &pod_id_str).await?;
 
         let built = pod_receipt::build(&handle, &self.state.authority)
             .await
@@ -3444,118 +3309,17 @@ impl NodeService for GrpcService {
         &self,
         request: Request<proto::LockdownRequest>,
     ) -> Result<GrpcResponse<proto::LockdownResponse>, Status> {
-        // Red team finding: this was the only RPC without auth.
+        // Issuing and lifting are both operator actions: see `auth::Operation::Lockdown`.
         auth::authorize_grpc_operation(
             &request,
             &self.state.authz_policy,
-            auth::Operation::CancelPod, // Lockdown is at least as privileged as cancel
+            auth::Operation::Lockdown,
         )?;
 
-        let req = request.into_inner();
-        let reason = if req.reason.is_empty() {
-            "emergency lockdown".to_string()
-        } else {
-            req.reason.clone()
-        };
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let scope_str = match &req.scope {
-            Some(proto::lockdown_request::Scope::PodId(id)) => format!("pod:{id}"),
-            Some(proto::lockdown_request::Scope::LabelSelector(sel)) => format!("label:{sel}"),
-            None => "all".to_string(),
-        };
-
-        let cmd = proto::LockdownCommand {
-            active: !req.restore,
-            reason: reason.clone(),
-            operator_id: req.operator_id.clone(),
-            timestamp_unix: timestamp,
-            scope: scope_str.clone(),
-        };
-
-        // Broadcast to all connected tool-proxy streams
-        let broadcast_receivers = self.state.lockdown_tx.receiver_count();
-        let _send_result = self.state.lockdown_tx.send(cmd);
-
-        // Count affected pods by scope
-        let pods = self.state.pods.lock().await;
-        let affected_pods = match &req.scope {
-            Some(proto::lockdown_request::Scope::PodId(id)) => {
-                if pods.values().any(|p| p.id.to_string() == *id) {
-                    1u32
-                } else {
-                    0u32
-                }
-            }
-            Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
-                pods.values()
-                    .filter(|p| matches_label_selector(&p.spec.metadata.labels, selector))
-                    .count() as u32
-            }
-            None => pods.len() as u32,
-        };
-
-        tracing::warn!(
-            reason = %reason,
-            operator = %req.operator_id,
-            restore = req.restore,
-            scope = %scope_str,
-            affected_pods,
-            broadcast_receivers,
-            "LOCKDOWN RPC — broadcast to connected proxies"
-        );
-
-        // Write per-pod lifecycle audit events (label-scoped matching).
-        {
-            let action = if req.restore {
-                "lockdown_restored"
-            } else {
-                "lockdown_applied"
-            };
-            for pod in pods.values() {
-                let matches = match &req.scope {
-                    Some(proto::lockdown_request::Scope::PodId(target_id)) => {
-                        pod.id.to_string() == *target_id
-                    }
-                    Some(proto::lockdown_request::Scope::LabelSelector(selector)) => {
-                        matches_label_selector(&pod.spec.metadata.labels, selector)
-                    }
-                    None => true,
-                };
-                if !matches {
-                    continue;
-                }
-                tracing::info!(
-                    pod_id = %pod.id,
-                    action = action,
-                    reason = %reason,
-                    operator = %req.operator_id,
-                    "lockdown: pod affected"
-                );
-                let pod_dir = pod.log_path.parent().unwrap_or_else(|| Path::new("."));
-                lifecycle::write_lifecycle_audit(
-                    pod_dir,
-                    action,
-                    &pod.id.to_string(),
-                    &format!("reason={}, operator={}", reason, req.operator_id),
-                )
-                .await;
-            }
-        }
-        // Release pods lock before response
-        drop(pods);
-
-        Ok(GrpcResponse::new(proto::LockdownResponse {
-            affected_pods,
-            // TODO: wire up actual audit entry creation when per-pod
-            // AuditEntry::ExecutionBlocked is implemented. Do not fabricate counts.
-            audit_entries_created: 0,
-            timestamp_unix: timestamp,
-        }))
+        let (operator, req) = lockdown::attributed(request)?;
+        Ok(GrpcResponse::new(
+            lockdown::issue(&self.state, operator, req).await,
+        ))
     }
 
     type WatchLockdownStream = ReceiverStream<Result<proto::LockdownCommand, Status>>;
@@ -3570,12 +3334,11 @@ impl NodeService for GrpcService {
             auth::Operation::CancelPod,
         )?;
 
-        // WHICH pod is watching; an unidentified watcher is unchanged.
-        let watcher = pod_caller_identity::identify_from_metadata(
-            self.state.caller_secret.as_ref(),
-            request.metadata(),
-        )
-        .ok();
+        // WHICH pod is watching, resolved as every other handler resolves it (a
+        // pod peer is its own pod); anything unresolved still receives, fail-open.
+        let watcher = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())
+            .ok()
+            .and_then(|scope| scope.pod());
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes
@@ -3584,7 +3347,7 @@ impl NodeService for GrpcService {
 
         let (tx, grpc_rx) = tokio::sync::mpsc::channel(16);
 
-        lockdown::spawn_filtered_forwarder(rx, tx, watcher);
+        lockdown::spawn_filtered_forwarder(self.state.clone(), rx, tx, watcher);
 
         // ACK consumer: log acknowledgements from the tool-proxy
         tokio::spawn(async move {

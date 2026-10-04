@@ -17,7 +17,7 @@
 //! Two backstops make "the adversary cannot influence which values get
 //! released" (robust declassification) hold at the *who* dimension:
 //!
-//! * With no trusted keys configured, `apply_declassification_token` refuses
+//! * With no trusted keys configured, `verify_declassification` refuses
 //!   outright — fail-closed, so an un-provisioned pod cannot declassify at all.
 //! * No agent-reachable path may write the trusted-key set:
 //!   `Kernel::set_trusted_keys` is called only at construction from the
@@ -27,7 +27,7 @@
 //! The scope itself (a token clears its node only for the sinks it signed) is
 //! enforced in `FlowGraph` and proven over the extracted decision core
 //! (`DeclassifySinkScopeExtracted.lean`); the one-shot burn (a token applies at
-//! most once) is enforced by the kernel's spent-signature ledger and proven as
+//! most once) is enforced by the graph's shared release-burn ledger and proven as
 //! the absorbing `declass_step` machine.
 
 use axum::Json;
@@ -76,7 +76,8 @@ pub fn governor_keys_from_env(raw: Option<&str>) -> Vec<[u8; 32]> {
 /// A governor's request to apply a single-use declassification token.
 ///
 /// The token carries its own Ed25519 signature; this endpoint is a thin,
-/// signature-gated wrapper over `Kernel::apply_declassification_token`.
+/// signature-gated wrapper over `Kernel::verify_declassification` +
+/// `FlowGraph::apply_verified`.
 #[derive(Debug, Deserialize)]
 pub(crate) struct DeclassifyRequest {
     /// The governor-signed token. Its `signature` field is what authorizes the
@@ -120,15 +121,24 @@ pub(crate) async fn apply_declassification(
         .collect();
     let target = token.target_node_id;
 
+    // Two calls joined by a witness (2026-09-27). The kernel checks the
+    // governor signature and mints a `VerifiedDeclassification`; the graph
+    // spends it BY VALUE — replay, value binding, scope, burn. There is no
+    // other public way onto the graph: the unsigned `FlowGraph::apply_token` is
+    // crate-private and `DeclassScope` cannot be written by hand.
+    //
     // Re-home (Phase 4.5): the scope must land on the session's authoritative
     // `state.flow_graph` — the graph the live egress verdict reads — not the
     // kernel's separate, never-populated `flow_graph`. Lock order MUST be
     // (kernel, then flow_graph) to match `http_kernel_decide` and the ingest
     // path, or the two lock sites could deadlock.
+    let now = chrono::Utc::now().timestamp() as u64;
     let applied = {
         let kernel = state.kernel.lock().await;
         let mut graph = state.flow_graph.lock().await;
-        kernel.apply_declassification_token_on(&mut graph, &token)
+        kernel
+            .verify_declassification(&token)
+            .and_then(|v| graph.apply_verified(v, now))
     };
 
     let result = classify_apply_result(applied, target, &sinks);

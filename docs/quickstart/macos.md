@@ -19,7 +19,7 @@ nucleus setup
 > forbidden one refused with `kind=kernel_denied`, and no PID-1 panic.
 >
 > `v2.1.0` is the first release whose rootfs carries a CA bundle — everything up
-> to 2.0.2 panics as PID 1, and `GUEST_RELEASE_FLOOR` refuses to install those.
+> to 2.0.2 panics as PID 1, and `tier2_artifacts::GuestCapability` refuses to install those.
 > Earlier revisions of this page told you to build from a clone instead, because
 > at the time no published release could boot a pod.
 >
@@ -140,11 +140,14 @@ the tool-proxy directly — the same enforcement path, no vendor in it.
 
 Releases at or below **2.0.2 cannot boot**: their rootfs contains no CA bundle
 anywhere, and on such a rootfs the tool-proxy's drand client fails and, as PID 1,
-takes the guest kernel with it. `tier2_artifacts::GUEST_RELEASE_FLOOR` refuses
-them rather than installing a pod that cannot start.
+takes the guest kernel with it. `tier2_artifacts::GuestCapability` refuses
+them rather than installing a pod that cannot start. v2.2.0 is refused too: its
+guest predates the egress attestation (#2365), the SVID on tmpfs (#2379), the
+workload door (#3031), the in-guest MCP bridge (#3135), and streaming
+egress (#3178).
 
-The pinned release is **`2.1.0`**, the first build carrying the CA bundle,
-the `ip netns exec` separator fix and the workload-API socket chown. Each
+The pinned release is **`2.3.0`**, the first build whose guest meets every
+`GuestCapability`. Each
 downloaded asset is checked against the release API digest and, when `gh` is on
 PATH, against its Sigstore build provenance — the output says which of the two
 happened rather than implying both.

@@ -25,7 +25,9 @@
 #
 # INPUTS (taken as given — built by the caller / CI, like boot-harness.sh). The
 # rootfs MUST bake `nucleus-podlist-probe` and carry `podlist-probe-pod.yaml`
-# (orchestrator + enable_pod_mgmt) as /etc/nucleus/pod.yaml.
+# (orchestrator + enable_pod_mgmt) as /etc/nucleus/pod.yaml. guest-init must
+# be built with the CI-only `ci-podlist-probe` feature; the ordinary workload
+# remains sandboxed and does not open vsock.
 #   KERNEL, ROOTFS, NODE_BIN   (defaults under $FC_DIR=$HOME/fc)
 #
 # Usage: [FC_DIR=… KERNEL=… ROOTFS=… NODE_BIN=…] scripts/firecracker/podlist-boot-check.sh
@@ -78,6 +80,7 @@ sudo -b env RUST_LOG="${RUST_LOG:-warn}" \
     NUCLEUS_JAILER_PATH="$(command -v jailer)" \
     NUCLEUS_JAILER_CHROOT_BASE="$JAIL_DIR" \
     NUCLEUS_FIRECRACKER_NETNS=false \
+    NUCLEUS_NODE_ARTIFACTS_ROOT="$FC_DIR" \
     "$NODE_BIN" --listen "$ADDR" --state-dir "$STATE_DIR" \
     --proxy-auth-secret "$SECRET" --proxy-approval-secret "$SECRET" \
     --identity-workload-api-socket "$FC_DIR/wapi.sock" > "$FC_DIR/node-podlist-check.log" 2>&1
@@ -108,7 +111,7 @@ for _ in $(seq 1 60); do N health >/dev/null 2>&1 && { ready=1; break; }; sleep 
 spec() {
     local name=$1 rootfs=$2
     cat > "$FC_DIR/$name.json" <<JSON
-{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{"name":"$name","labels":{"enable_pod_mgmt":"true"}},"spec":{"work_dir":"/work","timeout_seconds":120,"policy":{"type":"profile","name":"orchestrator"},"image":{"kernel_path":"$KERNEL","rootfs_path":"$rootfs","read_only":false},"vsock":{"guest_cid":3,"port":5005}}}
+{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{"name":"$name","labels":{"enable_pod_mgmt":"true"}},"spec":{"work_dir":"/work","timeout_seconds":120,"policy":{"type":"profile","name":"orchestrator"},"image":{"kernel_path":"$KERNEL","rootfs_path":"$rootfs","read_only":true},"vsock":{"guest_cid":3,"port":5005}}}
 JSON
 }
 # create <name> <rootfs> -> prints "<id> <proxy_addr>" (operator-created, no parent)
@@ -146,7 +149,7 @@ sleep 14   # A boots (~7s to probe) and the probe polls until C/B settle.
 ALOG="$(sudo find "$STATE_DIR" "$JAIL_DIR" -path "*$A*" -name firecracker.log 2>/dev/null | head -1)"
 [ -n "$ALOG" ] || die "no firecracker.log for A ($A)"
 # `tr -d` strips the guest console's trailing CR so the id set compares cleanly.
-IDS="$(sudo grep -aoE 'NUCLEUS_PODLIST_PROBE: PASS self=[^ ]+ ids=[^ ]+' "$ALOG" 2>/dev/null | tail -1 | sed -E 's/.*ids=//' | tr -d '[:space:]')"
+IDS="$(sudo grep -aoE 'NUCLEUS_PODLIST_PROBE: PASS ids=[^ ]+' "$ALOG" 2>/dev/null | tail -1 | sed -E 's/.*ids=//' | tr -d '[:space:]')"
 OP="$(operator_ids)"
 
 echo "  A(orch) =$A"

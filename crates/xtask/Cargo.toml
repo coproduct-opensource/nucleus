@@ -38,3 +38,17 @@ hex = { workspace = true }
 regex = { workspace = true }
 # Throwaway test trees for workspace gates.
 tempfile = { workspace = true }
+# `guest-layer`: the guest's binary table, and the tar writer an imported image
+# is emitted with, so the layer and the image are normalized by one piece of code.
+nucleus-spec = { path = "../nucleus-spec" }
+nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
+# The guest layer's CA bundle. Pinned EXACTLY: the rendered bundle's digest is
+# pinned in guest_layer.rs (CA_BUNDLE_SHA256), so a bump is a reviewed diff there.
+webpki-root-certs = "=1.0.9"
+base64 = { workspace = true }
+# `gates-can-fail` restores a perturbed file on SIGINT/SIGTERM before it exits: a
+# half-perturbed tree left behind by an interrupted run is worse than no check.
+signal-hook = "0.3"
+
+[dev-dependencies]
+tar = { version = "0.4", default-features = false }

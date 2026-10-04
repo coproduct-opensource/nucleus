@@ -1,0 +1,49 @@
+[package]
+name = "nucleus-decision-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The per-pod decision channel's wire declaration: one frame codec the guest and the host both link"
+
+# ONE declaration of the guest<->host decision wire (#2702, P7).
+#
+# The guest asks ("may I do OP to SUBJECT with these args?") and reports
+# observations that can only raise its taint; the host decides, numbers the
+# frames and mints the decision ids. Both halves link THIS crate, so there is
+# one encoder and one decoder rather than two that agree today. Two copies of
+# the proxy wire format drifted silently once already (nucleus-mcp sent `/v1/run`
+# a body the proxy never accepted); this crate exists so that cannot recur here.
+#
+# Pure: no I/O, no async, no serde. The framing layer that reads a socket is the
+# caller's (P8); everything that interprets a byte is here, so the fuzz target
+# and the property tests exercise exactly the code both sides run.
+
+[dependencies]
+# `Operation` and the IFC label lattice, NOT restated (ADR 0007 G-1). This is the
+# crate those types are defined in; `portcullis_core::{Operation, IFCLabel}` is a
+# re-export of the same items, so either side naming them through portcullis-core
+# gets the identical type. Depending on the defining crate keeps this one
+# dependency-free beyond it: nucleus-ifc-kernel has no dependencies at default
+# features, and both nucleus-node and nucleus-tool-proxy already link it.
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0", default-features = false }
+
+# The `kernel` feature (P8): the facts BOTH ends of the shadow channel compute
+# from a portcullis kernel, written once so the guest and the host cannot map a
+# verdict, summarise a taint or digest a call two ways (ADR 0007 G-1). Off by
+# default: the codec above stays dependency-free, and the fuzz target builds it
+# without the kernel. Both consumers (nucleus-node, nucleus-tool-proxy) already
+# link portcullis and sha2.
+portcullis = { path = "../portcullis", version = "1.0.0", optional = true }
+sha2 = { workspace = true, optional = true }
+
+[features]
+default = []
+kernel = ["dep:portcullis", "dep:sha2"]
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

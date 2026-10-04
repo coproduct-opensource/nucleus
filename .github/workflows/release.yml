@@ -160,11 +160,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: guest-binaries-${{ matrix.arch }}
-          # All seven the rootfs needs. Building them is not enough — the
+          # All eight the rootfs needs. Building them is not enough — the
           # rootfs job runs on a different runner and only sees what is
           # uploaded here, so this list and the `cross build` list above must
           # stay in step. `the_release_builds_every_binary_the_rootfs_needs`
-          # fails if either drifts from build-rootfs.sh.
+          # fails if either drifts from build-rootfs.sh. `nucleus-mcp` (#2696 P2)
+          # is built in the CLI step above; the guest carries it so an agent run
+          # in the pod can reach its tools.
           path: |
             target/${{ matrix.target }}/release/nucleus-guest-init
             target/${{ matrix.target }}/release/nucleus-tool-proxy
@@ -173,6 +175,7 @@ jobs:
             target/${{ matrix.target }}/release/nucleus-egress-probe
             target/${{ matrix.target }}/release/nucleus-adversary-probe
             target/${{ matrix.target }}/release/nucleus-podlist-probe
+            target/${{ matrix.target }}/release/nucleus-mcp
 
   # Build pre-built rootfs images
   build-rootfs:

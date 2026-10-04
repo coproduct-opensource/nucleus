@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-verifier-service", version)]
+#[command(name = "nucleus-verifier-service", version, mut_args = |a| a.hide_env_values(true))]
 struct Cli {
     /// Bind address (host:port). Fly.io exposes 0.0.0.0:8080 by default.
     #[arg(long, default_value = "0.0.0.0:8080", env = "NUCLEUS_VERIFIER_BIND")]
@@ -262,3 +262,6 @@ async fn shutdown_signal() {
     }
     tracing::info!("shutdown signal received");
 }
+
+#[cfg(test)]
+mod help_env_tests;

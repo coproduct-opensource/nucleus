@@ -9,6 +9,7 @@
 //!
 //! Nothing about the behaviour changes in this move.
 
+use crate::auth::CallerScope;
 use crate::{ApiError, NodeState, PodHandle, PodInfo};
 use axum::Json;
 use axum::extract::{Extension, Path as AxumPath, State};
@@ -47,9 +48,27 @@ pub(crate) type PodRegistry =
 /// asked WHICH pods that authorises, so any pod holding it could list, read the
 /// logs of, and cancel every pod on the node -- including other tenants'. The
 /// node had recorded lineage all along and consulted it only for cascade-cancel.
-fn caller_may_manage(caller: Option<Uuid>, pod_id: Uuid, parent_pod_id: Option<Uuid>) -> bool {
-    let Some(caller) = caller else {
-        return true;
+///
+/// # A CI/CD identity
+///
+/// Reaches exactly the pods it created: those the node stamped
+/// `auth::CI_PRINCIPAL_LABEL` = its SPIFFE ID (`ci_principal`). It used to fall
+/// into the operator's arm, because "not a pod" was spelled like "every pod".
+pub(crate) fn caller_may_manage(
+    caller: &CallerScope,
+    pod_id: Uuid,
+    parent_pod_id: Option<Uuid>,
+    ci_principal: Option<&str>,
+) -> bool {
+    let caller = match caller {
+        CallerScope::NodeWide => return true,
+        CallerScope::CiPrincipal(id) => return ci_principal == Some(id.as_str()),
+        // A tenant is scoped by the trust domain of the pod's recorded root, a
+        // fact this predicate is not given: `in_scope` decides it before ever
+        // calling here. Reaching this arm is a caller that skipped that, and it
+        // gets nothing rather than lineage it does not have.
+        CallerScope::Tenant(_) => return false,
+        CallerScope::Pod(caller) => *caller,
     };
     // DIRECT children, and itself -- not the transitive descendant closure.
     //
@@ -65,23 +84,77 @@ fn caller_may_manage(caller: Option<Uuid>, pod_id: Uuid, parent_pod_id: Option<U
     parent_pod_id == Some(caller) || pod_id == caller
 }
 
-/// The parent to record for a pod being created.
+/// A create named, as its parent, a pod the caller may not manage (#3126).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParentOutOfScope(Uuid);
+
+/// The parent to record for a pod being created, decided per scope. The pure
+/// half of [`parent_for_create`]: `registry` holds the pod the header names,
+/// if any, and only a CI identity's arm reads it.
 ///
-/// A proved caller identity wins outright; the header is only consulted when
-/// nothing was proved. See the call site for why the header alone is not
-/// trustworthy.
-pub(crate) fn resolve_parent_pod_id(caller: Option<Uuid>, header: Option<&str>) -> Option<Uuid> {
+/// * `Pod` — the proved pod, outright, whatever the header says.
+/// * `Tenant` — NO parent from the header. It is unauthenticated, so honouring
+///   it let a tenant make any pod on the node the parent of a pod it controls:
+///   its pod then appeared in the victim's `/v1/pods` listing and
+///   `PodListView`, and in the victim's cascade-cancel. A tenant's pods are
+///   roots of its own lineage (#3022).
+/// * `NodeWide` — the header, as named: the operator or an orchestrator holds
+///   every pod already, so lineage it records grants it nothing new.
+/// * `CiPrincipal` — the header only when it names a pod this identity may
+///   manage: one stamped with its own ID (#3088's label rule, the same
+///   `scoped_lookup` every read and cancel uses). Naming any other pod plants
+///   the CI's pod in that pod's lineage exactly as a tenant could, so it is
+///   refused rather than recorded or silently dropped (#3126).
+///
+/// An unparseable header is no parent, for every scope that reads one.
+fn resolve_parent_pod_id<T: Lineage + Clone>(
+    caller: &CallerScope,
+    header: Option<&str>,
+    registry: &[T],
+) -> Result<Option<Uuid>, ParentOutOfScope> {
+    let named = header.and_then(|s| Uuid::parse_str(s).ok());
     match caller {
-        Some(pod_id) => Some(pod_id),
-        None => header.and_then(|s| Uuid::parse_str(s).ok()),
+        CallerScope::Pod(pod_id) => Ok(Some(*pod_id)),
+        CallerScope::Tenant(_) => Ok(None),
+        CallerScope::NodeWide => Ok(named),
+        CallerScope::CiPrincipal(_) => match named {
+            None => Ok(None),
+            Some(id) => scoped_lookup(registry, id, caller)
+                .map(|_| Some(id))
+                .ok_or(ParentOutOfScope(id)),
+        },
     }
+}
+
+/// The parent a create records, for HTTP and gRPC alike: the one decider
+/// ([`resolve_parent_pod_id`]) over the pod the header names in the live
+/// registry. An out-of-scope parent is `NotFound`, the answer for a pod that
+/// does not exist, so a refused create does not tell a CI identity which pod
+/// ids are present (the oracle argument on [`get_pod_for_caller`]).
+pub(crate) async fn parent_for_create(
+    state: &NodeState,
+    caller: &CallerScope,
+    header: Option<&str>,
+) -> Result<Option<Uuid>, ApiError> {
+    let named = match header.and_then(|s| Uuid::parse_str(s).ok()) {
+        Some(id) => state.pods.lock().await.get(&id).cloned(),
+        None => None,
+    };
+    resolve_parent_pod_id(caller, header, named.as_slice()).map_err(|ParentOutOfScope(id)| {
+        tracing::warn!(
+            parent = %id,
+            caller = ?caller,
+            "a create named a parent the caller may not manage"
+        );
+        ApiError::NotFound
+    })
 }
 
 pub(crate) async fn list_pods(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<CallerScope>,
 ) -> Result<Json<Vec<PodInfo>>, ApiError> {
-    let infos = collect_pod_infos(&state, caller).await;
+    let infos = collect_pod_infos(&state, &caller).await;
     Ok(Json(infos))
 }
 
@@ -92,9 +165,17 @@ pub(crate) async fn list_pods(
 /// registry, so the shipped set operation cannot diverge from what the test
 /// checks — the pointwise `caller_may_manage` tests never exercised the actual
 /// `.filter` as a SET (a sibling being *excluded* vs never present).
-trait Lineage {
+pub(crate) trait Lineage {
     fn lineage_id(&self) -> Uuid;
     fn lineage_parent(&self) -> Option<Uuid>;
+    /// The CI/CD identity the node recorded as this pod's creator, if any.
+    fn lineage_ci_principal(&self) -> Option<&str>;
+    /// The trust domain of the certificate root this pod was created under —
+    /// its tenant. `None` (the default) matches no tenant: fail-closed for
+    /// anything that does not record one.
+    fn lineage_tenant(&self) -> Option<&str> {
+        None
+    }
 }
 
 impl Lineage for Arc<PodHandle> {
@@ -104,6 +185,32 @@ impl Lineage for Arc<PodHandle> {
     fn lineage_parent(&self) -> Option<Uuid> {
         self.parent_pod_id
     }
+    fn lineage_ci_principal(&self) -> Option<&str> {
+        self.spec
+            .metadata
+            .labels
+            .get(crate::auth::CI_PRINCIPAL_LABEL)
+            .map(String::as_str)
+    }
+    fn lineage_tenant(&self) -> Option<&str> {
+        self.owner
+            .as_deref()
+            .and_then(crate::federation_ingress::trust_domain_of)
+    }
+}
+
+pub(crate) fn in_scope<T: Lineage>(it: &T, caller: &CallerScope) -> bool {
+    // A federated tenant (ADR 0001): exactly the pods whose certificate root is
+    // in its trust domain. Not lineage -- a tenant is not a pod.
+    if let CallerScope::Tenant(td) = caller {
+        return it.lineage_tenant() == Some(td.as_str());
+    }
+    caller_may_manage(
+        caller,
+        it.lineage_id(),
+        it.lineage_parent(),
+        it.lineage_ci_principal(),
+    )
 }
 
 /// Select the items an identified pod `caller` may manage, by the same
@@ -115,10 +222,10 @@ impl Lineage for Arc<PodHandle> {
 /// the absence of an identity is what it means. It is factored out precisely so
 /// C2 G3's guest→host `PodList` command can apply the identical filter with a
 /// socket-bound caller, over this one tested function rather than a copy.
-fn scope_to_caller<T: Lineage + Clone>(items: &[T], caller: Uuid) -> Vec<T> {
+fn scope_to_caller<T: Lineage + Clone>(items: &[T], caller: &CallerScope) -> Vec<T> {
     items
         .iter()
-        .filter(|it| caller_may_manage(Some(caller), it.lineage_id(), it.lineage_parent()))
+        .filter(|it| in_scope(*it, caller))
         .cloned()
         .collect()
 }
@@ -155,7 +262,10 @@ impl PodListView {
     pub(crate) async fn scoped_infos(&self) -> Vec<PodInfo> {
         let pods: Vec<Arc<PodHandle>> = {
             let guard = self.pods.lock().await;
-            scope_to_caller(&guard.values().cloned().collect::<Vec<_>>(), self.caller)
+            scope_to_caller(
+                &guard.values().cloned().collect::<Vec<_>>(),
+                &CallerScope::Pod(self.caller),
+            )
         };
         let mut infos = Vec::with_capacity(pods.len());
         for pod in pods {
@@ -171,16 +281,13 @@ impl PodListView {
 /// caller LEARNS the pod UUIDs it would then pass to `pod_logs` or `cancel_pod`.
 /// Returning the full list and refusing individually would hand out the
 /// identifiers first and refuse afterwards.
-pub(crate) async fn collect_pod_infos(state: &NodeState, caller: Option<Uuid>) -> Vec<PodInfo> {
+pub(crate) async fn collect_pod_infos(state: &NodeState, caller: &CallerScope) -> Vec<PodInfo> {
     let pods: Vec<Arc<PodHandle>> = {
         let guard = state.pods.lock().await;
         let all: Vec<Arc<PodHandle>> = guard.values().cloned().collect();
-        // An identified pod is scoped by the shared set filter; an operator
-        // (`None` — holds the node auth secret directly) sees every pod.
-        match caller {
-            Some(c) => scope_to_caller(&all, c),
-            None => all,
-        }
+        // One filter for every kind of caller; the node-wide arm of
+        // `caller_may_manage` is what lets the operator see every pod.
+        scope_to_caller(&all, caller)
     };
 
     let mut infos = Vec::with_capacity(pods.len());
@@ -193,10 +300,10 @@ pub(crate) async fn collect_pod_infos(state: &NodeState, caller: Option<Uuid>) -
 
 pub(crate) async fn pod_logs(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<CallerScope>,
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<String, ApiError> {
-    let pod = get_pod_for_caller(&state, id, caller).await?;
+    let pod = get_pod_for_caller(&state, id, &caller).await?;
     let logs = tokio::fs::read_to_string(&pod.log_path)
         .await
         .unwrap_or_default();
@@ -205,10 +312,10 @@ pub(crate) async fn pod_logs(
 
 pub(crate) async fn cancel_pod(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<CallerScope>,
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let pod = get_pod_for_caller(&state, id, caller).await?;
+    let pod = get_pod_for_caller(&state, id, &caller).await?;
     pod.cancel().await?;
     Ok(Json(serde_json::json!({"status": "cancelled"})))
 }
@@ -228,7 +335,7 @@ pub(crate) async fn get_pod(state: &NodeState, id: Uuid) -> Result<Arc<PodHandle
 pub(crate) async fn get_pod_for_caller(
     state: &NodeState,
     id: Uuid,
-    caller: Option<Uuid>,
+    caller: &CallerScope,
 ) -> Result<Arc<PodHandle>, ApiError> {
     let pod = get_pod(state, id).await?;
     scoped_lookup(std::slice::from_ref(&pod), id, caller).ok_or_else(|| {
@@ -245,21 +352,35 @@ pub(crate) async fn get_pod_for_caller(
 /// it is present AND `caller_may_manage` admits it. The same predicate as
 /// `scope_to_caller`, so a pod that is filtered OUT of the listing cannot be
 /// reached by id either — over HTTP or gRPC, which both call this.
-fn scoped_lookup<T: Lineage + Clone>(items: &[T], id: Uuid, caller: Option<Uuid>) -> Option<T> {
+fn scoped_lookup<T: Lineage + Clone>(items: &[T], id: Uuid, caller: &CallerScope) -> Option<T> {
     items
         .iter()
-        .find(|it| {
-            it.lineage_id() == id && caller_may_manage(caller, it.lineage_id(), it.lineage_parent())
-        })
+        .find(|it| it.lineage_id() == id && in_scope(*it, caller))
         .cloned()
 }
 
-/// WHICH pod a gRPC request proves it is, from the same two metadata entries
-/// the HTTP middleware reads — and with the same outcome for an unprovable
-/// claim (`.ok()`: treated as no identity, exactly as `auth_middleware` does),
-/// so the two transports cannot disagree about who is calling (#2475).
-pub(crate) fn grpc_caller(caller_secret: &[u8], md: &tonic::metadata::MetadataMap) -> Option<Uuid> {
-    crate::pod_caller_identity::identify_from_metadata(caller_secret, md).ok()
+/// WHICH pod a gRPC request acts as: the caller token from the same two
+/// metadata entries the HTTP middleware reads, AND the interceptor-verified
+/// peer, through `AuthorizationPolicy::caller_scope` — the resolver
+/// `auth_middleware` uses — so the two transports cannot disagree (#2475).
+///
+/// The peer is required, not optional: a request with no verified peer is
+/// `UNAUTHENTICATED`, and an identity the policy does not grant node-wide reach
+/// is `PERMISSION_DENIED`. Neither is ever answered with the unscoped `None`.
+pub(crate) fn grpc_caller(
+    state: &NodeState,
+    md: &tonic::metadata::MetadataMap,
+    extensions: &tonic::Extensions,
+) -> Result<CallerScope, tonic::Status> {
+    let ctx = extensions
+        .get::<crate::auth::AuthContext>()
+        .ok_or_else(|| tonic::Status::unauthenticated("no authenticated peer"))?;
+    let token_pod =
+        crate::pod_caller_identity::identify_from_metadata(state.caller_secret.as_ref(), md).ok();
+    state
+        .authz_policy
+        .caller_scope(token_pod, &ctx.spiffe_id)
+        .map_err(|e| tonic::Status::permission_denied(e.to_string()))
 }
 
 /// Resolve a pod named on the wire for a gRPC caller: parse the id, identify
@@ -269,12 +390,13 @@ pub(crate) fn grpc_caller(caller_secret: &[u8], md: &tonic::metadata::MetadataMa
 pub(crate) async fn grpc_scoped_pod(
     state: &NodeState,
     md: &tonic::metadata::MetadataMap,
+    extensions: &tonic::Extensions,
     raw_id: &str,
 ) -> Result<Arc<PodHandle>, tonic::Status> {
     let id =
         Uuid::parse_str(raw_id).map_err(|_| tonic::Status::invalid_argument("invalid pod id"))?;
-    let caller = grpc_caller(state.caller_secret.as_ref(), md);
-    get_pod_for_caller(state, id, caller)
+    let caller = grpc_caller(state, md, extensions)?;
+    get_pod_for_caller(state, id, &caller)
         .await
         .map_err(|_| tonic::Status::not_found("pod not found"))
 }
@@ -297,10 +419,10 @@ pub(crate) async fn grpc_scoped_pod(
 /// barrier exists to prevent, and one that is otherwise completely silent.
 pub(crate) async fn snapshot_pod(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<CallerScope>,
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let pod = get_pod_for_caller(&state, id, caller).await?;
+    let pod = get_pod_for_caller(&state, id, &caller).await?;
     snapshot_running_pod(&state, &pod).await
 }
 
@@ -470,18 +592,18 @@ async fn snapshot_running_pod(
 ///
 /// The route the SDKs have been calling all along. `Operation::GetReceipt` has existed in the
 /// authorization enum since receipts did, and the gRPC surface has served them — but over HTTP
-/// this was a 404, so `sdk/python/nucleus_sdk/client.py`'s `get_receipt` could never have worked.
+/// this was a 404, so `sdks/python/nucleus_sdk/client.py`'s `get_receipt` could never have worked.
 ///
 /// Read-only, unlike its gRPC twin, which also fires an outward report to the trust API. That
 /// asymmetry is deliberate and `pod_receipt`'s module docs carry the argument: a GET should not
 /// have an external side effect, and the existing one is contained rather than propagated.
 pub(crate) async fn get_receipt(
     State(state): State<NodeState>,
-    Extension(caller): Extension<Option<Uuid>>,
+    Extension(caller): Extension<CallerScope>,
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<crate::pod_receipt::Receipt>, ApiError> {
     use crate::pod_receipt::ReceiptError;
-    let pod = get_pod_for_caller(&state, id, caller).await?;
+    let pod = get_pod_for_caller(&state, id, &caller).await?;
     match crate::pod_receipt::build(&pod, &state.authority).await {
         Ok(built) => Ok(Json(built.receipt)),
         // A pod that has not finished has no receipt YET, which is not the same as not having one
@@ -497,8 +619,36 @@ pub(crate) async fn get_receipt(
 
 #[cfg(test)]
 mod ownership_tests {
-    use super::{caller_may_manage, resolve_parent_pod_id};
+    use super::{ParentOutOfScope, caller_may_manage, resolve_parent_pod_id};
+    use crate::auth::CallerScope;
     use uuid::Uuid;
+
+    /// A registry entry for the parent resolver: a root pod, stamped with the
+    /// CI identity that created it, or with none.
+    #[derive(Clone)]
+    struct Named {
+        id: Uuid,
+        ci: Option<&'static str>,
+    }
+    impl super::Lineage for Named {
+        fn lineage_id(&self) -> Uuid {
+            self.id
+        }
+        fn lineage_parent(&self) -> Option<Uuid> {
+            None
+        }
+        fn lineage_ci_principal(&self) -> Option<&str> {
+            self.ci
+        }
+    }
+    /// The header names no pod the registry holds.
+    const NONE: [Named; 0] = [];
+    const CI: &str = "spiffe://nucleus.local/ns/github/sa/org-repo";
+    const OTHER_CI: &str = "spiffe://nucleus.local/ns/github/sa/org-other";
+
+    fn ci() -> CallerScope {
+        CallerScope::CiPrincipal(CI.to_string())
+    }
 
     fn a() -> Uuid {
         Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").unwrap()
@@ -515,7 +665,12 @@ mod ownership_tests {
     /// logs of, and cancel every pod on the node -- including other tenants'.
     #[test]
     fn a_pod_cannot_manage_another_pods_child() {
-        assert!(!caller_may_manage(Some(b()), child_of_a(), Some(a())));
+        assert!(!caller_may_manage(
+            &CallerScope::Pod(b()),
+            child_of_a(),
+            Some(a()),
+            None
+        ));
     }
 
     /// ...and the same for a pod with no recorded parent, which is the state
@@ -523,19 +678,29 @@ mod ownership_tests {
     /// read as "owned by whoever asks".
     #[test]
     fn an_unparented_pod_is_not_managed_by_an_identified_pod() {
-        assert!(!caller_may_manage(Some(b()), child_of_a(), None));
+        assert!(!caller_may_manage(
+            &CallerScope::Pod(b()),
+            child_of_a(),
+            None,
+            None
+        ));
     }
 
     /// The positive leg: a pod manages its own children.
     #[test]
     fn a_pod_manages_its_own_child() {
-        assert!(caller_may_manage(Some(a()), child_of_a(), Some(a())));
+        assert!(caller_may_manage(
+            &CallerScope::Pod(a()),
+            child_of_a(),
+            Some(a()),
+            None
+        ));
     }
 
     /// And itself, so a pod can read its own logs and cancel itself.
     #[test]
     fn a_pod_manages_itself() {
-        assert!(caller_may_manage(Some(a()), a(), None));
+        assert!(caller_may_manage(&CallerScope::Pod(a()), a(), None, None));
     }
 
     /// **C2 model↔runtime parity.** The abstract cross-pod noninterference theorem
@@ -544,7 +709,7 @@ mod ownership_tests {
     /// relation whose lineage filter is `ownedBy p q := q.parent == p || q.id == p`.
     /// That theorem is only *about the code that ships* if the SHIPPED filter is
     /// that same predicate. This pins it: exhaustively over a domain of pod ids,
-    /// `caller_may_manage(Some(caller), pod, parent)` — the predicate the live
+    /// `caller_may_manage(&CallerScope::Pod(caller), pod, parent, None)` — the predicate the live
     /// listing (`.filter` above, #2199) and the management gate both use — equals
     /// the abstract `ownedBy` formula. Change the shipped predicate and this reds,
     /// so the Lean theorem cannot quietly describe a filter the node does not run.
@@ -564,7 +729,7 @@ mod ownership_tests {
                     // PodCrossView `ownedBy caller {id = pod, parent}`:
                     //   q.parent == p || q.id == p
                     let abstract_owned = parent == Some(caller) || pod == caller;
-                    let shipped = caller_may_manage(Some(caller), pod, parent);
+                    let shipped = caller_may_manage(&CallerScope::Pod(caller), pod, parent, None);
                     assert_eq!(
                         shipped, abstract_owned,
                         "shipped caller_may_manage diverged from PodCrossView::ownedBy \
@@ -607,6 +772,9 @@ mod ownership_tests {
             fn lineage_parent(&self) -> Option<Uuid> {
                 self.parent
             }
+            fn lineage_ci_principal(&self) -> Option<&str> {
+                None
+            }
         }
         let (a, b, child) = (a(), b(), child_of_a());
         let registry = [
@@ -623,10 +791,11 @@ mod ownership_tests {
                 parent: None,
             }, // sibling B — NOT A's child
         ];
-        let seen: std::collections::BTreeSet<Uuid> = super::scope_to_caller(&registry, a)
-            .iter()
-            .map(|p| p.id)
-            .collect();
+        let seen: std::collections::BTreeSet<Uuid> =
+            super::scope_to_caller(&registry, &CallerScope::Pod(a))
+                .iter()
+                .map(|p| p.id)
+                .collect();
         // A sees itself and its child...
         assert!(seen.contains(&a), "A's scoped listing must contain A");
         assert!(seen.contains(&child), "A must see its own child");
@@ -682,14 +851,17 @@ mod ownership_tests {
         // (2) Filter: identified as B, the listing excludes sibling A and A's
         // child, and keeps B itself.
         assert!(
-            !caller_may_manage(Some(b), a, None),
+            !caller_may_manage(&CallerScope::Pod(b), a, None, None),
             "B must not see sibling A"
         );
         assert!(
-            !caller_may_manage(Some(b), a_child, Some(a)),
+            !caller_may_manage(&CallerScope::Pod(b), a_child, Some(a), None),
             "B must not see A's child"
         );
-        assert!(caller_may_manage(Some(b), b, None), "B still sees itself");
+        assert!(
+            caller_may_manage(&CallerScope::Pod(b), b, None, None),
+            "B still sees itself"
+        );
 
         // Symmetric non-vacuity: A, correctly identified from its own token, DOES
         // see A and A's child — so the isolation is not the vacuous "nobody sees
@@ -699,12 +871,34 @@ mod ownership_tests {
             identify_caller(SECRET, Some(&a.to_string()), Some(&a_token)),
             Ok(a)
         );
-        assert!(caller_may_manage(Some(a), a, None));
-        assert!(caller_may_manage(Some(a), a_child, Some(a)));
+        assert!(caller_may_manage(&CallerScope::Pod(a), a, None, None));
+        assert!(caller_may_manage(
+            &CallerScope::Pod(a),
+            a_child,
+            Some(a),
+            None
+        ));
         assert!(
-            !caller_may_manage(Some(a), b, None),
+            !caller_may_manage(&CallerScope::Pod(a), b, None, None),
             "A must not see sibling B"
         );
+    }
+
+    /// A CI/CD identity reaches the pods stamped with its own ID, and nothing
+    /// else: not another CI identity's, not an unstamped pod, not by lineage.
+    #[test]
+    fn a_ci_identity_manages_exactly_the_pods_stamped_with_it() {
+        let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+        let scope = CallerScope::CiPrincipal(ci.to_string());
+        assert!(caller_may_manage(&scope, a(), None, Some(ci)));
+        assert!(!caller_may_manage(
+            &scope,
+            a(),
+            None,
+            Some("spiffe://nucleus.local/ns/github/sa/org-other")
+        ));
+        assert!(!caller_may_manage(&scope, a(), None, None));
+        assert!(!caller_may_manage(&scope, child_of_a(), Some(a()), None));
     }
 
     /// A grandchild is NOT reachable: the rule is direct children, not the
@@ -715,9 +909,10 @@ mod ownership_tests {
         let grandchild = Uuid::parse_str("dddddddd-dddd-4ddd-8ddd-dddddddddddd").unwrap();
         // grandchild's parent is child_of_a; a() is its grandparent.
         assert!(!caller_may_manage(
-            Some(a()),
+            &CallerScope::Pod(a()),
             grandchild,
-            Some(child_of_a())
+            Some(child_of_a()),
+            None
         ));
     }
 
@@ -726,8 +921,18 @@ mod ownership_tests {
     /// already have full node authority.
     #[test]
     fn an_unidentified_caller_is_unrestricted() {
-        assert!(caller_may_manage(None, child_of_a(), Some(a())));
-        assert!(caller_may_manage(None, child_of_a(), None));
+        assert!(caller_may_manage(
+            &CallerScope::NodeWide,
+            child_of_a(),
+            Some(a()),
+            None
+        ));
+        assert!(caller_may_manage(
+            &CallerScope::NodeWide,
+            child_of_a(),
+            None,
+            None
+        ));
     }
 
     /// Lineage comes from the proof, not the claim. A pod that proves it is B
@@ -736,8 +941,8 @@ mod ownership_tests {
     #[test]
     fn a_proved_caller_overrides_the_claimed_parent() {
         assert_eq!(
-            resolve_parent_pod_id(Some(b()), Some(&a().to_string())),
-            Some(b())
+            resolve_parent_pod_id(&CallerScope::Pod(b()), Some(&a().to_string()), &NONE),
+            Ok(Some(b()))
         );
     }
 
@@ -746,11 +951,17 @@ mod ownership_tests {
     #[test]
     fn the_header_still_applies_to_unidentified_callers() {
         assert_eq!(
-            resolve_parent_pod_id(None, Some(&a().to_string())),
-            Some(a())
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&a().to_string()), &NONE),
+            Ok(Some(a()))
         );
-        assert_eq!(resolve_parent_pod_id(None, None), None);
-        assert_eq!(resolve_parent_pod_id(None, Some("not-a-uuid")), None);
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, None, &NONE),
+            Ok(None)
+        );
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some("not-a-uuid"), &NONE),
+            Ok(None)
+        );
     }
 
     /// The two legs together: what a forged header buys an identified caller is
@@ -759,10 +970,80 @@ mod ownership_tests {
     #[test]
     fn forging_the_parent_header_gains_an_identified_pod_nothing() {
         // B claims to be A's child, hoping to be handed A's children.
-        let recorded = resolve_parent_pod_id(Some(b()), Some(&a().to_string()));
-        assert_eq!(recorded, Some(b()), "the proof must win");
+        let recorded = resolve_parent_pod_id(&CallerScope::Pod(b()), Some(&a().to_string()), &NONE);
+        assert_eq!(recorded, Ok(Some(b())), "the proof must win");
         // And it still cannot reach A's child.
-        assert!(!caller_may_manage(Some(b()), child_of_a(), Some(a())));
+        assert!(!caller_may_manage(
+            &CallerScope::Pod(b()),
+            child_of_a(),
+            Some(a()),
+            None
+        ));
+    }
+
+    // ── #3126: a CI identity names only its own pods as parent ────────────
+
+    /// A CI identity that names, as parent, a pod another CI identity created,
+    /// an unstamped pod, or a pod that does not exist is refused, naming the
+    /// pod. Each would plant its pod in a lineage it does not own: the named
+    /// pod's scope, listing, cascade and lockdown would all reach it.
+    #[test]
+    fn a_ci_identity_cannot_name_a_pod_outside_its_scope_as_parent() {
+        let theirs = Named {
+            id: a(),
+            ci: Some(OTHER_CI),
+        };
+        let unstamped = Named { id: b(), ci: None };
+        for (what, registry) in [("another CI's", [theirs]), ("an unstamped", [unstamped])] {
+            let id = registry[0].id;
+            assert_eq!(
+                resolve_parent_pod_id(&ci(), Some(&id.to_string()), &registry),
+                Err(ParentOutOfScope(id)),
+                "{what} pod"
+            );
+        }
+        assert_eq!(
+            resolve_parent_pod_id(&ci(), Some(&child_of_a().to_string()), &NONE),
+            Err(ParentOutOfScope(child_of_a())),
+            "a pod that does not exist: refused alike, so no existence oracle"
+        );
+    }
+
+    /// The control: its own pod -- stamped with its ID by the node -- it may
+    /// name; and no header, or one that is not a pod id, is no parent.
+    #[test]
+    fn a_ci_identity_names_its_own_pod_as_parent() {
+        let mine = [Named {
+            id: a(),
+            ci: Some(CI),
+        }];
+        assert_eq!(
+            resolve_parent_pod_id(&ci(), Some(&a().to_string()), &mine),
+            Ok(Some(a()))
+        );
+        assert_eq!(resolve_parent_pod_id(&ci(), None, &mine), Ok(None));
+        assert_eq!(
+            resolve_parent_pod_id(&ci(), Some("not-a-uuid"), &mine),
+            Ok(None)
+        );
+    }
+
+    /// The operator's header is unchanged: it names any pod, in the registry
+    /// or not, stamped by any CI identity or by none.
+    #[test]
+    fn the_operator_still_names_any_parent() {
+        let theirs = [Named {
+            id: a(),
+            ci: Some(OTHER_CI),
+        }];
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&a().to_string()), &theirs),
+            Ok(Some(a()))
+        );
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&b().to_string()), &NONE),
+            Ok(Some(b()))
+        );
     }
 
     // ── #2475: the gRPC surface uses the same ownership predicate ─────────
@@ -783,6 +1064,9 @@ mod ownership_tests {
             fn lineage_parent(&self) -> Option<Uuid> {
                 self.parent
             }
+            fn lineage_ci_principal(&self) -> Option<&str> {
+                None
+            }
         }
         let (a, b, child) = (a(), b(), child_of_a());
         let registry = [
@@ -800,50 +1084,24 @@ mod ownership_tests {
             },
         ];
         assert!(
-            super::scoped_lookup(&registry, child, Some(b)).is_none(),
+            super::scoped_lookup(&registry, child, &CallerScope::Pod(b)).is_none(),
             "B cannot reach A's child"
         );
         assert!(
-            super::scoped_lookup(&registry, child, Some(a)).is_some(),
+            super::scoped_lookup(&registry, child, &CallerScope::Pod(a)).is_some(),
             "A manages its child"
         );
         assert!(
-            super::scoped_lookup(&registry, child, None).is_some(),
+            super::scoped_lookup(&registry, child, &CallerScope::NodeWide).is_some(),
             "the operator sees everything"
         );
         assert!(
-            super::scoped_lookup(&registry, a, Some(b)).is_none(),
+            super::scoped_lookup(&registry, a, &CallerScope::Pod(b)).is_none(),
             "a sibling is out of reach"
         );
         assert!(
-            super::scoped_lookup(&registry, Uuid::new_v4(), None).is_none(),
+            super::scoped_lookup(&registry, Uuid::new_v4(), &CallerScope::NodeWide).is_none(),
             "absent is absent"
-        );
-    }
-
-    /// gRPC identifies the caller from the same two metadata entries the HTTP
-    /// middleware reads, with the same outcome for a claim that does not verify.
-    #[test]
-    fn grpc_caller_mirrors_the_http_middleware() {
-        let secret = [7u8; 32];
-        let pod = a();
-        let token = crate::pod_caller_identity::derive_token(&secret, pod);
-        let mut md = tonic::metadata::MetadataMap::new();
-        assert_eq!(
-            super::grpc_caller(&secret, &md),
-            None,
-            "nothing claimed: operator scope"
-        );
-        md.insert(
-            nucleus_client::HEADER_POD_ID,
-            pod.to_string().parse().unwrap(),
-        );
-        md.insert(nucleus_client::HEADER_POD_TOKEN, token.parse().unwrap());
-        assert_eq!(super::grpc_caller(&secret, &md), Some(pod));
-        assert_eq!(
-            super::grpc_caller(&[8u8; 32], &md),
-            None,
-            "an unprovable claim is no identity, as over HTTP"
         );
     }
 
@@ -861,7 +1119,7 @@ mod ownership_tests {
             "an unscoped lookup survived in the gRPC impl"
         );
         assert!(
-            !grpc.contains("collect_pod_infos(&self.state, None)"),
+            !grpc.contains("CallerScope::NodeWide"),
             "the gRPC listing is unscoped"
         );
         assert!(
@@ -882,6 +1140,15 @@ mod ownership_tests {
 // The command walk over this surface, on the same fixture below.
 #[cfg(all(test, feature = "local-driver"))]
 mod walk;
+// gRPC handlers scope their caller as HTTP does, on the same fixture.
+#[cfg(all(test, feature = "local-driver"))]
+mod grpc_scope_tests;
+// Delegation chains through real admission, spawn, reaper and lockdown.
+#[cfg(all(test, feature = "local-driver"))]
+mod chain_walk;
+// #2702's host-side properties, measured against a compromised-guest double.
+#[cfg(all(test, feature = "local-driver"))]
+mod trust_boundary;
 
 // No subsystem is faked: this is the real `PodAuthority`, the real
 // `NetworkAllocator`, the real signing key loaded off disk.
@@ -889,7 +1156,7 @@ mod walk;
 // `local-driver` is not a default feature; CI's coverage job runs
 // `--all-features`, which compiles this.
 #[cfg(all(test, feature = "local-driver"))]
-mod handler_tests {
+pub(crate) mod handler_tests {
     mod boot_identity {
         use super::*;
         include!("pod_boot_identity_tests.rs");
@@ -916,21 +1183,47 @@ mod handler_tests {
         ])
     }
 
+    /// One HTTP client for every fixture in the test process, cloned into each.
+    ///
+    /// Building a client loads and parses the platform's root certificates, and in a
+    /// test build that is ~20 ms of CPU: measured 2026-10-02, it was about 70% of the
+    /// pod census, which builds a `NodeState` for each of its 1056 runs and never
+    /// sends a request. A clone shares the client, so it is built once.
+    ///
+    /// No connection is kept between requests. Every `#[tokio::test]` has its own
+    /// runtime, and a pooled connection belongs to the runtime that opened it; with
+    /// no idle pool, none can outlive its test or be handed to another one.
+    fn http_client() -> reqwest::Client {
+        static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .pool_max_idle_per_host(0)
+                    .build()
+                    .expect("a test HTTP client")
+            })
+            .clone()
+    }
+
     /// Mirrors `main()`'s construction. A field added to `NodeState` breaks this
     /// at compile time, which is the right failure: the fixture should not drift
     /// silently away from what the node actually runs with.
-    pub(super) fn state(dir: &tempfile::TempDir) -> NodeState {
+    pub(crate) fn state(dir: &tempfile::TempDir) -> NodeState {
         // `main()` installs this before building any client; this crate takes
         // reqwest with `rustls-no-provider`, so `Client::new()` PANICS without
         // it. Idempotent, so every test may call it.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let a = args(dir.path());
-        let authority = Arc::new(crate::pod_authority::PodAuthority::from_args(&a));
+        let authority =
+            Arc::new(crate::pod_authority::PodAuthority::from_args(&a).expect("authority"));
         NodeState {
             pods: Arc::new(Mutex::new(HashMap::new())),
             state_dir: a.state_dir.clone(),
+            host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
+            pod_ceilings: a.pod_ceilings.ceilings(),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
+            local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
             firecracker_path: a.firecracker_path.clone(),
             firecracker_pool: None,
             firecracker_api_boot: a.firecracker_api_boot,
@@ -945,6 +1238,7 @@ mod handler_tests {
             jailer_chroot_base: a.jailer_chroot_base.clone(),
             jailer_uid: a.jailer_uid,
             jailer_gid: a.jailer_gid,
+            sealed_rootfs: None,
             network_allocator: Arc::new(crate::net::NetworkAllocator::new()),
             listen_addr: a.listen.clone(),
             proxy_auth_secret: a.proxy_auth_secret.clone(),
@@ -955,34 +1249,139 @@ mod handler_tests {
             )),
             proxy_actor: None,
             trusted_postures: crate::posture::PostureRegistry::from_operator_str(""),
+            audit_sinks: Arc::new(a.audit_sinks.load().expect("audit sinks")),
+            audit_minter: None,
             drand_config: None,
             identity_manager: None,
             identity_vsock_port: a.identity_workload_api_vsock_port,
             broker_listen: a.broker_listen,
             broker_enforcing: a.broker_enforcing,
             broker_vsock_port: a.broker_vsock_port,
-            github_oidc: None,
+            egress_stream_limits: crate::broker_stream::StreamLimits::new(
+                a.egress_stream_max_request_bytes,
+                a.egress_stream_max_response_bytes,
+            )
+            .expect("the default stream bounds are non-zero"),
             authz_policy: crate::auth::AuthorizationPolicy::new(&a.identity_trust_domain),
             container_image: a.container_image.clone(),
+            container_mediation: a.container_mediation,
             container_network: a.container_network.clone(),
             container_proxy_unix: a.container_proxy_unix,
             container_pool: None,
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
             authority,
-            http_client: reqwest::Client::new(),
+            #[cfg(target_os = "linux")]
+            decision_epochs: Arc::new(crate::host_decide::EpochSource::seeded()),
+            http_client: http_client(),
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
+            lockdowns: Arc::default(),
+        }
+    }
+
+    /// #3032, end to end: a create whose future is dropped mid-boot (its client
+    /// went away) hands its budget reservation back. The "tool proxy" here never
+    /// announces, so the spawn is still pending when the future is dropped and
+    /// neither arm of the spawn's `match` runs: the path that used to leak.
+    #[tokio::test]
+    async fn a_create_dropped_mid_boot_hands_its_budget_back() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut st = state(&dir);
+        // The script must be EXECUTABLE where it lives, and a temp dir need not
+        // be: a hardened host mounts /tmp noexec (the guest does, see
+        // nucleus-guest-init's GUEST_MOUNTS), the exec fails at once, the spawn's
+        // Err arm releases the reservation, and the create never reaches the
+        // await this test exists to drop. The test binary's own directory is
+        // executable wherever the test runs at all.
+        let exe = std::env::current_exe().expect("the test binary's path");
+        let bin = tempfile::Builder::new()
+            .prefix("never-announces")
+            .tempdir_in(exe.parent().expect("the test binary's directory"))
+            .expect("a temp dir beside the test binary");
+        let proxy = bin.path().join("never-announces.sh");
+        std::fs::write(&proxy, "#!/bin/sh\nexec sleep 10\n").expect("script");
+        std::fs::set_permissions(&proxy, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        st.tool_proxy_path = proxy;
+        let spec = || {
+            let work = st.state_dir.join("w");
+            std::fs::create_dir_all(&work).expect("work dir");
+            let mut spec: nucleus_spec::PodSpec =
+                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                    .expect("minimal spec");
+            spec.spec.work_dir = work;
+            spec
+        };
+        let parent = uuid::Uuid::new_v4();
+        let root = crate::pod_authority::Admission {
+            caller_spiffe_id: st.authority.root_minter().to_string(),
+            caller_pod: None,
+            header_cert: None,
+        };
+        st.authority
+            .admit_kept(&root, &spec(), parent)
+            .await
+            .expect("the parent is admitted");
+        let from_parent = crate::pod_authority::Admission {
+            caller_spiffe_id: format!("spiffe://nucleus.local/ns/pods/sa/{parent}"),
+            caller_pod: Some(parent),
+            header_cert: None,
+        };
+
+        let create = crate::create_pod_internal(&st, spec(), Some(parent), None, from_parent);
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), create).await;
+        if let Ok(early) = outcome {
+            panic!("the create must still be booting when it is dropped; it returned {early:?}");
+        }
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while st.authority.live_children(parent).await != Some(0) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped create kept its reservation against the parent"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
     }
 
     /// A registered pod, running, optionally owned by `parent`.
-    pub(super) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
+    pub(crate) async fn register(st: &NodeState, parent: Option<uuid::Uuid>) -> uuid::Uuid {
+        register_full(st, parent, &[], None).await
+    }
+
+    /// `register`, with `labels` on the spec — as the node would have stamped them.
+    pub(crate) async fn register_labelled(
+        st: &NodeState,
+        parent: Option<uuid::Uuid>,
+        labels: &[(&str, &str)],
+    ) -> uuid::Uuid {
+        register_full(st, parent, labels, None).await
+    }
+
+    /// [`register`], with the certificate root identity the node recorded.
+    pub(super) async fn register_as(
+        st: &NodeState,
+        parent: Option<uuid::Uuid>,
+        owner: Option<&str>,
+    ) -> uuid::Uuid {
+        register_full(st, parent, &[], owner).await
+    }
+
+    async fn register_full(
+        st: &NodeState,
+        parent: Option<uuid::Uuid>,
+        labels: &[(&str, &str)],
+        owner: Option<&str>,
+    ) -> uuid::Uuid {
         let dir = st.state_dir.join("w");
         std::fs::create_dir_all(&dir).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =
             serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = dir;
+        for (k, v) in labels {
+            spec.metadata.labels.insert(k.to_string(), v.to_string());
+        }
         let id = uuid::Uuid::new_v4();
         let child = tokio::process::Command::new("/bin/sleep")
             .arg("30")
@@ -1000,6 +1399,7 @@ mod handler_tests {
             })),
             parent_pod_id: parent,
             posture_stamp: None,
+            owner: owner.map(str::to_string),
         });
         st.pods.lock().await.insert(id, handle);
         id
@@ -1047,6 +1447,7 @@ mod handler_tests {
             })),
             parent_pod_id: None,
             posture_stamp: None,
+            owner: None,
         };
         assert!(matches!(
             handle.status().await,
@@ -1116,9 +1517,13 @@ mod handler_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let st = state(&dir);
         let pod = register(&st, None).await;
-        let _cancelled = cancel_pod(State(st.clone()), Extension(None), AxumPath(pod))
-            .await
-            .expect("cancel");
+        let _cancelled = cancel_pod(
+            State(st.clone()),
+            Extension(CallerScope::NodeWide),
+            AxumPath(pod),
+        )
+        .await
+        .expect("cancel");
 
         let mut reaped = std::collections::HashSet::new();
         crate::reap_once(&st, &mut reaped).await;
@@ -1141,9 +1546,13 @@ mod handler_tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let st = state(&dir);
         let parent = register(&st, None).await;
-        let _cancelled = cancel_pod(State(st.clone()), Extension(None), AxumPath(parent))
-            .await
-            .expect("cancel");
+        let _cancelled = cancel_pod(
+            State(st.clone()),
+            Extension(CallerScope::NodeWide),
+            AxumPath(parent),
+        )
+        .await
+        .expect("cancel");
         let mut reaped = std::collections::HashSet::new();
         crate::reap_once(&st, &mut reaped).await;
 
@@ -1169,10 +1578,10 @@ mod handler_tests {
         let b = register(&st, None).await;
         let child_of_a = register(&st, Some(a)).await;
 
-        let all = collect_pod_infos(&st, None).await;
+        let all = collect_pod_infos(&st, &CallerScope::NodeWide).await;
         assert_eq!(all.len(), 3, "an operator sees every pod");
 
-        let seen: Vec<uuid::Uuid> = collect_pod_infos(&st, Some(a))
+        let seen: Vec<uuid::Uuid> = collect_pod_infos(&st, &CallerScope::Pod(a))
             .await
             .into_iter()
             .map(|i| i.id)
@@ -1212,15 +1621,21 @@ mod handler_tests {
         let b = register(&st, None).await;
 
         assert!(
-            get_pod_for_caller(&st, a, Some(a)).await.is_ok(),
+            get_pod_for_caller(&st, a, &CallerScope::Pod(a))
+                .await
+                .is_ok(),
             "a pod reaches itself"
         );
         assert!(
-            get_pod_for_caller(&st, b, Some(a)).await.is_err(),
+            get_pod_for_caller(&st, b, &CallerScope::Pod(a))
+                .await
+                .is_err(),
             "a pod must not reach a sibling by naming its id"
         );
         assert!(
-            get_pod_for_caller(&st, b, None).await.is_ok(),
+            get_pod_for_caller(&st, b, &CallerScope::NodeWide)
+                .await
+                .is_ok(),
             "an operator reaches any pod"
         );
         cancel_all(&st).await;
@@ -1240,7 +1655,7 @@ mod handler_tests {
 
         let _cancelled = cancel_pod(
             axum::extract::State(st.clone()),
-            axum::Extension(None),
+            axum::Extension(CallerScope::NodeWide),
             axum::extract::Path(id),
         )
         .await
@@ -1274,7 +1689,7 @@ mod handler_tests {
         let id = register(&st, None).await;
         let _cancelled = cancel_pod(
             axum::extract::State(st.clone()),
-            axum::Extension(None),
+            axum::Extension(CallerScope::NodeWide),
             axum::extract::Path(id),
         )
         .await
@@ -1285,7 +1700,7 @@ mod handler_tests {
         // ... and the receipt route says it is not.
         let Err(err) = get_receipt(
             axum::extract::State(st.clone()),
-            axum::Extension(None),
+            axum::Extension(CallerScope::NodeWide),
             axum::extract::Path(id),
         )
         .await
@@ -1311,7 +1726,7 @@ mod handler_tests {
 
         let Err(err) = get_receipt(
             axum::extract::State(st.clone()),
-            axum::Extension(None),
+            axum::Extension(CallerScope::NodeWide),
             axum::extract::Path(id),
         )
         .await
@@ -1324,5 +1739,153 @@ mod handler_tests {
             "the caller must be told to wait, not that the pod is missing: {rendered}"
         );
         cancel_all(&st).await;
+    }
+
+    // ── Federated tenants (ADR 0001) ────────────────────────────────────────
+    //
+    // Two tenants' pods side by side. Every per-pod route resolves through
+    // `get_pod_for_caller`, so each is driven through its real handler here:
+    // a tenant sees its own pod and gets 404 — not 403 — for the other's.
+
+    const TENANT_A: &str = "spiffe://tenant-a.example.invalid/ns/rt-a/sa/alice";
+    const TENANT_B: &str = "spiffe://tenant-b.example.invalid/ns/rt-b/sa/bob";
+
+    fn tenant(td: &str) -> CallerScope {
+        CallerScope::Tenant(td.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_tenant_reaches_its_own_pods_and_404s_on_anothers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let st = state(&dir);
+        let a = register_as(&st, None, Some(TENANT_A)).await;
+        let b = register_as(&st, None, Some(TENANT_B)).await;
+        let operators = register(&st, None).await;
+        let (ta, tb) = (
+            tenant("tenant-a.example.invalid"),
+            tenant("tenant-b.example.invalid"),
+        );
+
+        assert!(get_pod_for_caller(&st, a, &ta).await.is_ok());
+        for other in [b, operators] {
+            assert!(matches!(
+                get_pod_for_caller(&st, other, &ta).await,
+                Err(ApiError::NotFound)
+            ));
+            let logs = pod_logs(State(st.clone()), Extension(ta.clone()), AxumPath(other)).await;
+            assert!(matches!(logs, Err(ApiError::NotFound)), "logs");
+            let receipt =
+                get_receipt(State(st.clone()), Extension(ta.clone()), AxumPath(other)).await;
+            assert!(matches!(receipt, Err(ApiError::NotFound)), "receipt");
+            let cancel =
+                cancel_pod(State(st.clone()), Extension(ta.clone()), AxumPath(other)).await;
+            assert!(matches!(cancel, Err(ApiError::NotFound)), "cancel");
+        }
+        // The refusals above did not cancel B's pod: B still reaches it.
+        assert!(get_pod_for_caller(&st, b, &tb).await.is_ok());
+
+        let listed: Vec<Uuid> = collect_pod_infos(&st, &ta)
+            .await
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(listed, vec![a], "a tenant lists exactly its own pods");
+        assert_eq!(
+            collect_pod_infos(&st, &CallerScope::NodeWide).await.len(),
+            3,
+            "the operator lists all"
+        );
+        cancel_all(&st).await;
+    }
+
+    /// Snapshot is refused to a tenant at the policy, whatever the pod.
+    #[test]
+    fn a_tenant_may_not_snapshot() {
+        use crate::auth::{AuthContext, AuthorizationPolicy, Operation};
+        let policy = AuthorizationPolicy::new("node.local")
+            .with_federated_trust_domains(["tenant-a.example.invalid"]);
+        let ctx = AuthContext::from_spiffe(TENANT_A.to_string());
+        for op in [
+            Operation::CreatePod,
+            Operation::ListPods,
+            Operation::GetPod,
+            Operation::CancelPod,
+            Operation::StreamLogs,
+            Operation::GetReceipt,
+        ] {
+            assert!(policy.authorize(&ctx, op).is_ok(), "{op:?}");
+        }
+        assert!(policy.authorize(&ctx, Operation::SnapshotPod).is_err());
+        assert!(policy.authorize(&ctx, Operation::Lockdown).is_err());
+        // An unbound foreign domain is still refused outright.
+        let stranger = AuthContext::from_spiffe(TENANT_B.to_string());
+        assert!(policy.authorize(&stranger, Operation::GetPod).is_err());
+        // And a tenant is never let onto the gRPC surface, which does not scope
+        // by tenant.
+        let mut req = tonic::Request::new(());
+        req.extensions_mut().insert(ctx);
+        assert!(crate::auth::authorize_grpc_operation(&req, &policy, Operation::GetPod).is_err());
+    }
+
+    /// The resolver both transports use: a tenant is a tenant, not node-wide.
+    #[test]
+    fn a_federated_peer_resolves_to_its_tenant_not_the_operator() {
+        use crate::auth::AuthorizationPolicy;
+        let policy = AuthorizationPolicy::new("node.local")
+            .with_operator_identity("spiffe://node.local/ns/system/sa/cli")
+            .with_federated_trust_domains(["tenant-a.example.invalid"]);
+        let resolve = |id: &str| policy.caller_scope(None, id).expect("a placed identity");
+        assert_eq!(resolve(TENANT_A), tenant("tenant-a.example.invalid"));
+        assert_eq!(
+            resolve("spiffe://node.local/ns/system/sa/cli"),
+            CallerScope::NodeWide
+        );
+        let pod = Uuid::new_v4();
+        assert_eq!(
+            resolve(&format!("spiffe://node.local/ns/pods/sa/{pod}")),
+            CallerScope::Pod(pod),
+            "a pod presenting its own SVID is a pod, as admission already read it"
+        );
+    }
+
+    /// A pod's caller token is a bearer secret. Presented by a tenant peer it
+    /// is a replay, and the tenant stays a tenant. The control is the same
+    /// token from a node-domain peer, which still proves the pod.
+    #[test]
+    fn a_tenant_replaying_a_pod_token_is_still_the_tenant() {
+        use crate::auth::AuthorizationPolicy;
+        let policy = AuthorizationPolicy::new("node.local")
+            .with_operator_identity("spiffe://node.local/ns/system/sa/cli")
+            .with_federated_trust_domains(["tenant-a.example.invalid"]);
+        let victim = Uuid::new_v4();
+        let as_tenant = policy.caller_scope(Some(victim), TENANT_A).expect("placed");
+        assert_eq!(as_tenant, tenant("tenant-a.example.invalid"));
+        assert_eq!(
+            policy.proved_pod(Some(victim), TENANT_A),
+            None,
+            "admission reads the same decider"
+        );
+        let as_node_peer = policy
+            .caller_scope(Some(victim), "spiffe://node.local/ns/system/sa/cli")
+            .expect("placed");
+        assert_eq!(as_node_peer, CallerScope::Pod(victim), "the control");
+    }
+
+    /// The unauthenticated parent header is the operator's alone. A tenant that
+    /// names a victim pod as parent gets a root pod, not a child of the victim.
+    #[test]
+    fn a_tenant_cannot_name_a_parent_by_header() {
+        let victim = Uuid::new_v4();
+        let header = victim.to_string();
+        let none: &[Arc<PodHandle>] = &[];
+        assert_eq!(
+            resolve_parent_pod_id(&tenant("tenant-a.example.invalid"), Some(&header), none),
+            Ok(None)
+        );
+        assert_eq!(
+            resolve_parent_pod_id(&CallerScope::NodeWide, Some(&header), none),
+            Ok(Some(victim)),
+            "the control: the operator's header still applies"
+        );
     }
 }

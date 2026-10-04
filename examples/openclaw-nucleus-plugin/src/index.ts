@@ -3,40 +3,6 @@ import crypto from "crypto";
 const PLUGIN_ID = "nucleus";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-type PermissionDimension =
-  | "filesystem"
-  | "command_exec"
-  | "network_egress"
-  | "approval";
-type TrustTier = "unverified" | "community" | "verified" | "platform";
-
-interface PermissionBid {
-  skill_id: string;
-  requested: PermissionDimension[];
-  value_estimate: number;
-  trust_tier: TrustTier;
-}
-
-/** Map a tool-proxy endpoint path to its permission dimension. */
-function dimensionForEndpoint(path: string): PermissionDimension | null {
-  switch (path) {
-    case "/v1/read":
-    case "/v1/write":
-    case "/v1/glob":
-    case "/v1/grep":
-      return "filesystem";
-    case "/v1/run":
-      return "command_exec";
-    case "/v1/web_fetch":
-    case "/v1/web_search":
-      return "network_egress";
-    case "/v1/approve":
-      return "approval";
-    default:
-      return null;
-  }
-}
-
 interface PluginConfig {
   proxyUrl: string;
   authSecret: string;
@@ -113,17 +79,10 @@ async function postJson(
     ...signHttpHeaders(secret, body, cfg.actor),
   };
 
-  // Attach permission bid header when dimension is known
-  const dim = dimensionForEndpoint(path);
-  if (dim) {
-    const bid: PermissionBid = {
-      skill_id: PLUGIN_ID,
-      requested: [dim],
-      value_estimate: dim === "approval" ? 10.0 : 1.0,
-      trust_tier: "community",
-    };
-    headers["x-nucleus-permission-bid"] = JSON.stringify(bid);
-  }
+  // No permission-bid header. The proxy derives a bid from a verified
+  // delegation certificate and ignores anything a request declares about its
+  // own value or trust tier; the header this used to send was a self-scored
+  // screen and is no longer read.
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), cfg.timeoutMs);

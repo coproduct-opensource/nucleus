@@ -22,12 +22,20 @@
 #     no longer fires is itself a finding.
 #
 # PINNED may only SHRINK. Adding a crate here is a deliberate, dated act.
-# PINNED = 1
+# PINNED = 0
 
+# 2026-09-20: REMOVED. The last of the three failures in the note below was a unit test in
+# `prov_export.rs` calling `serde_json` without the `artifact` gate its sibling carries; the
+# other two had already been fixed. `cargo clippy -p portcullis-core --all-targets` is now
+# clean, so the crate is analysable and its cast sites are in the count for the first time.
+# The ceiling rose to match: that is coverage going up, exactly as this file predicted.
+#
+# The count was partial for ten days and said nothing about it -- the same shape as the
+# nucleus-verifier-service case above, and the reason this file exists.
+#
 # portcullis-core's TEST targets do not compile on a default-feature checkout:
 # `unresolved import portcullis_core::witness`, `cannot find prov_export`, and a
 # missing serde_json in a test module. The lib builds; the test targets do not,
 # and --all-targets is what the measurement uses. Its cast sites are therefore
 # absent from the count. Observed 2026-09-10 while grinding the ratchet
 # 462 -> 341; not introduced by that change (verified against a clean main).
-portcullis-core

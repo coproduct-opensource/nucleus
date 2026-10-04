@@ -16,7 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install CLI globally via lockfile for hash-pinned supply chain integrity.
-# The lockfile in cli-pins/ contains npm integrity hashes verified by `npm ci`.
+# The lockfile in cli-pins/ (docker/cli-pins/ in the repo; this image builds
+# with docker/ as its context) contains npm integrity hashes verified by `npm ci`.
 COPY cli-pins/package.json cli-pins/package-lock.json /tmp/cli-pins/
 RUN cd /tmp/cli-pins && npm ci --ignore-scripts \
     && npm install -g /tmp/cli-pins/node_modules/@anthropic-ai/claude-code \

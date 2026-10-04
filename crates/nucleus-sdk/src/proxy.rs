@@ -15,6 +15,7 @@ use serde_json::Value;
 use crate::auth::AuthStrategy;
 use crate::auth::MtlsConfig;
 use crate::error::{Error, from_error_payload};
+use nucleus_client::wire::{RunRequest, RunResponse};
 
 /// Output from a `/v1/run` command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,6 +26,19 @@ pub struct RunOutput {
     pub stdout: String,
     /// Standard error.
     pub stderr: String,
+}
+
+/// The proxy's reply, read through the shared wire type. This used to pick
+/// `exit_code` out of a `Value`; the proxy sends `status`, so every caller saw
+/// -1 whatever the command did (2026-09-29).
+impl From<RunResponse> for RunOutput {
+    fn from(r: RunResponse) -> Self {
+        Self {
+            exit_code: r.status,
+            stdout: r.stdout,
+            stderr: r.stderr,
+        }
+    }
 }
 
 /// Output from a `/v1/glob` search.
@@ -215,27 +229,14 @@ impl ProxyClient {
         stdin: Option<&str>,
         directory: Option<&str>,
     ) -> Result<RunOutput, Error> {
-        let mut payload = serde_json::json!({"args": args});
-        if let Some(stdin) = stdin {
-            payload["stdin"] = Value::String(stdin.to_string());
-        }
-        if let Some(dir) = directory {
-            payload["directory"] = Value::String(dir.to_string());
-        }
+        let mut req = RunRequest::new(args.iter().map(|a| (*a).to_string()).collect());
+        req.stdin = stdin.map(str::to_string);
+        req.directory = directory.map(str::to_string);
+        let payload = serde_json::to_value(&req)?;
         let data = self.request("POST", "/v1/run", Some(&payload)).await?;
-        Ok(RunOutput {
-            exit_code: data.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(-1) as i32,
-            stdout: data
-                .get("stdout")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-            stderr: data
-                .get("stderr")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string(),
-        })
+        Ok(RunOutput::from(serde_json::from_value::<RunResponse>(
+            data,
+        )?))
     }
 
     // -- Search --
@@ -392,15 +393,20 @@ mod tests {
         assert_eq!(client.base_url, "http://localhost:8080");
     }
 
+    /// Built from what the PROXY serializes, not from a hand-written mock. The
+    /// old test mocked `"exit_code": 0` -- the SDK's assumption rather than the
+    /// server's shape -- and so passed while every real call read -1.
     #[test]
-    fn test_run_output_deserialize() {
-        let json = serde_json::json!({
-            "exit_code": 0,
-            "stdout": "hello\n",
-            "stderr": ""
-        });
-        let output: RunOutput = serde_json::from_value(json).unwrap();
-        assert_eq!(output.exit_code, 0);
+    fn a_run_reply_from_the_proxy_keeps_its_exit_status() {
+        let reply = serde_json::to_value(RunResponse {
+            status: 3,
+            success: false,
+            stdout: "hello\n".into(),
+            stderr: String::new(),
+        })
+        .unwrap();
+        let output = RunOutput::from(serde_json::from_value::<RunResponse>(reply).unwrap());
+        assert_eq!(output.exit_code, 3);
         assert_eq!(output.stdout, "hello\n");
     }
 }

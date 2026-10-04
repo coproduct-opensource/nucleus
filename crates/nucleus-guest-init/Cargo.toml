@@ -16,9 +16,22 @@ path = "src/lib.rs"
 name = "nucleus-guest-init"
 path = "src/main.rs"
 
+[features]
+# CI-only trusted instrumentation; production guest-init builds omit it.
+ci-podlist-probe = []
+
 [dependencies]
-nix = { version = "0.31", default-features = false, features = ["mount", "fs"] }
+nix = { version = "0.31", default-features = false, features = ["mount", "fs", "net"] }
 vsock = "0.5"
 serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
+nucleus-spec = { path = "../nucleus-spec" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The blocking netlink socket (MIT, pure Rust; already in the lockfile via
+# netdev). Linux-only: AF_NETLINK does not exist elsewhere. The messages are
+# encoded in net.rs; see its module docs for why not netlink-packet-route.
+netlink-sys = { version = "0.9", default-features = false }
+# `IPT_SO_{GET_INFO,SET_REPLACE}` for the in-guest egress fence (`fence.rs`).
+libc = "0.2"

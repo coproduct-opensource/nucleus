@@ -86,7 +86,7 @@ pub const RATCHET: &str = ".scorecard-ratchet.toml";
 /// The badge cannot go stale, because the change that moves a number does not
 /// pass without moving the badge with it — the repo's own ratchet idiom applied
 /// to its own shield.
-pub const BADGE: &str = "badges/scorecard.json";
+pub const BADGE: &str = "ci/badges/scorecard.json";
 
 /// What one family found in the tree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -177,11 +177,31 @@ pub fn families() -> Vec<Box<dyn Family>> {
         Box::new(crate::life::Life),
         Box::new(crate::typed::Typed),
         Box::new(crate::suppress::Suppress),
+        Box::new(crate::mediate::Mediate),
     ]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The ratchet
+
+/// How a family's floor came to hold its value.
+///
+/// Required, because the two cases have opposite meanings and the file cannot
+/// tell them apart from a digit. Raising a floor to meet the measurement is
+/// routine — the ratchet working. Lowering one is an owner decision, and
+/// `.scorecard-ratchet.toml` says so in prose: "lowering either pin needs a
+/// dated note here saying what went away and who decided." Nothing checked it,
+/// so the note was a convention and a bare digit change was indistinguishable
+/// from a deliberate concession (ADR 0007 A-5: absence is a third value, never
+/// a pass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloorProvenance {
+    /// The floor equals what the tree measures. The ordinary case.
+    Measurement,
+    /// The floor sits BELOW the measurement by decision. Requires a date, an
+    /// owner and a reason in the file, or it does not parse.
+    Waived,
+}
 
 /// The pinned floors for one family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -204,6 +224,8 @@ pub struct Pin {
     /// Requiring the key makes it a deliberate sentence in the ratchet rather
     /// than a value someone left out.
     pub measured_zero: bool,
+    /// How `floor_bp` came to hold its value. See [`FloorProvenance`].
+    pub provenance: FloorProvenance,
 }
 
 /// Parse `.scorecard-ratchet.toml`: `[family.<name>]` sections, two keys each.
@@ -216,15 +238,37 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
     let mut floor_bp: Option<u32> = None;
     let mut population_floor: Option<usize> = None;
     let mut measured_zero = false;
+    let mut floor_set: Option<FloorProvenance> = None;
+    let mut waiver_dated: Option<String> = None;
+    let mut waiver_by: Option<String> = None;
+    let mut waiver_because: Option<String> = None;
 
-    // Close the section under construction, if any.
-    fn close(
-        out: &mut BTreeMap<String, Pin>,
-        name: &Option<String>,
+    /// The keys read so far for the section under construction.
+    ///
+    /// A struct rather than nine parameters, and no `#[derive(Default)]`: the
+    /// empty state is written out below so that adding a key cannot silently
+    /// acquire a default (ADR 0007 B-1).
+    struct Section {
         floor_bp: Option<u32>,
         population_floor: Option<usize>,
         measured_zero: bool,
-    ) -> Result<()> {
+        floor_set: Option<FloorProvenance>,
+        waiver_dated: Option<String>,
+        waiver_by: Option<String>,
+        waiver_because: Option<String>,
+    }
+
+    // Close the section under construction, if any.
+    fn close(out: &mut BTreeMap<String, Pin>, name: &Option<String>, sec: Section) -> Result<()> {
+        let Section {
+            floor_bp,
+            population_floor,
+            measured_zero,
+            floor_set,
+            waiver_dated,
+            waiver_by,
+            waiver_because,
+        } = sec;
         let Some(name) = name else { return Ok(()) };
         let floor_bp = floor_bp.with_context(|| {
             format!("[family.{name}] has no floor_bp; an unpinned ratio gates nothing")
@@ -256,6 +300,36 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
         if population_floor == 0 {
             bail!("[family.{name}] population_floor=0 passes for a tree with no obligations");
         }
+        let provenance = floor_set.with_context(|| {
+            format!(
+                "[family.{name}] has no floor_set. Say how this floor came to hold its value: \
+                 `floor_set = \"measurement\"` when it equals what the tree measures, or \
+                 `floor_set = \"waiver\"` with waiver_dated / waiver_by / waiver_because when \
+                 it sits below by decision. A bare number cannot tell a raise from a concession."
+            )
+        })?;
+        if provenance == FloorProvenance::Waived {
+            for (key, val) in [
+                ("waiver_dated", &waiver_dated),
+                ("waiver_by", &waiver_by),
+                ("waiver_because", &waiver_because),
+            ] {
+                let missing = val.as_ref().is_none_or(|v| v.trim().is_empty());
+                if missing {
+                    bail!(
+                        "[family.{name}] floor_set = \"waiver\" without `{key}`. A concession \
+                         with no date, owner or reason is the bare digit change this key exists \
+                         to forbid."
+                    );
+                }
+            }
+        } else if waiver_dated.is_some() || waiver_by.is_some() || waiver_because.is_some() {
+            bail!(
+                "[family.{name}] carries waiver fields with floor_set = \"measurement\". The \
+                 waiver is stale: either the floor is below the measurement and the provenance \
+                 should say so, or delete the fields."
+            );
+        }
         if out
             .insert(
                 name.clone(),
@@ -263,6 +337,7 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
                     floor_bp,
                     population_floor,
                     measured_zero,
+                    provenance,
                 },
             )
             .is_some()
@@ -281,13 +356,23 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
             close(
                 &mut out,
                 &current,
-                floor_bp,
-                population_floor,
-                measured_zero,
+                Section {
+                    floor_bp,
+                    population_floor,
+                    measured_zero,
+                    floor_set,
+                    waiver_dated: waiver_dated.clone(),
+                    waiver_by: waiver_by.clone(),
+                    waiver_because: waiver_because.clone(),
+                },
             )?;
             floor_bp = None;
             population_floor = None;
             measured_zero = false;
+            floor_set = None;
+            waiver_dated = None;
+            waiver_by = None;
+            waiver_because = None;
             let name = header.strip_prefix("family.").with_context(|| {
                 format!(
                     "line {}: only [family.<name>] sections are allowed",
@@ -331,15 +416,41 @@ pub fn parse_ratchet(text: &str) -> Result<BTreeMap<String, Pin>> {
                     )
                 })?;
             }
+            "floor_set" => {
+                let v = value.trim().trim_matches('"');
+                floor_set = Some(match v {
+                    "measurement" => FloorProvenance::Measurement,
+                    "waiver" => FloorProvenance::Waived,
+                    other => bail!(
+                        "line {}: floor_set is `{other}`; expected \"measurement\" or \"waiver\"",
+                        lineno + 1
+                    ),
+                });
+            }
+            "waiver_dated" => {
+                waiver_dated = Some(value.trim().trim_matches('"').to_string());
+            }
+            "waiver_by" => {
+                waiver_by = Some(value.trim().trim_matches('"').to_string());
+            }
+            "waiver_because" => {
+                waiver_because = Some(value.trim().trim_matches('"').to_string());
+            }
             other => bail!("line {}: unknown key `{other}`", lineno + 1),
         }
     }
     close(
         &mut out,
         &current,
-        floor_bp,
-        population_floor,
-        measured_zero,
+        Section {
+            floor_bp,
+            population_floor,
+            measured_zero,
+            floor_set,
+            waiver_dated,
+            waiver_by,
+            waiver_because,
+        },
     )?;
 
     if out.is_empty() {
@@ -376,8 +487,12 @@ pub enum Finding {
     Unpinned { family: String },
     /// A pin names a family that is not on the card.
     Stale { family: String },
-    /// The committed badge disagrees with the card.
+    /// A committed badge disagrees with the card.
     BadgeStale {
+        /// Which badge: the scorecard's or the mediation family's own.
+        path: &'static str,
+        /// The command that regenerates it.
+        regen: &'static str,
         /// What the tracked file says.
         have: String,
         /// What the card says.
@@ -430,10 +545,15 @@ impl std::fmt::Display for Finding {
                 "{RATCHET} pins [family.{family}] and no family by that name is on the card. A \
                  stale pin is a gate ranging over nothing."
             ),
-            Self::BadgeStale { have, want } => write!(
+            Self::BadgeStale {
+                path,
+                regen,
+                have,
+                want,
+            } => write!(
                 f,
-                "{BADGE} is stale. It says\n    {have}\nand the card says\n    {want}\n\
-                 Regenerate it with `cargo run -q -p xtask -- scorecard --badge > {BADGE}`. A \
+                "{path} is stale. It says\n    {have}\nand the card says\n    {want}\n\
+                 Regenerate it with `cargo run -q -p xtask -- {regen} --badge > {path}`. A \
                  badge that lags the number it reports is worse than no badge: a reader trusts \
                  it more than the file it came from."
             ),
@@ -494,7 +614,7 @@ pub fn weakest(card: &[(String, Census)]) -> Option<(&str, Census)> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Basis points as a percentage, for messages a human reads.
-fn pct(bp: u32) -> String {
+pub(crate) fn pct(bp: u32) -> String {
     format!("{}.{:02}%", bp / 100, bp % 100)
 }
 
@@ -608,6 +728,24 @@ fn repin(text: &str, family: &str, floor_bp: u32, population: usize) -> Result<S
         .find("\n[")
         .map_or(text.len(), |i| start + header.len() + i + 1);
     let mut section = text[start..end].to_string();
+    // A repin may RAISE a floor freely; lowering one is a concession and needs
+    // the provenance to say so. Without this the tool could walk a floor down
+    // while the section still read `floor_set = "measurement"`, which is the
+    // bare digit change `FloorProvenance` exists to forbid — reintroduced by
+    // the writer instead of by a hand.
+    if let Some(existing) = parse_ratchet(text)
+        .ok()
+        .and_then(|p| p.get(family).copied())
+        && floor_bp < existing.floor_bp
+        && existing.provenance == FloorProvenance::Measurement
+    {
+        bail!(
+            "repin would lower [family.{family}] from {} to {floor_bp} while its provenance says \
+             `measurement`. Lowering is an owner decision: set `floor_set = \"waiver\"` with \
+             waiver_dated / waiver_by / waiver_because in the same change.",
+            existing.floor_bp
+        );
+    }
     for (key, value) in [
         ("floor_bp", floor_bp.to_string()),
         ("population_floor", population.to_string()),
@@ -686,6 +824,11 @@ fn write_pins(card: &[(String, Census)], pins: &BTreeMap<String, Pin>) -> Result
     std::fs::write(RATCHET, &text).with_context(|| format!("writing {RATCHET}"))?;
     std::fs::write(BADGE, format!("{}\n", badge_json(card)?))
         .with_context(|| format!("writing {BADGE}"))?;
+    if let Some((_, c)) = card.iter().find(|(n, _)| n == "mediate") {
+        let mediation = crate::mediate::BADGE;
+        std::fs::write(mediation, format!("{}\n", crate::mediate::badge_json(*c)))
+            .with_context(|| format!("writing {mediation}"))?;
+    }
     if moved.is_empty() {
         println!("ok: the pins already say what this tree measures.");
     } else {
@@ -745,16 +888,31 @@ pub fn run(measure: bool, badge: bool, write: bool) -> Result<i32> {
     // The committed badge must say what the card says. Checked inside the
     // flagless run rather than behind a flag, because `probe_xtask`'s CI-PARITY
     // guard refuses to probe a gate CI invokes with arguments.
-    let want = badge_json(&card)?;
-    let have = std::fs::read_to_string(BADGE)
-        .with_context(|| format!("reading {BADGE}"))?
-        .trim()
-        .to_string();
-    if have != want {
-        findings.push(Finding::BadgeStale {
-            have,
-            want: want.clone(),
-        });
+    //
+    // Two badges: the card's weakest family, and the `mediate` family's own
+    // (the README shows it beside the card because "how much of what an agent
+    // can call is sealed" is the question a reader asks first).
+    let mut badges = vec![(BADGE, "scorecard", badge_json(&card)?)];
+    if let Some((_, c)) = card.iter().find(|(n, _)| n == "mediate") {
+        badges.push((
+            crate::mediate::BADGE,
+            "mediation",
+            crate::mediate::badge_json(*c),
+        ));
+    }
+    for (path, regen, want) in badges {
+        let have = std::fs::read_to_string(path)
+            .with_context(|| format!("reading {path}"))?
+            .trim()
+            .to_string();
+        if have != want {
+            findings.push(Finding::BadgeStale {
+                path,
+                regen,
+                have,
+                want,
+            });
+        }
     }
     if findings.is_empty() {
         println!(
@@ -828,6 +986,7 @@ mod tests {
                 floor_bp: 9_941,
                 population_floor: 172,
                 measured_zero: false,
+                provenance: FloorProvenance::Measurement,
             },
         )]);
         let card = vec![("bound".to_string(), c(172, 170))];
@@ -845,6 +1004,7 @@ mod tests {
                 floor_bp: 5_000,
                 population_floor: 172,
                 measured_zero: false,
+                provenance: FloorProvenance::Measurement,
             },
         )]);
         let card = vec![("bound".to_string(), c(172, 171))];
@@ -863,6 +1023,7 @@ mod tests {
                 floor_bp: 9_941,
                 population_floor: 172,
                 measured_zero: false,
+                provenance: FloorProvenance::Measurement,
             },
         )]);
         let card = vec![("bound".to_string(), c(100, 100))];
@@ -887,6 +1048,7 @@ mod tests {
                 floor_bp: 1,
                 population_floor: 1,
                 measured_zero: false,
+                provenance: FloorProvenance::Measurement,
             },
         )]);
         assert!(matches!(
@@ -918,7 +1080,8 @@ mod tests {
         // Superseded in wording, not in force: a bare zero is still refused. The
         // difference is that it can now be ADMITTED with `measured_zero = true`,
         // which the next test pins.
-        let text = "[family.bound]\nfloor_bp = 0\npopulation_floor = 1\n";
+        let text =
+            "[family.bound]\nfloor_bp = 0\nfloor_set = \"measurement\"\npopulation_floor = 1\n";
         assert!(
             parse_ratchet(text)
                 .unwrap_err()
@@ -929,7 +1092,8 @@ mod tests {
 
     #[test]
     fn a_measured_zero_must_be_acknowledged_not_merely_left_at_zero() {
-        let bare = "[family.life]\nfloor_bp = 0\npopulation_floor = 7\n";
+        let bare =
+            "[family.life]\nfloor_bp = 0\nfloor_set = \"measurement\"\npopulation_floor = 7\n";
         assert!(
             parse_ratchet(bare)
                 .unwrap_err()
@@ -937,7 +1101,7 @@ mod tests {
                 .contains("measured_zero"),
             "a zero floor needs a deliberate sentence, not an omission"
         );
-        let acked = "[family.life]\nfloor_bp = 0\npopulation_floor = 7\nmeasured_zero = true\n";
+        let acked = "[family.life]\nfloor_bp = 0\nfloor_set = \"measurement\"\npopulation_floor = 7\nmeasured_zero = true\n";
         let pins = parse_ratchet(acked).expect("an acknowledged zero parses");
         assert_eq!(pins["life"].floor_bp, 0);
         assert!(pins["life"].measured_zero);
@@ -947,7 +1111,7 @@ mod tests {
     fn the_acknowledgement_cannot_go_stale() {
         // Once the family rises above zero the key is a lie, and the parser says
         // so rather than carrying it forward.
-        let stale = "[family.life]\nfloor_bp = 1428\npopulation_floor = 7\nmeasured_zero = true\n";
+        let stale = "[family.life]\nfloor_bp = 1428\nfloor_set = \"measurement\"\npopulation_floor = 7\nmeasured_zero = true\n";
         assert!(
             parse_ratchet(stale)
                 .unwrap_err()
@@ -967,6 +1131,7 @@ mod tests {
                 floor_bp: 0,
                 population_floor: 7,
                 measured_zero: true,
+                provenance: FloorProvenance::Measurement,
             },
         )]);
         assert!(matches!(
@@ -984,6 +1149,8 @@ mod tests {
     #[test]
     fn a_stale_badge_is_a_finding() {
         let m = Finding::BadgeStale {
+            path: BADGE,
+            regen: "scorecard",
             have: "{\"message\":\"life 99.00%\"}".to_string(),
             want: "{\"message\":\"life 14.28%\"}".to_string(),
         }
@@ -1006,7 +1173,7 @@ mod tests {
         let badge = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../",
-            "badges/scorecard.json"
+            "ci/badges/scorecard.json"
         ))
         .expect("the committed badge is readable");
         assert!(
@@ -1026,15 +1193,115 @@ mod tests {
         );
     }
 
+    /// A floor with no provenance does not parse. Before this key a lowering
+    /// and a raise were the same edit — one digit, no sentence — and the
+    /// file's own prose asking for "a dated note saying what went away and who
+    /// decided" was a convention nothing checked.
+    /// The writer is held to the same rule as a hand: it may raise a floor,
+    /// and it may not walk one down while the section still claims the value
+    /// came from the measurement.
+    #[test]
+    fn repin_refuses_to_lower_a_measurement_floor() {
+        let src =
+            "[family.alg]\nfloor_bp = 3000\nfloor_set = \"measurement\"\npopulation_floor = 10\n";
+        let err = repin(src, "alg", 2000, 10).expect_err("a silent lowering must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("owner decision"), "{msg}");
+
+        // Raising is untouched — the guard is one-sided.
+        let up = repin(src, "alg", 3500, 12).expect("raising a floor is routine");
+        assert!(up.contains("floor_bp = 3500"));
+        assert!(
+            up.contains("floor_set = \"measurement\""),
+            "the provenance must survive a repin"
+        );
+    }
+
+    #[test]
+    fn a_floor_without_provenance_is_refused() {
+        let bare = "[family.bound]\nfloor_bp = 9941\npopulation_floor = 171\n";
+        let err = parse_ratchet(bare).expect_err("a bare floor must not parse");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("floor_set"), "{msg}");
+        assert!(
+            msg.contains("raise from a concession"),
+            "the refusal must say WHY provenance is required: {msg}"
+        );
+    }
+
+    /// And the ordinary case still parses, so the key is a declaration rather
+    /// than an obstacle.
+    #[test]
+    fn a_measurement_floor_parses() {
+        let ok = "[family.bound]\nfloor_bp = 9941\nfloor_set = \"measurement\"\npopulation_floor = 171\n";
+        let pins = parse_ratchet(ok).expect("a declared measurement floor parses");
+        assert_eq!(
+            pins["bound"].provenance,
+            FloorProvenance::Measurement,
+            "the provenance must round-trip"
+        );
+    }
+
+    /// A concession needs a date, an owner and a reason. Each missing field is
+    /// its own refusal, so the gate cannot be satisfied by naming one of them.
+    #[test]
+    fn a_waiver_without_date_owner_and_reason_is_refused() {
+        let base =
+            "[family.bound]\nfloor_bp = 9000\nfloor_set = \"waiver\"\npopulation_floor = 171\n";
+        for (missing, text) in [
+            ("waiver_dated", base.to_string()),
+            (
+                "waiver_by",
+                format!("{base}waiver_dated = \"2026-09-21\"\n"),
+            ),
+            (
+                "waiver_because",
+                format!("{base}waiver_dated = \"2026-09-21\"\nwaiver_by = \"owner\"\n"),
+            ),
+        ] {
+            let err = parse_ratchet(&text).expect_err("an incomplete waiver must not parse");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains(missing),
+                "expected {missing} to be named: {msg}"
+            );
+        }
+    }
+
+    /// A complete concession parses and records that it IS one — the point
+    /// being that the file now distinguishes the two cases.
+    #[test]
+    fn a_complete_waiver_parses_and_says_it_is_one() {
+        let text = "[family.bound]\nfloor_bp = 9000\nfloor_set = \"waiver\"\n\
+                    waiver_dated = \"2026-09-21\"\nwaiver_by = \"owner\"\n\
+                    waiver_because = \"the census lost a crate on purpose\"\n\
+                    population_floor = 171\n";
+        let pins = parse_ratchet(text).expect("a complete waiver parses");
+        assert_eq!(pins["bound"].provenance, FloorProvenance::Waived);
+    }
+
+    /// A stale waiver is refused from the other side: fields left behind after
+    /// the floor came back up to the measurement would otherwise sit there
+    /// reading as a live concession.
+    #[test]
+    fn waiver_fields_with_a_measurement_floor_are_refused() {
+        let text = "[family.bound]\nfloor_bp = 9941\nfloor_set = \"measurement\"\n\
+                    waiver_dated = \"2026-09-21\"\npopulation_floor = 171\n";
+        let err = parse_ratchet(text).expect_err("a stale waiver must not parse");
+        assert!(format!("{err:#}").contains("stale"));
+    }
+
     #[test]
     fn two_families_parse_independently() {
         let text = "\
 [family.bound]
 floor_bp = 9941
+floor_set = \"measurement\"
 population_floor = 172
 
 [family.alg]
 floor_bp = 2200
+floor_set = \"measurement\"
 population_floor = 250
 ";
         let pins = parse_ratchet(text).expect("two sections parse");
@@ -1244,6 +1511,35 @@ population_floor = 250
         assert!(b.contains(r#""schemaVersion":1"#), "{b}");
     }
 
+    /// #3050: `merge=keep-ours` on the ratchet kept one branch's text
+    /// wholesale, so merging a `main` that had added a required field (#3006's
+    /// `floor_set`) dropped it with a clean "Auto-merging". A ratchet carries
+    /// schema as well as pins, so it merges like source: line by line, with a
+    /// real conflict only where both sides moved the same pin.
+    #[test]
+    fn no_ratchet_is_resolved_by_a_merge_driver() {
+        let attrs = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../",
+            ".gitattributes"
+        ))
+        .expect("the committed .gitattributes is readable");
+        let driven: Vec<&str> = attrs
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with('#'))
+            .filter(|l| {
+                let mut fields = l.split_whitespace();
+                fields.next().is_some_and(|path| path.contains("ratchet"))
+                    && fields.any(|attr| attr.starts_with("merge="))
+            })
+            .collect();
+        assert!(
+            driven.is_empty(),
+            "a ratchet is resolved by a merge driver, which can drop a field main added: {driven:?}"
+        );
+    }
+
     #[test]
     fn the_committed_ratchet_parses_and_pins_every_family_on_the_card() {
         // The gate's own configuration is a subject, not an assumption.
@@ -1272,11 +1568,13 @@ population_floor = 250
 [family.alg]
 # 2026-09-01: measured on the tree that added the walk.
 floor_bp = 100
+floor_set = \"measurement\"
 population_floor = 10
 
 [family.tot]
 # A sentence that must survive.
 floor_bp = 200
+floor_set = \"measurement\"
 population_floor = 20
 ";
         let out = repin(src, "alg", 350, 12).expect("repin");
@@ -1294,7 +1592,8 @@ population_floor = 20
     /// happened to be last -- which is `suppress`, the one that conflicts most.
     #[test]
     fn the_last_family_in_the_file_is_repinned_like_any_other() {
-        let src = "[family.alg]\nfloor_bp = 100\npopulation_floor = 10\n";
+        let src =
+            "[family.alg]\nfloor_bp = 100\nfloor_set = \"measurement\"\npopulation_floor = 10\n";
         let out = repin(src, "alg", 999, 11).expect("repin");
         assert!(out.contains("floor_bp = 999"), "{out}");
         assert!(out.contains("population_floor = 11"), "{out}");
@@ -1303,7 +1602,7 @@ population_floor = 20
     #[test]
     fn a_family_the_ratchet_does_not_pin_is_refused_rather_than_invented() {
         let err = repin(
-            "[family.alg]\nfloor_bp = 1\npopulation_floor = 1\n",
+            "[family.alg]\nfloor_bp = 1\nfloor_set = \"measurement\"\npopulation_floor = 1\n",
             "tot",
             5,
             5,

@@ -173,6 +173,28 @@ jobs:
           done
           echo "generated-certchain/ canonicalized from the fresh extraction; theorem builds against it."
 
+      # Reuse the previous run's Lake output. Lake decides freshness by content-hash
+      # traces, not mtimes, so an older .lake is sound: what changed rebuilds, the
+      # rest replays. Saved from main only (a merge-group or PR cache is visible to
+      # that ref alone). A miss or a failed restore costs time, never a verdict.
+      # Mathlib is left out: `lake exe cache get` fetches its oleans every run, and
+      # its checkout plus build is ~8 GB, most of the repository's cache quota.
+      - name: Restore Lake build output
+        id: lake-cache
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        env:
+          SEGMENT_DOWNLOAD_TIMEOUT_MINS: "5"
+        with:
+          path: |
+            crates/portcullis-core/lean/.lake
+            !crates/portcullis-core/lean/.lake/packages/mathlib
+          key: lake-v1-portcullis-core-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lake-manifest.json', 'crates/portcullis-core/lean/lakefile.lean') }}-${{ github.job }}-${{ hashFiles('crates/portcullis-core/lean/**/*.lean', '!crates/portcullis-core/lean/.lake/**') }}
+          restore-keys: |
+            lake-v1-portcullis-core-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lake-manifest.json', 'crates/portcullis-core/lean/lakefile.lean') }}-${{ github.job }}-
+            lake-v1-portcullis-core-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/portcullis-core/lean/lean-toolchain', 'crates/portcullis-core/lean/lake-manifest.json', 'crates/portcullis-core/lean/lakefile.lean') }}-
+
       - name: Build Lean project with cached artifacts
         uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
         env:
@@ -184,10 +206,23 @@ jobs:
           test: "false"
           lint: "false"
           use-mathlib-cache: "true"
-          use-github-cache: "${{ runner.environment == 'github-hosted' }}"
+          use-github-cache: "false"
           build-args: >-
             PortcullisCoreCertChain
             CertChainMonotoneExtracted
+
+      # Only reached when the build above succeeded, so a failed build never
+      # becomes the next run's starting point.
+      - name: Save Lake build output
+        if: ${{ github.ref == 'refs/heads/main' && steps.lake-cache.outputs.cache-hit != 'true' }}
+        continue-on-error: true
+        timeout-minutes: 10
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            crates/portcullis-core/lean/.lake
+            !crates/portcullis-core/lean/.lake/packages/mathlib
+          key: ${{ steps.lake-cache.outputs.cache-primary-key }}
 
       - name: Replay build messages for axiom-profile checks (extracted core + theorem)
         working-directory: crates/portcullis-core/lean

@@ -403,6 +403,16 @@ mod tests {
     /// The serialized document must not carry relation keys at all — a consumer
     /// reading the JSON should see plainly that no derivation was asserted,
     /// rather than an empty object that looks like a graph with no findings.
+    /// `serde_json` is an OPTIONAL dependency (`artifact`/`zkvm`), and `default = []`. A unit
+    /// test inside `src/` has no `required-features` to lean on the way the `[[test]]` targets
+    /// do, so it has to carry the gate itself -- which the sibling `prov_json_serializes` does
+    /// and this one did not.
+    ///
+    /// It compiled anyway under `cargo test -p portcullis-core`, where something in the
+    /// dev-dependency graph turns `artifact` on, and broke under `cargo test --workspace`, where
+    /// feature unification does not. That is why it reached main: the gauntlet does not run the
+    /// workspace suite, so the two commands disagreed and only CI saw it.
+    #[cfg(feature = "artifact")]
     #[test]
     fn serialized_document_omits_relation_keys_entirely() {
         let obs = vec![

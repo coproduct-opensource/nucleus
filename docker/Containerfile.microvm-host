@@ -1,0 +1,134 @@
+# Firecracker microVM host, run inside an Apple `container` with nested
+# virtualization (SPIKE, see docs/findings/microvm-host-apple-container.md).
+#
+# The container is the L1 Linux host that `nucleus-node --driver firecracker`
+# expects: Firecracker + jailer, the pinned guest kernel and rootfs, and the
+# node itself. It needs the L1 kernel from docker/Containerfile.l1-kernel
+# (the runtime's default kernel has no KVM):
+#
+#   container build -c 8 -m 12g -f docker/Containerfile.microvm-host \
+#     -t nucleus-spike-microvm-host:dev .
+#   container run --virtualization --kernel <out>/linux_arm64/Image \
+#     --cap-add CAP_NET_ADMIN --cap-add CAP_SYS_ADMIN --cap-add CAP_SYS_PTRACE \
+#     -v nucleus-spike-srv:/srv nucleus-spike-microvm-host:dev
+#
+# Every download is pinned by digest, from the same constants `nucleus setup`
+# installs from:
+#   * Firecracker/jailer — nucleus_spec::vmm_version::PINNED (1.17.0)
+#   * guest kernel       — nucleus_spec::tier2_artifacts::KERNEL_AARCH64
+#   * guest rootfs       — Tier2Artifact::Rootfs at GUEST_RELEASE (2.2.0),
+#                          digest as the release API reports it
+#
+# `NODE_SOURCE=release` (default) takes the GUEST_RELEASE 2.2.0 musl
+# nucleus-node and nucleus-mcp — the node/rootfs pairing `nucleus setup`
+# installs today. `NODE_SOURCE=source` builds both from this tree, and that
+# node CANNOT boot the pinned 2.2.0 rootfs (measured in the spike): the guest
+# emits no `NUCLEUS_EGRESS_PROBE:` line, which a current node refuses, and a
+# read-only 2.2.0 rootfs dies creating its identity directory. Building from
+# source becomes the default once the plan's guest release 2.3.0 exists.
+
+ARG NODE_SOURCE=release
+
+# ── nucleus-node + nucleus-mcp from this tree ─────────────────────────
+FROM rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS node-source
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/ .cargo/
+COPY crates/ crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cargo build --locked --release -p nucleus-node -p nucleus-mcp \
+    && mkdir -p /out \
+    && cp target/release/nucleus-node target/release/nucleus-mcp /out/ \
+    && strip /out/nucleus-node /out/nucleus-mcp
+
+# ── nucleus-node + nucleus-mcp from the pinned guest release ──────────
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS node-release
+ADD --checksum=sha256:24add5c1d3e730e9f8516be907338e2f4b578b41b2487d6b82591f1caa9fd67c \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-node-2.2.0-aarch64-unknown-linux-musl.tar.gz /tmp/node.tgz
+ADD --checksum=sha256:4d5ba34a6c575752da8007b5a4b7cdb541a49d0ded05f359bccfc420817a21c9 \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-mcp-2.2.0-aarch64-unknown-linux-musl.tar.gz /tmp/mcp.tgz
+RUN mkdir -p /out /tmp/x && tar -xzf /tmp/node.tgz -C /tmp/x && tar -xzf /tmp/mcp.tgz -C /tmp/x \
+    && find /tmp/x -type f \( -name nucleus-node -o -name nucleus-mcp \) -exec cp {} /out/ \;
+
+FROM node-${NODE_SOURCE} AS node
+
+# ── nucleus-hostctl, always from this tree ────────────────────────────
+# The in-container probe (`probe`) and the MCP relay (`relay`) the CLI's
+# microVM host backend drives (crates/nucleus-cli/src/microvm_host/). No
+# release ships it yet, so it is built from source whatever NODE_SOURCE is.
+FROM rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS hostctl
+WORKDIR /build
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .cargo/ .cargo/
+COPY crates/ crates/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/build/target,sharing=locked \
+    cargo build --locked --release -p nucleus-microvm-host --bin nucleus-hostctl \
+    && mkdir -p /out \
+    && cp target/release/nucleus-hostctl /out/ \
+    && strip /out/nucleus-hostctl
+
+# ── the in-container KVM probe (throwaway; PR2 moves it to nucleus-hostctl) ─
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS probe
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/kvm-probe.c /src/kvm-probe.c
+RUN gcc -O2 -Wall -Werror -o /kvm-probe /src/kvm-probe.c
+
+# ── Firecracker, jailer and the guest artifacts ───────────────────────
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS artifacts
+ADD --checksum=sha256:e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256 \
+    https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz /tmp/fc.tgz
+ADD --checksum=sha256:69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31adde44 \
+    https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141 /out/artifacts/vmlinux
+ADD --checksum=sha256:6d2b41244ddd074f1eebc1ab4ca1c7be5b7bc55cde71eefbb9af919771fd4fe4 \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-rootfs-2.2.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
+# `ADD <url>` lays files down 0600. The jailed VMM (an unprivileged uid) could
+# open the kernel only because the node used to chown it into every jail, which
+# handed the shared artifact to the jail user (#3152). The node no longer chowns
+# a placed artifact and refuses an unreadable one at startup, so the shared
+# artifacts are root-owned 0444 here, as `nucleus setup` installs them.
+RUN mkdir -p /out/bin && tar -xzf /tmp/fc.tgz -C /tmp \
+    && cp /tmp/release-v1.17.0-aarch64/firecracker-v1.17.0-aarch64 /out/bin/firecracker \
+    && cp /tmp/release-v1.17.0-aarch64/jailer-v1.17.0-aarch64 /out/bin/jailer \
+    && gunzip -c /tmp/rootfs.ext4.gz > /out/artifacts/rootfs.ext4 \
+    && chmod 0444 /out/artifacts/vmlinux /out/artifacts/rootfs.ext4
+
+# ── the host ──────────────────────────────────────────────────────────
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
+
+# The same host packages the Lima template installs (scripts/lima/
+# nucleus-aarch64.yaml), plus curl/openssl so the spike harness can talk mTLS
+# to the node from inside the container.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl dnsmasq e2fsprogs iproute2 iptables openssl procps \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=artifacts /out/bin/ /usr/local/bin/
+COPY --from=artifacts /out/artifacts/ /var/lib/nucleus/artifacts/
+COPY --from=node /out/ /usr/local/bin/
+COPY --from=hostctl /out/nucleus-hostctl /usr/local/bin/nucleus-hostctl
+COPY --from=probe /kvm-probe /usr/local/bin/kvm-probe
+
+# Mirrors nucleus-cli provision::node_env_body. /srv is meant to be a
+# container volume: it holds the jail AND the scratch images (the jailer
+# hard-links writable drives, so they must share a filesystem) and the node's
+# state (CA, pod records), so it survives a container restart.
+#
+# SPIKE ONLY: the HMAC secrets below are fixed dev values baked into the image.
+# A real host tier generates them per install (provision.rs does).
+ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080 \
+    NUCLEUS_NODE_STATE_DIR=/srv/state \
+    NUCLEUS_NODE_DRIVER=firecracker \
+    NUCLEUS_NODE_AUTH_SECRET=00000000000000000000000000000000000000000000000000000000000000a1 \
+    NUCLEUS_NODE_PROXY_AUTH_SECRET=00000000000000000000000000000000000000000000000000000000000000a2 \
+    NUCLEUS_NODE_PROXY_APPROVAL_SECRET=00000000000000000000000000000000000000000000000000000000000000a3 \
+    NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=/srv/state/wapi.sock \
+    NUCLEUS_FIRECRACKER_PATH=/usr/local/bin/firecracker \
+    NUCLEUS_JAILER_PATH=/usr/local/bin/jailer \
+    NUCLEUS_JAILER_CHROOT_BASE=/srv/jailer \
+    RUST_LOG=info
+
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/nucleus-node"]

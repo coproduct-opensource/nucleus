@@ -55,12 +55,13 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::sync::Mutex;
 
-use nucleus_cred_broker::{CredentialStore, PodIdentity, TaskRequestEnvelope};
+use nucleus_cred_broker::{PodIdentity, TaskRequestEnvelope};
 use nucleus_cred_protocol::{PerformReply, PerformRequest};
-use nucleus_spec::CredentialedEgressSpec;
 use portcullis::PermissionLattice;
 
 use crate::envelope_frame::{FrameError, MAX_FIELD_BYTES, MAX_JSON_DEPTH, json_depth};
+use crate::federated_credential::PodCredentials;
+use crate::upstreams::{CredentialSource, RegistryEntry};
 
 /// Largest frame the host will reassemble when a perform request is possible.
 ///
@@ -122,6 +123,9 @@ pub enum GuestAsk {
     Query(TaskRequestEnvelope),
     /// "Make this call for me." Has an effect.
     Perform(Box<PerformRequest>),
+    /// "Make this call for me; its body follows, and stream me the reply."
+    /// Has an effect. See [`crate::broker_stream`].
+    Stream(Box<nucleus_cred_protocol::StreamRequest>),
 }
 
 /// Read one frame from the guest, refusing anything outside the bounds.
@@ -143,6 +147,22 @@ pub fn classify(raw: &str) -> Result<GuestAsk, FrameError> {
         return Ok(GuestAsk::Perform(Box::new(req)));
     }
 
+    // A stream's open frame carries no body, so it gets the query's 8 KiB
+    // bound, not the perform's: the size it needs arrives as chunks.
+    if raw.len() <= crate::envelope_frame::MAX_FRAME_BYTES
+        && let Ok(req) = serde_json::from_str::<nucleus_cred_protocol::StreamRequest>(raw)
+    {
+        check_fields(&[
+            ("operation", &req.operation),
+            ("target", &req.target),
+            ("justification", &req.justification),
+            ("nonce", &req.nonce),
+            ("path", &req.path),
+            ("content_type", &req.content_type),
+        ])?;
+        return Ok(GuestAsk::Stream(Box::new(req)));
+    }
+
     // Falls back to the ORIGINAL envelope check, which re-applies the 8 KiB
     // bound. A query frame gets exactly the treatment it got before perform
     // existed; the relaxed read bound above is spent only on perform frames.
@@ -155,13 +175,18 @@ pub fn classify(raw: &str) -> Result<GuestAsk, FrameError> {
 /// the fields that are carried into audit records or into a URL, where an
 /// unbounded field is an unbounded log entry or an unbounded request line.
 fn check_perform_fields(req: &PerformRequest) -> Result<(), FrameError> {
-    for (field, value) in [
+    check_fields(&[
         ("operation", &req.operation),
         ("target", &req.target),
         ("justification", &req.justification),
         ("idempotency_key", &req.idempotency_key),
         ("path", &req.path),
-    ] {
+    ])
+}
+
+/// Each named field within [`MAX_FIELD_BYTES`].
+fn check_fields(fields: &[(&'static str, &String)]) -> Result<(), FrameError> {
+    for &(field, value) in fields {
         if value.len() > MAX_FIELD_BYTES {
             return Err(FrameError::FieldTooLong {
                 field,
@@ -174,10 +199,11 @@ fn check_perform_fields(req: &PerformRequest) -> Result<(), FrameError> {
 
 /// A call the host is about to make on the guest's behalf.
 ///
-/// Built entirely from the pod spec and the store except for `body` and the
-/// tail of `url`. There is no field the guest sets that decides *where* this
-/// goes: `url` came from [`CredentialedEgressSpec::url_for`], which refuses a
-/// path that tries to leave the configured base.
+/// Built entirely from the operator's registry entry and the store except for
+/// `body` and the tail of `url`. There is no field the guest sets that decides
+/// *where* this goes: `url` came from
+/// [`CredentialedEgressSpec::url_for`](nucleus_spec::CredentialedEgressSpec::url_for),
+/// which refuses a path that tries to leave the configured base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpstreamCall {
     /// Absolute URL, already resolved against the pod spec's fixed base.
@@ -210,12 +236,29 @@ pub struct PerformContext<'a> {
     pub identity: &'a PodIdentity,
     /// This pod's policy.
     pub policy: &'a PermissionLattice,
-    /// This pod's credentials. The host half of CB4A.
-    pub store: &'a CredentialStore,
-    /// The upstreams this pod may reach, by name, with their fixed bases.
-    pub upstreams: &'a [CredentialedEgressSpec],
+    /// This pod's credentials — the host half of CB4A — and, for a federated
+    /// upstream, what mints them.
+    pub credentials: &'a PodCredentials,
+    /// The upstreams this pod may reach, by name, with their fixed bases and
+    /// credential sources: the operator registry's own entries for what the
+    /// pod was admitted.
+    pub upstreams: &'a [RegistryEntry],
     /// This pod's idempotency memory.
     pub ledger: &'a IdempotencyLedger,
+    /// This pod's egress balance — the SAME meter every egress path of this
+    /// pod draws from (#2905).
+    pub egress: &'a crate::egress_meter::EgressMeter,
+}
+
+/// The bytes a perform request sends toward the network that the GUEST chose.
+///
+/// The body, and the path tail — a path is as good a channel as a body, and
+/// leaving it uncounted would make it the unmetered one. The method, the
+/// base URL and the credential header are the operator's and the host's, so
+/// they are not the pod's to spend.
+#[must_use]
+pub fn upload_bytes(req: &PerformRequest) -> u64 {
+    u64::try_from(req.body.len().saturating_add(req.path.len())).unwrap_or(u64::MAX)
 }
 
 /// What a settled or in-flight key is remembered as.
@@ -327,6 +370,21 @@ impl IdempotencyLedger {
         }
     }
 
+    /// Give back a key that was reserved and then acted on by NOTHING.
+    ///
+    /// Only an in-flight reservation is removed; a settled one stays, since its
+    /// reply is what a repeat must get. For the one failure after the claim that
+    /// provably has no upstream effect — a federated credential that could not
+    /// be minted — so that the guest's retry under the same key is free, as it
+    /// is for every refusal before the claim.
+    pub fn release(&self, key: &str) {
+        if let Ok(mut entries) = self.entries.lock()
+            && matches!(entries.get(key), Some(Entry::InFlight { .. }))
+        {
+            entries.remove(key);
+        }
+    }
+
     /// How many keys are held.
     ///
     /// `cfg(test)` because it exists for the capacity and no-record-on-refusal
@@ -358,7 +416,140 @@ fn refused(reason: &str) -> PerformReply {
     }
 }
 
-/// Decide, resolve, claim, fetch, call.
+/// The guest-chosen fields every request to act carries, whichever frame
+/// carried them: a [`PerformRequest`] or a streamed
+/// [`StreamRequest`](nucleus_cred_protocol::StreamRequest).
+pub(crate) struct Asked<'a> {
+    pub(crate) operation: &'a str,
+    pub(crate) target: &'a str,
+    pub(crate) justification: &'a str,
+    pub(crate) path: &'a str,
+}
+
+/// A request to act that the PDP approved, naming an upstream the operator
+/// configured, at a URL under that upstream's fixed base.
+///
+/// Built only by [`resolve`], so holding one means all three checks ran.
+pub(crate) struct Resolved<'u> {
+    approved: crate::broker::Approved,
+    entry: &'u RegistryEntry,
+    url: String,
+}
+
+impl<'u> Resolved<'u> {
+    /// The operator's entry for the named upstream.
+    pub(crate) fn entry(&self) -> &'u RegistryEntry {
+        self.entry
+    }
+
+    /// The URL the call goes to.
+    pub(crate) fn url(&self) -> &str {
+        &self.url
+    }
+}
+
+/// Steps 1–3 of every request to act: decide, resolve the name, fix the path.
+///
+/// One function for the perform frame and the streamed call (ADR 0007 G): a
+/// streamed call is a perform whose body arrives later, and two copies of this
+/// decision would be two chances for a traversal or an unknown-name fix to
+/// reach one of them only. `None` is a refusal, reported to the guest as "not
+/// permitted" whichever step refused, so a guest cannot learn which names
+/// exist by watching which refusals differ.
+pub(crate) fn resolve<'u>(
+    asked: &Asked<'_>,
+    identity: &PodIdentity,
+    policy: &PermissionLattice,
+    upstreams: &'u [RegistryEntry],
+    now_unix: u64,
+) -> Option<Resolved<'u>> {
+    // 1. The same decision the same request would get as a query.
+    let envelope = TaskRequestEnvelope {
+        operation: asked.operation.to_string(),
+        target: asked.target.to_string(),
+        justification: asked.justification.to_string(),
+    };
+    let approved = crate::broker::pdp_decide(&envelope, identity, policy, now_unix).ok()?;
+    // 2. A name the operator configured, or nothing.
+    let entry = upstreams.iter().find(|e| e.spec().name == asked.target)?;
+    // 3. The path may pick a resource under the base. It may not pick the base.
+    let url = entry.spec().url_for(asked.path)?;
+    Some(Resolved {
+        approved,
+        entry,
+        url,
+    })
+}
+
+/// The credential header for a resolved call, and whether it was minted.
+pub(crate) struct InjectedHeader {
+    /// The header value, with the spec's prefix applied. Never logged.
+    pub(crate) value: String,
+    /// Whether it came from a federated exchange, so a 401 evicts it.
+    pub(crate) federated: bool,
+}
+
+/// Why no header could be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CredentialMiss {
+    /// A federated credential could not be minted, or was minted already
+    /// expired. No upstream call was made.
+    MintFailed,
+    /// The store holds nothing for this request.
+    NotHeld,
+}
+
+/// Steps 5–6: mint a federated credential if the upstream needs one, then
+/// fetch the credential and build its header.
+///
+/// # Order, and why the flight is released here
+///
+/// A federated credential is minted (or found cached) now, and not before:
+/// `resolved` carries the approval, the only value `refill` accepts. Every
+/// mint failure (no issuer, an expired pod certificate, the token endpoint
+/// refusing or unreachable) is one [`CredentialMiss::MintFailed`]; which one
+/// it was is in the host's log, and telling the guest would make the token
+/// endpoint an oracle.
+///
+/// The credential is read under the store's lock in a synchronous closure, so
+/// the lock cannot be held across the call that follows. The single-flight
+/// guard is dropped before this returns: it guarded the mint and the fetch,
+/// and holding it through a slow upstream would serialise the pod. A use-once
+/// token leaves the store here.
+pub(crate) async fn credential_header(
+    resolved: &Resolved<'_>,
+    credentials: &PodCredentials,
+    now_unix: u64,
+) -> Result<InjectedHeader, CredentialMiss> {
+    let refilled = match resolved.entry.credential() {
+        CredentialSource::Federated(federated) => {
+            match credentials
+                .refill(&resolved.approved, federated, now_unix)
+                .await
+            {
+                // A proof past its own end is no proof.
+                Ok(refilled) if refilled.valid_at(now_unix) => Some(refilled),
+                Ok(_) | Err(_) => return Err(CredentialMiss::MintFailed),
+            }
+        }
+        CredentialSource::Env { .. } => None,
+    };
+    let federated = refilled.is_some();
+    let prefix = &resolved.entry.spec().value_prefix;
+    let value = credentials
+        .read(|store| {
+            crate::broker::cdp_fetch(&resolved.approved, store, now_unix)
+                .ok()
+                .map(|credential| format!("{prefix}{}", credential.expose()))
+        })
+        .flatten();
+    drop(refilled);
+    value
+        .map(|value| InjectedHeader { value, federated })
+        .ok_or(CredentialMiss::NotHeld)
+}
+
+/// Decide, resolve, claim, mint, fetch, call.
 ///
 /// # The order is the security property, and each step is where it is on purpose
 ///
@@ -374,8 +565,12 @@ fn refused(reason: &str) -> PerformReply {
 ///    that could refuse. Refusals are deliberately NOT recorded: nothing
 ///    happened, so a retry is free and a policy that changes in the guest's
 ///    favour is not shadowed by a cached "no".
-/// 5. **CDP.** The credential is fetched last, once there is a call to make.
-/// 6. **Call**, and settle the key with whatever came back.
+/// 5. **Mint, for a federated upstream.** After the decision — `refill` takes
+///    the [`Approved`](crate::broker::Approved) only step 1 can produce, so a
+///    mint cannot move above it and still compile — and after the claim, so a
+///    concurrent duplicate of this key never costs an exchange.
+/// 6. **CDP.** The credential is fetched last, once there is a call to make.
+/// 7. **Call**, and settle the key with whatever came back.
 ///
 /// # An ambiguous outcome is settled, not left open
 ///
@@ -383,7 +578,10 @@ fn refused(reason: &str) -> PerformReply {
 /// saw it. Settling with the failure means a repeat of that key returns the
 /// failure instead of trying again — which is the whole point of a key naming
 /// one logical operation. A guest that genuinely wants another attempt says so
-/// by choosing a new key, which is it accepting the duplicate, explicitly.
+/// by choosing a new key, which is it accepting the duplicate explicitly.
+///
+/// A failed MINT is the exception, and the only one: no upstream call was made,
+/// so the key is released rather than settled.
 pub async fn handle_perform<F, Fut>(
     req: &PerformRequest,
     ctx: &PerformContext<'_>,
@@ -394,26 +592,24 @@ where
     F: FnOnce(UpstreamCall) -> Fut,
     Fut: Future<Output = Result<UpstreamResponse, String>>,
 {
-    // 1. The same decision the same request would get as a query.
-    let envelope = TaskRequestEnvelope {
-        operation: req.operation.clone(),
-        target: req.target.clone(),
-        justification: req.justification.clone(),
-    };
-    let Ok(approved) = crate::broker::pdp_decide(&envelope, ctx.identity, ctx.policy, now_unix)
-    else {
+    // 1–3. Decide, resolve the name, fix the path: `resolve`, shared with the
+    //      streamed path so the two cannot decide differently.
+    let Some(resolved) = resolve(
+        &Asked {
+            operation: &req.operation,
+            target: &req.target,
+            justification: &req.justification,
+            path: &req.path,
+        },
+        ctx.identity,
+        ctx.policy,
+        ctx.upstreams,
+        now_unix,
+    ) else {
         return refused("not permitted");
     };
-
-    // 2. A name the operator configured, or nothing.
-    let Some(spec) = ctx.upstreams.iter().find(|s| s.name == req.target) else {
-        return refused("not permitted");
-    };
-
-    // 3. The path may pick a resource under the base. It may not pick the base.
-    let Some(url) = spec.url_for(&req.path) else {
-        return refused("not permitted");
-    };
+    let spec = resolved.entry.spec();
+    let url = resolved.url.clone();
 
     // 4. Claim the key. Everything above could refuse without an effect, so
     //    nothing above is recorded.
@@ -429,17 +625,57 @@ where
         Reservation::Full => return refused("too many outstanding requests"),
     }
 
-    // 5. The credential, last, and never further than this function.
-    let reply = match crate::broker::cdp_fetch(&approved, ctx.store, now_unix) {
-        Ok(credential) => {
+    // 4b. Charge the pod's egress balance for what the guest is about to send
+    //     (#2905). After the key claim, so a replay — which sends nothing — is
+    //     never charged; before the mint, so an exhausted pod costs no token
+    //     exchange. A refusal is NAMED to the guest: the counts are its own
+    //     traffic, and "not permitted" would hide the one remedy (a larger
+    //     declared ceiling) from the person who has to apply it.
+    let charge = match ctx.egress.admit(upload_bytes(req), now_unix).await {
+        Ok(charge) => charge,
+        Err(refusal) => {
+            ctx.ledger.release(&req.idempotency_key);
+            return refused(&refusal.to_string());
+        }
+    };
+
+    // 5–6. Mint (for a federated upstream), then fetch: `credential_header`.
+    let header = match credential_header(&resolved, ctx.credentials, now_unix).await {
+        Ok(header) => Some(header),
+        // No upstream call was made, so the key is released, not settled.
+        Err(CredentialMiss::MintFailed) => {
+            ctx.ledger.release(&req.idempotency_key);
+            charge.not_sent();
+            return refused("upstream call failed");
+        }
+        Err(CredentialMiss::NotHeld) => None,
+    };
+
+    let reply = match header {
+        Some(InjectedHeader {
+            value: header_value,
+            federated,
+        }) => {
+            // Charged as sent whatever the outcome: a transport failure is
+            // ambiguous about whether the upstream saw the body.
+            charge.sent();
             let outcome = call(UpstreamCall {
                 url,
                 header_name: spec.header.clone(),
-                header_value: format!("{}{}", spec.value_prefix, credential.expose()),
+                header_value,
                 body: req.body.clone(),
             })
             .await;
             match outcome {
+                // The upstream refused the minted token. Holding on to it would
+                // only fail the next call the same way, so it is evicted and the
+                // next call mints afresh. NOT retried here: the call is a POST
+                // that may have had an effect, and the key settles below as it
+                // would for any other outcome.
+                Ok(resp) if federated && resp.status == 401 => {
+                    ctx.credentials.evict(&spec.name);
+                    refused("upstream call failed")
+                }
                 Ok(mut resp) => {
                     resp.body.truncate(MAX_UPSTREAM_BODY_BYTES);
                     PerformReply {
@@ -459,7 +695,10 @@ where
         // Same reason a policy refusal gives, so a guest cannot probe which
         // credentials the host holds by watching which refusals differ. This is
         // the same collapse `handle_frame` makes for queries.
-        Err(_) => refused("not permitted"),
+        None => {
+            charge.not_sent();
+            refused("not permitted")
+        }
     };
 
     ctx.ledger
@@ -481,20 +720,20 @@ mod tests {
         PodIdentity::observed_by_host("spiffe://nucleus/pod/abc")
     }
 
-    fn upstream() -> CredentialedEgressSpec {
-        CredentialedEgressSpec {
+    fn upstream() -> RegistryEntry {
+        RegistryEntry::env(nucleus_spec::CredentialedEgressSpec {
             name: "model-api".into(),
             upstream: "https://upstream.invalid/v1".into(),
             credential_env: "NUCLEUS_TEST_PERFORM_CRED".into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
-        }
+        })
     }
 
-    fn store() -> CredentialStore {
-        let mut s = CredentialStore::new();
+    fn store() -> PodCredentials {
+        let mut s = nucleus_cred_broker::CredentialStore::new();
         s.insert("model-api", Credential::new(SECRET));
-        s
+        PodCredentials::static_only(s)
     }
 
     fn request() -> PerformRequest {
@@ -537,18 +776,120 @@ mod tests {
 
     fn ctx<'a>(
         policy: &'a PermissionLattice,
-        store: &'a CredentialStore,
-        upstreams: &'a [CredentialedEgressSpec],
+        credentials: &'a PodCredentials,
+        upstreams: &'a [RegistryEntry],
         ledger: &'a IdempotencyLedger,
         identity: &'a PodIdentity,
     ) -> PerformContext<'a> {
         PerformContext {
             identity,
             policy,
-            store,
+            credentials,
             upstreams,
             ledger,
+            egress: generous_egress(),
         }
+    }
+
+    /// A meter no test outside the egress ones comes near: the default
+    /// ceiling. Leaked because `PerformContext` borrows it for the test's life.
+    fn generous_egress() -> &'static crate::egress_meter::EgressMeter {
+        let meter = crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::undeclared(),
+            std::env::temp_dir(),
+            "test-pod".to_string(),
+        );
+        Box::leak(Box::new(meter))
+    }
+
+    fn with_key(key: &str) -> PerformRequest {
+        PerformRequest {
+            idempotency_key: key.into(),
+            ..request()
+        }
+    }
+
+    /// **#2905, the defect.** A pod whose ceiling covers one request sends one;
+    /// the second, under a fresh key, is refused BEFORE the upstream is called,
+    /// the refusal names the dimension and the counts, and the host leaves a
+    /// record of the exhaustion.
+    #[tokio::test]
+    async fn a_send_past_the_egress_ceiling_is_refused_named_and_recorded() {
+        let (policy, store, ups, ledger, id) = (
+            PermissionLattice::permissive(),
+            store(),
+            vec![upstream()],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let one = upload_bytes(&request());
+        let meter = crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::new(2 * one - 1, portcullis::EgressPace::Unpaced),
+            dir.path().to_path_buf(),
+            "pod-1".to_string(),
+        );
+        let ctx = PerformContext {
+            egress: &meter,
+            ..ctx(&policy, &store, &ups, &ledger, &id)
+        };
+        let net = Upstream::default();
+
+        let first = handle_perform(&with_key("k1"), &ctx, NOW, net.caller()).await;
+        assert!(first.granted, "non-vacuity: the first send fits: {first:?}");
+
+        let second = handle_perform(&with_key("k2"), &ctx, NOW, net.caller()).await;
+        assert!(!second.granted);
+        assert_eq!(
+            net.count(),
+            1,
+            "the refused send never reached the upstream"
+        );
+        assert!(
+            second.reason.contains("egress.max_bytes")
+                && second
+                    .reason
+                    .contains(&format!("{one} of {} bytes", 2 * one - 1)),
+            "the refusal names the dimension and the counts: {:?}",
+            second.reason
+        );
+        let log = std::fs::read_to_string(dir.path().join("lifecycle.log")).unwrap_or_default();
+        assert!(log.contains("egress_budget_exhausted"), "{log}");
+
+        // A refusal claims no key: the same key retried under a larger ceiling
+        // would be a fresh call, not a replay of the refusal.
+        assert_eq!(ledger.len(), 1);
+    }
+
+    /// A replay sends nothing, so it is not charged — a guest retrying a slow
+    /// reply must not spend its budget twice on one logical send.
+    #[tokio::test]
+    async fn a_replayed_key_is_not_charged_twice() {
+        let (policy, store, ups, ledger, id) = (
+            PermissionLattice::permissive(),
+            store(),
+            vec![upstream()],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let one = upload_bytes(&request());
+        let meter = crate::egress_meter::EgressMeter::new(
+            portcullis::EgressCeiling::new(one, portcullis::EgressPace::Unpaced),
+            dir.path().to_path_buf(),
+            "pod-1".to_string(),
+        );
+        let ctx = PerformContext {
+            egress: &meter,
+            ..ctx(&policy, &store, &ups, &ledger, &id)
+        };
+        let net = Upstream::default();
+        for _ in 0..3 {
+            let reply = handle_perform(&request(), &ctx, NOW, net.caller()).await;
+            assert!(reply.granted, "{reply:?}");
+        }
+        assert_eq!(net.count(), 1);
+        assert_eq!(meter.counted(), one);
     }
 
     /// **The non-vacuity control, first.** Every other test here asserts that

@@ -68,7 +68,7 @@ pub(crate) struct Inputs<'a> {
     pub state: &'a NodeState,
     pub pod_dir: &'a Path,
     pub spec: &'a PodSpec,
-    pub image: &'a nucleus_spec::ImageSpec,
+    pub image: &'a crate::rootfs_source::HostImage,
     pub id: Uuid,
     pub grant: &'a net::IdentityGrant,
     pub vsock_path: &'a Path,
@@ -76,6 +76,12 @@ pub(crate) struct Inputs<'a> {
     pub task_token: Option<session_mint::MintedTaskToken>,
     pub pod_certificate: Option<pod_authority::BootCertificate>,
     pub broker_serve: broker_launch::ServeToken,
+    /// The audit uploader's credential, minted for this pod's resolved sink (#3160). `None` when
+    /// the pod has no audit sink.
+    pub audit_creds: Option<workload_api_vsock::AuditCredentials>,
+    /// What `image_identity::verify` read for this pod, so the attestation reports the bytes
+    /// that were held to the pin rather than a second read of the same file.
+    pub measured: crate::image_identity::Measured,
 }
 
 pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiError> {
@@ -91,6 +97,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         task_token,
         pod_certificate,
         broker_serve,
+        audit_creds,
+        measured,
     } = inputs;
     let identity_source = net::identity_registration(state.identity_manager.as_ref(), grant);
     let mut ready = PreparedIdentity(Some(IdentityParts {
@@ -121,8 +129,9 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             .compute_attestation(
                 &pod_id_str,
                 &image.kernel_path,
-                &image.rootfs_path,
+                image.rootfs_path(),
                 &config_bytes,
+                measured,
             )
             .await
         {
@@ -178,7 +187,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                     id,
                 )),
                 // Pod-scoped DLC-D admission provisioning (PodSpec labels).
-                dlc_admission: workload_api_vsock::DlcAdmissionMaterial::from_labels(
+                dlc_admission: nucleus_spec::dlc_admission::DlcProvisioning::from_labels(
                     &spec.metadata.labels,
                 ),
                 // The broker capability, minted per pod and served ONCE. See
@@ -188,23 +197,23 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // Served WITH the capability, not separately — the proxy
                 // needs both to reach the broker and neither is useful alone.
                 broker_port: state.broker_vsock_port,
-                broker_secret_served: std::sync::Arc::default(),
+                // Nothing served yet. Every per-pod value above that names or
+                // empowers this pod goes out ONCE, to guest-init, before the
+                // workload exists (#2724) — the SVID key included.
+                served: workload_api_vsock::ServedLedger::new(),
                 // Set the first time this pod is handed anything that names it; a snapshot
                 // of a VM past that point would give every clone this pod's identity.
                 personalized: std::sync::Arc::default(),
                 at_snapshot_barrier: std::sync::Arc::default(),
-                // The S3 audit-sink credentials, served once over this
+                // The audit uploader's credential, served once over this
                 // socket instead of riding the world-readable kernel
-                // command line (the C1 exposure).
-                audit_creds: workload_api_vsock::AuditCredentials::from_node_env(
-                    spec.spec.audit_sink.is_some(),
-                ),
-                audit_creds_served: std::sync::Arc::default(),
+                // command line (the C1 exposure). Minted for this pod's
+                // resolved sink; the node's own key is never served (#3160).
+                audit_creds,
                 // A per-pod ed25519 seed the guest proxy signs receipts with,
                 // served ONCE before the workload exists. See `mediation`.
                 mediation_signing_key: mediation::new_seed_hex(pod_dir),
                 mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
-                mediation_key_served: std::sync::Arc::default(),
                 // Where the host durably collects SHIP_RECEIPT receipts.
                 receipt_dir: Some(pod_dir.to_path_buf()),
                 pod_registry: state.pods.clone(),
@@ -219,4 +228,43 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         ready.0.as_mut().expect("guard owns registration").bridge = Some(bridge);
     }
     Ok(ready)
+}
+
+impl FirecrackerPod {
+    /// Cleans up identity resources (unregister from VM registry, forget certificate).
+    pub(super) async fn cleanup_identity(&self) {
+        // Shut down workload API bridge
+        if let Some(bridge) = self.workload_api_bridge.lock().await.take() {
+            bridge.shutdown().await;
+        }
+
+        // Stop the credential broker and unlink its socket. Both halves matter:
+        // see `BrokerListener::shutdown`.
+        if let Some(listener) = self.broker.lock().await.take() {
+            let path = listener.socket_path().to_path_buf();
+            if listener.shutdown().await == broker_transport::ShutdownOutcome::Aborted {
+                tracing::warn!(
+                    socket = %path.display(),
+                    "credential broker had to be aborted at teardown — a connection outlived the \
+                     shutdown signal"
+                );
+            }
+        }
+
+        if let Some(listener) = self.decide.lock().await.take() {
+            let tally = listener.shutdown().await;
+            tracing::info!(pod_dir = %self.pod_dir.display(), ?tally, "host-decide shadow tally at teardown");
+        }
+
+        // A let-chain (edition 2024) rather than a tuple of Options: it says the
+        // same thing without building a throwaway tuple, and the explicit `ref`
+        // bindings the tuple form needed are gone.
+        if let Some(identity) = &self.identity
+            && let Some(manager) = &self.identity_manager
+        {
+            manager
+                .release_pod(self.identity_registry_key.as_deref(), identity)
+                .await;
+        }
+    }
 }

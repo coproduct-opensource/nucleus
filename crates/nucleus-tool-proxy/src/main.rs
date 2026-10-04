@@ -11,14 +11,13 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
-#[cfg(test)]
-use base64::Engine as _;
 use clap::Parser;
 use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
 use nucleus::portcullis::kernel::{DecisionToken, Kernel};
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
 use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
-use nucleus_permission_market::{PermissionBid, PermissionGrant, PermissionMarket};
+use nucleus_authority_exchange::{Charger, RoundScheduler};
+use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
 use portcullis::flow_graph::FlowGraph;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
@@ -27,11 +26,14 @@ use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
 mod api_error;
+mod approval;
 mod art12;
 mod art12_shipper;
 mod art12_sink;
 mod attestation;
 mod auth;
+mod authority_ledger;
+mod authority_round;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
@@ -42,6 +44,7 @@ mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
+mod host_decide;
 mod host_socket;
 mod identity_fusion;
 mod ingest;
@@ -60,6 +63,7 @@ mod proposal;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
+mod spend_shipper;
 mod startup_trace;
 mod telemetry;
 #[allow(dead_code)]
@@ -72,17 +76,31 @@ mod artifact;
 mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
+mod workload_door;
 mod workload_supervisor;
 
+use approval::{
+    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, approve_operation,
+    load_approval_bundle,
+};
 use attestation::AttestationVerifier;
 use auth::AuthConfig;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
-use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
 use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use policy::PolicyEngine;
 
+/// `--unsandboxed` as the typed opt-in it is (ADR 0007 A): the flag's
+/// presence is the only thing that maps to `Explicit`.
+fn unsandboxed_opt_in(given: bool) -> nucleus::UnsandboxedOptIn {
+    if given {
+        nucleus::UnsandboxedOptIn::Explicit
+    } else {
+        nucleus::UnsandboxedOptIn::Absent
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-tool-proxy")]
+#[command(name = "nucleus-tool-proxy", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Tool proxy server running inside nucleus pods")]
 struct Args {
     /// Pod spec YAML path.
@@ -102,6 +120,17 @@ struct Args {
     /// always admitted; an out-of-namespace peer is the host).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_PEER_UIDS", value_delimiter = ',')]
     peer_uids: Vec<u32>,
+    /// Where to bind the workload door: the Unix socket on which this proxy
+    /// serves its workload's tool calls and egress, and nothing else (#3031
+    /// option B). Bound only when the pod spec has a workload. The default is
+    /// the guest's `guest_layout::WORKLOAD_DOOR`; a proxy outside a guest names
+    /// a directory it can write.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_WORKLOAD_DOOR",
+        default_value = nucleus_spec::guest_layout::WORKLOAD_DOOR
+    )]
+    workload_door: PathBuf,
     /// Optional vsock CID override.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_CID")]
     vsock_cid: Option<u32>,
@@ -202,6 +231,25 @@ struct Args {
     /// When enabled, requests must include valid VM attestation.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_ATTESTATION")]
     require_attestation: bool,
+    /// Explicit opt-in to the bare host tier (owner decisions, 2026-10-02):
+    /// on a non-root runtime whose containment is `Unsandboxed`, run `/v1/run`
+    /// children and the pod workload as this process's own uid, where they
+    /// can read every per-pod secret in this process's environment. Without
+    /// it every such child is refused by name. A root runtime drops its
+    /// children regardless, and no other containment is affected.
+    ///
+    /// A flag only, never an env var: ambient configuration is not an
+    /// explicit opt-in. `nucleus run --local`, `nucleus shell` and a node's
+    /// allowed local driver pass it.
+    #[arg(
+        long = "unsandboxed",
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::BoolValueParser::new(),
+            unsandboxed_opt_in
+        )
+    )]
+    unsandboxed: nucleus::UnsandboxedOptIn,
     /// Comma-separated list of allowed kernel hashes (SHA-256, hex).
     /// If empty, any kernel hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_KERNEL_HASHES")]
@@ -317,6 +365,36 @@ struct Args {
     /// Sub-pods cannot exceed this ceiling via delegate_to().
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_DELEGATION_CEILING")]
     delegation_ceiling: Option<String>,
+
+    /// Scarce-authority dimensions cleared by a truthful auction instead of the
+    /// Lagrangian screen. Comma-separated, from `filesystem`, `command_exec`,
+    /// `network_egress`, `approval`.
+    ///
+    /// Empty (the default) changes nothing: every dimension keeps the posted-price
+    /// path. A named dimension holds each request for `--clearing-window-ms`,
+    /// clears the group with the proven VCG kernel, and charges the winner the
+    /// Clarke pivot against this pod's delegated budget. A request for a named
+    /// dimension that arrives WITHOUT a verified delegation certificate is
+    /// refused: the bid ceiling comes from the certificate, and a bid the
+    /// principal did not authorise is not a bid.
+    #[arg(long, env = "NUCLEUS_CLEARING_DIMENSIONS", value_delimiter = ',')]
+    clearing: Vec<String>,
+
+    /// How long a clearing round collects bids before it closes, in
+    /// milliseconds. This is added latency on every request for a cleared
+    /// dimension, paid to make a second price exist at all.
+    #[arg(long, env = "NUCLEUS_CLEARING_WINDOW_MS", default_value_t = 50)]
+    clearing_window_ms: u64,
+
+    /// Where cleared rounds are written down: one signed, hash-chained edge per
+    /// participant, each bound to the round's receipt hash.
+    ///
+    /// Required whenever `--clearing` names a dimension. Clearing without a
+    /// record would produce a price nothing can check afterwards, which is the
+    /// opposite of the reason to run an auction at all — so a missing ledger is
+    /// a refusal at startup, not a silent degradation.
+    #[arg(long, env = "NUCLEUS_AUTHORITY_LEDGER")]
+    authority_ledger: Option<PathBuf>,
 
     // === Delegation Certificate Configuration ===
     /// Hex-encoded Ed25519 public key of the root delegation authority.
@@ -447,6 +525,11 @@ pub(crate) struct AppState {
     /// (`pod_cert.rs`). `None` only for a pod created before its node issued
     /// certificates.
     pod_cert: Option<Arc<pod_cert::PodCertificate>>,
+    /// The same chain as a sealed `VerifiedPermissions`: the ceiling a process
+    /// inside this pod bids under in the authority exchange (#2988). A pod
+    /// peer holds no certificate of its own; it acts under the pod's, and a
+    /// pod without one cannot bid at all.
+    pod_verified: Option<Arc<portcullis::certificate::VerifiedPermissions>>,
     /// What a denial needs to explain itself: the grant a person approved, the
     /// ceiling they chose, and the effect catalog. `None` for a profile run,
     /// and then refusals read exactly as they did before.
@@ -458,8 +541,22 @@ pub(crate) struct AppState {
     orchestrator_credentials: std::collections::BTreeMap<String, String>,
     /// Permission market for Lagrangian pricing of capability dimensions.
     permission_market: Arc<Mutex<PermissionMarket>>,
+    /// Dimensions whose slots are auctioned rather than posted-priced. Empty by
+    /// default, so this is inert until an operator names a dimension.
+    clearing_dimensions: std::collections::BTreeSet<PermissionDimension>,
+    /// The round scheduler, present exactly when `clearing_dimensions` is not
+    /// empty. `Box<dyn Charger>` so the charger is chosen at startup.
+    authority_exchange: Option<Arc<RoundScheduler<Box<dyn Charger>>>>,
+    /// Where cleared rounds are recorded. Present exactly when
+    /// `authority_exchange` is.
+    authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
+    /// Signs and ships a `SpendReceipt` for every charge the exchange makes, so
+    /// the node — not this guest — decides how much of the allocation was spent
+    /// (#2541). `None` when the exchange is off or the plumbing is absent; the
+    /// node then folds the full allocation, which is the conservative default.
+    spend_shipper: Option<Arc<spend_shipper::SpendShipper>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
-    sandbox_proof: sandbox_proof::SandboxProof,
+    sandbox_proof: Arc<sandbox_proof::SandboxProof>,
     /// Root authority Ed25519 public key for delegation certificate verification.
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
@@ -553,6 +650,9 @@ pub(crate) struct AppState {
     /// RunBash-gating PR to DENY. Consumed by that later PR, hence unused today.
     #[allow(dead_code)]
     pub(crate) session_task_token: session_token::SessionTaskToken,
+    /// The host's shadow decision service (#2702, P8): every kernel decision is
+    /// also put to the host, whose answer is counted and never enforced.
+    pub(crate) host_decide: Arc<host_decide::HostDecide>,
 }
 
 /// OR-semantics: locked if EITHER signal file OR gRPC stream says locked.
@@ -668,355 +768,12 @@ pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity
     }
 }
 
-#[derive(Default)]
-struct ApprovalRegistry {
-    approvals: Mutex<HashMap<String, ApprovalEntry>>,
-}
-
-#[derive(Default)]
-struct ApprovalNonceCache {
-    entries: Mutex<HashMap<String, u64>>,
-}
-
-impl ApprovalNonceCache {
-    fn check_and_insert(&self, nonce: &str, expires_at_unix: u64, now: u64) -> bool {
-        let mut guard = self.entries.lock().unwrap();
-        guard.retain(|_, exp| *exp > now);
-        if guard.contains_key(nonce) {
-            return false;
-        }
-        guard.insert(nonce.to_string(), expires_at_unix);
-        true
-    }
-}
-
-/// Simple token bucket rate limiter for the approval endpoint.
-/// Prevents DoS attacks by limiting approval requests per second.
-struct ApprovalRateLimiter {
-    /// Maximum tokens (burst capacity)
-    max_tokens: u32,
-    /// Tokens added per second
-    refill_rate: u32,
-    /// Current token count and last refill timestamp
-    state: Mutex<(u32, u64)>,
-}
-
-impl ApprovalRateLimiter {
-    fn new(max_tokens: u32, refill_rate: u32) -> Self {
-        Self {
-            max_tokens,
-            refill_rate,
-            state: Mutex::new((max_tokens, now_unix())),
-        }
-    }
-
-    /// Try to consume a token. Returns true if allowed, false if rate limited.
-    fn try_acquire(&self) -> bool {
-        let mut guard = self.state.lock().unwrap();
-        let (tokens, last_refill) = &mut *guard;
-        let now = now_unix();
-
-        // Refill tokens based on elapsed time
-        let elapsed = now.saturating_sub(*last_refill);
-        if elapsed > 0 {
-            let refill = (elapsed as u32).saturating_mul(self.refill_rate);
-            *tokens = (*tokens).saturating_add(refill).min(self.max_tokens);
-            *last_refill = now;
-        }
-
-        // Try to consume a token
-        if *tokens > 0 {
-            *tokens -= 1;
-            true
-        } else {
-            false
-        }
-    }
-}
-
-impl Default for ApprovalRateLimiter {
-    fn default() -> Self {
-        // Allow 10 approvals per second with burst of 20
-        Self::new(20, 10)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ApprovalEntry {
-    count: usize,
-    expires_at_unix: Option<u64>,
-}
-
-impl ApprovalRegistry {
-    fn approve(&self, operation: &str, count: usize, expires_at_unix: Option<u64>) {
-        let mut guard = self.approvals.lock().unwrap();
-        let entry = guard.entry(operation.to_string()).or_insert(ApprovalEntry {
-            count: 0,
-            expires_at_unix,
-        });
-        entry.count += count;
-        entry.expires_at_unix = merge_expiry(entry.expires_at_unix, expires_at_unix);
-    }
-
-    fn consume(&self, operation: &str) -> bool {
-        let mut guard = self.approvals.lock().unwrap();
-        if let Some(entry) = guard.get_mut(operation) {
-            if is_expired(entry.expires_at_unix) {
-                guard.remove(operation);
-                return false;
-            }
-            if entry.count > 0 {
-                entry.count -= 1;
-                if entry.count == 0 {
-                    guard.remove(operation);
-                }
-                return true;
-            }
-        }
-        false
-    }
-
-    /// Whether a live grant exists for `operation`, WITHOUT spending it.
-    ///
-    /// One human approval must buy exactly one operation, and an operation
-    /// crosses two independent approval gates on its way through: the kernel's
-    /// `RequiresApproval` verdict at the HTTP chokepoint, and the sandbox's own
-    /// capability guard. Both used to want to `consume`, which is #2406's other
-    /// half — a grant of `count: 1` was spent by whichever gate read it first
-    /// and the next gate found nothing, so the caller had to grant more than
-    /// they meant to approve for the write to land at all.
-    ///
-    /// So the gates split the two questions. Every gate before the last asks
-    /// *is this approved* (here); the sandbox approver, which is the last thing
-    /// between the request and the bytes, is the single site that spends it.
-    /// A peek that reports a live grant is therefore always followed by exactly
-    /// one `consume`, or by a refusal further down that spends nothing.
-    ///
-    /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
-    /// a peek cannot report a grant that a spend would then reject.
-    fn is_granted(&self, operation: &str) -> bool {
-        let mut guard = self.approvals.lock().unwrap();
-        match guard.get(operation) {
-            Some(entry) if is_expired(entry.expires_at_unix) => {
-                guard.remove(operation);
-                false
-            }
-            Some(entry) => entry.count > 0,
-            None => false,
-        }
-    }
-}
-
-impl mediation::ApprovalGrants for ApprovalRegistry {
-    fn is_granted(&self, operation: &str) -> bool {
-        ApprovalRegistry::is_granted(self, operation)
-    }
-}
-
-fn merge_expiry(existing: Option<u64>, incoming: Option<u64>) -> Option<u64> {
-    match (existing, incoming) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    }
-}
-
-fn is_expired(expires_at_unix: Option<u64>) -> bool {
-    match expires_at_unix {
-        Some(ts) => ts <= now_unix(),
-        None => false,
-    }
-}
-
-/// Load and verify a signed approval bundle from the NUCLEUS_APPROVAL_BUNDLE env var.
-///
-/// If present and valid, populates the ApprovalRegistry with the approved operations.
-/// If `require` is true, the function returns an error when the env var is missing.
-fn load_approval_bundle(
-    spec_contents: &str,
-    approvals: &ApprovalRegistry,
-    require: bool,
-) -> Result<(), ApiError> {
-    let jws = match std::env::var("NUCLEUS_APPROVAL_BUNDLE") {
-        Ok(val) if !val.is_empty() => val,
-        _ => {
-            if require {
-                return Err(ApiError::Spec(
-                    "--require-approval-bundle is set but NUCLEUS_APPROVAL_BUNDLE is not set"
-                        .to_string(),
-                ));
-            }
-            return Ok(());
-        }
-    };
-
-    let trusted_keys = parse_approval_trusted_keys();
-    verify_and_load_approval_bundle(&jws, spec_contents, approvals, &trusted_keys)
-}
-
-/// Parse the pinned trusted approver keys from `NUCLEUS_APPROVAL_TRUSTED_KEYS`
-/// (a JSON array of JWKs). Unset / empty / parse-error ⇒ empty set ⇒ approval
-/// bundles are refused fail-closed. Mirrors the `NUCLEUS_DECLASSIFY_TRUSTED_KEYS`
-/// pinned-trust-anchor pattern.
-fn parse_approval_trusted_keys() -> Vec<nucleus_identity::did::JsonWebKey> {
-    match std::env::var("NUCLEUS_APPROVAL_TRUSTED_KEYS") {
-        Ok(val) if !val.trim().is_empty() => {
-            match serde_json::from_str::<Vec<nucleus_identity::did::JsonWebKey>>(&val) {
-                Ok(keys) => keys,
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        "NUCLEUS_APPROVAL_TRUSTED_KEYS is set but is not a valid JSON array of \
-                         JWKs — treating as empty (approval bundles will be refused fail-closed)"
-                    );
-                    Vec::new()
-                }
-            }
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Verify a JWS approval bundle against a PINNED set of trusted approver keys and
-/// populate the ApprovalRegistry.
-///
-/// SECURITY: the bundle is verified against `trusted_keys` (the pinned approver
-/// trust anchors), NOT against the key embedded in the JWS header. Trusting the
-/// header's own JWK would be vacuous — an attacker could sign a bundle with their
-/// own key, embed that key in the header, and self-verify, bypassing the
-/// human-in-the-loop approval gate. Fail-closed: if no trusted approver key is
-/// configured, the bundle is refused.
-fn verify_and_load_approval_bundle(
-    jws: &str,
-    spec_contents: &str,
-    approvals: &ApprovalRegistry,
-    trusted_keys: &[nucleus_identity::did::JsonWebKey],
-) -> Result<(), ApiError> {
-    let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
-
-    // Fail-closed: never self-trust the bundle's embedded key. Without a pinned
-    // trusted approver key there is no authority to check against, so refuse.
-    if trusted_keys.is_empty() {
-        return Err(ApiError::Spec(
-            "no trusted approver keys configured (set NUCLEUS_APPROVAL_TRUSTED_KEYS) — refusing \
-             to load an approval bundle fail-closed (the embedded JWS key is never self-trusted)"
-                .to_string(),
-        ));
-    }
-
-    let verifier = ApprovalBundleVerifier::new();
-    // Verify against each PINNED trusted approver key; accept the first that the
-    // bundle validly matches (correct key + valid signature + manifest binding).
-    // A bundle signed by any non-trusted key is rejected.
-    let claims = trusted_keys
-        .iter()
-        .find_map(|tk| verifier.verify(jws, tk, &manifest_hash).ok())
-        .ok_or_else(|| {
-            ApiError::Spec(
-                "approval bundle signer is not a trusted approver key (or the signature / \
-                 manifest binding is invalid)"
-                    .to_string(),
-            )
-        })?;
-
-    // Populate the ApprovalRegistry with the approved operations
-    let count = claims.max_uses.map(|n| n as usize).unwrap_or(usize::MAX);
-    let expiry = Some(claims.exp as u64);
-    for op in &claims.approved_operations {
-        approvals.approve(op, count, expiry);
-        info!(
-            operation = %op,
-            count = count,
-            expires_at = claims.exp,
-            event = "approval_bundle_loaded",
-            "pre-approved operation from signed bundle"
-        );
-    }
-
-    info!(
-        issuer = %claims.iss,
-        jti = %claims.jti,
-        operations = ?claims.approved_operations,
-        manifest_hash = %claims.manifest_hash,
-        event = "approval_bundle_verified",
-        "signed approval bundle verified and loaded"
-    );
-
-    Ok(())
-}
-
-#[derive(Debug, Deserialize)]
-struct ReadRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-/// Run command request using secure array-based format.
-///
-/// The array form prevents shell injection by executing commands directly
-/// without shell interpretation. Each array element is passed as a separate
-/// argument to the process.
-#[derive(Debug, Deserialize)]
-struct RunRequest {
-    /// Command as array, e.g. ["ls", "-la", "/tmp"]
-    args: Vec<String>,
-    /// Optional input to pass to command stdin
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Optional working directory (relative to sandbox)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Optional timeout in seconds (clamped to policy limit)
-    #[serde(default)]
-    #[allow(dead_code)] // Reserved for future timeout implementation
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ApproveRequest {
-    operation: String,
-    #[serde(default = "default_approve_count")]
-    count: usize,
-    #[serde(default)]
-    expires_at_unix: Option<u64>,
-    #[serde(default)]
-    nonce: Option<String>,
-}
-
-fn default_approve_count() -> usize {
-    1
-}
-
-const MAX_APPROVAL_TTL_SECS: u64 = 300;
-
-#[derive(Debug, Serialize)]
-struct ApproveResponse {
-    ok: bool,
-}
+// The file and command bodies are `nucleus_client::wire`'s, the single
+// declaration every client serializes: a private copy here drifted from
+// nucleus-mcp's and made every MCP `run` a 422 (2026-09-29).
+use nucleus_client::wire::{
+    ReadRequest, ReadResponse, RunRequest, RunResponse, WriteRequest, WriteResponse,
+};
 
 #[derive(Debug, Deserialize)]
 struct WebFetchRequest {
@@ -1301,6 +1058,10 @@ async fn main() -> Result<(), ApiError> {
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
     let sandbox_proof_config = sandbox_proof::SandboxProofConfig {
         identity_cert_path: args.identity_cert.clone().or_else(|| args.tls_cert.clone()),
+        trust_bundle_path: args
+            .identity_trust_bundle
+            .clone()
+            .or_else(|| args.trust_bundle.clone()),
         spire_socket: args
             .spire_socket
             .clone()
@@ -1315,14 +1076,8 @@ async fn main() -> Result<(), ApiError> {
         )
         .await
     {
-        Ok(proof) => {
-            info!(
-                "sandbox proof verified: tier={} label={}",
-                proof.tier(),
-                proof.tier_label()
-            );
-            proof
-        }
+        // `verify_sandbox` logs the tier and the containment it decides.
+        Ok(proof) => proof,
         Err(e) => {
             eprintln!("FATAL: {e}");
             std::process::exit(78); // EX_CONFIG
@@ -1372,7 +1127,18 @@ async fn main() -> Result<(), ApiError> {
         };
     }
 
-    let runtime = pod_mgmt::build_runtime(&spec)?;
+    // Copied out once: the executor's children and the workload are confined
+    // under the same containment, and `sandbox_proof` moves into the state.
+    let containment = sandbox_proof.containment();
+    if args.unsandboxed == nucleus::UnsandboxedOptIn::Explicit {
+        console_line(&format!(
+            "[nucleus-tool-proxy] --unsandboxed: bare host tier opted in (containment {containment:?}, \
+             runtime uid {}). Commands and a workload on this tier run as this process's uid and \
+             can read its secrets; a root runtime still drops them.",
+            nucleus::runtime_uid()
+        ));
+    }
+    let runtime = pod_mgmt::build_runtime(&spec, containment, args.unsandboxed)?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
@@ -1389,8 +1155,10 @@ async fn main() -> Result<(), ApiError> {
     st.mark("runtime_build");
 
     // Split the verified certificate: the sealed permissions go into the
-    // kernel, the summary into AppState.
-    let (mut pod_cert_verified, pod_cert) = match pod_cert {
+    // kernel, the summary into AppState — and a second handle on the sealed
+    // permissions stays in AppState as the ceiling a pod peer bids under
+    // (#2988). Same verified value; nothing is re-derived.
+    let (mut pod_cert_verified, pod_cert, pod_verified) = match pod_cert {
         Some((verified, summary)) => {
             tracing::info!(
                 leaf = %summary.leaf_identity,
@@ -1399,9 +1167,14 @@ async fn main() -> Result<(), ApiError> {
                 "pod certificate verified; kernel and delegation ceiling derive from it"
             );
             let fingerprint = summary.fingerprint;
-            (Some((verified, fingerprint)), Some(Arc::new(summary)))
+            let pod_verified = Arc::new(verified.clone());
+            (
+                Some((verified, fingerprint)),
+                Some(Arc::new(summary)),
+                Some(pod_verified),
+            )
         }
-        None => (None, None),
+        None => (None, None, None),
     };
 
     let auth = AuthConfig::new(
@@ -1617,6 +1390,20 @@ async fn main() -> Result<(), ApiError> {
         })
     };
 
+    // The authority exchange: inert with an empty `--clearing`, fail-closed
+    // without a ledger otherwise. See `authority_round::build`.
+    let authority_round::Exchange {
+        clearing_dimensions,
+        scheduler: authority_exchange,
+        ledger: authority_ledger,
+        spend_shipper,
+    } = authority_round::build(
+        &args.clearing,
+        args.clearing_window_ms,
+        args.authority_ledger.as_ref(),
+        &delegation_ceiling,
+    )?;
+
     // Load orchestrator credentials from environment for sub-pod injection
     let orchestrator_credentials = {
         let mut creds = std::collections::BTreeMap::new();
@@ -1792,11 +1579,7 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
-    let unix_binding = host_socket::resolve_unix(
-        args.listen_unix.as_deref(),
-        &args.peer_uids,
-        vsock_binding.as_ref(),
-    )?;
+    let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
     // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
@@ -1845,7 +1628,11 @@ async fn main() -> Result<(), ApiError> {
         delegation_ceiling,
         orchestrator_credentials,
         permission_market: Arc::new(Mutex::new(PermissionMarket::new())),
-        sandbox_proof,
+        clearing_dimensions: clearing_dimensions.clone(),
+        authority_exchange,
+        authority_ledger,
+        spend_shipper,
+        sandbox_proof: Arc::new(sandbox_proof),
         cert_root_pubkey: args
             .cert_root_pubkey
             .as_deref()
@@ -1853,6 +1640,7 @@ async fn main() -> Result<(), ApiError> {
             .map(Arc::new),
         effect_gate: effect_gate::EffectGate::new(pod_cert.as_deref(), &spec.spec.work_dir),
         pod_cert,
+        pod_verified,
         proposals,
         exposure_guard,
         kernel_exposure: kernel_exposure.clone(),
@@ -1872,6 +1660,9 @@ async fn main() -> Result<(), ApiError> {
         declassify_trusted_keys,
         declassify_threshold,
         session_task_token,
+        host_decide: Arc::new(host_decide::HostDecide::for_transport(
+            vsock_binding.is_some(),
+        )),
     };
 
     st.mark("state_build");
@@ -1970,8 +1761,8 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/glob", post(glob_search))
         .route("/v1/grep", post(grep_search))
         .route("/v1/web_search", post(web_search))
-        .route("/v1/memory/write", post(memory_write))
-        .route("/v1/memory/recall", post(memory_recall))
+        .route("/v1/memory/write", post(memory::memory_write))
+        .route("/v1/memory/recall", post(memory::memory_recall))
         .route("/v1/approve", post(approve_operation))
         .route("/v1/escalate", post(escalate::escalate_permissions))
         // Governor declassification: signature-gated, one-shot, sink-scoped.
@@ -1990,6 +1781,7 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Keep references for the exit report after shutdown
+    let exit_spend = state.spend_shipper.clone();
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
@@ -1997,6 +1789,10 @@ async fn main() -> Result<(), ApiError> {
     let exit_art12 = state.art12_log.clone();
     let exit_kernel = state.kernel.clone();
     let exit_grant = spec.metadata.task_grant_id.clone();
+
+    // Built from the same state and the same middleware, before `state` moves
+    // into the main router below. Served only if the pod has a workload.
+    let door_app = workload_door::router(state.clone());
 
     let app = app
         .with_state(state.clone())
@@ -2030,23 +1826,29 @@ async fn main() -> Result<(), ApiError> {
         // THE GUEST PATH: vsock in a microVM, a peer-verified Unix socket in a
         // container (#2446). The proxy serves the host-verified transport and
         // `main` returns right here — everything below this block is host/TCP
-        // only. The workload therefore starts on this path (between bind and
-        // serve, so its proxy URL names a socket that exists); before run 4's
-        // diagnosis it started only below, and an in-guest pod's workload never
-        // ran at all.
+        // only. The workload therefore starts on this path, between bind and
+        // serve; before run 4's diagnosis it started only below, and an
+        // in-guest pod's workload never ran at all. It does not call this
+        // listener (nothing in the guest can connect to it): it is pointed at
+        // its own door, bound inside `start` (`workload::start_if_configured`).
         let _workload = workload_supervisor::start(
             &spec,
-            bound.proxy(),
-            &args.auth_secret,
+            &args.workload_door,
+            door_app,
+            containment,
+            args.unsandboxed,
             completion_writer,
-            Some(exit_report::on_workload_exit(
-                exit_audit.clone(),
-                exit_work_dir.clone(),
-                exit_exposure.clone(),
-                exit_monitor.clone(),
-                exit_art12.clone(),
-                exit_kernel.clone(),
-                exit_grant.clone(),
+            Some(spend_shipper::SpendShipper::before_exit(
+                exit_spend.clone(),
+                exit_report::on_workload_exit(
+                    exit_audit.clone(),
+                    exit_work_dir.clone(),
+                    exit_exposure.clone(),
+                    exit_monitor.clone(),
+                    exit_art12.clone(),
+                    exit_kernel.clone(),
+                    exit_grant.clone(),
+                ),
             )),
         )?;
         st.report();
@@ -2078,17 +1880,22 @@ async fn main() -> Result<(), ApiError> {
     // vsock branch above — this line alone is unreachable in a real guest.
     let _workload = workload_supervisor::start(
         &spec,
-        workload::BoundProxy::Tcp(addr),
-        &args.auth_secret,
+        &args.workload_door,
+        door_app,
+        containment,
+        args.unsandboxed,
         completion_writer,
-        Some(exit_report::on_workload_exit(
-            exit_audit.clone(),
-            exit_work_dir.clone(),
-            exit_exposure.clone(),
-            exit_monitor.clone(),
-            exit_art12.clone(),
-            exit_kernel.clone(),
-            exit_grant.clone(),
+        Some(spend_shipper::SpendShipper::before_exit(
+            exit_spend.clone(),
+            exit_report::on_workload_exit(
+                exit_audit.clone(),
+                exit_work_dir.clone(),
+                exit_exposure.clone(),
+                exit_monitor.clone(),
+                exit_art12.clone(),
+                exit_kernel.clone(),
+                exit_grant.clone(),
+            ),
         )),
     )?;
 
@@ -2233,9 +2040,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
     )
 }
 
-const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
-const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
-
 async fn auth_middleware(
     State(state): State<AppState>,
     request: axum::http::Request<Body>,
@@ -2264,108 +2068,38 @@ async fn auth_middleware(
         ));
     }
 
-    // Verify attestation if required
-    if state.attestation_verifier.is_required() {
-        // Try to get client certificate from mTLS connection first
-        // Check both direct ClientCertInfo and MtlsConnectInfo
-        let client_cert_der = parts
-            .extensions
-            .get::<MtlsConnectInfo>()
-            .and_then(|info| info.client_cert.as_ref())
-            .or_else(|| parts.extensions.get::<ClientCertInfo>())
-            .map(|cert| cert.der());
-
-        let attestation_result = if let Some(cert_der) = client_cert_der {
-            // mTLS mode: extract attestation from client certificate
-            let spiffe_id = parts
-                .extensions
-                .get::<MtlsConnectInfo>()
-                .and_then(|info| info.client_cert.as_ref())
-                .and_then(|cert| cert.spiffe_id.clone());
-            tracing::info!(
-                spiffe_id = ?spiffe_id,
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_mtls",
-                "verifying attestation from client certificate"
-            );
-            state.attestation_verifier.verify_certificate(cert_der)
-        } else if let Some(att_header) = parts.headers.get(HEADER_ATTESTATION) {
-            // Fallback: attestation passed via header (base64-encoded DER)
-            // This is less secure as headers can be spoofed
-            tracing::warn!(
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_header",
-                "attestation via header (not mTLS) - consider enabling mTLS for production"
-            );
-            let att_value = att_header.to_str().map_err(|_| {
-                ApiError::AttestationFailed("invalid attestation header encoding".to_string())
-            })?;
-            state.attestation_verifier.verify_header(att_value)
-        } else {
-            // No attestation provided
-            attestation::AttestationResult {
-                attestation_present: false,
-                attestation: None,
-                matches_requirements: false,
-                rejection_reason: Some("attestation required but not provided (enable mTLS or send x-nucleus-attestation header)".to_string()),
-            }
-        };
-
-        if !attestation_result.matches_requirements {
-            let reason = attestation_result
-                .rejection_reason
-                .unwrap_or_else(|| "unknown attestation failure".to_string());
-            return Err(ApiError::AttestationFailed(reason));
-        }
-
-        // North Star C9 — enforce the assurance floor on the live path (fail-closed
-        // on absent/invalid/replayed residency evidence). No-op when the floor is
-        // L0Bearer. Logic lives in `AttestationVerifier::enforce_floor` (unit-tested).
-        state
-            .attestation_verifier
-            .enforce_floor(client_cert_der, &attestation_result)
-            .map_err(ApiError::AttestationFailed)?;
-
-        // Log successful attestation verification
-        if let Some(ref info) = attestation_result.attestation {
-            tracing::debug!(
-                kernel_hash = %&info.kernel_hash[..16],
-                rootfs_hash = %&info.rootfs_hash[..16],
-                "attestation verified"
-            );
-        }
-    }
+    // What the transport proved, read once: it decides the attestation
+    // requirement here and the ingress below. Only the workload door's accept
+    // path and route layer produce `DoorPeer`, so a main-listener request can
+    // never be read as the door's, nor the reverse. The requirement and the
+    // assurance floor live in `AttestationVerifier::admit` (unit-tested).
+    let evidence = attestation::TransportEvidence::of(&parts.extensions)
+        .map_err(ApiError::AttestationFailed)?;
+    state
+        .attestation_verifier
+        .admit(&evidence, &parts.headers)
+        .map_err(ApiError::AttestationFailed)?;
 
     // Determine authentication context (unified flow — no early returns).
-    // SPIFFE mTLS is most secure, then HMAC+drand for approvals, then HMAC.
-    // Precedence is decided by `auth::select_auth_tier`, which is unit-tested;
-    // this match only performs the chosen tier. Keeping the order in one
-    // testable place is deliberate — an invisible reordering here would make
-    // the transport tier dead and silently reinstate the readable-key HMAC.
-    debug_assert_eq!(
-        auth::select_auth_tier(
-            auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some(),
-            parts.uri.path() == APPROVE_PATH,
-            state.approval_verifier.is_some(),
-            state.host_verified_transport,
-        ),
-        if auth::extract_spiffe_id_from_extensions(&parts.extensions).is_some() {
-            auth::AuthTier::SpiffeMtls
-        } else if parts.uri.path() == APPROVE_PATH && state.approval_verifier.is_some() {
-            auth::AuthTier::ApprovalEd25519Drand
-        } else if parts.uri.path() == APPROVE_PATH {
-            auth::AuthTier::ApprovalHmacDrand
-        } else if state.host_verified_transport {
-            auth::AuthTier::HostVsock
-        } else {
-            auth::AuthTier::Hmac
-        },
-        "the inline chain has diverged from select_auth_tier"
+    // Precedence is decided by `auth::select_auth_tier` alone, which is
+    // unit-tested; this match only performs the chosen tier. It used to be an
+    // inline if-chain beside a `debug_assert_eq!` restating the same order —
+    // two copies of one fact (ADR 0007 G-1), which agreed with each other on
+    // the SPIFFE-before-approval order and so could not catch it. Now there is
+    // one.
+    let spiffe_id = auth::extract_spiffe_id_from_extensions(&parts.extensions);
+    // The one per-connection fact, stamped by the kernel at accept (#2988).
+    let pod_peer = host_socket::pod_peer_of(&parts.extensions);
+    let tier = auth::tier_of(
+        evidence.ingress(),
+        spiffe_id.is_some(),
+        parts.uri.path() == APPROVE_PATH,
+        state.approval_verifier.is_some(),
+        state.host_verified_transport,
+        pod_peer.is_some(),
     );
-    let mut context =
-        if let Some(spiffe_id) = auth::extract_spiffe_id_from_extensions(&parts.extensions) {
+    let mut context = match (tier, spiffe_id) {
+        (auth::AuthTier::SpiffeMtls, Some(spiffe_id)) => {
             tracing::info!(
                 spiffe_id = %spiffe_id,
                 path = %parts.uri.path(),
@@ -2374,16 +2108,19 @@ async fn auth_middleware(
                 "request authenticated via SPIFFE mTLS"
             );
             auth::verify_spiffe_mtls(&spiffe_id)
-        } else if parts.uri.path() == APPROVE_PATH {
-            // Signature tier FIRST, and exclusively: when approver public keys
-            // are configured, the shared-secret HMAC must not remain an
-            // alternative way in — any residual copy of the old secret would
-            // still forge approvals and the keys would have removed nothing.
-            let ctx = if let Some(ref verifier) = state.approval_verifier {
-                auth::verify_http_with_ed25519_drand(&parts.headers, &bytes, verifier)?
-            } else {
-                auth::verify_http_with_drand(&parts.headers, &bytes, &state.approval_auth)?
-            };
+        }
+        (auth::AuthTier::SpiffeMtls, None) => {
+            return Err(ApiError::Spec(
+                "SPIFFE tier selected without a SPIFFE identity".to_string(),
+            ));
+        }
+        // An approver's signature, on every transport and whatever certificate
+        // the caller holds. `ApprovalKeys::of` picks the Ed25519 keys whenever
+        // they are configured, so the HMAC secret is then no way in. This is
+        // authentication only: the handler mints its `VerifiedApproval` from
+        // the same check — see `approval`'s module doc.
+        (auth::AuthTier::ApprovalEd25519Drand | auth::AuthTier::ApprovalHmacDrand, _) => {
+            let ctx = approval::ApprovalKeys::of(&state).authenticate(&parts.headers, &bytes)?;
             if ctx.drand_round.is_some() {
                 tracing::info!(
                     drand_round = ctx.drand_round,
@@ -2392,15 +2129,28 @@ async fn auth_middleware(
                 );
             }
             ctx
-        } else if state.host_verified_transport {
-            // The listener already dropped every non-host peer, so this request
-            // provably came from the host. No shared secret is involved, which
-            // is the point: the HMAC key it replaces was readable by the agent
-            // from /proc/cmdline.
-            auth::verify_host_vsock()
-        } else {
-            auth::verify_http(&parts.headers, &bytes, &state.auth)?
-        };
+        }
+        // A process inside the pod, over the peer-verified Unix socket: the
+        // kernel named it at accept. No secret and no certificate (#2988).
+        (auth::AuthTier::PodPeer, _) => match pod_peer {
+            Some(peer) => auth::verify_pod_peer(peer),
+            None => {
+                return Err(ApiError::Spec(
+                    "pod-peer tier selected without a pod peer".to_string(),
+                ));
+            }
+        },
+        // The listener already dropped every non-host peer, so this request
+        // provably came from the host. No shared secret is involved, which
+        // is the point: the HMAC key it replaces was readable by the agent
+        // from /proc/cmdline.
+        (auth::AuthTier::HostVsock, _) => auth::verify_host_vsock(),
+        // The door's listener admitted this peer by its kernel-reported uid
+        // before the stream reached the router. The workload holds no secret;
+        // being that uid on that socket is the authentication.
+        (auth::AuthTier::WorkloadDoor { uid }, _) => auth::verify_workload_door(uid),
+        (auth::AuthTier::Hmac, _) => auth::verify_http(&parts.headers, &bytes, &state.auth)?,
+    };
 
     // Extract client cert DER for Layer 3 (fused identity fingerprint extraction).
     let client_cert_der: Option<Vec<u8>> = parts
@@ -2443,8 +2193,38 @@ async fn auth_middleware(
         }
         (Some(grant), Some(certified))
     } else {
-        (evaluate_permission_bid(&parts.headers, &state), None)
+        // No certificate, no grant. This arm used to parse a self-declared
+        // `x-nucleus-permission-bid` header — value estimate and trust tier
+        // included — and evaluate it as if it were a bid (#2526). A
+        // `PermissionBid` is now constructible only from a
+        // `VerifiedPermissions`, so the honest answer here is none, and the
+        // gates downstream that need a grant refuse.
+        (None, None)
     };
+
+    // ── The authority exchange ───────────────────────────────────────────
+    // An auctioned dimension is decided by a round, BEFORE the posted-price
+    // screen below: the two are alternative mechanisms for the same decision
+    // and running both would price the slot twice. See `authority_round`.
+    // Who bids is decided here, from facts the request cannot claim: a verified
+    // certificate chain (mTLS), or a kernel-attributed process inside the pod.
+    let bidder = match (certified_perms.as_ref(), pod_peer) {
+        (Some(c), _) => authority_round::Bidder::Certified(c),
+        (None, Some(peer)) => authority_round::Bidder::PodPeer(peer),
+        (None, None) => authority_round::Bidder::Nobody,
+    };
+    let auction =
+        authority_round::join_if_auctioned(&state, parts.uri.path(), bidder, &parts.headers)
+            .await?;
+    if let authority_round::AuctionOutcome::Outbid { message } = &auction {
+        return Ok(auction.stamp(
+            ApiError::KernelDenied {
+                message: message.clone(),
+                code: None,
+            }
+            .into_response(),
+        ));
+    }
 
     // Refuse the endpoint when its dimension is denied, including partial grants.
     if let Some(ref grant) = permission_grant
@@ -2475,37 +2255,7 @@ async fn auth_middleware(
     if let Some(certified) = certified_perms {
         req.extensions_mut().insert(certified);
     }
-    Ok(next.run(req).await)
-}
-
-/// Parse and evaluate a permission bid from request headers.
-///
-/// Returns `Some(PermissionGrant)` if a valid bid was present, `None` otherwise.
-/// Invalid bid JSON is silently ignored (logged at warn level).
-fn evaluate_permission_bid(headers: &HeaderMap, state: &AppState) -> Option<PermissionGrant> {
-    let bid_header = headers.get(HEADER_PERMISSION_BID)?;
-    let bid_str = bid_header.to_str().ok()?;
-    let bid: PermissionBid = match serde_json::from_str(bid_str) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "invalid permission bid header");
-            return None;
-        }
-    };
-
-    let market = state.permission_market.lock().unwrap();
-    let grant = market.evaluate_bid(&bid);
-
-    tracing::info!(
-        skill_id = %bid.skill_id,
-        granted = grant.granted.len(),
-        denied = grant.denied.len(),
-        total_cost = grant.total_cost,
-        event = "permission_bid_evaluated",
-        "permission market evaluated bid"
-    );
-
-    Some(grant)
+    Ok(auction.stamp(next.run(req).await))
 }
 
 async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -2525,7 +2275,8 @@ async fn health(State(state): State<AppState>) -> Json<serde_json::Value> {
             "violations": state.trace_monitor.violations().len(),
             "violations_dropped": state.trace_monitor.violations_dropped(),
         },
-        "art12": art12_sink::health_json(state.art12_log.as_ref())
+        "art12": art12_sink::health_json(state.art12_log.as_ref()),
+        "host_decide": state.host_decide.health_json(),
     }))
 }
 
@@ -2594,66 +2345,6 @@ fn check_identity_policy(
     !requires_approval
 }
 
-/// POST `/v1/memory/write` — provenance-verified memory admission (next-bet #1).
-/// A write maps to `WriteFiles` (so it is itself subject to the egress gate),
-/// then goes through `verified_admit`: a forged label is rejected; an honest
-/// web-ingest record is admitted-but-quarantined.
-async fn memory_write(
-    State(state): State<AppState>,
-    auth: Option<axum::Extension<auth::AuthContext>>,
-    Json(req): Json<memory::MemoryWriteReq>,
-) -> Result<Json<memory::MemoryWriteResp>, ApiError> {
-    let _dt = http_kernel_decide(
-        &state,
-        Operation::WriteFiles,
-        "memory://write",
-        auth.as_ref().map(|e| &e.0),
-    )
-    .await?;
-    let mut set = state.provenance_memory.lock().await;
-    Ok(Json(memory::memory_write_core(
-        &mut set,
-        state.memory_transforms.as_ref(),
-        req,
-    )))
-}
-
-/// POST `/v1/memory/recall` — taint-labeled recall gated through the IFC flow
-/// tracker (next-bet #1). Recall maps to `ReadFiles` (a read, never an outbound
-/// action) so it always runs and injects the recalled record's own label into
-/// the session: an un-declassified adversarial record taints the session, so the
-/// agent's NEXT privileged tool call is denied by the existing egress gate.
-async fn memory_recall(
-    State(state): State<AppState>,
-    auth: Option<axum::Extension<auth::AuthContext>>,
-    Json(req): Json<memory::MemoryRecallReq>,
-) -> Result<Json<memory::MemoryRecallResp>, ApiError> {
-    let _dt = http_kernel_decide(
-        &state,
-        Operation::ReadFiles,
-        "memory://recall",
-        auth.as_ref().map(|e| &e.0),
-    )
-    .await?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let set = state.provenance_memory.lock().await;
-    // Project the recall's effective label onto the single authoritative graph
-    // the egress verdict reads.
-    let mut graph = state.flow_graph.lock().await;
-    let resp = memory::memory_recall_core(
-        &set,
-        &mut graph,
-        state.declassify_trusted_keys.as_ref(),
-        state.declassify_threshold,
-        now,
-        req,
-    )?;
-    Ok(Json(resp))
-}
-
 /// HTTP enforcement chokepoint: locks the kernel THEN the flow graph (same
 /// order as the MCP server) and runs the reference monitor. Both guards are
 /// dropped before the caller performs any sandbox/executor I/O.
@@ -2692,6 +2383,7 @@ async fn http_kernel_decide(
             actor: actor_from_auth(auth_ctx),
             transport: "http",
             grants: state.approvals.as_ref(),
+            shadow: &state.host_decide,
         },
         &mut kernel,
         &graph,
@@ -3671,10 +3363,16 @@ async fn web_fetch(
 }
 
 /// Glob pattern search within the sandbox.
+///
+/// The listing is `Sandbox::glob`, paid for by the decision token and a
+/// `(GlobSearch, AuditLogAppend)` discharge (2026-09-27). This handler used to
+/// drop the token (`let _ =`) and walk `std::fs` itself through `glob::glob`,
+/// so the decision ran and the walk did not need it.
 async fn glob_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<GlobRequest>,
 ) -> Result<Json<GlobResponse>, ApiError> {
     let sink = &state.verdict_sink;
@@ -3690,7 +3388,8 @@ async fn glob_search(
 
     // Kernel mediation + IFC flow consult. GlobSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let _ = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
+    let decision_token =
+        http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check glob_search capability
     let policy = state.runtime.policy();
@@ -3740,73 +3439,45 @@ async fn glob_search(
         }
     }
 
-    // Determine search root
-    let sandbox_root = state.runtime.sandbox().root_path();
-    let sandbox_canonical = sandbox_root
-        .canonicalize()
-        .map_err(|e| ApiError::Spec(format!("sandbox root not accessible: {e}")))?;
-
-    let search_root = if let Some(ref dir) = req.directory {
-        // An absolute directory under the root names the same directory as its
-        // relative spelling; one outside it is still an escape (#2787).
-        let dir = state
-            .runtime
-            .sandbox()
-            .root_relative(Path::new(dir))
-            .map_err(ApiError::Nucleus)?;
-        let resolved = sandbox_root.join(&dir);
-        // Canonicalize to resolve symlinks and .. components (path must exist)
-        let canonical = resolved.canonicalize().map_err(|_| {
-            ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: resolved.clone(),
-            })
-        })?;
-        // Security: ensure canonicalized path is within sandbox
-        if !canonical.starts_with(&sandbox_canonical) {
-            return Err(ApiError::Nucleus(NucleusError::SandboxEscape {
-                path: resolved,
-            }));
+    // One discharge for one listing. `InScopeWithTask` and the certificate
+    // ceiling decide here; the sandbox spends it before it opens a directory.
+    let authority = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let ceiling = state.ceiling(Operation::GlobSearch, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let r = run_gate::preflight_glob_fs(verified_scope, ceiling, &req.pattern, &flow);
+        drop(flow);
+        match r {
+            PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
+            }
         }
-        canonical
-    } else {
-        sandbox_canonical.clone()
     };
 
-    // Build full glob pattern
-    let full_pattern = search_root.join(&req.pattern);
-    let pattern_str = full_pattern.to_string_lossy();
-
-    // Perform glob search
-    let max_results = req.max_results.unwrap_or(1000);
-    let mut matches = Vec::new();
-    let mut truncated = false;
-
-    for entry in glob::glob(&pattern_str)
-        .map_err(|e| ApiError::Spec(format!("invalid glob pattern: {e}")))?
-    {
-        match entry {
-            Ok(path) => {
-                // Security: canonicalize and verify path is within sandbox
-                // This prevents symlink-based escapes
-                let canonical = match path.canonicalize() {
-                    Ok(c) => c,
-                    Err(_) => continue, // Skip inaccessible paths
-                };
-                if !canonical.starts_with(&sandbox_canonical) {
-                    continue;
-                }
-                // Convert to relative path (use canonical sandbox root)
-                if let Ok(relative) = canonical.strip_prefix(&sandbox_canonical) {
-                    matches.push(relative.to_string_lossy().to_string());
-                    if matches.len() >= max_results {
-                        truncated = true;
-                        break;
-                    }
-                }
-            }
-            Err(_) => continue, // Skip inaccessible paths
-        }
-    }
+    // `max_results: 0` used to return one match; the bound is now non-zero by
+    // type and 0 keeps meaning one.
+    let max = std::num::NonZeroUsize::new(req.max_results.unwrap_or(1000))
+        .unwrap_or(std::num::NonZeroUsize::MIN);
+    let listing = state
+        .runtime
+        .sandbox()
+        .glob(
+            req.directory.as_deref().map(Path::new),
+            &req.pattern,
+            max,
+            decision_token,
+            authority,
+        )
+        .map_err(ApiError::Nucleus)?;
+    let truncated = listing.completeness == nucleus::Completeness::Truncated;
+    let matches: Vec<String> = listing
+        .matches
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -3829,18 +3500,21 @@ async fn glob_search(
 }
 
 /// Grep (regex content search) within the sandbox.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "#1216 OPEN (see #2806): agent-directed read still on raw File::open, not FileEffect -- annotated so a NEW raw read is still caught, not to bless this one"
-)]
+///
+/// Each file is read through `Sandbox::read_to_string_for_search`, paid for by
+/// its own `(GrepSearch, AuditLogAppend)` discharge — the MCP grep's shape.
+/// Until 2026-09-27 this handler opened every file with a raw
+/// `std::fs::File::open` under `#[expect(clippy::disallowed_methods)]` naming
+/// #1216, so HTTP grep read the workspace with no discharge and no path policy.
+/// The `#[expect]` is gone: a raw open here reds clippy again.
 async fn grep_search(
     State(state): State<AppState>,
     _headers: HeaderMap,
     auth: Option<axum::Extension<auth::AuthContext>>,
+    certified: Option<axum::Extension<pod_cert::CertifiedPermissions>>,
     Json(req): Json<GrepRequest>,
 ) -> Result<Json<GrepResponse>, ApiError> {
     use regex::RegexBuilder;
-    use std::io::{BufRead, BufReader};
     use walkdir::WalkDir;
 
     let sink = &state.verdict_sink;
@@ -3982,21 +3656,37 @@ async fn grep_search(
             .collect()
     };
 
-    // Search each file
+    // Search each file. One discharge per file: an `Authority` buys one read.
+    // A file this session may not read is skipped, as an unreadable one is.
     'outer: for file_path in files {
-        let file = match std::fs::File::open(&file_path) {
-            Ok(f) => f,
-            Err(_) => continue,
+        let Ok(relative_path) = file_path.strip_prefix(&sandbox_canonical) else {
+            continue;
         };
-        let reader = BufReader::new(file);
-        let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+        let relative = relative_path.to_string_lossy().to_string();
+        let authority = {
+            use nucleus_ifc_kernel::discharge::PreflightResult;
+            let verified_scope = state.session_task_token.verified_scope();
+            let ceiling = state.ceiling(Operation::GrepSearch, certified.as_ref());
+            let flow = state.flow_graph.lock().await;
+            let r = run_gate::preflight_grep_fs(verified_scope, ceiling, &relative, &flow);
+            drop(flow);
+            match r {
+                PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+                _ => continue,
+            }
+        };
+        let Ok(contents) = state
+            .runtime
+            .sandbox()
+            .read_to_string_for_search(relative_path, authority)
+        else {
+            continue;
+        };
+        let lines: Vec<String> = contents.lines().map(str::to_string).collect();
 
         for (idx, line) in lines.iter().enumerate() {
             if regex.is_match(line) {
-                let relative = file_path
-                    .strip_prefix(&sandbox_canonical)
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|_| file_path.to_string_lossy().to_string());
+                let relative = relative.clone();
 
                 let context_before = if context_lines > 0 {
                     let start = idx.saturating_sub(context_lines);
@@ -4265,44 +3955,6 @@ async fn web_search(
     Ok(Json(WebSearchResponse { results }))
 }
 
-async fn approve_operation(
-    State(state): State<AppState>,
-    _headers: HeaderMap,
-    Json(req): Json<ApproveRequest>,
-) -> Result<Json<ApproveResponse>, ApiError> {
-    let sink = &state.verdict_sink;
-
-    // Rate limit approval requests to prevent DoS
-    if !state.approval_rate_limiter.try_acquire() {
-        return Err(ApiError::RateLimited);
-    }
-
-    let now = now_unix();
-    let expires_at = resolve_approval_expiry(req.expires_at_unix, now)?;
-    let nonce = req
-        .nonce
-        .as_deref()
-        .ok_or_else(|| ApiError::Spec("approval nonce required".to_string()))?;
-    let expiry = expires_at.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
-    if !state.approval_nonces.check_and_insert(nonce, expiry, now) {
-        return Err(ApiError::Spec("approval nonce replayed".to_string()));
-    }
-    state
-        .approvals
-        .approve(&req.operation, req.count, expires_at);
-    if let Err(e) = sink.record(VerdictContext {
-        operation: Operation::ManagePods, // meta-operation: approval grant
-        subject: req.operation,
-        outcome: VerdictOutcome::Allow,
-        actor: ActorIdentity::Unknown,
-        policy_rule: None,
-        extensions: BTreeMap::new(),
-    }) {
-        warn!(error = %e, "verdict recording failed -- audit gap");
-    }
-    Ok(Json(ApproveResponse { ok: true }))
-}
-
 /// Deserialize a trace chain from the request format.
 ///
 /// SECURITY: UUIDs are ALWAYS generated server-side. Client-provided IDs are
@@ -4428,18 +4080,6 @@ pub(crate) fn preset_to_permissions(preset: &str) -> PermissionLattice {
         "demo" => PermissionLattice::demo(),
         _ => PermissionLattice::restrictive(),
     }
-}
-
-fn resolve_approval_expiry(
-    expires_at_unix: Option<u64>,
-    now: u64,
-) -> Result<Option<u64>, ApiError> {
-    let requested = expires_at_unix.unwrap_or(now + MAX_APPROVAL_TTL_SECS);
-    if requested < now {
-        return Err(ApiError::Spec("approval expiry is in the past".to_string()));
-    }
-    let max_allowed = now + MAX_APPROVAL_TTL_SECS;
-    Ok(Some(requested.min(max_allowed)))
 }
 
 // Pod management handlers live in pod_mgmt.rs

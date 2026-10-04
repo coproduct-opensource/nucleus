@@ -225,6 +225,186 @@ fn a_destination_no_rule_admits_is_dropped() {
     );
 }
 
+/// #3120: the node's deny floor leads the chain, so no spec `allow` reaches the cloud metadata
+/// service or the host end of a pod's veth link. On main `allow: ["0.0.0.0/0"]` reached both, and
+/// `169.254.169.254/32` reached the metadata service while keeping the workload identity.
+#[test]
+fn no_allow_reopens_the_node_deny_floor() {
+    let allows: [&[&str]; 4] = [
+        &["0.0.0.0/0"],
+        &["169.254.169.254/32"],
+        &["169.254.0.0/16:80"],
+        &["10.0.0.0/8"],
+    ];
+    for allow in allows {
+        let spec = spec_from(&[], allow);
+        let chain = egress_chain(&spec, None).expect("chain");
+        let model = model_chain(&chain).expect("ipv4 chain is inside the model");
+        for d in [
+            dest(169, 254, 169, 254, 80), // instance metadata
+            dest(10, 200, 0, 1, 8080),    // the first pod's host-side veth address
+        ] {
+            assert!(!verdict(&model, d), "{allow:?} reached {d:?}");
+        }
+    }
+    // Non-vacuity: the floor denies only what it names.
+    let open = spec_from(&[], &["0.0.0.0/0"]);
+    let model = model_chain(&egress_chain(&open, None).expect("chain")).expect("model");
+    assert!(
+        verdict(&model, dest(93, 184, 216, 34, 443)),
+        "the internet is still allowed"
+    );
+}
+
+// ── The host side of a pod's link (#3134) ────────────────────────────────
+
+use crate::net::host_link::{HostRule, Placement, host_link_rules};
+
+const POD_LINK: &str = "vethpod0001";
+
+/// A packet on the host, described by what netfilter decides it on.
+#[derive(Clone, Copy, Debug)]
+struct HostPacket {
+    /// Arrived on this interface.
+    in_iface: &'static str,
+    /// Leaves on this interface, when forwarded.
+    out_iface: Option<&'static str>,
+    /// The destination, before NAT, is an address of the host (`addrtype --dst-type LOCAL`).
+    dst_is_host: bool,
+    /// After NAT the host delivers it locally (`INPUT`) rather than forwarding it.
+    delivered_locally: bool,
+    /// Conntrack has seen the other direction.
+    established: bool,
+}
+
+/// Whether `rule` matches `p`, and the verdict it gives. `Masquerade` rewrites, it does not filter.
+fn host_rule_verdict(rule: &HostRule, p: HostPacket) -> Option<bool> {
+    match rule {
+        HostRule::DropToHostBeforeNat { iface } => {
+            (p.in_iface == iface && p.dst_is_host).then_some(false)
+        }
+        HostRule::DropInput { iface } => (p.in_iface == iface).then_some(false),
+        HostRule::Masquerade { source: _ } => None,
+        HostRule::ForwardFrom { iface } => (p.in_iface == iface).then_some(true),
+        HostRule::ForwardRepliesTo { iface } => {
+            (p.out_iface == Some(iface.as_str()) && p.established).then_some(true)
+        }
+    }
+}
+
+/// netfilter over the host's chains, first match wins per chain, with every host policy ACCEPT:
+/// the worst host nucleus can land on, and the default of a stock install. `raw PREROUTING`, then
+/// `INPUT` for a locally delivered packet or `FORWARD` for a forwarded one.
+fn host_admits(rules: &[HostRule], p: HostPacket) -> bool {
+    let chain = |name: &str| -> bool {
+        rules
+            .iter()
+            .filter(|r| r.chain() == name)
+            .find_map(|r| host_rule_verdict(r, p))
+            .unwrap_or(true)
+    };
+    chain("PREROUTING")
+        && chain(if p.delivered_locally {
+            "INPUT"
+        } else {
+            "FORWARD"
+        })
+}
+
+fn from_pod(dst_is_host: bool, delivered_locally: bool) -> HostPacket {
+    HostPacket {
+        in_iface: POD_LINK,
+        out_iface: (!delivered_locally).then_some("eth0"),
+        dst_is_host,
+        delivered_locally,
+        established: false,
+    }
+}
+
+/// #3134: a pod whose spec allows `0.0.0.0/0` does not reach the host it runs on. Its own chain
+/// admits the host's LAN address (that is the gap: the namespace cannot name it), so the host
+/// side of the link is what has to drop it, for every host address and for a host port published
+/// with DNAT. On main nothing filtered the link's INPUT and both arrived.
+#[test]
+fn an_open_allowlist_does_not_reach_the_host() {
+    let spec = spec_from(&[], &["0.0.0.0/0"]);
+    let model = model_chain(&egress_chain(&spec, None).expect("chain")).expect("model");
+    assert!(
+        verdict(&model, dest(192, 0, 2, 10, 22)),
+        "the pod's own chain admits the host's LAN address; this test is about the host side"
+    );
+
+    let rules = host_link_rules(POD_LINK, "10.200.0.0/30".parse().unwrap());
+    for (what, p) in [
+        ("a host address", from_pod(true, true)),
+        (
+            "a host port DNAT'd to a local container",
+            from_pod(true, false),
+        ),
+    ] {
+        assert!(!host_admits(&rules, p), "the pod reached {what}");
+    }
+
+    // What the pod legitimately needs still passes: forwarded egress (the internet, and a public
+    // resolver on 53) and the replies to it. Its DNS proxy is inside its own namespace.
+    assert!(
+        host_admits(&rules, from_pod(false, false)),
+        "egress is forwarded"
+    );
+    let reply = HostPacket {
+        in_iface: "eth0",
+        out_iface: Some(POD_LINK),
+        dst_is_host: false,
+        delivered_locally: false,
+        established: true,
+    };
+    assert!(host_admits(&rules, reply), "replies reach the pod");
+    // Another interface is not this link's business.
+    let other = HostPacket {
+        in_iface: "eth0",
+        out_iface: None,
+        dst_is_host: true,
+        delivered_locally: true,
+        established: false,
+    };
+    assert!(
+        host_admits(&rules, other),
+        "the drops are scoped to the pod's link"
+    );
+}
+
+/// The node-owned drops are installed first and at the head of their chains, so neither the
+/// link's own accepts nor anything the host's firewall put first can precede them.
+#[test]
+fn the_host_drops_lead_and_are_rendered_at_the_head() {
+    let rules = host_link_rules(POD_LINK, "10.200.0.0/30".parse().unwrap());
+    let is_drop = |r: &HostRule| r.add_argv().last().map(String::as_str) == Some("DROP");
+    let last_drop = rules.iter().rposition(is_drop).expect("a drop exists");
+    let first_accept = rules
+        .iter()
+        .position(|r| !is_drop(r))
+        .expect("an accept exists");
+    assert!(last_drop < first_accept, "{rules:?}");
+    for r in rules.iter().filter(|r| is_drop(r)) {
+        assert_eq!(r.placement(), Placement::Head, "{r:?}");
+    }
+    let argv = |r: &HostRule| r.add_argv().join(" ");
+    assert_eq!(
+        argv(&rules[0]),
+        format!("-t raw -I PREROUTING 1 -i {POD_LINK} -m addrtype --dst-type LOCAL -j DROP")
+    );
+    assert_eq!(
+        argv(&rules[1]),
+        format!("-t filter -I INPUT 1 -i {POD_LINK} -j DROP")
+    );
+    // Teardown names the same rule setup installed.
+    for r in &rules {
+        let (add, del) = (r.add_argv(), r.delete_argv());
+        assert_eq!(del[2], "-D", "{del:?}");
+        assert!(add.ends_with(&del[4..]), "{add:?} vs {del:?}");
+    }
+}
+
 /// DNS-resolved allowlist entries are allows like any other, and must not
 /// outrank a deny. If they were appended before the denies, a resolver handing
 /// back a denied address would re-open it.
@@ -535,7 +715,7 @@ fn posture_spec(label: Option<&str>, rootfs: Option<&std::path::Path>) -> PodSpe
         workload: None,
         image: rootfs.map(|p| ImageSpec {
             kernel_path: PathBuf::from("/does/not/matter"),
-            rootfs_path: p.to_path_buf(),
+            rootfs: nucleus_spec::RootfsSource::Path(p.to_path_buf()),
             boot_args: None,
             read_only: true,
             scratch_path: None,
@@ -695,12 +875,16 @@ fn create_pod_internal_still_consults_the_authority_gate() {
         "create_pod_internal must consult pod_authority::admit before any driver spawns"
     );
     assert!(
-        body.contains("PolicySpec::Inline"),
-        "the issued effective lattice must replace the requested policy before spawn"
+        body.contains("let reservation = issued.apply_to(&mut spec);"),
+        "the issued effective lattice and admitted upstreams must replace the requested \
+         policy and credentialed_egress before spawn (`IssuedAuthority::apply_to`)"
     );
     assert!(
-        body.contains("state.authority.release_child("),
-        "a failed spawn must hand the budget reservation back"
+        body.contains("reservation.release().await;") && body.contains("reservation.commit();"),
+        "a failed spawn hands the budget reservation back, and only a registered pod keeps it \
+         (a dropped create releases through the guard's Drop, #3032). `Reservation::release` \
+         is the unspawned arm: nothing ran, so the spend is zero, where `release_child(_, None)` \
+         would fold the WHOLE allocation into the parent"
     );
     // Both entry points build an Admission — neither bypasses the gate.
     assert!(src.contains("pod_authority::Admission::from_http("));
@@ -784,11 +968,257 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         driver_state: DriverState::Container(Box::new(pod)),
         parent_pod_id: None,
         posture_stamp: None,
+        owner: None,
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;
     assert!(
         matches!(after, PodState::Exited { .. }),
         "a cancelled container reports {after:?}, not the state it exited in"
+    );
+}
+
+/// clap prints an env-backed arg's CURRENT value in `--help` unless the arg
+/// hides it, so a secret sitting in the environment reaches the terminal, shell
+/// logs and CI logs (#3026). Walked over the whole command tree, so a new flag
+/// or subcommand that forgets `hide_env_values` reds here.
+#[test]
+fn help_never_prints_an_env_value() {
+    fn walk(cmd: &clap::Command, seen: &mut usize, shown: &mut Vec<String>) {
+        for arg in cmd.get_arguments().filter(|a| a.get_env().is_some()) {
+            *seen += 1;
+            if !arg.is_hide_env_values_set() {
+                shown.push(format!("{} --{}", cmd.get_name(), arg.get_id()));
+            }
+        }
+        for sub in cmd.get_subcommands() {
+            walk(sub, seen, shown);
+        }
+    }
+    let (mut seen, mut shown) = (0, Vec::new());
+    walk(
+        &<Args as clap::CommandFactory>::command(),
+        &mut seen,
+        &mut shown,
+    );
+    assert!(
+        seen > 0,
+        "no env-backed arg was found; the walk reached nothing"
+    );
+    assert!(
+        shown.is_empty(),
+        "--help would print the value of: {shown:?}"
+    );
+}
+
+/// #2903, the container half. The container driver runs the same tool-proxy as
+/// the local driver (proxy mode), and it had no copy of the dlc_* label->env
+/// mapping at all: a container pod's labels were accepted, listed by `nucleus
+/// node pods`, and never reached the gate. Driven red by deleting the
+/// `DlcProvisioning::from_labels` block from `container_env`, which is exactly
+/// what main had.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
+    use nucleus_spec::dlc_admission::{DlcField, ENV_PREFIX};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = crate::pod_api::handler_tests::state(&dir);
+    let dlc = DlcProvisioning {
+        trusted_keys: "aa".repeat(32),
+        issuer: "bb".repeat(32),
+        credentials: "read_files=cc".to_string(),
+    };
+    let mut spec: PodSpec =
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec");
+    // The labels a spec author writes, through the same declaration.
+    spec.metadata.labels = dlc.labels();
+    assert!(
+        spec.metadata
+            .labels
+            .contains_key(DlcField::TrustedKeys.label())
+    );
+
+    let proxy = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        crate::container_mediation::ContainerMediation::ToolProxy,
+        "test-token-123",
+        "",
+        None,
+    )
+    .await;
+    for (key, value) in dlc.env() {
+        let want = format!("{key}={value}");
+        assert!(
+            proxy.contains(&want),
+            "a proxy-mode container must carry {key}; got {:?}",
+            proxy
+                .iter()
+                .map(|e| e.split('=').next())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Direct mode runs no tool-proxy, so there is nothing to arm and the
+    // credentials stay out of the workload's environment.
+    let direct = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        crate::container_mediation::ContainerMediation::Unmediated,
+        "test-token-123",
+        "",
+        None,
+    )
+    .await;
+    assert!(
+        !direct.iter().any(|e| e.starts_with(ENV_PREFIX)),
+        "a direct-mode container is the workload itself and must not hold DLC credentials"
+    );
+}
+
+/// What a child spawned from `command` actually starts with: this process's environment (a
+/// `Command` inherits it unless told otherwise), with the command's own sets and removals applied.
+#[cfg(feature = "local-driver")]
+fn effective_env(command: &Command) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> = std::env::vars().collect();
+    for (key, value) in command.as_std().get_envs() {
+        let key = key.to_string_lossy().into_owned();
+        match value {
+            Some(value) => {
+                env.insert(key, value.to_string_lossy().into_owned());
+            }
+            None => {
+                env.remove(&key);
+            }
+        }
+    }
+    env
+}
+
+/// #3160, the local driver. The node's own cloud key writes anywhere the operator's account
+/// reaches, so it must never be in the local tool-proxy's environment: not forwarded, and not
+/// inherited either, because a `Command` inherits the node's whole environment by default. Red on
+/// #3155's head, which forwarded the key to every pod with an audit sink and let every other pod
+/// inherit it.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn the_ambient_key_never_reaches_a_local_uploader() {
+    use audit_sink::credentials::fake;
+    audit_sink::ambient_fixture::plant();
+    let grant = fake::grant(fake::target()).await;
+    for audit in [None, Some(&grant)] {
+        let mut command = Command::new("tool-proxy");
+        provision_local_audit_env(&mut command, audit);
+        let env = effective_env(&command);
+        let leaked: Vec<&String> = env
+            .iter()
+            .filter(|(_, value)| audit_sink::ambient_fixture::leaks(value))
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "the node's ambient key reached the local uploader (sink: {}) under {leaked:?}",
+            audit.is_some()
+        );
+        if audit.is_some() {
+            // Non-vacuity: the uploader does hold a credential, and it is the minted one.
+            assert_eq!(
+                env.get("AWS_ACCESS_KEY_ID").map(String::as_str),
+                Some(fake::MINTED_KEY_ID)
+            );
+            assert_eq!(
+                env.get("AWS_SECRET_ACCESS_KEY").map(String::as_str),
+                Some(fake::MINTED_SECRET)
+            );
+            assert_eq!(
+                env.get("NUCLEUS_TOOL_PROXY_AUDIT_S3_PREFIX")
+                    .map(String::as_str),
+                Some("nucleus/team-a")
+            );
+        }
+    }
+}
+
+/// #3160, the container driver. Red on #3155's head, which copied the node's ambient key into
+/// the container's environment for any pod with an audit sink.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn the_ambient_key_never_reaches_a_container_uploader() {
+    use audit_sink::credentials::fake;
+    audit_sink::ambient_fixture::plant();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = crate::pod_api::handler_tests::state(&dir);
+    let spec: PodSpec =
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec");
+    let grant = fake::grant(fake::target()).await;
+    let env = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        crate::container_mediation::ContainerMediation::ToolProxy,
+        "test-token-123",
+        "",
+        Some(&grant),
+    )
+    .await;
+    let leaked: Vec<&str> = env
+        .iter()
+        .filter(|e| audit_sink::ambient_fixture::leaks(e))
+        .filter_map(|e| e.split('=').next())
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "the node's ambient key reached the container uploader under {leaked:?}"
+    );
+    // Non-vacuity: the uploader does hold a credential, and it is the minted one.
+    assert!(
+        env.contains(&format!("AWS_ACCESS_KEY_ID={}", fake::MINTED_KEY_ID)),
+        "the container uploader holds no minted credential"
+    );
+}
+
+/// #3160: a node with an audit sink configured but no credential minter refuses a spec that names
+/// the sink, at create, by the sink's name, before anything is spawned. It does not fall back to
+/// the node's own key.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut st = crate::pod_api::handler_tests::state(&dir);
+    st.audit_sinks = Arc::new(
+        audit_sink::AuditSinks::from_toml(
+            "[[sink]]\nname = \"audit\"\nbucket = \"operator-audit\"\nprefix = \"nucleus\"\n",
+        )
+        .expect("loads"),
+    );
+    assert!(st.audit_minter.is_none(), "the fixture has no minter");
+    let spec: PodSpec = serde_json::from_str(
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
+    )
+    .expect("spec parses");
+    let admission = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    let refused = create_pod_internal(&st, spec, None, None, admission)
+        .await
+        .expect_err("no minter: the sink is unavailable");
+    let msg = refused.to_string();
+    assert!(
+        matches!(refused, ApiError::InvalidSpec(_)),
+        "a refusal, not a driver failure: {msg}"
+    );
+    assert!(msg.contains("audit_sink.sink `audit`"), "{msg}");
+    assert!(msg.contains("no scoped credential minter"), "{msg}");
+    assert!(msg.contains("operator-audit/nucleus/team-a/*"), "{msg}");
+    assert!(
+        st.pods.lock().await.is_empty(),
+        "nothing was registered for a refused create"
     );
 }

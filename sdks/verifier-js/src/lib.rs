@@ -686,7 +686,9 @@ pub fn recompute_vcg_js(
     let proposals: Vec<nucleus_econ_kernels::IntegerProposal> =
         serde_json::from_str(proposals_json)
             .map_err(|e| JsError::new(&format!("proposals JSON: {e}")))?;
-    let clearing = nucleus_econ_kernels::run_vcg(&bids, &proposals, budget_micro_usd)
+    // Routed (#2521): the homogeneous kernel refuses heterogeneous input,
+    // which it used to misprice. Same function the Rust harness calls.
+    let clearing = nucleus_econ_kernels::clear_vcg(&bids, &proposals, budget_micro_usd)
         .map_err(|e| JsError::new(&format!("vcg: {e}")))?;
     serde_wasm_bindgen::to_value(&clearing).map_err(|e| JsError::new(&e.to_string()))
 }
@@ -850,7 +852,11 @@ pub fn recompute_assurance_rung_js(layers_json: &str) -> Result<JsValue, JsError
         .iter()
         .map(|l| DimRung {
             dimension: l.dimension.clone(),
-            rung: nucleus_externality::assess_rung(
+            // DECLARED, not derived: these four booleans come from the
+            // caller's JSON. The function name says so, and
+            // `nucleus_externality::assess_rung` — which takes witnesses —
+            // is deliberately unreachable from here.
+            rung: nucleus_externality::rung_from_declared_outcomes(
                 l.signature_ok,
                 l.tee_ok,
                 l.multi_source_disputed,

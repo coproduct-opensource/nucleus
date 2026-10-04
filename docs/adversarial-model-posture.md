@@ -98,6 +98,15 @@ item 3, and is not done here.
   checks it; the guest workload has no equivalent derived from its own policy.
   That is #2738 item 4, and it is the item that would let the non-interference
   claim extend past `exec` rather than stopping at it.
-- **It does not address workload identity.** A workload inside the pod can
-  currently fetch the pod's SVID private key and policy certificate over vsock
-  (#2724). That is the other half of this posture and is tracked separately.
+- **Workload identity rests on arrival order, not on peer authentication.**
+  Until #2724 a workload inside the pod could fetch the pod's SVID private key,
+  policy certificate, task token, caller token and DLC credentials over vsock.
+  Every per-pod value is now served ONCE (`ServedLedger`), to guest-init, before
+  the workload exists, and guest-init refuses to boot if any was already taken.
+  The vsock port on the world-readable `/proc/cmdline` still lets a workload
+  connect, and what it can still get is public or its own: the trust bundle,
+  the SVID's public chain, its pod spec, a ping, its pod listing, and receipt
+  shipping (signed receipts are verified later, so a forged one proves
+  nothing). The transport carries no peer credentials (virtio-vsock clears
+  them), so a design that needs to serve a secret AFTER boot would need a
+  bearer nonce handed to guest-init, and none does today.

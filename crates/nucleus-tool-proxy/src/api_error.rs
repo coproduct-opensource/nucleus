@@ -228,7 +228,10 @@ impl ApiError {
             }
             ApiError::Nucleus(NucleusError::IsolationNotConfigured)
             | ApiError::Nucleus(NucleusError::IsolationInsufficient { .. })
-            | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. }) => {
+            | ApiError::Nucleus(NucleusError::HardeningUnavailable { .. })
+            | ApiError::Nucleus(NucleusError::ChildSeparationUnavailable { .. })
+            | ApiError::Nucleus(NucleusError::ChildSharesRuntimeUid { .. })
+            | ApiError::Nucleus(NucleusError::UnsandboxedNotOptedIn { .. }) => {
                 (StatusCode::FORBIDDEN, "isolation_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {
@@ -246,6 +249,11 @@ impl ApiError {
             ApiError::Spec(_) => (StatusCode::BAD_REQUEST, "spec_error", None, None),
             ApiError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "io_error", None, None),
             ApiError::Serde(_) => (StatusCode::BAD_REQUEST, "serde_error", None, None),
+            // Not a credential failure: the cache is full of live signatures and
+            // clears as the skew window passes, so tell the caller to retry.
+            ApiError::Auth(AuthError::ReplayCapacity) => {
+                (StatusCode::SERVICE_UNAVAILABLE, "auth_busy", None, None)
+            }
             ApiError::Auth(_) => (StatusCode::UNAUTHORIZED, "auth_error", None, None),
             ApiError::Body(_) => (StatusCode::BAD_REQUEST, "body_error", None, None),
             ApiError::Lockdown(_) => (StatusCode::FORBIDDEN, "lockdown", None, None),

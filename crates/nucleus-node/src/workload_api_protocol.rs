@@ -38,7 +38,8 @@ pub const MAX_COMMAND_LEN: usize = 256;
 /// every byte string that does not map to one of these is rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkloadApiCommand {
-    /// `FETCH_SVID` — request this pod's X.509 SVID (cert chain + private key).
+    /// `FETCH_SVID` — request this pod's X.509 SVID: the cert chain, and the
+    /// private key on the FIRST request only (see `OneShot::SvidKey`).
     FetchSvid,
     /// `FETCH_BUNDLE` — request the trust bundle (root CA certificates).
     FetchBundle,
@@ -68,6 +69,15 @@ pub enum WorkloadApiCommand {
     /// The token is **not a secret** (a scoped capability plus a public issuer
     /// key, with anti-replay resting on a host-pinned nonce), so this is not
     /// about confidentiality. It is about uniqueness surviving a restore.
+    ///
+    /// # Served ONCE (#2724)
+    ///
+    /// Not a secret is not the same as the workload's to hold: the tool-proxy's
+    /// environment model refuses `NUCLEUS_TASK_TOKEN` to the workload, and the
+    /// cmdline copy went partly so the workload could not read it. Served on
+    /// demand, this command handed it back to any process that asked. It is a
+    /// `OneShot` now, like everything else guest-init fetches before the
+    /// workload exists.
     FetchTaskToken,
     /// `FETCH_DLC_ADMISSION` — request this pod's DLC-D verified-admission
     /// provisioning (trusted issuer keys, issuer, per-operation credentials).
@@ -76,8 +86,9 @@ pub enum WorkloadApiCommand {
     /// material over the per-pod socket, fetched after boot so it is neither
     /// baked into a snapshot base nor subject to the kernel cmdline's capacity
     /// (which a credential set exceeds — observed live). The values are a
-    /// public keyset plus the pod's OWN capability grants; possession is
-    /// exactly the authority intended.
+    /// public keyset plus the pod's OWN capability grants — intended for the
+    /// tool-proxy that presents them, not the workload (`NUCLEUS_DLC_*` is
+    /// withheld from it), so it is served ONCE, to guest-init (#2724).
     FetchDlcAdmission,
     /// `FETCH_POD_CERTIFICATE` — request this pod's `LatticeCertificate`
     /// (base64 `AttenuationToken`) and the node's root public key.
@@ -88,7 +99,8 @@ pub enum WorkloadApiCommand {
     /// is PUBLIC (its holder key never leaves the node — `pod_authority`);
     /// the root key delivered alongside is the pinned trust anchor the
     /// tool-proxy verifies against, deliberately NOT the key embedded in the
-    /// token itself.
+    /// token itself. Served ONCE, to guest-init, like every other per-pod
+    /// value the workload is not given (#2724).
     FetchPodCertificate,
     /// `FETCH_POD_CALLER_TOKEN` — request this pod's caller-identity token for
     /// the node's management API.
@@ -101,16 +113,21 @@ pub enum WorkloadApiCommand {
     /// a caller-identity token needs. Any other delivery (a spec field, a
     /// kernel cmdline value, an environment variable set before the pod is
     /// known) would be something the guest could restate.
+    ///
+    /// Served ONCE (#2724): holding it is exercising this pod's authority at
+    /// the node, which is the tool-proxy's to do, not the workload's.
     FetchPodCallerToken,
     /// `FETCH_BROKER_SECRET` — request this pod's credential-broker capability.
     ///
     /// # Served exactly ONCE per pod, and that is the security property
     ///
-    /// Its neighbours may be fetched repeatedly: a task token and an admission
-    /// keyset are per-pod material whose possession is the authority intended,
-    /// so serving them twice changes nothing. This one is different. It exists
-    /// to distinguish the mediating tool-proxy from every OTHER process in the
-    /// guest, and a secret served twice cannot do that.
+    /// This used to say its neighbours could be fetched repeatedly because
+    /// possession was "the authority intended". It was intended for the
+    /// tool-proxy, and a socket that cannot see who asks gave it to the
+    /// workload too (#2724). Every per-pod value guest-init fetches is now a
+    /// `OneShot`. This one exists to distinguish the mediating tool-proxy from
+    /// every OTHER process in the guest, and a secret served twice cannot do
+    /// that.
     ///
     /// # What it defends against, concretely
     ///
@@ -221,6 +238,21 @@ pub enum WorkloadApiCommand {
     /// The Firecracker guest has no HTTP path to the node, so this vsock channel
     /// is how a real pod's receipts reach the host as they are produced.
     ShipReceipt,
+    /// `SHIP_SPEND` — stream one signed `SpendReceipt` to the host (#2541). Same
+    /// two-frame shape as `SHIP_RECEIPT`, but the body is VERIFIED on arrival
+    /// against the mediator key the node minted for this pod, and refused by
+    /// name if it does not: the node decides a pod's consumed budget from these,
+    /// so an unverified line must not reach the log (see
+    /// [`crate::spend_receipt_collector`]).
+    ShipSpend,
+    /// `SHIP_CLEARING` — stream one `ClearingReceipt` to the host. Same
+    /// two-frame shape as its siblings, and verified on arrival by
+    /// RECOMPUTATION rather than a signature: the receipt carries its declared
+    /// inputs, so the host re-derives the outcome with the proven kernel
+    /// (`crate::clearing_receipt_collector`). It exists because a spend
+    /// receipt's `basis` named a clearing receipt that died with the guest's
+    /// tmpfs, leaving the node holding a reference to evidence nobody kept.
+    ShipClearing,
     /// The guest is up and has asked for nothing that would make it one particular pod.
     ///
     /// This is the point a snapshot base has to be taken at, and the guest is the only party
@@ -232,7 +264,7 @@ pub enum WorkloadApiCommand {
     /// OPTIONAL, deliberately. A guest built before this command exists simply never sends it,
     /// stays exactly as it was, and is refused as a snapshot base — which is the right answer
     /// for an image that cannot say where its barrier is. That is why adding it needs no
-    /// `GUEST_RELEASE_FLOOR` bump: nothing that works today stops working.
+    /// `GuestCapability` entry: nothing that works today stops working.
     SnapshotReady,
 }
 
@@ -271,6 +303,8 @@ impl WorkloadApiCommand {
             | Self::Ping
             | Self::PodList
             | Self::ShipReceipt
+            | Self::ShipSpend
+            | Self::ShipClearing
             // Announcing the barrier is the opposite of being personalised: it is the guest
             // saying it has asked for nothing yet.
             | Self::SnapshotReady => false,
@@ -302,6 +336,8 @@ impl WorkloadApiCommand {
             WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
             WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
+            WorkloadApiCommand::ShipSpend => "SHIP_SPEND",
+            WorkloadApiCommand::ShipClearing => "SHIP_CLEARING",
         }
     }
 }
@@ -374,6 +410,8 @@ pub fn parse_command(frame: &[u8]) -> Result<WorkloadApiCommand, CommandParseErr
         "POD_LIST" => Ok(WorkloadApiCommand::PodList),
         "FETCH_POD_SPEC" => Ok(WorkloadApiCommand::FetchPodSpec),
         "SHIP_RECEIPT" => Ok(WorkloadApiCommand::ShipReceipt),
+        "SHIP_SPEND" => Ok(WorkloadApiCommand::ShipSpend),
+        "SHIP_CLEARING" => Ok(WorkloadApiCommand::ShipClearing),
         "SNAPSHOT_READY" => Ok(WorkloadApiCommand::SnapshotReady),
         other => Err(CommandParseError::Unknown(other.to_string())),
     }
@@ -558,6 +596,8 @@ mod tests {
                 WorkloadApiCommand::PodList => "POD_LIST",
                 WorkloadApiCommand::FetchPodSpec => "FETCH_POD_SPEC",
                 WorkloadApiCommand::ShipReceipt => "SHIP_RECEIPT",
+                WorkloadApiCommand::ShipSpend => "SHIP_SPEND",
+                WorkloadApiCommand::ShipClearing => "SHIP_CLEARING",
                 WorkloadApiCommand::SnapshotReady => "SNAPSHOT_READY",
             }
         }
@@ -604,6 +644,8 @@ mod tests {
             WorkloadApiCommand::FetchPodSpec,
             WorkloadApiCommand::PodList,
             WorkloadApiCommand::ShipReceipt,
+            WorkloadApiCommand::ShipSpend,
+            WorkloadApiCommand::ShipClearing,
             WorkloadApiCommand::SnapshotReady,
         ];
         let accepted: std::collections::BTreeSet<String> =
@@ -622,6 +664,8 @@ mod tests {
             "FETCH_POD_SPEC",
             "POD_LIST",
             "SHIP_RECEIPT",
+            "SHIP_SPEND",
+            "SHIP_CLEARING",
             "SNAPSHOT_READY",
         ]
         .iter()
@@ -643,7 +687,7 @@ mod tests {
         // the natural way to add a command — leaves this number alone, so it
         // reds and the two lists above get read. Raise it in the same change
         // that adds a command, never separately.
-        const DECLARED_COMMANDS: usize = 14;
+        const DECLARED_COMMANDS: usize = 16;
         assert_eq!(
             surface.len(),
             DECLARED_COMMANDS,
@@ -683,7 +727,14 @@ mod tests {
             );
         }
 
-        for cmd in [FetchBundle, Ping, PodList, ShipReceipt] {
+        for cmd in [
+            FetchBundle,
+            Ping,
+            PodList,
+            ShipReceipt,
+            ShipSpend,
+            ShipClearing,
+        ] {
             assert!(
                 !cmd.personalizes_the_vm(),
                 "{cmd:?} is not per-pod, and treating it as such would refuse bases needlessly"

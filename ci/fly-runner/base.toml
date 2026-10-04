@@ -1,6 +1,6 @@
 # The worker image's base: docker/Dockerfile.runner, the SAME tool set the k3s scale set runs,
-# built for x86_64. It exists as its own config because the repository root holds an unrelated
-# fly.toml (nucleus-ctf) whose [build] wins over a --dockerfile flag — the build then silently
+# built for x86_64. It exists as its own config because the repository root held an unrelated
+# fly.toml (nucleus-ctf, now crates/ctf-server/fly.toml) whose [build] won over a --dockerfile flag — the build then silently
 # builds the wrong image.
 #
 #   cd <repo root>

@@ -22,7 +22,9 @@
 //! EXACTLY one of the allowed nucleus MCP tools and denies everything else —
 //! a built-in, a tool the agent CLI grew last week, a nucleus tool the policy
 //! did not grant, a malformed event, a missing allowlist. Unknown is denied,
-//! not passed through.
+//! not passed through. The one built-in admitted is the agent CLI's schema
+//! loader, by exact name ([`SCHEMA_LOADER_TOOL`]): it reads tool metadata and
+//! cannot invoke a tool, and without it no granted tool is reachable (#2994).
 //!
 //! The static denylist stays as defence in depth (it also keeps the agent
 //! from wasting tokens on tool definitions it cannot use); the hook is the
@@ -67,6 +69,32 @@ pub const HOOK_SUBCOMMAND: &str = "mediation-hook";
 /// blocks on every version that has hooks at all.
 const BLOCK_EXIT_CODE: u8 = 2;
 
+/// The wrapped agent CLI's built-in schema loader, admitted by EXACT name.
+///
+/// The agent CLI defers MCP tool schemas and loads them on demand through this
+/// one built-in. Denying it left every granted `mcp__nucleus__*` tool
+/// unreachable: the agent could not learn a tool's arguments, so it guessed
+/// them or gave up (#2994). The profile was enforced down to nothing.
+///
+/// Why admitting it does not open the boundary:
+///
+/// - It is a pure READ of tool metadata. Its argument is a query string and
+///   its result is tool schemas — names, descriptions, argument shapes. It has
+///   no effect on the filesystem, the network, or a process.
+/// - It cannot INVOKE a tool. Calling a tool whose schema it loaded is a
+///   separate tool call, which comes back through this hook and is decided by
+///   [`decide`] like any other: a nucleus MCP tool the policy granted, routed
+///   through the `PermissionLattice`, or denied.
+/// - The schemas it can return are bounded by what the session exposes, and
+///   [`confine_to_nucleus_settings`] passes `--strict-mcp-config`, so the only
+///   MCP server in the session is nucleus's own.
+///
+/// Admitted by exact string equality, never by prefix or pattern: a built-in
+/// that merely resembles this name is denied like every other built-in. The
+/// literal is the external CLI's own interop identifier, not a nucleus name,
+/// and this constant is its single copy.
+pub const SCHEMA_LOADER_TOOL: &str = "ToolSearch";
+
 /// What the hook decided for one tool call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -77,7 +105,8 @@ pub enum Decision {
 }
 
 /// The pure decision: allow iff `tool_name` is EXACTLY in `allowed` AND is a
-/// nucleus MCP tool. An empty allowlist denies everything (the launch site
+/// nucleus MCP tool, or is EXACTLY [`SCHEMA_LOADER_TOOL`] (a metadata read
+/// that cannot invoke anything; see its doc). An empty allowlist denies everything (the launch site
 /// refuses to start with no allowed tools, so this is only reachable if the
 /// env var was lost — and losing it must fail closed).
 pub fn decide(tool_name: &str, allowed: &[String]) -> Decision {
@@ -86,6 +115,11 @@ pub fn decide(tool_name: &str, allowed: &[String]) -> Decision {
         return Decision::Deny {
             reason: "tool call carried no tool name".to_string(),
         };
+    }
+    // Exact match on the raw name, not the trimmed one: a padded variant is
+    // not the schema loader and falls through to the built-in denial.
+    if tool_name == SCHEMA_LOADER_TOOL {
+        return Decision::Allow;
     }
     if !name.starts_with(crate::run::NUCLEUS_MCP_TOOL_PREFIX) {
         return Decision::Deny {
@@ -153,49 +187,110 @@ pub fn confine_to_nucleus_settings(cmd: &mut Command) -> &mut Command {
         .arg("--strict-mcp-config")
 }
 
-/// The settings document that registers `exe` as the `PreToolUse` hook for
-/// every tool (no matcher = all tools), with `args` appended to the command.
+/// The settings document that registers the mediation hook, as a type.
 ///
-/// The ONE place that knows this shape, because the shape is fail-open: the
-/// nested `hooks` array is load-bearing, and an entry carrying `type` and
-/// `command` at the matcher-group level instead registers NOTHING — no error,
-/// no warning, and every tool call proceeds unhooked. Verified against the
-/// wrapped CLI at 2.1.278. A launch site must not hand-roll this JSON.
-pub fn hook_settings_for_exe(exe: &Path, args: &[&str]) -> serde_json::Value {
-    let mut command = shell_quote(exe);
-    for arg in args {
-        command.push(' ');
-        command.push_str(arg);
-    }
-    serde_json::json!({
-        "hooks": {
-            "PreToolUse": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": command,
-                }]
-            }]
+/// Opaque on purpose. The shape is FAIL-OPEN — the nested `hooks` array is
+/// load-bearing, and an entry carrying `type` and `command` at the
+/// matcher-group level registers NOTHING, with no error and no warning, while
+/// every tool call proceeds unhooked (verified against the wrapped CLI at
+/// 2.1.278). A launch site that builds this JSON itself can reintroduce that
+/// silently, so there is no way to build one except the constructors below and
+/// no way to spend one except [`HookSettings::write_to`].
+///
+/// Before this type the same guarantee was a `grep` in a unit test: the shape
+/// lived in one function by convention, and a second author was caught by a
+/// structural assertion rather than by the compiler. ADR 0007 C-1 — a type that
+/// names evidence has a private constructor — read across to a document whose
+/// wrongness is invisible.
+///
+/// NOT `#[must_use]`, and `write_to` takes `&self`. The first draft made this
+/// affine — consumed by value, "the document exists to become one file" — and
+/// the `life` census was right to charge for it: a `#[must_use]` non-`Clone`
+/// type joins the population of one-shot RIGHTS, every member of which is
+/// expected to carry a validity interval, and this one has nothing to expire.
+/// Writing the same document twice is harmless. The guarantee here is the
+/// private field and the two constructors; affinity was ornament, and ornament
+/// that moves a security census is not free.
+pub struct HookSettings(serde_json::Value);
+
+impl HookSettings {
+    /// Register `exe` as the `PreToolUse` hook for every tool (no matcher =
+    /// all tools), with `args` appended to the command line.
+    pub fn for_exe(exe: &Path, args: &[&str]) -> Self {
+        let mut command = shell_quote(exe);
+        for arg in args {
+            command.push(' ');
+            command.push_str(arg);
         }
-    })
+        Self(serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "hooks": [{
+                        "type": "command",
+                        "command": command,
+                    }]
+                }]
+            }
+        }))
+    }
+
+    /// Register THIS binary's hidden hook subcommand.
+    ///
+    /// # Errors
+    ///
+    /// If the running executable's path cannot be resolved — without it the
+    /// hook command line cannot be written, and a settings file naming no
+    /// hook is the fail-open shape this type exists to prevent.
+    pub fn for_self() -> Result<Self> {
+        let self_exe = std::env::current_exe().context("resolving own executable for the hook")?;
+        Ok(Self::for_exe(&self_exe, &[HOOK_SUBCOMMAND]))
+    }
+
+    /// Write the document into `dir` and return the path `--settings` takes.
+    ///
+    /// # Errors
+    ///
+    /// If serialization or the write fails.
+    pub fn write_to(&self, dir: &Path, file_name: &str) -> Result<SettingsPath> {
+        let path = dir.join(file_name);
+        std::fs::write(&path, serde_json::to_string_pretty(&self.0)?)
+            .with_context(|| format!("writing {}", path.display()))?;
+        Ok(SettingsPath(path))
+    }
+
+    /// The document, for tests that assert its shape. `#[cfg(test)]`, so no
+    /// production caller can reach the JSON and hand it somewhere else.
+    #[cfg(test)]
+    pub(crate) fn as_json(&self) -> &serde_json::Value {
+        &self.0
+    }
 }
 
-/// The settings document that registers this binary as the `PreToolUse`
-/// hook for every tool (no matcher = all tools).
-pub fn hook_settings(self_exe: &Path) -> serde_json::Value {
-    hook_settings_for_exe(self_exe, &[HOOK_SUBCOMMAND])
+/// A path known to hold a [`HookSettings`] document.
+///
+/// The only thing a launch site may pass to `--settings`. Minted only by
+/// [`HookSettings::write_to`], so an arbitrary path — or one holding a
+/// hand-rolled document — cannot get there.
+pub struct SettingsPath(PathBuf);
+
+impl SettingsPath {
+    /// The path, for the command line.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
 }
 
-/// Write the hook settings into `dir` and return the path to pass as
-/// `--settings`.
-pub fn write_hook_settings(dir: &Path) -> Result<PathBuf> {
-    let self_exe = std::env::current_exe().context("resolving own executable for the hook")?;
-    let path = dir.join("mediation-hook-settings.json");
-    std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&hook_settings(&self_exe))?,
-    )
-    .with_context(|| format!("writing {}", path.display()))?;
-    Ok(path)
+/// Write the mediation hook's settings into `dir`.
+///
+/// The ordinary route for a launch site: build the document for this binary
+/// and write it under the conventional name.
+///
+/// # Errors
+///
+/// As [`HookSettings::for_self`] and [`HookSettings::write_to`].
+pub fn write_hook_settings(dir: &Path) -> Result<SettingsPath> {
+    HookSettings::for_self()?.write_to(dir, "mediation-hook-settings.json")
 }
 
 /// Single-quote a path for the hook's shell command line.
@@ -277,6 +372,68 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_loader_is_admitted() {
+        // #2994: without it every granted nucleus MCP tool is unreachable,
+        // because the agent CLI loads their schemas through this built-in.
+        assert_eq!(decide(SCHEMA_LOADER_TOOL, &allowed()), Decision::Allow);
+        assert_eq!(decide("ToolSearch", &allowed()), Decision::Allow);
+        // Admitted independently of the grant: it reads schemas, it does not
+        // run a tool, so it needs no grant of its own.
+        assert_eq!(decide(SCHEMA_LOADER_TOOL, &[]), Decision::Allow);
+    }
+
+    #[test]
+    fn a_near_miss_of_the_schema_loader_is_denied() {
+        // Exact name, never a pattern: nothing that merely resembles the
+        // schema loader rides on its admission.
+        for near in [
+            "toolsearch",
+            "TOOLSEARCH",
+            "Toolsearch",
+            "ToolSearch2",
+            "ToolSearc",
+            "ToolSearchAndRun",
+            "XToolSearch",
+            " ToolSearch",
+            "ToolSearch ",
+            "Tool Search",
+            "mcp__nucleus__ToolSearch",
+            "mcp__other__ToolSearch",
+        ] {
+            assert!(
+                matches!(decide(near, &allowed()), Decision::Deny { .. }),
+                "{near:?} must be denied"
+            );
+        }
+    }
+
+    #[test]
+    fn every_other_effectful_builtin_is_still_denied() {
+        // Admitting the schema loader admits nothing else: every built-in that
+        // has an effect on the world stays denied.
+        let effectful = crate::constants::DISALLOWED_BUILTIN_TOOLS
+            .split(',')
+            .chain([
+                "Task",
+                "BashOutput",
+                "KillShell",
+                "Skill",
+                "TodoWrite",
+                "MultiEdit",
+                "NotebookRead",
+                "SlashCommand",
+                "ExitPlanMode",
+            ]);
+        for builtin in effectful {
+            assert_ne!(builtin, SCHEMA_LOADER_TOOL);
+            assert!(
+                matches!(decide(builtin, &allowed()), Decision::Deny { .. }),
+                "{builtin} must be denied"
+            );
+        }
+    }
+
+    #[test]
     fn nucleus_tool_outside_the_policy_grant_is_denied() {
         assert!(matches!(
             decide("mcp__nucleus__web_fetch", &allowed()),
@@ -332,7 +489,8 @@ mod tests {
 
     #[test]
     fn settings_register_this_binary_for_every_tool() {
-        let v = hook_settings(Path::new("/opt/nuc leus/nucleus"));
+        let s = HookSettings::for_exe(Path::new("/opt/nuc leus/nucleus"), &[HOOK_SUBCOMMAND]);
+        let v = s.as_json();
         let entry = &v["hooks"]["PreToolUse"][0];
         assert!(entry.get("matcher").is_none(), "no matcher = every tool");
         let cmd = entry["hooks"][0]["command"].as_str().unwrap();
@@ -426,6 +584,33 @@ mod tests {
         );
     }
 
+    /// The document reaches disk with the nested array intact, and the path
+    /// that comes back is the one `--settings` is given. A round trip, because
+    /// the failure this type exists to prevent is invisible in the written
+    /// file: a flat entry is valid JSON and registers nothing.
+    #[test]
+    fn the_written_document_keeps_the_nested_hooks_array() {
+        let dir =
+            std::env::temp_dir().join(format!("nucleus-hook-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let written = HookSettings::for_exe(Path::new("/opt/hook"), &["run"])
+            .write_to(&dir, "settings.json")
+            .expect("write");
+        let raw = std::fs::read_to_string(written.as_path()).expect("read back");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("valid json");
+        let group = &v["hooks"]["PreToolUse"][0];
+        assert!(
+            group.get("hooks").is_some(),
+            "the nested array is what registers the hook: {raw}"
+        );
+        assert!(
+            group.get("command").is_none(),
+            "a command at the matcher-group level registers nothing"
+        );
+        assert_eq!(group["hooks"][0]["command"], "'/opt/hook' run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The fail-open shape has exactly one author.
     ///
     /// A matcher-group entry carrying `type`/`command` without the nested
@@ -441,7 +626,7 @@ mod tests {
             assert!(
                 !src.contains("\"PreToolUse\""),
                 "{name}: builds a hook registration itself; call \
-                 mediation::hook_settings_for_exe instead"
+                 mediation::HookSettings instead"
             );
         }
     }
@@ -450,7 +635,8 @@ mod tests {
     fn the_registration_nests_the_hooks_array_and_quotes_the_path() {
         // The nested array is the load-bearing part: without it the CLI
         // registers no hook and does not say so.
-        let v = hook_settings_for_exe(Path::new("/opt/nuc leus/hook"), &[]);
+        let s = HookSettings::for_exe(Path::new("/opt/nuc leus/hook"), &[]);
+        let v = s.as_json();
         let group = &v["hooks"]["PreToolUse"][0];
         assert!(
             group.get("hooks").is_some(),
@@ -468,8 +654,8 @@ mod tests {
         );
         // And the self-registering form still agrees with it.
         assert_eq!(
-            hook_settings(Path::new("/opt/nucleus"))["hooks"]["PreToolUse"][0]["hooks"][0]
-                ["command"]
+            HookSettings::for_exe(Path::new("/opt/nucleus"), &[HOOK_SUBCOMMAND]).as_json()["hooks"]
+                ["PreToolUse"][0]["hooks"][0]["command"]
                 .as_str()
                 .unwrap(),
             "'/opt/nucleus' mediation-hook"

@@ -125,5 +125,5 @@ The hook maintains a separate high-water-mark file. Tampering fails closed.
 ## Links
 
 - [Source](https://github.com/coproduct-opensource/nucleus)
-- [Formal methods assessment](https://github.com/coproduct-opensource/nucleus/blob/main/FORMAL_METHODS.md)
+- [Formal methods assessment](https://github.com/coproduct-opensource/nucleus/blob/main/docs/FORMAL_METHODS.md)
 - [Claude Code hooks docs](https://code.claude.com/docs/en/hooks)

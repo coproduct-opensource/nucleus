@@ -1,19 +1,9 @@
-# Same shape as probe-pod.yaml, but the workload is `nucleus-podlist-probe` and
-# the pod is an ORCHESTRATOR with pod-management enabled — because the probe
-# needs two things an ordinary pod does not get:
-#
-#   * `enable_pod_mgmt: "true"` (+ the orchestrator profile) makes the node mint
-#     this pod a caller token, and `FETCH_POD_CALLER_TOKEN` then serves its
-#     `pod_id` alongside it (G1). `nucleus-guest-init` sets `NUCLEUS_POD_ID` from
-#     that, which the probe requires to self-check its listing.
-#   * The probe reaches the workload-API vsock (CID 2, port 15012) and sends
-#     `POD_LIST`; the node answers this pod's lineage-scoped listing (G3).
-#
-# This is pod A of the C2 G4 live scenario. The boot harness also creates a
-# non-lineage sibling B on the node, so A's listing being {A} (B excluded) over
-# the REAL vsock transport — not {A,B} — is the live cross-pod isolation proof.
-# (C-inclusion / lineage-scoping is enforced KVM-free by cross-pod-scoped-check.sh
-# over the same `scope_to_caller` filter this path uses.)
+# CI-only rootfs: guest-init is built with `ci-podlist-probe` and launches the
+# trusted lineage probe beside the proxy. It queries POD_LIST over this pod's
+# real vsock; the host checks A and child C are included, sibling B excluded.
+# The ordinary workload stays under the default seccomp filter, which denies
+# AF_VSOCK. Syscall-filter denial is measured by the separate workload probe.
+# The guest-init feature is absent from production builds.
 apiVersion: nucleus/v1
 kind: Pod
 metadata:
@@ -23,14 +13,11 @@ metadata:
 spec:
   work_dir: /work
   timeout_seconds: 2700
-  # A distinct unprivileged uid, so the launch's privilege-drop path runs before
-  # the probe does — matching probe-pod.yaml, so the probe observes the same
-  # dropped-privilege child the other boot probes assert against.
+  # Keep the pod alive while trusted instrumentation polls for child creation.
   workload:
-    command: /bin/sh
+    command: /bin/sleep
     args:
-      - "-c"
-      - "/usr/local/bin/nucleus-podlist-probe"
+      - "60"
     uid: 65534
   policy:
     type: profile

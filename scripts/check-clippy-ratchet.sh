@@ -91,6 +91,22 @@ RAW=$(mktemp)
 # what hid it from the gate that exists to catch it. Measured 2026-09-21 on main:
 # `cargo exit=101`, the FAILED query returns nothing, the crate is undeclared.
 ERRS=$(mktemp)
+# PRINT THE EVIDENCE ON ANY FAILING EXIT, and only then delete it.
+#
+# Both streams of the clippy run are captured to files, one pattern is extracted from stderr, and
+# the file was then deleted unread. So when this script exits non-zero anywhere before its own
+# echoes -- `set -e` on a failing `find`, `jq`, or `comm` -- CI shows `Process completed with exit
+# code 1` and NOTHING ELSE. Measured 2026-09-25 on nucleus #3017/#3018/#3019: three pull requests
+# blocked by this gate with no diagnostic anywhere in the log, so nobody could tell whether the
+# count had exceeded the ceiling or the measurement had broken.
+#
+# A trap, not a line before each exit: the failures that need this are the ones nobody predicted,
+# which is exactly the set an explicit call site misses.
+trap 'rc=$?; if [ "$rc" -ne 0 ] && [ -s "$ERRS" ]; then
+        echo "::group::cargo stderr from the measurement that failed (exit $rc)" >&2
+        tail -60 "$ERRS" >&2
+        echo "::endgroup::" >&2
+      fi; rm -f "$RAW" "$ERRS"' EXIT
 set +e
 # RUSTFLAGS is cleared for the MEASUREMENT run. CI (setup-rust-toolchain)
 # exports `-D warnings`, which promotes the tracked cast lints from `warning`
@@ -110,8 +126,18 @@ FAILED=$(jq -r 'select(.reason=="compiler-message") | .message
 # manifest directory, which is the same crate spelling the list above uses.
 BUILD_FAILED=$(sed -n 's/.*failed to run custom build command for `[^(]*(\(.*\))`.*/\1/p' "$ERRS" \
          | sed 's#.*/##' | sort -u)
-rm -f "$ERRS"
-FAILED=$(printf '%s\n%s\n' "$FAILED" "$BUILD_FAILED" | grep -v '^$' | sort -u)
+# `sed`, not `grep -v`. GREP EXITS 1 WHEN NOTHING MATCHES, and nothing matches exactly when both
+# lists are empty -- which is the HEALTHY case, no crate failed to compile. Under `set -euo
+# pipefail` that killed the script here, silently, after a clean clippy run.
+#
+# So the gate died precisely when the workspace was fine. It went unnoticed while some crate was
+# always unanalysable; when the last one was fixed and `.clippy-unanalysed.txt` emptied, every
+# pull request started failing `Check clippy ceiling` with no output at all -- seven at once on
+# 2026-09-26, including rebases of previously-green branches and this very PR.
+#
+# `sed '/^$/d'` deletes the same lines and always exits 0, so the healthy case cannot be a
+# failure. Whether a filter found anything is not a verdict about the tree.
+FAILED=$(printf '%s\n%s\n' "$FAILED" "$BUILD_FAILED" | sed '/^$/d' | sort -u)
 
 # Unique (file, line, column, lint) SITES, not raw messages: a file compiled as
 # both lib and test yields the same warning twice, and which targets cargo
@@ -133,7 +159,6 @@ COUNT=$(jq -r --arg lints "$LINTS" '($lints | split("\n") | map(select(length > 
            | (.spans[] | select(.is_primary)) as $s
            | "\($s.file_name):\($s.line_start):\($s.column_start):\(.code.code)"' "$RAW" \
   | sort -u | wc -l | tr -d ' ')
-rm -f "$RAW"
 
 # Never report a partial count as if it were whole. The set of crates clippy
 # could not analyse is DECLARED in .clippy-unanalysed.txt and checked both ways:

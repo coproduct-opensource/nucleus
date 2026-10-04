@@ -14,7 +14,7 @@ use nucleus_oidc_provider::{
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-oidc-provider", version)]
+#[command(name = "nucleus-oidc-provider", version, mut_args = |a| a.hide_env_values(true))]
 struct Cli {
     /// Bind address (host:port). Container deployments typically expose 0.0.0.0:8080.
     #[arg(long, default_value = "0.0.0.0:8080", env = "NUCLEUS_OIDC_BIND")]
@@ -157,3 +157,6 @@ fn hex_decode(s: &str) -> anyhow::Result<Vec<u8>> {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod help_env_tests;

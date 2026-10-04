@@ -11,10 +11,18 @@
 //!   - no file descriptor above its own stdio leaked in (the `close_range`
 //!     structural closure — the runc CVE-2024-21626 shape),
 //!   - if it was given a distinct uid, its supplementary groups were dropped,
-//!   - its root filesystem is mounted read-only.
+//!   - its root filesystem is mounted read-only,
+//!   - it runs under the workload syscall filter (#2696 P3b): AF_VSOCK, a user
+//!     namespace and ptrace are refused with the filter's `EPERM`, while an
+//!     ordinary socket, fork and exec still work. Also a stage of its own,
+//!     `--syscall-filter`, for a `/v1/run` child.
+//!   - if it runs under a non-root uid, PID 1 (the tool-proxy, guest root) is
+//!     invisible in its `/proc` (`hidepid=invisible`, #2696 P3d).
 //!
-//! Zero dependencies (it is baked into the musl rootfs as a static binary,
-//! exactly like `nucleus-net-probe`); everything is a `std::fs` read of procfs.
+//! It is baked into the musl rootfs as a static binary, exactly like
+//! `nucleus-net-probe`. Everything but the syscall-filter stage is a
+//! `std::fs` read of procfs; that stage needs raw syscalls, so `libc` is the
+//! one dependency.
 //! The verdict is a sentinel line on BOTH stdout and stderr plus the exit code
 //! — the tool-proxy drains the child's stderr into the guest console log, where
 //! `nucleus verify --tier2` reads it back on the host.
@@ -51,13 +59,107 @@ const IDENTITY_VARS: &[&str] = &[
 /// learns the full canary and no secret ever reaches the console.
 const CANARY_PREFIX: &str = "nucleus-e2e-canary-";
 
+/// The `/v1/run` child's sentinels — a different stage from the workload's, so
+/// one console log can carry both verdicts without either masking the other.
+const RUN_CHILD_PASS: &str = "NUCLEUS_RUN_CHILD_PROBE: PASS";
+const RUN_CHILD_FAIL: &str = "NUCLEUS_RUN_CHILD_PROBE: FAIL";
+
+/// The syscall-filter stage's sentinels. Not `NUCLEUS_CONFINEMENT_PROBE`: that
+/// name is reserved for guest-init's boot verdict (#3148, P3d).
+const SYSCALL_FILTER_PASS: &str = "NUCLEUS_SYSCALL_FILTER_PROBE: PASS";
+const SYSCALL_FILTER_FAIL: &str = "NUCLEUS_SYSCALL_FILTER_PROBE: FAIL";
+const SYSCALL_FILTER_OP_FLAG: &str = "--syscall-filter-op";
+const SYSCALL_FILTER_OP_LINE: &str = "NUCLEUS_SYSCALL_FILTER_OP: ";
+
+/// The errno the workload filter answers (`nucleus::hardening::seccomp`'s
+/// `DENIED_ERRNO`). `EPERM` is 1 on every Linux architecture
+/// (`asm-generic/errno-base.h`); restated because this binary is
+/// dependency-light and runs only in the guest.
+const FILTER_ERRNO: i32 = 1;
+
+/// The contention probe's per-request line and its summary line, read back off
+/// the guest console by whoever ran the pod.
+const CONTEND_SENTINEL: &str = "NUCLEUS_CONTEND";
+
 fn main() {
+    // Stage 2: invoked as a `/v1/run` command
+    // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--run-child"]}`)
+    // rather than as the pod workload. A command the tool-proxy runs for the
+    // agent must not be guest root: the proxy is PID 1 and root, and its
+    // environment holds the pod's secrets.
+    if std::env::args().nth(1).as_deref() == Some("--run-child") {
+        let status = std::fs::read_to_string("/proc/self/status");
+        let pid1_environ = std::fs::read("/proc/1/environ");
+        let view = observe_pid1();
+        let fails = run_child_failures(status.as_deref().ok(), &pid1_environ, &view);
+        if fails.is_empty() {
+            println!("{RUN_CHILD_PASS}");
+            eprintln!("{RUN_CHILD_PASS}");
+        } else {
+            let reason = fails.join("; ");
+            println!("{RUN_CHILD_FAIL}: {reason}");
+            eprintln!("{RUN_CHILD_FAIL}: {reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // Internal: one syscall-filter operation, in a subprocess of its own (a
+    // successful `unshare` or `ptrace(TRACEME)` changes the caller).
+    if std::env::args().nth(1).as_deref() == Some(SYSCALL_FILTER_OP_FLAG) {
+        let result = std::env::args()
+            .nth(2)
+            .as_deref()
+            .and_then(FilterOp::from_name)
+            .map_or_else(|| "unknown-op".to_string(), |op| op.run().render());
+        println!("{SYSCALL_FILTER_OP_LINE}{result}");
+        return;
+    }
+
+    // Stage 3: the workload syscall filter alone, e.g. as a `/v1/run` command
+    // (`{"args": ["/usr/local/bin/nucleus-workload-probe", "--syscall-filter"]}`).
+    if std::env::args().nth(1).as_deref() == Some("--syscall-filter") {
+        let mut fails = Vec::new();
+        check_syscall_filter(&mut fails);
+        if fails.is_empty() {
+            println!("{SYSCALL_FILTER_PASS}");
+            eprintln!("{SYSCALL_FILTER_PASS}");
+        } else {
+            let reason = fails.join("; ");
+            println!("{SYSCALL_FILTER_FAIL}: {reason}");
+            eprintln!("{SYSCALL_FILTER_FAIL}: {reason}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // `contend N` (#2988): the composition probe for the authority exchange.
+    // N child PROCESSES — distinct kernel-reported pids, so distinct bidders —
+    // each ask the pod's proxy for the same auctioned dimension inside one
+    // clearing window, at a different declared value. The proxy's verdicts come
+    // back as one line per child, and the parent's summary says whether the
+    // round was CONTESTED at all: a run where nobody was outbid proves nothing.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("contend") => {
+            let n = args.get(2).and_then(|s| s.parse::<u32>().ok()).unwrap_or(3);
+            std::process::exit(contend(n));
+        }
+        Some("contend-child") => {
+            let bid = args.get(2).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            std::process::exit(contend_child(bid));
+        }
+        _ => {}
+    }
+
     let mut fails: Vec<String> = Vec::new();
 
     check_environment(&mut fails);
     check_file_descriptors(&mut fails);
     check_groups(&mut fails);
     check_root_readonly(&mut fails);
+    check_syscall_filter(&mut fails);
+    check_pid1_invisible(&mut fails);
     check_credential_absence();
 
     if fails.is_empty() {
@@ -269,5 +371,842 @@ fn check_root_readonly(fails: &mut Vec<String>) {
         Some(true) => {}
         Some(false) => fails.push("root filesystem is mounted read-write".to_string()),
         None => fails.push("no root (/) mount found in /proc/self/mountinfo".to_string()),
+    }
+}
+
+/// What one syscall-filter operation returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    Ok,
+    Errno(i32),
+}
+
+impl Outcome {
+    fn render(self) -> String {
+        match self {
+            Outcome::Ok => "ok".to_string(),
+            Outcome::Errno(e) => format!("errno={e}"),
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim() {
+            "ok" => Some(Outcome::Ok),
+            other => other
+                .strip_prefix("errno=")
+                .and_then(|e| e.parse().ok())
+                .map(Outcome::Errno),
+        }
+    }
+}
+
+/// The operations the syscall-filter stage tries, each in its own
+/// subprocess. That subprocess is a fork and exec of this binary, so the stage
+/// running at all is the "fork and exec still work" check for std's spawn
+/// (whose `clone3` the filter answers `ENOSYS`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FilterOp {
+    /// `socket(AF_VSOCK)`: measured OPEN to the workload in #3148.
+    Vsock,
+    /// `unshare(CLONE_NEWUSER)`: measured OPEN in #3148.
+    UnshareUserns,
+    /// `clone(CLONE_NEWUSER | SIGCHLD)`, the other door to a user namespace.
+    CloneNewuser,
+    /// `ptrace(PTRACE_TRACEME)`.
+    Ptrace,
+    /// `socket(AF_INET, SOCK_STREAM)`: must still work.
+    InetSocket,
+    /// A raw fork (`clone(SIGCHLD)`): must still work.
+    Fork,
+}
+
+impl FilterOp {
+    const ALL: [FilterOp; 6] = [
+        FilterOp::Vsock,
+        FilterOp::UnshareUserns,
+        FilterOp::CloneNewuser,
+        FilterOp::Ptrace,
+        FilterOp::InetSocket,
+        FilterOp::Fork,
+    ];
+
+    fn name(self) -> &'static str {
+        match self {
+            FilterOp::Vsock => "vsock",
+            FilterOp::UnshareUserns => "unshare-userns",
+            FilterOp::CloneNewuser => "clone-newuser",
+            FilterOp::Ptrace => "ptrace",
+            FilterOp::InetSocket => "inet-socket",
+            FilterOp::Fork => "fork",
+        }
+    }
+
+    fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.name() == name)
+    }
+
+    /// What the workload filter must answer.
+    fn expected(self) -> Outcome {
+        match self {
+            FilterOp::Vsock
+            | FilterOp::UnshareUserns
+            | FilterOp::CloneNewuser
+            | FilterOp::Ptrace => Outcome::Errno(FILTER_ERRNO),
+            FilterOp::InetSocket | FilterOp::Fork => Outcome::Ok,
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn run(self) -> Outcome {
+        use libc::c_long;
+        let outcome = |r: Result<c_long, i32>| match r {
+            Ok(_) => Outcome::Ok,
+            Err(e) => Outcome::Errno(e),
+        };
+        // A fork-like clone whose child exits at once; the parent reaps it.
+        let clone_and_reap = |flags: c_long| {
+            let r = sys(libc::SYS_clone, [flags, 0, 0, 0, 0]);
+            match r {
+                Ok(0) => {
+                    let _ = sys(libc::SYS_exit_group, [0, 0, 0, 0, 0]);
+                    unreachable!("exit_group returned")
+                }
+                Ok(pid) => {
+                    let _ = sys(libc::SYS_wait4, [pid, 0, 0, 0, 0]);
+                }
+                Err(_) => {}
+            }
+            outcome(r)
+        };
+        match self {
+            FilterOp::Vsock | FilterOp::InetSocket => {
+                let family = if self == FilterOp::Vsock {
+                    libc::AF_VSOCK
+                } else {
+                    libc::AF_INET
+                };
+                let r = sys(
+                    libc::SYS_socket,
+                    [
+                        c_long::from(family),
+                        c_long::from(libc::SOCK_STREAM | libc::SOCK_CLOEXEC),
+                        0,
+                        0,
+                        0,
+                    ],
+                );
+                if let Ok(fd) = r {
+                    let _ = sys(libc::SYS_close, [fd, 0, 0, 0, 0]);
+                }
+                outcome(r)
+            }
+            FilterOp::UnshareUserns => outcome(sys(
+                libc::SYS_unshare,
+                [c_long::from(libc::CLONE_NEWUSER), 0, 0, 0, 0],
+            )),
+            FilterOp::CloneNewuser => {
+                clone_and_reap(c_long::from(libc::CLONE_NEWUSER | libc::SIGCHLD))
+            }
+            FilterOp::Ptrace => outcome(sys(
+                libc::SYS_ptrace,
+                [c_long::from(libc::PTRACE_TRACEME), 0, 0, 0, 0],
+            )),
+            FilterOp::Fork => clone_and_reap(c_long::from(libc::SIGCHLD)),
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn run(self) -> Outcome {
+        // No seccomp off Linux; the guest is Linux. ENOSYS reads as a FAIL.
+        Outcome::Errno(38)
+    }
+}
+
+/// The one raw-syscall door of this binary. Every caller passes scalars only
+/// (no pointer the kernel would read or write), so nothing here touches this
+/// process's memory.
+#[cfg(target_os = "linux")]
+fn sys(nr: libc::c_long, a: [libc::c_long; 5]) -> Result<libc::c_long, i32> {
+    // SAFETY: a raw syscall with scalar arguments only (see the doc comment);
+    // `wait4` is passed NULL for both of its out-pointers.
+    let rc = unsafe { libc::syscall(nr, a[0], a[1], a[2], a[3], a[4]) };
+    if rc < 0 {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1))
+    } else {
+        Ok(rc)
+    }
+}
+
+/// Run every [`FilterOp`] in its own subprocess and check the answers, plus
+/// `/proc/self/status`'s `Seccomp:` mode.
+fn check_syscall_filter(fails: &mut Vec<String>) {
+    let mode = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("Seccomp:"))
+                .map(|v| v.trim().to_string())
+        });
+    let observed: Vec<(FilterOp, Result<Outcome, String>)> = FilterOp::ALL
+        .into_iter()
+        .map(|op| (op, observe(op)))
+        .collect();
+    for (op, seen) in &observed {
+        let line = match seen {
+            Ok(o) => o.render(),
+            Err(e) => format!("not observed: {e}"),
+        };
+        eprintln!("NUCLEUS_SYSCALL_FILTER {}: {line}", op.name());
+    }
+    fails.extend(syscall_filter_failures(mode.as_deref(), &observed));
+}
+
+/// Spawn this binary to run `op`. A spawn that fails, or a child that prints
+/// no result, is "could not look", which is reported as such (ADR 0007 A-1).
+fn observe(op: FilterOp) -> Result<Outcome, String> {
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let out = std::process::Command::new(exe)
+        .args([SYSCALL_FILTER_OP_FLAG, op.name()])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("spawn (fork+exec under the filter): {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    stdout
+        .lines()
+        .find_map(|l| l.strip_prefix(SYSCALL_FILTER_OP_LINE))
+        .and_then(Outcome::parse)
+        .ok_or_else(|| format!("no result line (exit {})", out.status))
+}
+
+/// The syscall-filter verdict, pure so it is testable off-guest.
+///
+/// * `Seccomp:` in `/proc/self/status` must be `2` (filter mode);
+/// * each [`FilterOp`] must answer exactly [`FilterOp::expected`]. A denial
+///   with any other errno is not the filter's, and an op that could not be
+///   run is not a pass.
+fn syscall_filter_failures(
+    seccomp_mode: Option<&str>,
+    observed: &[(FilterOp, Result<Outcome, String>)],
+) -> Vec<String> {
+    let mut fails = Vec::new();
+    match seccomp_mode {
+        Some("2") => {}
+        Some(m) => fails.push(format!(
+            "the workload runs without a seccomp filter (Seccomp: {m}); the workload syscall \
+             filter was not installed"
+        )),
+        None => fails.push("could not read Seccomp: from /proc/self/status".to_string()),
+    }
+    for op in FilterOp::ALL {
+        match observed.iter().find(|(o, _)| *o == op).map(|(_, r)| r) {
+            Some(Ok(seen)) if *seen == op.expected() => {}
+            Some(Ok(seen)) => fails.push(format!(
+                "{}: expected {}, got {}",
+                op.name(),
+                op.expected().render(),
+                seen.render()
+            )),
+            Some(Err(e)) => fails.push(format!("{}: not observed ({e})", op.name())),
+            None => fails.push(format!("{}: never run", op.name())),
+        }
+    }
+    fails
+}
+
+// ── contend: the authority exchange's composition probe (#2988) ─────────────
+
+/// Spawn `n` children, each a distinct process bidding a distinct value for the
+/// same auctioned dimension, and summarise what the proxy decided. Exit 0 when
+/// the round was contested (at least one winner AND at least one outbid), 1
+/// otherwise: an uncontested run is a posted price wearing a theorem's name.
+fn contend(n: u32) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            println!("{CONTEND_SENTINEL}: FAIL current_exe: {e}");
+            return 1;
+        }
+    };
+    // Values 1 000 000, 2 000 000, … µUSD: distinct, so the second-price rule
+    // has something to discover, and all under the certificate ceilings the
+    // live specs use.
+    let mut children = Vec::new();
+    let mut failed = false;
+    for i in 1..=n {
+        let bid = u64::from(i) * 1_000_000;
+        match std::process::Command::new(&exe)
+            .arg("contend-child")
+            .arg(bid.to_string())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::inherit())
+            .spawn()
+        {
+            Ok(c) => children.push(c),
+            Err(e) => {
+                failed = true;
+                println!("{CONTEND_SENTINEL}: FAIL spawn child {i}: {e}");
+            }
+        }
+    }
+    let (mut won, mut outbid, mut denied, mut other) = (0u32, 0u32, 0u32, 0u32);
+    for c in children {
+        let out = match c.wait_with_output() {
+            Ok(o) => o,
+            Err(e) => {
+                failed = true;
+                println!("{CONTEND_SENTINEL}: FAIL wait: {e}");
+                continue;
+            }
+        };
+        failed |= !out.status.success();
+        let line = String::from_utf8_lossy(&out.stdout);
+        // Echo the child's line so the console carries every verdict.
+        print!("{line}");
+        eprint!("{line}");
+        let outcome = line
+            .split_whitespace()
+            .find_map(|word| word.strip_prefix("outcome="));
+        if outcome == Some("won") {
+            won += 1;
+        } else if outcome == Some("outbid") {
+            outbid += 1;
+        } else if outcome == Some("denied") {
+            denied += 1;
+        } else {
+            other += 1;
+        }
+    }
+    let contested = !failed && other == 0 && won >= 1 && outbid >= 1;
+    let summary = format!(
+        "{CONTEND_SENTINEL}: SUMMARY children={n} won={won} outbid={outbid} denied={denied} \
+         other={other} contested={contested}"
+    );
+    println!("{summary}");
+    eprintln!("{summary}");
+    if contested { 0 } else { 1 }
+}
+
+/// One bidder: POST an egress request over the pod's Unix socket with a
+/// declared value, and classify the proxy's answer.
+fn contend_child(bid: u64) -> i32 {
+    use std::io::{Read, Write};
+
+    let pid = std::process::id();
+    let url = std::env::var("NUCLEUS_TOOL_PROXY_URL").unwrap_or_default();
+    let Some(path) = url.strip_prefix("unix://") else {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=no-unix-socket url={url:?}");
+        return 1;
+    };
+    let body = r#"{"url":"http://contend.invalid/","method":"GET"}"#;
+    let request = format!(
+        "POST /v1/web_fetch HTTP/1.1\r\nHost: nucleus\r\nContent-Type: application/json\r\n\
+         Content-Length: {}\r\nx-nucleus-bid-micro-usd: {bid}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = match std::os::unix::net::UnixStream::connect(path) {
+        Ok(s) => s,
+        Err(e) => {
+            // A connect refusal is a permission FACT, so report the facts that
+            // decide it rather than leaving the reader to guess: our uid, and
+            // the mode/owner of the socket and of every directory above it.
+            use std::os::unix::fs::MetadataExt;
+            let uid = std::fs::metadata("/proc/self")
+                .map(|m| m.uid())
+                .unwrap_or(u32::MAX);
+            let mut modes = String::new();
+            let mut acc = std::path::PathBuf::from("/");
+            for part in std::path::Path::new(path).iter().skip(1) {
+                acc.push(part);
+                let d = match std::fs::metadata(&acc) {
+                    Ok(m) => format!(
+                        "{}=mode{:o},uid{} ",
+                        acc.display(),
+                        m.mode() & 0o7777,
+                        m.uid()
+                    ),
+                    Err(e) => format!("{}=<{}> ", acc.display(), e.kind()),
+                };
+                modes.push_str(&d);
+            }
+            println!(
+                "{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=connect-failed error={e} \
+                 my_uid={uid} path_modes=[{}]",
+                modes.trim_end()
+            );
+            return 1;
+        }
+    };
+    if let Err(e) = stream.set_read_timeout(Some(std::time::Duration::from_secs(30))) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=timeout-setup-failed error={e}");
+        return 1;
+    }
+    if let Err(e) = stream.write_all(request.as_bytes()) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=write-failed error={e}");
+        return 1;
+    }
+    let mut reply = Vec::new();
+    if let Err(e) = stream.take(32 * 1024 + 1).read_to_end(&mut reply) {
+        println!("{CONTEND_SENTINEL}: bid={bid} pid={pid} outcome=read-failed error={e}");
+        return 1;
+    }
+    if reply.len() > 32 * 1024 {
+        return 1;
+    }
+    let reply = String::from_utf8_lossy(&reply);
+    let status = reply.split_whitespace().nth(1).unwrap_or("?").to_string();
+    let outcome = auction_outcome(&reply);
+    let tail: String = reply
+        .chars()
+        .rev()
+        .take(120)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    println!(
+        "{CONTEND_SENTINEL}: bid={bid} pid={pid} status={status} outcome={outcome} tail={:?}",
+        tail.replace('\n', " ")
+    );
+    i32::from(outcome == "other")
+}
+
+/// HTTP status/body alone never establishes an auction result. Only the
+/// proxy's decision header does; duplicate or malformed evidence is refused.
+fn auction_outcome(reply: &str) -> &'static str {
+    let Some((headers, _)) = reply.split_once("\r\n\r\n") else {
+        return "other";
+    };
+    let mut lines = headers.split("\r\n");
+    let mut status = lines.next().unwrap_or("").split_whitespace();
+    if !matches!(status.next(), Some("HTTP/1.1" | "HTTP/1.0")) {
+        return "other";
+    }
+    let Some(code) = status
+        .next()
+        .and_then(|s| s.parse::<u16>().ok())
+        .filter(|n| (200..600).contains(n))
+    else {
+        return "other";
+    };
+    let mut outcome = None;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            return "other";
+        };
+        if name.eq_ignore_ascii_case("x-nucleus-auction-outcome") {
+            if outcome.is_some() {
+                return "other";
+            }
+            outcome = Some(value.trim());
+        }
+    }
+    match outcome {
+        Some("won") => "won",
+        Some("outbid") if code == 403 => "outbid",
+        _ => "other",
+    }
+}
+
+/// What a process saw of PID 1 in its own `/proc`.
+///
+/// Three outcomes, not a bool (ADR 0007 A-1, A-2): PID 1 always exists, so
+/// "not there" means hidden ONLY when `/proc` demonstrably answers. A `/proc`
+/// that cannot be listed, or that does not even list this process, is a probe
+/// that could not look, and that is never reported as hidden.
+#[derive(Debug, PartialEq, Eq)]
+enum Pid1View {
+    /// Absent from the `/proc` listing and `/proc/1/cmdline` is `ENOENT`, while
+    /// the same listing shows this process: `hidepid=invisible` at work.
+    Invisible,
+    /// The workload can see PID 1. Which of the two leaked is kept, so the
+    /// failure says what a fix has to close.
+    Visible {
+        listed: bool,
+        cmdline_readable: bool,
+    },
+    /// The observation itself failed, with why.
+    Unobserved(String),
+}
+
+/// Look at PID 1 from here. The effectful half of [`pid1_view`].
+fn observe_pid1() -> Pid1View {
+    let listing = std::fs::read_dir("/proc").map(|entries| {
+        entries
+            .flatten()
+            .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+            .collect::<Vec<String>>()
+    });
+    let cmdline = std::fs::read("/proc/1/cmdline");
+    pid1_view(&listing, std::process::id(), &cmdline)
+}
+
+/// Classify one observation of PID 1. Pure, so the red case (a plain `/proc`)
+/// is testable off-guest.
+fn pid1_view(
+    listing: &std::io::Result<Vec<String>>,
+    self_pid: u32,
+    pid1_cmdline: &std::io::Result<Vec<u8>>,
+) -> Pid1View {
+    let names = match listing {
+        Ok(names) => names,
+        Err(e) => return Pid1View::Unobserved(format!("cannot list /proc: {e}")),
+    };
+    // Non-vacuity: an empty or foreign `/proc` "hides" PID 1 too.
+    let self_name = self_pid.to_string();
+    if !names.contains(&self_name) {
+        return Pid1View::Unobserved(format!(
+            "/proc does not list this process (pid {self_pid}), so PID 1's absence \
+             from it shows nothing"
+        ));
+    }
+    let listed = names.iter().any(|n| n == "1");
+    let cmdline_readable = match pid1_cmdline {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        // hidepid=noaccess answers EACCES for a pid it still lists; an unlisted
+        // PID 1 that fails with anything but ENOENT is not invisibility.
+        Err(e) if !listed => {
+            return Pid1View::Unobserved(format!(
+                "PID 1 is unlisted but /proc/1/cmdline fails with {e}, not ENOENT"
+            ));
+        }
+        Err(_) => false,
+    };
+    if listed || cmdline_readable {
+        Pid1View::Visible {
+            listed,
+            cmdline_readable,
+        }
+    } else {
+        Pid1View::Invisible
+    }
+}
+
+/// The failure, if any, for a non-root process's view of PID 1.
+fn pid1_failure(view: &Pid1View) -> Option<String> {
+    match view {
+        Pid1View::Invisible => None,
+        Pid1View::Visible {
+            listed,
+            cmdline_readable,
+        } => Some(format!(
+            "PID 1 is visible to the workload (listed in /proc: {listed}, /proc/1/cmdline \
+             readable: {cmdline_readable}); /proc is not mounted hidepid=invisible"
+        )),
+        Pid1View::Unobserved(why) => Some(format!(
+            "could not observe PID 1's visibility: {why}; containment was not observed"
+        )),
+    }
+}
+
+/// `/proc` is mounted `hidepid=invisible` (#2696 P3d): a non-root workload
+/// must not see PID 1 at all.
+///
+/// Root sees every pid whatever the mount says, so for a root workload there is
+/// nothing to observe and this asserts nothing, as `check_groups` does. The
+/// probe pod (`examples/openclaw-demo/probe-pod.yaml`) runs as 65534.
+fn check_pid1_invisible(fails: &mut Vec<String>) {
+    let uid = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| status_uid(&s));
+    match uid {
+        Some(0) => {}
+        Some(_) => fails.extend(pid1_failure(&observe_pid1())),
+        None => fails.push("could not read the workload's uid from /proc/self/status".into()),
+    }
+}
+
+/// The real uid: the first field of `/proc/self/status`'s `Uid:` line.
+fn status_uid(status: &str) -> Option<u32> {
+    status
+        .lines()
+        .find_map(|l| l.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|v| v.parse::<u32>().ok())
+}
+
+/// The `--run-child` verdict, pure so it is testable off-guest.
+///
+/// * the real uid (`Uid:` first field) must not be 0;
+/// * PID 1 must be invisible to it (`hidepid=invisible`, P3d);
+/// * `/proc/1/environ` must be refused: `EACCES` (the uid fence), or `ENOENT`
+///   when PID 1 was observed to be invisible. "Could not look" for any other
+///   reason (no procfs, an `ENOENT` nothing explains) is not "looked and it
+///   was denied" (ADR 0007 A-2), so it fails too: the probe cannot vouch for
+///   containment it did not observe.
+fn run_child_failures(
+    status: Option<&str>,
+    pid1_environ: &std::io::Result<Vec<u8>>,
+    pid1: &Pid1View,
+) -> Vec<String> {
+    let mut fails = Vec::new();
+    let uid = status.and_then(status_uid);
+    match uid {
+        Some(0) => fails.push("the /v1/run child runs as root (uid 0)".to_string()),
+        Some(_) => {}
+        None => fails.push("could not read the child's uid from /proc/self/status".to_string()),
+    }
+    match pid1_environ {
+        Ok(_) => fails
+            .push("the /v1/run child can read /proc/1/environ — the runtime's secrets".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && *pid1 == Pid1View::Invisible => {}
+        Err(e) => fails.push(format!(
+            "/proc/1/environ unreadable for a reason other than permission ({e}); \
+             containment was not observed"
+        )),
+    }
+    fails.extend(pid1_failure(pid1));
+    fails
+}
+
+#[cfg(test)]
+mod syscall_filter_tests {
+    use super::{FILTER_ERRNO, FilterOp, Outcome, syscall_filter_failures};
+
+    fn filtered() -> Vec<(FilterOp, Result<Outcome, String>)> {
+        FilterOp::ALL
+            .into_iter()
+            .map(|op| (op, Ok(op.expected())))
+            .collect()
+    }
+
+    #[test]
+    fn the_filtered_workload_passes() {
+        assert!(syscall_filter_failures(Some("2"), &filtered()).is_empty());
+    }
+
+    /// What #3148 measured on the unfiltered guest: AF_VSOCK, both user
+    /// namespace doors and ptrace succeed, and there is no filter.
+    #[test]
+    fn the_unfiltered_guest_fails_on_every_measured_exposure() {
+        let unfiltered: Vec<_> = FilterOp::ALL
+            .into_iter()
+            .map(|op| (op, Ok(Outcome::Ok)))
+            .collect();
+        let fails = syscall_filter_failures(Some("0"), &unfiltered);
+        assert_eq!(fails.len(), 5, "{fails:#?}");
+    }
+
+    /// A denial with another errno (DAC, a host policy) is not the filter's.
+    #[test]
+    fn a_denial_with_another_errno_is_not_the_filter() {
+        let mut seen = filtered();
+        seen[0].1 = Ok(Outcome::Errno(97)); // EAFNOSUPPORT
+        assert_eq!(syscall_filter_failures(Some("2"), &seen).len(), 1);
+    }
+
+    /// Could not look is not a pass (ADR 0007 A-1).
+    #[test]
+    fn an_op_that_could_not_run_or_a_missing_mode_fails() {
+        let mut seen = filtered();
+        seen[4].1 = Err("spawn failed".to_string());
+        assert_eq!(syscall_filter_failures(Some("2"), &seen).len(), 1);
+        assert_eq!(syscall_filter_failures(None, &filtered()).len(), 1);
+        assert_eq!(
+            syscall_filter_failures(Some("2"), &[]).len(),
+            FilterOp::ALL.len()
+        );
+    }
+
+    #[test]
+    fn ops_round_trip_by_name_and_outcomes_by_rendering() {
+        for op in FilterOp::ALL {
+            assert_eq!(FilterOp::from_name(op.name()), Some(op));
+        }
+        for o in [
+            Outcome::Ok,
+            Outcome::Errno(FILTER_ERRNO),
+            Outcome::Errno(97),
+        ] {
+            assert_eq!(Outcome::parse(&o.render()), Some(o));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_restated_errno_is_eperm() {
+        assert_eq!(FILTER_ERRNO, libc::EPERM);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Pid1View, pid1_failure, pid1_view, run_child_failures};
+    use std::io;
+
+    const NOBODY: &str = "Name:\tprobe\nUid:\t65534\t65534\t65534\t65534\n";
+    const ROOT: &str = "Name:\tprobe\nUid:\t0\t0\t0\t0\n";
+
+    fn denied() -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    }
+
+    fn missing() -> io::Result<Vec<u8>> {
+        Err(io::Error::from(io::ErrorKind::NotFound))
+    }
+
+    fn listing(pids: &[&str]) -> io::Result<Vec<String>> {
+        Ok(pids.iter().map(|p| (*p).to_string()).collect())
+    }
+
+    /// The child's own pid in the fixtures below.
+    const SELF: u32 = 42;
+
+    /// Plain `/proc`, which the guest mounted before P3d, as a uid-65534 child
+    /// saw it in the P3 spike (section 5): PID 1 listed and its cmdline
+    /// readable. The red case for the new stage.
+    fn plain_proc() -> Pid1View {
+        pid1_view(
+            &listing(&["1", "42", "self", "cmdline"]),
+            SELF,
+            &Ok(b"/init\0".to_vec()),
+        )
+    }
+
+    /// `hidepid=invisible`: only the child's own pid, and `ENOENT` for PID 1.
+    fn hidepid_proc() -> Pid1View {
+        pid1_view(&listing(&["42", "self", "cmdline"]), SELF, &missing())
+    }
+
+    #[test]
+    fn plain_proc_shows_pid1_and_fails() {
+        assert_eq!(
+            plain_proc(),
+            Pid1View::Visible {
+                listed: true,
+                cmdline_readable: true
+            }
+        );
+        assert!(pid1_failure(&plain_proc()).is_some());
+    }
+
+    #[test]
+    fn hidepid_invisible_hides_pid1_and_passes() {
+        assert_eq!(hidepid_proc(), Pid1View::Invisible);
+        assert!(pid1_failure(&hidepid_proc()).is_none());
+    }
+
+    /// `hidepid=noaccess` lists PID 1 and answers `EACCES`: enumerable, so not
+    /// the posture.
+    #[test]
+    fn hidepid_noaccess_still_lists_pid1_and_fails() {
+        let denied_cmdline = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        let v = pid1_view(&listing(&["1", "42"]), SELF, &denied_cmdline);
+        assert_eq!(
+            v,
+            Pid1View::Visible {
+                listed: true,
+                cmdline_readable: false
+            }
+        );
+    }
+
+    /// Absence of PID 1 is evidence only when `/proc` demonstrably answers.
+    #[test]
+    fn an_empty_or_unlistable_proc_is_not_invisibility() {
+        assert!(matches!(
+            pid1_view(&listing(&[]), SELF, &missing()),
+            Pid1View::Unobserved(_)
+        ));
+        assert!(matches!(
+            pid1_view(
+                &Err(io::Error::from(io::ErrorKind::NotFound)),
+                SELF,
+                &missing()
+            ),
+            Pid1View::Unobserved(_)
+        ));
+        let odd = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert!(matches!(
+            pid1_view(&listing(&["42"]), SELF, &odd),
+            Pid1View::Unobserved(_)
+        ));
+        assert!(pid1_failure(&Pid1View::Unobserved("x".into())).is_some());
+    }
+
+    #[test]
+    fn an_unprivileged_child_that_is_refused_pid1s_environ_passes() {
+        assert!(run_child_failures(Some(NOBODY), &denied(), &Pid1View::Invisible).is_empty());
+    }
+
+    /// With hidepid, PID 1's environ is `ENOENT`, not `EACCES`, and that is the
+    /// stronger containment: accepted because PID 1 was observed invisible.
+    #[test]
+    fn enoent_on_pid1s_environ_passes_when_pid1_is_invisible() {
+        assert!(run_child_failures(Some(NOBODY), &missing(), &hidepid_proc()).is_empty());
+    }
+
+    /// The pre-hidepid guest: the uid fence held (`EACCES`) but PID 1 was
+    /// visible, which is now a failure of its own.
+    #[test]
+    fn a_child_that_sees_pid1_fails_even_when_environ_is_denied() {
+        let fails = run_child_failures(Some(NOBODY), &denied(), &plain_proc());
+        assert_eq!(fails.len(), 1, "{fails:?}");
+        assert!(fails[0].contains("PID 1 is visible"), "{fails:?}");
+    }
+
+    /// The pre-fix guest: root, the read succeeds, and PID 1 is visible.
+    #[test]
+    fn a_root_child_that_reads_pid1s_environ_fails_three_times() {
+        let fails = run_child_failures(Some(ROOT), &Ok(b"K=V\0".to_vec()), &plain_proc());
+        assert_eq!(fails.len(), 3, "{fails:?}");
+    }
+
+    #[test]
+    fn could_not_look_is_not_denied() {
+        let unobserved = Pid1View::Unobserved("no /proc".into());
+        // An ENOENT that hidepid does not explain is not containment.
+        assert_eq!(
+            run_child_failures(Some(NOBODY), &missing(), &unobserved).len(),
+            2
+        );
+        assert_eq!(
+            run_child_failures(None, &denied(), &Pid1View::Invisible).len(),
+            1
+        );
+    }
+}
+
+#[cfg(test)]
+mod auction_tests {
+    use super::auction_outcome;
+
+    #[test]
+    fn generic_successes_refusals_and_server_errors_are_not_auction_wins() {
+        for status in [200, 401, 403, 404, 500, 502] {
+            assert_eq!(
+                auction_outcome(&format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\n\r\n"
+                )),
+                "other"
+            );
+        }
+        assert_eq!(
+            auction_outcome("HTTP/1.1 403 Forbidden\r\n\r\noutbid for the slot"),
+            "other"
+        );
+    }
+
+    #[test]
+    fn only_one_explicit_header_establishes_the_outcome() {
+        assert_eq!(
+            auction_outcome("HTTP/1.1 502 Bad Gateway\r\nX-Nucleus-Auction-Outcome: won\r\n\r\n"),
+            "won",
+            "the slot was paid for even when the downstream fetch failed"
+        );
+        assert_eq!(
+            auction_outcome("HTTP/1.1 403 Forbidden\r\nx-nucleus-auction-outcome: outbid\r\n\r\n"),
+            "outbid"
+        );
+        for reply in [
+            "HTTP/1.1 200 OK\r\nx-nucleus-auction-outcome: outbid\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nx-nucleus-auction-outcome: won\r\nx-nucleus-auction-outcome: won\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nx-nucleus-auction-outcome: won",
+            "HTTP/1.1 200 OK\r\n\r\nx-nucleus-auction-outcome: won",
+            "garbage 200 OK\r\nx-nucleus-auction-outcome: won\r\n\r\n",
+        ] {
+            assert_eq!(auction_outcome(reply), "other", "{reply:?}");
+        }
     }
 }

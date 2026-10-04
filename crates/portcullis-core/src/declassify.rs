@@ -392,6 +392,20 @@ impl DeclassificationToken {
     /// right after `valid_until`) so the value binding is signed. Signatures
     /// produced under v2 (which lacked it) will not verify against v3 canonical
     /// bytes — exactly as v2 broke v1's bare-`0xFF`-separator encoding.
+    /// A length prefix for the signing preimage.
+    ///
+    /// `as u32` here was a silent truncation in a SIGNED preimage: two
+    /// different documents whose lengths differ by a multiple of 2^32 would
+    /// prefix identically, which is the collision a length prefix exists to
+    /// prevent. The length of an in-memory field cannot reach that, so this
+    /// cannot fire — and if it ever did, refusing to build the preimage is the
+    /// only answer that does not sign an ambiguous one.
+    fn len_prefix(len: usize) -> [u8; 4] {
+        u32::try_from(len)
+            .expect("a preimage field longer than u32::MAX cannot be length-prefixed")
+            .to_le_bytes()
+    }
+
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
 
@@ -428,18 +442,18 @@ impl DeclassificationToken {
 
         // Rule justification (length-prefixed)
         let rule_just = self.rule.justification.as_bytes();
-        buf.extend_from_slice(&(rule_just.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&Self::len_prefix(rule_just.len()));
         buf.extend_from_slice(rule_just);
 
         // Allowed sinks (count-prefixed)
-        buf.extend_from_slice(&(self.allowed_sinks.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&Self::len_prefix(self.allowed_sinks.len()));
         for op in &self.allowed_sinks {
             buf.push(*op as u8);
         }
 
         // Token justification (length-prefixed)
         let just = self.justification.as_bytes();
-        buf.extend_from_slice(&(just.len() as u32).to_le_bytes());
+        buf.extend_from_slice(&Self::len_prefix(just.len()));
         buf.extend_from_slice(just);
 
         buf
@@ -644,9 +658,14 @@ impl DeclassifyRateLimiter {
         let cutoff = now.saturating_sub(self.window_secs);
         self.events.retain(|&t| t >= cutoff);
 
-        if self.events.len() as u32 >= self.max_per_window {
+        // Saturating rather than casting: a count past u32::MAX would WRAP to a
+        // small number and let the request through, which is a rate limiter
+        // failing open. Saturated, an absurd count reads as the maximum and is
+        // refused, which is the direction a limiter is allowed to be wrong in.
+        let count = u32::try_from(self.events.len()).unwrap_or(u32::MAX);
+        if count >= self.max_per_window {
             return Err(RateLimitExceeded {
-                count: self.events.len() as u32,
+                count,
                 max: self.max_per_window,
                 window_secs: self.window_secs,
             });

@@ -48,9 +48,40 @@
 # can go green. `gatehouse/required` is produced by the coproduct-gatehouse GitHub App (4853870),
 # not a workflow, so it carries `@app`: the producer and merge-group invariants cannot be decided
 # from the tree for it, and live parity instead holds branch protection to that app id. It also
-# requires the plan's `ci-spec` and `test-core` gates; `Tests` stays required here because it
+# requires the plan's `ci-spec` and `test` gates (`test` replaced `test-core` + `test-audit` on
+# 2026-09-28: one build of the workspace instead of two); `Tests` stays required here because it
 # additionally runs the SDK tests (node, python) that the gate image does not carry.
-# PINNED = 47
+# 2026-09-20: 47 -> 38. The SECOND SUBTRACTION of the 2026-09-17 cutover, nine lines late.
+#
+# `ci/gatehouse-replacements.txt` records eleven contexts retiring to the gatehouse `text-gates`
+# gate, and says what retiring one costs: "a line out of ci/required-checks.txt and a rule out of
+# the GitHub ruleset". The ruleset subtraction happened; this one did not, so for weeks
+# `live-parity` reported nine CI-LP-MISSING and the gate that reports it was itself not required.
+#
+# Read from this side alone the drift looks like GitHub having lost nine required contexts, and
+# that is how it was first read today -- the nine were ADDED to branch protection, taking it to
+# 47, before `gatehouse-replacements.txt` turned up and said they had been retired on purpose.
+# Branch protection has been returned to the 38 it held; this is the file that was wrong.
+#
+# The nine still RUN -- ci.yml's `text-gates` job and its relays are untouched -- and they still
+# gate a merge, through `gatehouse/required`, which is context 14 here. What changed in September
+# is which context carries them, not whether anything does.
+# 2026-10-02, owner decision, 38 -> 41: `exemplar metrics ratchet`, `Dylint passes (one pod)` and
+# `the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)` become
+# required. All three merged red on main the same day while advisory, and that is not a local
+# cost: `Gates must fail on their own subject` (required) re-runs EVERY gate on the clean tree
+# before perturbing it, so one advisory red on main failed every later merge group until somebody
+# fixed it. An advisory gate that the gate of gates baselines is required in effect -- just at
+# the wrong moment, on everybody else's PR. Requiring it moves the red to the PR that caused it.
+#
+# What each needed (all decided by `cargo xtask ci-spec check`):
+#   exemplar  -- `merge_group:` added, the pull_request path filter dropped (cheap job; one copy
+#                of the path list beats a twin), and a timeout (CI-I7).
+#   Dylint    -- `merge_group:` added, plus dylint-separation-noop.yml with the real `paths`
+#                as its `paths-ignore`, verbatim (CI-I1), and `ready_for_review` (it skips drafts).
+#   podlist   -- nothing: it already had `merge_group:`, a scope step (CI-I5) and an exact-name
+#                noop twin, podlist-probe-noop.yml. It was simply never added here.
+# PINNED = 41
 
 # --- the gatehouse App ---
 gatehouse/required @app 4853870
@@ -60,23 +91,14 @@ Detect changed crates
 Tests
 Fuzz
 OWASP LLM Security Gauntlet
-Ed25519 verify_strict gate (M-3)
-Sandbox trusted-base gate
-Fail-closed verifier gate
-Mediation backstop gate (North Star)
 test-helpers is not reachable from a shipping build
 Every lean_lib is type-checked by something
 Declassify sink scope is enforced
 Declassification is value-bound, single-use, and live
-Governor trusted-key set is not workload-writable
 C1 inbound fences are enforced
-The North Star status table cannot outrun its wiring
-Extracted predicates have live call sites (C8)
 The node records pod lineage on the live path (C2)
 Gates must fail on their own subject
 The CI assurance ledger cannot outrun its wiring
-No-unwitnessed-ingest gate (InputsAuthorized)
-Sealed-home integrity gate (North Star)
 Policy-kernel model↔Rust parity (K4)
 musl type-check (nucleus-node, nucleus-tool-proxy)
 
@@ -95,6 +117,7 @@ zizmor (high+ gate)
 Manifest Guards
 Scan PodSpecs
 Analyze
+exemplar metrics ratchet
 
 # --- twin-paired (real + -noop) ----------------------------------------
 lake build CiSpec (pipeline + merge-queue theorems)
@@ -108,3 +131,5 @@ lake build Nucleus (rubric scoring proofs)
 version ceiling + wasm closure
 Kani
 Kani (constitutional kernel)
+Dylint passes (one pod)
+the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)

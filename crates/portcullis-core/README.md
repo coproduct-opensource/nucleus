@@ -50,4 +50,4 @@ portcullis-core (this crate)
     -> Mathlib HeytingAlgebra proof (kernel-checked)
 ```
 
-See [`FORMAL_METHODS.md`](../../FORMAL_METHODS.md) for the full verification story.
+See [`FORMAL_METHODS.md`](../../docs/FORMAL_METHODS.md) for the full verification story.

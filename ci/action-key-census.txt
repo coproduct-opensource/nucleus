@@ -1,0 +1,34 @@
+# The action-key census, pinned.
+#
+# `cargo run -p nucleus-action-key -- --check` runs `census.rs` over every
+# context in ci/required-checks.txt and holds the result to the two numbers
+# below. Before 2026-09-21 nothing ran that census at all: the crate derives a
+# gate's receipt key, `census.rs` calls itself "the audit the design rests on",
+# and no workflow, script or ledger entry named either. A mechanism nothing
+# binds to the live path is this repository's most common defect family, and an
+# audit nobody runs is its purest form.
+#
+# WHAT IT MEASURES. A context is KEYED when its workflow declares what it reads,
+# so two runs over the same read-set provably have the same verdict and a
+# receipt may be reused. It is REFUSED when it does not — today every refusal
+# carries the same sentence: "declares no `paths:` filter, so its read-set is
+# the whole tree and a key over it would never hit."
+#
+# WHY THE NUMBERS ARE WHAT THEY ARE. 11 of 47 as measured on 2026-09-21. That
+# ratio is the throughput finding of that day stated as a number: the gates that
+# restarted on every push are the ones whose read-set is the whole tree, and
+# they cannot be cached until their workflows say what they read.
+#
+#   keyed_floor          may only RISE. Losing a key means a workflow stopped
+#                        declaring its reads, which makes its result uncacheable.
+#   unmeasured_ceiling   may only FALL. `Unmeasured` is "could not look", kept
+#                        separate from `Refused` by census.rs on purpose; a
+#                        growing count is the vacuity that separation prevents.
+#
+# The POPULATION is not pinned here. ci/required-checks.txt already carries
+# `# PINNED = n` and the check reads it, because a second copy of one fact goes
+# stale (ADR 0007 G). A census over the wrong population is reported as
+# "could not look" rather than compared to these floors.
+
+keyed_floor = 11
+unmeasured_ceiling = 0

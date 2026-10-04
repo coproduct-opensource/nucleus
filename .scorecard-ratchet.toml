@@ -22,6 +22,10 @@
 #
 #   floor_bp          minimum discharged/population in basis points. May only RISE.
 #   population_floor  minimum population. A shrinking surface is a decision.
+#   floor_set         how the floor came to hold its value: "measurement" when it
+#                     equals what the tree measures, or "waiver" with waiver_dated,
+#                     waiver_by and waiver_because when it sits below by decision.
+#                     Required: a bare digit cannot tell a raise from a concession.
 #
 # Both, because neither alone is a gate. A floor on the ratio rewards deleting
 # obligations: remove one and numerator and denominator fall together while the
@@ -58,8 +62,33 @@
 # #2197 -- taking 3 bound witness-accepting sites with them (174 -> 171). A
 # deletion, not a regression: the one undischarged site (`trait CaClient`) is
 # unchanged, so the ratio moves only because the denominator shrank. 170/171.
-floor_bp = 9941
-population_floor = 171
+# 2026-09-27: the two memory cores take an Authority by value and spend it before
+# mutating — two new sites, both bound. 173/174.
+# 2026-09-27: NodeClient::{create_pod, list_pods, pod_logs, cancel_pod} take an
+# Authority by value and spend it before building the request — four new sites,
+# all bound. 177/178.
+# 2026-09-29: `Sandbox::glob` joins with its DecisionToken and Authority taken by value
+# and consumed before the walk — two new sites, both bound, on top of main's 177/178. 179/180.
+# 2026-09-27: declassification became a sealed witness. VerifiedDeclassification
+# joins the WITNESS vocabulary (bound at FlowGraph::apply_verified), and
+# kernel/declassify_authority.rs names DeclassificationToken bare, so four
+# existing bound sites become visible to the scan. 176/177, CaClient unchanged.
+# 2026-09-29, merging main into the declassification branch: both moves on one tree. 184/185.
+# 2026-10-01: the execute-on-consume guard splits the executor's synchronous
+# spawn into `spawn_checked` (the guard) and `spawn_unguarded` (the effect), and
+# the effect half takes the `Authority` by name and spends it -- one more bound
+# site, on main's 184/185. 185/186 = 99.46%, and the floor follows it up.
+# 2026-10-01: census correction, not new obligations (#2986). The census read a
+# witness type by its bare spelling, so a parameter written with its path --
+# `&portcullis::VerifiedPermissions`, `portcullis_effects::authority::Authority`,
+# `&portcullis_core::declassify::DeclassificationToken` -- was not a site at all.
+# It now reads the type's last path segment as a whole identifier. Seven bound
+# sites that were always there become visible (authority-exchange from_verified,
+# tool-proxy broker_client and run_gate, four in portcullis flow_graph); dropped
+# is unchanged at 33, so INERT_TOTAL still agrees. 192/193 = 99.48%.
+floor_bp = 9948
+floor_set = "measurement"
+population_floor = 193
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -93,6 +122,7 @@ population_floor = 171
 # absorption checked -- so it is its own commit. This number rises when that
 # lands.
 floor_bp = 3956
+floor_set = "measurement"
 population_floor = 278
 
 [family.tot]
@@ -161,13 +191,56 @@ population_floor = 278
 # all seven from its first commit; 26/84. Without the declaration the new crate
 # alone dropped the ratio to 29.76% -- a crate that can panic while appending
 # evidence is exactly what this family counts.
-# 2026-09-20: new crate nucleus-blast-radius declares all seven from its first
-# commit; 27/85. Same measured value the authority-exchange branch raises to, on
-# its own — two independent crates each lifting the floor by one is the ratchet
-# working, and the merge of the two pins is an identical-value conflict. A crate
-# whose output an insurer prices is exactly what this family counts.
-floor_bp = 3176
-population_floor = 85
+# 2026-09-20: new crate nucleus-authority-exchange declares all seven; 27/85. The
+# gate caught it the same way: without the declaration the ratio fell to 30.58%
+# and Manifest Guards went red. Declaring it found five real sites -- two
+# unchecked `Decimal` multiplications converting a certificate's budget to a
+# ceiling, an `expect` on a map lookup that `entry()` removes, a `Duration`
+# addition, and a fixture that panicked instead of taking an infallible
+# constructor. A crate that decides who may spend authority is exactly what this
+# family counts.
+# 2026-09-21 (#2983 into #2977): new crate nucleus-blast-radius, the bound an
+# underwriter prices, declares all seven by inheriting `[lints] workspace = true`
+# from its first commit; 28/86. So the ratio ROSE rather than fell, and the gate
+# then refused the old floor for the opposite reason to the two notes above --
+# a floor with slack under it has already stopped gating (ADR 0007 I-1). Raised
+# to the measured value, which is the only direction this pin moves.
+# 2026-09-26 (#3019): new crate nucleus-federation, the token validator and
+# exchange client a node runs on every federated call, shipped WITHOUT the
+# declaration and diluted the ratio to 32.18%; Manifest Guards went red.
+# Declaring it found eight real sites -- slicing a SEC1 point by fixed offsets,
+# slicing a JWS signing input by summed lengths, a hex-table index, and five
+# unchecked additions or multiplications on lengths and times. With it the ratio is
+# 29/87, 33.33%, and the floor follows it up.
+# 2026-09-29: new crate nucleus-oci-rootfs, which parses untrusted OCI images
+# (tar headers, JSON, decompression streams), declares all seven from its first
+# commit; 30/88, 34.09%. The ratio rose, so the floor follows it up.
+# 2026-09-29: new crate nucleus-microvm-host (the host requirements table and KVM
+# probe, the scratch-image read-back, workspace seed/harvest) declares all seven
+# in lib.rs and main.rs from its first commit; 31/89, 34.83%. Declaring it moved
+# one site: the CAP_NET_ADMIN mask `1u64 << bit` became `checked_shl`.
+# 2026-10-02 (#3119, rebased): the population pin had not followed the three
+# crates above -- the tree measures 31/89 on main and here, while the pin still
+# said 86. Re-pinned to the measurement; the ratio is unchanged.
+# 2026-10-02 (#3002, rebased onto main): nucleus-permission-market declares all
+# seven and goes integer -- the f64 λ curve became a u128 fixed-point
+# exponential, every price a micro-USD u64, `deny(float_arithmetic)` on the
+# shipped build. 32/89, 35.95%.
+# 2026-10-02 (#2702 P7): new crate nucleus-decision-protocol, the decision
+# channel's codec -- it parses every byte a guest writes on that channel --
+# declares all seven from its first commit; 32/90, 35.55%. The ratio rose, so
+# the floor follows it up.
+# 2026-10-02 (#2981): new crate nucleus-calibration declares all seven from its
+# first commit; 32/90, 35.55%. The declaration paid for itself before the first
+# commit: two integer divisions behind a `.max(1)` that the type could not see
+# (now `checked_div`). Note the census reads git, not the working tree -- the
+# crate was invisible to this gate until `git add`. A crate that decides whether
+# a probability may be trusted is exactly what this family counts.
+# 2026-10-04: integer market, calibration and decision-protocol are all present.
+# Combined 34 of 91 = 37.36%; retain all three lint-adoption gains.
+floor_bp = 3736
+floor_set = "measurement"
+population_floor = 91
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -241,8 +314,59 @@ population_floor = 85
 # 5/12 (41.66%), and that exposed a real hole: the proof did not say WHICH record it
 # proved, so one record's proof could acknowledge another. It now carries a
 # state_hash of the log and the record, checked at both acknowledgement sites. 6/12.
-floor_bp = 5000
-population_floor = 12
+# 2026-09-26 (#3020): federated_credential::Refilled, the proof a federated
+# credential was minted or found cached, entered as an affine right. Unbounded it
+# reddened CI at 6/13 (46.15%), and it was a real gap: the proof vouched for a
+# credential with an end and carried none, so only the store stood between a
+# held proof and an expired token. It now carries not_after (the cache entry's
+# end, or the pod certificate's on a hit) and handle_perform refuses a proof past
+# it before the store is read. 7/13.
+# 2026-09-27: VerifiedDeclassification, the witness FlowGraph::apply_verified
+# spends, entered as an affine right. Unbounded it measured 6/13 (46.15%) and
+# reddened this family; it now carries the signed token's valid_until, fixed at
+# mint, and apply_verified decides expiry from that field and no other on the
+# production path (refused Expired, not burned). 7/13.
+# 2026-09-29, merging main into the declassification branch: both affine rights
+# (Refilled from #3020, VerifiedDeclassification here) on one tree, both bounded. 8/14.
+# 2026-10-01 (#3112, #2905): egress_meter::EgressCharge, the host's reservation
+# for one guest send, entered as an affine right. Unbounded it reddened CI at
+# 8/15 (53.33%). Chasing it found a real gap one layer down: EgressHold ids are
+# per-ledger (every ledger numbers from zero), so a hold settled on a ledger
+# that did not decide it released THAT ledger's same-id hold -- a NotSent
+# refunded bytes in flight, and the real hold then settled against nothing and
+# was never counted. EgressHold now carries its ledger's epoch and
+# EgressLedger::settle refuses a foreign one (EgressSettleError::ForeignHold)
+# before the id is looked up.
+# Two census corrections in the same change:
+# * A THIRD FORM OF BOUND. EgressCharge<'a> holds `&'a EgressMeter`, and only
+#   EgressMeter::admit builds one, so it cannot outlive or be settled against
+#   any meter but its issuer -- a compile error, tighter than either field.
+#   life::borrows_its_issuer credits exactly that: a lifetime the struct
+#   declares, a field whose type is `&'x Issuer` at the top (so
+#   PhantomData<&'a ()> or Option<&'a T> does not count), and an impl of
+#   Issuer that constructs the right. Copying the epoch onto the charge
+#   instead would have been a second decider of one fact (ADR 0007 G).
+# * THE CLONE WINDOW. is_clone read the 8 lines above a declaration AFTER
+#   production_region stripped comments, so a documented type's window reached
+#   the previous item: EgressHold and EgressDecision read as Clone and fell out
+#   of the population. The window now stops at the previous item's boundary.
+# Neither correction moves main: re-measured on main 2fc73eda with both, life is
+# 8/14 (57.14%) and linearity 4 on 14 types, as before. This branch measures
+# 10/17: EgressHold (epoch) and EgressCharge (issuer borrow) bounded,
+# EgressDecision -- the reserve() outcome that carries a hold -- not.
+# A-19: replacing EgressCharge's `meter: &'a EgressMeter` with an Arc drops the
+# family to 9/17 (52.94%), below this floor, and the scorecard reds.
+# 2026-10-02 (#2702 P7): nucleus-decision-protocol adds three affine rights --
+# DecisionId, ApprovalId and host::Spent. Unbounded they measured 10/20 (50.00%)
+# and reddened this family, and it was the EgressHold hole again: every
+# DecisionLedger numbers from zero, so decision 0 from a closed channel was
+# live decision 0 on the channel that replaced it -- a replay across a
+# reconnect that no single ledger could see. All three now carry their
+# ledger's epoch, and consume/redeem refuse a foreign one
+# (LedgerError::ForeignEpoch) before the number is looked up. 13/20, 65.00%.
+floor_bp = 6500
+floor_set = "measurement"
+population_floor = 20
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -290,6 +414,7 @@ population_floor = 12
 # obvious tag pair -- McpToolResult and ToolResponse are adversarial, EnvVar and
 # Secret are confidential -- and each is a struct plus a registry row.
 floor_bp = 869
+floor_set = "measurement"
 population_floor = 23
 
 [family.suppress]
@@ -377,5 +502,74 @@ population_floor = 23
 # 2026-09-18: rebased onto the tree that deleted WorkloadApiServer, so neither
 # branch's number describes the merged tree -- 19 of 143 = 13.28%, re-measured
 # rather than carried over from either side.
-floor_bp = 1388
-population_floor = 143
+#
+# LOWERED 1388 -> 1328 on 2026-09-27, and the reason is the one this family was
+# written to reward. HTTP `grep_search` carried
+# `#[expect(clippy::disallowed_methods, reason = "#1216 OPEN ...")]` over a raw
+# `std::fs::File::open`. The handler now reads through
+# `Sandbox::read_to_string_for_search`, so the lint stopped firing and the
+# expectation had to go -- the one suppression form that CAN fail, failing as
+# designed. Removing a discharged waiver lowers a discharged ratio (20/144 ->
+# 19/143), because the census counts waivers, not the defects under them; the
+# population floor is re-pinned with it so nothing else can slip under.
+#
+# 2026-09-29: the tool-proxy's private `RunRequest` gives way to
+# `nucleus_client::wire::RunRequest`, and its `#[allow(dead_code)]` on
+# `timeout_seconds` goes with it -- a public field of a shared wire type is not
+# dead. One undischarged suppression deleted with the code it excused: 19 of
+# 142 = 13.38%. The ratio rises because the denominator shrank, so both pins
+# follow the measurement rather than reading it as progress.
+#
+# 2026-10-01 (#3022, rebased onto the above): the hard-coded outside-issuer path,
+# crates/nucleus-node/src/oidc.rs, is deleted in favour of a configured [[caller]]
+# binding, and its four production #[allow(dead_code)]s go with it -- by deletion,
+# not discharge. 19 of 138 = 13.76%; both pins follow the tree.
+#
+# 2026-10-02 (#3119, rebased onto the above): RE-MEASURED, because the census
+# was wrong. `suppressions()` searched for the next `[allow(` and fell back to
+# `[expect(` only when none was left, so any `#[expect]` ahead of an `#[allow]` in
+# the same file was skipped. Fixed to take the earlier of the two (test
+# `an_expect_before_an_allow_is_not_skipped`, red on the old scanner). Main
+# (574687d76) measured with the corrected scanner is 21 of 140, not the 19 of 138
+# pinned above. #3119 then moves `nucleus-tool-proxy`'s hardening hook into
+# `nucleus::ChildConfinement`, deleting one undischarged `#[allow(unsafe_code)]`
+# -- the allow that had been hiding `workload.rs`'s expect. Nothing was
+# discharged: 21 of 139 = 15.10%, and the ratio rises because the denominator
+# shrank. Both pins follow the measurement so it does not read as progress.
+#
+# 2026-10-02 (#3076, rebased onto #3119): the microVM host backend
+# (crates/nucleus-cli/src/microvm_host) lands before the change that wires it
+# into `shell`/`run`, so its module carries
+# `#[expect(dead_code, reason = ...)]`. That waiver expires by itself once the
+# wiring uses the module. Re-measured on the tree rebased onto 02e7aa341
+# (`cargo xtask scorecard --measure`): 22 of 140 = 15.71% -- one more
+# discharged suppression and one more in the population.
+# 2026-10-04 (#3155 integration): audit credential helpers add one expiring
+# production suppression. Measured 23 of 141 = 16.31%; tighten both pins.
+floor_bp = 1631
+floor_set = "measurement"
+population_floor = 141
+
+[family.mediate]
+# How much of what an agent can call is SEALED: the handler mints an
+# `Authority` (only mintable from a `run_gate::preflight_*`'s DischargedBundle),
+# so the effect method -- which takes it by value -- is reachable only through
+# the decision. `crates/xtask/src/mediate.rs` enumerates every tool-proxy HTTP
+# route and MCP `#[tool]` and classifies each handler Sealed / Checked /
+# Unchecked; `cargo xtask mediation` prints the table.
+#
+# 2026-09-27: seeded at the measurement, 12 of 25 = 48.00%. The 13 not sealed are
+# all CHECKED -- a runtime decision is on the path but the effect does not need
+# its result: glob, grep, memory/{write,recall} and pod/* over HTTP, MCP glob,
+# and approve/declassify/escalate on authority of their own. None is Unchecked.
+# Four routes are declared not-an-effect (health, workload result/logs) and sit
+# outside the population. Raise this as Checked handlers are made to take an
+# Authority.
+# 2026-09-29, merging main: #3036 (memory), #3041 (pod/*) and #3040 (glob, grep) sealed the
+# ten Checked handlers named above. 22/25 sealed; the three left are approve, declassify and
+# escalate, each Checked on an authority of its own (signature, token, certificate chain).
+# 2026-09-30, merging main: #3038 split declassify into Kernel::verify_declassification and
+# FlowGraph::apply_verified, so its OWN_AUTHORITY row names verify_declassification. 22/25.
+floor_bp = 8800
+floor_set = "measurement"
+population_floor = 25
