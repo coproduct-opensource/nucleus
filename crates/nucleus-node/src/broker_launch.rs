@@ -423,7 +423,6 @@ pub async fn pod_credentials(
 /// error case is deliberately narrow: a launch fails only when enforcement was
 /// requested dishonestly, or when the socket could not be created *and*
 /// credentials had already been withheld in exchange for it.
-#[cfg(target_os = "linux")]
 pub async fn start_broker_for_pod(
     state: &crate::NodeState,
     spec: &nucleus_spec::PodSpec,

@@ -24,17 +24,58 @@ impl PreparedIdentity {
         self.0.as_ref().and_then(|parts| parts.identity.as_ref())
     }
 
-    /// The caller holds prepared services through spawn and confinement checks.
-    pub(crate) fn spawn(
-        &self,
-        command: &mut tokio::process::Command,
-    ) -> std::io::Result<tokio::process::Child> {
-        boot_trace::time_sync("firecracker.spawn", || command.spawn())
+    /// Broker admission and binding must finish before a VMM can be spawned.
+    /// A refusal consumes and drops the identity preparation (D-1, C-4).
+    pub(crate) async fn with_broker(
+        self,
+        state: &NodeState,
+        spec: &PodSpec,
+        vsock_path: &Path,
+        id: Uuid,
+        capability: broker_launch::VerifyToken,
+        jail_owner: Option<(u32, u32)>,
+    ) -> Result<PreparedPod, ApiError> {
+        let broker = broker_launch::start_broker_for_pod(
+            state,
+            spec,
+            vsock_path,
+            self.identity(),
+            id,
+            capability,
+            jail_owner,
+        )
+        .await?;
+        Ok(PreparedPod {
+            identity: self,
+            broker,
+        })
     }
 
     /// Transfer cleanup responsibility to the running pod, by value (C-4).
     pub(crate) fn into_parts(mut self) -> IdentityParts {
         self.0.take().expect("prepared identity is consumed once")
+    }
+}
+
+/// Private construction keeps broker readiness on the only VMM spawn path.
+#[must_use]
+pub(crate) struct PreparedPod {
+    identity: PreparedIdentity,
+    broker: Option<broker_transport::BrokerListener>,
+}
+
+impl PreparedPod {
+    pub(crate) fn spawn(
+        &self,
+        command: &mut tokio::process::Command,
+    ) -> std::io::Result<tokio::process::Child> {
+        // Any later launch error must drop a killing child, not detach a VMM.
+        command.kill_on_drop(true);
+        boot_trace::time_sync("firecracker.spawn", || command.spawn())
+    }
+
+    pub(crate) fn into_parts(self) -> (IdentityParts, Option<broker_transport::BrokerListener>) {
+        (self.identity.into_parts(), self.broker)
     }
 }
 

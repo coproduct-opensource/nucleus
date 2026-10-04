@@ -2380,25 +2380,40 @@ async fn spawn_firecracker_pod(
         };
         firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
         let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
-        let prepared_identity = match pod_boot_identity::prepare(pod_boot_identity::Inputs {
-            measured,
-            state,
-            pod_dir,
-            spec,
-            image,
-            id,
-            grant: &identity_grant,
-            vsock_path: &vsock_path,
-            jail_owner: jail_layout
-                .as_ref()
-                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-            task_token: task_token.clone(),
-            pod_certificate: pod_certificate.clone(),
-            broker_serve,
-            // Served once over FETCH_AUDIT_CREDENTIALS: the credential minted for this pod's
-            // resolved sink, never the node's own (#3160).
-            audit_creds: audit.map(audit_sink::credentials::AuditGrant::served_credentials),
-        })
+        let prepared_pod = match async {
+            let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
+                measured,
+                state,
+                pod_dir,
+                spec,
+                image,
+                id,
+                grant: &identity_grant,
+                vsock_path: &vsock_path,
+                jail_owner: jail_layout
+                    .as_ref()
+                    .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                task_token: task_token.clone(),
+                pod_certificate: pod_certificate.clone(),
+                broker_serve,
+                // Served once over FETCH_AUDIT_CREDENTIALS: the credential minted for this pod's
+                // resolved sink, never the node's own (#3160).
+                audit_creds: audit.map(audit_sink::credentials::AuditGrant::served_credentials),
+            })
+            .await?;
+            identity
+                .with_broker(
+                    state,
+                    spec,
+                    &vsock_path,
+                    id,
+                    broker_verify,
+                    jail_layout
+                        .as_ref()
+                        .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                )
+                .await
+        }
         .await
         {
             Ok(ready) => ready,
@@ -2415,7 +2430,7 @@ async fn spawn_firecracker_pod(
             }
         };
         command.stdout(log_stdout).stderr(log_stderr);
-        let mut child = match prepared_identity.spawn(&mut command) {
+        let mut child = match prepared_pod.spawn(&mut command) {
             Ok(child) => child,
             Err(err) => {
                 cleanup_net_resources(
@@ -2732,20 +2747,6 @@ async fn spawn_firecracker_pod(
             None
         };
 
-        let broker = broker_launch::start_broker_for_pod(
-            state,
-            spec,
-            &vsock_path,
-            prepared_identity.identity(),
-            id,
-            broker_verify,
-            // The SAME expression the workload API bridge uses. That socket was chowned and this
-            // one was not, which is why no guest could have reached the broker under the jailer.
-            jail_layout
-                .as_ref()
-                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-        )
-        .await?;
         let decide = host_decide::start_for_pod(
             state,
             id,
@@ -2757,12 +2758,13 @@ async fn spawn_firecracker_pod(
         )
         .await;
 
+        let (identity_parts, broker) = prepared_pod.into_parts();
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
             manager: identity_manager,
             registry_key: identity_registry_key,
             bridge: workload_api_bridge,
-        } = prepared_identity.into_parts();
+        } = identity_parts;
 
         let handle = FirecrackerPod {
             pod_dir: pod_dir.to_path_buf(),

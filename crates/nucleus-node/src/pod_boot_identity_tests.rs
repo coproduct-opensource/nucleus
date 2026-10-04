@@ -76,6 +76,22 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
         .unwrap();
     assert!(response.contains("host-spec-before-vmm"), "{response}");
     assert!(manager.get_attestation(&id.to_string()).await.is_some());
+    let spec = serde_json::from_value(serde_json::json!({
+        "apiVersion": "nucleus/v1", "kind": "Pod",
+        "metadata": {"name": "spawn-control"}, "spec": {},
+    }))
+    .unwrap();
+    let ready = ready
+        .with_broker(
+            &st,
+            &spec,
+            &socket,
+            id,
+            crate::broker_launch::BrokerCapability::mint(id).1,
+            None,
+        )
+        .await
+        .unwrap();
     // A failure at the actual spawn call must clean both serving and registry.
     let mut command = tokio::process::Command::new(dir.path().join("missing-vmm"));
     assert!(ready.spawn(&mut command).is_err());
@@ -88,6 +104,103 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
     .await
     .unwrap();
     assert!(!manager.unregister_pod(&id.to_string()).await);
+}
+
+#[tokio::test]
+async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let mut st = state(&dir);
+    st.broker_enforcing = true;
+    let manager =
+        crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
+            .unwrap();
+    st.identity_manager = Some(manager.clone());
+    let id = uuid::Uuid::new_v4();
+    let socket = dir.path().join("vsock");
+    let ready = prepare_for_test(&st, dir.path(), id, &socket)
+        .await
+        .unwrap();
+    let spec = serde_json::from_value(serde_json::json!({
+        "apiVersion": "nucleus/v1", "kind": "Pod",
+        "metadata": {"name": "enforcing-refusal"},
+        "spec": {"vsock": {"guest_cid": 3, "port": 5005}},
+    }))
+    .unwrap();
+    let result = ready
+        .with_broker(
+            &st,
+            &spec,
+            &socket,
+            id,
+            crate::broker_launch::BrokerCapability::mint(id).1,
+            None,
+        )
+        .await;
+    assert!(
+        matches!(result, Err(crate::ApiError::Driver(ref e)) if e.contains("bakes the pod spec"))
+    );
+    let api = dir.path().join(format!("vsock_{}", st.identity_vsock_port));
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while api.exists() || manager.get_attestation(&id.to_string()).await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!manager.unregister_pod(&id.to_string()).await);
+}
+
+#[tokio::test]
+async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let st = state(&dir);
+    let id = uuid::Uuid::new_v4();
+    let socket = dir.path().join("vsock");
+    let identity = prepare_for_test(&st, dir.path(), id, &socket)
+        .await
+        .unwrap();
+    let spec = serde_json::from_value(serde_json::json!({
+        "apiVersion": "nucleus/v1", "kind": "Pod",
+        "metadata": {"name": "child-cleanup"}, "spec": {},
+    }))
+    .unwrap();
+    let ready = identity
+        .with_broker(
+            &st,
+            &spec,
+            &socket,
+            id,
+            crate::broker_launch::BrokerCapability::mint(id).1,
+            None,
+        )
+        .await
+        .unwrap();
+    let mut command = tokio::process::Command::new("/bin/sleep");
+    command.arg("60");
+    let child = ready.spawn(&mut command).unwrap();
+    let pid = child.id().unwrap().to_string();
+    let alive = |pid: &str| {
+        std::process::Command::new("/bin/kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(alive(&pid), "control: child really started");
+    drop(child);
+    let stopped = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while alive(&pid) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if stopped.is_err() {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-KILL", &pid])
+            .status();
+    }
+    assert!(stopped.is_ok(), "failed launch left child {pid} running");
 }
 
 /// Ask a prepared pod's workload API one line, as guest-init does, and return the reply.
@@ -143,8 +256,14 @@ async fn the_ambient_key_is_never_served_to_a_guest() {
         );
         if minted {
             // Non-vacuity: the reply is a credential, and it is the minted one.
-            assert!(reply.contains(fake::MINTED_KEY_ID), "{minted}: no minted key served");
-            assert!(reply.contains(fake::MINTED_SECRET), "{minted}: no minted secret served");
+            assert!(
+                reply.contains(fake::MINTED_KEY_ID),
+                "{minted}: no minted key served"
+            );
+            assert!(
+                reply.contains(fake::MINTED_SECRET),
+                "{minted}: no minted secret served"
+            );
         } else {
             assert!(
                 reply.contains("no audit credentials provisioned"),

@@ -521,7 +521,7 @@ fn the_workload_api_bridge_starts_before_the_health_check() {
         .find("pod_boot_identity::prepare(")
         .expect("the bridge start site");
     let spawn = src
-        .find("prepared_identity.spawn(&mut command)")
+        .find("prepared_pod.spawn(&mut command)")
         .expect("guarded VMM spawn");
     assert!(
         bridge < spawn,

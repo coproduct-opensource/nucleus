@@ -633,3 +633,65 @@ staged-file rewind makes the resume regression fail at runtime; restored code
 passes. Node/proxy Linux ARM64 musl builds, strict Clippy for all three changed
 crates, and all four prepush gates pass. Broker clients opting into this pause
 must keep the upload half open after END; EOF is cancellation.
+
+### First live branch validation: enforcing launch is not wired (2026-10-04)
+
+Measured against `59baa46ac` on the local M5 Pro, Lima VZ/aarch64, Ubuntu
+6.8.0-142, and Firecracker/jailer 1.17.0. Both `/dev/kvm` and
+`/dev/vhost-vsock` exist. An isolated node at port 18080 used its own state and
+CA, a copy of the installed kernel/rootfs, and this checkout's ARM64 musl node,
+guest-init, proxy, and four probe binaries. Its mTLS health answered successfully.
+This was a manually assembled validation image, not a fresh-install proof.
+
+The guest booted, fetched its SPIFFE identity and host spec over vsock, and
+reported `NUCLEUS_EGRESS_PROBE: PASS`. Pod creation then refused
+`--broker-enforcing`: `start_broker_for_pod` still calls
+`check_enforcement_is_honest(rollout, false)`. Host spec delivery exists, but the
+credential split has no launch call site, and guest-init prefers a baked spec
+when one exists. The local broker tests therefore do not establish an available
+enforcing Firecracker workflow. Do not remove this refusal without establishing
+credential-free host spec delivery and guest selection of that spec.
+
+The refusal occurs after VMM spawn and drift-monitor creation. The rejected pod
+`ae30ebed-b12e-45e7-bfbc-2fd70ca4c533` left Firecracker PID 1988 running, even
+after the isolated node service stopped. This is a confirmed launch-error cleanup
+gap; validation terminated that exact process. Broker readiness/refusal must
+precede guest execution, with owned cleanup through every subsequent failure.
+
+Two validation setup errors were resolved without disabling gates: long jail
+paths exceeded Unix socket limits (use `/srv/nbv` for this isolated setup), and
+the jailer needed an absolute Firecracker executable path. The latter surfaced
+misleadingly as a seccomp-mode failure because verification inspected the exited
+launcher. The old installed rootfs also lacked required egress/podlist probes;
+adding current probe binaries allowed boot checks to reach the enforcing refusal.
+
+The next P0 milestone is production launch wiring and rollback, followed by
+live approved/denied broker effects and the two complete harness journeys.
+`nucleus run` still selects a single external harness in `constants::AGENT_CLI_BIN`;
+it is not evidence of the required vendor-neutral two-harness workflow.
+
+### Broker readiness before guest execution (2026-10-04)
+
+The observed launch leak is fixed by moving broker preparation before the VMM
+spawn. A private `PreparedPod` can only be constructed after identity preparation
+and broker admission/binding; its spawn method marks the child to terminate on
+drop. Failed preparation drops identity services and uses the existing network
+and jail rollback. Successful preparation transfers the broker to the running
+pod by value. Enforcing mode still refuses until credential-free host spec
+delivery is connected; this change does not remove that safeguard.
+
+Live reproduction on the same local VM now refuses before any guest console
+output, with no remaining Firecracker process, network namespace, or jail. The
+positive control, pod `41ea9962-d560-4b00-900b-da5eafe483d5`, successfully booted
+with broker listen mode, then cancelled through the mTLS API; its VMM and broker
+socket disappeared. No confinement checks were disabled.
+
+Local regressions exercise pre-spawn refusal and identity cleanup, failed spawn,
+and an actual child process dropped during launch. Disabling child cleanup makes
+the latter fail at runtime by leaving its process alive; restored code passes.
+The full node run passed 843 unit tests, with one existing ignored case and one
+source-order test failing on the renamed preparation variable; that test passes
+after updating its reference. All three integration tests, the final Linux ARM64
+musl build, strict Clippy, and all four prepush gates pass. The final Linux binary
+was also rechecked against the live enforcing refusal with no VMM or jail left
+behind. Credential-free spec delivery and complete agent journeys remain open.
