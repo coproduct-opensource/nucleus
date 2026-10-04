@@ -82,6 +82,7 @@ sudo -b env RUST_LOG="${RUST_LOG:-info}" \
     NUCLEUS_FIRECRACKER_NETNS=false \
     NUCLEUS_FIRECRACKER_JAILER=false \
     NUCLEUS_FIRECRACKER_API_BOOT="${NUCLEUS_FIRECRACKER_API_BOOT:-false}" \
+    NUCLEUS_NODE_ARTIFACTS_ROOT="$FC_DIR" \
     "$NODE_BIN" \
     --listen "$NODE_ADDR" \
     --state-dir "$STATE_DIR" \
@@ -97,7 +98,7 @@ cat > "$FC_DIR/harness-pod.json" <<JSON
  "metadata":{"name":"boot-harness"},
  "spec":{"work_dir":"/work","timeout_seconds":120,
    "policy":{"type":"profile","name":"codegen"},
-   "image":{"kernel_path":"$KERNEL","rootfs_path":"$ROOTFS","read_only":false},
+   "image":{"kernel_path":"$KERNEL","rootfs_path":"$ROOTFS","read_only":true},
    "vsock":{"guest_cid":3,"port":5005}}}
 JSON
 

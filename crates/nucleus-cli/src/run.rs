@@ -4,7 +4,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_client::sign_http_headers;
 use nucleus_spec::{
-    CredentialsSpec, ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, VsockSpec,
+    CredentialsSpec, ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, RootfsSource,
+    VsockSpec,
 };
 use portcullis::{CapabilityLevel, PermissionLattice};
 use rust_decimal::Decimal;
@@ -127,6 +128,7 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
 /// By default, requires a running nucleus-node with Firecracker. Use `--local`
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct RunArgs {
     /// Task prompt (use - for stdin). Not needed with --goal or --grant.
     #[arg(required_unless_present_any = ["goal", "grant"])]
@@ -288,7 +290,8 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_FIRECRACKER_VSOCK_PORT", default_value_t = 5000)]
     pub vsock_port: u32,
 
-    /// Mount rootfs read-only (recommended).
+    /// Mount rootfs read-only. The node refuses `false` at create (#3132): the
+    /// rootfs is its shared artifact, and writable storage is `/work`.
     #[arg(long, env = "NUCLEUS_FIRECRACKER_READ_ONLY", default_value_t = true)]
     pub rootfs_read_only: bool,
 
@@ -567,6 +570,22 @@ async fn run_local(
     fs::create_dir_all(&tmp_dir)?;
     let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
 
+    // The session task token, from the policy the proxy's spec will carry and,
+    // when the proxy gets a pod certificate, bound to that certificate's
+    // fingerprint -- the proxy refuses a token naming another authority.
+    // Without it the proxy starts `Missing` and InScopeWithTask refuses every
+    // action (see `crate::session_token`).
+    let authority = match &args.pod_cert_b64 {
+        Some(cert) => Some(
+            portcullis::AttenuationToken::from_base64(cert.trim())
+                .map_err(|e| anyhow!("--pod-cert is not a certificate: {e}"))?
+                .fingerprint(),
+        ),
+        None => None,
+    };
+    let task_token =
+        crate::session_token::mint_local(&run_id.to_string(), policy, args.timeout, authority)?;
+
     // Generate per-run auth secrets
     let auth_secret = hex::encode(rand::random::<[u8; 32]>());
     let approval_secret = hex::encode(rand::random::<[u8; 32]>());
@@ -597,8 +616,13 @@ async fn run_local(
         "Spawning local tool-proxy"
     );
 
+    // The bare host tier, declared: this command passes the tool-proxy's
+    // explicit opt-in and says so (owner decision 1, 2026-10-02).
+    crate::host_tier::announce("run --local");
+
     // Spawn tool-proxy as subprocess
     let mut proxy_child = tokio::process::Command::new(&proxy_bin)
+        .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
@@ -612,6 +636,7 @@ async fn run_local(
         .arg("--audit-log")
         .arg(&audit_path)
         .args(pod_cert_args(args))
+        .args(crate::session_token::proxy_args(&task_token))
         .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
@@ -635,8 +660,10 @@ async fn run_local(
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth_secret: Some(&auth_secret),
-            approval_secret: Some(&approval_secret),
+            auth: McpProxyAuth::Hmac {
+                auth_secret: &auth_secret,
+                approval_secret: &approval_secret,
+            },
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: Some(&sandbox_token),
@@ -809,8 +836,9 @@ async fn run_enforced(
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth_secret: None,
-            approval_secret: None,
+            // The node's SignedProxy signs every request it forwards, so the
+            // bridge holds no secret, and says so rather than leaving it out.
+            auth: McpProxyAuth::SignedUpstream,
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: None, // provided by node in enforced mode
@@ -864,7 +892,7 @@ fn build_pod_spec(
         network: None,
         image: Some(ImageSpec {
             kernel_path: PathBuf::from(kernel_path),
-            rootfs_path: PathBuf::from(rootfs_path),
+            rootfs: RootfsSource::Path(PathBuf::from(rootfs_path)),
             boot_args: None,
             read_only: args.rootfs_read_only,
             scratch_path: None,
@@ -951,6 +979,10 @@ async fn create_pod_via_node(
     let mut request = ureq::post(&url)
         .config()
         .timeout_global(Some(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT))
+        // Without this, ureq turns a 4xx into a transport error and discards the
+        // body, so the `>= 400` branch below never ran and the node's own
+        // sentence ("no such policy profile") arrived as "http status: 400".
+        .http_status_as_error(false)
         .build()
         .header("content-type", "application/yaml");
     let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
@@ -981,10 +1013,23 @@ async fn create_pod_via_node(
     }
 }
 
+/// How `nucleus-mcp` authenticates to a TCP tool-proxy. No unauthenticated
+/// arm: the bridge refuses to start against TCP without one of these.
+pub enum McpProxyAuth<'a> {
+    /// The bridge signs with the proxy's shared secret, and approvals with the
+    /// approval secret.
+    Hmac {
+        auth_secret: &'a str,
+        approval_secret: &'a str,
+    },
+    /// A signing proxy (the node's) sits in front of the tool-proxy and signs
+    /// every request the bridge sends through it.
+    SignedUpstream,
+}
+
 pub struct McpEnvConfig<'a> {
     pub proxy_url: &'a str,
-    pub auth_secret: Option<&'a str>,
-    pub approval_secret: Option<&'a str>,
+    pub auth: McpProxyAuth<'a>,
     pub spec_path: &'a Path,
     pub kernel_trace: Option<&'a Path>,
     pub sandbox_token: Option<&'a str>,
@@ -1017,14 +1062,26 @@ pub fn write_mcp_config(
         "NUCLEUS_MCP_PROXY_URL".to_string(),
         env_cfg.proxy_url.to_string(),
     );
-    if let Some(secret) = env_cfg.auth_secret {
-        env.insert("NUCLEUS_MCP_AUTH_SECRET".to_string(), secret.to_string());
-    }
-    if let Some(secret) = env_cfg.approval_secret {
-        env.insert(
-            "NUCLEUS_MCP_APPROVAL_SECRET".to_string(),
-            secret.to_string(),
-        );
+    match env_cfg.auth {
+        McpProxyAuth::Hmac {
+            auth_secret,
+            approval_secret,
+        } => {
+            env.insert(
+                "NUCLEUS_MCP_AUTH_SECRET".to_string(),
+                auth_secret.to_string(),
+            );
+            env.insert(
+                "NUCLEUS_MCP_APPROVAL_SECRET".to_string(),
+                approval_secret.to_string(),
+            );
+        }
+        McpProxyAuth::SignedUpstream => {
+            env.insert(
+                "NUCLEUS_MCP_SIGNED_UPSTREAM".to_string(),
+                "true".to_string(),
+            );
+        }
     }
     env.insert(
         "NUCLEUS_MCP_SPEC".to_string(),
@@ -1363,12 +1420,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n")
             .into_bytes();
-        let identity = reqwest::Identity::from_pem(&identity_pem).unwrap();
-        let roots = reqwest::Certificate::from_pem_bundle(&bundle_pem).unwrap();
+        let tls =
+            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
         let client = reqwest::Client::builder()
-            .identity(identity)
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .unwrap();
 

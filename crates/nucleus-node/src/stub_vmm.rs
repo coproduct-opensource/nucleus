@@ -133,7 +133,7 @@ pub(crate) fn sample_config() -> crate::firecracker_config::FirecrackerConfig {
         &spec,
         std::path::Path::new("/tmp/pod.log"),
         std::path::Path::new("/tmp/vsock.sock"),
-        &image,
+        &crate::rootfs_source::HostImage::resolve(&image).expect("a path rootfs resolves"),
         None,
         "",
         None,

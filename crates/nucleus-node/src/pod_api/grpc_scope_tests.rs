@@ -4,7 +4,7 @@
 //! `handler_tests` fixture), with the interceptor's `AuthContext` placed in
 //! the request extensions the way `serve_grpc` places it.
 
-use super::handler_tests::{register, state};
+use super::handler_tests::{register, register_labelled, state};
 use super::*;
 use crate::proto;
 use crate::proto::node_service_server::NodeService;
@@ -232,5 +232,163 @@ async fn http_resolves_a_tokenless_pod_peer_to_its_own_pod() {
     let ctx = crate::auth::AuthContext::from_spiffe(pod_svid(a));
     let headers = axum::http::HeaderMap::new();
     let got = crate::auth::resolve_http_caller(&st, &ctx, &headers).expect("a pod resolves");
-    assert_eq!(got, Some(a));
+    assert_eq!(got, crate::auth::CallerScope::Pod(a));
+}
+
+/// A CI/CD peer is scoped to the pods it created — those the node stamped with
+/// its identity — and nothing else: it lists them alone, and every by-id
+/// operation on any other pod is NOT_FOUND, with that pod untouched. It used to
+/// resolve to the operator's unscoped view.
+#[tokio::test]
+async fn a_ci_peer_manages_only_the_pods_stamped_with_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+    let label = crate::auth::CI_PRINCIPAL_LABEL;
+    let mine = register_labelled(&st, None, &[(label, ci)]).await;
+    let theirs = register_labelled(
+        &st,
+        None,
+        &[(label, "spiffe://nucleus.local/ns/github/sa/org-other")],
+    )
+    .await;
+    let unstamped = register(&st, None).await;
+
+    assert_eq!(
+        listed(&st, ci, None).await,
+        vec![mine.to_string()],
+        "a CI peer lists only its own pods"
+    );
+    let s = svc(&st);
+    for other in [theirs, unstamped] {
+        let get = s.get_pod(req(
+            proto::GetPodRequest {
+                pod_id: other.to_string(),
+            },
+            Some(ci),
+            None,
+        ));
+        assert_eq!(code(get.await), Some(tonic::Code::NotFound), "get {other}");
+        let cancel = s.cancel_pod(req(
+            proto::PodId {
+                id: other.to_string(),
+            },
+            Some(ci),
+            None,
+        ));
+        assert_eq!(
+            code(cancel.await),
+            Some(tonic::Code::NotFound),
+            "cancel {other}"
+        );
+        assert!(running(&st, other).await, "{other} is untouched");
+    }
+    let own = s.cancel_pod(req(
+        proto::PodId {
+            id: mine.to_string(),
+        },
+        Some(ci),
+        None,
+    ));
+    assert!(own.await.is_ok(), "a CI peer cancels its own pod");
+    cancel_all(&st).await;
+}
+
+/// The stamp is the node's: a create whose spec sets it is refused as an
+/// invalid spec before anything is admitted, whoever sends it. Drives the real
+/// HTTP handler, so it holds the line in `create_pod_internal` that stamps.
+#[tokio::test]
+async fn a_create_that_sets_the_ci_principal_label_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let body = format!(
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{{"labels":{{"{}":"spiffe://nucleus.local/ns/github/sa/org-other"}}}},"spec":{{}}}}"#,
+        crate::auth::CI_PRINCIPAL_LABEL
+    );
+    let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+    let r = crate::create_pod(
+        axum::extract::State(st.clone()),
+        axum::Extension(crate::auth::CallerScope::CiPrincipal(ci.to_string())),
+        axum::Extension(crate::auth::AuthContext::from_spiffe(ci.to_string())),
+        axum::http::HeaderMap::new(),
+        axum::body::Bytes::from(body),
+    )
+    .await;
+    match r {
+        Err(crate::ApiError::InvalidSpec(msg)) => assert!(
+            msg.contains(crate::auth::CI_PRINCIPAL_LABEL),
+            "the refusal names the label: {msg}"
+        ),
+        Err(e) => panic!("refused for the wrong reason: {e}"),
+        Ok(_) => panic!("a spec that sets the node's stamp was admitted"),
+    }
+    assert!(st.pods.lock().await.is_empty(), "and nothing was created");
+}
+
+/// A lockdown is attributed to the peer the interceptor verified. The request's
+/// own `operator_id` is the caller's claim: it may appear, quoted and labelled,
+/// but never as the operator — not in the command broadcast to proxies and not
+/// in the pod's lifecycle audit. Read `req.operator_id` in the handler again and
+/// both assertions go red.
+#[tokio::test]
+async fn a_lockdown_is_attributed_to_the_verified_peer_not_the_claimed_operator() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let target = register(&st, None).await;
+    let peer = "spiffe://nucleus.local/ns/default/sa/orchestrator";
+    let mut broadcast = st.lockdown_tx.subscribe();
+
+    svc(&st)
+        .lockdown(req(
+            proto::LockdownRequest {
+                scope: Some(proto::lockdown_request::Scope::PodId(target.to_string())),
+                reason: "attribution test".to_string(),
+                operator_id: "someone-else".to_string(),
+                restore: false,
+            },
+            Some(peer),
+            None,
+        ))
+        .await
+        .expect("an orchestrator may issue a lockdown");
+
+    let cmd = broadcast.try_recv().expect("the command was broadcast");
+    assert!(
+        cmd.operator_id.starts_with(peer),
+        "the broadcast names the verified peer, got {:?}",
+        cmd.operator_id
+    );
+    let audit = std::fs::read_to_string(st.state_dir.join("lifecycle.log")).expect("audited");
+    assert!(
+        audit.contains(&format!("operator={peer}")),
+        "the lifecycle audit names the verified peer: {audit}"
+    );
+    assert!(
+        !audit.contains("operator=someone-else") && !audit.contains("operator=\\\"someone-else"),
+        "and never the claimed name as the operator: {audit}"
+    );
+    cancel_all(&st).await;
+}
+
+/// Without a verified peer there is nobody to attribute a lockdown to, so it is
+/// refused before anything is broadcast.
+#[tokio::test]
+async fn a_lockdown_without_a_verified_peer_is_refused() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let mut broadcast = st.lockdown_tx.subscribe();
+    let r = svc(&st)
+        .lockdown(req(
+            proto::LockdownRequest {
+                scope: None,
+                reason: String::new(),
+                operator_id: "someone".to_string(),
+                restore: false,
+            },
+            None,
+            None,
+        ))
+        .await;
+    assert!(r.is_err(), "no peer, no lockdown");
+    assert!(broadcast.try_recv().is_err(), "and nothing was broadcast");
 }

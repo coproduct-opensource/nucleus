@@ -1,0 +1,16 @@
+*filter
+:INPUT DROP
+:FORWARD DROP
+:OUTPUT DROP
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A OUTPUT -o lo -j ACCEPT
+-A OUTPUT -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+-A OUTPUT -d 1.0.0.1/32 -p tcp -m tcp --dport 443 -j ACCEPT
+-A OUTPUT -d 1.0.0.1/32 -p udp -m udp --dport 443 -j ACCEPT
+-A OUTPUT -d 10.20.0.0/16 -j ACCEPT
+-A OUTPUT -d 9.9.9.9/32 -p tcp -m tcp --dport 53 -j ACCEPT
+-A OUTPUT -d 9.9.9.9/32 -p udp -m udp --dport 53 -j ACCEPT
+-A OUTPUT -d 169.254.169.254/32 -j DROP
+-A OUTPUT -d 8.8.8.8/32 -j DROP
+COMMIT

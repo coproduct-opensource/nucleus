@@ -29,6 +29,11 @@ use crate::{ApiError, NodeState};
 /// The socket path INSIDE the container: `/data/pod` is the pod directory's
 /// mount point, so the host sees the same socket at `<pod_dir>/proxy.sock`.
 pub(crate) const CONTAINER_PROXY_SOCKET: &str = "/data/pod/proxy.sock";
+
+/// The workload door INSIDE the container (#3031 option B): the Unix socket
+/// on which the proxy serves its workload, admitting the workload's uid by
+/// `SO_PEERCRED`. Bound by the proxy only when the pod has a workload.
+pub(crate) const CONTAINER_WORKLOAD_DOOR: &str = "/data/pod/workload.sock";
 const SOCKET_FILE: &str = "proxy.sock";
 
 /// The proxy-mode environment entries that depend on the transport.
@@ -38,15 +43,19 @@ const SOCKET_FILE: &str = "proxy.sock";
 /// path and NO secret: the proxy accepts an empty key on a host-verified
 /// transport, and the whole point is that nothing in the container holds one.
 pub(crate) fn proxy_env(state: &NodeState) -> Vec<String> {
+    // The workload door goes in the pod directory on both transports: the
+    // guest default under /run is not the container's to assume.
+    let door = format!("NUCLEUS_TOOL_PROXY_WORKLOAD_DOOR={CONTAINER_WORKLOAD_DOOR}");
     if state.container_proxy_unix {
-        vec![format!(
-            "NUCLEUS_TOOL_PROXY_LISTEN_UNIX={CONTAINER_PROXY_SOCKET}"
-        )]
+        vec![
+            format!("NUCLEUS_TOOL_PROXY_LISTEN_UNIX={CONTAINER_PROXY_SOCKET}"),
+            door,
+        ]
     } else {
-        vec![format!(
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET={}",
-            state.proxy_auth_secret
-        )]
+        vec![
+            format!("NUCLEUS_TOOL_PROXY_AUTH_SECRET={}", state.proxy_auth_secret),
+            door,
+        ]
     }
 }
 

@@ -185,6 +185,19 @@ operand; here, an operand with no predicate.
 Rust cannot force relevance the way a linear type can. What it can do is E-1.
 *Enforcement: dylint, via E-1.*
 
+**B-6 — A TLS client that does not check the hostname checks the identity instead.**
+A node's certificate is an X.509-SVID: one SPIFFE URI SAN, no DNS or IP SAN. Hostname
+verification cannot identify it, and switching it off leaves chain validation, which
+says only "certified by this CA" — and the node's CA certifies pods as well as the
+node. `nucleus_identity::node_tls` builds the one client configuration that keeps the
+chain check, drops the name comparison, and requires the leaf to name exactly
+`Identity::node(<trust domain>)`. Every node-facing client uses it, and the builder
+methods that switch verification off are not callable.
+*Enforcement: clippy — `clippy.toml` disallows `danger_accept_invalid_hostnames` and
+`danger_accept_invalid_certs` (both spellings, async and blocking builders). Measured
+2026-09-29: 0 occurrences once the node-facing clients moved to `node_tls`. Probed red
+in `nucleus-perf` (root config) and `nucleus-tool-proxy` (its own config).*
+
 ---
 
 ### Family C — Evidence and witnesses
@@ -572,6 +585,7 @@ is added only when the tree is already clean of it. Measured 2026-09-11:
 | `std::vec::Vec::leak` | **0** | yes |
 | `std::env::set_var` | 13, all `#[cfg(test)]` | yes — 13 `#[expect]` |
 | `std::env::remove_var` | 12, all `#[cfg(test)]` | yes — 12 `#[expect]` |
+| `reqwest` `danger_accept_invalid_{hostnames,certs}` | **0** (2026-09-29) | yes — B-6 |
 | `unwrap_or_default` | 218 | no — dylint, scoped |
 | `unwrap_or` | 584 | no — dylint, scoped |
 | `#[derive(Default)]` | 177 | no — dylint, scoped |

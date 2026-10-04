@@ -19,7 +19,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::profiles;
-use crate::run::{McpEnvConfig, build_mcp_allowed_tools, write_mcp_config};
+use crate::run::{McpEnvConfig, McpProxyAuth, build_mcp_allowed_tools, write_mcp_config};
 
 /// Launch an interactive agent session with nucleus as the security context.
 ///
@@ -27,6 +27,7 @@ use crate::run::{McpEnvConfig, build_mcp_allowed_tools, write_mcp_config};
 /// flow through the nucleus permission lattice. The tool-proxy enforces
 /// capabilities, budget, command restrictions, and exposure tracking.
 #[derive(Args, Debug)]
+#[command(mut_args = |a| a.hide_env_values(true))]
 pub struct ShellArgs {
     /// Working directory (default: current directory)
     #[arg(short = 'd', long, default_value = ".")]
@@ -110,6 +111,12 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
     let tmp_dir = std::env::temp_dir().join(format!("nucleus-shell-{run_id}"));
     fs::create_dir_all(&tmp_dir)?;
 
+    // The session task token, from the policy the proxy's spec will carry.
+    // Without it the proxy starts `Missing` and InScopeWithTask refuses every
+    // action (see `crate::session_token`).
+    let task_token =
+        crate::session_token::mint_local(&run_id.to_string(), &policy, args.timeout, None)?;
+
     // Generate per-session auth secrets
     let auth_secret = hex::encode(rand::random::<[u8; 32]>());
     let approval_secret = hex::encode(rand::random::<[u8; 32]>());
@@ -141,8 +148,13 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         "Starting nucleus shell"
     );
 
+    // The bare host tier, declared: this command passes the tool-proxy's
+    // explicit opt-in and says so (owner decision 1, 2026-10-02).
+    crate::host_tier::announce("shell");
+
     // Spawn tool-proxy as subprocess
     let mut proxy_child = tokio::process::Command::new(&proxy_bin)
+        .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
         .arg("--spec")
         .arg(&spec_path)
         .arg("--listen")
@@ -155,6 +167,7 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         .arg(&approval_secret)
         .arg("--audit-log")
         .arg(&audit_path)
+        .args(crate::session_token::proxy_args(&task_token))
         .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
@@ -178,8 +191,10 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth_secret: Some(&auth_secret),
-            approval_secret: Some(&approval_secret),
+            auth: McpProxyAuth::Hmac {
+                auth_secret: &auth_secret,
+                approval_secret: &approval_secret,
+            },
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: Some(&sandbox_token),

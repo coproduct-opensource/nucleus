@@ -25,9 +25,11 @@
 //! # What this does not reach
 //!
 //! Pods are registered through the fixture, not `create_pod_internal`. The
-//! parent a create would record goes through the real `resolve_parent_pod_id`,
+//! parent a create would record goes through the real `parent_for_create`,
 //! but `PodAuthority` admission and the driver spawn are out of the walk. The
 //! cascade-cancel in the reaper loop is not run.
+//!
+//! [`chain_walk`](super::chain_walk) runs all three.
 
 use std::collections::BTreeSet;
 
@@ -40,6 +42,16 @@ use crate::PodState;
 
 use super::handler_tests::{register, state};
 use super::*;
+
+/// A model's caller (`None` = the operator) as a scope. Lives with the walks
+/// that use it, not on `CallerScope`: in production "no pod" is never read as
+/// "node-wide".
+fn scope_of(caller: Option<Uuid>) -> crate::auth::CallerScope {
+    caller.map_or(
+        crate::auth::CallerScope::NodeWide,
+        crate::auth::CallerScope::Pod,
+    )
+}
 
 /// Who issues a step. A pod caller is an index into the pods created so far,
 /// resolved modulo their count when the step runs.
@@ -207,7 +219,10 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                     let caller_id = model.caller_id(caller);
                     let header_text =
                         header.map(|h| model.pods[h % model.pods.len()].id.to_string());
-                    let parent = resolve_parent_pod_id(caller_id, header_text.as_deref());
+                    let parent =
+                        parent_for_create(&st, &scope_of(caller_id), header_text.as_deref())
+                            .await
+                            .map_err(|e| at(format!("parent refused: {e}")))?;
                     let want = match caller_id {
                         Some(c) => Some(c),
                         None => header_text.as_deref().and_then(|h| Uuid::parse_str(h).ok()),
@@ -233,7 +248,7 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 }
                 Op::List { caller } => {
                     let caller_id = model.caller_id(caller);
-                    let infos = collect_pod_infos(&st, caller_id).await;
+                    let infos = collect_pod_infos(&st, &scope_of(caller_id)).await;
                     let got: BTreeSet<Uuid> = infos.iter().map(|i| i.id).collect();
                     let want = model.visible_to(caller_id);
                     if got != want {
@@ -261,22 +276,31 @@ async fn walk(ops: &[Op]) -> Result<Stats, String> {
                 Op::Get { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
-                    let got = get_pod_for_caller(&st, id, caller_id).await;
+                    let got = get_pod_for_caller(&st, id, &scope_of(caller_id)).await;
                     check_scoped(&model, caller_id, id, got.map(|p| p.id), &mut stats)
                         .map_err(at)?;
                 }
                 Op::Logs { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
-                    let got = pod_logs(State(st.clone()), Extension(caller_id), AxumPath(id)).await;
+                    let got = pod_logs(
+                        State(st.clone()),
+                        Extension(scope_of(caller_id)),
+                        AxumPath(id),
+                    )
+                    .await;
                     check_scoped(&model, caller_id, id, got.map(|_| id), &mut stats).map_err(at)?;
                 }
                 Op::Cancel { caller, target } => {
                     let caller_id = model.caller_id(caller);
                     let id = model.target_id(target, unknown);
                     let already = model.pod(id).is_some_and(|p| p.cancelled);
-                    let got =
-                        cancel_pod(State(st.clone()), Extension(caller_id), AxumPath(id)).await;
+                    let got = cancel_pod(
+                        State(st.clone()),
+                        Extension(scope_of(caller_id)),
+                        AxumPath(id),
+                    )
+                    .await;
                     let allowed = model.may_manage(caller_id, id);
                     check_scoped(&model, caller_id, id, got.map(|_| id), &mut stats).map_err(at)?;
                     if allowed {

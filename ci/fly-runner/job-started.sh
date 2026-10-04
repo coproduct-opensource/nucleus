@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ACTIONS_RUNNER_HOOK_JOB_STARTED — runs as a synchronous step at the start of
-# every job on the self-hosted scale set (k8s/ci-runner/values.yaml mounts it
+# every job on the self-hosted scale set (deploy/k8s/ci-runner/values.yaml mounts it
 # from the `runner-hooks` ConfigMap). Output lands in the job log.
 #
 # Instrumentation, not policy: it records what the pod looks like so a slow

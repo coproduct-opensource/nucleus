@@ -76,6 +76,7 @@ mod artifact;
 mod verdict_sink;
 mod web_fetch_policy;
 mod workload;
+mod workload_door;
 mod workload_supervisor;
 
 use approval::{
@@ -88,8 +89,18 @@ use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
 use policy::PolicyEngine;
 
+/// `--unsandboxed` as the typed opt-in it is (ADR 0007 A): the flag's
+/// presence is the only thing that maps to `Explicit`.
+fn unsandboxed_opt_in(given: bool) -> nucleus::UnsandboxedOptIn {
+    if given {
+        nucleus::UnsandboxedOptIn::Explicit
+    } else {
+        nucleus::UnsandboxedOptIn::Absent
+    }
+}
+
 #[derive(Parser, Debug)]
-#[command(name = "nucleus-tool-proxy")]
+#[command(name = "nucleus-tool-proxy", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Tool proxy server running inside nucleus pods")]
 struct Args {
     /// Pod spec YAML path.
@@ -109,6 +120,17 @@ struct Args {
     /// always admitted; an out-of-namespace peer is the host).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_PEER_UIDS", value_delimiter = ',')]
     peer_uids: Vec<u32>,
+    /// Where to bind the workload door: the Unix socket on which this proxy
+    /// serves its workload's tool calls and egress, and nothing else (#3031
+    /// option B). Bound only when the pod spec has a workload. The default is
+    /// the guest's `guest_layout::WORKLOAD_DOOR`; a proxy outside a guest names
+    /// a directory it can write.
+    #[arg(
+        long,
+        env = "NUCLEUS_TOOL_PROXY_WORKLOAD_DOOR",
+        default_value = nucleus_spec::guest_layout::WORKLOAD_DOOR
+    )]
+    workload_door: PathBuf,
     /// Optional vsock CID override.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_CID")]
     vsock_cid: Option<u32>,
@@ -209,6 +231,25 @@ struct Args {
     /// When enabled, requests must include valid VM attestation.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_ATTESTATION")]
     require_attestation: bool,
+    /// Explicit opt-in to the bare host tier (owner decisions, 2026-10-02):
+    /// on a non-root runtime whose containment is `Unsandboxed`, run `/v1/run`
+    /// children and the pod workload as this process's own uid, where they
+    /// can read every per-pod secret in this process's environment. Without
+    /// it every such child is refused by name. A root runtime drops its
+    /// children regardless, and no other containment is affected.
+    ///
+    /// A flag only, never an env var: ambient configuration is not an
+    /// explicit opt-in. `nucleus run --local`, `nucleus shell` and a node's
+    /// allowed local driver pass it.
+    #[arg(
+        long = "unsandboxed",
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::BoolValueParser::new(),
+            unsandboxed_opt_in
+        )
+    )]
+    unsandboxed: nucleus::UnsandboxedOptIn,
     /// Comma-separated list of allowed kernel hashes (SHA-256, hex).
     /// If empty, any kernel hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_KERNEL_HASHES")]
@@ -505,7 +546,7 @@ pub(crate) struct AppState {
     /// `authority_exchange` is.
     authority_ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
     /// Cryptographic proof that this process is inside a managed sandbox.
-    sandbox_proof: sandbox_proof::SandboxProof,
+    sandbox_proof: Arc<sandbox_proof::SandboxProof>,
     /// Root authority Ed25519 public key for delegation certificate verification.
     cert_root_pubkey: Option<Arc<Vec<u8>>>,
     /// Session exposure guard for exit report (set when MCP server starts).
@@ -714,55 +755,12 @@ pub(crate) fn actor_from_auth(auth: Option<&auth::AuthContext>) -> ActorIdentity
     }
 }
 
-#[derive(Debug, Deserialize)]
-struct ReadRequest {
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct ReadResponse {
-    contents: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct WriteRequest {
-    path: String,
-    contents: String,
-}
-
-#[derive(Debug, Serialize)]
-struct WriteResponse {
-    ok: bool,
-}
-
-/// Run command request using secure array-based format.
-///
-/// The array form prevents shell injection by executing commands directly
-/// without shell interpretation. Each array element is passed as a separate
-/// argument to the process.
-#[derive(Debug, Deserialize)]
-struct RunRequest {
-    /// Command as array, e.g. ["ls", "-la", "/tmp"]
-    args: Vec<String>,
-    /// Optional input to pass to command stdin
-    #[serde(default)]
-    stdin: Option<String>,
-    /// Optional working directory (relative to sandbox)
-    #[serde(default)]
-    directory: Option<String>,
-    /// Optional timeout in seconds (clamped to policy limit)
-    #[serde(default)]
-    #[allow(dead_code)] // Reserved for future timeout implementation
-    timeout_seconds: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-struct RunResponse {
-    status: i32,
-    success: bool,
-    stdout: String,
-    stderr: String,
-}
+// The file and command bodies are `nucleus_client::wire`'s, the single
+// declaration every client serializes: a private copy here drifted from
+// nucleus-mcp's and made every MCP `run` a 422 (2026-09-29).
+use nucleus_client::wire::{
+    ReadRequest, ReadResponse, RunRequest, RunResponse, WriteRequest, WriteResponse,
+};
 
 #[derive(Debug, Deserialize)]
 struct WebFetchRequest {
@@ -1047,6 +1045,10 @@ async fn main() -> Result<(), ApiError> {
     // Refuse to start unless we can cryptographically prove we're in a managed sandbox.
     let sandbox_proof_config = sandbox_proof::SandboxProofConfig {
         identity_cert_path: args.identity_cert.clone().or_else(|| args.tls_cert.clone()),
+        trust_bundle_path: args
+            .identity_trust_bundle
+            .clone()
+            .or_else(|| args.trust_bundle.clone()),
         spire_socket: args
             .spire_socket
             .clone()
@@ -1061,14 +1063,8 @@ async fn main() -> Result<(), ApiError> {
         )
         .await
     {
-        Ok(proof) => {
-            info!(
-                "sandbox proof verified: tier={} label={}",
-                proof.tier(),
-                proof.tier_label()
-            );
-            proof
-        }
+        // `verify_sandbox` logs the tier and the containment it decides.
+        Ok(proof) => proof,
         Err(e) => {
             eprintln!("FATAL: {e}");
             std::process::exit(78); // EX_CONFIG
@@ -1118,7 +1114,18 @@ async fn main() -> Result<(), ApiError> {
         };
     }
 
-    let runtime = pod_mgmt::build_runtime(&spec)?;
+    // Copied out once: the executor's children and the workload are confined
+    // under the same containment, and `sandbox_proof` moves into the state.
+    let containment = sandbox_proof.containment();
+    if args.unsandboxed == nucleus::UnsandboxedOptIn::Explicit {
+        console_line(&format!(
+            "[nucleus-tool-proxy] --unsandboxed: bare host tier opted in (containment {containment:?}, \
+             runtime uid {}). Commands and a workload on this tier run as this process's uid and \
+             can read its secrets; a root runtime still drops them.",
+            nucleus::runtime_uid()
+        ));
+    }
+    let runtime = pod_mgmt::build_runtime(&spec, containment, args.unsandboxed)?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
@@ -1607,7 +1614,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions: clearing_dimensions.clone(),
         authority_exchange,
         authority_ledger,
-        sandbox_proof,
+        sandbox_proof: Arc::new(sandbox_proof),
         cert_root_pubkey: args
             .cert_root_pubkey
             .as_deref()
@@ -1760,6 +1767,10 @@ async fn main() -> Result<(), ApiError> {
     let exit_kernel = state.kernel.clone();
     let exit_grant = spec.metadata.task_grant_id.clone();
 
+    // Built from the same state and the same middleware, before `state` moves
+    // into the main router below. Served only if the pod has a workload.
+    let door_app = workload_door::router(state.clone());
+
     let app = app
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(state, auth_middleware))
@@ -1792,14 +1803,17 @@ async fn main() -> Result<(), ApiError> {
         // THE GUEST PATH: vsock in a microVM, a peer-verified Unix socket in a
         // container (#2446). The proxy serves the host-verified transport and
         // `main` returns right here — everything below this block is host/TCP
-        // only. The workload therefore starts on this path (between bind and
-        // serve, so its proxy URL names a socket that exists); before run 4's
-        // diagnosis it started only below, and an in-guest pod's workload never
-        // ran at all.
+        // only. The workload therefore starts on this path, between bind and
+        // serve; before run 4's diagnosis it started only below, and an
+        // in-guest pod's workload never ran at all. It does not call this
+        // listener (nothing in the guest can connect to it): it is pointed at
+        // its own door, bound inside `start` (`workload::start_if_configured`).
         let _workload = workload_supervisor::start(
             &spec,
-            bound.proxy(),
-            &args.auth_secret,
+            &args.workload_door,
+            door_app,
+            containment,
+            args.unsandboxed,
             completion_writer,
             Some(exit_report::on_workload_exit(
                 exit_audit.clone(),
@@ -1840,8 +1854,10 @@ async fn main() -> Result<(), ApiError> {
     // vsock branch above — this line alone is unreachable in a real guest.
     let _workload = workload_supervisor::start(
         &spec,
-        workload::BoundProxy::Tcp(addr),
-        &args.auth_secret,
+        &args.workload_door,
+        door_app,
+        containment,
+        args.unsandboxed,
         completion_writer,
         Some(exit_report::on_workload_exit(
             exit_audit.clone(),
@@ -1995,7 +2011,6 @@ fn is_allowed_during_lockdown(path: &str) -> bool {
     )
 }
 
-const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 const HEADER_PERMISSION_BID: &str = "x-nucleus-permission-bid";
 
 async fn auth_middleware(
@@ -2026,79 +2041,17 @@ async fn auth_middleware(
         ));
     }
 
-    // Verify attestation if required
-    if state.attestation_verifier.is_required() {
-        // Try to get client certificate from mTLS connection first
-        // Check both direct ClientCertInfo and MtlsConnectInfo
-        let client_cert_der = parts
-            .extensions
-            .get::<MtlsConnectInfo>()
-            .and_then(|info| info.client_cert.as_ref())
-            .or_else(|| parts.extensions.get::<ClientCertInfo>())
-            .map(|cert| cert.der());
-
-        let attestation_result = if let Some(cert_der) = client_cert_der {
-            // mTLS mode: extract attestation from client certificate
-            let spiffe_id = parts
-                .extensions
-                .get::<MtlsConnectInfo>()
-                .and_then(|info| info.client_cert.as_ref())
-                .and_then(|cert| cert.spiffe_id.clone());
-            tracing::info!(
-                spiffe_id = ?spiffe_id,
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_mtls",
-                "verifying attestation from client certificate"
-            );
-            state.attestation_verifier.verify_certificate(cert_der)
-        } else if let Some(att_header) = parts.headers.get(HEADER_ATTESTATION) {
-            // Fallback: attestation passed via header (base64-encoded DER)
-            // This is less secure as headers can be spoofed
-            tracing::warn!(
-                path = %parts.uri.path(),
-                method = %parts.method,
-                event = "attestation_verify_header",
-                "attestation via header (not mTLS) - consider enabling mTLS for production"
-            );
-            let att_value = att_header.to_str().map_err(|_| {
-                ApiError::AttestationFailed("invalid attestation header encoding".to_string())
-            })?;
-            state.attestation_verifier.verify_header(att_value)
-        } else {
-            // No attestation provided
-            attestation::AttestationResult {
-                attestation_present: false,
-                attestation: None,
-                matches_requirements: false,
-                rejection_reason: Some("attestation required but not provided (enable mTLS or send x-nucleus-attestation header)".to_string()),
-            }
-        };
-
-        if !attestation_result.matches_requirements {
-            let reason = attestation_result
-                .rejection_reason
-                .unwrap_or_else(|| "unknown attestation failure".to_string());
-            return Err(ApiError::AttestationFailed(reason));
-        }
-
-        // North Star C9 — enforce the assurance floor on the live path (fail-closed
-        // on absent/invalid/replayed residency evidence). No-op when the floor is
-        // L0Bearer. Logic lives in `AttestationVerifier::enforce_floor` (unit-tested).
-        state
-            .attestation_verifier
-            .enforce_floor(client_cert_der, &attestation_result)
-            .map_err(ApiError::AttestationFailed)?;
-
-        // Log successful attestation verification
-        if let Some(ref info) = attestation_result.attestation {
-            tracing::debug!(
-                kernel_hash = %&info.kernel_hash[..16],
-                rootfs_hash = %&info.rootfs_hash[..16],
-                "attestation verified"
-            );
-        }
-    }
+    // What the transport proved, read once: it decides the attestation
+    // requirement here and the ingress below. Only the workload door's accept
+    // path and route layer produce `DoorPeer`, so a main-listener request can
+    // never be read as the door's, nor the reverse. The requirement and the
+    // assurance floor live in `AttestationVerifier::admit` (unit-tested).
+    let evidence = attestation::TransportEvidence::of(&parts.extensions)
+        .map_err(ApiError::AttestationFailed)?;
+    state
+        .attestation_verifier
+        .admit(&evidence, &parts.headers)
+        .map_err(ApiError::AttestationFailed)?;
 
     // Determine authentication context (unified flow — no early returns).
     // Precedence is decided by `auth::select_auth_tier` alone, which is
@@ -2108,7 +2061,8 @@ async fn auth_middleware(
     // the SPIFFE-before-approval order and so could not catch it. Now there is
     // one.
     let spiffe_id = auth::extract_spiffe_id_from_extensions(&parts.extensions);
-    let tier = auth::select_auth_tier(
+    let tier = auth::tier_of(
+        evidence.ingress(),
         spiffe_id.is_some(),
         parts.uri.path() == APPROVE_PATH,
         state.approval_verifier.is_some(),
@@ -2151,6 +2105,10 @@ async fn auth_middleware(
         // is the point: the HMAC key it replaces was readable by the agent
         // from /proc/cmdline.
         (auth::AuthTier::HostVsock, _) => auth::verify_host_vsock(),
+        // The door's listener admitted this peer by its kernel-reported uid
+        // before the stream reached the router. The workload holds no secret;
+        // being that uid on that socket is the authentication.
+        (auth::AuthTier::WorkloadDoor { uid }, _) => auth::verify_workload_door(uid),
         (auth::AuthTier::Hmac, _) => auth::verify_http(&parts.headers, &bytes, &state.auth)?,
     };
 

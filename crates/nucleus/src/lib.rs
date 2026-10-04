@@ -64,6 +64,7 @@
 mod approval;
 mod budget;
 mod command;
+pub mod consume_guard;
 /// One enforced check that the decision is about the operation being performed.
 /// Was thirty `debug_assert_eq!` copies, which compile out in release.
 mod decision_scope;
@@ -77,6 +78,7 @@ pub use approval::{ApprovalRequest, ApprovalToken, Approver, CallbackApprover, a
 pub use budget::AtomicBudget;
 pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
+pub use hardening::{ChildConfinement, ChildUid, DEFAULT_CHILD_UID, UnsandboxedOptIn, runtime_uid};
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};
 pub use time::MonotonicGuard;

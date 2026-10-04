@@ -190,12 +190,11 @@ impl NodeClient {
     /// `nucleus-sdk::MtlsConfig` already use, so callers can build it the
     /// same way: read cert bytes, push a newline, extend with key bytes.
     /// `trust_bundle_pem` is the node's CA root, used to validate the
-    /// server's cert chain; hostname/SNI verification is skipped (see the
-    /// comment on `tls_certs_only` below) because the node's SVID carries a
-    /// SPIFFE URI SAN, never a DNS or IP SAN — SPIFFE identity, not
-    /// hostname, is this system's trust model, matching every other mTLS
-    /// client in this codebase (`nucleus-cli/src/node.rs`,
-    /// `nucleus-sdk/src/auth.rs`).
+    /// server's cert chain. In place of hostname verification the server's
+    /// certificate must name the node's SPIFFE ID, because the node's SVID
+    /// carries a SPIFFE URI SAN, never a DNS or IP SAN — SPIFFE identity, not
+    /// hostname, is this system's trust model. Every node-facing client
+    /// builds its TLS the same way: `nucleus_identity::node_tls`.
     pub fn new(
         base_url: String,
         identity_pem: &[u8],
@@ -207,28 +206,22 @@ impl NodeClient {
         // feature, and why installing it again here is harmless.
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        let identity = reqwest::Identity::from_pem(identity_pem).map_err(|e| NodeClientError {
-            message: format!("failed to build client identity from SVID cert/key: {e}"),
-        })?;
-        let roots = reqwest::Certificate::from_pem_bundle(trust_bundle_pem).map_err(|e| {
-            NodeClientError {
-                message: format!("failed to parse trust bundle: {e}"),
-            }
-        })?;
+        // The node's certificate names it by SPIFFE ID, never by hostname,
+        // so `node_tls` replaces the hostname check with a check that the
+        // certificate chains to the node's CA AND names exactly the node in
+        // this pod's own trust domain. The same CA certifies pods, so the
+        // chain alone would not say which workload answered. It also signs
+        // federated tenants' SVIDs; those carry `ClientAuth` only, so the
+        // server-usage check refuses one before it could receive this
+        // client's caller token.
+        let tls = nucleus_identity::node_tls::node_client_config(identity_pem, trust_bundle_pem)
+            .map_err(|e| NodeClientError {
+                message: format!("failed to build the node TLS configuration: {e}"),
+            })?;
 
         let http = reqwest::Client::builder()
-            .identity(identity)
             .timeout(std::time::Duration::from_secs(30))
-            // `tls_certs_only`, not repeated `add_root_certificate`: reqwest
-            // refuses to combine `danger_accept_invalid_hostnames` with the
-            // platform/webpki default roots, since that combination would
-            // mean trusting a hostname-unverified cert from ANY public CA.
-            // `tls_certs_only` replaces the trust store entirely with ONLY
-            // the node's own CA root, so the chain is still fully validated
-            // — only hostname matching is skipped, and only against a
-            // pinned root.
-            .tls_certs_only(roots)
-            .danger_accept_invalid_hostnames(true)
+            .tls_backend_preconfigured(tls)
             .build()
             .map_err(|e| NodeClientError {
                 message: format!("failed to build mTLS client: {e}"),
@@ -656,14 +649,20 @@ mod mtls_tests {
         trust_domain: &str,
         service: &str,
     ) -> nucleus_identity::WorkloadCertificate {
-        let identity = Identity::new(trust_domain, "system", service);
+        issue_as(ca, &Identity::new(trust_domain, "system", service)).await
+    }
+
+    async fn issue_as(
+        ca: &SelfSignedCa,
+        identity: &Identity,
+    ) -> nucleus_identity::WorkloadCertificate {
         let csr = CsrOptions::new(identity.to_spiffe_uri())
             .generate()
             .unwrap();
         ca.sign_csr(
             csr.csr(),
             csr.private_key(),
-            &identity,
+            identity,
             std::time::Duration::from_secs(3600),
         )
         .await
@@ -729,8 +728,8 @@ mod mtls_tests {
     }
 
     /// The refute half: a server cert from an UNRELATED CA must be refused
-    /// even though hostname verification is skipped — proving `tls_certs_only`
-    /// is pinning to the SVID's own trust bundle, not a broader store.
+    /// even though it names the node — proving the client pins the SVID's
+    /// own trust bundle, not a broader store.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn list_pods_refuses_a_server_from_an_unrelated_ca() {
         let real_domain = "node-client-refuse-test.nucleus.local";
@@ -777,6 +776,59 @@ mod mtls_tests {
         assert!(
             result.is_err(),
             "a server cert from an unrelated CA must be refused, not silently trusted"
+        );
+
+        server_handle.abort();
+    }
+
+    /// The node's CA certifies pods as well as the node, so a verified chain
+    /// alone does not identify the node. A server presenting a sibling pod's
+    /// certificate from the SAME CA is refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_pods_accepts_only_the_node_from_its_own_ca() {
+        let trust_domain = "node-client-peer-test.nucleus.local";
+        let ca = SelfSignedCa::new(trust_domain).unwrap();
+        let client_cert = issue(&ca, trust_domain, "tool-proxy").await;
+        let sibling = Identity::new(trust_domain, "pods", Uuid::from_u128(0xB).to_string());
+        let server_cert = issue_as(&ca, &sibling).await;
+        let trust_bundle = ca.trust_bundle().clone();
+
+        let mut identity_pem = client_cert.chain_pem().into_bytes();
+        identity_pem.push(b'\n');
+        identity_pem.extend_from_slice(client_cert.private_key_pem().as_bytes());
+        let bundle_pem = trust_bundle.roots()[0].to_pem().as_bytes().to_vec();
+
+        let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = tcp_listener.local_addr().unwrap();
+        let server_handle = tokio::spawn(async move {
+            let (stream, _peer) = tcp_listener.accept().await.unwrap();
+            let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
+                .build_acceptor()
+                .unwrap();
+            // Answers exactly as the node would, so the only way the client
+            // can fail is by refusing the certificate.
+            if let Ok(mut tls) = acceptor.accept(stream).await {
+                let mut buf = [0u8; 1024];
+                let _ = tls.read(&mut buf).await;
+                let _ = tls
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\n\r\n[]",
+                    )
+                    .await;
+            }
+        });
+
+        let client = NodeClient::new(
+            format!("https://{addr}"),
+            &identity_pem,
+            &bundle_pem,
+            Arc::new(Mutex::new(FlowGraph::new())),
+        )
+        .unwrap();
+        let result = client.list_pods(list_authority()).await;
+        assert!(
+            result.is_err(),
+            "a pod's certificate from the node's own CA must not be taken for the node"
         );
 
         server_handle.abort();

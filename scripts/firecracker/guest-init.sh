@@ -2,7 +2,7 @@
 # Deprecated: replaced by crates/nucleus-guest-init (Rust).
 set -eu
 
-mount -t proc proc /proc
+mount -t proc -o hidepid=invisible proc /proc
 mount -t sysfs sys /sys
 mount -t devtmpfs dev /dev
 mount -t tmpfs tmpfs /tmp
@@ -50,12 +50,6 @@ if [ -n "$NET_CONFIG" ]; then
   fi
   if [ -n "$DNS" ] && [ "$DNS" != "$3" ]; then
     echo "nameserver $DNS" > /etc/resolv.conf
-  fi
-fi
-
-if [ -f /etc/nucleus/net.allow ] || [ -f /etc/nucleus/net.deny ]; then
-  if [ -x /usr/local/bin/guest-net.sh ]; then
-    /usr/local/bin/guest-net.sh || true
   fi
 fi
 

@@ -57,7 +57,6 @@ use tracing::{info, warn};
 use crate::ApiError;
 use crate::pod_mgmt::{self, BoundVsock, VsockConfig};
 use crate::startup_trace::Startup;
-use crate::workload::BoundProxy;
 
 /// Where to bind and whom to admit; resolved from the CLI before the state is
 /// built, like `pod_mgmt::resolve_vsock`.
@@ -170,8 +169,12 @@ pub(crate) async fn bind_unix(
 }
 
 /// The URL form the workload and the announce file carry for a Unix socket.
+///
+/// Written by `nucleus_client::endpoint`, whose `ProxyEndpoint::parse` is what
+/// every client (the in-guest MCP bridge among them) reads it back with, so the
+/// writer and the readers are one declaration (ADR 0007 G-1).
 pub(crate) fn unix_url(path: &Path) -> String {
-    format!("unix://{}", path.display())
+    nucleus_client::endpoint::ProxyEndpoint::unix(path).to_string()
 }
 
 fn current_uid() -> u32 {
@@ -255,17 +258,6 @@ pub(crate) enum HostBound {
 }
 
 impl HostBound {
-    /// What the workload's `NUCLEUS_TOOL_PROXY_URL` should name.
-    pub(crate) fn proxy(&self) -> BoundProxy {
-        match self {
-            Self::Vsock(b) => BoundProxy::Vsock {
-                cid: b.cid(),
-                port: b.port(),
-            },
-            Self::Unix(b) => BoundProxy::Unix(b.path.clone()),
-        }
-    }
-
     pub(crate) async fn serve(self, app: Router) -> Result<(), ApiError> {
         match self {
             Self::Vsock(b) => pod_mgmt::serve_vsock(app, b).await,

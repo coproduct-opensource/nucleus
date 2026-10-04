@@ -130,7 +130,7 @@ What this file does NOT prove:
   cohomology beyond the suggestive numerology.
 
 Recommended next step: implement a small numerical check in Python
-(via `notebooks/run_empirical.py` or a dedicated script) that
+(via `docs/notebooks/run_empirical.py` or a dedicated script) that
 permutes the borromean observation indices and verifies whether
 `alignmentTaxH1` is invariant. If yes, the IFC poset has at least
 the symmetry necessary to support a braid action. -/

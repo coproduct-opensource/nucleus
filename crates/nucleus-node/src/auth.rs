@@ -111,8 +111,52 @@ pub enum Operation {
     /// so a pod able to snapshot would be a pod able to author what its neighbours boot from.
     /// That is an operator's authority, not a workload's.
     SnapshotPod,
+    /// Issue or lift a lockdown (`NodeService::Lockdown`, either direction).
+    ///
+    /// Not part of the pod-management group. A lockdown is the operator's break-glass control:
+    /// an empty scope reaches every pod on the node, and lifting one is the human action that
+    /// ends it. Neither is a workload's to take, for itself or for anyone else — a pod that
+    /// needs to stop itself already can, locally, through its own circuit breaker. RECEIVING
+    /// lockdown commands (`WatchLockdown`) is a different operation and stays with the pods.
+    Lockdown,
     /// Any pod management operation (used for matching).
     PodManagement,
+}
+
+/// The label the node stamps on a pod created by a CI/CD identity: that
+/// identity's full SPIFFE ID. Node-assigned, like the pod's own SVID: a spec
+/// that carries it is refused (`AuthorizationPolicy::stamp_ci_principal`), so
+/// the only way a pod comes to bear a CI identity's label is for that identity
+/// to have created it.
+pub const CI_PRINCIPAL_LABEL: &str = "nucleus.io/ci-principal";
+
+/// WHICH pods an authenticated caller may list, read and manage.
+///
+/// Three answers, not an `Option<Uuid>`: "no pod" used to mean "every pod",
+/// and a CI/CD identity, which is not a pod, fell into that arm although the
+/// policy restricts it to the pods it created. Every consumer now matches the
+/// kind it was handed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallerScope {
+    /// The operator or an orchestrator: every pod on the node.
+    NodeWide,
+    /// A pod: itself and its direct children (`pod_api::caller_may_manage`).
+    Pod(uuid::Uuid),
+    /// A CI/CD identity: the pods stamped [`CI_PRINCIPAL_LABEL`] = this ID.
+    CiPrincipal(String),
+    /// A federated tenant, by trust domain (ADR 0001): exactly the pods whose
+    /// certificate is rooted in that trust domain. Anything else is 404.
+    Tenant(String),
+}
+
+impl CallerScope {
+    /// The calling pod, when the caller is one.
+    pub fn pod(&self) -> Option<uuid::Uuid> {
+        match self {
+            CallerScope::Pod(p) => Some(*p),
+            CallerScope::NodeWide | CallerScope::CiPrincipal(_) | CallerScope::Tenant(_) => None,
+        }
+    }
 }
 
 /// Authorization policy for nucleus operations.
@@ -127,7 +171,8 @@ pub struct AuthorizationPolicy {
     /// Identities matching these prefixes can perform any operation.
     orchestrator_prefixes: Vec<String>,
     /// Allowed SPIFFE ID prefixes for CI/CD (GitHub OIDC).
-    /// These identities can only manage pods with matching labels.
+    /// These identities can only manage pods with matching labels: the pods
+    /// they created, which the node stamps [`CI_PRINCIPAL_LABEL`] = their ID.
     cicd_prefixes: Vec<String>,
     /// SPIFFE ID prefixes of PODS this node minted (`ns/pods/sa/<uuid>`).
     ///
@@ -139,6 +184,11 @@ pub struct AuthorizationPolicy {
     pod_prefixes: Vec<String>,
     /// Exact SPIFFE IDs with full access — the certificate root minter.
     operator_identities: Vec<String>,
+    /// Trust domains of federated tenants (`[[caller]]` bindings,
+    /// `federation_ingress.rs`). An identity in one of these got its SVID from
+    /// the federation exchange; it may create pods and manage ITS TENANT'S
+    /// pods (`CallerScope::Tenant`), and nothing else.
+    federated_trust_domains: std::collections::BTreeSet<String>,
 }
 
 impl Default for AuthorizationPolicy {
@@ -160,8 +210,31 @@ impl AuthorizationPolicy {
             cicd_prefixes: vec![format!("spiffe://{}/ns/github/sa/", trust_domain)],
             pod_prefixes: vec![format!("spiffe://{}/ns/pods/sa/", trust_domain)],
             operator_identities: Vec::new(),
+            federated_trust_domains: std::collections::BTreeSet::new(),
             trust_domain,
         }
+    }
+
+    /// Admit the federated tenants' trust domains (see the field). The node's
+    /// own trust domain is never one — `CallerBindings` refuses it at load —
+    /// and is ignored here as well, so no configuration can turn the
+    /// operator's own identities into tenant-scoped ones.
+    pub fn with_federated_trust_domains<'a>(
+        mut self,
+        domains: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        for td in domains {
+            if td != self.trust_domain {
+                self.federated_trust_domains.insert(td.to_string());
+            }
+        }
+        self
+    }
+
+    /// The federated tenant a SPIFFE ID belongs to, if it belongs to one.
+    pub fn federated_tenant<'a>(&self, spiffe_id: &'a str) -> Option<&'a str> {
+        crate::federation_ingress::trust_domain_of(spiffe_id)
+            .filter(|td| self.federated_trust_domains.contains(*td))
     }
 
     /// Add an orchestrator prefix.
@@ -173,46 +246,123 @@ impl AuthorizationPolicy {
     /// The pod id a SPIFFE ID names, if it has the node-assigned pod shape
     /// (`<pod prefix><uuid>`). Anything else — including an orchestrator or
     /// CI/CD identity — is `None`: those callers are not pods.
+    ///
+    /// The uuid must be spelled exactly as the node mints it (lowercase,
+    /// hyphenated). `Uuid::parse_str` also reads the simple, braced, URN and
+    /// uppercase forms, and a pod named by any of those would be a second ID
+    /// for the same pod.
     pub fn pod_id_from_spiffe(&self, spiffe_id: &str) -> Option<uuid::Uuid> {
         self.pod_prefixes.iter().find_map(|prefix| {
-            spiffe_id
-                .strip_prefix(prefix.as_str())
-                .and_then(|rest| uuid::Uuid::parse_str(rest).ok())
+            let rest = spiffe_id.strip_prefix(prefix.as_str())?;
+            let pod = uuid::Uuid::parse_str(rest).ok()?;
+            (pod.hyphenated().to_string() == rest).then_some(pod)
         })
     }
 
-    /// Which pod an authenticated caller acts as, for scoping WHICH pods it may
-    /// list, read and cancel. The one resolver both transports use
-    /// (`resolve_http_caller`, `pod_api::grpc_caller`), so HTTP and gRPC cannot
-    /// disagree about a caller's reach.
+    /// Which pods an authenticated caller may list, read and manage. The one
+    /// resolver both transports use (`resolve_http_caller`,
+    /// `pod_api::grpc_caller`), so HTTP and gRPC cannot disagree about a
+    /// caller's reach.
     ///
-    /// * `Ok(Some(pod))` — a pod: the one its caller token proves, else the one
-    ///   its own SVID names. A pod peer is its own pod with or without a token.
-    /// * `Ok(None)` — unscoped, and ONLY for an identity this policy positively
-    ///   grants node-wide pod management: the operator, an orchestrator, CI/CD.
+    /// * `Tenant(td)` — a federated tenant's peer: the pods rooted in its own
+    ///   trust domain. Decided FIRST, from the verified peer alone: a caller
+    ///   token it presents is a replay ([`Self::proved_pod`]) and changes
+    ///   nothing.
+    /// * `Pod(pod)` — a pod: the one its caller token proves, else the one its
+    ///   own SVID names. A pod peer is its own pod with or without a token.
+    /// * `NodeWide` — ONLY an identity this policy positively grants every pod:
+    ///   the operator or an orchestrator.
+    /// * `CiPrincipal(id)` — a CI/CD identity: the pods it created.
     /// * `Err` — anything else, including an identity under a pod prefix that
-    ///   names no pod. The unscoped answer is never a fallthrough.
+    ///   names no pod. No arm is a fallthrough.
     pub fn caller_scope(
         &self,
         caller_token_pod: Option<uuid::Uuid>,
         spiffe_id: &str,
-    ) -> Result<Option<uuid::Uuid>, AuthorizationError> {
-        if let Some(pod) = caller_token_pod.or_else(|| self.pod_id_from_spiffe(spiffe_id)) {
-            return Ok(Some(pod));
+    ) -> Result<CallerScope, AuthorizationError> {
+        if !is_canonical_spiffe_id(spiffe_id) {
+            return Err(AuthorizationError::NotAuthorized {
+                identity: spiffe_id.to_string(),
+                operation: "anything: not a canonical SPIFFE ID".to_string(),
+            });
+        }
+        if let Some(td) = self.federated_tenant(spiffe_id) {
+            return Ok(CallerScope::Tenant(td.to_string()));
+        }
+        if let Some(pod) = self.proved_pod(caller_token_pod, spiffe_id) {
+            return Ok(CallerScope::Pod(pod));
         }
         let node_wide = self.operator_identities.iter().any(|id| id == spiffe_id)
             || self
                 .orchestrator_prefixes
                 .iter()
-                .chain(&self.cicd_prefixes)
-                .any(|prefix| spiffe_id.starts_with(prefix.as_str()));
+                .any(|prefix| id_under(spiffe_id, prefix));
         if node_wide {
-            return Ok(None);
+            return Ok(CallerScope::NodeWide);
+        }
+        if self.is_cicd(spiffe_id) {
+            return Ok(CallerScope::CiPrincipal(spiffe_id.to_string()));
         }
         Err(AuthorizationError::NotAuthorized {
             identity: spiffe_id.to_string(),
             operation: "node-wide pod management".to_string(),
         })
+    }
+
+    fn is_cicd(&self, spiffe_id: &str) -> bool {
+        self.cicd_prefixes
+            .iter()
+            .any(|prefix| id_under(spiffe_id, prefix))
+    }
+
+    /// Record who created a pod, where the CI/CD scope reads it: a pod created
+    /// by a CI/CD identity is stamped [`CI_PRINCIPAL_LABEL`] = that identity.
+    ///
+    /// A spec that already carries the label is refused, whoever sends it. The
+    /// label is the node's record, not the creator's claim: accepting it from a
+    /// spec would let one CI identity file a pod under another's name, or a pod
+    /// hand one of its children to a CI identity.
+    pub fn stamp_ci_principal(
+        &self,
+        creator_spiffe_id: &str,
+        spec: &mut nucleus_spec::PodSpec,
+    ) -> Result<(), String> {
+        if spec.metadata.labels.contains_key(CI_PRINCIPAL_LABEL) {
+            return Err(format!(
+                "label {CI_PRINCIPAL_LABEL} is assigned by the node; a spec may not set it"
+            ));
+        }
+        if self.is_cicd(creator_spiffe_id) {
+            spec.metadata.labels.insert(
+                CI_PRINCIPAL_LABEL.to_string(),
+                creator_spiffe_id.to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Which pod an authenticated caller PROVES it is: the per-pod caller token,
+    /// else the peer's own pod SVID -- and never either for a federated tenant.
+    ///
+    /// The caller token is a bearer secret, not bound to the TLS peer. A tenant
+    /// holds no pod's token legitimately (pods reach the node with their own
+    /// node-domain SVIDs), so a tenant peer presenting one is a replay: honoured,
+    /// it would make the tenant `CallerScope::Pod(victim)` and let it manage the
+    /// victim's lineage and mint children under the victim's certificate. The
+    /// tenant stays a tenant whatever it carries.
+    ///
+    /// The one decider for this fact: [`Self::caller_scope`] and
+    /// `Admission::from_http` both read it, so the pod that lists and the pod
+    /// that creates cannot diverge (ADR 0007 G).
+    pub fn proved_pod(
+        &self,
+        caller_token_pod: Option<uuid::Uuid>,
+        spiffe_id: &str,
+    ) -> Option<uuid::Uuid> {
+        if self.federated_tenant(spiffe_id).is_some() {
+            return None;
+        }
+        caller_token_pod.or_else(|| self.pod_id_from_spiffe(spiffe_id))
     }
 
     /// Add a CI/CD prefix.
@@ -241,6 +391,39 @@ impl AuthorizationPolicy {
 
     /// Check if a SPIFFE ID is authorized to perform an operation.
     fn authorize_spiffe(&self, spiffe_id: &str, op: Operation) -> Result<(), AuthorizationError> {
+        // Every decision below reads the ID as a string. Each reading is sound
+        // only for the one canonical spelling (`docs/spiffe-taxonomy.md`), so
+        // anything else is refused before any of them runs.
+        if !is_canonical_spiffe_id(spiffe_id) {
+            return Err(AuthorizationError::NotAuthorized {
+                identity: spiffe_id.to_string(),
+                operation: format!("{op:?}"),
+            });
+        }
+        // A federated tenant: pod management over its own pods — which ones is
+        // `CallerScope::Tenant`'s scoping, not this table's. Never a snapshot, for
+        // the reason on `Operation::SnapshotPod`, which applies to a tenant
+        // outside the node at least as much as to a pod inside it.
+        if self.federated_tenant(spiffe_id).is_some() {
+            return match op {
+                Operation::CreatePod
+                | Operation::ListPods
+                | Operation::GetPod
+                | Operation::CancelPod
+                | Operation::StreamLogs
+                | Operation::GetReceipt
+                | Operation::PodManagement => Ok(()),
+                // A lockdown is the operator's control (see the variant), and a
+                // tenant is never the operator.
+                Operation::SnapshotPod | Operation::Lockdown => {
+                    Err(AuthorizationError::NotAuthorized {
+                        identity: spiffe_id.to_string(),
+                        operation: format!("{op:?}"),
+                    })
+                }
+            };
+        }
+
         // Verify trust domain
         let expected_prefix = format!("spiffe://{}/", self.trust_domain);
         if !spiffe_id.starts_with(&expected_prefix) {
@@ -258,7 +441,7 @@ impl AuthorizationPolicy {
 
         // Check if this is an orchestrator identity (full access)
         for prefix in &self.orchestrator_prefixes {
-            if spiffe_id.starts_with(prefix) {
+            if id_under(spiffe_id, prefix) {
                 tracing::debug!(
                     spiffe_id = %spiffe_id,
                     operation = ?op,
@@ -270,7 +453,7 @@ impl AuthorizationPolicy {
 
         // Check if this is a CI/CD identity (limited access)
         for prefix in &self.cicd_prefixes {
-            if spiffe_id.starts_with(prefix) {
+            if id_under(spiffe_id, prefix) {
                 // CI/CD identities can only perform pod management operations
                 match op {
                     Operation::CreatePod
@@ -288,6 +471,8 @@ impl AuthorizationPolicy {
                         );
                         return Ok(());
                     }
+                    // Falls through to the refusal below: see the variant's doc comment.
+                    Operation::Lockdown => {}
                 }
             }
         }
@@ -295,7 +480,7 @@ impl AuthorizationPolicy {
         // A pod this node minted: pod-management operations only. Its
         // certificate decides what those operations may grant (pod_authority).
         for prefix in &self.pod_prefixes {
-            if spiffe_id.starts_with(prefix) {
+            if id_under(spiffe_id, prefix) {
                 match op {
                     Operation::CreatePod
                     | Operation::GetPod
@@ -313,7 +498,7 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod => {}
+                    Operation::SnapshotPod | Operation::Lockdown => {}
                 }
             }
         }
@@ -324,6 +509,31 @@ impl AuthorizationPolicy {
             operation: format!("{:?}", op),
         })
     }
+}
+
+/// Is `id` the one canonical spelling of a workload SPIFFE ID
+/// (`nucleus_identity::Identity::from_spiffe_uri`, the parser every peer
+/// certificate already went through)?
+pub(crate) fn is_canonical_spiffe_id(id: &str) -> bool {
+    nucleus_identity::Identity::from_spiffe_uri(id).is_ok()
+}
+
+/// Is `id` below the grant `prefix`, at a SEGMENT boundary?
+///
+/// A grant is a path prefix, so it must end where a segment ends. Written with
+/// a trailing `/` (as every built-in one is) it is a plain prefix; written
+/// without one, `…/ns/ops` would otherwise also grant `…/ns/ops-anything` and,
+/// as a bare trust domain, `spiffe://td.example` would grant
+/// `spiffe://td.example.evil/…`. Here it grants only itself and what lies
+/// below it.
+pub(crate) fn id_under(id: &str, prefix: &str) -> bool {
+    if prefix.ends_with('/') {
+        return id.len() > prefix.len() && id.starts_with(prefix);
+    }
+    id == prefix
+        || id
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Authorization errors.
@@ -492,7 +702,7 @@ pub fn resolve_http_caller(
     state: &crate::NodeState,
     ctx: &AuthContext,
     headers: &axum::http::HeaderMap,
-) -> Result<Option<uuid::Uuid>, crate::ApiError> {
+) -> Result<CallerScope, crate::ApiError> {
     let token_pod =
         crate::pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), headers);
     Ok(state
@@ -517,6 +727,17 @@ pub fn authorize_grpc_operation<T>(
     let auth_ctx =
         get_auth_context(request).ok_or_else(|| tonic::Status::internal("missing auth context"))?;
 
+    // Federated tenants are served over HTTP only. The gRPC pod handlers now
+    // resolve their caller through `AuthorizationPolicy::caller_scope`, which does
+    // produce `CallerScope::Tenant` -- but the gRPC surface was never
+    // reviewed for tenant scoping, so it stays closed to tenants here, the one
+    // gate every gRPC handler calls, rather than being opened by accident.
+    if policy.federated_tenant(&auth_ctx.spiffe_id).is_some() {
+        return Err(tonic::Status::permission_denied(
+            "federated callers are served over HTTP only",
+        ));
+    }
+
     policy
         .authorize(auth_ctx, operation)
         .map_err(|e| tonic::Status::permission_denied(e.to_string()))
@@ -530,32 +751,40 @@ mod tests {
     /// node-wide; a pod is its own pod with or without a token; anything else
     /// is refused rather than defaulted.
     #[test]
-    fn caller_scope_is_unscoped_only_for_a_named_node_wide_identity() {
+    fn caller_scope_is_node_wide_only_for_a_named_node_wide_identity() {
         let policy = AuthorizationPolicy::default()
             .with_operator_identity("spiffe://nucleus.local/ns/system/sa/cli");
         let pod = uuid::Uuid::new_v4();
         let other = uuid::Uuid::new_v4();
         let pod_svid = format!("spiffe://nucleus.local/ns/pods/sa/{pod}");
 
-        assert_eq!(policy.caller_scope(None, &pod_svid).unwrap(), Some(pod));
+        assert_eq!(
+            policy.caller_scope(None, &pod_svid).unwrap(),
+            CallerScope::Pod(pod)
+        );
         assert_eq!(
             policy.caller_scope(Some(pod), &pod_svid).unwrap(),
-            Some(pod)
+            CallerScope::Pod(pod)
         );
         let orch = "spiffe://nucleus.local/ns/default/sa/orchestrator";
-        assert_eq!(policy.caller_scope(Some(other), orch).unwrap(), Some(other));
+        assert_eq!(
+            policy.caller_scope(Some(other), orch).unwrap(),
+            CallerScope::Pod(other)
+        );
 
-        for node_wide in [
-            orch,
-            "spiffe://nucleus.local/ns/github/sa/ci",
-            "spiffe://nucleus.local/ns/system/sa/cli",
-        ] {
+        for node_wide in [orch, "spiffe://nucleus.local/ns/system/sa/cli"] {
             assert_eq!(
                 policy.caller_scope(None, node_wide).unwrap(),
-                None,
+                CallerScope::NodeWide,
                 "{node_wide}"
             );
         }
+        // A CI/CD identity is NOT node-wide: it reaches the pods it created.
+        let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+        assert_eq!(
+            policy.caller_scope(None, ci).unwrap(),
+            CallerScope::CiPrincipal(ci.to_string())
+        );
         for unplaced in [
             "spiffe://nucleus.local/ns/pods/sa/not-a-pod",
             "spiffe://nucleus.local/ns/system/sa/cli-other",
@@ -563,6 +792,60 @@ mod tests {
             "spiffe://other.domain/ns/default/sa/orchestrator",
         ] {
             assert!(policy.caller_scope(None, unplaced).is_err(), "{unplaced}");
+        }
+    }
+
+    fn bare_spec() -> nucleus_spec::PodSpec {
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec")
+    }
+
+    /// A pod a CI/CD identity creates carries that identity's label; a pod
+    /// anyone else creates carries none.
+    #[test]
+    fn a_ci_identitys_pod_is_stamped_with_that_identity() {
+        let policy = AuthorizationPolicy::default();
+        let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";
+        let mut spec = bare_spec();
+        policy.stamp_ci_principal(ci, &mut spec).unwrap();
+        assert_eq!(
+            spec.metadata
+                .labels
+                .get(CI_PRINCIPAL_LABEL)
+                .map(String::as_str),
+            Some(ci)
+        );
+        for creator in [
+            "spiffe://nucleus.local/ns/default/sa/orchestrator",
+            &format!("spiffe://nucleus.local/ns/pods/sa/{}", uuid::Uuid::new_v4()),
+        ] {
+            let mut spec = bare_spec();
+            policy.stamp_ci_principal(creator, &mut spec).unwrap();
+            assert!(
+                !spec.metadata.labels.contains_key(CI_PRINCIPAL_LABEL),
+                "{creator} is not a CI identity"
+            );
+        }
+    }
+
+    /// The label is the node's record: a spec that sets it is refused, from a
+    /// CI identity (another's name) and from anyone else alike.
+    #[test]
+    fn a_spec_may_not_set_the_ci_principal_label() {
+        let policy = AuthorizationPolicy::default();
+        for creator in [
+            "spiffe://nucleus.local/ns/github/sa/org-repo",
+            "spiffe://nucleus.local/ns/default/sa/orchestrator",
+        ] {
+            let mut spec = bare_spec();
+            spec.metadata.labels.insert(
+                CI_PRINCIPAL_LABEL.to_string(),
+                "spiffe://nucleus.local/ns/github/sa/someone-else".to_string(),
+            );
+            assert!(
+                policy.stamp_ci_principal(creator, &mut spec).is_err(),
+                "{creator}"
+            );
         }
     }
 
@@ -747,6 +1030,37 @@ mod tests {
             "spiffe://nucleus.local/ns/github/sa/myorg/myrepo".to_string(),
         );
         assert!(policy.authorize(&cicd, Operation::SnapshotPod).is_ok());
+    }
+
+    /// Issuing or lifting a lockdown belongs to the operator and the orchestrators, and to no
+    /// other identity class — while every pod keeps what it needs to RECEIVE one.
+    #[test]
+    fn lockdown_is_an_operator_action() {
+        let cli = "spiffe://nucleus.local/ns/system/sa/cli";
+        let policy = AuthorizationPolicy::new("nucleus.local").with_operator_identity(cli);
+        let ctx = |s: &str| AuthContext::from_spiffe(s.to_string());
+
+        for operator in [cli, "spiffe://nucleus.local/ns/default/sa/orchestrator"] {
+            assert!(
+                policy
+                    .authorize(&ctx(operator), Operation::Lockdown)
+                    .is_ok(),
+                "{operator}"
+            );
+        }
+        let pod = format!("spiffe://nucleus.local/ns/pods/sa/{}", uuid::Uuid::new_v4());
+        for other in [
+            pod.as_str(),
+            "spiffe://nucleus.local/ns/github/sa/myorg/myrepo",
+            "spiffe://nucleus.local/ns/system/sa/cli-other",
+        ] {
+            assert!(
+                policy.authorize(&ctx(other), Operation::Lockdown).is_err(),
+                "{other}"
+            );
+        }
+        // `WatchLockdown` is authorized as `CancelPod`: a pod must still hear a lockdown.
+        assert!(policy.authorize(&ctx(&pod), Operation::CancelPod).is_ok());
     }
 
     /// Exhaustive against `main.rs`'s `authenticated_routes` table: every

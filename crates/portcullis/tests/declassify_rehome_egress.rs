@@ -379,3 +379,186 @@ proptest! {
         }
     }
 }
+
+// ── The sealed split: verify mints, apply_verified spends (2026-09-27) ─────
+//
+// The live endpoint now spells the release as two calls joined by a witness:
+// `Kernel::verify_declassification` (signature against the governor keys) mints a
+// `VerifiedDeclassification`, and `FlowGraph::apply_verified` consumes it BY VALUE
+// (replay, value binding, scope, burn). These pin each half's refusals and that
+// the pair releases exactly once.
+
+#[test]
+fn verify_refuses_with_no_trusted_keys() {
+    let key = test_key();
+    let kernel = Kernel::new(PermissionLattice::safe_pr_fixer()); // no set_trusted_keys
+    let mut g = FlowGraph::new();
+    let node = observe_secret(&mut g, H);
+    let token = signed_token(&key, node, vec![Operation::GitPush], H);
+
+    assert!(
+        matches!(
+            kernel.verify_declassification(&token),
+            Err(DenyReason::InvalidDeclassification { .. })
+        ),
+        "no trust root ⇒ no witness (fail-closed)"
+    );
+    assert!(
+        g.declass_scope(node).is_none(),
+        "a refused verify records nothing"
+    );
+}
+
+#[test]
+fn verify_refuses_a_bad_signature() {
+    let key = test_key();
+    let kernel = governor_kernel(&key);
+    let mut g = FlowGraph::new();
+    let node = observe_secret(&mut g, H);
+
+    // Signed by a key the kernel does not trust.
+    let stranger = signed_token(&test_key(), node, vec![Operation::GitPush], H);
+    assert!(matches!(
+        kernel.verify_declassification(&stranger),
+        Err(DenyReason::InvalidDeclassification { .. })
+    ));
+
+    // Signed by the governor, then widened in transit.
+    let mut widened = signed_token(&key, node, vec![Operation::GitPush], H);
+    widened.allowed_sinks.push(Operation::WebFetch);
+    assert!(matches!(
+        kernel.verify_declassification(&widened),
+        Err(DenyReason::InvalidDeclassification { .. })
+    ));
+
+    // Never signed at all.
+    let mut unsigned = signed_token(&key, node, vec![Operation::GitPush], H);
+    unsigned.signature = [0u8; 64];
+    assert!(matches!(
+        kernel.verify_declassification(&unsigned),
+        Err(DenyReason::InvalidDeclassification { .. })
+    ));
+
+    assert!(g.declass_scope(node).is_none());
+    assert!(is_deny(&g, Operation::GitPush));
+}
+
+#[test]
+fn a_verified_declassification_applies_once() {
+    let key = test_key();
+    let kernel = governor_kernel(&key);
+    let mut g = FlowGraph::new();
+    let node = observe_secret(&mut g, H);
+    assert!(
+        is_deny(&g, Operation::GitPush),
+        "premise: Secret denies push"
+    );
+
+    let token = signed_token(&key, node, vec![Operation::GitPush], H);
+    let v = kernel
+        .verify_declassification(&token)
+        .expect("a governor-signed token verifies");
+    assert_eq!(v.target_node_id(), node);
+    assert!(matches!(
+        g.apply_verified(v, 0),
+        Ok(TokenApplyResult::Applied { .. })
+    ));
+
+    // The release took effect for the signed sink, and only that one.
+    assert!(is_pass(&g, Operation::GitPush));
+    assert!(is_deny(&g, Operation::WebFetch));
+    let scope = g.declass_scope(node).expect("the scope was recorded");
+    assert_eq!(scope.sink_mask(), token.sink_mask());
+    assert_eq!(scope.released_label().confidentiality, ConfLevel::Public);
+}
+
+#[test]
+fn apply_verified_refuses_a_replayed_token() {
+    let key = test_key();
+    let kernel = governor_kernel(&key);
+    let mut g = FlowGraph::new();
+    let node = observe_secret(&mut g, H);
+    let token = signed_token(&key, node, vec![Operation::GitPush], H);
+
+    let first = kernel.verify_declassification(&token).unwrap();
+    assert!(matches!(
+        g.apply_verified(first, 0),
+        Ok(TokenApplyResult::Applied { .. })
+    ));
+
+    // The same signed token verifies again — the signature is still good; a
+    // witness is not a spend. The ledger on the graph is what refuses it.
+    let second = kernel
+        .verify_declassification(&token)
+        .expect("verification does not consult the ledger");
+    assert!(matches!(
+        g.apply_verified(second, 0),
+        Err(DenyReason::DeclassificationReplayed { .. })
+    ));
+
+    // A refusal that did NOT apply leaves the token unspent (runD): a
+    // content-mismatched token is refused, not burned, and applies once its
+    // value is in place.
+    let mut g2 = FlowGraph::new();
+    let wrong = observe_secret(&mut g2, OTHER);
+    let mismatched = signed_token(&key, wrong, vec![Operation::GitPush], H);
+    let v = kernel.verify_declassification(&mismatched).unwrap();
+    assert!(matches!(
+        g2.apply_verified(v, 0),
+        Ok(TokenApplyResult::ContentMismatch)
+    ));
+    let v = kernel.verify_declassification(&mismatched).unwrap();
+    assert!(
+        matches!(
+            g2.apply_verified(v, 0),
+            Ok(TokenApplyResult::ContentMismatch)
+        ),
+        "a non-applied token must not have been burned (a replay would read Replayed)"
+    );
+}
+
+/// The witness carries a deadline and `apply_verified` decides expiry from it:
+/// a governor-signed token past its `valid_until` still VERIFIES (a signature
+/// does not expire), but the witness cannot be spent — `Expired`, nothing
+/// recorded, nothing burned.
+#[test]
+fn an_expired_witness_is_refused_and_not_burned() {
+    let key = test_key();
+    let kernel = governor_kernel(&key);
+    let mut g = FlowGraph::new();
+    let node = observe_secret(&mut g, H);
+
+    let mut token = DeclassificationToken::new(
+        node,
+        DeclassificationRule {
+            action: DeclassifyAction::LowerConfidentiality {
+                from: ConfLevel::Secret,
+                to: ConfLevel::Public,
+            },
+            justification: "short-lived release".to_string(),
+        },
+        vec![Operation::GitPush],
+        100, // valid_until
+        "short-lived release".to_string(),
+    )
+    .with_content_commitment(H);
+    token_sign::sign_token(&mut token, &key);
+
+    let v = kernel.verify_declassification(&token).unwrap();
+    assert_eq!(v.valid_until(), 100, "the deadline is the signed one");
+    assert!(matches!(
+        g.apply_verified(v, 101),
+        Ok(TokenApplyResult::Expired {
+            valid_until: 100,
+            now: 101
+        })
+    ));
+    assert!(g.declass_scope(node).is_none());
+
+    // Not burned: inside its window the same token still applies, once.
+    let v = kernel.verify_declassification(&token).unwrap();
+    assert!(matches!(
+        g.apply_verified(v, 100),
+        Ok(TokenApplyResult::Applied { .. })
+    ));
+}

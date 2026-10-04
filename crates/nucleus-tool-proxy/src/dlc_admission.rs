@@ -20,6 +20,9 @@
 //! unsatisfiable admission state (empty keyring), and malformed or missing
 //! credentials simply deny their operations. Misconfiguration can only narrow.
 
+// The variable names are `nucleus_spec::dlc_admission`'s: the same declaration
+// the node maps PodSpec labels through and guest-init exports with.
+use nucleus_spec::dlc_admission::DlcField;
 use portcullis::says_admission::{
     DlcAdmission, DlcKeyRecord, DlcKeyRing, DlcPrincipal, DlcPrincipalId, DlcSignature,
 };
@@ -34,7 +37,7 @@ fn hex32(s: &str) -> Option<[u8; 32]> {
 /// is unprovisioned (inert). See the module docs for the variables and the
 /// fail-closed semantics.
 pub(crate) fn provision_from_env() -> Option<DlcAdmission> {
-    let raw_keys = std::env::var("NUCLEUS_DLC_TRUSTED_KEYS").ok()?;
+    let raw_keys = std::env::var(DlcField::TrustedKeys.env()).ok()?;
     if raw_keys.trim().is_empty() {
         return None;
     }
@@ -54,7 +57,7 @@ pub(crate) fn provision_from_env() -> Option<DlcAdmission> {
         })
         .collect();
 
-    let issuer = match std::env::var("NUCLEUS_DLC_ISSUER")
+    let issuer = match std::env::var(DlcField::Issuer.env())
         .ok()
         .and_then(|s| hex32(&s))
     {
@@ -75,7 +78,7 @@ pub(crate) fn provision_from_env() -> Option<DlcAdmission> {
     };
 
     let mut admission = DlcAdmission::new(DlcKeyRing { entries }, issuer);
-    if let Ok(raw_creds) = std::env::var("NUCLEUS_DLC_CREDENTIALS") {
+    if let Ok(raw_creds) = std::env::var(DlcField::Credentials.env()) {
         for pair in raw_creds.split(',').filter(|p| !p.trim().is_empty()) {
             match pair.split_once('=') {
                 Some((op, sig_hex)) => match hex::decode(sig_hex.trim()) {
@@ -224,5 +227,25 @@ mod tests {
                 assert!(!adm.decide_operation("read_files").is_admit());
             },
         );
+    }
+
+    /// The proxy holds these and the workload must not. The workload-env
+    /// classifier keys on a prefix it spells for itself (it is an extracted,
+    /// dependency-free crate), so this is where the two are held together: a
+    /// provisioning variable named outside the prefix would be handed to the
+    /// workload as ordinary data (ADR 0007 G-2).
+    #[test]
+    fn every_provisioning_variable_is_withheld_from_the_workload() {
+        use nucleus_ifc_kernel::extracted::identity::MaterialKind;
+        for f in DlcField::ALL {
+            assert!(
+                matches!(
+                    crate::workload::env_key_material(f.env()),
+                    MaterialKind::DlcCredentials
+                ),
+                "{} would reach the workload",
+                f.env()
+            );
+        }
     }
 }

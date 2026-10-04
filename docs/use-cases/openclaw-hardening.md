@@ -96,13 +96,10 @@ Nucleus interposes a Firecracker microVM between the AI agent and tool execution
 
 ### Step 1: Install Nucleus
 
-```bash
-# From source
-git clone https://github.com/coproduct-opensource/nucleus
-cd nucleus
-cargo install --path crates/nucleus-node
-cargo install --path crates/nucleus-cli
+Install the CLI as described in the canonical
+[install section](../../README.md#install). `nucleus setup` installs the node.
 
+```bash
 # Setup (generates secrets, configures VM)
 nucleus setup
 nucleus doctor  # Verify installation

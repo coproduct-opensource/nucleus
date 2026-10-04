@@ -2,10 +2,17 @@
 //!
 //! A [`ClearingReceipt`] bundles a cleared outcome's **declared inputs** with its
 //! **claimed outputs**. [`verify_receipt`] re-derives the outputs from the inputs
-//! using the *proven* kernels in `nucleus-econ-kernels` (`classify` /
-//! `seller_gross` / `refund` — pinned to `SettlementDecision.lean`;
-//! `route_to_commons` — pinned to `Commons.lean`'s `routed_conserves`; `run_vcg` —
-//! truthful/IR-proven) and compares them field-by-field to what was claimed.
+//! using the kernels in `nucleus-econ-kernels` (`classify` / `seller_gross` /
+//! `refund` — pinned to `SettlementDecision.lean`; `route_to_commons` — pinned to
+//! `Commons.lean`'s `routed_conserves`; VCG via `clear_vcg`) and compares them
+//! field-by-field to what was claimed.
+//!
+//! What is PROVED of the VCG kernels is narrower than "truthful and IR". The
+//! homogeneous `run_vcg` (one proposal) is single-good Vickrey, and its dominant-
+//! strategy truthfulness and individual rationality are proved in
+//! `IntegerVcgTruthful.lean`. Heterogeneous input goes to the exact enumerator
+//! (`clear_heterogeneous_exact`), whose IR is property-tested, not proved; the
+//! greedy heterogeneous allocator it replaced had an IR counterexample.
 //!
 //! This is the centerpiece of "verify, don't trust": a relying party who never saw
 //! the auction can take a receipt and confirm — by *recomputing* — that the
@@ -318,7 +325,9 @@ pub enum ReceiptKind {
     Settlement,
     /// `route_to_commons` — `Commons.lean`'s `routed_conserves`.
     Commons,
-    /// `run_vcg` — truthful/IR-proven.
+    /// `clear_vcg` — the homogeneous `run_vcg` (truthful and IR, proved in
+    /// `IntegerVcgTruthful.lean`) or the heterogeneous exact enumerator (IR
+    /// property-tested, not proved).
     Vcg,
 }
 

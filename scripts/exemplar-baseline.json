@@ -1,20 +1,20 @@
 {
   "formal_verification": {
-    "extracted_proofs": 4,
-    "handmodel_proofs": 3,
-    "extraction_ratio_pct": 66,
-    "sorry_admit": 38,
+    "extracted_proofs": 6,
+    "handmodel_proofs": 1,
+    "extraction_ratio_pct": 85,
+    "sorry_admit": 26,
     "vacuous_lean": 3,
-    "lean_theorems_GUARD": 891,
+    "lean_theorems_GUARD": 1490,
     "clean_axiom_footprint": "n/a"
   },
   "rust_craft": {
-    "permissive_verify": 13,
-    "verify_calls_GUARD": 44,
-    "unsafe_blocks": 6,
-    "crates_total": 67,
-    "crates_lints_workspace": 41,
-    "lints_adoption_pct": 61
+    "permissive_verify": 11,
+    "verify_calls_GUARD": 50,
+    "unsafe_blocks": 4,
+    "crates_total": 95,
+    "crates_lints_workspace": 63,
+    "lints_adoption_pct": 66
   },
   "sandboxing": {
     "mediation_drift": 0,

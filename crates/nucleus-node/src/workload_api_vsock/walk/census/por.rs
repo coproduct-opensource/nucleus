@@ -191,19 +191,11 @@ async fn check_word(
             }
         }
     }
-    let model_record = (
-        model.personalized,
-        model.at_barrier,
-        model.broker_served,
-        model.mediation_key_served,
-        model.audit_served,
-    );
+    let model_record = (model.personalized, model.at_barrier, model.served.clone());
     let host_record = (
         record.personalized,
         record.at_barrier,
-        record.broker_served,
-        record.mediation_key_served,
-        record.audit_served,
+        record.served.clone(),
     );
     if model_record != host_record {
         return Err(format!(
