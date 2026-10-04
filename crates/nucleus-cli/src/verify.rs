@@ -1130,11 +1130,14 @@ fn check_guest_facts(host: &Tier2Host, pod: &Pod) -> Result<()> {
         {
             println!("  [OK] in-guest workload probe passed (FM-5 posture on the real child)");
         } else {
-            println!(
-                "  [--] in-guest workload probe FAILED: the real workload child saw identity \
-                 material, a leaked file descriptor, retained supplementary groups, or a \
-                 writable root"
-            );
+            // The probe's own reason, not a list of what it checks restated
+            // here: that list went stale when the probe gained a check (P3d's
+            // PID-1 visibility) and would again (ADR 0007 G-1).
+            let reason = contents
+                .lines()
+                .find_map(|l| l.split_once("NUCLEUS_WORKLOAD_PROBE: FAIL: "))
+                .map_or("no FAIL reason on the console", |(_, why)| why.trim());
+            println!("  [--] in-guest workload probe FAILED: {reason}");
             failures.push("workload probe");
         }
     }

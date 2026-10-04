@@ -145,7 +145,7 @@ mod tests {
             kernel_path: kernel.to_path_buf(),
             rootfs: nucleus_spec::RootfsSource::Path(PathBuf::from("/unused/rootfs.ext4")),
             boot_args: None,
-            read_only: false,
+            read_only: true,
             scratch_path: None,
             kernel_digest: kd.map(|d| ArtifactDigest::parse(d).expect("test digest parses")),
             rootfs_digest: None,

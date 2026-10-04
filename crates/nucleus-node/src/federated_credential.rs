@@ -935,6 +935,7 @@ policy_id = "example-policy-0001"
             upstreams: &pod.upstreams,
             ledger: &pod.ledger,
             egress: &pod.egress,
+            streams: crate::broker_transport::serving_tests::test_streams_ref(),
             upstream_caller: Arc::clone(&pod.caller),
         };
         let serve = serve_connection_with_timeout(server, &serving, Duration::from_secs(10));

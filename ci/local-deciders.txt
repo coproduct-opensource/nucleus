@@ -31,14 +31,14 @@
 # predicting that gate.
 #
 # 2026-10-02, 38 -> 41 with ci/required-checks.txt (owner decision: three advisory gates that
-# merged red became required). NOT-LOCAL 13 -> 15, and that is NOT a context giving up on the
+# merged red became required). NOT-LOCAL 12 -> 14, and that is NOT a context giving up on the
 # gauntlet: the two NOT-LOCAL lines are contexts that were not required before, whose deciders
 # need what a developer checkout lacks (a Linux-only rustc-dev nightly; /dev/kvm). The third,
 # `exemplar metrics ratchet`, is already decided locally: the gate-of-gates probe table carries
 # it (`probe_xtask_generated scoreboard-ratchet`), and `--baseline-only` runs that probe green
 # on the tree as it stands -- which is exactly the run that went red on every merge group.
 # PINNED = 41
-# NOT-LOCAL = 15
+# NOT-LOCAL = 14
 
 # --- decided locally, in the fast gauntlet -----------------------------------
 Tests <- prepush: cargo test
@@ -59,6 +59,9 @@ gatehouse/required <- prepush: check-gate-defs-match-plan
 cargo hack --each-feature <- prepush: cargo hack check --each-feature
 MSRV floor (workspace rust-version) <- prepush: cargo hack check --each-feature
 exemplar metrics ratchet <- prepush: check-gates-can-fail.sh --baseline-only
+# 2026-10-02: `audit` left NOT-LOCAL. cargo-audit fetches the advisory DB in seconds; a missing binary is
+# CouldNotRun (a red, with the install command), never a skip. See crates/xtask/src/prepush.rs.
+audit <- prepush: cargo run -q -p xtask -- prepush
 
 # --- decided locally, only under --full --------------------------------------
 Analyze <- prepush --full: cargo clippy --all-targets --all-features -D warnings
@@ -89,7 +92,6 @@ Scoped Aeneas OIDC→SPIFFE (Rust → Lean 4) + parity tests <- NOT-LOCAL: charo
 musl type-check (nucleus-node, nucleus-tool-proxy) <- NOT-LOCAL: musl cross-toolchain
 Scan PodSpecs <- NOT-LOCAL: scans PodSpecs from the live cluster, not the tree
 zizmor (high+ gate) <- NOT-LOCAL: zizmor is not a workspace tool
-audit <- NOT-LOCAL: cargo-audit needs the advisory DB fetched
 OWASP LLM Security Gauntlet <- NOT-LOCAL: a hosted adversarial suite
 Dylint passes (one pod) <- NOT-LOCAL: Linux-only (the lint dylibs resolve rustc_driver via @rpath, which macOS SIP strips) and needs the pinned rustc-dev nightly + cargo-dylint
 the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64) <- NOT-LOCAL: boots a Firecracker guest under the jailer; needs x86_64 /dev/kvm
