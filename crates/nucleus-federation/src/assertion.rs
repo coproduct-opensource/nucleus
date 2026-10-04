@@ -224,7 +224,9 @@ impl AssertionClaims {
 }
 
 /// Whether `issuer` can be this crate's `iss`: an `https://` URL with a
-/// non-empty authority.
+/// host, without user information, a query, or a fragment. The discovery
+/// publisher appends a path to this value, so those components are not valid
+/// issuer bases even when a generic URL parser accepts them.
 ///
 /// One definition, because two things depend on it agreeing: the claims every
 /// assertion carries ([`AssertionClaims::new`]) and the discovery document the
@@ -232,9 +234,17 @@ impl AssertionClaims {
 /// issuer one accepted and the other refused would be a node whose assertions
 /// no provider could ever resolve.
 pub fn is_valid_issuer(issuer: &str) -> bool {
-    issuer
-        .strip_prefix("https://")
-        .is_some_and(|rest| !rest.is_empty() && !rest.starts_with('/'))
+    let Ok(url) = reqwest::Url::parse(issuer) else {
+        return false;
+    };
+    issuer.starts_with("https://")
+        && !issuer.contains(['\\', '\r', '\n', '\t'])
+        && url.scheme() == "https"
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
 }
 
 /// 128 random bits, base64url without padding (22 characters).

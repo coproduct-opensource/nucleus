@@ -66,16 +66,15 @@
 //!
 //! # How the running node picks up a promoted key
 //!
-//! Without a restart. [`KeyDirSigner`] re-checks the `current` file's
-//! identity (device, inode, size, mtime) on every assertion and reloads when
-//! it changed; promote is a `rename`, so the inode always changes. A reload
-//! that fails its checks FAILS the assertion rather than falling back to the
-//! key the operator replaced — see [`crate::CurrentSigner`].
+//! Without a restart. [`KeyDirSigner`] reads and validates the `current`
+//! file on every assertion, retaining one fixed signer for that assertion.
+//! A failed read or validation FAILS the assertion rather than falling back
+//! to the key the operator replaced — see [`crate::CurrentSigner`].
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -458,6 +457,7 @@ impl KeyDir {
     /// refused, and the opened file must be the one checked), no group/other
     /// bits, owned by the directory's owner. `None` if absent.
     fn open_checked(&self, name: &str) -> Result<Option<(File, fs::Metadata)>, KeyringError> {
+        self.check_dir()?;
         let path = self.path(name);
         let link = match fs::symlink_metadata(&path) {
             Ok(m) => m,
@@ -548,6 +548,7 @@ impl KeyDir {
     /// service user), the node could not read the key it will be asked to
     /// sign with, so the write is abandoned before the rename.
     fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<(), KeyringError> {
+        self.check_dir()?;
         let target = self.path(name);
         let tmp = self.path(&format!(".{name}.tmp-{}", std::process::id()));
         let _ = fs::remove_file(&tmp);
@@ -886,60 +887,15 @@ pub fn discovery_document(issuer: &str) -> Result<serde_json::Value, KeyringErro
     }))
 }
 
-/// A file's identity, to tell whether it was replaced since it was loaded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FileStamp {
-    dev: u64,
-    ino: u64,
-    len: u64,
-    mtime_ns: i128,
-}
-
-impl FileStamp {
-    fn of(meta: &fs::Metadata) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::MetadataExt as _;
-            Self {
-                dev: meta.dev(),
-                ino: meta.ino(),
-                len: meta.len(),
-                mtime_ns: i128::from(meta.mtime())
-                    .saturating_mul(1_000_000_000)
-                    .saturating_add(i128::from(meta.mtime_nsec())),
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let mtime_ns = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos() as i128);
-            Self {
-                dev: 0,
-                ino: 0,
-                len: meta.len(),
-                mtime_ns,
-            }
-        }
-    }
-}
-
-struct Loaded {
-    stamp: FileStamp,
-    signer: Arc<EcdsaP256Signer>,
-}
-
 /// The node's signer: whatever key is in [`CURRENT_KEY_FILE`] right now.
 ///
 /// Reads nothing but the current file — `next` is never a signer before it
 /// is promoted, because no code path here opens it. Each call re-checks the
-/// file (permissions, owner, identity) and reloads it when it was replaced,
-/// so a promote takes effect at the node's next assertion with no restart.
+/// file (permissions and owner) and parses its bytes for this assertion. A
+/// stat tuple cannot prove that key bytes are unchanged (ADR 0007 C-1); an
+/// in-place replacement with a restored timestamp must never reuse an old key.
 pub struct KeyDirSigner {
     keys: KeyDir,
-    loaded: Mutex<Loaded>,
 }
 
 impl std::fmt::Debug for KeyDirSigner {
@@ -954,52 +910,23 @@ impl KeyDirSigner {
     /// A signer over `keys`' current key, loaded now so a node with no usable
     /// key fails at start-up rather than at its first assertion.
     pub fn open(keys: KeyDir) -> Result<Self, KeyringError> {
-        let (signer, stamp) = Self::load_current(&keys)?;
-        Ok(Self {
-            keys,
-            loaded: Mutex::new(Loaded {
-                stamp,
-                signer: Arc::new(signer),
-            }),
-        })
+        let source = Self { keys };
+        source.signer()?;
+        Ok(source)
     }
 
-    fn load_current(keys: &KeyDir) -> Result<(EcdsaP256Signer, FileStamp), KeyringError> {
-        let path = keys.path(CURRENT_KEY_FILE);
-        let (mut file, meta) = keys
-            .open_checked(CURRENT_KEY_FILE)?
-            .ok_or(KeyringError::NoCurrent { path: path.clone() })?;
-        let mut bytes = Zeroizing::new(Vec::new());
-        file.read_to_end(&mut bytes)
-            .map_err(|e| KeyDir::io(&path, &e))?;
-        let signer = EcdsaP256Signer::from_pkcs8(&bytes).map_err(|_| KeyringError::Key { path })?;
-        Ok((signer, FileStamp::of(&meta)))
-    }
-
-    /// The signer for the next assertion.
+    /// The signer for the next assertion, loaded from one checked file.
     ///
     /// # Errors
-    /// The current file is gone, or was replaced by one that fails its checks.
-    /// Never the previously loaded key instead: the operator replaced it.
+    /// The current file is gone, or its permissions, ownership or bytes fail
+    /// validation. Never fall back to a previously loaded key.
     pub fn signer(&self) -> Result<Arc<EcdsaP256Signer>, KeyringError> {
-        let path = self.keys.path(CURRENT_KEY_FILE);
-        let (_, meta) = self
-            .keys
-            .open_checked(CURRENT_KEY_FILE)?
-            .ok_or(KeyringError::NoCurrent { path })?;
-        let stamp = FileStamp::of(&meta);
-        let mut loaded = self.loaded.lock().unwrap_or_else(PoisonError::into_inner);
-        if loaded.stamp != stamp {
-            // Loaded from a fresh open, and stamped from THAT open: if the
-            // file changes again in between, the stamp differs next call and
-            // it reloads again, rather than caching a key under a stale stamp.
-            let (signer, stamp) = Self::load_current(&self.keys)?;
-            *loaded = Loaded {
-                stamp,
-                signer: Arc::new(signer),
-            };
-        }
-        Ok(Arc::clone(&loaded.signer))
+        self.keys
+            .load_current()?
+            .map(Arc::new)
+            .ok_or_else(|| KeyringError::NoCurrent {
+                path: self.keys.path(CURRENT_KEY_FILE),
+            })
     }
 }
 
@@ -1063,6 +990,16 @@ mod tests {
         }
         assert!(discovery_document("http://federation.nodes.example.invalid").is_err());
         assert!(discovery_document("https://").is_err());
+        for malformed in [
+            "https://?query",
+            "https://#fragment",
+            "https:// bad host",
+            "https://issuer.example.invalid?query",
+            "https://issuer.example.invalid#fragment",
+            "https://user:password@issuer.example.invalid",
+        ] {
+            assert!(discovery_document(malformed).is_err(), "{malformed}");
+        }
     }
 
     /// The JWKS kid is the RFC 7638 thumbprint, recomputed here from the
@@ -1219,6 +1156,55 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn changing_key_bytes_without_changing_the_cache_stamp_cannot_reuse_a_signer() {
+        use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+        let (_d, keys) = fresh();
+        let signer = KeyDirSigner::open(keys.clone()).unwrap();
+        let path = keys.dir().join(CURRENT_KEY_FILE);
+        let before = fs::metadata(&path).unwrap();
+        let original = signer.signer().unwrap();
+        let replacement = EcdsaP256Signer::generate_pkcs8().unwrap();
+        let expected = EcdsaP256Signer::from_pkcs8(&replacement).unwrap();
+        assert_eq!(replacement.len() as u64, before.len());
+        let overwrite = |bytes: &[u8]| {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut file = OpenOptions::new()
+                .write(true)
+                .truncate(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(bytes).unwrap();
+            file.set_times(fs::FileTimes::new().set_modified(before.modified().unwrap()))
+                .unwrap();
+            file.set_permissions(fs::Permissions::from_mode(0o400))
+                .unwrap();
+            let after = file.metadata().unwrap();
+            assert_eq!(
+                (
+                    before.dev(),
+                    before.ino(),
+                    before.len(),
+                    before.modified().unwrap()
+                ),
+                (
+                    after.dev(),
+                    after.ino(),
+                    after.len(),
+                    after.modified().unwrap()
+                )
+            );
+        };
+        overwrite(&replacement);
+        assert_ne!(original.kid(), expected.kid());
+        assert_eq!(signer.signer().unwrap().kid(), expected.kid());
+        // An assertion already holding its signer remains internally consistent.
+        assert_ne!(original.kid(), expected.kid());
+        overwrite(&vec![0; replacement.len()]);
+        assert!(matches!(signer.signer(), Err(KeyringError::Key { .. })));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_key_readable_by_others_is_refused_everywhere() {
         use std::os::unix::fs::PermissionsExt as _;
         let (_d, keys) = fresh();
@@ -1257,9 +1243,22 @@ mod tests {
     fn a_group_writable_key_directory_refuses_rotation() {
         use std::os::unix::fs::PermissionsExt as _;
         let (_d, keys) = fresh();
+        let signer = KeyDirSigner::open(keys.clone()).unwrap();
         fs::set_permissions(keys.dir(), fs::Permissions::from_mode(0o770)).unwrap();
         assert!(matches!(
             keys.stage(T0),
+            Err(KeyringError::DirPermissions { .. })
+        ));
+        assert!(matches!(
+            keys.load_current(),
+            Err(KeyringError::DirPermissions { .. })
+        ));
+        assert!(matches!(
+            signer.signer(),
+            Err(KeyringError::DirPermissions { .. })
+        ));
+        assert!(matches!(
+            keys.create_current(),
             Err(KeyringError::DirPermissions { .. })
         ));
     }

@@ -109,8 +109,9 @@ nucleus federation rotate --state-dir /var/lib/nucleus-node --retire
 nucleus federation rotate --state-dir /var/lib/nucleus-node --status
 ```
 
-**No restart.** The running node checks the current key file on every assertion and reloads it
-when a promote has replaced it. It never reads the staged key. If the replaced file fails its
+**No restart.** The running node reads and validates the current key file for every assertion,
+even if its inode, size and modification time have not changed. It never reads the staged key.
+Each assertion retains one fixed signer for both its `kid` and signature. If the file fails its
 checks (permissions, owner, parse), the node fails that exchange instead of carrying on with the
 old key, and the pod's call returns "upstream call failed".
 
@@ -140,3 +141,4 @@ order:
 | every exchange refused from the start | `iss` differs from the discovery `issuer` (trailing slash, scheme, path), or the rule's `aud` is not the registry audience | compare `--export` output and `--claims-for` with the provider's registration |
 | node will not start: "mode … must be readable by its owner only" | the key file's permissions were widened | `chmod 0400` so the node can start, then assume the key was read: rotate it |
 | rotation refused: "owned by uid …" | the CLI ran as a different user than the node | run it as the node's user |
+| key creation, signing or rotation refused: directory permissions | the state directory is writable by a group or other users | restrict writes to the node's owner before retrying |

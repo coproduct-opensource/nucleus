@@ -59,10 +59,10 @@ pub enum FederationCommand {
 pub struct IssuerArgs {
     /// The node's `--federation-issuer`, byte for byte: providers compare it
     /// to every assertion's `iss` exactly.
-    #[arg(long, env = "NUCLEUS_FEDERATION_ISSUER")]
+    #[arg(long, env = "NUCLEUS_FEDERATION_ISSUER", hide_env_values = true)]
     issuer: Option<String>,
     /// The node's state directory (where its issuer key lives).
-    #[arg(long, env = "NUCLEUS_NODE_STATE_DIR")]
+    #[arg(long, env = "NUCLEUS_NODE_STATE_DIR", hide_env_values = true)]
     state_dir: Option<PathBuf>,
     /// Write `.well-known/openid-configuration` and `.well-known/jwks.json`
     /// under this directory, for static hosting at the issuer URL.
@@ -76,7 +76,7 @@ pub struct IssuerArgs {
     #[arg(long, value_name = "UPSTREAM", requires = "upstreams")]
     claims_for: Option<String>,
     /// The node's upstream registry (`--upstreams`).
-    #[arg(long, env = "NUCLEUS_NODE_UPSTREAMS")]
+    #[arg(long, env = "NUCLEUS_NODE_UPSTREAMS", hide_env_values = true)]
     upstreams: Option<PathBuf>,
     /// With `--claims-for`: also require this `nucleus_tenant` (when one
     /// provider account serves one tenant).
@@ -88,7 +88,7 @@ pub struct IssuerArgs {
 #[command(group(ArgGroup::new("step").required(true).args(["stage", "promote", "retire", "status"])))]
 pub struct RotateArgs {
     /// The node's state directory (where its issuer key lives).
-    #[arg(long, env = "NUCLEUS_NODE_STATE_DIR")]
+    #[arg(long, env = "NUCLEUS_NODE_STATE_DIR", hide_env_values = true)]
     state_dir: PathBuf,
     /// Generate the next key and publish it beside the current one.
     #[arg(long)]
@@ -113,7 +113,7 @@ pub struct RotateArgs {
     max_assertion_ttl_secs: u64,
     /// The node's upstream registry; when given, `--max-assertion-ttl-secs` is
     /// checked against it.
-    #[arg(long, env = "NUCLEUS_NODE_UPSTREAMS")]
+    #[arg(long, env = "NUCLEUS_NODE_UPSTREAMS", hide_env_values = true)]
     upstreams: Option<PathBuf>,
 }
 
@@ -202,15 +202,24 @@ fn write_public(root: &Path, rel: &str, doc: &serde_json::Value) -> Result<PathB
     let path = root.join(rel);
     let parent = path.parent().context("export path has no parent")?;
     std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let tmp = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("doc"),
-        std::process::id()
-    ));
+    // Exclusive creation owns the scratch file: a predictable pathname could
+    // be a symlink, and fs::write would overwrite its unrelated target.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)
+        .with_context(|| format!("create temporary in {}", parent.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        // These contain only public metadata and must be readable by the host
+        // serving them, which may run as a different user from the operator.
+        tmp.as_file()
+            .set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    }
     let mut bytes = serde_json::to_vec_pretty(doc)?;
     bytes.push(b'\n');
-    std::fs::write(&tmp, &bytes).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("rename to {}", path.display()))?;
+    tmp.write_all(&bytes).context("write public metadata")?;
+    tmp.as_file().sync_all().context("sync public metadata")?;
+    tmp.persist(&path)
+        .with_context(|| format!("publish {}", path.display()))?;
     Ok(path)
 }
 
@@ -546,6 +555,29 @@ var = "SEARCH_API_TOKEN"
             T0,
         );
         assert!(r.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_never_follows_a_preexisting_temporary_symlink() {
+        let site = tempfile::tempdir().unwrap();
+        let parent = site.path().join(".well-known");
+        std::fs::create_dir(&parent).unwrap();
+        let unrelated = site.path().join("unrelated");
+        std::fs::write(&unrelated, b"keep these bytes").unwrap();
+        let predictable = parent.join(format!(".jwks.json.tmp-{}", std::process::id()));
+        std::os::unix::fs::symlink(&unrelated, &predictable).unwrap();
+        let doc = serde_json::json!({"keys": []});
+        let result = write_public(site.path(), JWKS_PATH, &doc);
+        assert_eq!(std::fs::read(&unrelated).unwrap(), b"keep these bytes");
+        let published = result.unwrap();
+        assert!(
+            !std::fs::symlink_metadata(&published)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(json(&std::fs::read(published).unwrap()), doc);
     }
 
     #[test]
