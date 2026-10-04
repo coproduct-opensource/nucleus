@@ -44,7 +44,7 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 # The guest layer's CA bundle. Pinned EXACTLY: the rendered bundle's digest is
 # pinned in guest_layer.rs (CA_BUNDLE_SHA256), so a bump is a reviewed diff there.
-webpki-root-certs = "=1.0.7"
+webpki-root-certs = "=1.0.9"
 base64 = { workspace = true }
 
 [dev-dependencies]

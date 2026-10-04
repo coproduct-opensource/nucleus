@@ -288,6 +288,27 @@ fn a_container_pod_cannot_choose_a_wider_network() {
     );
 }
 
+/// #3132: `read_only: false` attached the node's shared rootfs writable, so one pod's writes were
+/// every later pod's boot image. Refused by name; `true` and omission are admitted.
+#[test]
+fn a_spec_cannot_ask_for_a_writable_shared_rootfs() {
+    let image = |extra: &str| {
+        spec(&format!(
+            r#"{{"image":{{"kernel_path":"/var/lib/nucleus/artifacts/vmlinux",
+                          "rootfs_path":"/var/lib/nucleus/artifacts/rootfs.ext4"{extra}}}}}"#
+        ))
+    };
+    let e = refused(&image(r#","read_only":false"#));
+    assert_eq!(e, PostureRefused::WritableRootfs);
+    let msg = ApiError::from(e).to_string();
+    assert!(
+        msg.contains("image.read_only"),
+        "the refusal names the field: {msg}"
+    );
+    admitted(&image(r#","read_only":true"#)).expect("a read-only rootfs is admitted");
+    admitted(&image("")).expect("omitted read_only means read-only (#2784)");
+}
+
 fn labelled(label: &str, value: &str) -> PodSpec {
     let mut s = spec("{}");
     s.metadata.labels.insert(label.into(), value.into());

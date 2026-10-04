@@ -172,7 +172,7 @@ impl JailLayout {
 ///
 /// THIS DISTINCTION IS LOAD-BEARING AND IT IS ABOUT DATA, NOT ISOLATION. Today a
 /// non-jailed Firecracker is handed the caller's path directly, so when the guest
-/// writes to an RW rootfs those writes land in the caller's file. Under a jail the
+/// writes to a scratch disk those writes land in the caller's file. Under a jail the
 /// resource has to be brought inside, and a hard link preserves exactly that
 /// semantics while a copy silently does not.
 ///
@@ -224,24 +224,12 @@ pub(crate) fn jail_resources(
         JailResource {
             host_source: image.rootfs_path().to_path_buf(),
             in_jail: in_jail::ROOTFS,
-            // Mirrors `lower_drives`' `is_read_only: image.read_only` exactly. If
-            // these two ever disagree, a writable rootfs gets copied and the
-            // guest's writes vanish — hence the `rw_rootfs_is_hard_link_only`
-            // pin, which until #2784 was named here and never written.
-            //
-            // The agreement is necessary and NOT sufficient. A hard link means
-            // the guest writes through to `image.rootfs_path()` itself, so
-            // `read_only: false` against the shared installed artifact gives
-            // every later pod the previous pod's writes and lets concurrent
-            // pods share one writable block device. That is why
-            // `ImageSpec::read_only` now defaults to TRUE: the placement below
-            // is correct for a private image and unsafe for a shared one, and
-            // nothing here can tell which it was handed.
-            placement: if image.read_only {
-                Placement::CopyableIfCrossDevice
-            } else {
-                Placement::HardLinkOnly
-            },
+            // The rootfs is the node's shared artifact (#3070/#3071), so it is
+            // attached read-only whatever the spec says (`lower_drives`), and a
+            // read-only drive is safe to copy across devices. It used to be
+            // `HardLinkOnly` under `read_only: false`, which made the guest write
+            // through to the artifact every later pod boots (#2784, #3132).
+            placement: Placement::CopyableIfCrossDevice,
         },
     ];
 
@@ -331,8 +319,8 @@ fn place_resource(resource: &JailResource, dest: &Path) -> Result<(), String> {
 ///
 /// `/work` mounts `/dev/vdb`, which exists only when a scratch drive is
 /// attached — and nothing created one, so a `codegen` pod met `EROFS` on its
-/// first write. The other route to a writable guest, `read_only: false`, is the
-/// one #2784 closed: it writes through the shared rootfs artifact.
+/// first write. The other route to a writable guest, `read_only: false`, wrote
+/// through the shared rootfs artifact; #2784 and #3132 closed it.
 ///
 /// BORN INSIDE THE JAIL. Under the jailer `lower_drives` gives the drive a
 /// `path_on_host` of `in_jail::SCRATCH`, resolved after `chroot`, so the file
@@ -1133,10 +1121,11 @@ impl FirecrackerConfig {
 
 /// ISOLATION INVARIANT (1) — read-only rootfs.
 ///
-/// The rootfs drive's `is_read_only` is a pure function of `image.read_only`:
-/// an RO policy lowers to `is_read_only = true` and an RW policy lowers to
-/// `false` (no silent flip in either direction). The optional scratch drive is
-/// always writable and never the root device.
+/// The rootfs drive is ALWAYS `is_read_only = true`, and `image.read_only` is
+/// not read here (#3132): the rootfs is the node's shared artifact, so there is
+/// no spec under which a pod may write it. `spec_posture::admit` refuses
+/// `read_only: false` by name; this is what holds if a spec reaches the lowering
+/// without passing it. The scratch drive is the writable one, never root.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 /// ISOLATION INVARIANT: under the jailer, `path_on_host` is a path in the JAIL.
 /// Firecracker resolves it after `chroot`, so a host path here would simply not
@@ -1150,7 +1139,7 @@ fn lower_drives(image: &HostImage, jailed: bool) -> Vec<DriveConfig> {
             image.rootfs_path().display().to_string()
         },
         is_root_device: true,
-        is_read_only: image.read_only,
+        is_read_only: true,
     }];
 
     if let Some(ref scratch) = image.scratch_path {

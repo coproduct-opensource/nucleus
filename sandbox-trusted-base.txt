@@ -34,7 +34,7 @@ absent vsock grant attaches no vsock device         | pinned_by:absent_vsock_low
 guest CIDs are distinct across pods                 | pinned_by:lowering_preserves_distinct_cids
 no net plan attaches zero interfaces                | pinned_by:no_net_plan_lowers_to_zero_network_interfaces
 a net plan attaches exactly one bound tap           | pinned_by:net_plan_lowers_to_exactly_one_bound_tap
-rootfs is read-only under a readonly policy         | pinned_by:readonly_policy_lowers_to_readonly_rootfs
+rootfs is read-only under every policy            | pinned_by:every_policy_lowers_to_a_readonly_rootfs
 
 # ── Kernel-enforced confinement ─────────────────────────────────────────────
 seccomp is never silently disabled                  | pinned_by:seccomp_never_silently_disabled

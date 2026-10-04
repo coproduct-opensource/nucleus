@@ -32,6 +32,10 @@
 //!   `TimeDelta`'s range panicked the create handler; one inside it minted tokens for centuries.
 //! - **`budget_model`** — the spec priced its own command executions, below the runtime's
 //!   default, so a budget stopped bounding how much a pod could run.
+//! - **`image.read_only`** — `false` attached the rootfs writable, and the rootfs a spec can name
+//!   is the node's shared artifact (#3070/#3071 confine it there), hard-linked into the jail. One
+//!   pod's writes were the next pod's boot image (#3132). The lowering no longer reads the field
+//!   (`lower_drives` attaches every rootfs read-only); refusing it here is what tells the author.
 //! - **[`NODE_OWNED_LABELS`]** — on the container driver, `nucleus.io/proxy-mode` chose whether the
 //!   pod was mediated at all (absent meant not), and `nucleus.io/container-image` chose the image
 //!   the mediating binary came from (#3133). Both are node flags now (`container_mediation`).
@@ -116,6 +120,13 @@ pub(crate) enum PostureRefused {
         value: f64,
         floor: f64,
     },
+    /// A writable root filesystem. The rootfs is the node's shared artifact, never the pod's.
+    #[error(
+        "image.read_only false is refused: the root filesystem a pod names is the node's shared \
+         artifact, which every later pod boots, so the node attaches it read-only. Writable \
+         storage is `/work`, on the per-pod scratch disk the node provisions (or `scratch_path`)."
+    )]
+    WritableRootfs,
     /// A container network mode other than the node's own or `none`.
     #[error(
         "label nucleus.io/network `{value}` is refused: a pod may ask for `none` or the node's \
@@ -170,6 +181,9 @@ pub(crate) fn admit(
     }
     if let Some(model) = &inner.budget_model {
         budget_model(model)?;
+    }
+    if inner.image.as_ref().is_some_and(|image| !image.read_only) {
+        return Err(PostureRefused::WritableRootfs);
     }
     Ok(audit)
 }

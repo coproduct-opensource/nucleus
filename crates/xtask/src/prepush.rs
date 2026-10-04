@@ -3,7 +3,7 @@
 //! Owner decision 2026-10-02. On that day four gates that need nothing but the tree broke `main`
 //! or ejected merge-queue groups, each one decidable in seconds on the author's machine:
 //!
-//! * the exemplar ratchet (`scripts/exemplar-scoreboard.sh` then `xtask scoreboard-ratchet`);
+//! * the exemplar ratchet (`xtask scoreboard-ratchet`, measuring the tree in process);
 //! * `cargo audit --deny warnings` (a new RUSTSEC advisory against the lockfile);
 //! * `xtask scorecard`;
 //! * `xtask line-ratchet --strict`.
@@ -136,38 +136,10 @@ fn xtask_gate(root: &Path, args: &[&str]) -> Verdict {
 }
 
 fn exemplar_ratchet(root: &Path) -> Verdict {
-    let dir = match tempfile::tempdir() {
-        Ok(d) => d,
-        Err(e) => return Verdict::CouldNotRun(format!("creating a scratch dir: {e}")),
-    };
-    let board = dir.path().join("scoreboard.json");
-    let mut measure = Command::new("bash");
-    measure.arg("scripts/exemplar-scoreboard.sh").arg(&board);
-    match run_child(measure, root) {
-        Ok(out) if out.status.success() => {}
-        Ok(out) => {
-            return Verdict::CouldNotRun(format!(
-                "scripts/exemplar-scoreboard.sh exited {:?}; nothing was measured\n{}",
-                out.status.code(),
-                combined(&out)
-            ));
-        }
-        Err(e) => return Verdict::CouldNotRun(format!("spawning bash: {e}")),
-    }
-    if !board.is_file() {
-        return Verdict::CouldNotRun(
-            "scripts/exemplar-scoreboard.sh exited 0 and wrote no scoreboard".to_string(),
-        );
-    }
-    let Some(board) = board.to_str() else {
-        return Verdict::CouldNotRun("the scratch path is not UTF-8".to_string());
-    };
     xtask_gate(
         root,
         &[
             "scoreboard-ratchet",
-            "--current",
-            board,
             "--baseline",
             "scripts/exemplar-baseline.json",
         ],
