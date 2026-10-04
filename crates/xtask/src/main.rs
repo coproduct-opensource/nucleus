@@ -115,6 +115,10 @@ enum Command {
         #[arg(long, default_value = ".gatehouse/plan-gates.json")]
         plan: std::path::PathBuf,
     },
+    /// The cheap tree-only gates, before a push: exemplar ratchet, cargo-audit, scorecard,
+    /// line ratchet. Each gets Pass / Fail / CouldNotRun; anything but Pass exits non-zero.
+    /// See crates/xtask/src/prepush.rs.
+    Prepush,
     /// A SHA of this repo pinned by this repo must still match the working tree.
     SelfPin,
     /// One fact written in several files must have one value: the elan release and its
@@ -346,13 +350,22 @@ enum Command {
         #[command(subcommand)]
         cmd: CiSpecCmd,
     },
+    /// Measure the exemplar scoreboard (formal verification, Rust craft,
+    /// sandboxing) and write scoreboard.json. Replaces
+    /// scripts/exemplar-scoreboard.sh; see crates/xtask/src/exemplar_scoreboard.rs.
+    ExemplarScoreboard {
+        /// Where to write the scoreboard.
+        #[arg(default_value = "scoreboard.json")]
+        out: String,
+    },
     /// The exemplar scoreboard's anti-Goodhart ratchet (lower-is-better
     /// metrics may not rise, higher-is-better may not fall, `_GUARD`s may
     /// not drop). Ported from exemplar-scoreboard.yml's python3 heredoc.
     ScoreboardRatchet {
-        /// The freshly generated scoreboard.json.
+        /// A scoreboard.json to compare. Omitted, the tree is measured in
+        /// process (`exemplar-scoreboard`), which is how CI runs it.
         #[arg(long)]
-        current: String,
+        current: Option<String>,
         /// The pinned baseline (scripts/exemplar-baseline.json).
         #[arg(long)]
         baseline: String,
@@ -447,6 +460,7 @@ mod command_grammar;
 mod convergence;
 mod coverage_floor;
 mod econ_boundary;
+mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
 mod gatehouse_pin;
@@ -463,6 +477,7 @@ mod pin_parity;
 mod pipefail;
 mod plan_measurements;
 mod portability;
+mod prepush;
 mod push_auth;
 mod rerun_plan;
 mod schedule_liveness;
@@ -535,6 +550,11 @@ fn main() -> Result<()> {
                 }
             }
         }
+        // Exit code mapped here, not inside the run, for the SelfPin arm's reason.
+        Command::Prepush => match prepush::run(&repo_root()?)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::Pipefail => pipefail::check(&std::env::current_dir()?),
         Command::Portability => portability::check(&std::env::current_dir()?),
         Command::ActionInputs { network } => {
@@ -616,8 +636,9 @@ fn main() -> Result<()> {
                 json,
             } => ci_spec::trace_check(&github, since_hours, json),
         },
+        Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
-            scoreboard::scoreboard_ratchet(&current, &baseline)
+            scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)
         }
         Command::CiOtel {
             since,

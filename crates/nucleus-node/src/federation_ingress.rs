@@ -294,15 +294,20 @@ impl CallerBinding {
     /// The SPIFFE ID a validated `sub` maps to, or `None` when the `sub`
     /// cannot be mapped without truncation. See the module docs.
     pub fn principal(&self, sub: &str) -> Option<String> {
-        let sa = encode_sub(sub)?;
-        Identity::try_new(&self.trust_domain, &self.label, sa)
-            .ok()
-            .map(|id| id.to_spiffe_uri())
+        principal_of(&self.trust_domain, &self.label, sub)
     }
 }
 
+/// [`CallerBinding::principal`] for a binding's trust domain and label.
+pub(crate) fn principal_of(trust_domain: &str, label: &str, sub: &str) -> Option<String> {
+    let sa = encode_sub(sub)?;
+    Identity::try_new(trust_domain, label, sa)
+        .ok()
+        .map(|id| id.to_spiffe_uri())
+}
+
 /// The injective `sub` → path-segment encoding. See the module docs.
-fn encode_sub(sub: &str) -> Option<String> {
+pub(crate) fn encode_sub(sub: &str) -> Option<String> {
     use std::fmt::Write as _;
     if sub.is_empty() {
         return None;

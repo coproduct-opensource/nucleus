@@ -195,6 +195,13 @@ pub enum GuestCapability {
     /// through the workload door with no secret (#2696 P2). An older guest has
     /// no bridge, so an agent started in the pod (P5) has no tools at all.
     McpBridge,
+    /// The tool-proxy relays a workload's credentialed egress to the host as a
+    /// STREAM: the body goes up in bounded chunks, each charged to the pod's
+    /// egress ceiling, and the reply comes back as the upstream sends it
+    /// (#2696 P4). An older proxy sends the whole call in one perform frame,
+    /// which the host refuses above 256 KiB and which cannot carry a streamed
+    /// (server-sent-event) reply, so a model call from the pod fails or stalls.
+    StreamingEgress,
 }
 
 /// Which published release first carried a [`GuestCapability`].
@@ -210,7 +217,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 7] = [
+    pub const ALL: [GuestCapability; 8] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -218,6 +225,7 @@ impl GuestCapability {
         GuestCapability::SvidOnTmpfs,
         GuestCapability::WorkloadDoor,
         GuestCapability::McpBridge,
+        GuestCapability::StreamingEgress,
     ];
 
     /// The first release whose rootfs has this.
@@ -229,11 +237,12 @@ impl GuestCapability {
             // #2365 and #2379 merged on 2026-09-02, after `v2.2.0` (8a452030b)
             // was tagged; #3122 (the door) and #3135 (the bridge) on
             // 2026-10-02. 2.3.0 is the first release cut from a tree carrying
-            // all four.
+            // all four; #3178 added streaming egress before the tag as well.
             GuestCapability::EgressAttestation => FirstShipped::Release("2.3.0"),
             GuestCapability::SvidOnTmpfs => FirstShipped::Release("2.3.0"),
             GuestCapability::WorkloadDoor => FirstShipped::Release("2.3.0"),
             GuestCapability::McpBridge => FirstShipped::Release("2.3.0"),
+            GuestCapability::StreamingEgress => FirstShipped::Release("2.3.0"),
         }
     }
 
@@ -273,6 +282,12 @@ impl GuestCapability {
             GuestCapability::McpBridge => {
                 "#2696 (P2) put the MCP bridge in the guest at /usr/local/bin/nucleus-mcp; \
                  an older guest has none, so an agent run in the pod has no way to call its tools"
+            }
+            GuestCapability::StreamingEgress => {
+                "#2696 (P4) made the tool-proxy stream a workload's credentialed egress to the \
+                 host in bounded, metered chunks; an older proxy sends the whole call in one \
+                 perform frame, which the host refuses above 256 KiB and which cannot carry a \
+                 streamed reply"
             }
         }
     }
@@ -376,7 +391,8 @@ fn skew_against(
 ///
 /// `2.3.0` is the first release whose rootfs meets every [`GuestCapability`]:
 /// it runs the egress probe (#2365), keeps its SVID on tmpfs (#2379), serves
-/// the workload its own door (#3122) and carries the MCP bridge (#3135). 2.2.0
+/// the workload its own door (#3122), carries the MCP bridge (#3135), and
+/// streams credentialed egress (#3178). 2.2.0
 /// was the first release matching a post-#2214 node, and it stopped serving
 /// `main` the day after it was tagged. 2.1.0 was the first release containing
 /// everything a pod needed to boot at the time
@@ -560,6 +576,7 @@ mod tests {
                 GuestCapability::SvidOnTmpfs,
                 GuestCapability::WorkloadDoor,
                 GuestCapability::McpBridge,
+                GuestCapability::StreamingEgress,
             ]
         );
         let msg = skew.to_string();
@@ -604,7 +621,8 @@ mod tests {
                 GuestCapability::EgressAttestation => GuestCapability::SvidOnTmpfs,
                 GuestCapability::SvidOnTmpfs => GuestCapability::WorkloadDoor,
                 GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
-                GuestCapability::McpBridge => GuestCapability::CaBundle,
+                GuestCapability::McpBridge => GuestCapability::StreamingEgress,
+                GuestCapability::StreamingEgress => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
@@ -626,6 +644,7 @@ mod tests {
             ("2.2.0", GuestCapability::SvidOnTmpfs),
             ("2.2.0", GuestCapability::WorkloadDoor),
             ("2.2.0", GuestCapability::McpBridge),
+            ("2.2.0", GuestCapability::StreamingEgress),
         ] {
             match guest_skew(broken) {
                 Err(GuestSkew::Lacks { missing, .. }) => {

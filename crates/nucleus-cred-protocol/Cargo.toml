@@ -30,8 +30,21 @@ hmac = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
+# The streaming codec's async half (`stream::io`), behind a feature so a caller
+# that only needs the wire types links no runtime. Both callers, the node and
+# the in-guest tool-proxy, already link tokio with `io-util`, so enabling it
+# adds nothing to either side's dependency graph.
+tokio = { workspace = true, optional = true, features = ["io-util"] }
+
+[features]
+default = []
+# Read and write stream frames over any `AsyncRead`/`AsyncWrite`: one
+# implementation for the guest that relays and the host that performs.
+io = ["dep:tokio"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
 
 [lints]
 workspace = true

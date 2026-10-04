@@ -155,7 +155,8 @@ Guest artifacts come from the pinned release **v2.3.0**.
 and which release first shipped each, and `setup` refuses a release that lacks
 one rather than installing a pod that cannot boot. v2.2.0 and earlier are refused:
 they predate the egress attestation (#2365), the SVID on tmpfs (#2379), the
-workload door (#3031) and the in-guest MCP bridge (#3135). A guest built from the same checkout is always an option
+workload door (#3031), the in-guest MCP bridge (#3135), and streaming
+egress (#3178). A guest built from the same checkout is always an option
 (`nucleus setup --artifacts local`). **Measured 48.7 s** from a deleted VM to
 a booted pod, with Sigstore build provenance verified on every downloaded
 artifact.

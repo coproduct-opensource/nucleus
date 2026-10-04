@@ -527,6 +527,9 @@ pub async fn start_broker_for_pod(
                 crate::lifecycle::pod_dir(&state.state_dir, id),
                 id,
             ),
+            // The operator's per-call bounds on a streamed call (#2696 P4),
+            // validated at start-up; finite whether or not they were set.
+            stream_limits: state.egress_stream_limits,
         },
         jail_owner,
     ) {

@@ -211,20 +211,39 @@ pub struct ParsedSpiffeId {
 impl ParsedSpiffeId {
     /// Parse a SPIFFE ID string.
     ///
-    /// Returns None if the string is not a valid SPIFFE ID.
+    /// Returns None unless the string is the one canonical spelling of a SPIFFE
+    /// ID (`docs/spiffe-taxonomy.md`): a trust domain of 1..=255 bytes of
+    /// `[a-z0-9.-]`, then non-empty `[A-Za-z0-9._-]` segments that are never
+    /// `.` or `..`, at most 2048 bytes. Empty segments used to be dropped, so
+    /// `…/ns//a/` parsed as `…/ns/a`: a second spelling, normalised rather
+    /// than refused.
     pub fn parse(spiffe_id: &str) -> Option<Self> {
+        if spiffe_id.len() > 2048 {
+            return None;
+        }
         let stripped = spiffe_id.strip_prefix("spiffe://")?;
         let (trust_domain, path_str) = stripped.split_once('/')?;
 
-        if trust_domain.is_empty() {
+        if trust_domain.is_empty()
+            || trust_domain.len() > 255
+            || !trust_domain
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+        {
             return None;
         }
 
-        let path: Vec<String> = path_str
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
+        let path: Vec<String> = path_str.split('/').map(String::from).collect();
+        let segment_ok = |s: &String| {
+            !s.is_empty()
+                && s != "."
+                && s != ".."
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
+        };
+        if !path.iter().all(segment_ok) {
+            return None;
+        }
 
         Some(Self {
             trust_domain: trust_domain.to_string(),

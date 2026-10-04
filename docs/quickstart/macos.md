@@ -143,7 +143,8 @@ anywhere, and on such a rootfs the tool-proxy's drand client fails and, as PID 1
 takes the guest kernel with it. `tier2_artifacts::GuestCapability` refuses
 them rather than installing a pod that cannot start. v2.2.0 is refused too: its
 guest predates the egress attestation (#2365), the SVID on tmpfs (#2379), the
-workload door (#3031) and the in-guest MCP bridge (#3135).
+workload door (#3031), the in-guest MCP bridge (#3135), and streaming
+egress (#3178).
 
 The pinned release is **`2.3.0`**, the first build whose guest meets every
 `GuestCapability`. Each
