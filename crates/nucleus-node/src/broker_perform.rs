@@ -16,12 +16,11 @@
 //! is no credential in the guest to steal, so guest compromise does not yield
 //! one. The guest receives the RESULT of the call, which is what it needed.
 //!
-//! What this does NOT do is mediate. `FlowTracker`, the session taint ceiling,
-//! the lethal-trifecta guard and the egress allowlist all live in the tool-proxy
-//! inside the guest, and none of them is reachable from here. The host applies
-//! its own [PDP decision](crate::broker::pdp_decide), which is a coarse
-//! capability check and an independent one — but it is a SECOND gate, not a
-//! replacement for the first.
+//! Fine-grained authorization still runs in the guest. The host now records
+//! broker responses in the pod's shared policy history before delivering them,
+//! but this path does not yet consume that policy's decisions. Its
+//! [PDP decision](crate::broker::pdp_decide) remains a coarse capability check,
+//! alongside the host egress budget and policy-state health checks.
 //!
 //! So the property that makes this safe is not stated in this file:
 //!
@@ -235,6 +234,9 @@ pub struct UpstreamResponse {
 /// more: every field here is per-pod, and grouping them makes it visible that
 /// nothing in a perform decision is global.
 pub struct PerformContext<'a> {
+    /// The pod authority's shared host policy history.
+    pub host_policy: &'a crate::host_decide::SharedPodPolicy,
+
     /// Who is asking, from which socket accepted the connection — never from
     /// the frame.
     pub identity: &'a PodIdentity,
@@ -443,6 +445,19 @@ fn refused(reason: &str) -> PerformReply {
     }
 }
 
+/// Cached responses cross the same observation boundary as fresh responses.
+fn observe_reply(
+    reply: PerformReply,
+    policy: &crate::host_decide::SharedPodPolicy,
+    now: u64,
+) -> PerformReply {
+    if reply.granted && crate::host_decide::PodPolicy::observe_response(policy, now).is_err() {
+        refused("host policy unavailable")
+    } else {
+        reply
+    }
+}
+
 /// The guest-chosen fields every request to act carries, whichever frame
 /// carried them: a [`PerformRequest`] or a streamed
 /// [`StreamRequest`](nucleus_cred_protocol::StreamRequest).
@@ -621,6 +636,9 @@ where
 {
     // 1–3. Decide, resolve the name, fix the path: `resolve`, shared with the
     //      streamed path so the two cannot decide differently.
+    if crate::host_decide::PodPolicy::available(ctx.host_policy).is_err() {
+        return refused("host policy unavailable");
+    }
     let Some(resolved) = resolve(
         &Asked {
             operation: &req.operation,
@@ -646,7 +664,7 @@ where
     //    nothing above is recorded.
     match ctx.ledger.reserve(&req.idempotency_key, effect, now_unix) {
         Reservation::Fresh => {}
-        Reservation::Replay(prior) => return *prior,
+        Reservation::Replay(prior) => return observe_reply(*prior, ctx.host_policy, now_unix),
         // Distinguishable from "not permitted" ON PURPOSE. It says nothing about
         // policy or about which credentials exist — it reports the state of a
         // key the GUEST chose, which the guest already knows. Collapsing it into
@@ -733,6 +751,7 @@ where
         }
     };
 
+    let reply = observe_reply(reply, ctx.host_policy, now_unix);
     ctx.ledger
         .settle(&req.idempotency_key, effect, now_unix, reply.clone());
     reply
@@ -814,6 +833,7 @@ mod tests {
         identity: &'a PodIdentity,
     ) -> PerformContext<'a> {
         PerformContext {
+            host_policy: Box::leak(Box::new(crate::host_decide::test_policy(policy.clone()))),
             identity,
             policy,
             credentials,
@@ -839,6 +859,54 @@ mod tests {
             idempotency_key: key.into(),
             ..request()
         }
+    }
+
+    #[tokio::test]
+    async fn broker_response_taints_the_host_without_a_guest_report() {
+        let (policy, credentials, upstreams, ledger, identity) = (
+            PermissionLattice::permissive(),
+            store(),
+            vec![upstream()],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let decide = || {
+            let (decision, _token) = context
+                .host_policy
+                .lock()
+                .unwrap()
+                .decide(portcullis::Operation::GitCommit, "commit");
+            nucleus_decision_protocol::kernel::outcome_of(&decision.verdict)
+        };
+        assert_eq!(decide(), nucleus_decision_protocol::Outcome::Allowed);
+        let net = Upstream::default();
+        assert!(
+            handle_perform(&request(), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(
+            decide(),
+            nucleus_decision_protocol::Outcome::Denied {
+                reason: nucleus_decision_protocol::DenyReason::FlowRefused,
+            }
+        );
+        // Even a cached response may not cross when the shared state is faulty.
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = context.host_policy.lock().unwrap();
+            panic!("policy update interrupted");
+        }));
+        assert!(fault.is_err());
+        let replay = handle_perform(&request(), &context, NOW, net.caller()).await;
+        assert!(!replay.granted);
+        assert!(replay.body.is_empty());
+        assert_eq!(replay.reason, "host policy unavailable");
+        let fresh =
+            handle_perform(&with_key("fresh-after-fault"), &context, NOW, net.caller()).await;
+        assert!(!fresh.granted);
+        assert_eq!(fresh.reason, "host policy unavailable");
+        assert_eq!(net.count(), 1);
     }
 
     #[tokio::test]

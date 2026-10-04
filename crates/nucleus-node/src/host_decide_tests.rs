@@ -613,6 +613,63 @@ async fn a_misreported_outcome_is_a_disagreement() {
 
 // ── epochs ──────────────────────────────────────────────────────────────────
 
+#[tokio::test]
+async fn authority_owns_policy_across_listener_replacement_but_not_certificate_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let broker_policy = auth.host_policy(pod).await.unwrap();
+    PodPolicy::observe_response(&broker_policy, 1).unwrap();
+    for _ in 0..2 {
+        let listener = PodDecide::new(
+            pod,
+            Arc::clone(&auth),
+            Arc::new(EpochSource::seeded()),
+            Recorder {
+                tally: Arc::new(ShadowTally::default()),
+                log: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(&broker_policy, &listener.policy));
+        let mut channel = listener.open().await.unwrap();
+        assert!(matches!(
+            HostFrame::decode(&decide_step(
+                &mut channel,
+                0,
+                Operation::GitCommit,
+                "commit"
+            ))
+            .unwrap(),
+            HostFrame::Verdict {
+                verdict: Verdict::Denied {
+                    reason: DenyReason::FlowRefused
+                },
+                ..
+            }
+        ));
+    }
+    let another_pod = admit(&auth, PermissionLattice::permissive()).await;
+    assert!(!Arc::ptr_eq(
+        &broker_policy,
+        &auth.host_policy(another_pod).await.unwrap()
+    ));
+    drop(auth);
+    let restored = authority(dir.path());
+    assert_eq!(restored.restore_from_disk().await, 2);
+    assert!(
+        restored.host_kernel(pod).await.is_ok(),
+        "certificate itself is valid"
+    );
+    assert!(matches!(
+        restored.host_policy(pod).await,
+        Err(crate::pod_authority::HostKernelError::HistoryUnavailable)
+    ));
+    let fresh = admit(&restored, PermissionLattice::permissive()).await;
+    assert!(restored.host_policy(fresh).await.is_ok());
+}
+
 /// Two channels for ONE pod, and a channel reopened after it closed: every one
 /// issues under its own epoch, observed on the wire in the ids it hands out.
 #[tokio::test]

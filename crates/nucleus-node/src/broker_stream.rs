@@ -317,6 +317,9 @@ impl PodStreams {
 /// Everything the host needs to serve a streamed call for one pod. Every field
 /// is per pod, as for [`crate::broker_perform::PerformContext`].
 pub struct StreamContext<'a> {
+    /// The pod authority's shared host policy history.
+    pub host_policy: &'a crate::host_decide::SharedPodPolicy,
+
     /// Who is asking, from which socket accepted the connection.
     pub identity: &'a PodIdentity,
     /// This pod's policy.
@@ -485,6 +488,16 @@ where
     W: AsyncWrite + Unpin,
 {
     // 1–3. The perform path's own decision, resolution and path fixing.
+    if crate::host_decide::PodPolicy::available(ctx.host_policy).is_err() {
+        return refuse(
+            &Refusal::Named("host policy unavailable".into()),
+            0,
+            Remaining::MayFollow,
+            reader,
+            writer,
+        )
+        .await;
+    }
     let Some(resolved) = crate::broker_perform::resolve(
         &Asked {
             operation: &req.operation,
@@ -611,6 +624,18 @@ where
         .await;
     }
 
+    // The host records what it is about to deliver, even if the guest omits
+    // its observation report. No upstream status, headers or bytes cross first.
+    if crate::host_decide::PodPolicy::observe_response(ctx.host_policy, now).is_err() {
+        return refuse(
+            &Refusal::Named("host policy unavailable".into()),
+            uploaded,
+            Remaining::Ended,
+            reader,
+            writer,
+        )
+        .await;
+    }
     // 8. Granted: the head, then the reply as it arrives, then the end.
     let head = StreamHead {
         granted: true,
@@ -851,6 +876,7 @@ mod tests {
 
     /// One pod, as the listener would hold it.
     struct Pod {
+        host_policy: crate::host_decide::SharedPodPolicy,
         identity: PodIdentity,
         policy: PermissionLattice,
         credentials: PodCredentials,
@@ -878,6 +904,7 @@ mod tests {
             }
             let dir = tempfile::tempdir().expect("tempdir");
             Self {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/stream"),
                 policy: PermissionLattice::permissive(),
                 credentials: PodCredentials::static_only(store),
@@ -901,6 +928,7 @@ mod tests {
 
         fn serving(&self) -> BrokerServing<'_> {
             BrokerServing {
+                host_policy: &self.host_policy,
                 identity: &self.identity,
                 policy: &self.policy,
                 credentials: &self.credentials,
@@ -993,6 +1021,22 @@ mod tests {
         (0..MIB).map(|i| b"0123456789abcdef"[i % 16]).collect()
     }
 
+    #[tokio::test]
+    async fn a_faulted_host_policy_refuses_a_stream_before_upstream_io() {
+        let (base, seen) = upstream().await;
+        let pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = pod.host_policy.lock().unwrap();
+            panic!("policy update interrupted");
+        }));
+        assert!(fault.is_err());
+        let heard = drive(&pod, &open("model-api", "after-fault"), b"request").await;
+        assert!(!heard.head.granted);
+        assert_eq!(heard.head.reason, "host policy unavailable");
+        assert!(heard.body.is_empty());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
     /// **#2696 P4's headline.** A 1 MiB request body streams through the host
     /// to the upstream, and the upstream's server-sent events stream back, in
     /// order and whole. The host injected the credential: the upstream saw
@@ -1008,6 +1052,18 @@ mod tests {
         let heard = drive(&pod, &open("model-api", "n-1"), &mebibyte()).await;
 
         assert!(heard.head.granted, "{:?}", heard.head);
+        // The guest never sent an Observe frame. The broker owns this fact.
+        let (decision, _token) = pod
+            .host_policy
+            .lock()
+            .unwrap()
+            .decide(portcullis::Operation::GitCommit, "commit");
+        assert_eq!(
+            nucleus_decision_protocol::kernel::outcome_of(&decision.verdict),
+            nucleus_decision_protocol::Outcome::Denied {
+                reason: nucleus_decision_protocol::DenyReason::FlowRefused,
+            }
+        );
         assert_eq!(heard.head.status, 200);
         assert_eq!(heard.head.content_type, "text/event-stream");
         assert_eq!(

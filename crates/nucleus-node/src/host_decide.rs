@@ -353,9 +353,62 @@ pub(crate) struct Step {
 
 /// Policy history belongs to the pod, not to a guest-selected connection.
 /// Access is serialized with observation and decision in one critical section.
-struct PodPolicy {
+pub(crate) struct PodPolicy {
     kernel: Kernel,
     taint: HostTaint,
+}
+
+/// One policy history shared by the decision and credential listeners.
+pub(crate) type SharedPodPolicy = Arc<Mutex<PodPolicy>>;
+
+/// Restoring a certificate does not restore observations or spent runtime budget.
+pub(crate) enum PolicyHistory {
+    Fresh,
+    Live(SharedPodPolicy),
+    UnavailableAfterRestart,
+}
+
+impl PodPolicy {
+    pub(crate) fn available(policy: &SharedPodPolicy) -> Result<(), ChannelError> {
+        let _guard = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
+        Ok(())
+    }
+
+    pub(crate) fn new(kernel: Kernel) -> SharedPodPolicy {
+        Arc::new(Mutex::new(Self {
+            kernel,
+            taint: HostTaint::clean(),
+        }))
+    }
+
+    /// Record host-delivered external content before making it visible to the
+    /// guest. A guest report is not needed and cannot undo this observation.
+    pub(crate) fn observe_response(policy: &SharedPodPolicy, now: u64) -> Result<(), ChannelError> {
+        let mut policy = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
+        policy
+            .taint
+            .raise(nucleus_decision_protocol::LabelRaise::new(
+                nucleus_decision_protocol::IFCLabel::web_content(now),
+            ));
+        Ok(())
+    }
+
+    pub(crate) fn decide(
+        &mut self,
+        op: Operation,
+        subject: &str,
+    ) -> (
+        portcullis::kernel::Decision,
+        Option<portcullis::kernel::DecisionToken>,
+    ) {
+        self.kernel
+            .decide_term_with_flow(ActionTerm::from_operation(op, subject), Some(&self.taint))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_policy(policy: portcullis::PermissionLattice) -> SharedPodPolicy {
+    PodPolicy::new(Kernel::new(policy))
 }
 
 /// One decision channel's host state. See the module docs.
@@ -363,7 +416,7 @@ pub(crate) struct Channel {
     pod: Uuid,
     gate: SeqGate,
     ledger: DecisionLedger,
-    policy: Arc<Mutex<PodPolicy>>,
+    policy: SharedPodPolicy,
     pending: Option<Pending>,
 }
 
@@ -390,7 +443,7 @@ impl Channel {
         )
     }
 
-    fn with_policy(pod: Uuid, policy: Arc<Mutex<PodPolicy>>, epoch: u64) -> Self {
+    fn with_policy(pod: Uuid, policy: SharedPodPolicy, epoch: u64) -> Self {
         Self {
             pod,
             gate: SeqGate::new(),
@@ -494,11 +547,7 @@ impl Channel {
                 .policy
                 .lock()
                 .map_err(|_| ChannelError::PolicyUnavailable)?;
-            let PodPolicy { kernel, taint } = &mut *policy;
-            kernel.decide_term_with_flow(
-                ActionTerm::from_operation(op, subject.as_str()),
-                Some(taint),
-            )
+            policy.decide(op, subject.as_str())
         };
         // The host performs nothing in shadow mode; the token authorizes I/O
         // nobody will do.
@@ -710,7 +759,7 @@ where
 pub(crate) struct PodDecide {
     pub pod: Uuid,
     pub authority: Arc<crate::pod_authority::PodAuthority>,
-    policy: Arc<Mutex<PodPolicy>>,
+    policy: SharedPodPolicy,
     pub epochs: Arc<EpochSource>,
     pub recorder: Recorder,
 }
@@ -732,16 +781,13 @@ impl PodDecide {
         epochs: Arc<EpochSource>,
         recorder: Recorder,
     ) -> Result<Self, crate::pod_authority::HostKernelError> {
-        let kernel = authority.host_kernel(pod).await?;
+        let policy = authority.host_policy(pod).await?;
         Ok(Self {
             pod,
             authority,
             epochs,
             recorder,
-            policy: Arc::new(Mutex::new(PodPolicy {
-                kernel,
-                taint: HostTaint::clean(),
-            })),
+            policy,
         })
     }
 

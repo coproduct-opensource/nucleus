@@ -347,6 +347,9 @@ pub type UpstreamCaller = Arc<
 /// every field is per-pod, and a listener assembled from a mixture of two pods'
 /// values is the failure this arc has already produced once.
 pub struct PodBrokerConfig {
+    /// The pod authority's shared host policy history.
+    pub host_policy: crate::host_decide::SharedPodPolicy,
+
     /// Bound at the listener, never read from a frame.
     pub identity: PodIdentity,
     /// This pod's policy.
@@ -372,6 +375,9 @@ pub struct PodBrokerConfig {
 /// the ownership difference is real: the identity is fixed when the socket is
 /// bound and the ledger must outlive every connection served on it.
 pub struct PodBroker {
+    /// The pod authority's shared host policy history.
+    pub host_policy: crate::host_decide::SharedPodPolicy,
+
     /// Bound at the listener, never read from a frame.
     pub identity: PodIdentity,
     /// This pod's policy.
@@ -401,6 +407,9 @@ pub struct PodBroker {
 /// between pods, which is the property that keeps this from becoming the
 /// credential-concentrating gateway `CredentialedEgressSpec` warns about.
 pub struct BrokerServing<'a> {
+    /// The pod authority's shared host policy history.
+    pub host_policy: &'a crate::host_decide::SharedPodPolicy,
+
     /// Who is calling, from which socket accepted — never from the frame.
     pub identity: &'a PodIdentity,
     /// This pod's policy.
@@ -543,6 +552,7 @@ pub async fn serve_connection_with_timeout<S>(
                 ),
                 Ok(GuestAsk::Perform(request)) => {
                     let ctx = PerformContext {
+                        host_policy: serving.host_policy,
                         identity: serving.identity,
                         policy: serving.policy,
                         credentials: serving.credentials,
@@ -562,6 +572,7 @@ pub async fn serve_connection_with_timeout<S>(
                 // then the reply, then its end. Nothing more is written here.
                 Ok(GuestAsk::Stream(request)) => {
                     let ctx = crate::broker_stream::StreamContext {
+                        host_policy: serving.host_policy,
                         identity: serving.identity,
                         policy: serving.policy,
                         credentials: serving.credentials,
@@ -670,6 +681,7 @@ pub(crate) mod serving_tests {
         caller: UpstreamCaller,
     ) -> BrokerServing<'a> {
         BrokerServing {
+            host_policy: Box::leak(Box::new(crate::host_decide::test_policy(policy.clone()))),
             identity,
             policy,
             credentials,
@@ -1252,6 +1264,7 @@ pub async fn serve_broker(
     shutdown: impl std::future::Future<Output = ()>,
 ) {
     let PodBroker {
+        host_policy,
         identity,
         policy,
         credentials,
@@ -1282,6 +1295,7 @@ pub async fn serve_broker(
                 match accepted {
                     Ok((stream, _addr)) => {
                         let policy = Arc::clone(&policy);
+                        let host_policy = Arc::clone(&host_policy);
                         let credentials = Arc::clone(&credentials);
                         let identity = identity.clone();
                         let broker_secret = broker_secret.clone();
@@ -1294,6 +1308,7 @@ pub async fn serve_broker(
                             serve_connection(
                                 stream,
                                 &BrokerServing {
+                                    host_policy: &host_policy,
                                     identity: &identity,
                                     policy: &policy,
                                     credentials: &credentials,
@@ -1373,6 +1388,7 @@ impl BrokerListener {
         jail_owner: Option<(u32, u32)>,
     ) -> io::Result<Self> {
         let PodBrokerConfig {
+            host_policy,
             identity,
             policy,
             credentials,
@@ -1428,6 +1444,7 @@ impl BrokerListener {
             serve_broker(
                 listener,
                 PodBroker {
+                    host_policy,
                     identity,
                     policy,
                     credentials,
@@ -1580,6 +1597,7 @@ mod listener_lifecycle_tests {
             &uds,
             9999,
             PodBrokerConfig {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
                 policy: policy(),
                 credentials: store("api.example.test", "v"),
@@ -1609,6 +1627,7 @@ mod listener_lifecycle_tests {
             &uds,
             9999,
             PodBrokerConfig {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
                 policy: policy(),
                 credentials: store("api.example.test", "v"),
@@ -1646,6 +1665,7 @@ mod listener_lifecycle_tests {
             &uds,
             9998,
             PodBrokerConfig {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),
                 policy: policy(),
                 credentials: store("api.example.test", "v"),
@@ -1777,6 +1797,7 @@ mod listener_tests {
         let server = tokio::spawn(serve_broker(
             listener,
             PodBroker {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: who(),
                 policy,
                 credentials,
@@ -1844,6 +1865,7 @@ mod listener_tests {
         let server = tokio::spawn(serve_broker(
             listener,
             PodBroker {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: who(),
                 policy: Arc::new(PermissionLattice::permissive()),
                 credentials: Arc::new(PodCredentials::static_only(s)),

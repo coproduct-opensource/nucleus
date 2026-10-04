@@ -209,6 +209,8 @@ pub(crate) struct Admission {
 pub(crate) enum HostKernelError {
     #[error("this node issued the pod no certificate")]
     NoCertificate,
+    #[error("the restored pod has no recovered host policy history")]
+    HistoryUnavailable,
     #[error("the pod's certificate does not verify against this node's root: {0}")]
     DoesNotVerify(String),
 }
@@ -489,6 +491,7 @@ impl IssuedAuthority {
 }
 
 struct PodCert {
+    host_policy: crate::host_decide::PolicyHistory,
     cert: LatticeCertificate,
     holder: Ed25519KeyPair,
     holder_pkcs8: Vec<u8>,
@@ -499,6 +502,19 @@ struct PodCert {
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
     upstreams: Vec<CredentialedEgressSpec>,
+}
+
+/// One verifier for both fresh guest-equivalent kernels and shared host state.
+fn verified_host_kernel(
+    entry: &PodCert,
+    root: &[u8],
+) -> Result<portcullis::kernel::Kernel, HostKernelError> {
+    let verified = verify_certificate(&entry.cert, root, Utc::now(), DEFAULT_MAX_CHAIN_DEPTH)
+        .map_err(|e| HostKernelError::DoesNotVerify(e.to_string()))?;
+    Ok(portcullis::kernel::Kernel::from_certificate(
+        verified,
+        entry.cert.fingerprint(),
+    ))
 }
 
 /// An external caller chain's ledger, and its retired children as for a pod.
@@ -1214,6 +1230,7 @@ impl PodAuthority {
         let chain_depth = cert.chain_depth();
         let root_identity = cert.root_identity().to_string();
         let entry = PodCert {
+            host_policy: crate::host_decide::PolicyHistory::Fresh,
             ledger: BudgetLedger::for_parent(&effective.budget),
             retired: Vec::new(),
             cert,
@@ -1314,17 +1331,32 @@ impl PodAuthority {
             .pods
             .get(&pod_id)
             .ok_or(HostKernelError::NoCertificate)?;
-        let verified = verify_certificate(
-            &entry.cert,
-            &self.root_pubkey,
-            Utc::now(),
-            DEFAULT_MAX_CHAIN_DEPTH,
-        )
-        .map_err(|e| HostKernelError::DoesNotVerify(e.to_string()))?;
-        Ok(portcullis::kernel::Kernel::from_certificate(
-            verified,
-            entry.cert.fingerprint(),
-        ))
+        verified_host_kernel(entry, &self.root_pubkey)
+    }
+
+    /// The one runtime policy history owned by this admitted pod. Both broker
+    /// and decision listeners obtain it here; connection/listener replacement
+    /// cannot mint a fresh history. Certificate restore alone is insufficient.
+    pub async fn host_policy(
+        &self,
+        pod_id: Uuid,
+    ) -> Result<crate::host_decide::SharedPodPolicy, HostKernelError> {
+        use crate::host_decide::{PodPolicy, PolicyHistory};
+        let mut inner = self.inner.lock().await;
+        let entry = inner
+            .pods
+            .get_mut(&pod_id)
+            .ok_or(HostKernelError::NoCertificate)?;
+        let kernel = verified_host_kernel(entry, &self.root_pubkey)?;
+        match &entry.host_policy {
+            PolicyHistory::Live(policy) => Ok(std::sync::Arc::clone(policy)),
+            PolicyHistory::UnavailableAfterRestart => Err(HostKernelError::HistoryUnavailable),
+            PolicyHistory::Fresh => {
+                let policy = PodPolicy::new(kernel);
+                entry.host_policy = PolicyHistory::Live(std::sync::Arc::clone(&policy));
+                Ok(policy)
+            }
+        }
     }
 
     /// `admit`, with the reservation committed: for tests about what admission
@@ -1576,6 +1608,7 @@ fn restored_pod(bytes: &[u8]) -> Result<PodCert, &'static str> {
     }
     let ledger = BudgetLedger::for_parent(&persisted.certificate.effective_permissions().budget);
     Ok(PodCert {
+        host_policy: crate::host_decide::PolicyHistory::UnavailableAfterRestart,
         ledger: charged(ledger, persisted.ledger.consumed_micro),
         retired: persisted.ledger.retired,
         cert: persisted.certificate,

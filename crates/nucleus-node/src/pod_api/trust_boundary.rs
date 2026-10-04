@@ -679,6 +679,7 @@ impl Host for Node {
         let (caller, calls) = crate::broker_transport::serving_tests::recording_caller();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let broker = crate::broker_transport::PodBroker {
+            host_policy: crate::host_decide::test_policy(policy.clone()),
             identity: nucleus_cred_broker::PodIdentity::observed_by_host(format!(
                 "spiffe://test.local/ns/pods/sa/{id}"
             )),

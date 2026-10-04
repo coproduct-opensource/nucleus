@@ -41,12 +41,14 @@ Implementation sequence:
    reset observed taint, spent budget or revocation. Concurrent channels must
    share the applicable limits. Host-delivered observations raise host taint
    independently of guest reports.
-   **In progress:** the shadow service shares one kernel and taint across pod
-   connections. Protocol sequence/decision epochs remain per channel. A policy
-   panic refuses subsequent observations and decisions rather than resetting
-   state. This is in-memory state for the running pod listener, not persistence
-   across node restart. Broker charging, revocation and host-derived observations
-   are not yet wired into this state.
+   **In progress:** pod authority owns one kernel and taint shared by the broker
+   and decision service, including across listener replacement. Protocol
+   sequence/decision epochs remain per channel. Broker PERFORM and streaming
+   responses raise host taint before delivery, without relying on guest reports.
+   A policy panic refuses observations, decisions and new broker I/O. State is
+   in memory; restored certificates without recovered runtime history cannot
+   obtain a clean policy or start a broker. Broker charging and revocation are
+   not yet wired into this state, and durable runtime recovery remains open.
 4. Connect host decisions to both PERFORM and streaming effects. The executable
    effect requires a consumed, matching host decision. Missing, stale, foreign,
    replayed and mismatched decisions refuse before credentials or upstream I/O.
@@ -150,3 +152,22 @@ kernel per connection makes the budget-history test fail.
 aarch64-unknown-linux-musl` succeeds, compiling the Linux-only production startup
 as well as the shared implementation. This is cross-build evidence, not a guest
 boot or a node-restart recovery test.
+
+### Broker observation evidence (2026-10-04)
+
+Pod authority now owns the shared runtime policy. Broker and decision listeners
+obtain the same handle, and replacing either listener does not create clean
+history. PERFORM, cached PERFORM replies and streamed responses cross a host
+observation boundary before delivery. Faulted policy state refuses new broker
+I/O. A restored certificate without runtime history is explicitly unavailable;
+newly admitted pods after restart remain usable.
+
+The full node run passed 796 unit tests (one ignored) and three integration
+checks. After the final fault-path additions, 94 broker tests and the 17 host / 9
+guest decision tests pass. Removing host observation makes both the PERFORM
+regression and the real HTTP/SSE streaming regression fail. The Linux ARM64 musl
+build, consumer Clippy checks and all four prepush gates pass.
+
+This establishes host-owned observations and shared state, not host-authoritative
+effects. Full effect decision consumption, approvals, charging, revocation,
+durable runtime recovery and host-only signing remain required.

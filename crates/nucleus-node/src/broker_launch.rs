@@ -510,6 +510,11 @@ pub async fn start_broker_for_pod(
         vsock_path,
         state.broker_vsock_port,
         crate::broker_transport::PodBrokerConfig {
+            host_policy: state
+                .authority
+                .host_policy(id)
+                .await
+                .map_err(|e| crate::ApiError::Driver(e.to_string()))?,
             identity,
             policy,
             credentials,

@@ -868,6 +868,9 @@ policy_id = "example-policy-0001"
 
         async fn call_as(&self, req: &PerformRequest, now: u64) -> PerformReply {
             let ctx = PerformContext {
+                host_policy: Box::leak(Box::new(crate::host_decide::test_policy(
+                    self.policy.clone(),
+                ))),
                 identity: &self.identity,
                 policy: &self.policy,
                 credentials: &self.credentials,
@@ -937,6 +940,9 @@ policy_id = "example-policy-0001"
         );
         let (client, server) = tokio::io::duplex(512 * 1024);
         let serving = BrokerServing {
+            host_policy: Box::leak(Box::new(crate::host_decide::test_policy(
+                PermissionLattice::permissive(),
+            ))),
             identity: &pod.identity,
             policy: &pod.policy,
             credentials: &pod.credentials,
