@@ -35,6 +35,9 @@ nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 # Credential/CredentialStore, and deny.toml refuses it outside the composition
 # root. Attempting it failed `deny (bans)`, which is why this crate exists.
 nucleus-cred-protocol = { path = "../nucleus-cred-protocol", features = ["io"] }
+# The decision channel's one wire declaration (#2702, P7), which the node links
+# too. The proxy asks the host as well as its own kernel, in shadow (P8).
+nucleus-decision-protocol = { path = "../nucleus-decision-protocol", features = ["kernel"] }
 axum = { workspace = true }
 # Panic net: CatchPanicLayer converts a stray panic (e.g. a poisoned lock's
 # `.expect()`) into a fail-closed HTTP 500 instead of dropping the connection.

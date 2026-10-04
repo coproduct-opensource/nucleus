@@ -6853,7 +6853,9 @@ name = "nucleus-decision-protocol"
 version = "1.0.0"
 dependencies = [
  "nucleus-ifc-kernel",
+ "portcullis",
  "proptest",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -7239,6 +7241,7 @@ dependencies = [
  "nucleus-client",
  "nucleus-cred-broker",
  "nucleus-cred-protocol",
+ "nucleus-decision-protocol",
  "nucleus-federation",
  "nucleus-identity",
  "nucleus-ifc-kernel",
@@ -7685,6 +7688,7 @@ dependencies = [
  "nucleus-authority-exchange",
  "nucleus-client",
  "nucleus-cred-protocol",
+ "nucleus-decision-protocol",
  "nucleus-econ-types",
  "nucleus-identity",
  "nucleus-ifc-kernel",

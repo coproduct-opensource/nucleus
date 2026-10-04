@@ -394,9 +394,12 @@ impl NucleusMcpServer {
         // The live egress verdict reads the single authoritative `FlowGraph` (its
         // session aggregates). Once adversarial (web) content is in the session,
         // outbound operations are denied with `IfcUnsafe` before the normal
-        // decision path.
+        // decision path. The host is asked too, under both locks (P8 shadow).
         let graph = self.flow_graph.lock().await;
         let (decision, token) = kernel.decide_term_with_flow(term, Some(&*graph));
+        self.state
+            .host_decide
+            .submit(&kernel, &graph, operation, subject, &decision.verdict);
         // Read before the lock goes: the record below names the session the
         // KERNEL decided under, which is not the sink's own `session_id` (that
         // one is the PermissionLattice's uuid).

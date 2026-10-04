@@ -85,6 +85,7 @@ mod envelope_frame;
 mod federated_credential;
 mod federation_ingress;
 mod guest_socket;
+mod host_decide;
 mod host_paths;
 mod lifecycle;
 mod net;
@@ -468,6 +469,10 @@ struct NodeState {
     /// Per-pod certificate authority: proof of caller authority at
     /// pod-create, budget conserved across spawn (pod_authority.rs).
     authority: Arc<pod_authority::PodAuthority>,
+    /// Epochs for the pods' shadow decision channels (#2702, P8): one counter
+    /// for the whole node, so no two channels' ledgers share an epoch.
+    #[cfg(target_os = "linux")]
+    decision_epochs: Arc<host_decide::EpochSource>,
     /// HTTP client for trust API calls.
     http_client: reqwest::Client,
     /// Broadcast channel for streaming lockdown commands to connected tool-proxies.
@@ -564,6 +569,9 @@ struct FirecrackerPod {
     /// the pod's vsock path, so a listener outliving its pod would still be bound
     /// to the dead pod's identity when a later pod reused that path.
     broker: Mutex<Option<broker_transport::BrokerListener>>,
+    /// The shadow decision service for this pod (#2702, P8), owned for the same
+    /// reason the broker is: its socket path is derived from the pod's vsock path.
+    decide: Mutex<Option<host_decide::DecideListener>>,
     /// The jail this pod runs in, when launched via the jailer. Held so teardown
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
@@ -796,6 +804,8 @@ async fn main() -> Result<(), ApiError> {
         docker,
         trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
         authority: Arc::new(authority),
+        #[cfg(target_os = "linux")]
+        decision_epochs: Arc::new(host_decide::EpochSource::seeded()),
         http_client: reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()
@@ -1234,6 +1244,11 @@ impl FirecrackerPod {
                      shutdown signal"
                 );
             }
+        }
+
+        if let Some(listener) = self.decide.lock().await.take() {
+            let tally = listener.shutdown().await;
+            tracing::info!(pod_dir = %self.pod_dir.display(), ?tally, "host-decide shadow tally at teardown");
         }
 
         // A let-chain (edition 2024) rather than a tuple of Options: it says the
@@ -2730,6 +2745,16 @@ async fn spawn_firecracker_pod(
                 .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
         )
         .await?;
+        let decide = host_decide::start_for_pod(
+            state,
+            id,
+            &vsock_path,
+            pod_dir,
+            jail_layout
+                .as_ref()
+                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+        )
+        .await;
 
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
@@ -2756,6 +2781,7 @@ async fn spawn_firecracker_pod(
             identity_manager,
             workload_api_bridge: Mutex::new(workload_api_bridge),
             broker: Mutex::new(broker),
+            decide: Mutex::new(decide),
             snapshot: verdict.found().map(|v| config.snapshot_inputs(v)),
         };
 

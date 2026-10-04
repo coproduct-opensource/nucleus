@@ -278,6 +278,9 @@ pub(crate) struct MediationEnv<'a> {
     pub transport: &'a str,
     /// Approvals a person has already given.
     pub grants: &'a dyn ApprovalGrants,
+    /// The host's shadow decision service (#2702, P8). Every decision made here
+    /// is put to it too; its answer is counted, never enforced.
+    pub shadow: &'a crate::host_decide::HostDecide,
 }
 
 /// Decide, record, and map — in that order, indivisibly.
@@ -300,6 +303,7 @@ pub(crate) fn decide_and_record(
         actor,
         transport,
         grants,
+        shadow,
     } = env;
     // The live egress verdict is read from the single authoritative `FlowGraph`
     // (Phase 2 retirement: the retained `FlowTracker` oracle and its divergence
@@ -308,6 +312,11 @@ pub(crate) fn decide_and_record(
     // `session_exfiltration_check` aggregates carry the lethal-trifecta taint, and
     // on absence/error the kernel path denies fail-closed.
     let (decision, mapped) = decide_with_flow_mapped(kernel, graph, operation, subject, grants);
+    // Shadowed here, beside the recording, for the same reason the recording is
+    // here: no decision leaves this function unshadowed. The kernel's own
+    // verdict is reported — a deferral a grant satisfied is still the
+    // `RequiresApproval` the host's kernel would also have said.
+    shadow.submit(kernel, graph, operation, subject, &decision.verdict);
 
     crate::verdict_sink::record_kernel_decision(
         sink,

@@ -29,6 +29,19 @@ description = "The per-pod decision channel's wire declaration: one frame codec 
 # features, and both nucleus-node and nucleus-tool-proxy already link it.
 nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0", default-features = false }
 
+# The `kernel` feature (P8): the facts BOTH ends of the shadow channel compute
+# from a portcullis kernel, written once so the guest and the host cannot map a
+# verdict, summarise a taint or digest a call two ways (ADR 0007 G-1). Off by
+# default: the codec above stays dependency-free, and the fuzz target builds it
+# without the kernel. Both consumers (nucleus-node, nucleus-tool-proxy) already
+# link portcullis and sha2.
+portcullis = { path = "../portcullis", version = "1.0.0", optional = true }
+sha2 = { workspace = true, optional = true }
+
+[features]
+default = []
+kernel = ["dep:portcullis", "dep:sha2"]
+
 [dev-dependencies]
 proptest = { workspace = true }
 

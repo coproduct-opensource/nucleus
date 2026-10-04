@@ -3,8 +3,10 @@
 //! Part of the host-decides programme (#2702, L-1, step P7). Today every
 //! decision about a tool call is taken inside the guest, by a process that also
 //! holds the receipt-signing key. The programme moves the deciding to the host;
-//! this crate is the protocol it moves over. It is not wired in yet — P8 adds the
-//! host's shadow decide — so nothing here changes behaviour on its own.
+//! this crate is the protocol it moves over. P8 wires it in SHADOW mode: the
+//! guest asks the host as well as its own kernel, still enforces its own answer,
+//! and the host records every disagreement. Nothing the host says is enforced
+//! until P9.
 //!
 //! # The conversation
 //!
@@ -16,6 +18,7 @@
 //! | [`GuestFrame::Decide`] — may I do `op` to `subject` with args hashing to `args_digest`? | [`HostFrame::Verdict`]: [`Verdict::Allowed`] with a [`DecisionId`], [`Verdict::Denied`] with a [`DenyReason`], or [`Verdict::ApprovalRequired`] with an [`ApprovalId`] |
 //! | [`GuestFrame::Observe`] — I have seen something; raise my taint by this | [`HostFrame::Observed`] |
 //! | [`GuestFrame::Redeem`] — the approval I was told to wait for | [`HostFrame::Verdict`], allowed or denied |
+//! | [`GuestFrame::Shadow`] (P8 only) — my own kernel decided that `Decide` as this [`Outcome`] | [`HostFrame::Compared`] with the host's [`Agreement`] |
 //!
 //! # Who decides what
 //!
@@ -90,9 +93,21 @@ pub use codec::{
     EncodeError, Field, FrameError, LEN_PREFIX, MAX_BODY_LEN, Region, VERSION, body_len,
 };
 pub use frame::{
-    ApprovalId, ArgsDigest, DecisionId, DenyReason, GuestFrame, HostFrame, LabelRaise,
-    MAX_SUBJECT_LEN, Seq, Subject, SubjectError, Verdict,
+    Agreement, ApprovalId, ArgsDigest, DecisionId, DenyReason, GuestFrame, HostFrame, LabelRaise,
+    MAX_SUBJECT_LEN, Outcome, Seq, Subject, SubjectError, Verdict,
 };
+
+/// The vsock port the guest dials for its decision channel (P8).
+///
+/// Declared here, beside the wire it carries, so the node that listens and the
+/// proxy that dials read one number (ADR 0007 G-1). Guest-initiated, like the
+/// credential broker's 1027 and unlike the tool-proxy's host-initiated control
+/// port; distinct from both so a trusted direction and an untrusted one never
+/// share a listener.
+pub const DECISION_VSOCK_PORT: u32 = 1028;
+
+#[cfg(feature = "kernel")]
+pub mod kernel;
 
 /// The label and operation vocabulary, re-exported so a consumer names the
 /// same types this protocol carries without a second dependency line.

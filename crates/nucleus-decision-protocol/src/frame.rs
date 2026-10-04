@@ -286,6 +286,62 @@ pub enum Verdict {
     ApprovalRequired { approval_id: ApprovalId },
 }
 
+impl Verdict {
+    /// What was decided, without the id that carries the right to act on it.
+    pub const fn outcome(&self) -> Outcome {
+        match self {
+            Verdict::Allowed { decision_id: _ } => Outcome::Allowed,
+            Verdict::Denied { reason } => Outcome::Denied { reason: *reason },
+            Verdict::ApprovalRequired { approval_id: _ } => Outcome::ApprovalRequired,
+        }
+    }
+}
+
+/// A decision's class: what a [`Verdict`] says, with no id attached.
+///
+/// The unit of comparison in shadow mode (#2702, P8). The guest reports the
+/// outcome its own kernel reached in a [`GuestFrame::Shadow`]; the host compares
+/// it with the outcome of the [`Verdict`] it sent. An outcome carries no
+/// decision or approval id, so a report of one grants nothing and anyone can
+/// write it: it is a claim the host records, never a right it honours.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Outcome {
+    /// Permitted.
+    Allowed,
+    /// Refused, for this reason.
+    Denied { reason: DenyReason },
+    /// Deferred to a human.
+    ApprovalRequired,
+}
+
+/// Whether the host's verdict and the guest's own decision were the same
+/// [`Outcome`].
+///
+/// Decided by the host, once ([`Agreement::of`]), and told to the guest in
+/// [`HostFrame::Compared`], so the host's tally and the guest's cannot count
+/// the same exchange differently (ADR 0007 G-1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Agreement {
+    /// The same outcome.
+    Agree,
+    /// Different outcomes. The host keeps a record naming both.
+    Disagree,
+}
+
+impl Agreement {
+    /// Every value, for the decoder's search (as [`DenyReason::ALL`]).
+    pub const ALL: [Agreement; 2] = [Agreement::Agree, Agreement::Disagree];
+
+    /// The comparison. The one place agreement is decided.
+    pub fn of(host: Outcome, guest: Outcome) -> Self {
+        if host == guest {
+            Agreement::Agree
+        } else {
+            Agreement::Disagree
+        }
+    }
+}
+
 /// A frame the guest sends.
 #[derive(Debug, PartialEq, Eq)]
 pub enum GuestFrame {
@@ -300,6 +356,15 @@ pub enum GuestFrame {
     Observe { seq: Seq, label_raise: LabelRaise },
     /// Redeem the approval I was told to wait for. Consumes the guest's handle.
     Redeem { seq: Seq, approval_id: ApprovalId },
+    /// SHADOW MODE ONLY (P8): my own kernel decided the `Decide` numbered
+    /// `decided` as `local`. The host compares that with its verdict and retires
+    /// the id it issued for it. Goes when the guest's kernel does (owner
+    /// decision D6).
+    Shadow {
+        seq: Seq,
+        decided: Seq,
+        local: Outcome,
+    },
 }
 
 /// A frame the host sends. Every guest frame is answered by exactly one.
@@ -309,4 +374,7 @@ pub enum HostFrame {
     Verdict { seq: Seq, verdict: Verdict },
     /// The `Observe` numbered `seq` has been folded into the host's label.
     Observed { seq: Seq },
+    /// SHADOW MODE ONLY (P8): the `Shadow` report numbered `seq` was compared,
+    /// and this is what the host found.
+    Compared { seq: Seq, agreement: Agreement },
 }
