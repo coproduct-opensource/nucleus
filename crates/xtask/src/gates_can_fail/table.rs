@@ -81,14 +81,6 @@ const fn xtask(sub: &'static str) -> Family {
     Family::Xtask { sub }
 }
 
-const EXEMPLAR: &[Generated] = &[Generated {
-    ci_name: "scoreboard.json",
-    temp: ("scoreboard", ".json"),
-    gen_name: "gen_exemplar_scoreboard",
-    write: p::gen_exemplar_scoreboard,
-    must_be_nonempty: true,
-}];
-
 const POLICY: &[Generated] = &[
     Generated {
         ci_name: "before.toml",
@@ -263,10 +255,9 @@ pub fn probes() -> Vec<Probe> {
             perturb: pert!(perturb_command_band_dropped),
         },
         Probe {
-            family: Family::XtaskGenerated {
+            family: Family::XtaskFlagged {
                 sub: "scoreboard-ratchet",
-                ci_flags: "--current scoreboard.json --baseline scripts/exemplar-baseline.json",
-                generated: EXEMPLAR,
+                flags: "--baseline scripts/exemplar-baseline.json",
             },
             target: "scripts/exemplar-baseline.json",
             desc: "a baseline claiming a score the tree does not have",

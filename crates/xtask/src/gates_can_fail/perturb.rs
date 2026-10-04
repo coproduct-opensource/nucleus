@@ -14,7 +14,6 @@
 
 use std::fs;
 use std::path::Path;
-use std::process::{Command, Stdio};
 
 use regex::Regex;
 
@@ -566,17 +565,6 @@ pub fn perturb_policy_escalation(_: &Path, t: &str) -> Perturbed {
         r"(?m)^(network_allow = \[)",
         "${1}\"evil.example.com\", ",
     ))
-}
-
-pub fn gen_exemplar_scoreboard(cwd: &Path, out: &Path) -> bool {
-    Command::new("bash")
-        .arg("scripts/exemplar-scoreboard.sh")
-        .arg(out)
-        .current_dir(cwd)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
 }
 
 pub fn perturb_exemplar_baseline(_: &Path, t: &str) -> Perturbed {

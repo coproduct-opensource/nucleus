@@ -10,16 +10,17 @@ name: exemplar-scoreboard
 #     `permissive_verify` by deleting the verifier: `verify_calls_GUARD` would
 #     fall; you can't cut `vacuous_lean` by deleting theorems: `lean_theorems_GUARD`
 #     would fall).
-# Fast (grep only, no cargo/lake build). The judgment-level gaps grep can't see
-# (real-vs-decorative, overclaim) are caught by the periodic adversarial workflow,
-# which also RECALIBRATES these metrics — grep measures, the panel re-tunes the ruler.
+# Fast (a parse of the tree; no cargo/lake build of the measured crates). The
+# judgment-level gaps grep can't see (real-vs-decorative, overclaim) are caught
+# by the periodic adversarial workflow, which also RECALIBRATES these metrics:
+# grep measures, the panel re-tunes the ruler.
 
 on:
   push:
     branches: [main]
-    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-scoreboard.sh', 'scripts/exemplar-baseline.json']
+    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-baseline.json']
   pull_request:
-    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-scoreboard.sh', 'scripts/exemplar-baseline.json']
+    paths: ['**/*.rs', '**/*.lean', '**/Cargo.toml', 'scripts/exemplar-baseline.json']
   workflow_dispatch:
 
 concurrency:
@@ -40,15 +41,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Compute scoreboard
-        run: bash scripts/exemplar-scoreboard.sh scoreboard.json
-
-      # The ratchet was the last `python3` heredoc on the gate path; it is now
-      # `cargo xtask scoreboard-ratchet` (crates/xtask/src/scoreboard.rs), with
-      # the same LOWER/HIGHER/_GUARD rules, unit-tested, and a non-vacuity
-      # floor (fewer than three shared metrics is a red, not a pass).
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
-      - name: Ratchet against baseline (with anti-Goodhart guards)
-        run: cargo run -q -p xtask -- scoreboard-ratchet --current scoreboard.json --baseline scripts/exemplar-baseline.json
+      # Measure and decide in ONE command, so the two cannot run on different
+      # trees. The measurement was scripts/exemplar-scoreboard.sh; it is now
+      # crates/xtask/src/exemplar_scoreboard.rs, which also excludes a
+      # `#[cfg(test)] mod x;` whose body is in another file (#3146). The ratchet
+      # (crates/xtask/src/scoreboard.rs) keeps the LOWER/HIGHER/_GUARD rules and
+      # its non-vacuity floor (fewer than three shared metrics is a red).
+      - name: Measure, then ratchet against baseline (with anti-Goodhart guards)
+        run: cargo run -q -p xtask -- scoreboard-ratchet --baseline scripts/exemplar-baseline.json
