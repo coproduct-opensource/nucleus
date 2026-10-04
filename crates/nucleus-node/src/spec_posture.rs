@@ -31,6 +31,9 @@
 //!   default, so a budget stopped bounding how much a pod could run.
 //! - **`resources`, `cgroup.settings`** — a pod's memory and vCPUs had no node ceiling, and its
 //!   only cgroup limit was optional spec input (#3130). See `pod_resources`.
+//! - **[`NODE_OWNED_LABELS`]** — on the container driver, `nucleus.io/proxy-mode` chose whether the
+//!   pod was mediated at all (absent meant not), and `nucleus.io/container-image` chose the image
+//!   the mediating binary came from (#3133). Both are node flags now (`container_mediation`).
 
 use nucleus_spec::{AuditSinkSpec, BudgetModelSpec, PodSpec};
 
@@ -49,6 +52,20 @@ pub(crate) const MAX_TIMEOUT_SECONDS: u64 = 30 * 24 * 60 * 60;
 /// task runner, which the orchestrator supplies there (`spawn_container_pod`). Every other name in
 /// the namespace is the runtime's.
 const SPEC_SETTABLE_RESERVED: &[&str] = &["NUCLEUS_TASK_CMD"];
+
+/// Labels that used to choose a pod's mediation and are now node configuration (#3133). A spec
+/// naming one is refused at create rather than ignored, whatever its value, so its author learns
+/// the node no longer reads it. Each entry names the node setting that owns the fact instead.
+pub(crate) const NODE_OWNED_LABELS: &[(&str, &str)] = &[
+    (
+        "nucleus.io/proxy-mode",
+        "whether the pod is mediated is the node's --container-mediation",
+    ),
+    (
+        "nucleus.io/container-image",
+        "the image, and so the binary that mediates the pod, is the node's --container-image",
+    ),
+];
 
 /// Why a spec was refused. Every variant names the field, and the value where showing it is safe.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -100,6 +117,12 @@ pub(crate) enum PostureRefused {
     /// A size above the node's per-pod ceilings, or a cgroup setting above the node's limit.
     #[error(transparent)]
     Resources(#[from] ResourceRefused),
+    /// A label naming a fact the node owns.
+    #[error("label {label} is refused: {owner}. A pod spec cannot choose its own mediation.")]
+    NodeOwnedLabel {
+        label: &'static str,
+        owner: &'static str,
+    },
 }
 
 impl From<PostureRefused> for ApiError {
@@ -111,6 +134,11 @@ impl From<PostureRefused> for ApiError {
 /// Refuse at create a spec that asks for a weaker posture than the node gives. The one decider.
 pub(crate) fn admit(spec: &PodSpec, ceilings: &PodCeilings) -> Result<(), PostureRefused> {
     crate::pod_resources::admit(spec, ceilings)?;
+    for &(label, owner) in NODE_OWNED_LABELS {
+        if spec.metadata.labels.contains_key(label) {
+            return Err(PostureRefused::NodeOwnedLabel { label, owner });
+        }
+    }
     let inner = &spec.spec;
     if let Some(sink) = &inner.audit_sink {
         audit_sink_boot_args(sink)?;

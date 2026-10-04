@@ -353,6 +353,7 @@ impl NodeCgroup {
 }
 
 /// The limits every pod's VMM runs under, merged with what its spec may add.
+#[cfg(any(test, target_os = "linux"))]
 pub(crate) fn node_cgroup(
     spec: &PodSpec,
     version: CgroupVersion,

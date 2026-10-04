@@ -584,7 +584,8 @@ TODO
 - Allowlist the label keys a child may set; drop the rest, logged, as `strip_requested_workload` already does.
 
 Status
-- OPEN. Adjacent to, but not covered by, the container-driver credential exposure already recorded in `docs/production-delta.md:15`.
+- PARTLY CLOSED (#3133). Mediation and the mediating image are node configuration: `--container-mediation` (default `tool-proxy`; `unmediated` is a typed operator opt-in, logged at startup) and `--container-image` (`crates/nucleus-node/src/container_mediation.rs`). A spec naming `nucleus.io/proxy-mode` or `nucleus.io/container-image` is refused by name at create (`spec_posture::admit`), which also covers `create_sub_pod`'s label passthrough for those two keys; `nucleus.io/network` was narrowed in #3120. Still OPEN: the flipped default has unit coverage of the launch plan, not a boot test of a mediated container; and a general child-label allowlist.
+- Adjacent to, but not covered by, the container-driver credential exposure already recorded in `docs/production-delta.md:15`.
 
 ## 28) No production kernel knows its own isolation
 

@@ -214,7 +214,7 @@ pub struct SpiffeId {
     /// The trust-domain authority, e.g. `"ci.example.org"`.
     pub trust_domain: String,
     /// The workload path *with* its leading slash, e.g. `"/runner/42"`.
-    /// May be empty for a bare trust-domain ID.
+    /// Never empty: a JWT-SVID names a workload, not a trust domain.
     pub path: String,
 }
 
@@ -222,33 +222,46 @@ impl SpiffeId {
     /// Hand-rolled `spiffe://` parse (no `spiffe`/`tonic` dependency — we
     /// keep the supply chain lean for a security product).
     ///
-    /// Enforces: the `spiffe://` scheme, a non-empty authority, no
-    /// userinfo (`@`), no port (`:`) in the authority, and a lowercase
-    /// authority (SPIFFE trust domains are case-insensitive; we normalize
-    /// so a mixed-case `sub` cannot dodge the pinned-set lookup).
+    /// The SPIFFE ID grammar as `docs/spiffe-taxonomy.md` states it, and only
+    /// its canonical spelling: a trust domain of 1..=255 bytes of `[a-z0-9.-]`
+    /// (an uppercase one is REFUSED, not lowercased — folding it accepted a
+    /// second spelling of every ID), then one or more non-empty segments of
+    /// `[A-Za-z0-9._-]` that are never `.` or `..`, at most 2048 bytes in all.
+    /// No port, userinfo, query, fragment or percent-encoding.
     pub fn parse(s: &str) -> Result<Self, OidcError> {
-        let rest = s
-            .strip_prefix("spiffe://")
-            .ok_or_else(|| OidcError::MalformedSpiffeId(format!("not a spiffe:// URI: {s:?}")))?;
-        // Authority is everything up to the first '/'. Path (if any)
-        // includes the leading slash.
-        let (authority, path) = match rest.find('/') {
-            Some(i) => (&rest[..i], &rest[i..]),
-            None => (rest, ""),
-        };
-        if authority.is_empty() {
-            return Err(OidcError::MalformedSpiffeId(format!(
-                "empty trust domain in {s:?}"
-            )));
+        let bad = |why: &str| Err(OidcError::MalformedSpiffeId(format!("{why}: {s:?}")));
+        if s.len() > 2048 {
+            return bad("longer than 2048 bytes");
         }
-        if authority.contains('@') || authority.contains(':') {
-            return Err(OidcError::MalformedSpiffeId(format!(
-                "trust domain must not contain userinfo or port: {authority:?}"
-            )));
+        let Some(rest) = s.strip_prefix("spiffe://") else {
+            return bad("not a spiffe:// URI");
+        };
+        let Some((authority, path)) = rest.split_once('/') else {
+            return bad("no workload path");
+        };
+        if authority.is_empty() || authority.len() > 255 {
+            return bad("trust domain must be 1..=255 bytes");
+        }
+        if !authority
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'.' || b == b'-')
+        {
+            return bad("trust domain must be lowercase [a-z0-9.-] (no port, no userinfo)");
+        }
+        for segment in path.split('/') {
+            if segment.is_empty() || segment == "." || segment == ".." {
+                return bad("empty or dot path segment");
+            }
+            if !segment
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_')
+            {
+                return bad("path segment outside [A-Za-z0-9._-]");
+            }
         }
         Ok(SpiffeId {
-            trust_domain: authority.to_ascii_lowercase(),
-            path: path.to_string(),
+            trust_domain: authority.to_string(),
+            path: format!("/{path}"),
         })
     }
 }
@@ -603,16 +616,32 @@ mod tests {
     }
 
     #[test]
-    fn parses_bare_trust_domain() {
-        let id = SpiffeId::parse("spiffe://ci.example.org").unwrap();
-        assert_eq!(id.trust_domain, "ci.example.org");
-        assert_eq!(id.path, "");
+    fn refuses_a_bare_trust_domain() {
+        // A JWT-SVID's `sub` names a workload.
+        assert!(SpiffeId::parse("spiffe://ci.example.org").is_err());
+        assert!(SpiffeId::parse("spiffe://ci.example.org/").is_err());
     }
 
     #[test]
-    fn lowercases_trust_domain() {
-        let id = SpiffeId::parse("spiffe://CI.Example.ORG/w").unwrap();
-        assert_eq!(id.trust_domain, "ci.example.org");
+    fn refuses_an_uppercase_trust_domain_rather_than_folding_it() {
+        // Folding accepted a second spelling of every ID.
+        assert!(SpiffeId::parse("spiffe://CI.Example.ORG/w").is_err());
+    }
+
+    #[test]
+    fn refuses_non_canonical_paths() {
+        for s in [
+            "spiffe://ci.example.org/w/",
+            "spiffe://ci.example.org//w",
+            "spiffe://ci.example.org/a/../w",
+            "spiffe://ci.example.org/./w",
+            "spiffe://ci.example.org/a%2Fw",
+            "spiffe://ci.example.org/w?x",
+            "spiffe://ci.example.org/w#x",
+            "spiffe://u@ci.example.org/w",
+        ] {
+            assert!(SpiffeId::parse(s).is_err(), "{s}");
+        }
     }
 
     #[test]
