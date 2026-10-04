@@ -28,7 +28,7 @@
 //! and no manifest in this tree names it. Only `cargo metadata` sees it.
 //!
 //! The graph alone is not enough either: `cargo metadata` at the root resolves the root
-//! workspace, and this repository contains thirteen more. A satellite could declare anything
+//! workspace, and this repository contains satellite workspaces. A satellite could declare anything
 //! and the root query would never look.
 //!
 //! So: `cargo metadata` for the graph it resolves — cargo's own answer, which cannot disagree
@@ -48,7 +48,7 @@
 //!
 //! # The satellites
 //!
-//! Thirteen directories under this repository carry their own `[workspace]` — the dylint
+//! Satellite directories under this repository carry their own `[workspace]` — the dylint
 //! passes, the zkVM guest, the fuzz targets, and three standalone examples whose dependency
 //! trees are deliberately kept out of the main build. A new one would escape a root-level
 //! check entirely, so the gate pins the set: a workspace root that is not in
@@ -69,6 +69,7 @@ const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 /// each is swept. A root that is not listed here fails the gate: an unlisted satellite is a
 /// place the rule would not be checked.
 const DECLARED_SATELLITES: &[&str] = &[
+    "crates/nucleus-decision-protocol/fuzz",
     "crates/portcullis-zkvm-guest",
     "examples/a2a-server",
     "examples/marketplace-live",

@@ -222,15 +222,21 @@ population_floor = 278
 # 2026-10-02 (#3119, rebased): the population pin had not followed the three
 # crates above -- the tree measures 31/89 on main and here, while the pin still
 # said 86. Re-pinned to the measurement; the ratio is unchanged.
+# 2026-10-02 (#2702 P7): new crate nucleus-decision-protocol, the decision
+# channel's codec -- it parses every byte a guest writes on that channel --
+# declares all seven from its first commit; 32/90, 35.55%. The ratio rose, so
+# the floor follows it up.
 # 2026-10-02 (#2981): new crate nucleus-calibration declares all seven from its
 # first commit; 32/90, 35.55%. The declaration paid for itself before the first
 # commit: two integer divisions behind a `.max(1)` that the type could not see
 # (now `checked_div`). Note the census reads git, not the working tree -- the
 # crate was invisible to this gate until `git add`. A crate that decides whether
 # a probability may be trusted is exactly what this family counts.
-floor_bp = 3555
+# 2026-10-04 (#3156 integration): both new crates are now in the tree.
+# Measured 33 of 91 = 36.26%; preserve both gains in the combined floor.
+floor_bp = 3626
 floor_set = "measurement"
-population_floor = 90
+population_floor = 91
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -346,9 +352,17 @@ population_floor = 90
 # EgressDecision -- the reserve() outcome that carries a hold -- not.
 # A-19: replacing EgressCharge's `meter: &'a EgressMeter` with an Arc drops the
 # family to 9/17 (52.94%), below this floor, and the scorecard reds.
-floor_bp = 5882
+# 2026-10-02 (#2702 P7): nucleus-decision-protocol adds three affine rights --
+# DecisionId, ApprovalId and host::Spent. Unbounded they measured 10/20 (50.00%)
+# and reddened this family, and it was the EgressHold hole again: every
+# DecisionLedger numbers from zero, so decision 0 from a closed channel was
+# live decision 0 on the channel that replaced it -- a replay across a
+# reconnect that no single ledger could see. All three now carry their
+# ledger's epoch, and consume/redeem refuse a foreign one
+# (LedgerError::ForeignEpoch) before the number is looked up. 13/20, 65.00%.
+floor_bp = 6500
 floor_set = "measurement"
-population_floor = 17
+population_floor = 20
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
