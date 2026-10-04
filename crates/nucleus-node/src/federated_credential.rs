@@ -900,6 +900,49 @@ policy_id = "example-policy-0001"
         }
     }
 
+    #[tokio::test]
+    async fn taint_arriving_during_credential_mint_prevents_the_effect() {
+        let tokens = TokenEndpoint::start(Some(3600), Duration::from_millis(100), &[]).await;
+        let up = Upstream::start(&[]).await;
+        let source = source();
+        let pod = Pod::new(POD_A, &source, registry(&tokens, &up), NOW + DAY);
+        let host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        let ctx = PerformContext {
+            host_policy: &host_policy,
+            identity: &pod.identity,
+            policy: &pod.policy,
+            credentials: &pod.credentials,
+            upstreams: &pod.upstreams,
+            ledger: &pod.ledger,
+            egress: &pod.egress,
+        };
+        let mut req = perform("mint-race");
+        req.operation = "GitCommit".into();
+        let calls = AtomicUsize::new(0);
+        let effect = handle_perform(&req, &ctx, NOW, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err("must not call upstream".into()))
+        });
+        let observation = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tokens.minted() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("preflight allowed the mint");
+            crate::host_decide::PodPolicy::observe_response(&host_policy, NOW).unwrap();
+        };
+        let (reply, ()) = tokio::join!(effect, observation);
+        assert!(!reply.granted, "{reply:?}");
+        assert!(
+            reply.reason.starts_with("host policy refused:"),
+            "{reply:?}"
+        );
+        assert_eq!(tokens.minted(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
     fn approval(pod: &str, now: u64) -> Approved {
         crate::broker::pdp_decide(
             &nucleus_cred_broker::TaskRequestEnvelope {

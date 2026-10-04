@@ -11,11 +11,12 @@ repository.
 
 Issues: #2702, #3114, #3115, #3116, #3117.
 
-Current baseline: `host_decide` is shadow-only. Its kernel and taint are now
-shared across pod channels; decision ledgers remain per connection. Broker
-PERFORM and streaming calls do not consume host decision
-rights. `pod_api/trust_boundary.rs` records six expected gaps. None of those gaps
-may be relabelled as holding solely because a protocol or kernel unit test passes.
+Current baseline: the decision-channel protocol remains shadow-only. Non-streamed
+broker PERFORM now requires a host decision over shared pod policy, with operator
+approval bound to the resolved effect when required. Streaming still lacks this
+execution gate. The compromised-guest socket conformance table now holds for
+observed taint, absent/reused approval, and zero remaining budget. Its two signing
+key properties remain gaps. These are local host tests, not Tier-2 evidence.
 
 Implementation sequence:
 
@@ -35,8 +36,8 @@ Implementation sequence:
    content type and exact body bytes. Method and content type are shared with
    the HTTP caller. The retry ledger rejects substitutions both while a call
    is in flight and after settlement; audit justification is deliberately not
-   part of the effect. This binding is not yet connected to host decision
-   consumption, and stream payload binding remains open.
+   part of the effect. This binding now names the one-shot host approval and
+   execution permit; stream payload binding remains open.
 3. Move enforceable state to the pod lifetime. Connection replacement cannot
    reset observed taint, spent budget or revocation. Concurrent channels must
    share the applicable limits. Host-delivered observations raise host taint
@@ -54,8 +55,16 @@ Implementation sequence:
    replayed and mismatched decisions refuse before credentials or upstream I/O.
    Recheck current pod taint, expiry, revocation and budget when committing the
    effect: another channel may change them after an earlier decision was issued.
+   **In progress:** PERFORM checks actual WebFetch authority plus the requested
+   operation before credential access and again after async minting, immediately
+   before upstream execution. A private non-cloneable permit is required to
+   construct an upstream call. Streaming, revocation and cost settlement remain.
 5. Wire authenticated host approval, expiry and one-shot consumption. Preserve
    legitimate approved work; denying every approval-gated operation is not done.
+   **In progress:** operator-only mTLS routes list and grant/refuse pending host
+   effects. Approvals expire after five minutes and are consumed at final
+   authorization, not preflight. Failed minting does not consume them. CLI UX and
+   complete request review remain to be delivered.
 6. Keep receipt and exit-report authority outside the guest. Distinguish host
    observations from guest assertions in signed evidence.
 7. Exercise the compromised-guest conformance harness, genuine allowed effects,
@@ -171,3 +180,32 @@ build, consumer Clippy checks and all four prepush gates pass.
 This establishes host-owned observations and shared state, not host-authoritative
 effects. Full effect decision consumption, approvals, charging, revocation,
 durable runtime recovery and host-only signing remain required.
+
+### Non-streamed host enforcement (2026-10-04)
+
+The host checks WebFetch for the real HTTP effect even when a guest labels it
+ReadFiles. It also checks the declared operation. This does not infer remote API
+semantics: trusted upstream action mapping is still needed before claiming that
+a guest cannot mislabel a remote write. Streaming authorization is still open.
+
+Operator routes are `GET /v1/pods/{id}/effect-approvals` and
+`POST /v1/pods/{id}/effect-approvals/{approval}` with JSON `"grant"` or `"refuse"`.
+Only the configured root-minter SPIFFE identity can use them. Listings currently
+show operation, resolved subject, effect digest, expiry and status; a complete
+human review surface for request content remains open. Approval state is local
+to the pod's shared host policy. It cannot transfer between pods or survive a
+node restart as a fresh grant.
+
+Tests cover exact-action matching, expiry, refusal, repeated decisions,
+cross-pod IDs, simultaneous preflights with one successful commit, budget changes
+between preflight and commit, and real credential minting raced against a host
+taint observation. The conformance reuse row first executes a legitimate
+operator-approved request through the broker socket, then refuses its reuse.
+Independent approval tests exercise consumption without relying on response taint.
+
+Validation: all-feature node suite passed 804 unit tests (one ignored) and three
+integration tests. Restored targeted effect tests passed 11/11 after negative
+controls: disabling approval consumption or the real WebFetch capability check
+made the corresponding regression fail. Clippy with warnings denied, the Linux
+ARM64 musl cross-build, and all four `cargo xtask prepush` gates passed. Socket
+fixtures require an execution environment that permits local listener binding.

@@ -121,6 +121,7 @@ uuid = { workspace = true, features = ["serde"] }
 libc = "0.2"
 
 [dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
 # Decodes the node's own federated assertions in `federated_credential` tests.
 # Only a dev-dependency since the single-vendor inbound route (its one
 # production user) was replaced by `federation_ingress.rs`, which validates

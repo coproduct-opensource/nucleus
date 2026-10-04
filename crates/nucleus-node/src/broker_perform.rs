@@ -207,8 +207,9 @@ fn check_fields(fields: &[(&'static str, &String)]) -> Result<(), FrameError> {
 /// *where* this goes: `url` came from
 /// [`CredentialedEgressSpec::url_for`](nucleus_spec::CredentialedEgressSpec::url_for),
 /// which refuses a path that tries to leave the configured base.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct UpstreamCall {
+    _permit: crate::host_decide::effects::EffectPermit,
     /// Absolute URL, already resolved against the pod spec's fixed base.
     pub url: String,
     /// Header the credential goes in, from the spec.
@@ -634,6 +635,7 @@ where
     F: FnOnce(UpstreamCall) -> Fut,
     Fut: Future<Output = Result<UpstreamResponse, String>>,
 {
+    let started = std::time::Instant::now();
     // 1–3. Decide, resolve the name, fix the path: `resolve`, shared with the
     //      streamed path so the two cannot decide differently.
     if crate::host_decide::PodPolicy::available(ctx.host_policy).is_err() {
@@ -689,6 +691,22 @@ where
         }
     };
 
+    let preflight = match ctx.host_policy.lock() {
+        Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
+            Some(op) => policy.preflight_effect(effect, op, &url, now_unix),
+            None => Err("unknown operation".into()),
+        },
+        Err(_) => Err("host policy unavailable".into()),
+    };
+    match preflight {
+        Ok(()) => (),
+        Err(reason) => {
+            ctx.ledger.release(&req.idempotency_key);
+            charge.not_sent();
+            return refused(&reason);
+        }
+    };
+
     // 5–6. Mint (for a federated upstream), then fetch: `credential_header`.
     let header = match credential_header(&resolved, ctx.credentials, now_unix).await {
         Ok(header) => Some(header),
@@ -706,10 +724,34 @@ where
             value: header_value,
             federated,
         }) => {
+            // Credential retrieval can await an exchange. Recheck shared state
+            // and approval expiry now; only this check spends the approval.
+            // Round up because the supplied Unix timestamp has second precision.
+            // Rounding down could keep an approval live beyond its deadline.
+            let elapsed = started.elapsed();
+            let current_time = now_unix
+                .saturating_add(elapsed.as_secs())
+                .saturating_add(u64::from(elapsed.subsec_nanos() != 0));
+            let permit = match ctx.host_policy.lock() {
+                Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
+                    Some(op) => policy.authorize_effect(effect, op, &url, current_time),
+                    None => Err("unknown operation".into()),
+                },
+                Err(_) => Err("host policy unavailable".into()),
+            };
+            let permit = match permit {
+                Ok(permit) => permit,
+                Err(reason) => {
+                    ctx.ledger.release(&req.idempotency_key);
+                    charge.not_sent();
+                    return refused(&reason);
+                }
+            };
             // Charged as sent whatever the outcome: a transport failure is
             // ambiguous about whether the upstream saw the body.
             charge.sent();
             let outcome = call(UpstreamCall {
+                _permit: permit,
                 url,
                 header_name: spec.header.clone(),
                 header_value,

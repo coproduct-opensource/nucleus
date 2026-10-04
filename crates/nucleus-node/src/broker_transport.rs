@@ -776,7 +776,7 @@ pub(crate) mod serving_tests {
             line
         };
         let (_, reply) = tokio::join!(serve, talk);
-        let calls = seen.lock().expect("not poisoned").clone();
+        let calls = std::mem::take(&mut *seen.lock().expect("not poisoned"));
         (reply, calls)
     }
 

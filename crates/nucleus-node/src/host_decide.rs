@@ -62,6 +62,8 @@
 // macOS build compiles none of its callers.
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
+pub(crate) mod effects;
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -356,6 +358,7 @@ pub(crate) struct Step {
 pub(crate) struct PodPolicy {
     kernel: Kernel,
     taint: HostTaint,
+    approvals: effects::Approvals,
 }
 
 /// One policy history shared by the decision and credential listeners.
@@ -378,6 +381,7 @@ impl PodPolicy {
         Arc::new(Mutex::new(Self {
             kernel,
             taint: HostTaint::clean(),
+            approvals: effects::Approvals::new(),
         }))
     }
 
@@ -438,6 +442,7 @@ impl Channel {
             Arc::new(Mutex::new(PodPolicy {
                 kernel,
                 taint: HostTaint::clean(),
+                approvals: effects::Approvals::new(),
             })),
             epoch,
         )

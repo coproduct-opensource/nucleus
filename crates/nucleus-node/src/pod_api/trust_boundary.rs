@@ -114,10 +114,10 @@ fn expected(p: Property) -> Expected {
     match p {
         Property::ReceiptKeyGuestNeverHeld => Expected::Gap { issue: 3114 },
         Property::ExitReportKeyGuestNeverHeld => Expected::Gap { issue: 3114 },
-        Property::TaintedPerformRefused => Expected::Gap { issue: 3115 },
-        Property::UnapprovedPerformRefused => Expected::Gap { issue: 3116 },
-        Property::OverBudgetPerformRefused => Expected::Gap { issue: 3117 },
-        Property::ReusedApprovalRefused => Expected::Gap { issue: 3116 },
+        Property::TaintedPerformRefused => Expected::Holds,
+        Property::UnapprovedPerformRefused => Expected::Holds,
+        Property::OverBudgetPerformRefused => Expected::Holds,
+        Property::ReusedApprovalRefused => Expected::Holds,
     }
 }
 
@@ -585,6 +585,8 @@ fn render(control: &Result<String, String>, rows: &[Measured]) -> String {
 struct Node;
 
 struct NodePod {
+    host_policy: crate::host_decide::SharedPodPolicy,
+    approvals: BTreeMap<Operation, u32>,
     /// The workload API socket the guest reaches.
     api: PathBuf,
     /// The pod's node-side directory: the node's key anchor and receipt log.
@@ -616,10 +618,6 @@ impl Host for Node {
         policy: PermissionLattice,
         approvals: &[(Operation, u32)],
     ) -> Result<NodePod, String> {
-        // The node's approvals (`/v1/approve`, signed with `approval_signer`) are
-        // delivered to the in-guest proxy. The broker takes no approval input,
-        // so there is nowhere on the host to hand these: that is P3/P5's finding.
-        let _ = approvals;
         let dir = tempfile::tempdir_in("/tmp").map_err(|e| e.to_string())?;
         let mut st = super::handler_tests::state(&dir);
         let manager = crate::identity::IdentityManager::new(
@@ -678,8 +676,9 @@ impl Host for Node {
         );
         let (caller, calls) = crate::broker_transport::serving_tests::recording_caller();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let host_policy = crate::host_decide::test_policy(policy.clone());
         let broker = crate::broker_transport::PodBroker {
-            host_policy: crate::host_decide::test_policy(policy.clone()),
+            host_policy: host_policy.clone(),
             identity: nucleus_cred_broker::PodIdentity::observed_by_host(format!(
                 "spiffe://test.local/ns/pods/sa/{id}"
             )),
@@ -727,6 +726,8 @@ impl Host for Node {
             Err(e) => Err(format!("FETCH_BROKER_SECRET: {e}")),
         };
         Ok(NodePod {
+            host_policy,
+            approvals: approvals.iter().copied().collect(),
             api,
             pod_dir,
             broker,
@@ -861,6 +862,41 @@ impl GuestFacing for NodePod {
             Err(e) => return Probe::Inconclusive(e.to_string()),
         };
         let frame = nucleus_cred_protocol::frame::sign(secret, &payload);
+        // Operator fixture: first let the real broker register the exact effect,
+        // then grant that pending request using the host's approval mechanism.
+        // The guest request itself never carries approval authority.
+        let op = crate::broker::parse_operation(&req.operation);
+        if let Some(count) = op
+            .and_then(|op| self.approvals.get_mut(&op))
+            .filter(|n| **n > 0)
+        {
+            if let Err(e) = crate::broker_transport::request_over_socket(path, &frame).await {
+                return Probe::Inconclusive(e.to_string());
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let operator = || {
+                crate::host_decide::effects::Operator::authenticate(
+                    "test-operator",
+                    "test-operator",
+                )
+                .unwrap()
+            };
+            let mut policy = self.host_policy.lock().unwrap();
+            let pending = policy.list_effect_approvals(operator(), now);
+            if pending.len() != 1
+                || policy
+                    .settle_effect_approval(operator(), pending[0].id, true, now)
+                    .is_err()
+            {
+                return Probe::Inconclusive(
+                    "operator could not approve the exact pending effect".into(),
+                );
+            }
+            *count -= 1;
+        }
         let line = match crate::broker_transport::request_over_socket(path, &frame).await {
             Ok(l) => l,
             Err(e) => return Probe::Inconclusive(format!("broker: {e}")),
