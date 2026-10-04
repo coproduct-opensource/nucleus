@@ -53,8 +53,20 @@ existing `pod.yaml`. Removal errors prevent startup; restart can retry after
 the Docker service recovers. Use the same state directory and Docker daemon for
 recovery. Moving state or switching drivers requires separate reconciliation.
 
-Cancellation during an unfinished Docker create/start still needs cleanup in
-the current process; startup recovery covers leftovers at the next restart.
+Container creates run in a node-owned task. Cancelling the API create future does
+not drop launch reservations while Docker is still processing create/start. A
+successful result must be accepted by the calling request task; otherwise the
+node cancels the registered pod and retries cleanup until removal is confirmed. Failed starts
+also finish removal before returning their reservations.
+
+Creates have a unique node-generated Docker name, so cleanup can find a
+container even if its create response was lost. An uncertain transport error
+keeps capacity reserved until that named container is found and removed; an
+initial not-found response does not settle an in-flight create. If Docker never
+created it, this conservative reservation remains held pending operator recovery.
+This handoff does not prove the remote client received the HTTP/gRPC response.
+These tasks survive request-task cancellation, not node process termination.
+Startup inventory cannot yet settle remote creates that complete after its inventory.
 
 `--egress-staging-max-bytes` bounds reserved upload payload storage across all
 pods, defaulting to 256 MiB. Each streamed upload reserves its configured

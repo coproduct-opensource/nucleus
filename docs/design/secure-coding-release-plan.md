@@ -1275,3 +1275,32 @@ was exercised through its real client against an HTTP fixture, not a live daemon
 In-process interrupted launch cleanup remains open, including remote creates
 that are still in flight when a process exits. Recovery requires the same state
 directory, Docker daemon and container driver.
+
+### Container launch survives request cancellation (2026-10-04)
+
+HTTP and gRPC container creation now run the existing admission/launch path in
+a node-owned task. Cancelling the request future no longer drops reservations
+while Docker is processing create/start. The result has an owned handoff: if the
+request task never accepts a successful launch, the node cancels the registered
+pod and retries removal while retaining resources. This covers a receiver dropped
+before send and a queued delivery dropped before acceptance. Other drivers keep
+their existing creation path.
+
+Failed starts and post-start setup errors now remove the created container before
+returning launch reservations. Every create has a unique node-generated Docker
+name. After an uncertain create transport failure, cleanup waits for that name
+to appear and be removed; an initial 404 cannot establish that the remote create
+will not complete later. A name-conflict response does not authorize removing
+the pre-existing container. An unresolved transport outcome conservatively holds
+capacity in the current process and reports pending cleanup in the node log.
+
+Four ordinary Docker API fixture tests cover delayed create cancellation,
+successful handoff, failed-start rollback and a late container appearing after
+an initial not-found response. Capacity and concurrency slots remain held until
+confirmed cleanup. The full node suite passed 863 tests (one ignored), plus
+three integration tests. Linux ARM64 build and all four repository gates passed;
+Clippy completed with the existing blocking-client configuration warnings.
+This is request-task cancellation handling, not proof that the remote client
+received a response. Durable pending-create reconciliation across node process
+termination remains open; startup inventory alone cannot settle a late remote
+create that appears after that inventory.

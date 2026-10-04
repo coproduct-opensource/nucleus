@@ -33,6 +33,7 @@ mod art12_collector;
 mod audit_sink;
 mod auth;
 mod clearing_receipt_collector;
+mod container_launch;
 mod container_lifecycle;
 mod container_recovery;
 mod firecracker_api;
@@ -1033,7 +1034,7 @@ async fn create_pod(
 
     let raw = String::from_utf8_lossy(&body).to_string();
     let (id, proxy_addr) =
-        create_pod_internal(&state, spec, parent_pod_id, Some(raw), admission).await?;
+        container_launch::create(&state, spec, parent_pod_id, Some(raw), admission).await?;
 
     Ok(Json(CreatePodResponse { id, proxy_addr }))
 }
@@ -1690,115 +1691,153 @@ async fn spawn_container_pod(
         ..Default::default()
     };
 
-    let container = docker
+    let container_name = format!("nucleus-{id}");
+    let container = match docker
         .create_container(
-            None::<bollard::query_parameters::CreateContainerOptions>,
+            Some(bollard::query_parameters::CreateContainerOptions {
+                name: Some(container_name.clone()),
+                ..Default::default()
+            }),
             config,
         )
         .await
-        .map_err(|e| ApiError::Driver(format!("create container: {e}")))?;
-
-    let container_id = container.id.clone();
-    docker
-        .start_container(
-            &container_id,
-            None::<bollard::query_parameters::StartContainerOptions>,
-        )
-        .await
-        .map_err(|e| ApiError::Driver(format!("start container {container_id}: {e}")))?;
-
-    // Stream container logs to pod.log in background
     {
-        let docker = docker.as_ref().clone();
-        let cid = container_id.clone();
-        let log_path = log_path.clone();
-        tokio::spawn(async move {
-            use bollard::query_parameters::LogsOptions;
-            use tokio_stream::StreamExt;
-            let opts = LogsOptions {
-                follow: true,
-                stdout: true,
-                stderr: true,
-                ..Default::default()
-            };
-            let mut stream = docker.logs(&cid, Some(opts));
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "ADR 0007 G-1 does not apply: a byte stream (the container's log stream), not a record log"
-            )]
-            let mut file = match tokio::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-                .await
-            {
-                Ok(f) => f,
-                Err(e) => {
-                    error!("failed to open log file {}: {e}", log_path.display());
-                    return;
+        Ok(container) => container,
+        Err(error) => {
+            // A name conflict belongs to an existing container, not this create.
+            if matches!(
+                error,
+                bollard::errors::Error::DockerResponseServerError {
+                    status_code: 409,
+                    ..
                 }
-            };
-            while let Some(Ok(output)) = stream.next().await {
-                let bytes = output.into_bytes();
-                if file.write_all(&bytes).await.is_err() {
-                    break;
-                }
+            ) {
+                return Err(ApiError::Driver(format!("create container: {error}")));
             }
-        });
-    }
-
-    // In proxy mode: wait for announce file and wrap with SignedProxy
-    let mut proxy_addr = None;
-    let mut signed_proxy_opt = None;
-
-    if proxy_mode {
-        proxy_addr =
-            wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await;
-
-        if let Some(ref addr) = proxy_addr {
-            let target = container_transport::target(state, &pod_dir_abs, addr)?;
-            let proxy = signed_proxy::SignedProxy::start_with_drand(
-                target,
-                Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-                // Env-provisioned container: shared-secret approvals.
-                Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
-                    state.proxy_approval_secret.as_bytes().to_vec(),
-                ))),
-                state.proxy_actor.clone(),
-                state.drand_config.clone(),
-            )
-            .await
-            .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
-            proxy_addr = Some(format!("http://{}", proxy.listen_addr()));
-            signed_proxy_opt = Some(proxy);
+            let final_response = matches!(
+                error,
+                bollard::errors::Error::DockerResponseServerError { .. }
+            );
+            container_launch::rollback(docker, &container_name, final_response).await;
+            return Err(ApiError::Driver(format!("create container: {error}")));
         }
-    }
-
-    // Touch audit log so it exists even in direct mode (for inspection)
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "ADR 0007 G-1 does not apply: creates the file so it exists; writes nothing"
-    )]
-    let _ = tokio::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&audit_path)
-        .await;
-
-    let handle = ContainerPod {
-        container_id,
-        docker: docker.as_ref().clone(),
-        signed_proxy: Mutex::new(signed_proxy_opt),
-        permit: Mutex::new(permit),
-        cached_exit: Mutex::new(None),
     };
 
-    info!(pod_id = %id, %image, ?mediation, "spawned container pod");
-    Ok((
-        DriverState::Container(Box::new(handle)),
-        proxy_addr,
-        log_path,
-    ))
+    let container_id = container.id.clone();
+    let result = async {
+        docker
+            .start_container(
+                &container_id,
+                None::<bollard::query_parameters::StartContainerOptions>,
+            )
+            .await
+            .map_err(|e| ApiError::Driver(format!("start container {container_id}: {e}")))?;
+
+        // Stream container logs to pod.log in background
+        {
+            let docker = docker.as_ref().clone();
+            let cid = container_id.clone();
+            let log_path = log_path.clone();
+            tokio::spawn(async move {
+                use bollard::query_parameters::LogsOptions;
+                use tokio_stream::StreamExt;
+                let opts = LogsOptions {
+                    follow: true,
+                    stdout: true,
+                    stderr: true,
+                    ..Default::default()
+                };
+                let mut stream = docker.logs(&cid, Some(opts));
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 G-1 does not apply: a byte stream (the container's log stream), not a record log"
+                )]
+                let mut file = match tokio::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .await
+                {
+                    Ok(f) => f,
+                    Err(e) => {
+                        error!("failed to open log file {}: {e}", log_path.display());
+                        return;
+                    }
+                };
+                while let Some(Ok(output)) = stream.next().await {
+                    let bytes = output.into_bytes();
+                    if file.write_all(&bytes).await.is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        // In proxy mode: wait for announce file and wrap with SignedProxy
+        let mut proxy_addr = None;
+        let mut signed_proxy_opt = None;
+
+        if proxy_mode {
+            proxy_addr =
+                wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await;
+
+            if let Some(ref addr) = proxy_addr {
+                let target = container_transport::target(state, &pod_dir_abs, addr)?;
+                let proxy = signed_proxy::SignedProxy::start_with_drand(
+                    target,
+                    Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
+                    // Env-provisioned container: shared-secret approvals.
+                    Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
+                        state.proxy_approval_secret.as_bytes().to_vec(),
+                    ))),
+                    state.proxy_actor.clone(),
+                    state.drand_config.clone(),
+                )
+                .await
+                .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+                proxy_addr = Some(format!("http://{}", proxy.listen_addr()));
+                signed_proxy_opt = Some(proxy);
+            }
+        }
+
+        // Touch audit log so it exists even in direct mode (for inspection)
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "ADR 0007 G-1 does not apply: creates the file so it exists; writes nothing"
+        )]
+        let _ = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&audit_path)
+            .await;
+
+        let handle = ContainerPod {
+            container_id,
+            docker: docker.as_ref().clone(),
+            signed_proxy: Mutex::new(signed_proxy_opt),
+            permit: Mutex::new(None),
+            cached_exit: Mutex::new(None),
+        };
+
+        info!(pod_id = %id, %image, ?mediation, "spawned container pod");
+        Ok((
+            DriverState::Container(Box::new(handle)),
+            proxy_addr,
+            log_path,
+        ))
+    }
+    .await;
+    match result {
+        Ok((DriverState::Container(container), address, log)) => {
+            *container.permit.lock().await = permit;
+            Ok((DriverState::Container(container), address, log))
+        }
+        Err(error) => {
+            container_launch::rollback(docker, &container.id, true).await;
+            Err(error)
+        }
+        Ok(_) => unreachable!("container launch returns a container driver"),
+    }
 }
 
 /// Wait for the announce file inside a container pod (analogous to `wait_for_announce`
@@ -3040,7 +3079,7 @@ impl NodeService for GrpcService {
 
         let spec: PodSpec = serde_yaml::from_str(&yaml)
             .map_err(|e| Status::invalid_argument(format!("invalid yaml: {e}")))?;
-        let (id, proxy_addr) = create_pod_internal(
+        let (id, proxy_addr) = container_launch::create(
             &self.state,
             spec,
             parent_pod_id,
