@@ -38,6 +38,7 @@ mod guest_diagnosis;
 mod http_serve;
 mod identity;
 mod image_identity;
+mod jail_placement;
 mod keys;
 mod lockdown;
 mod mediation;
@@ -218,11 +219,12 @@ struct Args {
         default_value = "/srv/jailer"
     )]
     jailer_chroot_base: PathBuf,
-    /// Unprivileged uid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_UID", default_value = "123")]
+    /// Unprivileged uid the jailed VMM drops to. `nucleus-hostctl seed` reads the same variable,
+    /// so a disk it seeds is handed to this uid.
+    #[arg(long, env = nucleus_microvm_host::jail_user::UID_ENV, default_value = "123")]
     jailer_uid: production_confinement::NonRootUid,
     /// Unprivileged gid the jailed VMM drops to.
-    #[arg(long, env = "NUCLEUS_JAILER_GID", default_value_t = 100)]
+    #[arg(long, env = nucleus_microvm_host::jail_user::GID_ENV, default_value_t = 100)]
     jailer_gid: u32,
 
     // Container driver configuration
@@ -809,6 +811,23 @@ async fn main() -> Result<(), ApiError> {
         if n > 0 {
             info!(count = n, "reclaimed jail(s) stranded by a previous node");
         }
+    }
+
+    // Refuse, by name, an installed artifact the jailed VMM cannot read or could rewrite, rather
+    // than chowning it at the first pod: it is hard-linked into every jail (#3152).
+    #[cfg(target_os = "linux")]
+    if args.firecracker_jailer && matches!(&args.driver, DriverKind::Firecracker) {
+        let who = jail_placement::JailUser {
+            uid: args.jailer_uid.get(),
+            gid: args.jailer_gid,
+        };
+        let checked =
+            jail_placement::check_installed_artifacts(&args.host_paths.artifacts_root, who)
+                .map_err(|refusal| ApiError::Driver(refusal.to_string()))?;
+        info!(
+            checked,
+            "installed artifacts: readable and not writable by the jail user"
+        );
     }
 
     // Pods that outlived a restart get their certificates + holder keys back.

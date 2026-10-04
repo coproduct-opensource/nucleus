@@ -84,10 +84,16 @@ ADD --checksum=sha256:69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31
     https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141 /out/artifacts/vmlinux
 ADD --checksum=sha256:6d2b41244ddd074f1eebc1ab4ca1c7be5b7bc55cde71eefbb9af919771fd4fe4 \
     https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-rootfs-2.2.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
+# `ADD <url>` lays files down 0600. The jailed VMM (an unprivileged uid) could
+# open the kernel only because the node used to chown it into every jail, which
+# handed the shared artifact to the jail user (#3152). The node no longer chowns
+# a placed artifact and refuses an unreadable one at startup, so the shared
+# artifacts are root-owned 0444 here, as `nucleus setup` installs them.
 RUN mkdir -p /out/bin && tar -xzf /tmp/fc.tgz -C /tmp \
     && cp /tmp/release-v1.17.0-aarch64/firecracker-v1.17.0-aarch64 /out/bin/firecracker \
     && cp /tmp/release-v1.17.0-aarch64/jailer-v1.17.0-aarch64 /out/bin/jailer \
-    && gunzip -c /tmp/rootfs.ext4.gz > /out/artifacts/rootfs.ext4
+    && gunzip -c /tmp/rootfs.ext4.gz > /out/artifacts/rootfs.ext4 \
+    && chmod 0444 /out/artifacts/vmlinux /out/artifacts/rootfs.ext4
 
 # ── the host ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
