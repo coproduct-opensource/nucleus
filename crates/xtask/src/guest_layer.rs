@@ -47,7 +47,7 @@ use sha2::{Digest, Sha256};
 /// `crates/xtask/Cargo.toml` pins. Bumping that crate moves this; the build
 /// refuses until it is updated, so a trust-store change is a reviewed diff.
 pub const CA_BUNDLE_SHA256: &str =
-    "5c4539be266bd5c71e427d385c3087f73000a7f00dfe434e953519f255a4341a";
+    "a8e00c3793f619a1b7a6cd50211ec0081836f83cef4b237e8cb52876e72da9c2";
 
 /// A guest architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]

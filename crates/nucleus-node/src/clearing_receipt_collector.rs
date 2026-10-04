@@ -4,7 +4,7 @@
 //! # Why the host needs these, and why a hash was not enough
 //!
 //! A `SpendReceipt` says "I charged 2 000 000 µUSD, on the basis of
-//! `authority-round:<hash>`". The hash names the clearing receipt that
+//! `authority-round:<hash>:<payer>`". The hash names the clearing receipt that
 //! justifies the amount — the bids, the proposals, the winners, the payments.
 //! That receipt lived in the guest's `/run/nucleus/authority.jsonl`, on a
 //! tmpfs, and died with the microVM. So the node held **a reference to
@@ -33,9 +33,9 @@
 //!
 //! # The binding, and why it is load-bearing
 //!
-//! [`resolve_spend_basis`] is what makes the corpus matter rather than
-//! decorate: a spend receipt whose `basis` names a clearing receipt the host
-//! does not hold — or holds and cannot recompute — is **not credited**.
+//! [`resolve_spend_basis`] checks the signed payer and amount against a
+//! winning payment in the referenced, recomputed clearing. Missing evidence,
+//! a losing payer, or a mismatched amount is **not credited**.
 //! `PodAuthority::release_child` folds the full allocation in that case, the
 //! same as for a missing receipt. Evidence that changes no decision is not
 //! evidence, so the discount is conditional on the evidence being here.
@@ -47,7 +47,7 @@ use nucleus_recompute::{ClearingReceipt, RecomputeOutcome, content_hash_hex, ver
 
 /// The prefix a `SpendReceipt::basis` uses to name the round that justifies it.
 /// Written by `nucleus-tool-proxy`'s exchange; read here.
-pub const AUTHORITY_ROUND_BASIS: &str = "authority-round:";
+pub use nucleus_recompute::authority_spend::PREFIX as AUTHORITY_ROUND_BASIS;
 
 /// The collected-clearings log inside a pod's node-side directory. Same
 /// directory and same host-privacy argument as the other per-pod records.
@@ -142,8 +142,8 @@ pub fn verified_clearings(pod_dir: &Path) -> BTreeMap<String, ClearingReceipt> {
     out
 }
 
-/// Whether a spend receipt's `basis` names a clearing receipt this host holds
-/// and can recompute.
+/// Whether the signed basis names a winning payer in a clearing this host
+/// holds and has recomputed, at exactly the signed amount.
 ///
 /// `None` for a basis this collector does not understand, so a future basis
 /// kind cannot silently read as unresolved: the caller decides what an unknown
@@ -152,9 +152,15 @@ pub fn verified_clearings(pod_dir: &Path) -> BTreeMap<String, ClearingReceipt> {
 pub fn resolve_spend_basis(
     clearings: &BTreeMap<String, ClearingReceipt>,
     basis: &str,
+    amount_micro: u64,
 ) -> Option<bool> {
-    let hash = basis.strip_prefix(AUTHORITY_ROUND_BASIS)?;
-    Some(clearings.contains_key(hash))
+    basis.strip_prefix(AUTHORITY_ROUND_BASIS)?;
+    let Some((hash, payer)) = nucleus_recompute::authority_spend::parse(basis) else {
+        return Some(false);
+    };
+    Some(clearings.get(hash).is_some_and(|receipt| {
+        nucleus_recompute::authority_spend::payment_matches(receipt, payer, amount_micro)
+    }))
 }
 
 /// What the node may credit a pod as having SPENT, or `None` for "could not
@@ -169,9 +175,10 @@ pub fn resolve_spend_basis(
 /// `Some(total)` requires ALL of:
 ///
 /// * the spend receipts verify under the key the node minted for this pod, and
-/// * their sequence is exactly `1..=n`, so none is missing, and
+/// * their sequence is exactly `1..=n`, followed by a signed terminal record
+///   committing to their count and total, so a missing tail cannot earn credit, and
 /// * every receipt's `basis` names a clearing receipt this host holds and can
-///   RECOMPUTE.
+///   RECOMPUTE, and its signed payer and amount match a winning payment.
 ///
 /// Any gap gives `None`, and `release_child` then folds the full allocation.
 /// That is what makes the corpus load-bearing: a pod that wants the discount
@@ -184,8 +191,11 @@ pub fn creditable_spend(pod_dir: &Path, pod_id: &str) -> Option<rust_decimal::De
     match VerifiedSpend::fold(spends.iter()) {
         VerifiedSpend::Complete { total_micro, count } => {
             let clearings = verified_clearings(pod_dir);
-            for s in &spends {
-                match resolve_spend_basis(&clearings, &s.basis) {
+            for s in spends
+                .iter()
+                .filter(|s| s.kind == portcullis::spend_receipt::SpendKind::Charge)
+            {
+                match resolve_spend_basis(&clearings, &s.basis, s.amount_micro) {
                     Some(true) => {}
                     Some(false) => {
                         tracing::warn!(
@@ -221,7 +231,7 @@ pub fn creditable_spend(pod_dir: &Path, pod_id: &str) -> Option<rust_decimal::De
                 6,
             ))
         }
-        VerifiedSpend::NoReceipts => None,
+        VerifiedSpend::NoReceipts | VerifiedSpend::Unsealed => None,
         VerifiedSpend::Gapped { at_seq } => {
             tracing::warn!(
                 pod = pod_id,
@@ -269,17 +279,40 @@ mod tests {
         let clearings = verified_clearings(dir.path());
         assert_eq!(clearings.len(), 1);
         assert_eq!(
-            resolve_spend_basis(&clearings, &format!("{AUTHORITY_ROUND_BASIS}{hash}")),
+            resolve_spend_basis(
+                &clearings,
+                &format!("{AUTHORITY_ROUND_BASIS}{hash}:alice"),
+                2_000_000
+            ),
             Some(true),
             "the basis the proxy writes must resolve"
         );
         assert_eq!(
-            resolve_spend_basis(&clearings, &format!("{AUTHORITY_ROUND_BASIS}deadbeef")),
+            resolve_spend_basis(
+                &clearings,
+                &format!("{AUTHORITY_ROUND_BASIS}deadbeef:alice"),
+                2_000_000
+            ),
             Some(false),
             "a hash the host does not hold must NOT resolve"
         );
+        for (payer, amount) in [
+            ("alice", 1_000_000),
+            ("bob", 2_000_000),
+            ("unknown", 2_000_000),
+        ] {
+            assert_eq!(
+                resolve_spend_basis(
+                    &clearings,
+                    &format!("{AUTHORITY_ROUND_BASIS}{hash}:{payer}"),
+                    amount
+                ),
+                Some(false),
+                "a losing or unknown payer, or a different payment, is not the referenced charge"
+            );
+        }
         assert_eq!(
-            resolve_spend_basis(&clearings, "some-future-basis:x"),
+            resolve_spend_basis(&clearings, "some-future-basis:x", 2_000_000),
             None,
             "an unknown basis kind is not silently 'unresolved'"
         );
@@ -344,7 +377,7 @@ mod tests {
             POD,
             1,
             2_000_000,
-            &format!("{AUTHORITY_ROUND_BASIS}{hash}"),
+            &format!("{AUTHORITY_ROUND_BASIS}{hash}:alice"),
             &key,
         );
         let spend_line = serde_json::to_string(&spend).unwrap();
@@ -354,6 +387,16 @@ mod tests {
         assert!(kept.proves(
             &crate::spend_receipt_collector::spend_log_path(dir.path()),
             &spend_line
+        ));
+
+        let seal = SpendReceipt::seal("spiffe://t/mediator", POD, 2, 2_000_000, &key);
+        let seal_line = serde_json::to_string(&seal).unwrap();
+        let kept = crate::spend_receipt_collector::append_spend(dir.path(), &seal_line)
+            .await
+            .unwrap();
+        assert!(kept.proves(
+            &crate::spend_receipt_collector::spend_log_path(dir.path()),
+            &seal_line
         ));
 
         // Spend present, evidence absent: NOT credited. This is the state the
@@ -385,6 +428,13 @@ mod tests {
             &format!("{AUTHORITY_ROUND_BASIS}deadbeef"),
             &key,
         );
+        // A separate final log with two charges: remove the one-charge seal
+        // so the unresolved basis, rather than a duplicate sequence, decides.
+        std::fs::write(
+            crate::spend_receipt_collector::spend_log_path(dir.path()),
+            format!("{spend_line}\n"),
+        )
+        .unwrap();
         let orphan_line = serde_json::to_string(&orphan).unwrap();
         let kept = crate::spend_receipt_collector::append_spend(dir.path(), &orphan_line)
             .await
@@ -393,10 +443,94 @@ mod tests {
             &crate::spend_receipt_collector::spend_log_path(dir.path()),
             &orphan_line
         ));
+        let seal = SpendReceipt::seal("spiffe://t/mediator", POD, 3, 2_500_000, &key);
+        let seal_line = serde_json::to_string(&seal).unwrap();
+        let kept = crate::spend_receipt_collector::append_spend(dir.path(), &seal_line)
+            .await
+            .unwrap();
+        assert!(kept.proves(
+            &crate::spend_receipt_collector::spend_log_path(dir.path()),
+            &seal_line
+        ));
         assert_eq!(
             creditable_spend(dir.path(), POD),
             None,
             "one unresolvable basis must not leave the rest silently credited"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signed_amount_must_match_the_clearing_payment() {
+        use ed25519_dalek::SigningKey;
+        use portcullis::spend_receipt::SpendReceipt;
+        const POD: &str = "wrong-amount-pod";
+        let key = SigningKey::from_bytes(&[23u8; 32]);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mediator-pubkey.hex"),
+            hex::encode(key.verifying_key().to_bytes()),
+        )
+        .unwrap();
+        let clearing = a_real_clearing();
+        let clearing_line = serde_json::to_string(&clearing).unwrap();
+        let (_, hash) = check(&clearing_line).unwrap();
+        let kept = append_clearing(dir.path(), &clearing_line).await.unwrap();
+        assert!(kept.proves(&clearing_log_path(dir.path()), &clearing_line));
+        let basis = format!("{AUTHORITY_ROUND_BASIS}{hash}:alice");
+        let spend = SpendReceipt::issue("spiffe://t/mediator", POD, 1, 1_000_000, &basis, &key);
+        let seal = SpendReceipt::seal("spiffe://t/mediator", POD, 2, 1_000_000, &key);
+        for receipt in [spend, seal] {
+            let line = serde_json::to_string(&receipt).unwrap();
+            let kept = crate::spend_receipt_collector::append_spend(dir.path(), &line)
+                .await
+                .unwrap();
+            assert!(kept.proves(
+                &crate::spend_receipt_collector::spend_log_path(dir.path()),
+                &line
+            ));
+        }
+        assert_eq!(
+            creditable_spend(dir.path(), POD),
+            None,
+            "the recomputed winner paid two dollars, not the signed one dollar"
+        );
+    }
+
+    /// A contiguous prefix cannot distinguish a complete log from a lost tail.
+    #[tokio::test]
+    async fn a_lost_final_charge_must_not_earn_a_refund() {
+        use ed25519_dalek::SigningKey;
+        use portcullis::spend_receipt::SpendReceipt;
+        const POD: &str = "lost-tail-pod";
+        let key = SigningKey::from_bytes(&[23u8; 32]);
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("mediator-pubkey.hex"),
+            hex::encode(key.verifying_key().to_bytes()),
+        )
+        .unwrap();
+        let clearing = a_real_clearing();
+        let clearing_line = serde_json::to_string(&clearing).unwrap();
+        let (_, hash) = check(&clearing_line).unwrap();
+        let basis = format!("{AUTHORITY_ROUND_BASIS}{hash}:alice");
+        let first = SpendReceipt::issue("spiffe://t/mediator", POD, 1, 2_000_000, &basis, &key);
+        let lost = SpendReceipt::issue("spiffe://t/mediator", POD, 2, 2_000_000, &basis, &key);
+        assert_eq!(lost.verify_strict(&key.verifying_key()), Ok(()));
+        let kept = append_clearing(dir.path(), &clearing_line).await.unwrap();
+        assert!(kept.proves(&clearing_log_path(dir.path()), &clearing_line));
+        let first_line = serde_json::to_string(&first).unwrap();
+        let kept = crate::spend_receipt_collector::append_spend(dir.path(), &first_line)
+            .await
+            .unwrap();
+        assert!(kept.proves(
+            &crate::spend_receipt_collector::spend_log_path(dir.path()),
+            &first_line
+        ));
+        // The second receipt was issued but its background delivery was lost.
+        assert_eq!(
+            creditable_spend(dir.path(), POD),
+            None,
+            "receipt 1 alone does not prove that receipt 2 was never issued"
         );
     }
 

@@ -1392,6 +1392,7 @@ async fn main() -> Result<(), ApiError> {
         clearing_dimensions,
         scheduler: authority_exchange,
         ledger: authority_ledger,
+        spend_shipper,
     } = authority_round::build(
         &args.clearing,
         args.clearing_window_ms,
@@ -1598,24 +1599,6 @@ async fn main() -> Result<(), ApiError> {
         }
     });
 
-    // Host-side spend accounting. Only meaningful with the exchange on: it is the
-    // exchange's charges that are otherwise invisible to the node.
-    let spend_shipper = if clearing_dimensions.is_empty() {
-        None
-    } else {
-        match spend_shipper::SpendShipper::from_env() {
-            Ok(s) => Some(Arc::new(s)),
-            Err(why) => {
-                warn!(
-                    %why,
-                    "authority charges cannot be shipped to the host; it will fold this pod's \
-                     FULL budget allocation at exit"
-                );
-                None
-            }
-        }
-    };
-
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
     let state = AppState {
         receipts: Arc::clone(&receipts),
@@ -1791,6 +1774,7 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Keep references for the exit report after shutdown
+    let exit_spend = state.spend_shipper.clone();
     let exit_audit = state.audit.clone();
     let exit_work_dir = spec.spec.work_dir.clone();
     let exit_exposure = state.exposure_guard.clone();
@@ -1847,14 +1831,17 @@ async fn main() -> Result<(), ApiError> {
             containment,
             args.unsandboxed,
             completion_writer,
-            Some(exit_report::on_workload_exit(
-                exit_audit.clone(),
-                exit_work_dir.clone(),
-                exit_exposure.clone(),
-                exit_monitor.clone(),
-                exit_art12.clone(),
-                exit_kernel.clone(),
-                exit_grant.clone(),
+            Some(spend_shipper::SpendShipper::before_exit(
+                exit_spend.clone(),
+                exit_report::on_workload_exit(
+                    exit_audit.clone(),
+                    exit_work_dir.clone(),
+                    exit_exposure.clone(),
+                    exit_monitor.clone(),
+                    exit_art12.clone(),
+                    exit_kernel.clone(),
+                    exit_grant.clone(),
+                ),
             )),
         )?;
         st.report();
@@ -1891,14 +1878,17 @@ async fn main() -> Result<(), ApiError> {
         containment,
         args.unsandboxed,
         completion_writer,
-        Some(exit_report::on_workload_exit(
-            exit_audit.clone(),
-            exit_work_dir.clone(),
-            exit_exposure.clone(),
-            exit_monitor.clone(),
-            exit_art12.clone(),
-            exit_kernel.clone(),
-            exit_grant.clone(),
+        Some(spend_shipper::SpendShipper::before_exit(
+            exit_spend.clone(),
+            exit_report::on_workload_exit(
+                exit_audit.clone(),
+                exit_work_dir.clone(),
+                exit_exposure.clone(),
+                exit_monitor.clone(),
+                exit_art12.clone(),
+                exit_kernel.clone(),
+                exit_grant.clone(),
+            ),
         )),
     )?;
 

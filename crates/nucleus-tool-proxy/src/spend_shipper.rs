@@ -8,27 +8,49 @@
 //! its OWN record of that key and, at release, folds `min(allocation, Σ
 //! verified)` into the parent's budget instead of the whole allocation.
 //!
-//! # Failure runs in the pod's disfavour, never the parent's
-//!
-//! A receipt that fails to ship is warned about and dropped. The node then
-//! sees a gap in the sequence and folds the FULL allocation — the same outcome
-//! as before this module existed. So a shipping failure can only make the pod
-//! look more expensive, never cheaper, and the request that won the round is
-//! not refused for it: the charge was made, the slot is the pod's, and the bill
-//! is the node's to settle conservatively.
-//!
-//! # Sequence numbers are issued here, in charge order
-//!
-//! `issue` takes the next `seq` synchronously in the request handler, so the
-//! order of receipts is the order of charges even though shipping is spawned.
-//! The node's fold is order-independent (it sorts by `seq`), so arrival order
-//! does not matter; a missing number does.
+//! Each debit and receipt issuance occurs under the same lock that closes
+//! accounting. Cancellation of a bidder cannot suppress its receipt. Closure
+//! prevents new debits, drains receipt deliveries, then ships a signed terminal
+//! count and total. Missing deliveries (including a lost tail) cannot earn a
+//! refund because the host requires that terminal commitment.
 
+use nucleus_authority_exchange::scheduler::ChargeError;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 use ed25519_dalek::SigningKey;
 use portcullis::spend_receipt::SpendReceipt;
+
+/// The only scheduler debit path when host accounting is provisioned.
+struct RecordedCharger {
+    ledger: Box<dyn nucleus_authority_exchange::Charger>,
+    shipper: Arc<SpendShipper>,
+}
+
+impl nucleus_authority_exchange::Charger for RecordedCharger {
+    fn charge(
+        &self,
+        _: &nucleus_econ_types::AgentId,
+        _: nucleus_econ_types::MicroUsd,
+    ) -> Result<(), ChargeError> {
+        Err(ChargeError::Ledger(
+            "a recorded charge requires clearing evidence".into(),
+        ))
+    }
+
+    fn charge_clearing(
+        &self,
+        payer: &nucleus_econ_types::AgentId,
+        price: nucleus_econ_types::MicroUsd,
+        clearing: &nucleus_recompute::ClearingReceipt,
+    ) -> Result<(), ChargeError> {
+        self.shipper
+            .record_charge(payer.as_str(), price.get(), clearing, || {
+                self.ledger.charge(payer, price)
+            })
+            .map(|_| ())
+    }
+}
 
 /// Signs and ships spend receipts for this pod.
 pub(crate) struct SpendShipper {
@@ -36,8 +58,18 @@ pub(crate) struct SpendShipper {
     spiffe_id: String,
     pod_id: String,
     port: u32,
-    seq: AtomicU64,
+    accounting: Mutex<Accounting>,
 }
+
+struct Accounting {
+    seq: u64,
+    total: u64,
+    closed: bool,
+    pending: tokio::task::JoinSet<()>,
+}
+
+/// Bound detached delivery work; capacity exhaustion refuses before charging.
+const MAX_PENDING: usize = 1024;
 
 impl std::fmt::Debug for SpendShipper {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -102,99 +134,149 @@ impl SpendShipper {
             spiffe_id,
             pod_id,
             port,
-            seq: AtomicU64::new(0),
+            accounting: Mutex::new(Accounting {
+                seq: 0,
+                total: 0,
+                closed: false,
+                pending: tokio::task::JoinSet::new(),
+            }),
         }
     }
 
-    /// Sign the next receipt. Takes the sequence number NOW, in the caller's
-    /// order; see the module docs.
-    pub(crate) fn issue(&self, amount_micro: u64, basis: &str) -> SpendReceipt {
-        let seq = self.seq.fetch_add(1, Ordering::SeqCst).saturating_add(1);
-        SpendReceipt::issue(
+    pub(crate) fn wrap_charger(
+        self: &Arc<Self>,
+        ledger: Box<dyn nucleus_authority_exchange::Charger>,
+    ) -> Box<dyn nucleus_authority_exchange::Charger> {
+        Box::new(RecordedCharger {
+            ledger,
+            shipper: Arc::clone(self),
+        })
+    }
+
+    /// Charge and record atomically with respect to closure. This runs in the
+    /// scheduler's closer, not in the request awaiting its verdict.
+    pub(crate) fn record_charge(
+        self: &Arc<Self>,
+        payer: &str,
+        amount: u64,
+        clearing: &nucleus_recompute::ClearingReceipt,
+        debit: impl FnOnce() -> Result<(), ChargeError>,
+    ) -> Result<SpendReceipt, ChargeError> {
+        tokio::runtime::Handle::try_current().map_err(|e| ChargeError::Ledger(e.to_string()))?;
+        let clearing_line =
+            serde_json::to_string(clearing).map_err(|e| ChargeError::Ledger(e.to_string()))?;
+        if !nucleus_recompute::authority_spend::payment_matches(clearing, payer, amount) {
+            return Err(ChargeError::Ledger(
+                "the debit does not match the clearing's payer and payment".into(),
+            ));
+        }
+        let basis = nucleus_recompute::authority_spend::basis(clearing, payer);
+        let mut state = self
+            .accounting
+            .lock()
+            .map_err(|_| ChargeError::Ledger("spend accounting lock is poisoned".into()))?;
+        while state.pending.try_join_next().is_some() {}
+        if state.closed || state.pending.len() >= MAX_PENDING {
+            return Err(ChargeError::Ledger(
+                "spend accounting is closed or delivery capacity is exhausted".into(),
+            ));
+        }
+        let seq = state
+            .seq
+            .checked_add(1)
+            .filter(|n| *n < u64::MAX)
+            .ok_or_else(|| ChargeError::Ledger("spend sequence exhausted".into()))?;
+        let receipt = SpendReceipt::issue(
             &self.spiffe_id,
             &self.pod_id,
             seq,
-            amount_micro,
-            basis,
+            amount,
+            &basis,
             &self.key,
-        )
-    }
-
-    /// Issue and ship in the background. The returned receipt is what was
-    /// signed; the ship's outcome is logged, never awaited by the request.
-    /// Issue and ship the spend receipt, AND ship the clearing receipt its
-    /// `basis` names.
-    ///
-    /// Both, or the discount is not earned: the host credits a spend only when
-    /// it holds a clearing receipt that recomputes for every basis. Shipping
-    /// the amount without the evidence used to leave the node with a hash
-    /// pointing at a receipt that died with this guest's tmpfs.
-    ///
-    /// The clearing receipt goes FIRST, so a host that sees the spend has
-    /// already seen what justifies it; if the clearing ship fails the spend is
-    /// still sent, and the host's refusal to credit it is the correct outcome
-    /// rather than a silent discount.
-    pub(crate) fn charge(
-        self: &Arc<Self>,
-        amount_micro: u64,
-        basis: &str,
-        clearing: &nucleus_recompute::ClearingReceipt,
-    ) -> SpendReceipt {
-        match serde_json::to_string(clearing) {
-            Ok(line) => self.send("SHIP_CLEARING", line, 0),
-            Err(e) => tracing::error!(
-                error = %e,
-                "could not serialize a ClearingReceipt; the host will not credit the spend"
-            ),
-        }
-        let receipt = self.issue(amount_micro, basis);
-        let me = Arc::clone(self);
-        let line = match serde_json::to_string(&receipt) {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::error!(error = %e, "could not serialize a SpendReceipt; the host will fold the full allocation");
-                return receipt;
+        );
+        let line =
+            serde_json::to_string(&receipt).map_err(|e| ChargeError::Ledger(e.to_string()))?;
+        debit()?;
+        state.seq = seq;
+        state.total = state.total.saturating_add(amount);
+        let port = self.port;
+        state.pending.spawn(async move {
+            // The corpus must precede the spend that cites it. A failed send
+            // leaves incomplete evidence, which the terminal count exposes.
+            if let Err(e) = send_checked(port, "SHIP_CLEARING", &clearing_line).await {
+                tracing::warn!(error = %e, "clearing receipt delivery failed");
             }
-        };
-        let _ = me;
-        self.send("SHIP_SPEND", line, receipt.seq);
-        receipt
-    }
-
-    /// Ship one line under one command, in the background.
-    ///
-    /// One sender for both receipt kinds: the only difference between them is
-    /// the command word and how the host verifies the body, and neither is the
-    /// guest's business. A failure is logged and never refuses the request —
-    /// the charge was made, the slot is the pod's, and an unshipped receipt
-    /// costs the POD (the host folds the full allocation), which is the right
-    /// direction for the incentive to point.
-    fn send(self: &Arc<Self>, command: &'static str, line: String, seq: u64) {
-        let me = Arc::clone(self);
-        tokio::spawn(async move {
-            match ship(me.port, command, &line).await {
-                Ok(reply) if reply.contains("\"collected\"") => {
-                    tracing::debug!(
-                        command,
-                        seq,
-                        event = "receipt_shipped",
-                        "receipt collected by the host"
-                    );
-                }
-                Ok(reply) => tracing::warn!(
-                    command,
-                    seq,
-                    reply = %reply.trim(),
-                    "the host refused a receipt; it will fold the full allocation"
-                ),
-                Err(e) => tracing::warn!(
-                    command,
-                    seq,
-                    error = %e,
-                    "could not ship a receipt; the host will fold the full allocation"
-                ),
+            if let Err(e) = send_checked(port, "SHIP_SPEND", &line).await {
+                tracing::warn!(error = %e, "spend receipt delivery failed");
             }
         });
+        Ok(receipt)
+    }
+
+    /// The closed bit and final count are written under the debit lock. Even a
+    /// detached auction that closes later cannot debit after this statement.
+    fn close(&self) -> Option<(SpendReceipt, tokio::task::JoinSet<()>)> {
+        let mut state = self.accounting.lock().ok()?;
+        if state.closed {
+            return None;
+        }
+        state.closed = true;
+        let seal = SpendReceipt::seal(
+            &self.spiffe_id,
+            &self.pod_id,
+            state.seq.checked_add(1)?,
+            state.total,
+            &self.key,
+        );
+        Some((seal, std::mem::take(&mut state.pending)))
+    }
+
+    pub(crate) async fn finish(&self) {
+        let Some((seal, mut pending)) = self.close() else {
+            return;
+        };
+        while let Some(result) = pending.join_next().await {
+            if let Err(error) = result {
+                tracing::warn!(%error, "receipt delivery task did not finish");
+            }
+        }
+        let line = match serde_json::to_string(&seal) {
+            Ok(line) => line,
+            Err(error) => {
+                tracing::warn!(%error, "cannot serialize terminal spend evidence");
+                return;
+            }
+        };
+        if let Err(error) = send_checked(self.port, "SHIP_SPEND", &line).await {
+            tracing::warn!(%error, "terminal spend evidence was not collected; no refund is proven");
+        }
+    }
+
+    /// Finish before the supervisor publishes exit (the host may immediately
+    /// kill the guest on observing it), then run the existing exit-report hook.
+    pub(crate) fn before_exit(
+        shipper: Option<Arc<Self>>,
+        next: crate::workload_supervisor::ExitHook,
+    ) -> crate::workload_supervisor::ExitHook {
+        Box::new(move || {
+            Box::pin(async move {
+                if let Some(shipper) = shipper {
+                    shipper.finish().await;
+                }
+                next().await;
+            })
+        })
+    }
+}
+
+async fn send_checked(port: u32, command: &str, line: &str) -> std::io::Result<()> {
+    let reply = ship(port, command, line).await?;
+    let value: serde_json::Value = serde_json::from_str(&reply)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    if value.get("status").and_then(serde_json::Value::as_str) == Some("collected") {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("host refused the receipt"))
     }
 }
 
@@ -259,22 +341,173 @@ mod tests {
         )
     }
 
-    #[test]
-    fn receipts_are_numbered_from_one_in_issue_order() {
-        let s = shipper();
-        let a = s.issue(10, "authority-round:a");
-        let b = s.issue(20, "authority-round:b");
-        assert_eq!((a.seq, b.seq), (1, 2));
-        assert_eq!(a.amount_micro, 10);
-        assert_eq!(a.pod_id, "pod-1");
+    fn clearing() -> nucleus_recompute::ClearingReceipt {
+        use nucleus_recompute::{IntegerBid, IntegerProposal};
+        nucleus_recompute::issue_vcg(
+            vec![
+                IntegerBid {
+                    bidder: "a".into(),
+                    proposal_id: "slot".into(),
+                    effective_value_micro_usd: 20,
+                },
+                IntegerBid {
+                    bidder: "b".into(),
+                    proposal_id: "slot".into(),
+                    effective_value_micro_usd: 10,
+                },
+            ],
+            vec![IntegerProposal {
+                id: "slot".into(),
+                cost_micro_usd: 1,
+            }],
+            1,
+        )
+        .unwrap()
     }
 
-    #[test]
-    fn an_issued_receipt_verifies_under_the_shipper_key() {
-        let s = shipper();
-        let r = s.issue(10, "authority-round:a");
-        let pubkey = SigningKey::from_bytes(&[5u8; 32]).verifying_key();
-        assert_eq!(r.verify_strict(&pubkey), Ok(()));
+    #[tokio::test]
+    async fn every_successful_debit_is_in_the_seal_and_closure_refuses_later_debits() {
+        use portcullis::spend_receipt::{SpendKind, VerifiedSpend};
+        let s = Arc::new(shipper());
+        let mut debits = 0;
+        let first = s
+            .record_charge("a", 10, &clearing(), || {
+                debits += 1;
+                Ok(())
+            })
+            .unwrap();
+        let second = s
+            .record_charge("a", 10, &clearing(), || {
+                debits += 1;
+                Ok(())
+            })
+            .unwrap();
+        let (seal, pending) = s.close().unwrap();
+        assert_eq!((first.seq, second.seq, seal.seq), (1, 2, 3));
+        assert_eq!(seal.kind, SpendKind::Final);
+        for r in [&first, &second, &seal] {
+            assert_eq!(r.verify_strict(&s.key.verifying_key()), Ok(()));
+        }
+        assert_eq!(
+            VerifiedSpend::fold([&first, &second, &seal]),
+            VerifiedSpend::Complete {
+                count: 2,
+                total_micro: 20
+            }
+        );
+        assert!(
+            s.record_charge("a", 10, &clearing(), || {
+                debits += 1;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(debits, 2, "a post-seal round must not debit");
+        assert!(s.close().is_none(), "a terminal record is issued once");
+        drop(pending);
+    }
+
+    #[tokio::test]
+    async fn refused_debits_do_not_issue_receipts_or_inflate_the_seal() {
+        let s = Arc::new(shipper());
+        assert!(
+            s.record_charge("a", 10, &clearing(), || Err(ChargeError::Ledger(
+                "refused".into()
+            )))
+            .is_err()
+        );
+        let first = s.record_charge("a", 10, &clearing(), || Ok(())).unwrap();
+        let (seal, pending) = s.close().unwrap();
+        assert_eq!((first.seq, seal.seq, seal.amount_micro), (1, 2, 10));
+        drop(pending);
+    }
+
+    #[tokio::test]
+    async fn a_payment_mismatch_is_refused_before_the_debit() {
+        let s = Arc::new(shipper());
+        for (payer, amount) in [("a", 9), ("b", 10), ("unknown", 10)] {
+            let mut debited = false;
+            assert!(
+                s.record_charge(payer, amount, &clearing(), || {
+                    debited = true;
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert!(!debited);
+        }
+        let (seal, pending) = s.close().unwrap();
+        assert_eq!((seal.seq, seal.amount_micro), (1, 0));
+        drop(pending);
+    }
+
+    #[tokio::test]
+    async fn delivery_capacity_refuses_before_the_debit() {
+        let s = Arc::new(shipper());
+        {
+            let mut state = s.accounting.lock().unwrap();
+            for _ in 0..MAX_PENDING {
+                state.pending.spawn(std::future::pending());
+            }
+        }
+        let mut debited = false;
+        assert!(
+            s.record_charge("a", 10, &clearing(), || {
+                debited = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!debited);
+        let (seal, pending) = s.close().unwrap();
+        assert_eq!((seal.seq, seal.amount_micro), (1, 0));
+        drop(pending);
+    }
+
+    #[tokio::test]
+    async fn sequence_exhaustion_refuses_before_the_debit_and_keeps_room_for_the_seal() {
+        let s = Arc::new(shipper());
+        s.accounting.lock().unwrap().seq = u64::MAX - 1;
+        let mut debited = false;
+        assert!(
+            s.record_charge("a", 10, &clearing(), || {
+                debited = true;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert!(!debited);
+        let (seal, pending) = s.close().unwrap();
+        assert_eq!(seal.seq, u64::MAX);
+        drop(pending);
+    }
+
+    #[tokio::test]
+    async fn exit_hook_waits_for_delivery_tasks_before_publishing_exit() {
+        let s = Arc::new(shipper());
+        let (release, wait) = tokio::sync::oneshot::channel::<()>();
+        s.accounting.lock().unwrap().pending.spawn(async move {
+            let _ = wait.await;
+        });
+        let (published, observe) = tokio::sync::oneshot::channel();
+        let hook = SpendShipper::before_exit(
+            Some(Arc::clone(&s)),
+            Box::new(move || {
+                Box::pin(async move {
+                    published.send(()).unwrap();
+                })
+            }),
+        );
+        let task = tokio::spawn(hook());
+        tokio::task::yield_now().await;
+        assert!(!task.is_finished());
+        assert!(s.accounting.lock().unwrap().closed);
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(6), task)
+            .await
+            .unwrap()
+            .unwrap();
+        observe.await.unwrap();
     }
 
     #[test]

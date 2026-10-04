@@ -29,13 +29,13 @@
 //! the clearing receipt named in [`SpendReceipt::basis`] is for, and a relying
 //! party recomputes it with `nucleus-recompute`.
 //!
-//! # Sequence numbers are the completeness claim
+//! # Completeness requires a signed terminal statement
 //!
-//! `seq` starts at 1 and increments by one per receipt the mediator issues. A
-//! host that holds receipts 1, 2 and 4 knows one is missing, and a missing
-//! receipt is a charge it cannot see. The fold treats a gap as "could not
-//! look" and charges the full allocation — so suppressing a receipt costs the
-//! pod more than shipping it, which is the incentive the design needs.
+//! Charges are numbered from 1. A gap detects a missing interior charge, but
+//! a contiguous prefix cannot detect a lost tail. Only a signed `Final` record
+//! committing to the next sequence and accumulated total establishes completion.
+//! The issuer must stop charging before sealing. Missing, duplicate, misplaced,
+//! or inconsistent terminal evidence never earns a refund.
 
 // Needs `crypto` (ed25519) AND `serde` (the receipt is shipped as JSON), the
 // same gating as `mediation_receipt` and for the same reason.
@@ -45,18 +45,31 @@ use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// Schema version — a verifier rejects a version it does not know.
-pub const SPEND_RECEIPT_SCHEMA_VERSION: u32 = 1;
+pub const SPEND_RECEIPT_SCHEMA_VERSION: u32 = 2;
 
 /// Domain separator folded into every preimage, so a spend-receipt signature
 /// can never be confused with a mediation receipt's or any other nucleus
 /// structure's.
-const PREIMAGE_DOMAIN: &str = "nucleus-spend-receipt-v1";
+const PREIMAGE_DOMAIN: &str = "nucleus-spend-receipt-v2";
+
+/// A charge or the mediator's irrevocable end-of-log statement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpendKind {
+    /// One debit against the delegated budget.
+    Charge,
+    /// No more charges can occur. `seq` follows the last charge and
+    /// `amount_micro` commits to the sum of all preceding charges.
+    Final,
+}
 
 /// One signed charge against a pod's delegated budget.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpendReceipt {
     /// Layout version.
     pub schema_version: u32,
+    /// The statement this signature attests to.
+    pub kind: SpendKind,
     /// SPIFFE id of the mediator (the tool-proxy) that made the charge.
     pub mediator_spiffe_id: String,
     /// The pod whose budget was charged. The host checks this against the pod
@@ -105,16 +118,21 @@ impl SpendReceipt {
     /// serializer. Excludes the signature.
     #[must_use]
     pub fn preimage(&self) -> Vec<u8> {
-        format!(
-            "{PREIMAGE_DOMAIN}|{}|{}|{}|{}|{}|{}",
-            self.schema_version,
-            self.mediator_spiffe_id,
-            self.pod_id,
-            self.seq,
-            self.amount_micro,
-            self.basis,
-        )
-        .into_bytes()
+        let mut out = PREIMAGE_DOMAIN.as_bytes().to_vec();
+        out.extend_from_slice(&self.schema_version.to_be_bytes());
+        out.push(match self.kind {
+            SpendKind::Charge => 0,
+            SpendKind::Final => 1,
+        });
+        // Length framing prevents a separator inside an identity or basis
+        // from moving bytes into the adjacent signed field.
+        for value in [&self.mediator_spiffe_id, &self.pod_id, &self.basis] {
+            out.extend_from_slice(&u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+            out.extend_from_slice(value.as_bytes());
+        }
+        out.extend_from_slice(&self.seq.to_be_bytes());
+        out.extend_from_slice(&self.amount_micro.to_be_bytes());
+        out
     }
 
     /// Issue a receipt for one charge. `seq` is the caller's monotonic counter;
@@ -131,6 +149,7 @@ impl SpendReceipt {
     ) -> Self {
         let mut receipt = Self {
             schema_version: SPEND_RECEIPT_SCHEMA_VERSION,
+            kind: SpendKind::Charge,
             mediator_spiffe_id: mediator_spiffe_id.to_string(),
             pod_id: pod_id.to_string(),
             seq,
@@ -138,6 +157,23 @@ impl SpendReceipt {
             basis: basis.to_string(),
             signature: String::new(),
         };
+        receipt.signature = hex::encode(key.sign(&receipt.preimage()).to_bytes());
+        receipt
+    }
+
+    /// Seal a stopped accounting session. The caller must prevent all later
+    /// charges before signing: this is evidence about the complete log, not a
+    /// checkpoint. `next_seq` is one after the last charge, or 1 for no charges.
+    #[must_use]
+    pub fn seal(
+        mediator: &str,
+        pod: &str,
+        next_seq: u64,
+        total_micro: u64,
+        key: &SigningKey,
+    ) -> Self {
+        let mut receipt = Self::issue(mediator, pod, next_seq, total_micro, "", key);
+        receipt.kind = SpendKind::Final;
         receipt.signature = hex::encode(key.sign(&receipt.preimage()).to_bytes());
         receipt
     }
@@ -171,14 +207,16 @@ impl SpendReceipt {
 
 /// Fold a pod's receipts into the amount the host may count as spent.
 ///
-/// Three-valued on purpose (ADR 0007 A-1): "no receipts" and "receipts with a
-/// gap" are both cases where the host could not see every charge, and neither
-/// may be reported as a spend of zero.
+/// Absence, an unsealed prefix, and gaps all mean the host could not see
+/// every charge (ADR 0007 A-1). None may be reported as a spend of zero.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerifiedSpend {
     /// The pod shipped nothing the host could verify.
     NoReceipts,
-    /// Every receipt from `seq = 1` to `count` is present and verified.
+    /// A contiguous prefix without a signed end-of-log statement.
+    Unsealed,
+    /// Every charge from `seq = 1` to `count` is present, followed by a
+    /// verified terminal record at `count + 1` committing to their total.
     Complete {
         /// Σ `amount_micro`, saturating.
         total_micro: u64,
@@ -202,22 +240,33 @@ impl VerifiedSpend {
     /// produces the gap this function reports.
     #[must_use]
     pub fn fold<'a>(verified: impl IntoIterator<Item = &'a SpendReceipt>) -> Self {
-        let mut seqs: Vec<(u64, u64)> = verified
-            .into_iter()
-            .map(|r| (r.seq, r.amount_micro))
-            .collect();
-        if seqs.is_empty() {
+        let mut receipts: Vec<&SpendReceipt> = verified.into_iter().collect();
+        if receipts.is_empty() {
             return Self::NoReceipts;
         }
-        seqs.sort_unstable_by_key(|(s, _)| *s);
+        receipts.sort_unstable_by_key(|r| r.seq);
         let mut expected: u64 = 1;
         let mut total: u64 = 0;
-        for (seq, amount) in seqs {
-            if seq != expected {
+        let mut sealed = false;
+        for receipt in receipts {
+            if sealed || receipt.seq != expected {
                 return Self::Gapped { at_seq: expected };
             }
-            total = total.saturating_add(amount);
-            expected = expected.saturating_add(1);
+            match receipt.kind {
+                SpendKind::Charge => {
+                    total = total.saturating_add(receipt.amount_micro);
+                    expected = expected.saturating_add(1);
+                }
+                SpendKind::Final => {
+                    if receipt.amount_micro != total || !receipt.basis.is_empty() {
+                        return Self::Gapped { at_seq: expected };
+                    }
+                    sealed = true;
+                }
+            }
+        }
+        if !sealed {
+            return Self::Unsealed;
         }
         Self::Complete {
             total_micro: total,
@@ -287,10 +336,12 @@ mod tests {
     fn unknown_schema_is_refused_before_the_signature_is_looked_at() {
         let k = key(7);
         let mut r = receipt(1, 250_000, &k);
-        r.schema_version = 2;
+        r.schema_version = SPEND_RECEIPT_SCHEMA_VERSION + 1;
         assert_eq!(
             r.verify_strict(&k.verifying_key()),
-            Err(SpendReceiptError::UnknownSchema(2))
+            Err(SpendReceiptError::UnknownSchema(
+                SPEND_RECEIPT_SCHEMA_VERSION + 1
+            ))
         );
     }
 
@@ -321,6 +372,83 @@ mod tests {
         assert_eq!(back.verify_strict(&k.verifying_key()), Ok(()));
     }
 
+    #[test]
+    fn signed_fields_cannot_be_repartitioned_at_a_separator() {
+        let k = key(1);
+        let first = SpendReceipt::issue("a|b", "c", 1, 10, "basis", &k);
+        let mut second = first.clone();
+        second.mediator_spiffe_id = "a".into();
+        second.pod_id = "b|c".into();
+        assert_ne!(first.preimage(), second.preimage());
+        assert_eq!(
+            second.verify_strict(&k.verifying_key()),
+            Err(SpendReceiptError::SignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn a_charge_cannot_be_relabelled_as_a_terminal_statement() {
+        let k = key(1);
+        let mut r = receipt(1, 0, &k);
+        r.kind = SpendKind::Final;
+        assert_eq!(
+            r.verify_strict(&k.verifying_key()),
+            Err(SpendReceiptError::SignatureInvalid)
+        );
+    }
+
+    #[test]
+    fn only_a_terminal_statement_proves_a_contiguous_log_complete() {
+        let k = key(1);
+        let first = receipt(1, 10, &k);
+        let last = receipt(2, 20, &k);
+        let seal = SpendReceipt::seal("spiffe://t/mediator", "pod-1", 3, 30, &k);
+        assert_eq!(seal.verify_strict(&k.verifying_key()), Ok(()));
+        assert_eq!(VerifiedSpend::fold([&first]), VerifiedSpend::Unsealed);
+        assert_eq!(
+            VerifiedSpend::fold([&first, &last]),
+            VerifiedSpend::Unsealed
+        );
+        assert_eq!(
+            VerifiedSpend::fold([&first, &seal]),
+            VerifiedSpend::Gapped { at_seq: 2 }
+        );
+        assert_eq!(
+            VerifiedSpend::fold([&seal, &last, &first]),
+            VerifiedSpend::Complete {
+                count: 2,
+                total_micro: 30
+            }
+        );
+        let wrong_total = SpendReceipt::seal("spiffe://t/mediator", "pod-1", 3, 29, &k);
+        assert_eq!(
+            VerifiedSpend::fold([&first, &last, &wrong_total]),
+            VerifiedSpend::Gapped { at_seq: 3 }
+        );
+        assert_eq!(
+            VerifiedSpend::fold([&first, &last, &seal, &seal]),
+            VerifiedSpend::Gapped { at_seq: 3 }
+        );
+        let later = receipt(4, 1, &k);
+        assert_eq!(
+            VerifiedSpend::fold([&first, &last, &seal, &later]),
+            VerifiedSpend::Gapped { at_seq: 3 }
+        );
+    }
+
+    #[test]
+    fn a_zero_spend_requires_an_explicit_terminal_record() {
+        let k = key(1);
+        let seal = SpendReceipt::seal("spiffe://t/mediator", "pod-1", 1, 0, &k);
+        assert_eq!(
+            VerifiedSpend::fold([&seal]),
+            VerifiedSpend::Complete {
+                count: 0,
+                total_micro: 0
+            }
+        );
+    }
+
     // ── fold ─────────────────────────────────────────────────────────────
 
     #[test]
@@ -334,7 +462,12 @@ mod tests {
     #[test]
     fn a_complete_sequence_sums_regardless_of_order() {
         let k = key(1);
-        let rs = [receipt(3, 5, &k), receipt(1, 10, &k), receipt(2, 20, &k)];
+        let rs = [
+            receipt(3, 5, &k),
+            receipt(1, 10, &k),
+            receipt(2, 20, &k),
+            SpendReceipt::seal("spiffe://t/mediator", "pod-1", 4, 35, &k),
+        ];
         assert_eq!(
             VerifiedSpend::fold(rs.iter()),
             VerifiedSpend::Complete {
@@ -377,7 +510,11 @@ mod tests {
     #[test]
     fn the_total_saturates_rather_than_wrapping() {
         let k = key(1);
-        let rs = [receipt(1, u64::MAX, &k), receipt(2, 1, &k)];
+        let rs = [
+            receipt(1, u64::MAX, &k),
+            receipt(2, 1, &k),
+            SpendReceipt::seal("spiffe://t/mediator", "pod-1", 3, u64::MAX, &k),
+        ];
         assert_eq!(
             VerifiedSpend::fold(rs.iter()),
             VerifiedSpend::Complete {

@@ -98,7 +98,7 @@ cat > "$FC_DIR/harness-pod.json" <<JSON
  "metadata":{"name":"boot-harness"},
  "spec":{"work_dir":"/work","timeout_seconds":120,
    "policy":{"type":"profile","name":"codegen"},
-   "image":{"kernel_path":"$KERNEL","rootfs_path":"$ROOTFS","read_only":false},
+   "image":{"kernel_path":"$KERNEL","rootfs_path":"$ROOTFS","read_only":true},
    "vsock":{"guest_cid":3,"port":5005}}}
 JSON
 

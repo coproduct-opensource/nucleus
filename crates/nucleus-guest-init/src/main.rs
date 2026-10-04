@@ -310,7 +310,7 @@ fn run() -> Result<(), String> {
                 .iter()
                 .find(|g| g.target == m.target)
                 .expect("mount_specs is derived from GUEST_MOUNTS");
-            mount_fs(m.source, m.target, m.fstype, gm.ms_flags(), None)
+            mount_fs(m.source, m.target, m.fstype, gm.ms_flags(), gm.fs.data())
         })
         .map_err(|e| e.to_string())?;
     for missing in &boot.optional_mount_failures {
@@ -846,7 +846,7 @@ fn mount_specs() -> Vec<MountSpec> {
         .map(|m| MountSpec {
             source: m.source,
             target: m.target,
-            fstype: m.fstype,
+            fstype: m.fs.fstype(),
             load_bearing: m.load_bearing,
         })
         .collect()
@@ -861,7 +861,12 @@ fn mount_specs() -> Vec<MountSpec> {
 pub(crate) struct GuestMount {
     pub source: &'static str,
     pub target: &'static str,
-    pub fstype: &'static str,
+    /// The filesystem, carrying its own mount data. Typed rather than an
+    /// `fstype` string beside a free-form options string, so a procfs entry
+    /// cannot be written without stating its `hidepid` (ADR 0007 E-2) and the
+    /// options a mount gets are derived from the filesystem, never restated
+    /// beside it (G-1).
+    pub fs: GuestFs,
     /// SUID/SGID bits are not honoured — blocks a dropped setuid binary.
     pub nosuid: bool,
     /// Device nodes cannot be created — blocks a crafted /dev/mem or /dev/sda.
@@ -872,6 +877,80 @@ pub(crate) struct GuestMount {
     /// pseudo-filesystem here is load-bearing: the proxy needs /proc and /dev,
     /// the identity handshake needs /run, the audit fallback needs /tmp.
     pub load_bearing: bool,
+}
+
+/// A guest pseudo-filesystem, with the mount data it takes.
+///
+/// One variant per filesystem the table mounts. Only procfs takes data today;
+/// the others are unit variants, so adding data to one is a type change the
+/// `match`es below will not let anyone skip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GuestFs {
+    /// procfs. `hidepid` is a required field, not an option: a `/proc` mounted
+    /// without it lists PID 1 (the tool-proxy, guest root) to the workload and
+    /// serves it `/proc/1/cmdline` (measured, P3 spike section 5).
+    Proc {
+        hidepid: HidePid,
+    },
+    Sysfs,
+    Devtmpfs,
+    Tmpfs,
+}
+
+/// procfs `hidepid`: what a process sees of another uid's `/proc/<pid>`.
+///
+/// Deliberately has no `Off` (`hidepid=0`), `NoAccess` (`1`) or `Ptraceable`
+/// (`4`) variant. `Off` is the defect this exists to remove, and `NoAccess`
+/// still lists every pid, so a workload could enumerate the runtime's process
+/// tree. A variant is added when something needs it, and then the reason is
+/// written here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HidePid {
+    /// `hidepid=invisible` (= `2`): another uid's `/proc/<pid>` directories do
+    /// not exist for this process. They are absent from the listing and a
+    /// lookup is `ENOENT`. Root and same-uid processes still see them, so PID 1
+    /// (root) and the workload's own children (same uid) are unaffected.
+    Invisible,
+}
+
+impl HidePid {
+    /// The option as procfs spells it. Since 5.8 `proc_parse_hidepid_param`
+    /// accepts the name or the number, and `proc_show_options` prints only the
+    /// name. The NAME is written so the option is byte-identical to what
+    /// `/proc/self/mountinfo` reports back, which is what the workload probe
+    /// checks.
+    pub(crate) const fn option(self) -> &'static str {
+        match self {
+            HidePid::Invisible => "hidepid=invisible",
+        }
+    }
+}
+
+impl GuestFs {
+    /// The `fstype` argument to `mount(2)`.
+    pub(crate) const fn fstype(self) -> &'static str {
+        match self {
+            GuestFs::Proc { .. } => "proc",
+            GuestFs::Sysfs => "sysfs",
+            GuestFs::Devtmpfs => "devtmpfs",
+            GuestFs::Tmpfs => "tmpfs",
+        }
+    }
+
+    /// The `data` argument to `mount(2)`: the filesystem-specific options.
+    ///
+    /// No `subset=pid` on procfs, although 6.1 supports it (5.8+). It hides
+    /// every non-pid entry, and this mount is one superblock shared with
+    /// guest-init itself: guest-init reads `/proc/cmdline` after mounting it for
+    /// its network config and approval keys, and ordinary workloads read
+    /// `/proc/meminfo`, `/proc/cpuinfo` and `/proc/sys`. What it would hide
+    /// beyond hidepid is system-wide state, none of it another process's.
+    pub(crate) const fn data(self) -> Option<&'static str> {
+        match self {
+            GuestFs::Proc { hidepid } => Some(hidepid.option()),
+            GuestFs::Sysfs | GuestFs::Devtmpfs | GuestFs::Tmpfs => None,
+        }
+    }
 }
 
 impl GuestMount {
@@ -944,7 +1023,9 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "proc",
         target: "/proc",
-        fstype: "proc",
+        fs: GuestFs::Proc {
+            hidepid: HidePid::Invisible,
+        },
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -953,7 +1034,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "sys",
         target: "/sys",
-        fstype: "sysfs",
+        fs: GuestFs::Sysfs,
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -962,7 +1043,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "dev",
         target: "/dev",
-        fstype: "devtmpfs",
+        fs: GuestFs::Devtmpfs,
         nosuid: true,
         nodev: false,
         noexec: false,
@@ -971,7 +1052,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "tmpfs",
         target: "/tmp",
-        fstype: "tmpfs",
+        fs: GuestFs::Tmpfs,
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -980,7 +1061,7 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "tmpfs",
         target: "/run",
-        fstype: "tmpfs",
+        fs: GuestFs::Tmpfs,
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -1461,6 +1542,50 @@ mod tests {
             !dev.nodev,
             "/dev must permit device nodes — it is the device tree"
         );
+    }
+
+    /// P3d (#2696): `/proc` is mounted `hidepid=invisible`, so a workload under
+    /// its own uid cannot see PID 1 (the tool-proxy, root) at all.
+    ///
+    /// Checked on `data()`, the value `run()` hands to `mount(2)`, not on the
+    /// variant alone: dropping the option from the call is the regression.
+    #[test]
+    fn proc_is_mounted_with_hidepid_invisible() {
+        let proc = super::GUEST_MOUNTS
+            .iter()
+            .find(|m| m.target == "/proc")
+            .expect("/proc must be in the mount table");
+        assert_eq!(proc.fs.fstype(), "proc");
+        assert_eq!(
+            proc.fs.data(),
+            Some("hidepid=invisible"),
+            "/proc without hidepid lists PID 1 to the workload and serves it \
+             /proc/1/cmdline (P3 spike, section 5)"
+        );
+        // `subset=pid` would also hide /proc/cmdline, which guest-init itself
+        // reads after this mount. See `GuestFs::data`.
+        assert!(
+            !proc.fs.data().unwrap_or_default().contains("subset"),
+            "subset=pid hides /proc/cmdline from guest-init"
+        );
+    }
+
+    /// Non-vacuity for the test above: only procfs takes data, so the option
+    /// is not riding on every mount, where `tmpfs` would reject it and the
+    /// load-bearing mount would abort the boot.
+    #[test]
+    fn only_procfs_carries_mount_data() {
+        for m in super::GUEST_MOUNTS {
+            let is_proc = matches!(m.fs, super::GuestFs::Proc { .. });
+            assert_eq!(
+                m.fs.data().is_some(),
+                is_proc,
+                "{} ({}) has unexpected mount data {:?}",
+                m.target,
+                m.fs.fstype(),
+                m.fs.data()
+            );
+        }
     }
 
     use super::*;

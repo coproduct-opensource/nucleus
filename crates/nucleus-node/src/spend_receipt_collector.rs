@@ -21,10 +21,10 @@
 //!
 //! # What the fold refuses to guess
 //!
-//! `portcullis::spend_receipt::VerifiedSpend` is three-valued. `NoReceipts` and
-//! `Gapped` are both "the host could not see every charge", and `release_child`
-//! folds the FULL allocation for either. Only `Complete` — receipts `1..=n`, all
-//! verified — is a spend the node will count as less than everything.
+//! `portcullis::spend_receipt::VerifiedSpend` distinguishes `NoReceipts`,
+//! `Unsealed` and `Gapped` all mean "the host could not see every charge".
+//! `release_child` folds the FULL allocation for each. Only `Complete` — all
+//! charges plus a matching signed terminal count and total — can earn credit.
 
 use std::path::{Path, PathBuf};
 
@@ -186,6 +186,10 @@ mod tests {
             let kept = append_spend(dir.path(), &l).await.unwrap();
             assert!(kept.proves(&spend_log_path(dir.path()), &l));
         }
+        let seal = SpendReceipt::seal("spiffe://t/mediator", POD, 3, 500_000, &k);
+        let seal_line = serde_json::to_string(&seal).unwrap();
+        let kept = append_spend(dir.path(), &seal_line).await.unwrap();
+        assert!(kept.proves(&spend_log_path(dir.path()), &seal_line));
         assert_eq!(
             VerifiedSpend::fold(verified_spend_receipts(dir.path(), POD).iter()),
             VerifiedSpend::Complete {

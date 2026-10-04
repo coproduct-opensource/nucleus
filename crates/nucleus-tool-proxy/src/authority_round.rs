@@ -103,6 +103,7 @@ pub(crate) struct Exchange {
     pub(crate) clearing_dimensions: BTreeSet<PermissionDimension>,
     pub(crate) scheduler: Option<Arc<RoundScheduler<Box<dyn Charger>>>>,
     pub(crate) ledger: Option<Arc<authority_ledger::AuthorityLedger>>,
+    pub(crate) spend_shipper: Option<Arc<crate::spend_shipper::SpendShipper>>,
 }
 
 /// Build the exchange from the flags, or refuse to start.
@@ -124,6 +125,7 @@ pub(crate) fn build(
             clearing_dimensions,
             scheduler: None,
             ledger: None,
+            spend_shipper: None,
         });
     }
     // The pod cannot spend more on authority than it was delegated: the
@@ -133,6 +135,17 @@ pub(crate) fn build(
         Box::new(nucleus_authority_exchange::scheduler::LedgerCharger::new(
             portcullis::budget_ledger::BudgetLedger::for_parent(&delegation_ceiling.budget),
         ));
+    let spend_shipper = match crate::spend_shipper::SpendShipper::from_env() {
+        Ok(shipper) => Some(Arc::new(shipper)),
+        Err(why) => {
+            tracing::warn!(%why, "host accounting is unavailable; no complete spend log can be proved");
+            None
+        }
+    };
+    let charger = match &spend_shipper {
+        Some(shipper) => shipper.wrap_charger(charger),
+        None => charger,
+    };
     info!(
         dimensions = %clearing_dimensions.iter().map(|d| d.label()).collect::<Vec<_>>().join(","),
         window_ms = clearing_window_ms,
@@ -179,6 +192,7 @@ pub(crate) fn build(
         clearing_dimensions,
         scheduler: Some(scheduler),
         ledger: Some(Arc::new(ledger)),
+        spend_shipper,
     })
 }
 
@@ -272,18 +286,7 @@ pub(crate) async fn join_if_auctioned(
                 },
                 &receipt,
             );
-            // The charge was made in this guest's ledger; tell the host, signed,
-            // so the node can fold what was spent rather than everything (#2541).
-            if let Some(ref shipper) = state.spend_shipper {
-                shipper.charge(
-                    price.get(),
-                    &format!(
-                        "authority-round:{}",
-                        nucleus_recompute::content_hash_hex(&receipt)
-                    ),
-                    &receipt,
-                );
-            }
+            // The scheduler recorded the charge before delivering this verdict.
             tracing::info!(
                 dimension = dimension.label(),
                 round = round.as_str(),

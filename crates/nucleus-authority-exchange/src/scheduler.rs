@@ -131,12 +131,33 @@ pub trait Charger: Send + Sync + 'static {
     ///
     /// [`ChargeError`] if the payer cannot cover it, which denies the slot.
     fn charge(&self, payer: &AgentId, price: MicroUsd) -> Result<(), ChargeError>;
+
+    /// Debit a cleared price with its evidence, before notifying the waiter.
+    /// Implementations that record spend override this boundary so a cancelled
+    /// request cannot make a successful debit disappear from accounting.
+    fn charge_clearing(
+        &self,
+        payer: &AgentId,
+        price: MicroUsd,
+        _receipt: &ClearingReceipt,
+    ) -> Result<(), ChargeError> {
+        self.charge(payer, price)
+    }
 }
 
 /// So a caller that picks its charger at runtime can still name one type.
 impl Charger for Box<dyn Charger> {
     fn charge(&self, payer: &AgentId, price: MicroUsd) -> Result<(), ChargeError> {
         (**self).charge(payer, price)
+    }
+
+    fn charge_clearing(
+        &self,
+        payer: &AgentId,
+        price: MicroUsd,
+        receipt: &ClearingReceipt,
+    ) -> Result<(), ChargeError> {
+        (**self).charge_clearing(payer, price, receipt)
     }
 }
 
@@ -362,7 +383,7 @@ impl<C: Charger> RoundScheduler<C> {
         // leaves the others', which is what charging per payer means.
         let charged: std::collections::BTreeMap<&AgentId, bool> = winners
             .iter()
-            .map(|w| (w, self.charger.charge(w, price).is_ok()))
+            .map(|w| (w, self.charger.charge_clearing(w, price, &receipt).is_ok()))
             .collect();
 
         for (agent, tx) in waiters {
@@ -433,6 +454,58 @@ mod tests {
                 price: price.get(),
             })
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_winner_is_recorded_at_the_debit_even_through_a_boxed_charger() {
+        struct Accounted(Arc<AtomicU64>);
+        impl Charger for Accounted {
+            fn charge(&self, _: &AgentId, _: MicroUsd) -> Result<(), ChargeError> {
+                panic!("the scheduler bypassed the accounting boundary")
+            }
+            fn charge_clearing(
+                &self,
+                _: &AgentId,
+                price: MicroUsd,
+                receipt: &ClearingReceipt,
+            ) -> Result<(), ChargeError> {
+                assert_eq!(
+                    nucleus_recompute::verify_receipt(receipt),
+                    nucleus_recompute::RecomputeOutcome::Match
+                );
+                self.0.fetch_add(price.get(), Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let recorded = Arc::new(AtomicU64::new(0));
+        let charger: Box<dyn Charger> = Box::new(Accounted(Arc::clone(&recorded)));
+        let scheduler = RoundScheduler::new(WINDOW, charger);
+        let a = {
+            let s = Arc::clone(&scheduler);
+            tokio::spawn(async move { s.join(bid("a", 100, egress())).await })
+        };
+        let b = {
+            let s = Arc::clone(&scheduler);
+            tokio::spawn(async move { s.join(bid("b", 70, egress())).await })
+        };
+        // Both join futures run before the paused window can advance.
+        tokio::task::yield_now().await;
+        assert_eq!(
+            scheduler
+                .open
+                .lock()
+                .unwrap()
+                .get(&egress())
+                .unwrap()
+                .waiters
+                .len(),
+            2
+        );
+        a.abort();
+        assert!(a.await.unwrap_err().is_cancelled());
+        tokio::time::advance(WINDOW).await;
+        assert!(matches!(b.await.unwrap(), Verdict::Lost { .. }));
+        assert_eq!(recorded.load(Ordering::SeqCst), 70);
     }
 
     /// NON-VACUITY, and the reason this module exists: two bidders that arrive

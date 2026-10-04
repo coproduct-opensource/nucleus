@@ -38,6 +38,8 @@
 //! set is complete — the on-chain `CommitSet` closure handles that). See
 //! `docs/PROOFS.md`.
 
+pub mod authority_spend;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
