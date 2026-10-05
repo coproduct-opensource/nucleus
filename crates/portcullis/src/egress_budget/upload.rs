@@ -51,17 +51,19 @@ impl EgressLedger {
     /// Admit up to `requested` bytes from an existing total reservation.
     /// Packet reservations and other uploads consume this same pace window.
     /// A later total-ceiling latch does not invalidate already reserved volume.
+    /// Consume and return the reservation for every step, including waits.
+    /// A refusal drops the handle and conservatively retains its allocation.
     pub fn pace_upload(
         &mut self,
-        upload: &mut EgressUploadHold,
+        mut upload: EgressUploadHold,
         requested: EgressBytes,
         now_unix: u64,
-    ) -> Result<UploadPace, EgressRefusal> {
+    ) -> Result<(EgressUploadHold, UploadPace), EgressRefusal> {
         if upload.epoch != self.epoch || self.core.allocation_of(upload.id) != Some(upload.bytes) {
             return Err(EgressRefusal::LedgerFault);
         }
         if upload.remaining == 0 {
-            return Ok(UploadPace::Complete);
+            return Ok((upload, UploadPace::Complete));
         }
         let mut bytes = requested.min(upload.remaining);
         if let EgressPace::PerWindow {
@@ -73,15 +75,19 @@ impl EgressLedger {
             self.refresh_window(now_unix, len);
             let available = per_window.saturating_sub(self.window.counted);
             if available == 0 {
-                return Ok(UploadPace::Wait {
-                    seconds: len.saturating_sub(now_unix.saturating_sub(self.window.started_at)),
-                });
+                return Ok((
+                    upload,
+                    UploadPace::Wait {
+                        seconds: len
+                            .saturating_sub(now_unix.saturating_sub(self.window.started_at)),
+                    },
+                ));
             }
             bytes = bytes.min(available);
             self.window.counted = self.window.counted.saturating_add(bytes);
         }
         upload.remaining -= bytes;
-        Ok(UploadPace::Ready(bytes))
+        Ok((upload, UploadPace::Ready(bytes)))
     }
 
     /// Settle the entire upload. Use `NotSent` only when no bytes were handed to
@@ -119,36 +125,26 @@ mod tests {
     #[test]
     fn upload_spans_windows_and_shares_pace_with_packets() {
         let mut ledger = ledger();
-        let mut upload = ledger.reserve_upload(250).unwrap();
+        let upload = ledger.reserve_upload(250).unwrap();
         let EgressDecision::Admitted(packet) = ledger.reserve(30, 10) else {
             panic!("packet fits");
         };
         ledger.settle(packet, EgressSettlement::Sent).unwrap();
         assert_eq!(ledger.counted(), 280);
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 250, 10),
-            Ok(UploadPace::Ready(70))
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 180, 11),
-            Ok(UploadPace::Wait { seconds: 1 })
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 180, 12),
-            Ok(UploadPace::Ready(100))
-        );
+        let (upload, pace) = ledger.pace_upload(upload, 250, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(70));
+        let (upload, pace) = ledger.pace_upload(upload, 180, 11).unwrap();
+        assert_eq!(pace, UploadPace::Wait { seconds: 1 });
+        let (upload, pace) = ledger.pace_upload(upload, 180, 12).unwrap();
+        assert_eq!(pace, UploadPace::Ready(100));
         assert!(matches!(
             ledger.reserve(1, 12),
             EgressDecision::Refused(EgressRefusal::RateExceeded { .. }, _)
         ));
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 180, 14),
-            Ok(UploadPace::Ready(80))
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 1, 14),
-            Ok(UploadPace::Complete)
-        );
+        let (upload, pace) = ledger.pace_upload(upload, 180, 14).unwrap();
+        assert_eq!(pace, UploadPace::Ready(80));
+        let (upload, pace) = ledger.pace_upload(upload, 1, 14).unwrap();
+        assert_eq!(pace, UploadPace::Complete);
         ledger
             .settle_upload(upload, EgressSettlement::Sent)
             .unwrap();
@@ -159,15 +155,13 @@ mod tests {
     #[test]
     fn total_refusal_does_not_interrupt_reserved_upload() {
         let mut ledger = ledger();
-        let mut upload = ledger.reserve_upload(250).unwrap();
+        let upload = ledger.reserve_upload(250).unwrap();
         assert!(matches!(
             ledger.reserve_upload(751),
             Err((EgressRefusal::CeilingExhausted { .. }, _))
         ));
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 50, 10),
-            Ok(UploadPace::Ready(50))
-        );
+        let (upload, pace) = ledger.pace_upload(upload, 50, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(50));
         ledger
             .settle_upload(upload, EgressSettlement::Sent)
             .unwrap();
@@ -177,25 +171,17 @@ mod tests {
     #[test]
     fn concurrent_uploads_reserve_total_once_and_share_windows() {
         let mut ledger = ledger();
-        let mut first = ledger.reserve_upload(200).unwrap();
-        let mut second = ledger.reserve_upload(200).unwrap();
+        let first = ledger.reserve_upload(200).unwrap();
+        let second = ledger.reserve_upload(200).unwrap();
         assert_eq!(ledger.counted(), 400);
-        assert_eq!(
-            ledger.pace_upload(&mut first, 60, 10),
-            Ok(UploadPace::Ready(60))
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut second, 60, 10),
-            Ok(UploadPace::Ready(40))
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut first, 60, 10),
-            Ok(UploadPace::Wait { seconds: 2 })
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut second, 60, 12),
-            Ok(UploadPace::Ready(60))
-        );
+        let (first, pace) = ledger.pace_upload(first, 60, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(60));
+        let (second, pace) = ledger.pace_upload(second, 60, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(40));
+        let (first, pace) = ledger.pace_upload(first, 60, 10).unwrap();
+        assert_eq!(pace, UploadPace::Wait { seconds: 2 });
+        let (second, pace) = ledger.pace_upload(second, 60, 12).unwrap();
+        assert_eq!(pace, UploadPace::Ready(60));
         ledger.settle_upload(first, EgressSettlement::Sent).unwrap();
         ledger
             .settle_upload(second, EgressSettlement::Sent)
@@ -207,15 +193,11 @@ mod tests {
     #[test]
     fn unpaced_upload_is_still_limited_by_its_total_reservation() {
         let mut ledger = EgressLedger::new(EgressCeiling::new(1_000, EgressPace::Unpaced));
-        let mut upload = ledger.reserve_upload(250).unwrap();
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 1_000, 10),
-            Ok(UploadPace::Ready(250))
-        );
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 1_000, 10),
-            Ok(UploadPace::Complete)
-        );
+        let upload = ledger.reserve_upload(250).unwrap();
+        let (upload, pace) = ledger.pace_upload(upload, 1_000, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(250));
+        let (upload, pace) = ledger.pace_upload(upload, 1_000, 10).unwrap();
+        assert_eq!(pace, UploadPace::Complete);
         ledger
             .settle_upload(upload, EgressSettlement::Sent)
             .unwrap();
@@ -225,11 +207,9 @@ mod tests {
     #[test]
     fn unsent_refunds_total_but_not_pace_and_drop_retains_total() {
         let mut ledger = ledger();
-        let mut upload = ledger.reserve_upload(250).unwrap();
-        assert_eq!(
-            ledger.pace_upload(&mut upload, 100, 10),
-            Ok(UploadPace::Ready(100))
-        );
+        let upload = ledger.reserve_upload(250).unwrap();
+        let (upload, pace) = ledger.pace_upload(upload, 100, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(100));
         ledger
             .settle_upload(upload, EgressSettlement::NotSent)
             .unwrap();

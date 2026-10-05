@@ -42,14 +42,16 @@ impl UploadCharge {
             .ledger
             .lock()
             .map_err(|_| EgressRefusal::LedgerFault)?;
-        ledger
+        let (hold, pace) = ledger
             .as_mut()
             .ok_or(EgressRefusal::LedgerFault)?
             .pace_upload(
-                self.hold.as_mut().ok_or(EgressRefusal::LedgerFault)?,
+                self.hold.take().ok_or(EgressRefusal::LedgerFault)?,
                 bytes,
                 now,
-            )
+            )?;
+        self.hold = Some(hold);
+        Ok(pace)
     }
 
     pub fn not_sent(mut self) {

@@ -2435,3 +2435,31 @@ Workspace CI run `37272836266` completed coverage on commit `72b58a9fa` at
 The repository's current pinned workspace floor is 82.5%, despite older guidance
 and workflow summary text saying 83%; neither threshold was changed here.
 Mutation testing is still running. Later changes require their own final-head CI.
+
+
+### Consume upload reservations at each pacing step (2026-10-05)
+
+The merge preflight found one new borrowed affine parameter:
+`EgressLedger::pace_upload` took `&mut EgressUploadHold`. It now consumes the
+reservation and returns the updated owned reservation with the pace decision,
+including wait and complete results (ADR 0007 C-4). The node transfers its hold
+into each call and retains only the returned handle. A ledger refusal loses the
+handle and conservatively retains its allocation; it does not refund unknown
+transport work. Byte ceilings and window calculations are unchanged.
+
+The convergence gate returned from five borrowed sites to its unchanged ceiling
+of four. Fifteen ledger tests, two meter tests and five ordinary broker pacing,
+cancellation and deadline tests passed. Scoped Clippy and all four prepush gates
+passed. The separate bound-enforcement ratchet was raised to the measured
+196/197 (99.49%) and population 197; its previous 193-site pin predated the
+combined implementation. No enforcement floor or debt ceiling was loosened.
+
+The additional local merge checks also pass for strict signature APIs, trusted
+base pins, fail-closed verifier structure, north-star evidence, extracted call
+sites, offline task compiler, hashed ingest, sealed effect home, governor-key
+construction and Kani divergence. Manifest checks passed for command grammar,
+workspace membership, dependency visibility, self-pins, shared pins, runner pools,
+push authentication, workflow deadlines/pipelines, shell portability and action
+inputs. Existing release checks find all nine required guest packages built and
+uploaded. Linux dependency-hygiene run `37274887141` passed on `d7053913a`;
+custom-lint run `37274884233` remains active on that same commit.
