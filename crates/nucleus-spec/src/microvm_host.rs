@@ -419,7 +419,7 @@ pub fn in_container_bin(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tier2_artifacts::{GUEST_RELEASE, KERNEL_AARCH64};
+    use crate::tier2_artifacts::{GUEST_RELEASE, KERNEL_AARCH64, RELEASE_REPO, Tier2Artifact};
     use std::path::PathBuf;
 
     #[test]
@@ -610,17 +610,61 @@ mod tests {
         }
     }
 
-    /// The release the image still downloads while it trails the pin.
-    ///
-    /// The image takes the release's node, mcp and rootfs by digest, and a
-    /// release's digests exist only once its tag has built them, while the pin
-    /// moves BEFORE the tag. So the change that bumps [`GUEST_RELEASE`] cannot
-    /// move the image in the same commit; the image trails by one release
-    /// until the follow-up that copies the new digests in. That follow-up
-    /// deletes this constant and asserts the image is at the pin; the test
-    /// below reds until it does.
-    const IMAGE_TRAILS_THE_PIN_AT: &str = "2.2.0";
+    /// The nucleus release assets the image downloads, as [`GUEST_RELEASE`]
+    /// names them. Derived from [`Tier2Artifact::asset_url`] — the function
+    /// `setup` downloads with — so the recipe is checked against the pin rather
+    /// than against a second copy of the version (ADR 0007 G-1). The MCP bridge
+    /// has no `Tier2Artifact` row (`setup` does not install it on the host);
+    /// its URL is the node's with the binary name swapped.
+    fn release_urls_at_the_pin() -> Vec<String> {
+        let node = Tier2Artifact::Node.asset_url(GUEST_RELEASE, "aarch64");
+        let mcp = node.replace("/nucleus-node-", "/nucleus-mcp-");
+        assert_ne!(node, mcp, "the node asset name changed shape");
+        let mut urls = vec![
+            Tier2Artifact::Rootfs.asset_url(GUEST_RELEASE, "aarch64"),
+            node,
+            mcp,
+        ];
+        urls.sort_unstable();
+        urls
+    }
 
+    /// Whether a recipe downloads exactly [`GUEST_RELEASE`]'s node, MCP bridge
+    /// and rootfs — each on the line after an `ADD --checksum=sha256:<64 hex>`
+    /// — and no other asset of this repository's releases.
+    fn image_is_at_the_pin(recipe: &str) -> Result<(), String> {
+        let prefix = format!("https://github.com/{RELEASE_REPO}/releases/download/");
+        let lines: Vec<&str> = recipe.lines().collect();
+        let mut found = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            for url in line.split_whitespace().filter(|w| w.starts_with(&prefix)) {
+                let add = i.checked_sub(1).map(|p| lines[p].trim());
+                let digest = add
+                    .and_then(|l| l.strip_prefix("ADD --checksum=sha256:"))
+                    .map(|rest| rest.trim_end_matches('\\').trim());
+                match digest {
+                    Some(d) if d.len() == 64 && d.bytes().all(|b| b.is_ascii_hexdigit()) => {}
+                    _ => return Err(format!("{url} is not behind an ADD --checksum: {add:?}")),
+                }
+                found.push(url.to_string());
+            }
+        }
+        found.sort_unstable();
+        let expected = release_urls_at_the_pin();
+        if found == expected {
+            Ok(())
+        } else {
+            Err(format!(
+                "the image downloads {found:?}, not GUEST_RELEASE {GUEST_RELEASE}'s {expected:?}"
+            ))
+        }
+    }
+
+    /// The image is at the pin. The pin moves BEFORE the tag (a release's
+    /// digests exist only once the tag has built them), so the change that
+    /// bumps [`GUEST_RELEASE`] reds this until the follow-up copies the
+    /// published digests into the recipe — which is the point: the image
+    /// cannot silently stay on the previous guest.
     #[test]
     fn the_image_pins_the_same_vmm_guest_kernel_and_release() {
         let r = recipe(IMAGE_SOURCE);
@@ -628,25 +672,36 @@ mod tests {
         assert!(r.contains(&format!("/v{fc}/firecracker-v{fc}-aarch64.tgz")));
         assert!(r.contains(&format!("--checksum=sha256:{}", KERNEL_AARCH64.sha256)));
         assert!(r.contains(KERNEL_AARCH64.url));
-        // Teeth both ways: the trailing release really is older than the pin,
-        // and the image moving to the pin reds this until the trail is removed.
-        let v = IMAGE_TRAILS_THE_PIN_AT;
-        let (pin, trail) = (
-            crate::tier2_artifacts::parse_release(GUEST_RELEASE),
-            crate::tier2_artifacts::parse_release(v),
-        );
-        assert!(
-            trail.is_some() && trail < pin,
-            "{v} does not trail {GUEST_RELEASE}"
-        );
-        assert!(
-            r.contains(&format!("releases/download/v{v}/")),
-            "image moved off v{v}"
-        );
-        assert!(
-            !r.contains(&format!("releases/download/v{GUEST_RELEASE}/")),
-            "the image is at the pin: drop IMAGE_TRAILS_THE_PIN_AT and assert that"
-        );
+        assert_eq!(image_is_at_the_pin(&r), Ok(()));
+    }
+
+    /// The check has teeth: the recipe left on the previous release (2.2.0, as
+    /// it stood until this release's follow-up), one asset dropped, and the
+    /// downloads stripped of their checksums are each refused.
+    #[test]
+    fn an_image_off_the_pin_or_unpinned_is_refused() {
+        let r = recipe(IMAGE_SOURCE);
+        let previous = r.replace(GUEST_RELEASE, "2.2.0");
+        assert_ne!(previous, r, "the substitution matched nothing");
+        assert!(image_is_at_the_pin(&previous).is_err());
+
+        let mcp_line = r
+            .lines()
+            .find(|l| l.contains("/nucleus-mcp-"))
+            .expect("the recipe downloads the MCP bridge");
+        assert!(image_is_at_the_pin(&r.replace(mcp_line, "")).is_err());
+
+        let unpinned: Vec<&str> = r
+            .lines()
+            .map(|l| {
+                if l.starts_with("ADD --checksum=") {
+                    "ADD \\"
+                } else {
+                    l
+                }
+            })
+            .collect();
+        assert!(image_is_at_the_pin(&unpinned.join("\n")).is_err());
     }
 
     // ── versions and the Mac ──
