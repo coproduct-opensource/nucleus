@@ -91,6 +91,9 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
             None,
         )
         .await
+        .unwrap()
+        .with_network_meter(None)
+        .await
         .unwrap();
     // A failure at the actual spawn call must clean both serving and registry.
     let mut command = tokio::process::Command::new(dir.path().join("missing-vmm"));
@@ -173,6 +176,9 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
             crate::broker_launch::BrokerCapability::mint(id).1,
             None,
         )
+        .await
+        .unwrap()
+        .with_network_meter(None)
         .await
         .unwrap();
     let mut command = tokio::process::Command::new("/bin/sleep");

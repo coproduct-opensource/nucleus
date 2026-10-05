@@ -91,6 +91,7 @@ mod cred_split;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
+mod egress_link;
 mod egress_meter;
 mod envelope_frame;
 mod federated_credential;
@@ -576,6 +577,7 @@ struct FirecrackerPod {
     netns: Mutex<Option<String>>,
     dns_proxy: Mutex<Option<net::DnsProxyState>>,
     drift_monitor: Mutex<Option<JoinHandle<()>>>,
+    egress_link: Mutex<Option<egress_link::LinkMonitor>>,
     drift_stop: Arc<AtomicBool>,
     /// Reference to network allocator for releasing indices on cleanup
     network_allocator: Arc<net::NetworkAllocator>,
@@ -1242,6 +1244,7 @@ impl FirecrackerPod {
         if let Some(handle) = self.drift_monitor.lock().await.take() {
             handle.abort();
         }
+        egress_link::shutdown(&self.egress_link).await?;
         self.permit.lock().await.take();
         if let Some(bridge) = self.bridge.lock().await.take() {
             bridge.shutdown().await;
@@ -2387,6 +2390,8 @@ async fn spawn_firecracker_pod(
                         .as_ref()
                         .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
                 )
+                .await?
+                .with_network_meter(net_plan.as_ref())
                 .await
         }
         .await
@@ -2740,7 +2745,7 @@ async fn spawn_firecracker_pod(
         )
         .await;
 
-        let (identity_parts, broker) = prepared_pod.into_parts();
+        let (identity_parts, broker, egress_link) = prepared_pod.into_parts();
         let pod_boot_identity::IdentityParts {
             identity: pod_identity,
             manager: identity_manager,
@@ -2760,6 +2765,7 @@ async fn spawn_firecracker_pod(
             netns: Mutex::new(netns_name),
             dns_proxy: Mutex::new(dns_proxy),
             drift_monitor: Mutex::new(drift_monitor),
+            egress_link: Mutex::new(egress_link),
             drift_stop,
             network_allocator: state.network_allocator.clone(),
             identity: pod_identity,

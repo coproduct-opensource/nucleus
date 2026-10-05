@@ -7,6 +7,13 @@ produces evidence an external verifier can inspect. Two distinct harnesses must
 complete this journey. Gatehouse control-plane implementation stays outside this
 repository.
 
+Current execution scope: implement the design and validate ordinary supported
+workflows. Red-teaming, adversarial probes and attack evaluations are paused at
+the user's direction. Historical evidence below remains a record of completed
+work, not an instruction to repeat those exercises. Continue with shared outbound
+accounting and normal integration checks; complete the two coding journeys once
+model endpoint configuration is available.
+
 ## 1. Host-authoritative enforcement (P0)
 
 Issues: #2702, #3114, #3115, #3116, #3117.
@@ -85,10 +92,9 @@ Implementation sequence:
    evidence. Host-signed broker transport observations are implemented in the
    working tree; remote action semantics, guest execution outcomes, and terminal
    completeness remain open.
-7. Exercise the compromised-guest conformance harness, genuine allowed effects,
-   reconnects, concurrency and real Tier-2 guest traffic. Promote each gap only
-   when the corresponding live host property holds. Retire shadow-only behavior
-   only after the enforcing path has this evidence.
+7. Validate supported effects, reconnects, concurrency and real Tier-2 guest
+   traffic through ordinary functional integration. Record which implementation
+   properties have live evidence. Compromised-guest conformance work is paused.
 
 ## 2. Supported coding workflow (P0, alongside enforcement)
 
@@ -101,11 +107,16 @@ Do not equate the algebra demo or an isolated proof pod with useful agent work.
 ## 3. Egress accounting and scoped credentials (P1)
 
 Issues: #2905, #3160. Broker egress metering already exists. Complete accounting
-for every permitted outbound path, preserving a shared pod budget. Test an
-otherwise allowed service used as an exfiltration destination, including
-concurrent calls. Give audit uploaders short-lived credentials restricted to the
+for every permitted outbound path, preserving a shared pod budget. Validate
+normal uploads and concurrent calls against the configured byte allowance.
+Give audit uploaders short-lived credentials restricted to the
 resolved bucket/prefix, without ambient credentials in workload or uploader
 environments. Keep provider implementations behind the vendor-neutral boundary.
+
+**In progress:** Firecracker direct-link accounting now shares the broker's
+ledger. Kernel counter sampling closes the link at exhaustion, but can overshoot
+between observations and does not implement direct-link pacing. Strict shared
+packet admission and review of the remaining outbound paths are still open.
 
 ## 4. Resource admission (P1)
 
@@ -116,7 +127,8 @@ reserve. Per-pod ceilings alone do not establish this property.
 
 ## 5. Evaluation through production enforcement (P1)
 
-Issue: #2699. Restore the AgentDojo integration through the real kernel/runtime,
+Paused under the current execution scope. Issue: #2699. The deferred design is
+to restore the AgentDojo integration through the real kernel/runtime,
 not the removed Python policy mirror. Report attack success alongside benign
 completion, false refusals and approval burden across multiple models. Pin the
 artifacts and configuration needed to reproduce each result.
@@ -1363,3 +1375,45 @@ and all four repository gates passed; Clippy completed with existing configurati
 warnings. The late-create/unknown-outcome cases still have fixture coverage,
 not a live interrupted Docker-create demonstration. The full release goal remains
 open, including the two complete model-driven coding journeys.
+
+### Shared Firecracker link and broker accounting (2026-10-04)
+
+Pod preparation now creates the egress ledger and passes the same Arc to both
+broker paths and the direct-link monitor. The link reader must initialize before
+VMM spawn. It samples the host veth's RX counter every 100 ms: namespace uploads,
+including packet overhead, retransmissions and setup traffic. Host broker
+requests use a different route and are not counted twice. Download bodies are
+not charged; outgoing acknowledgments are.
+
+The spawn API is only available on the completed preparation type: broker
+readiness alone cannot spawn a VMM without an explicit network-accounting step
+(ADR 0007 D-1). Shared meter ownership follows G-1; an unavailable counter refuses
+new accounting instead of becoming a zero observation (A-2).
+
+Exhaustion closes the link without modifying the iptables drift baseline.
+Counter read failure or reset makes the shared ledger unavailable to subsequent
+broker admissions. Normal teardown closes and samples before removing network
+resources. A failed close is retried; teardown returns an error after six seconds
+while retaining the monitor for the reaper. Cancelling that wait also retains
+ownership. The final lifecycle record names the observed link byte count even
+when the ledger has clamped at its ceiling.
+
+The ordinary Linux namespace test ran inside Apple Container with the production
+sysfs reader and cutoff. A UDP payload was received and 189 outgoing link bytes
+were charged. A broker-style reservation consumed the remainder of the same
+allowance; the kernel link then became administratively down. A separate
+Firecracker pod, `b101bb26-393b-44fc-b860-c326cb73c127`, completed the normal
+file-producing workflow with exit code zero. Cancellation succeeded and recorded
+726 link bytes. The container's default read-only `/proc/sys` initially prevented
+network setup; the temporary node used a private mount namespace with that mount
+writable. The temporary node was stopped after validation, and the original
+node still answered mTLS health.
+
+The full node suite passed 872 unit tests (one ignored) and three integration
+tests. Eleven focused tests passed, including shared reservations and refunds, final
+sampling, counter availability, close retry and cancellation ownership. The
+Linux ARM64 build, Clippy and four repository gates passed. This is sampled
+accounting and eventual cutoff, not a strict packet ceiling: bytes can leave
+between samples or during cutoff retries, and direct-link pacing is still open.
+The unmediated container/local drivers are not covered by this link monitor.
+The broader egress milestone and two complete coding journeys remain open.

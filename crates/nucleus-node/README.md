@@ -85,6 +85,31 @@ reconciliation is still required. Do not erase a pending record merely because
 an inventory is empty. This also covers a crash after container removal but
 before record removal: the previously recorded ID makes absence conclusive.
 
+## Outbound byte accounting
+
+Firecracker pods share one `network.egress` ledger between broker PERFORM,
+streamed broker uploads and direct namespace traffic. The default allowance is
+1 GiB when no byte ceiling is declared. Broker paths reserve request-body bytes
+before sending. For pods with a network link, the node samples host-veth RX
+every 100 ms, counting traffic from the namespace, including packet overhead
+and retransmissions. Download bodies traverse the opposite direction; their
+outgoing acknowledgments still count.
+
+The link reader is prepared before guest launch. Exhaustion disconnects the
+link without changing the iptables baseline; new broker admissions also refuse.
+An unreadable or reset counter makes the shared budget unavailable. Teardown
+closes the link and takes a final sample before deleting network resources.
+Cutoff failures retain the monitor for retry, including across cancelled
+teardown requests. Lifecycle records include exhaustion and observed link bytes
+at closure.
+
+Link accounting is periodic and can overshoot between samples or while cutoff
+is pending; it does not enforce the optional pace on direct traffic. Broker
+reservations enforce their byte and fixed-window limits before sending. A strict
+shared packet ceiling and direct-link pacing remain implementation work. These
+link guarantees apply to the Firecracker namespace path, not unmediated
+container or local-driver traffic.
+
 `--egress-staging-max-bytes` bounds reserved upload payload storage across all
 pods, defaulting to 256 MiB. Each streamed upload reserves its configured
 per-call maximum before creating its temporary file, retaining the reservation

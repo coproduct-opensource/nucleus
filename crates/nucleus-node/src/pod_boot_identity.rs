@@ -39,7 +39,12 @@ impl PreparedIdentity {
         id: Uuid,
         capability: broker_launch::VerifyToken,
         jail_owner: Option<(u32, u32)>,
-    ) -> Result<PreparedPod, ApiError> {
+    ) -> Result<PreparedBroker, ApiError> {
+        let egress = crate::egress_meter::EgressMeter::for_pod(
+            spec,
+            crate::lifecycle::pod_dir(&state.state_dir, id),
+            id,
+        );
         let broker = broker_launch::start_broker_for_pod(broker_launch::BrokerInputs {
             state,
             spec,
@@ -49,11 +54,13 @@ impl PreparedIdentity {
             capability,
             jail_owner,
             withheld: self.withholding.as_ref(),
+            egress: Arc::clone(&egress),
         })
         .await?;
-        Ok(PreparedPod {
+        Ok(PreparedBroker {
             identity: self,
             broker,
+            egress,
         })
     }
 
@@ -65,11 +72,37 @@ impl PreparedIdentity {
     }
 }
 
-/// Private construction keeps broker readiness on the only VMM spawn path.
+/// Broker readiness precedes explicit network-accounting preparation (D-1).
+#[must_use]
+pub(crate) struct PreparedBroker {
+    identity: PreparedIdentity,
+    broker: Option<broker_transport::BrokerListener>,
+    egress: Arc<crate::egress_meter::EgressMeter>,
+}
+
+impl PreparedBroker {
+    pub(crate) async fn with_network_meter(
+        self,
+        plan: Option<&net::NetPlan>,
+    ) -> Result<PreparedPod, ApiError> {
+        let link = match plan {
+            Some(plan) => Some(crate::egress_link::LinkMonitor::start(plan, self.egress).await?),
+            None => None,
+        };
+        Ok(PreparedPod {
+            identity: self.identity,
+            broker: self.broker,
+            link,
+        })
+    }
+}
+
+/// Only completed broker and network preparation can expose VMM spawn.
 #[must_use]
 pub(crate) struct PreparedPod {
     identity: PreparedIdentity,
     broker: Option<broker_transport::BrokerListener>,
+    link: Option<crate::egress_link::LinkMonitor>,
 }
 
 impl PreparedPod {
@@ -102,8 +135,14 @@ impl PreparedPod {
         Ok(())
     }
 
-    pub(crate) fn into_parts(self) -> (IdentityParts, Option<broker_transport::BrokerListener>) {
-        (self.identity.into_parts(), self.broker)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        IdentityParts,
+        Option<broker_transport::BrokerListener>,
+        Option<crate::egress_link::LinkMonitor>,
+    ) {
+        (self.identity.into_parts(), self.broker, self.link)
     }
 }
 

@@ -400,6 +400,7 @@ pub(crate) struct BrokerInputs<'a> {
     pub capability: VerifyToken,
     pub jail_owner: Option<(u32, u32)>,
     pub withheld: Option<&'a crate::cred_split::Withheld>,
+    pub egress: std::sync::Arc<crate::egress_meter::EgressMeter>,
 }
 
 pub(crate) async fn start_broker_for_pod(
@@ -414,6 +415,7 @@ pub(crate) async fn start_broker_for_pod(
         capability,
         jail_owner,
         withheld,
+        egress,
     } = inputs;
     let transport = if spec.spec.vsock.is_some() {
         crate::broker_rollout::BrokerTransport::Vsock
@@ -497,13 +499,8 @@ pub(crate) async fn start_broker_for_pod(
             // verifier holding another pod's secret would authenticate that
             // pod's proxy against this pod's broker.
             broker_secret: capability.into_verifier(id)?,
-            // This pod's ONE egress balance (#2905): its declared
-            // `network.egress`, or the finite default — never unbounded.
-            egress: crate::egress_meter::EgressMeter::for_pod(
-                spec,
-                crate::lifecycle::pod_dir(&state.state_dir, id),
-                id,
-            ),
+            // The launch owns one meter shared with direct link accounting.
+            egress,
             // The operator's per-call bounds on a streamed call (#2696 P4),
             // validated at start-up; finite whether or not they were set.
             stream_limits: state.egress_stream_limits,

@@ -232,6 +232,7 @@ impl Run {
             netns: Mutex::new(None),
             dns_proxy: Mutex::new(None),
             drift_monitor: Mutex::new(None),
+            egress_link: Mutex::new(None),
             drift_stop: Arc::default(),
             network_allocator: st.network_allocator.clone(),
             identity: Some(identity.clone()),
