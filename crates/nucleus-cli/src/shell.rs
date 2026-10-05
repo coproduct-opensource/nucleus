@@ -86,6 +86,12 @@ pub struct ShellArgs {
     /// Arguments for the agent program, placed before nucleus's own flags.
     #[arg(last = true, value_name = "AGENT_ARGS")]
     pub agent_args: Vec<String>,
+
+    /// Accept that the agent runs on THIS host, as your user, outside any
+    /// microVM. Required: `shell` has no in-pod mode. Prints a banner and
+    /// records the launch in ~/.config/nucleus/audit/host-agent-launches.jsonl.
+    #[arg(long)]
+    pub unsandboxed: bool,
 }
 
 /// Execute the shell command
@@ -106,6 +112,20 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     // Resolve working directory
     let work_dir = shellexpand::tilde(&args.dir).to_string();
     let work_dir = PathBuf::from(&work_dir).canonicalize()?;
+
+    // `shell` launches the agent on this host, outside any microVM, so it does
+    // so only on the operator's own `--unsandboxed` (owner decision D9).
+    // Declared before anything starts; `--print-config` launches nothing.
+    let declared = if args.print_config {
+        None
+    } else {
+        Some(crate::host_tier::HostAgentOptIn::declare(
+            args.unsandboxed,
+            "shell",
+            &agent,
+            &work_dir,
+        )?)
+    };
 
     // Build permission lattice
     let policy = if let Some(ref config_path) = args.config {
@@ -238,7 +258,7 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
         // confinement flags too — without them the pasted command lets the
         // working directory register its own hooks and MCP servers. Rendered
         // from the same constructor the launch uses, so the two cannot drift.
-        let mut advice = agent.launch();
+        let mut advice = agent.printed_advice();
         advice
             .arg("--mcp-config")
             .arg(&mcp_config_path)
@@ -297,7 +317,9 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
 
     // Confined by construction: `launch` applies the confinement flags, and
     // the user's `-- ARGS` already lead the command line.
-    let mut cmd = agent.launch();
+    let declared = declared
+        .ok_or_else(|| anyhow!("no --unsandboxed declaration for the host agent launch"))?;
+    let mut cmd = agent.launch(declared);
     cmd.arg("--mcp-config")
         .arg(&mcp_config_path)
         .arg("--allowedTools")

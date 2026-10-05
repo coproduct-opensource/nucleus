@@ -38,8 +38,10 @@ Nucleus does not copy a host binary into the guest; a host-relative path
 (`./agent`, `~/bin/agent`) is refused, and a missing program is reported by the
 node as "the agent program was not found in the guest image".
 
-**On this host** with `run --local`, `run --hook` and `shell`: the agent runs on
-this machine, as you, outside any microVM.
+**On this host, only when you say so.** `run --local`, `run --hook` and `shell`
+launch the agent on this machine, as you, outside any microVM. They refuse to
+unless you pass `--unsandboxed`; with it they print a banner and append a record
+to `~/.config/nucleus/audit/host-agent-launches.jsonl`.
 
 ## The launch protocol
 
@@ -73,15 +75,15 @@ you pass cannot be the last word on them.
 Claude Code accepts every flag above as-is:
 
 ```bash
-nucleus run   --agent claude --local "fix the failing test"
-nucleus shell --agent claude --profile codegen --dir ~/repo
+nucleus run   --agent claude --local --unsandboxed "fix the failing test"
+nucleus shell --agent claude --unsandboxed --profile codegen --dir ~/repo
 ```
 
 It refuses to start inside one of its own sessions. To try `nucleus shell` from
 inside one, unset its session variable for the nested launch:
 
 ```bash
-env -u CLAUDECODE nucleus shell --agent claude
+env -u CLAUDECODE nucleus shell --agent claude --unsandboxed
 ```
 
 ### An agent CLI that does not

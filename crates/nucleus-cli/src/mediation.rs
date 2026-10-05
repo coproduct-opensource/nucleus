@@ -509,7 +509,7 @@ mod tests {
     /// How a launch site starts the agent's command. `AgentCommand::launch` is
     /// the only constructor, and it applies [`confine_to_nucleus_settings`]
     /// itself (pinned by `crate::agent`'s tests).
-    const LAUNCH: &str = "let mut cmd = agent.launch();";
+    const LAUNCH: &str = "let mut cmd = agent.launch(";
 
     /// Every source region that builds one agent-CLI invocation: from the
     /// `agent.launch()` that starts it to whatever consumes it.
