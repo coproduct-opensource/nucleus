@@ -2680,3 +2680,34 @@ All 895 node unit tests (one ignored) and three integrations passed after this
 change, along with scoped Clippy, convergence and four prepush gates. The existing
 four Clippy configuration warnings remain. A newly unused macOS import exposed
 by extraction was corrected; no warning suppression was added.
+
+### Updated-node Apple microVM timeout validation (2026-10-05)
+
+Built node commit `d2237238a` for `aarch64-unknown-linux-musl` and layered it
+onto the existing local host image. The new image is
+`nucleus-local-host:node-d2237238a` (image index
+`sha256:b0f09de87c6c3a22dd8ef2375519cbd5fa547ee7fddde1d9e95dd60c561437c8`).
+Only the node and its manifest entry changed; guest/rootfs and other host tools
+remain the explicitly recorded `workspace-a125a6c43` inputs. The running node's
+SHA-256 matched the built binary:
+`50d03231f872bbe4ecb12c258364fc46298c2335bf18a193c1f9c18ef27df1a4`.
+
+The idle normal Apple host was replaced with this image using retained CA/state.
+Setup verified and cancelled ordinary pod `56ed1179-26e0-40b2-82a6-48cecf876724`.
+A second workload requested a 15-second execution lifetime and ran a 60-second
+sleep. The authenticated result reported `running`, then pod
+`47b7a41f-8933-4b88-bc8a-656aa569582f` was observed exited with a node timeout
+event. A subsequent ordinary workload, `5cb02591-5bcf-47c0-89b4-da582e4bb4ed`,
+was admitted, independently checked by the shared execution/log verifier and
+cancelled. Both verification workloads required Firecracker/UID-isolation,
+exact output and exit 0.
+
+Evidence, image provenance and the current test-host configuration are under
+`/tmp/nucleus-node-refresh-d2237238a/`. An initial timeout-script invocation used
+the wrong observation command and cancelled its pod; its records are retained
+separately and are not counted as a timeout pass. The successful retry used
+`node pods`. After validation the idle normal host was trimmed and stopped;
+the existing development and primary acceptance hosts were not replaced.
+Native tools were preserved before `cargo clean` reclaimed 6.2 GiB. This is live
+microVM lifecycle evidence on a node refresh, not a newly published full image
+or either model-driven coding journey.
