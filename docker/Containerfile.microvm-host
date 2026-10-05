@@ -16,16 +16,22 @@
 # installs from:
 #   * Firecracker/jailer — nucleus_spec::vmm_version::PINNED (1.17.0)
 #   * guest kernel       — nucleus_spec::tier2_artifacts::KERNEL_AARCH64
-#   * guest rootfs       — Tier2Artifact::Rootfs at GUEST_RELEASE (2.2.0),
+#   * guest rootfs       — Tier2Artifact::Rootfs at GUEST_RELEASE (2.3.0),
 #                          digest as the release API reports it
 #
-# `NODE_SOURCE=release` (default) takes the GUEST_RELEASE 2.2.0 musl
+# The release is GUEST_RELEASE and nothing else: microvm_host's tests derive
+# every nucleus release URL below from Tier2Artifact::asset_url(GUEST_RELEASE)
+# and red if one names another version. The digests cannot be derived — they
+# exist only once the tag has built the assets — so a pin bump reds those tests
+# until this file is moved with the published digests.
+#
+# `NODE_SOURCE=release` (default) takes the GUEST_RELEASE 2.3.0 musl
 # nucleus-node and nucleus-mcp — the node/rootfs pairing `nucleus setup`
-# installs today. `NODE_SOURCE=source` builds both from this tree, and that
-# node CANNOT boot the pinned 2.2.0 rootfs (measured in the spike): the guest
-# emits no `NUCLEUS_EGRESS_PROBE:` line, which a current node refuses, and a
-# read-only 2.2.0 rootfs dies creating its identity directory. Building from
-# source becomes the default once the plan's guest release 2.3.0 exists.
+# installs today. `NODE_SOURCE=source` builds both from this tree. Against the
+# 2.2.0 rootfs that node could not boot a pod (measured in the spike: no
+# `NUCLEUS_EGRESS_PROBE:` line, and a read-only rootfs died creating its
+# identity directory); 2.3.0 ships both fixes, but a source-built node on the
+# 2.3.0 rootfs has not been measured here, so the default stays the release.
 
 ARG NODE_SOURCE=release
 
@@ -44,10 +50,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 # ── nucleus-node + nucleus-mcp from the pinned guest release ──────────
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS node-release
-ADD --checksum=sha256:24add5c1d3e730e9f8516be907338e2f4b578b41b2487d6b82591f1caa9fd67c \
-    https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-node-2.2.0-aarch64-unknown-linux-musl.tar.gz /tmp/node.tgz
-ADD --checksum=sha256:4d5ba34a6c575752da8007b5a4b7cdb541a49d0ded05f359bccfc420817a21c9 \
-    https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-mcp-2.2.0-aarch64-unknown-linux-musl.tar.gz /tmp/mcp.tgz
+ADD --checksum=sha256:e9f6ff37dfb0fce4827b5613754246d4f6e60a4c611dc31b225062554996015a \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.3.0/nucleus-node-2.3.0-aarch64-unknown-linux-musl.tar.gz /tmp/node.tgz
+ADD --checksum=sha256:e03029e28f1c0478a11ec573843afdedfd48367d584f729209cfa109373df873 \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.3.0/nucleus-mcp-2.3.0-aarch64-unknown-linux-musl.tar.gz /tmp/mcp.tgz
 RUN mkdir -p /out /tmp/x && tar -xzf /tmp/node.tgz -C /tmp/x && tar -xzf /tmp/mcp.tgz -C /tmp/x \
     && find /tmp/x -type f \( -name nucleus-node -o -name nucleus-mcp \) -exec cp {} /out/ \;
 
@@ -82,8 +88,8 @@ ADD --checksum=sha256:e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a9
     https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz /tmp/fc.tgz
 ADD --checksum=sha256:69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31adde44 \
     https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141 /out/artifacts/vmlinux
-ADD --checksum=sha256:6d2b41244ddd074f1eebc1ab4ca1c7be5b7bc55cde71eefbb9af919771fd4fe4 \
-    https://github.com/coproduct-opensource/nucleus/releases/download/v2.2.0/nucleus-rootfs-2.2.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
+ADD --checksum=sha256:cc3766b10f9627aee74c52e626e998733a1ab1ff8f5dcdd37816b80867e88797 \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.3.0/nucleus-rootfs-2.3.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
 # `ADD <url>` lays files down 0600. The jailed VMM (an unprivileged uid) could
 # open the kernel only because the node used to chown it into every jail, which
 # handed the shared artifact to the jail user (#3152). The node no longer chowns

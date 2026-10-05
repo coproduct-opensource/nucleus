@@ -282,7 +282,11 @@ impl GuestCapability {
             GuestCapability::WorkloadDoor => FirstShipped::Release("2.3.0"),
             GuestCapability::McpBridge => FirstShipped::Release("2.3.0"),
             GuestCapability::StreamingEgress => FirstShipped::Release("2.3.0"),
-            GuestCapability::HostDecideShadow => FirstShipped::NotYet,
+            // #3177 (P8) merged on 2026-10-04, before `v2.3.0` (450e47854) was
+            // tagged: the published `nucleus-rootfs-2.3.0-aarch64.ext4` carries
+            // the tool-proxy's shadow client (its "host-decide shadow" log
+            // string is in the image).
+            GuestCapability::HostDecideShadow => FirstShipped::Release("2.3.0"),
         }
     }
 
@@ -443,7 +447,8 @@ fn skew_against(
 /// `2.3.0` is the first release whose rootfs meets every [`GuestCapability`]:
 /// it runs the egress probe (#2365), keeps its SVID on tmpfs (#2379), serves
 /// the workload its own door (#3122), carries the MCP bridge (#3135), and
-/// streams credentialed egress (#3178). 2.2.0
+/// streams credentialed egress (#3178); it also carries the optional shadow
+/// decision client (#3177). 2.2.0
 /// was the first release matching a post-#2214 node, and it stopped serving
 /// `main` the day after it was tagged. 2.1.0 was the first release containing
 /// everything a pod needed to boot at the time

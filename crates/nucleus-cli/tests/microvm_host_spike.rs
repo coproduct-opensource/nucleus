@@ -22,6 +22,11 @@
 //! `cleanup`. The image defaults to the GUEST_RELEASE node (`NUCLEUS_SPIKE_NODE_SOURCE=source`
 //! selects a node built from this tree, which cannot boot the 2.2.0 rootfs — see the findings).
 //!
+//! These measurements were taken when the image carried the 2.2.0 release. The image now
+//! carries 2.3.0, whose release node is mTLS-only like a source-built one, so the HMAC path
+//! `node_auth` selects for the release node describes the measured 2.2.0 image only; this
+//! harness has not been re-run against the 2.3.0 image.
+//!
 //! Safety: everything this creates is named `nucleus-spike-*`, and [`remove`]
 //! refuses any other name. It never changes a system-wide `container` property;
 //! the L1 kernel is attached per container with `--kernel`.
