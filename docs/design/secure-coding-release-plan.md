@@ -3023,3 +3023,20 @@ The existing cancellation regression now checks the JSON response and status,
 not only the internal error. All 22 handler tests passed, including caller
 ownership checks and the running-pod case. This corrects the misleading behavior
 recorded in the earlier environment notes; the pod-retention semantics remain.
+
+Scoped Clippy, the Linux ARM64 node/CLI build and all four prepush gates passed.
+The final local image `nucleus-local-host:final-ea6057adb` replaces those two
+binaries on the matched `b7a5b306f` image, retaining its guest inputs. Its index is
+`sha256:43324312bc39294df3559a59e900d809421daa25add205877bfa3e6d88dba788`.
+Setup verified and cancelled `b92933fa-2c94-4074-bcd1-ad1f8b9c5e3d`. Over mTLS,
+the pod remained listed as exited, its receipt returned 404 with the new report
+diagnostic, and an unknown pod's receipt retained 404 `pod not found`.
+The test host was trimmed and stopped. Build provenance and results are under
+`/tmp/nucleus-final-ea6057adb/`.
+
+The direct Python check used required verification under the installation CA,
+with hostname checking disabled for the SPIFFE URI SAN, matching the CLI's
+connection model. Python 3.14's optional `X509_STRICT` additionally demanded an
+Authority Key Identifier extension and was not used by that check. Inspection
+used the supported pod-list route; `GET /v1/pods/{id}` is not an authorized HTTP
+operation here. No certificate, route or authorization policy was changed.
