@@ -83,6 +83,17 @@
 "node logs" = "reach"
 "node pods" = "reach"
 "node sign" = "reach"
+"node effect-approvals list" = "reach"    # authenticated node API, including read-only calls
+"node effect-approvals review" = "reach"
+"node effect-approvals grant" = "reach"
+"node effect-approvals refuse" = "reach"
+"node workload admission" = "reach"      # fetches from node and writes a local record
+"node workload result" = "reach"
+"node workload logs" = "reach"
+"node workload collect" = "reach"
+"microvm-host up" = "reach"              # creates/starts the host and checks mTLS health
+"microvm-host status" = "reach"          # read-only, but executes the container client
+"microvm-host seed" = "reach"            # copies a selected tree and builds its guest disk
 "token delegate" = "emit"
 "token inspect" = "observe"
 "token mint" = "emit"

@@ -1,31 +1,10 @@
-//! An exit report the host can tell apart from one the workload wrote.
+//! Legacy guest-signed exit-report envelopes and explicit report provenance.
 //!
-//! # The gap this closes
-//!
-//! The exit report lives at `/work/.nucleus-exit-report.json`, and on a
-//! Firecracker pod `/work` is a scratch image whose root the WORKLOAD owns. So
-//! a workload can write that path itself, or delete and replace the file the
-//! supervisor wrote, and the node reads it back out of the image and signs a
-//! receipt over it. `scratch_readback.rs` said so plainly: the host quotes the
-//! image and does not know whether the words are true. Measured on a live node
-//! (`nucleus-perf guest-transcript --forge-spec`), the only thing that stopped a
-//! forged report from becoming a signed receipt was that no receipt could be
-//! produced for a Firecracker pod at all.
-//!
-//! # The fix is a key the workload never holds
-//!
-//! The supervisor signs the report with the pod's mediation key. The node mints
-//! that key for this pod, records its public half in the pod directory, and
-//! serves the seed exactly once over vsock, before any workload exists (see
-//! `workload_api_vsock`'s one-shots). The workload runs under a distinct uid and
-//! cannot read the supervisor's environment. So a report the node can verify
-//! against ITS OWN record of the key came from the supervisor, wherever the
-//! bytes sat in between — which is why the location stays guest-writable and no
-//! longer matters.
-//!
-//! The signature says who wrote the report, not that its contents are true: a
-//! compromised supervisor signs whatever it likes. What it removes is the
-//! workload's word standing in for the supervisor's.
+//! New nodes never deliver receipt-signing keys to guests. Plain reports and
+//! older signed envelopes are parsed as guest claims, with `guest_reported`
+//! bound into the node's version-2 receipt. A guest signature cannot establish
+//! independent host measurement, even when a protected supervisor produced it.
+//! Host broker authorization evidence has its own host-only signing path.
 //!
 //! # Preimage
 //!
@@ -37,6 +16,27 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ExitReport;
+
+/// What a node signature establishes about exit-report content. Neither variant
+/// claims that a host independently measured the workspace, usage or audit data.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportProvenance {
+    /// Older receipts omitted provenance; absence cannot imply host measurement.
+    #[default]
+    Unspecified,
+    /// Content asserted by the guest/supervisor, including guest-signed reports.
+    GuestReported,
+}
+
+impl ReportProvenance {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::GuestReported => "guest_reported",
+        }
+    }
+}
 
 /// Where the supervisor writes the report, relative to the pod's work dir.
 pub const EXIT_REPORT_FILE: &str = ".nucleus-exit-report.json";

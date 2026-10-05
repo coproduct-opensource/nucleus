@@ -521,7 +521,7 @@ fn the_workload_api_bridge_starts_before_the_health_check() {
         .find("pod_boot_identity::prepare(")
         .expect("the bridge start site");
     let spawn = src
-        .find("prepared_identity.spawn(&mut command)")
+        .find("prepared_pod.spawn(&mut command)")
         .expect("guarded VMM spawn");
     assert!(
         bridge < spawn,
@@ -532,7 +532,7 @@ fn the_workload_api_bridge_starts_before_the_health_check() {
         // also requires the guest's egress attestation. The ordering this
         // guards is unchanged — the bridge must still come first — so the
         // needle follows the call site rather than the function name.
-        .find("confinement::gate(health_addr")
+        .find(".gate(health_addr")
         .expect("the health/attestation gate site");
     assert!(
         bridge < health,
@@ -1474,6 +1474,7 @@ fn a_spec_without_a_cgroup_still_launches_under_node_limits() {
     assert_eq!(pair("--cgroup-version").map(String::as_str), Some("2"));
     for limit in [
         "memory.max=671088640",
+        "memory.swap.max=0",
         "cpu.max=100000 100000",
         "pids.max=64",
     ] {

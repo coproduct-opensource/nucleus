@@ -11,6 +11,12 @@ CONFIG_VHOST_MENU=y
 CONFIG_VHOST=y
 CONFIG_VHOST_VSOCK=y
 
+# Direct-packet budget admission requires a namespace-local Netfilter queue.
+# These are already enabled in the pinned base; retain them explicitly.
+CONFIG_NETFILTER_NETLINK_QUEUE=y
+CONFIG_NETFILTER_XT_TARGET_NFQUEUE=y
+CONFIG_NFT_QUEUE=y
+
 # The base is a debug build with DWARF + BTF. Neither is needed to host
 # microVMs, and BTF would require pahole in the build image. Dropping them cuts
 # build time and the build cache by several GiB.

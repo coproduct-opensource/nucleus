@@ -1,49 +1,23 @@
-//! Host-side collection of signed `MediationReceipt`s streamed from pods over vsock.
+//! Durable collection of guest-reported mediation claims, including legacy
+//! `MediationReceipt` envelopes. These are NOT host authorization evidence.
 //!
-//! # Why the host holds a copy
-//!
-//! A Firecracker guest cannot reach the node over HTTP, and its `/run` receipt
-//! file dies with the microVM — so `nucleus-tool-proxy` streams each receipt to
-//! the node over the workload-API vsock as it is produced (the `SHIP_RECEIPT`
-//! command). This is the collector half: the copy the pod cannot retract, so a
-//! host attestation over the receipt set binds what it OBSERVED rather than what
-//! the pod later chose to report. It is the completeness-bounding the console
-//! mirror (the boot lane's channel today) cannot give — the guest shipper is
-//! fail-closed, so a pod whose receipts stop reaching the host stops deciding.
-//!
-//! # What authenticates a shipped receipt
-//!
-//! Two independent things, so this layer stays small:
-//!
-//! * **the connection** — the workload-API vsock connection is already bound to
-//!   ONE pod (the node serves this pod's SVID and secrets over it), so a receipt
-//!   arriving here can only be filed under THAT pod. The collector keys the file
-//!   by the node's own `pod_id`, never anything the guest sends, so there is no
-//!   cross-pod injection to guard against (and no session id to sanitize).
-//! * **the receipt** — its content is an Ed25519 signature over its own fields,
-//!   verified later by `nucleus-audit verify-mediation-receipts` over the
-//!   assembled file. The node does not re-verify here: one implementation of that
-//!   logic, not two that must agree.
-//!
-//! A note on trust granularity: the connection authenticates the *pod*, not the
-//! tool-proxy vs. the workload inside it. A workload that reached this channel
-//! could append receipts it did not sign — but it cannot forge the mediator
-//! Ed25519 signature (the key lives in the tool-proxy, not the workload), so any
-//! such line surfaces as a verification FAILURE in the scoreboard rather than a
-//! trusted receipt. Distinguishing the two senders with a tool-proxy-held secret
-//! is a later hardening, noted rather than pretended.
+//! The connection identifies the pod, not a trusted process inside it. A
+//! compromised guest may choose every field and signature. Keeping its bytes
+//! supports diagnostics but neither authenticates their truth nor proves a host
+//! decision. The guest-claim log is separate from the host-only, signed
+//! `host-effect-authorizations.jsonl` journal; SHIP_RECEIPT cannot append there.
 
 use std::path::{Path, PathBuf};
 
-/// The collected-receipts log inside a pod's node-side directory.
+/// The guest-claim log inside a pod's node-side directory.
 ///
 /// `pod_dir` is `<state>/pods/<pod_id>` — already per-pod and host-private (the
 /// guest has no path to the node's state dir), and where the node keeps this
-/// pod's other host-side records (`mediator-pubkey.hex`, `firecracker.log`). No
+/// pod's other host-side records. No
 /// pod-id subkeying and nothing guest-supplied enters the path.
 #[must_use]
 pub fn receipt_log_path(pod_dir: &Path) -> PathBuf {
-    pod_dir.join("collected-receipts.jsonl")
+    pod_dir.join("guest-mediation-claims.jsonl")
 }
 
 /// Append one shipped receipt line to the pod's collected log.

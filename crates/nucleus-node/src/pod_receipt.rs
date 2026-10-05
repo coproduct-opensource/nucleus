@@ -1,4 +1,4 @@
-//! The execution receipt: what a pod did, as a value both transports serve.
+//! A node-signed guest report plus host metadata, served by both transports.
 //!
 //! # Why this exists as a module
 //!
@@ -29,6 +29,7 @@
 use nucleus_microvm_host::scratch_readback;
 use std::sync::Arc;
 
+use nucleus_spec::exit_report_auth::ReportProvenance;
 use serde::Serialize;
 
 use crate::{NodeState, PodHandle, PodState};
@@ -46,6 +47,8 @@ pub(crate) struct Receipt {
     pub sandbox_tier: String,
     pub spiffe_id: String,
     pub version: u32,
+    /// Signed provenance of report-derived hashes, counters, usage and time.
+    pub report_provenance: ReportProvenance,
     pub v1_content_hash: String,
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -83,6 +86,7 @@ impl Receipt {
             sandbox_tier,
             spiffe_id,
             version,
+            report_provenance,
             v1_content_hash,
             input_tokens,
             output_tokens,
@@ -108,6 +112,7 @@ impl Receipt {
         absorb("sandbox_tier", sandbox_tier.as_bytes());
         absorb("spiffe_id", spiffe_id.as_bytes());
         absorb("version", &version.to_be_bytes());
+        absorb("report_provenance", report_provenance.as_str().as_bytes());
         absorb("v1_content_hash", v1_content_hash.as_bytes());
         absorb("input_tokens", &input_tokens.to_be_bytes());
         absorb("output_tokens", &output_tokens.to_be_bytes());
@@ -132,9 +137,6 @@ pub(crate) enum ReceiptError {
     NoExitReport(String),
     /// The report is there and unreadable.
     Malformed(String),
-    /// A report was found where the workload could have written it, and it does
-    /// not carry this pod's supervisor signature. See `nucleus_spec::exit_report_auth`.
-    Unauthenticated(String),
 }
 
 impl std::fmt::Display for ReceiptError {
@@ -143,9 +145,6 @@ impl std::fmt::Display for ReceiptError {
             Self::NotExited => write!(f, "pod has not exited yet; receipt not available"),
             Self::NoExitReport(why) => write!(f, "exit report not found: {why}"),
             Self::Malformed(why) => write!(f, "failed to parse exit report: {why}"),
-            Self::Unauthenticated(why) => {
-                write!(f, "exit report is not the supervisor's: {why}")
-            }
         }
     }
 }
@@ -173,20 +172,18 @@ pub(crate) async fn build(
         return Err(ReceiptError::NotExited);
     };
 
-    let report = match &handle.driver_state {
+    let claim = match &handle.driver_state {
         crate::DriverState::Firecracker(pod) => {
             let json = firecracker_report_json(pod).await?;
-            parse_report(
-                &json,
-                &ReportSource::WorkloadOwnedImage {
-                    pod_dir: pod.pod_dir.clone(),
-                },
-            )?
+            parse_guest_report(&json)?
         }
         #[cfg(feature = "local-driver")]
         crate::DriverState::Local(_) => shared_directory_report(handle).await?,
         crate::DriverState::Container(_) => shared_directory_report(handle).await?,
     };
+
+    let provenance = claim.provenance();
+    let report = claim.0;
 
     let spec_yaml = serde_yaml::to_string(&handle.spec).unwrap_or_default();
     let manifest_hash =
@@ -227,7 +224,8 @@ pub(crate) async fn build(
         // and is the natural follow-up; it is new behaviour, not a deletion.
         sandbox_tier: String::new(),
         spiffe_id,
-        version: 1,
+        version: 2,
+        report_provenance: provenance,
         v1_content_hash,
         input_tokens: report.input_tokens,
         output_tokens: report.output_tokens,
@@ -267,7 +265,7 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
         tool_call_count: r.audit_entry_count,
         workspace_hash: r.workspace_hash.clone(),
         audit_tail_hash: r.audit_tail_hash.clone(),
-        // Verified exposure from the tool proxy's GradedExposureGuard, written to
+        // Guest-reported exposure from the tool proxy's guard, written to
         // .nucleus-exit-report.json at shutdown.
         observed_exposure_labels: r.observed_exposure_labels.clone(),
         observed_risk_tier: if r.observed_risk_tier.is_empty() {
@@ -297,6 +295,7 @@ pub(crate) fn report_to_trust_gate(state: &NodeState, built: &Built) {
             built.receipt.spiffe_id.clone()
         },
         v1_content_hash: built.receipt.v1_content_hash.clone(),
+        report_provenance: built.receipt.report_provenance,
     };
     let trust_config = state.trust_gate.clone();
     let http_client = state.http_client.clone();
@@ -329,6 +328,7 @@ impl From<Receipt> for crate::proto::ExecutionReceipt {
             sandbox_tier: r.sandbox_tier,
             spiffe_id: r.spiffe_id,
             version: r.version,
+            report_provenance: r.report_provenance.as_str().to_string(),
             v1_content_hash: r.v1_content_hash,
             extensions: std::collections::HashMap::new(),
             input_tokens: r.input_tokens,
@@ -350,9 +350,7 @@ const PRESERVED_REPORT: &str = "exit-report.json";
 /// outright and have no per-pod mediation key to sign with, so this path never
 /// claimed more than "the file in the pod's directory". A signed report found here
 /// is unwrapped, not verified.
-async fn shared_directory_report(
-    handle: &Arc<PodHandle>,
-) -> Result<nucleus_spec::ExitReport, ReceiptError> {
+async fn shared_directory_report(handle: &Arc<PodHandle>) -> Result<GuestReport, ReceiptError> {
     let path = handle
         .spec
         .spec
@@ -361,7 +359,7 @@ async fn shared_directory_report(
     let json = tokio::fs::read_to_string(&path)
         .await
         .map_err(|e| ReceiptError::NoExitReport(format!("{}: {e}", path.display())))?;
-    parse_report(&json, &ReportSource::SharedDirectory)
+    parse_guest_report(&json)
 }
 
 /// The Firecracker pod's report bytes: the copy preserved at teardown, else a
@@ -421,72 +419,26 @@ pub(crate) fn preserve_exit_report(
     }
 }
 
-/// Where a report was read from, which decides what it has to prove.
-pub(crate) enum ReportSource {
-    /// A directory the host shares with the pod (local and container drivers).
-    SharedDirectory,
-    /// An image the workload can write (Firecracker): only the supervisor's
-    /// signature, checked against the key the node minted, makes it a report.
-    WorkloadOwnedImage { pod_dir: std::path::PathBuf },
+/// Parsed guest content. It cannot be constructed by deserializing provenance,
+/// and does not represent independent host measurement, even with a signature.
+pub(crate) struct GuestReport(nucleus_spec::ExitReport);
+impl GuestReport {
+    pub(crate) fn provenance(&self) -> ReportProvenance {
+        ReportProvenance::GuestReported
+    }
 }
 
-/// Parse and, where the source requires it, authenticate a report.
-pub(crate) fn parse_report(
-    json: &str,
-    source: &ReportSource,
-) -> Result<nucleus_spec::ExitReport, ReceiptError> {
-    use nucleus_spec::exit_report_auth::{SignedExitReport, signing_bytes};
-    match source {
-        ReportSource::SharedDirectory => {
-            if let Ok(signed) = serde_json::from_str::<SignedExitReport>(json) {
-                return Ok(signed.report);
-            }
-            serde_json::from_str(json).map_err(|e| ReceiptError::Malformed(e.to_string()))
-        }
-        ReportSource::WorkloadOwnedImage { pod_dir } => {
-            let signed: SignedExitReport = serde_json::from_str(json).map_err(|e| {
-                if serde_json::from_str::<nucleus_spec::ExitReport>(json).is_ok() {
-                    ReceiptError::Unauthenticated("the report is unsigned".into())
-                } else {
-                    ReceiptError::Malformed(e.to_string())
-                }
-            })?;
-            let recorded =
-                std::fs::read_to_string(pod_dir.join("mediator-pubkey.hex")).map_err(|e| {
-                    ReceiptError::Unauthenticated(format!(
-                        "the node has no record of this pod's mediation key: {e}"
-                    ))
-                })?;
-            let recorded = recorded.trim();
-            // The report's own copy of the key is a claim; the node's record decides.
-            if !signed.signer_pubkey.eq_ignore_ascii_case(recorded) {
-                return Err(ReceiptError::Unauthenticated(
-                    "signed by a key other than the one the node minted for this pod".into(),
-                ));
-            }
-            let key_bytes: [u8; 32] = hex::decode(recorded)
-                .ok()
-                .and_then(|b| b.try_into().ok())
-                .ok_or_else(|| {
-                    ReceiptError::Unauthenticated("the recorded key is malformed".into())
-                })?;
-            let key = ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
-                .map_err(|e| ReceiptError::Unauthenticated(format!("the recorded key: {e}")))?;
-            let sig_bytes: [u8; 64] = hex::decode(&signed.signature)
-                .ok()
-                .and_then(|b| b.try_into().ok())
-                .ok_or_else(|| {
-                    ReceiptError::Unauthenticated("the signature is malformed".into())
-                })?;
-            let bytes = signing_bytes(&signed.report)
-                .map_err(|e| ReceiptError::Malformed(e.to_string()))?;
-            key.verify_strict(&bytes, &ed25519_dalek::Signature::from_bytes(&sig_bytes))
-                .map_err(|_| {
-                    ReceiptError::Unauthenticated("the signature does not verify".into())
-                })?;
-            Ok(signed.report)
-        }
+/// Preserve plain reports and legacy guest-signed envelopes as guest claims.
+/// A guest signature is deliberately not promoted to host authentication.
+pub(crate) fn parse_guest_report(json: &str) -> Result<GuestReport, ReceiptError> {
+    if let Ok(signed) =
+        serde_json::from_str::<nucleus_spec::exit_report_auth::SignedExitReport>(json)
+    {
+        return Ok(GuestReport(signed.report));
     }
+    serde_json::from_str(json)
+        .map(GuestReport)
+        .map_err(|e| ReceiptError::Malformed(e.to_string()))
 }
 
 #[cfg(test)]
@@ -503,7 +455,8 @@ mod tests {
             manifest_hash: "mf".into(),
             sandbox_tier: "restricted".into(),
             spiffe_id: "spiffe://nucleus.local/ns/pods/sa/1".into(),
-            version: 1,
+            version: 2,
+            report_provenance: ReportProvenance::GuestReported,
             v1_content_hash: "v1".into(),
             input_tokens: 10,
             output_tokens: 20,
@@ -541,6 +494,7 @@ mod tests {
             "sandbox_tier",
             "spiffe_id",
             "version",
+            "report_provenance",
             "v1_content_hash",
             "input_tokens",
             "output_tokens",
@@ -620,6 +574,35 @@ mod tests {
             .expect("no registry to fail to load")
         }
 
+        #[tokio::test]
+        async fn a_guest_report_cannot_choose_host_provenance() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
+            report["report_provenance"] = "host_observed".into();
+            report["version"] = 999.into();
+            write_report(dir.path(), &serde_json::to_string(&report).unwrap());
+            assert!(
+                matches!(
+                    build(&pod(dir.path(), true, &[]).await, &authority(dir.path())).await,
+                    Err(ReceiptError::Malformed(_))
+                ),
+                "guest-authored provenance is not a report field"
+            );
+            write_report(dir.path(), REPORT);
+            let built = build(&pod(dir.path(), true, &[]).await, &authority(dir.path()))
+                .await
+                .unwrap();
+            assert_eq!(built.receipt.version, 2);
+            assert_eq!(
+                built.receipt.report_provenance,
+                ReportProvenance::GuestReported
+            );
+            assert_eq!(
+                built.receipt.workspace_hash,
+                report["workspace_hash"].as_str().unwrap()
+            );
+        }
+
         /// **The claim, end to end.** Every other signature test builds a `Receipt`
         /// by hand and signs a preimage itself, which tests the primitives and not
         /// the composition: until this existed, nothing checked that a receipt
@@ -643,6 +626,10 @@ mod tests {
                 !r.signature.is_empty(),
                 "build produced an unsigned receipt"
             );
+            assert_eq!(r.version, 2);
+            assert_eq!(r.report_provenance, ReportProvenance::GuestReported);
+            let wire: crate::proto::ExecutionReceipt = r.clone().into();
+            assert_eq!(wire.report_provenance, "guest_reported");
             assert_eq!(
                 r.signer_pubkey,
                 auth.root_pubkey_hex(),
@@ -693,6 +680,7 @@ mod tests {
 
             let handle = Arc::new(crate::PodHandle {
                 id: uuid::Uuid::new_v4(),
+                execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
                 spec,
                 created_at: 1_757_000_000,
                 log_path: work_dir.join("pod.log"),
@@ -704,6 +692,7 @@ mod tests {
                 parent_pod_id: None,
                 posture_stamp: None,
                 owner: None,
+                capacity: tokio::sync::Mutex::new(None),
             });
 
             if exit {
@@ -798,7 +787,8 @@ mod tests {
             assert_eq!(r.output_tokens, 22);
             assert_eq!(r.cache_read_tokens, 33);
             assert!((r.cost_usd - 1.5).abs() < f64::EPSILON);
-            assert_eq!(r.version, 1);
+            assert_eq!(r.version, 2);
+            assert_eq!(r.report_provenance, ReportProvenance::GuestReported);
             assert_eq!(built.exit_code, 0, "/bin/true exits 0");
             assert!(!r.manifest_hash.is_empty(), "the spec must be hashed");
             assert!(
@@ -901,7 +891,8 @@ mod signature_tests {
             manifest_hash: "mh".into(),
             sandbox_tier: "tier2".into(),
             spiffe_id: "spiffe://nucleus.local/ns/default/sa/x".into(),
-            version: 1,
+            version: 2,
+            report_provenance: ReportProvenance::GuestReported,
             v1_content_hash: "v1".into(),
             input_tokens: 10,
             output_tokens: 20,
@@ -978,7 +969,14 @@ mod signature_tests {
             (
                 "version",
                 Receipt {
-                    version: 2,
+                    version: 3,
+                    ..sample()
+                },
+            ),
+            (
+                "report_provenance",
+                Receipt {
+                    report_provenance: ReportProvenance::Unspecified,
                     ..sample()
                 },
             ),
@@ -1122,132 +1120,30 @@ mod signature_tests {
     }
 }
 
-/// What a report read out of a workload-owned image has to prove.
-///
-/// The forged-report case is the one a live node measured as reachable in
-/// principle: the scratch root is the workload's uid, so the workload can put
-/// any bytes at the report's path. These pin that only a report signed with the
-/// key the NODE minted for this pod is accepted there.
 #[cfg(test)]
-mod authenticated_reports {
+mod guest_reports {
     use super::*;
-    use ed25519_dalek::Signer;
-    use nucleus_spec::exit_report_auth::{SignedExitReport, signing_bytes};
-
     const REPORT: &str = r#"{"workspace_hash":"ws","audit_tail_hash":"tail","audit_entry_count":4,"timestamp_unix":7}"#;
 
-    fn report() -> nucleus_spec::ExitReport {
-        serde_json::from_str(REPORT).unwrap()
-    }
-
-    fn signed_by(
-        key: &ed25519_dalek::SigningKey,
-        report: nucleus_spec::ExitReport,
-    ) -> SignedExitReport {
-        SignedExitReport {
-            signature: hex::encode(key.sign(&signing_bytes(&report).unwrap()).to_bytes()),
-            signer_pubkey: hex::encode(key.verifying_key().to_bytes()),
-            report,
-        }
-    }
-
-    /// A pod dir holding the node's record of `key`.
-    fn pod_dir(key: &ed25519_dalek::SigningKey) -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("mediator-pubkey.hex"),
-            hex::encode(key.verifying_key().to_bytes()),
-        )
-        .unwrap();
-        dir
-    }
-
-    fn image(dir: &tempfile::TempDir) -> ReportSource {
-        ReportSource::WorkloadOwnedImage {
-            pod_dir: dir.path().to_path_buf(),
-        }
-    }
-
-    fn pod_key() -> ed25519_dalek::SigningKey {
-        ed25519_dalek::SigningKey::from_bytes(&[7u8; 32])
-    }
-
-    /// Control first: the supervisor's own report is accepted, with its numbers.
     #[test]
-    fn a_report_signed_with_the_pods_key_is_accepted() {
-        let dir = pod_dir(&pod_key());
-        let json = serde_json::to_string(&signed_by(&pod_key(), report())).unwrap();
-        let got = parse_report(&json, &image(&dir)).expect("the supervisor's report verifies");
-        assert_eq!(got.workspace_hash, "ws");
-        assert_eq!(got.audit_entry_count, 4);
+    fn plain_and_legacy_signed_reports_are_useful_but_never_host_measurements() {
+        let plain = parse_guest_report(REPORT).unwrap();
+        assert_eq!(plain.provenance(), ReportProvenance::GuestReported);
+        assert_eq!(plain.0.audit_entry_count, 4);
+        let legacy = serde_json::json!({
+            "report": serde_json::from_str::<serde_json::Value>(REPORT).unwrap(),
+            "signature": "guest-controlled", "signer_pubkey": "guest-controlled"
+        });
+        let parsed = parse_guest_report(&legacy.to_string()).unwrap();
+        assert_eq!(parsed.provenance(), ReportProvenance::GuestReported);
+        assert_eq!(parsed.0.workspace_hash, "ws");
     }
 
     #[test]
-    fn an_unsigned_report_in_the_image_is_refused_by_name() {
-        let dir = pod_dir(&pod_key());
-        let Err(ReceiptError::Unauthenticated(why)) = parse_report(REPORT, &image(&dir)) else {
-            panic!("an unsigned report must not become a receipt");
-        };
-        assert!(why.contains("unsigned"), "{why}");
-    }
-
-    /// The workload's own key, honestly named: not the key the node minted.
-    #[test]
-    fn a_report_signed_by_another_key_is_refused() {
-        let dir = pod_dir(&pod_key());
-        let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-        let json = serde_json::to_string(&signed_by(&other, report())).unwrap();
-        assert!(matches!(
-            parse_report(&json, &image(&dir)),
-            Err(ReceiptError::Unauthenticated(_))
-        ));
-    }
-
-    /// The report's claimed key is a claim: naming the right key does not make
-    /// another key's signature verify.
-    #[test]
-    fn claiming_the_pods_key_does_not_make_a_foreign_signature_verify() {
-        let dir = pod_dir(&pod_key());
-        let other = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-        let mut forged = signed_by(&other, report());
-        forged.signer_pubkey = hex::encode(pod_key().verifying_key().to_bytes());
-        let json = serde_json::to_string(&forged).unwrap();
-        let Err(ReceiptError::Unauthenticated(why)) = parse_report(&json, &image(&dir)) else {
-            panic!("a foreign signature must not verify");
-        };
-        assert!(why.contains("does not verify"), "{why}");
-    }
-
-    /// A genuine signature over different numbers: the workload edits the
-    /// supervisor's report in place.
-    #[test]
-    fn editing_a_signed_report_breaks_it() {
-        let dir = pod_dir(&pod_key());
-        let mut edited = signed_by(&pod_key(), report());
-        edited.report.workspace_hash = "forged-by-the-guest".into();
-        let json = serde_json::to_string(&edited).unwrap();
-        assert!(matches!(
-            parse_report(&json, &image(&dir)),
-            Err(ReceiptError::Unauthenticated(_))
-        ));
-    }
-
-    /// "Could not look" is not "looked and it was fine" (ADR 0007 A-1).
-    #[test]
-    fn with_no_record_of_the_key_nothing_is_accepted() {
-        let dir = tempfile::tempdir().unwrap();
-        let json = serde_json::to_string(&signed_by(&pod_key(), report())).unwrap();
-        let Err(ReceiptError::Unauthenticated(why)) = parse_report(&json, &image(&dir)) else {
-            panic!("no key record must refuse");
-        };
-        assert!(why.contains("no record"), "{why}");
-    }
-
-    /// The shared-directory drivers keep what they accepted.
-    #[test]
-    fn a_shared_directory_accepts_a_plain_or_a_signed_report() {
-        assert!(parse_report(REPORT, &ReportSource::SharedDirectory).is_ok());
-        let json = serde_json::to_string(&signed_by(&pod_key(), report())).unwrap();
-        assert!(parse_report(&json, &ReportSource::SharedDirectory).is_ok());
+    fn unknown_fields_cannot_promote_a_guest_report() {
+        let mut report: serde_json::Value = serde_json::from_str(REPORT).unwrap();
+        report["report_provenance"] = "host_observed".into();
+        assert!(parse_guest_report(&report.to_string()).is_err());
+        assert!(parse_guest_report("not json").is_err());
     }
 }

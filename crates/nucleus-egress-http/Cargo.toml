@@ -1,0 +1,24 @@
+[package]
+name = "nucleus-egress-http"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Unprivileged HTTP compatibility client for the nucleus Unix workload door"
+repository = "https://github.com/coproduct-opensource/nucleus"
+
+[dependencies]
+axum = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true, features = ["process", "signal", "rt-multi-thread", "macros"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "stream"] }
+rustls = { workspace = true }
+
+[dev-dependencies]
+nix = { version = "0.31", default-features = false, features = ["process"] }
+tempfile = { workspace = true }
+tokio-stream = "0.1"
+tower = { version = "0.5", features = ["util"] }
+
+[lints]
+workspace = true

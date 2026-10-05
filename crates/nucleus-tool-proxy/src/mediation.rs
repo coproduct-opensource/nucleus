@@ -392,3 +392,159 @@ impl From<Denied> for ApiError {
         d.error
     }
 }
+
+/// Permission to submit a request to the host broker, never to execute it.
+/// No guest approval grant can discharge this request's host-side obligation.
+#[must_use]
+pub(crate) struct BrokerSubmission {
+    require_approval: bool,
+}
+impl BrokerSubmission {
+    pub(crate) fn require_approval(self) -> bool {
+        self.require_approval
+    }
+}
+
+pub(crate) fn decide_for_broker(
+    env: MediationEnv<'_>,
+    kernel: &mut Kernel,
+    graph: &FlowGraph,
+    subject: &str,
+) -> Result<BrokerSubmission, ApiError> {
+    let operation = Operation::WebFetch;
+    let MediationEnv {
+        sink,
+        actor,
+        transport,
+        grants: _,
+        shadow,
+    } = env;
+    let (decision, _token) =
+        kernel.decide_term_with_flow(ActionTerm::from_operation(operation, subject), Some(graph));
+    shadow.submit(kernel, graph, operation, subject, &decision.verdict);
+    crate::verdict_sink::record_kernel_decision(
+        sink,
+        &decision,
+        operation,
+        subject,
+        actor,
+        transport,
+        kernel.session_id(),
+    );
+    match decision.verdict {
+        Verdict::Allow => Ok(BrokerSubmission {
+            require_approval: false,
+        }),
+        Verdict::RequiresApproval => Ok(BrokerSubmission {
+            require_approval: true,
+        }),
+        Verdict::Deny(DenyReason::IfcUnsafe { detail }) => Err(ApiError::IfcDenied(detail)),
+        Verdict::Deny(reason) => Err(kernel_denial_to_api_error(operation, subject, reason)),
+    }
+}
+
+pub(crate) async fn admit_to_broker(
+    state: &crate::AppState,
+    subject: &str,
+) -> Result<BrokerSubmission, ApiError> {
+    let mut kernel = state.kernel.lock().await;
+    let graph = state.flow_graph.lock().await;
+    if let Ok(mut cell) = state.kernel_exposure.write() {
+        *cell = kernel.exposure().clone();
+    }
+    let result = decide_for_broker(
+        MediationEnv {
+            sink: state.verdict_sink.as_ref(),
+            actor: crate::actor_from_auth(None),
+            transport: "http",
+            grants: state.approvals.as_ref(),
+            shadow: &state.host_decide,
+        },
+        &mut kernel,
+        &graph,
+        subject,
+    );
+    if let Ok(mut cell) = state.kernel_exposure.write() {
+        *cell = kernel.exposure().clone();
+    }
+    result
+}
+
+#[cfg(test)]
+mod broker_tests {
+    use super::*;
+    use portcullis::PermissionLattice;
+    use portcullis::verdict_sink::{SinkError, VerdictContext, VerdictOutcome};
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Sink(Mutex<Vec<VerdictOutcome>>);
+    impl VerdictSink for Sink {
+        fn record(&self, context: VerdictContext) -> Result<(), SinkError> {
+            self.0.lock().unwrap().push(context.outcome);
+            Ok(())
+        }
+        fn preflight(&self, _: Operation) -> Result<(), SinkError> {
+            Ok(())
+        }
+    }
+    struct GuestGrant;
+    impl ApprovalGrants for GuestGrant {
+        fn is_granted(&self, _: &str) -> bool {
+            true
+        }
+    }
+    fn submit(
+        policy: PermissionLattice,
+        graph: &FlowGraph,
+        sink: &Sink,
+    ) -> Result<BrokerSubmission, ApiError> {
+        decide_for_broker(
+            MediationEnv {
+                sink,
+                actor: ActorIdentity::Unknown,
+                transport: "http",
+                grants: &GuestGrant,
+                shadow: &crate::host_decide::HostDecide::Off,
+            },
+            &mut Kernel::new(policy),
+            graph,
+            "https://api.invalid/request",
+        )
+    }
+    #[test]
+    fn broker_submission_preserves_deferral_without_minting_a_guest_grant() {
+        for required in [false, true] {
+            let mut policy = PermissionLattice::network_only();
+            if required {
+                policy.obligations.insert(Operation::WebFetch);
+            }
+            let sink = Sink::default();
+            let submission = submit(policy, &FlowGraph::new(), &sink).unwrap();
+            assert_eq!(submission.require_approval(), required);
+            let records = sink.0.lock().unwrap();
+            assert_eq!(records.len(), 1);
+            assert_eq!(
+                matches!(records[0], VerdictOutcome::RequiresApproval { .. }),
+                required
+            );
+            assert_eq!(matches!(records[0], VerdictOutcome::Allow), !required);
+        }
+    }
+    #[test]
+    fn guest_capability_and_flow_denials_never_become_broker_submissions() {
+        let mut denied = PermissionLattice::network_only();
+        denied.capabilities.web_fetch = CapabilityLevel::Never;
+        assert!(submit(denied, &FlowGraph::new(), &Sink::default()).is_err());
+        let mut poisoned = FlowGraph::new();
+        poisoned.poison();
+        assert!(
+            submit(
+                PermissionLattice::network_only(),
+                &poisoned,
+                &Sink::default()
+            )
+            .is_err()
+        );
+    }
+}

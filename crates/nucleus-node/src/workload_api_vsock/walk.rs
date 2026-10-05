@@ -44,15 +44,13 @@ use crate::workload_api_protocol::{CommandParseError, WorkloadApiCommand as Cmd}
 /// Values distinctive enough that finding one in a refusal is a leak, not a
 /// coincidence.
 const BROKER_SECRET: &str = "walk-broker-secret-5d1f0c";
-const MEDIATION_KEY: &str = "walk-mediation-key-a93b27";
 const AUDIT_SECRET: &str = "walk-audit-secret-7e40d8";
 const TASK_TOKEN: &str = "walk-task-token-31c9a0";
 const POD_CERT: &str = "d2Fsay1wb2QtY2VydC02YjE=";
 const CALLER_TOKEN: &str = "walk-caller-token-e2f415";
 const DLC_CREDENTIALS: &str = "op=walk-dlc-credential-904d";
-const LEAKABLE: [&str; 7] = [
+const LEAKABLE: [&str; 6] = [
     BROKER_SECRET,
-    MEDIATION_KEY,
     AUDIT_SECRET,
     TASK_TOKEN,
     POD_CERT,
@@ -62,8 +60,7 @@ const LEAKABLE: [&str; 7] = [
 
 /// The seed whose public half the walk writes as the pod's `mediator-pubkey.hex`
 /// anchor when a mediation key is provisioned, and signs `SHIP_SPEND` bodies
-/// with. Distinct from `MEDIATION_KEY`, which is served as opaque material and
-/// never used to sign anything here.
+/// with. This models an old on-disk anchor only; the host no longer serves keys.
 const SPEND_SEED: [u8; 32] = [0x5a; 32];
 
 /// A valid `ClearingReceipt` line: a real two-bid round issued by the proven
@@ -194,7 +191,6 @@ enum Op {
 struct Provision {
     broker_secret: bool,
     mediation_key: bool,
-    mediation_spiffe_id: bool,
     audit_creds: bool,
     pod_spec: bool,
     dlc_admission: bool,
@@ -260,11 +256,9 @@ impl Model {
                     Material::BrokerSecret,
                     OneShot::BrokerSecret,
                 ),
-                Cmd::FetchMediationKey => once(
-                    p.mediation_key && p.mediation_spiffe_id,
-                    Material::MediationKey,
-                    OneShot::MediationKey,
-                ),
+                Cmd::FetchMediationKey => {
+                    Expect::Refused(Refusal::NotProvisioned(Material::MediationKey))
+                }
                 Cmd::FetchAuditCredentials => once(
                     p.audit_creds,
                     Material::AuditCredentials,
@@ -332,7 +326,7 @@ impl Model {
         // production's: deciding it is what the walk checks.
         let spends = match c {
             Cmd::FetchBrokerSecret => Some(OneShot::BrokerSecret),
-            Cmd::FetchMediationKey => Some(OneShot::MediationKey),
+            Cmd::FetchMediationKey => None,
             Cmd::FetchAuditCredentials => Some(OneShot::AuditCredentials),
             Cmd::FetchSvid => Some(OneShot::SvidKey),
             Cmd::FetchTaskToken => Some(OneShot::TaskToken),
@@ -376,9 +370,8 @@ const UNKNOWN_TOKEN: &str = "FETCH_EVERYTHING";
 /// added to `PodMaterial` stops this compiling until the walk decides whether it
 /// is provisioned (ADR 0007 E).
 fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
-    // The node writes the anchor exactly when it mints a mediation key
-    // (`mediation::new_seed_hex`), so the walk does the same: a pod with a
-    // receipt dir but no key has no anchor, and its spend receipts are refused.
+    // Exercise historical spend anchors, including their absence. New pods
+    // receive no signing key and the node no longer creates this anchor.
     if p.receipts && p.mediation_key {
         let pubkey = ed25519_dalek::SigningKey::from_bytes(&SPEND_SEED).verifying_key();
         std::fs::write(
@@ -414,10 +407,6 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
             session_token: None,
         }),
         pod_spec_yaml: p.pod_spec.then(|| "kind: Pod".to_string()),
-        mediation_signing_key: p.mediation_key.then(|| MEDIATION_KEY.to_string()),
-        mediation_spiffe_id: p
-            .mediation_spiffe_id
-            .then(|| "spiffe://walk.local/mediator".to_string()),
         at_snapshot_barrier: Arc::default(),
         personalized: Arc::default(),
         receipt_dir: p.receipts.then(|| receipt_dir.to_path_buf()),
@@ -426,17 +415,17 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
 }
 
 fn provision() -> impl Strategy<Value = Provision> {
-    proptest::collection::vec(any::<bool>(), 10).prop_map(|b| Provision {
+    proptest::collection::vec(any::<bool>(), 9).prop_map(|b| Provision {
         broker_secret: b[0],
         mediation_key: b[1],
-        mediation_spiffe_id: b[2],
-        audit_creds: b[3],
-        pod_spec: b[4],
-        dlc_admission: b[5],
-        pod_certificate: b[6],
-        task_token: b[7],
-        caller_token: b[8],
-        receipts: b[9],
+
+        audit_creds: b[2],
+        pod_spec: b[3],
+        dlc_admission: b[4],
+        pod_certificate: b[5],
+        task_token: b[6],
+        caller_token: b[7],
+        receipts: b[8],
     })
 }
 
@@ -579,7 +568,7 @@ fn the_walk_reaches_every_outcome_it_asserts() {
     let everything = Provision {
         broker_secret: true,
         mediation_key: true,
-        mediation_spiffe_id: true,
+
         audit_creds: true,
         pod_spec: true,
         dlc_admission: true,
@@ -611,6 +600,12 @@ fn the_walk_reaches_every_outcome_it_asserts() {
             assert!(model.served.contains(&o), "the SVID key was never served");
             continue;
         }
+        if o == OneShot::MediationKey {
+            assert!(!model.served.contains(&o), "the retired key was served");
+            assert!(refused.contains(&Refusal::NotProvisioned(Material::MediationKey)));
+            assert!(!refused.contains(&Refusal::AlreadyServed(o)));
+            continue;
+        }
         assert!(
             refused.contains(&Refusal::AlreadyServed(o)),
             "{o:?} never absorbed"
@@ -627,7 +622,8 @@ fn the_walk_reaches_every_outcome_it_asserts() {
 }
 
 /// A2 under concurrency: the one-shot is an atomic swap, so of many requests
-/// racing on separate connections, exactly one is served.
+/// racing on separate connections, exactly one is served. The retired mediation
+/// key is never served, including under concurrent requests.
 #[test]
 fn racing_requests_for_a_one_shot_serve_exactly_one() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -640,7 +636,7 @@ fn racing_requests_for_a_one_shot_serve_exactly_one() {
         let all = Provision {
             broker_secret: true,
             mediation_key: true,
-            mediation_spiffe_id: true,
+
             audit_creds: true,
             pod_spec: false,
             dlc_admission: true,
@@ -684,7 +680,8 @@ fn racing_requests_for_a_one_shot_serve_exactly_one() {
                     served += 1;
                 }
             }
-            assert_eq!(served, 1, "{command:?} served {served} times");
+            let expected = usize::from(command != "FETCH_MEDIATION_KEY\n");
+            assert_eq!(served, expected, "{command:?} served {served} times");
         }
     });
 }

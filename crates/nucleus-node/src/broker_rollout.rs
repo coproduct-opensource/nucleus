@@ -1,41 +1,25 @@
-//! When the credential broker is actually used, and why the order matters.
-//!
-//! # The ordering constraint
-//!
-//! The broker has two halves and they cannot land together:
-//!
-//! 1. **The host serves** — a listener the guest can reach, which decides and
-//!    fetches. That exists.
-//! 2. **The guest asks** — a client in the tool-proxy that sends an envelope
-//!    instead of reading a credential from its spec. That does **not** exist.
-//!
-//! Until both exist, [`cred_split::split_credentials`](crate::cred_split) must
-//! not run on the launch path. Stripping credential values from a guest whose
-//! code still expects to read them does not make anything more secure; it makes
-//! every pod fail. The exposure stays open for exactly as long as it takes the
-//! guest to gain a way to ask.
-//!
-//! # Why the listener can land first anyway
-//!
-//! A listener that nobody connects to changes no behaviour. Landing it early
-//! means the socket path, permissions, bounds and refusal semantics are in
-//! production and exercised before anything depends on them — rather than
-//! arriving in the same change that also flips how credentials are delivered.
-//!
-//! # Why it is still off by default
-//!
-//! Flags of this kind are runtime safety tools, not growth knobs. `Off` means a
-//! node behaves exactly as it did; `On` means the socket exists and answers.
-//! Neither setting yet changes how a credential reaches a workload, and this
-//! module's tests say so explicitly so nobody reads the flag as "secretless mode".
+//! Broker rollout is explicit: disabled, listen with legacy spec delivery, or
+//! enforcing with credential-free host spec delivery. Firecracker enforcement
+//! requires the workload API, host-side credential sources, the broker client in
+//! the proxy, and guest-init honoring required host-spec selection. Readiness
+//! checks refuse when those pieces are unavailable; listen mode preserves its
+//! prior delivery behavior.
 
-// Not yet read by the launch path: the flag exists and is tested, but nothing
-// consults it during pod spawn, because doing so is only useful once the guest
-// has a client. Deliberately landed ahead of that so the DEFAULT-OFF decision
-// is reviewable on its own rather than buried in the change that flips
-// credential delivery. CI denies warnings; this states the gap rather than
-// hiding it.
 #![cfg_attr(not(test), allow(dead_code))]
+
+/// Other drivers do not prepare the credential-free workload API delivery path.
+/// Refuse the requested mode rather than silently launch with legacy credentials.
+pub(crate) fn require_supported_driver(
+    enforcing: bool,
+    driver: &crate::driver::DriverKind,
+) -> Result<(), crate::ApiError> {
+    if enforcing && !matches!(driver, crate::driver::DriverKind::Firecracker) {
+        return Err(crate::ApiError::Driver(
+            "--broker-enforcing requires the Firecracker host-spec delivery path".into(),
+        ));
+    }
+    Ok(())
+}
 
 /// What a node should do about the credential broker for a given pod.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,12 +27,11 @@ pub enum BrokerRollout {
     /// Do not create the socket. Indistinguishable from before this work.
     Disabled,
     /// Create the socket and answer requests, but keep delivering credentials
-    /// the existing way — because the guest cannot ask yet.
+    /// the existing way.
     ListenOnly,
     /// Serve the socket AND stop putting credential values in the guest spec.
     ///
-    /// Only correct once the guest has a client. Reachable today only by
-    /// explicitly asking for it, so it can be exercised in a test environment.
+    /// Explicitly enabled and checked by the launch preparation path.
     Enforcing,
 }
 
@@ -61,8 +44,7 @@ impl BrokerRollout {
     /// Whether credential values should be withheld from the guest spec.
     ///
     /// Separate from [`serves_socket`](Self::serves_socket) on purpose: the
-    /// dangerous half is withholding, and it must be impossible to enable it by
-    /// accident while merely turning the listener on.
+    /// delivery change must not happen while merely turning the listener on.
     pub fn withholds_credentials(self) -> bool {
         matches!(self, BrokerRollout::Enforcing)
     }
@@ -150,6 +132,18 @@ pub fn decide_rollout(
 mod tests {
     use super::*;
 
+    #[test]
+    fn unsupported_drivers_cannot_silently_downgrade_enforcement() {
+        use crate::driver::DriverKind;
+        assert!(require_supported_driver(true, &DriverKind::Firecracker).is_ok());
+        for driver in [DriverKind::Container, DriverKind::AppleVz] {
+            assert!(require_supported_driver(true, &driver).is_err());
+            assert!(require_supported_driver(false, &driver).is_ok());
+        }
+        #[cfg(feature = "local-driver")]
+        assert!(require_supported_driver(true, &DriverKind::Local).is_err());
+    }
+
     /// Default is off. A node that has not asked for the broker behaves exactly
     /// as it did before this work.
     #[test]
@@ -163,8 +157,7 @@ mod tests {
     }
 
     /// **The safety property of this whole module.** Turning the listener on
-    /// must NOT withhold credentials. The guest has no client yet, so a pod
-    /// whose credentials were stripped would simply fail.
+    /// must NOT withhold credentials: legacy clients retain their delivery mode.
     #[test]
     fn listening_does_not_withhold_credentials() {
         let r = decide_rollout(false, true, BrokerTransport::Vsock);

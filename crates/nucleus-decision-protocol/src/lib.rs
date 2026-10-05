@@ -35,6 +35,11 @@
 //!   ledger's epoch, so an id from a closed channel is
 //!   [`host::LedgerError::ForeignEpoch`] on the channel that replaced it rather
 //!   than a live number on a ledger that also started from zero.
+//! * **A decision is bound to its action digest.** The ledger preserves the
+//!   digest through approval redemption and refuses consumption for different
+//!   arguments. The host must compute the digest from the effect it checks and
+//!   executes. Shadow mode currently binds operation and subject only; this
+//!   is not yet authorization of a complete executable effect.
 //! * **Taint is the host's, and the guest can only raise it** (owner decision
 //!   D2). [`LabelRaise`] has one consumer, [`LabelRaise::raise`], and it is the
 //!   lattice join — an upper bound of what the host already holds. There is no

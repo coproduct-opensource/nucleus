@@ -1,5 +1,16 @@
 # macOS Quickstart (Tier 2 — real microVM isolation)
 
+For the current source-built workflow on M3-or-newer Macs with macOS 26 and
+Apple Container 1.4.1 or newer, follow the [Apple Container guide](apple-container.md).
+It covers local image/kernel assembly, `setup --apple-host-config host.json`,
+signed workload verification and workspace/evidence operations. Setup saves that
+host selection, so later `verify --tier2`, `node` and `run` commands use it.
+
+The release-artifact installation below uses Lima. Without a saved Apple host
+selection, `nucleus setup` retains that path.
+
+## Lima installation
+
 One command takes an Apple Silicon Mac from nothing to a booted nucleus pod:
 
 ```bash

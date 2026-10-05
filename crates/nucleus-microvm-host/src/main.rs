@@ -1,5 +1,7 @@
 //! `nucleus-hostctl`: the host side of running nucleus microVMs.
 //!
+//! - `run-node [args...]` is the Linux container PID-1 entrypoint. It moves
+//!   itself into a cgroup leaf before replacing itself with nucleus-node.
 //! - `probe` prints a JSON report of what this host provides and exits non-zero
 //!   when a microVM cannot launch here.
 //! - `seed <tree> <image> --owner UID:GID --jailer-uid UID --jailer-gid GID
@@ -10,6 +12,7 @@
 //! - `harvest <image> <out>` replays the image's journal and copies its tree out.
 //! - `relay --listen <addr> --to <loopback addr>` forwards TCP to a pod's proxy
 //!   until the proxy is gone.
+//! - `public-key <key-file>` exports an existing Ed25519 key's public half.
 
 #![cfg_attr(
     not(test),
@@ -39,6 +42,8 @@ use nucleus_microvm_host::{relay, workspace};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 
+mod public_key;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "nucleus-hostctl",
@@ -51,6 +56,18 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Export only the public Ed25519 key as hex for independent enrollment.
+    /// Run on the trusted host; never copy its private key to a verifier.
+    PublicKey {
+        /// Existing unencrypted PKCS#8 DER key. Never created or rotated.
+        key_file: PathBuf,
+    },
+    /// Container PID-1 entrypoint: prepare cgroup v2, then exec nucleus-node.
+    RunNode {
+        /// Arguments passed unchanged to nucleus-node.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Report what this host provides; non-zero exit when a microVM cannot launch.
     Probe {
         /// Also require what a pod with a `network` block needs (CAP_NET_ADMIN).
@@ -91,6 +108,9 @@ enum Command {
         /// How often, in seconds, an idle relay checks its target.
         #[arg(long, default_value_t = 2)]
         liveness_secs: u64,
+        /// New readiness file, written only after this relay owns its listener
+        #[arg(long)]
+        ready_file: Option<PathBuf>,
     },
 }
 
@@ -126,6 +146,17 @@ struct Report {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::PublicKey { key_file } => match public_key::read(&key_file) {
+            Ok(key) => {
+                println!("{}", hex::encode(key.as_bytes()));
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(&error),
+        },
+        Command::RunNode { args } => match nucleus_microvm_host::node_entrypoint::run(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => fail(&format!("preparing container node: {e}")),
+        },
         Command::Probe { network } => run_probe(network),
         Command::Seed {
             tree,
@@ -165,11 +196,17 @@ fn main() -> ExitCode {
             listen,
             to,
             liveness_secs,
-        } => run_relay(listen, to, Duration::from_secs(liveness_secs)),
+            ready_file,
+        } => run_relay(listen, to, Duration::from_secs(liveness_secs), ready_file),
     }
 }
 
-fn run_relay(listen: SocketAddr, to: SocketAddr, liveness: Duration) -> ExitCode {
+fn run_relay(
+    listen: SocketAddr,
+    to: SocketAddr,
+    liveness: Duration,
+    ready_file: Option<PathBuf>,
+) -> ExitCode {
     if !to.ip().is_loopback() {
         return fail(&format!(
             "refusing to relay to {to}: not a loopback address"
@@ -179,6 +216,11 @@ fn run_relay(listen: SocketAddr, to: SocketAddr, liveness: Duration) -> ExitCode
         Ok(l) => l,
         Err(e) => return fail(&format!("binding {listen}: {e}")),
     };
+    if let Some(path) = ready_file {
+        if let Err(error) = relay::announce_bound(&listener, to, &path) {
+            return fail(&format!("announcing relay readiness: {error}"));
+        }
+    }
     match relay::serve(listener, to, liveness) {
         relay::RelayEnd::TargetGone => {
             eprintln!("nucleus-hostctl relay: {to} is gone; stopping");
@@ -250,6 +292,24 @@ fn fail(msg: &str) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_flags_are_forwarded_without_becoming_hostctl_options() {
+        let cli = Cli::try_parse_from([
+            "nucleus-hostctl",
+            "run-node",
+            "--listen",
+            "127.0.0.1:8080",
+            "--broker-enforcing",
+        ])
+        .expect("node arguments");
+        match cli.command {
+            Command::RunNode { args } => {
+                assert_eq!(args, ["--listen", "127.0.0.1:8080", "--broker-enforcing",])
+            }
+            other => panic!("{other:?}"),
+        }
+    }
 
     /// The jail user's uid is the node's `NonRootUid`: seed cannot hand a disk
     /// to root as the "jail" user, which the node never drops to.

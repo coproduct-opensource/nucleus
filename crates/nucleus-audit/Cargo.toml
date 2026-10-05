@@ -7,6 +7,9 @@ authors.workspace = true
 
 [dependencies]
 anyhow = { workspace = true }
+base64 = { workspace = true }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
 clap = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }

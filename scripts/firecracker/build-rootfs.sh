@@ -49,6 +49,7 @@ POD_SPEC="${POD_SPEC:-$ROOT_DIR/examples/openclaw-demo/firecracker-pod.yaml}"
 GUEST_INIT_BIN="${GUEST_INIT_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-guest-init}"
 INIT_SRC="${INIT_SRC:-$SCRIPT_DIR/guest-init.sh}"
 PROXY_BIN="${PROXY_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-tool-proxy}"
+EGRESS_HTTP_BIN="${EGRESS_HTTP_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-http}"
 NET_PROBE_BIN="${NET_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-net-probe}"
 WORKLOAD_PROBE_BIN="${WORKLOAD_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-workload-probe}"
 EGRESS_PROBE_BIN="${EGRESS_PROBE_BIN:-$ROOT_DIR/target/$TARGET/release/nucleus-egress-probe}"
@@ -260,7 +261,7 @@ if [ "$VERIFY_ONLY" = true ]; then
     echo "Verifying binaries for $ARCH ($TARGET)..."
     preflight_host_tooling || exit 1
     missing=0
-    for bin in "$PROXY_BIN" "$NET_PROBE_BIN" "$WORKLOAD_PROBE_BIN" "$EGRESS_PROBE_BIN"; do
+    for bin in "$PROXY_BIN" "$EGRESS_HTTP_BIN" "$NET_PROBE_BIN" "$WORKLOAD_PROBE_BIN" "$EGRESS_PROBE_BIN"; do
         if [ ! -f "$bin" ]; then
             echo "  MISSING: $bin"
             missing=1
@@ -566,6 +567,10 @@ if [ -n "${OVERLAY_DIR:-}" ]; then
 fi
 
 # Set executable permissions
+# The independently built unprivileged adapter is a required guest input.
+# Copy after overlays; absence fails the build.
+cp "$EGRESS_HTTP_BIN" "$ROOTFS_DIR/usr/local/bin/nucleus-egress-http"
+chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-egress-http"
 chmod +x "$ROOTFS_DIR/init"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-tool-proxy"
 chmod +x "$ROOTFS_DIR/usr/local/bin/nucleus-net-probe"

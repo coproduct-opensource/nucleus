@@ -199,8 +199,6 @@ impl Run {
             served,
             audit_creds: None,
             pod_spec_yaml: None,
-            mediation_signing_key: None,
-            mediation_spiffe_id: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
             receipt_dir: Some(dir.path().join("p")),
@@ -223,6 +221,7 @@ impl Run {
             .spawn()
             .expect("a child spawns");
         let firecracker = crate::FirecrackerPod {
+            direct_cgroup: Mutex::new(None),
             pod_dir: dir.path().to_path_buf(),
             jail: Mutex::new(None),
             child: Arc::new(Mutex::new(child)),
@@ -233,8 +232,8 @@ impl Run {
             netns: Mutex::new(None),
             dns_proxy: Mutex::new(None),
             drift_monitor: Mutex::new(None),
+            egress_link: Mutex::new(None),
             drift_stop: Arc::default(),
-            network_allocator: st.network_allocator.clone(),
             identity: Some(identity.clone()),
             identity_registry_key: Some(p.to_string()),
             identity_manager: Some(manager.clone()),
@@ -251,6 +250,7 @@ impl Run {
             p,
             Arc::new(crate::PodHandle {
                 id: p,
+                execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
                 spec,
                 created_at: 1_757_000_000,
                 log_path: dir.path().join("pod.log"),
@@ -259,6 +259,7 @@ impl Run {
                 parent_pod_id: None,
                 posture_stamp: None,
                 owner: None,
+                capacity: tokio::sync::Mutex::new(None),
             }),
         );
         let k = register(&st, Some(p)).await;

@@ -145,6 +145,7 @@ pub const SHARED_CONFIG_KEYS: &[&str] = &[
     "nucleus.audit_s3_region",
     "nucleus.aws_default_region",
     "nucleus.workload_api_port",
+    "nucleus.host_spec",
     // Networking is re-established after restore, not inherited: Firecracker
     // documents that "guest network connectivity is not guaranteed to be
     // preserved after resume".
@@ -482,6 +483,7 @@ mod tests {
             "nucleus.audit_s3_region",
             "nucleus.aws_default_region",
             "nucleus.workload_api_port",
+            "nucleus.host_spec",
             "nucleus.net",
         ];
         assert_eq!(

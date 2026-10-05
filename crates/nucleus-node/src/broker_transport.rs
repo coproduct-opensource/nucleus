@@ -227,6 +227,9 @@ pub const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg_attr(not(test), allow(dead_code))]
 pub const MAX_CONCURRENT_CONNECTIONS: usize = 16;
 
+#[cfg(test)]
+mod revocation_tests;
+
 /// Read one frame asynchronously, refusing to accumulate past `max`.
 ///
 /// The async twin of [`read_frame_bounded`], and bounded for the same reason:
@@ -347,6 +350,9 @@ pub type UpstreamCaller = Arc<
 /// every field is per-pod, and a listener assembled from a mixture of two pods'
 /// values is the failure this arc has already produced once.
 pub struct PodBrokerConfig {
+    /// The pod authority's shared host policy history.
+    pub host_policy: crate::host_decide::SharedPodPolicy,
+
     /// Bound at the listener, never read from a frame.
     pub identity: PodIdentity,
     /// This pod's policy.
@@ -362,6 +368,7 @@ pub struct PodBrokerConfig {
     pub egress: Arc<crate::egress_meter::EgressMeter>,
     /// Per-call bounds on a streamed call (the operator's, or the defaults).
     pub stream_limits: crate::broker_stream::StreamLimits,
+    pub staging_budget: crate::broker_stream::staging_budget::Budget,
 }
 
 /// One pod's broker, owned, as the listener task needs it.
@@ -372,6 +379,9 @@ pub struct PodBrokerConfig {
 /// the ownership difference is real: the identity is fixed when the socket is
 /// bound and the ledger must outlive every connection served on it.
 pub struct PodBroker {
+    /// The pod authority's shared host policy history.
+    pub host_policy: crate::host_decide::SharedPodPolicy,
+
     /// Bound at the listener, never read from a frame.
     pub identity: PodIdentity,
     /// This pod's policy.
@@ -401,6 +411,9 @@ pub struct PodBroker {
 /// between pods, which is the property that keeps this from becoming the
 /// credential-concentrating gateway `CredentialedEgressSpec` warns about.
 pub struct BrokerServing<'a> {
+    /// The pod authority's shared host policy history.
+    pub host_policy: &'a crate::host_decide::SharedPodPolicy,
+
     /// Who is calling, from which socket accepted — never from the frame.
     pub identity: &'a PodIdentity,
     /// This pod's policy.
@@ -414,7 +427,7 @@ pub struct BrokerServing<'a> {
     /// This pod's idempotency memory.
     pub ledger: &'a IdempotencyLedger,
     /// This pod's egress balance.
-    pub egress: &'a crate::egress_meter::EgressMeter,
+    pub egress: &'a Arc<crate::egress_meter::EgressMeter>,
     /// How to make the call.
     pub upstream_caller: UpstreamCaller,
     /// How to make a streamed call, and its bounds and nonce memory.
@@ -445,10 +458,10 @@ pub fn http_caller(client: reqwest::Client) -> UpstreamCaller {
         let client = client.clone();
         Box::pin(async move {
             let resp = client
-                .post(&call.url)
+                .request(crate::broker_perform::METHOD, &call.url)
                 .header(&call.header_name, &call.header_value)
-                .header("content-type", "application/json")
-                .body(call.body)
+                .header("content-type", crate::broker_perform::CONTENT_TYPE)
+                .body(reqwest::Body::wrap_stream(call.body))
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -470,10 +483,26 @@ pub fn http_caller(client: reqwest::Client) -> UpstreamCaller {
 /// constant sitting right there unused. `a_peer_that_sends_nothing_gets_a_refusal_not_a_hang`
 /// found it. A named constant is not a bound until something reads it.
 pub async fn serve_connection_with_timeout<S>(
-    stream: S,
+    mut stream: S,
     serving: &BrokerServing<'_>,
     deadline: Duration,
 ) where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Ok(mut revoked) = crate::host_decide::PodPolicy::revocation(serving.host_policy) else {
+        let reply = format!("{}\n", refusal_line("host policy unavailable"));
+        let _ = tokio::time::timeout(deadline, stream.write_all(reply.as_bytes())).await;
+        return;
+    };
+    tokio::select! {
+        biased;
+        _ = revoked.wait_for(|revoked| *revoked) => {},
+        _ = serve_live_connection(stream, serving, deadline) => {},
+    }
+}
+
+async fn serve_live_connection<S>(stream: S, serving: &BrokerServing<'_>, deadline: Duration)
+where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (reader, mut writer) = tokio::io::split(stream);
@@ -543,6 +572,7 @@ pub async fn serve_connection_with_timeout<S>(
                 ),
                 Ok(GuestAsk::Perform(request)) => {
                     let ctx = PerformContext {
+                        host_policy: serving.host_policy,
                         identity: serving.identity,
                         policy: serving.policy,
                         credentials: serving.credentials,
@@ -562,6 +592,7 @@ pub async fn serve_connection_with_timeout<S>(
                 // then the reply, then its end. Nothing more is written here.
                 Ok(GuestAsk::Stream(request)) => {
                     let ctx = crate::broker_stream::StreamContext {
+                        host_policy: serving.host_policy,
                         identity: serving.identity,
                         policy: serving.policy,
                         credentials: serving.credentials,
@@ -670,6 +701,7 @@ pub(crate) mod serving_tests {
         caller: UpstreamCaller,
     ) -> BrokerServing<'a> {
         BrokerServing {
+            host_policy: Box::leak(Box::new(crate::host_decide::test_policy(policy.clone()))),
             identity,
             policy,
             credentials,
@@ -684,7 +716,7 @@ pub(crate) mod serving_tests {
 
     /// The default (finite) ceiling, which no test here approaches. Leaked
     /// because `BrokerServing` borrows it for the test's life.
-    pub(super) fn test_egress() -> &'static crate::egress_meter::EgressMeter {
+    pub(super) fn test_egress() -> &'static Arc<crate::egress_meter::EgressMeter> {
         Box::leak(Box::new(test_egress_arc()))
     }
 
@@ -764,7 +796,7 @@ pub(crate) mod serving_tests {
             line
         };
         let (_, reply) = tokio::join!(serve, talk);
-        let calls = seen.lock().expect("not poisoned").clone();
+        let calls = std::mem::take(&mut *seen.lock().expect("not poisoned"));
         (reply, calls)
     }
 
@@ -1252,6 +1284,7 @@ pub async fn serve_broker(
     shutdown: impl std::future::Future<Output = ()>,
 ) {
     let PodBroker {
+        host_policy,
         identity,
         policy,
         credentials,
@@ -1271,17 +1304,25 @@ pub async fn serve_broker(
     // be decoration.
     let ledger = Arc::new(IdempotencyLedger::new());
     tokio::pin!(shutdown);
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let permit = match Arc::clone(&permits).acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => return, // semaphore closed
+        let permit = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+            permit = Arc::clone(&permits).acquire_owned() => match permit {
+                Ok(permit) => permit,
+                Err(_) => break,
+            },
         };
         tokio::select! {
-            _ = &mut shutdown => return,
+            biased;
+            _ = &mut shutdown => break,
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _addr)) => {
                         let policy = Arc::clone(&policy);
+                        let host_policy = Arc::clone(&host_policy);
                         let credentials = Arc::clone(&credentials);
                         let identity = identity.clone();
                         let broker_secret = broker_secret.clone();
@@ -1290,10 +1331,11 @@ pub async fn serve_broker(
                         let caller = Arc::clone(&caller);
                         let egress = Arc::clone(&egress);
                         let streams = Arc::clone(&streams);
-                        tokio::spawn(async move {
+                        connections.spawn(async move {
                             serve_connection(
                                 stream,
                                 &BrokerServing {
+                                    host_policy: &host_policy,
                                     identity: &identity,
                                     policy: &policy,
                                     credentials: &credentials,
@@ -1323,6 +1365,9 @@ pub async fn serve_broker(
             }
         }
     }
+    crate::host_decide::PodPolicy::revoke(&host_policy);
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
 }
 
 /// Connect to the broker as a guest would, for tests and diagnostics.
@@ -1346,6 +1391,7 @@ pub enum ShutdownOutcome {
 /// identity, and be served credentials as that pod. Owning the handle is what
 /// makes the identity binding hold over time rather than only at start-up.
 pub struct BrokerListener {
+    host_policy: crate::host_decide::SharedPodPolicy,
     shutdown: Option<tokio::sync::oneshot::Sender<()>>,
     task: tokio::task::JoinHandle<()>,
     socket_path: std::path::PathBuf,
@@ -1361,6 +1407,12 @@ impl std::fmt::Debug for BrokerListener {
     }
 }
 
+impl Drop for BrokerListener {
+    fn drop(&mut self) {
+        self.revoke();
+    }
+}
+
 impl BrokerListener {
     /// Bind the broker socket for one pod and start serving it.
     ///
@@ -1373,6 +1425,7 @@ impl BrokerListener {
         jail_owner: Option<(u32, u32)>,
     ) -> io::Result<Self> {
         let PodBrokerConfig {
+            host_policy,
             identity,
             policy,
             credentials,
@@ -1380,6 +1433,7 @@ impl BrokerListener {
             broker_secret,
             egress,
             stream_limits,
+            staging_budget,
         } = pod;
         let socket_path = broker_socket_path(uds_path, port);
         let listener = prepare_socket(&socket_path)?;
@@ -1424,10 +1478,12 @@ impl BrokerListener {
                 crate::broker_stream::refusing_stream_caller(),
             )
         };
+        let listener_policy = Arc::clone(&host_policy);
         let task = tokio::spawn(async move {
             serve_broker(
                 listener,
                 PodBroker {
+                    host_policy,
                     identity,
                     policy,
                     credentials,
@@ -1440,7 +1496,11 @@ impl BrokerListener {
                     upstreams,
                     caller,
                     egress,
-                    streams: crate::broker_stream::PodStreams::new(stream_caller, stream_limits),
+                    streams: crate::broker_stream::PodStreams::with_staging(
+                        stream_caller,
+                        stream_limits,
+                        staging_budget,
+                    ),
                 },
                 async {
                     let _ = rx.await;
@@ -1449,6 +1509,7 @@ impl BrokerListener {
             .await;
         });
         Ok(BrokerListener {
+            host_policy: listener_policy,
             shutdown: Some(tx),
             task,
             socket_path,
@@ -1475,7 +1536,12 @@ impl BrokerListener {
     /// leak. The task is aborted if it does not observe the shutdown signal,
     /// because teardown must not be able to hang on a connection that is being
     /// slow on purpose.
+    pub fn revoke(&self) {
+        crate::host_decide::PodPolicy::revoke(&self.host_policy);
+    }
+
     pub async fn shutdown(mut self) -> ShutdownOutcome {
+        self.revoke();
         // Dropping the sender resolves the receiver too, so shutdown is robust
         // to a path that forgets to send. Established by perturbation: replacing
         // the send with a drop changed nothing, and only `mem::forget` on the
@@ -1483,15 +1549,15 @@ impl BrokerListener {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        // The serving loop only checks for shutdown between accepts, so a
-        // connection in flight can outlive the signal by up to CONNECTION_TIMEOUT.
-        // Teardown does not wait that long for a guest that may be stalling
-        // deliberately.
+        // Revocation wakes existing connections; the serving loop aborts and
+        // drains its owned tasks even when all connection slots were occupied.
+        // Retain a bounded fallback for a stuck serving task.
         let outcome = if tokio::time::timeout(Duration::from_secs(2), &mut self.task)
             .await
             .is_err()
         {
             self.task.abort();
+            let _ = (&mut self.task).await;
             ShutdownOutcome::Aborted
         } else {
             ShutdownOutcome::Stopped
@@ -1580,6 +1646,7 @@ mod listener_lifecycle_tests {
             &uds,
             9999,
             PodBrokerConfig {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
                 policy: policy(),
                 credentials: store("api.example.test", "v"),
@@ -1587,6 +1654,10 @@ mod listener_lifecycle_tests {
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
                 egress: serving_tests::test_egress_arc(),
                 stream_limits: crate::broker_stream::StreamLimits::DEFAULT,
+                staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                    crate::broker_stream::staging_budget::DEFAULT_BYTES,
+                )
+                .unwrap(),
             },
             None,
         )
@@ -1609,6 +1680,7 @@ mod listener_lifecycle_tests {
             &uds,
             9999,
             PodBrokerConfig {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
                 policy: policy(),
                 credentials: store("api.example.test", "v"),
@@ -1616,6 +1688,10 @@ mod listener_lifecycle_tests {
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
                 egress: serving_tests::test_egress_arc(),
                 stream_limits: crate::broker_stream::StreamLimits::DEFAULT,
+                staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                    crate::broker_stream::staging_budget::DEFAULT_BYTES,
+                )
+                .unwrap(),
             },
             None,
         )
@@ -1646,6 +1722,7 @@ mod listener_lifecycle_tests {
             &uds,
             9998,
             PodBrokerConfig {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),
                 policy: policy(),
                 credentials: store("api.example.test", "v"),
@@ -1653,6 +1730,10 @@ mod listener_lifecycle_tests {
                 broker_secret: Arc::new(TEST_SECRET.to_vec()),
                 egress: serving_tests::test_egress_arc(),
                 stream_limits: crate::broker_stream::StreamLimits::DEFAULT,
+                staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                    crate::broker_stream::staging_budget::DEFAULT_BYTES,
+                )
+                .unwrap(),
             },
             None,
         )
@@ -1777,6 +1858,7 @@ mod listener_tests {
         let server = tokio::spawn(serve_broker(
             listener,
             PodBroker {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: who(),
                 policy,
                 credentials,
@@ -1844,6 +1926,7 @@ mod listener_tests {
         let server = tokio::spawn(serve_broker(
             listener,
             PodBroker {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: who(),
                 policy: Arc::new(PermissionLattice::permissive()),
                 credentials: Arc::new(PodCredentials::static_only(s)),

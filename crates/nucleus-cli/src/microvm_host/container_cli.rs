@@ -47,6 +47,8 @@ pub enum Deadline {
     Exec,
     /// `container build` of the image or the kernel.
     Build,
+    /// Copy a selected workspace or build its filesystem image.
+    Workspace,
 }
 
 impl Deadline {
@@ -58,6 +60,7 @@ impl Deadline {
             Self::Lifecycle => Duration::from_secs(90),
             Self::Exec => Duration::from_secs(30),
             Self::Build => Duration::from_secs(60 * 60),
+            Self::Workspace => Duration::from_secs(10 * 60),
         }
     }
 }
@@ -211,7 +214,8 @@ impl RunSpec {
         let mut a: Vec<String> = vec![
             "run".into(),
             "--detach".into(),
-            "--init".into(),
+            // The image's run-node entrypoint prepares the cgroup as PID 1.
+            // A runtime-injected init would make that preparation refuse.
             "--name".into(),
             self.name.clone(),
             "--label".into(),
@@ -228,6 +232,10 @@ impl RunSpec {
         ];
         for cap in &self.caps {
             a.extend(["--cap-add".into(), cap.clone()]);
+        }
+        a.extend(["--read-only-path".into(), "NONE".into()]);
+        for path in nucleus_spec::microvm_host::HOST_READONLY_PATHS {
+            a.extend(["--read-only-path".into(), (*path).into()]);
         }
         for (src, dst) in &self.mounts {
             a.extend(["--volume".into(), format!("{src}:{dst}")]);
@@ -326,6 +334,21 @@ impl ContainerCli {
         let mut a = vec!["exec", c.name()];
         a.extend_from_slice(argv);
         self.call(&a, Deadline::Exec)
+    }
+
+    /// Copy an absolute local path into a checked host. No shell interprets paths.
+    pub fn copy_into(&self, c: &Owned, source: &str, destination: &str) -> Outcome {
+        self.call(
+            &["copy", source, &format!("{}:{destination}", c.name())],
+            Deadline::Workspace,
+        )
+    }
+
+    /// Filesystem construction can exceed the short observation deadline.
+    pub fn exec_workspace(&self, c: &Owned, argv: &[&str]) -> Outcome {
+        let mut a = vec!["exec", c.name()];
+        a.extend_from_slice(argv);
+        self.call(&a, Deadline::Workspace)
     }
 
     /// `container exec --detach <name> <argv…>`: start a process and return.
@@ -449,6 +472,7 @@ mod tests {
             publish: vec![(40001, 8080)],
             env_file: PathBuf::from("/s/node.env"),
         };
+        assert!(!spec.argv().iter().any(|arg| arg == "--init"));
         let argv = spec.argv().join(" ");
         for want in [
             "--virtualization",
@@ -459,10 +483,14 @@ mod tests {
             "--publish 127.0.0.1:40001:8080",
             "--label org.nucleus.microvm-host=nucleus-dev-microvm-host",
             "--env-file /s/node.env",
+            "--read-only-path NONE",
         ] {
             assert!(argv.contains(want), "{want} missing from {argv}");
         }
         assert!(argv.ends_with("nucleus-dev-microvm-host:local"));
+        for path in nucleus_spec::microvm_host::HOST_READONLY_PATHS {
+            assert!(argv.contains(&format!("--read-only-path {path}")));
+        }
         assert!(
             !argv.contains("0.0.0.0"),
             "a port was published beyond loopback"

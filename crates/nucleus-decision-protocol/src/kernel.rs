@@ -109,13 +109,12 @@ pub fn taint_report(graph: &FlowGraph) -> LabelRaise {
     })
 }
 
-/// The host's taint for one decision channel (owner decision D2).
+/// The host's taint for one pod, shared across decision channels (decision D2).
 ///
-/// One label, starting at the bottom of the lattice — in shadow mode the host
-/// has delivered nothing to the guest yet, so it has nothing of its own to
-/// taint with (P11's egress proxy is where host-delivered content arrives) —
-/// and moved only by [`HostTaint::raise`], which is the lattice join. There is
-/// no setter and no way to lower it.
+/// One label, starting at the bottom before observations. The host raises it
+/// before delivering broker responses, independently of guest reports; guest
+/// reports can raise it further. Every update uses [`HostTaint::raise`], the
+/// lattice join. There is no setter and no way to lower it.
 ///
 /// The kernel reads it through [`EgressAggregates`], the same trait it reads a
 /// `FlowGraph` through, so the host's verdict comes out of the same gate the

@@ -87,14 +87,14 @@ impl std::fmt::Display for TransportError {
 /// carry. `open` returns a `Result`, so discarding the call is still a warning.
 #[derive(Debug)]
 pub struct McpEndpoint {
-    mac_port: u16,
+    address: SocketAddr,
     _slot: File,
 }
 
 impl McpEndpoint {
     /// What the Mac-side `nucleus-mcp` should use as `NUCLEUS_MCP_PROXY_URL`.
     pub fn proxy_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.mac_port)
+        format!("http://{}", self.address)
     }
 
     /// The environment for a Mac-side `nucleus-mcp`.
@@ -138,7 +138,11 @@ pub fn open(
 ) -> Result<McpEndpoint, TransportError> {
     let target = proxy_target(proxy_addr)?;
     let (slot, (container_port, mac_port)) = claim_slot(host)?;
-    let argv = relay_argv(container_port, target);
+    let address = host.relay_address(container_port, mac_port);
+    let ready_file = format!("/srv/state/relay-{}.ready", uuid::Uuid::new_v4());
+    let expected = format!("0.0.0.0:{container_port}\n{target}\n");
+    let mut argv = relay_argv(container_port, target);
+    argv.extend(["--ready-file".into(), ready_file.clone()]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let out = cli.exec_detached(host.container(), &argv);
     if !out.succeeded() {
@@ -146,11 +150,29 @@ pub fn open(
     }
     let started = Instant::now();
     let mut last = String::new();
+    let mut bound = false;
     while started.elapsed() < ready {
-        match health_through(mac_port) {
+        if !bound {
+            let record = cli.exec(host.container(), &["/bin/cat", &ready_file]);
+            if record.stdout() == Some(expected.as_str()) {
+                let removed = cli.exec(host.container(), &["/bin/rm", "--", &ready_file]);
+                if !removed.succeeded() {
+                    return Err(TransportError::RelayStart(removed.describe()));
+                }
+                bound = true;
+            } else {
+                last = format!(
+                    "new relay has not acknowledged its listener: {}",
+                    record.describe()
+                );
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+        }
+        match health_through(address) {
             Ok(()) => {
                 return Ok(McpEndpoint {
-                    mac_port,
+                    address,
                     _slot: slot,
                 });
             }
@@ -179,8 +201,7 @@ fn claim_slot(host: &MicroVmHost) -> Result<(File, (u16, u16)), TransportError> 
 
 /// One `GET /v1/health` through the relay. HTTP/1.0 and a raw socket, so
 /// there is no client library between the check and the bytes.
-fn health_through(mac_port: u16) -> Result<(), String> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], mac_port));
+fn health_through(addr: SocketAddr) -> Result<(), String> {
     let mut s =
         TcpStream::connect_timeout(&addr, Duration::from_secs(2)).map_err(|e| e.to_string())?;
     s.set_read_timeout(Some(Duration::from_secs(5)))
@@ -247,13 +268,19 @@ mod tests {
 
     #[test]
     fn health_passes_only_on_200() {
-        assert_eq!(health_through(one_shot_server("200 OK")), Ok(()));
-        assert!(health_through(one_shot_server("503 Service Unavailable")).is_err());
+        assert_eq!(
+            health_through(([127, 0, 0, 1], one_shot_server("200 OK")).into()),
+            Ok(())
+        );
+        assert!(
+            health_through(([127, 0, 0, 1], one_shot_server("503 Service Unavailable")).into())
+                .is_err()
+        );
         let closed = TcpListener::bind("127.0.0.1:0")
             .expect("bind")
             .local_addr()
             .expect("addr")
             .port();
-        assert!(health_through(closed).is_err());
+        assert!(health_through(([127, 0, 0, 1], closed).into()).is_err());
     }
 }

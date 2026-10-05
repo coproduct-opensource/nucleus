@@ -300,9 +300,9 @@ pub async fn write_exit_report(
     });
     let is_signed = signed.is_some();
     let json = match signed {
-        // Signed whenever the pod has a mediation key — every node-launched
-        // microVM does. See `nucleus_spec::exit_report_auth` for why the node
-        // refuses an unsigned report on that path.
+        // Legacy/custom environments may still supply a guest signing key.
+        // New nodes supply none. Both shapes remain guest-reported data; the
+        // node never treats this signature as independent host measurement.
         Some(Ok(signed)) => serde_json::to_string_pretty(&signed),
         Some(Err(e)) => {
             warn!("failed to sign exit report: {e}");

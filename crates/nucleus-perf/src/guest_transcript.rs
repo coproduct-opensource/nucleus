@@ -300,6 +300,9 @@ fn forge_outcome(pod_receipt: &Result<Value, String>) -> (String, bool) {
             format!("NOT CHECKED: no pod receipt was produced ({e})"),
             false,
         ),
+        Ok(v) if v.get("report_provenance").and_then(Value::as_str) == Some("guest_reported") => (
+            "NOT CHECKED: receipt contains explicitly guest-reported claims, not independent outcome evidence".into(), false,
+        ),
         Ok(v) if v.get("workspace_hash").and_then(Value::as_str) == Some("forged-by-the-guest") => {
             (
                 "VIOLATED: the node's signed pod receipt repeats the guest-written workspace_hash"
@@ -359,7 +362,7 @@ fn finish(
     pod_receipt: Result<Value, String>,
 ) -> Result<Run> {
     let pod_dir = a.state_dir.join("pods").join(&id);
-    let collected = pod_dir.join("collected-receipts.jsonl");
+    let collected = pod_dir.join("guest-mediation-claims.jsonl");
     let receipts_shipped = std::fs::read_to_string(&collected)
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
@@ -747,6 +750,18 @@ mod tests {
     }
 
     #[test]
+    fn guest_reported_hashes_do_not_establish_an_execution_outcome() {
+        for hash in ["forged-by-the-guest", "real"] {
+            let (outcome, violated) = forge_outcome(&Ok(serde_json::json!({
+                "workspace_hash": hash,
+                "report_provenance": "guest_reported"
+            })));
+            assert!(outcome.starts_with("NOT CHECKED"), "{outcome}");
+            assert!(!violated);
+        }
+    }
+
+    #[test]
     fn the_forge_run_has_four_outcomes() {
         let (o, v) = forge_outcome(&Err("exit report is not the supervisor's".into()));
         assert!(o.starts_with("held") && !v, "{o}");
@@ -810,7 +825,8 @@ mod tests {
         let id = "pod-1234";
         let pod_dir = dir.join("pods").join(id);
         std::fs::create_dir_all(&pod_dir).expect("pod dir");
-        std::fs::write(pod_dir.join("collected-receipts.jsonl"), "{}\n\n{}\n").expect("receipts");
+        std::fs::write(pod_dir.join("guest-mediation-claims.jsonl"), "{}\n\n{}\n")
+            .expect("receipts");
         let log = dir.join("node.log");
         std::fs::write(
             &log,

@@ -420,11 +420,6 @@ pub struct PodMaterial {
     /// and minted for this pod's resolved sink rather than the node's own (#3160).
     /// `None` when the pod has no audit sink or the node holds no credentials.
     pub audit_creds: Option<AuditCredentials>,
-    /// The per-pod ed25519 signing seed (64 hex chars) the tool-proxy signs
-    /// `MediationReceipt`s with, and the mediator SPIFFE id they carry. `None`
-    /// when receipts are not provisioned for this pod. Served ONCE, before the
-    /// workload exists — the broker secret's discipline — because possession lets
-    /// the holder sign receipts as this mediator.
     /// The spec naming what this pod runs, served over vsock instead of baked
     /// into the rootfs.
     ///
@@ -432,10 +427,6 @@ pub struct PodMaterial {
     /// image carries — which is the behaviour every pod has today, so a node
     /// that never sets this is unchanged.
     pub pod_spec_yaml: Option<String>,
-    pub mediation_signing_key: Option<String>,
-    /// The mediator SPIFFE id carried in emitted receipts. `None` disables the
-    /// signer even if a key is present.
-    pub mediation_spiffe_id: Option<String>,
     /// Whether the guest has announced it is at its snapshot barrier — booted, and having asked
     /// for nothing that would make it one pod.
     ///
@@ -830,23 +821,10 @@ fn handle_fetch_broker_secret(secret: Option<&str>, port: u32, served: &ServedLe
         .to_string())
 }
 
-/// Serve the per-pod mediation signing key exactly once, before the workload
-/// exists. Same discipline as [`handle_fetch_broker_secret`]: the key value is
-/// never logged, and a second request is refused (a workload trying to obtain
-/// the mediator's receipt-signing key). Both the key and the SPIFFE id must be
-/// present, or the signer stays off.
-fn handle_fetch_mediation_key(
-    signing_key: Option<&str>,
-    spiffe_id: Option<&str>,
-    served: &ServedLedger,
-) -> Reply {
-    let (Some(signing_key), Some(spiffe_id)) = (signing_key, spiffe_id) else {
-        return Err(Refusal::NotProvisioned(Material::MediationKey));
-    };
-    let claimed = served.claim(OneShot::MediationKey)?;
-    Ok(claimed
-        .release(serde_json::json!({ "signing_key": signing_key, "spiffe_id": spiffe_id }))
-        .to_string())
+/// Legacy guests may still ask, but no signing seed is representable in
+/// PodMaterial. Authorization signing stays on the host.
+fn handle_fetch_mediation_key() -> Reply {
+    Err(Refusal::NotProvisioned(Material::MediationKey))
 }
 
 /// Handle `FETCH_POD_SPEC`: the command this pod is to run.
@@ -884,15 +862,18 @@ where
             return Err(Refusal::ReceiptBodyUnreadable);
         }
     };
-    // The body is opaque here: its Ed25519 signature is verified later by
-    // `nucleus-audit verify-mediation-receipts`, not re-implemented on the hot path.
+    // Opaque guest testimony, never a host authorization. Its signature cannot
+    // prove a host decision even when it verifies under a guest's key.
     let line = String::from_utf8_lossy(&body);
     match crate::mediation_receipt_collector::append_receipt(dir, line.trim_end()).await {
-        Ok(kept) => receipt_collected(
-            kept,
-            &crate::mediation_receipt_collector::receipt_log_path(dir),
-            line.trim_end(),
-        ),
+        Ok(kept) => {
+            receipt_collected(
+                kept,
+                &crate::mediation_receipt_collector::receipt_log_path(dir),
+                line.trim_end(),
+            )?;
+            Ok(r#"{"status":"collected","report_provenance":"guest_reported"}"#.into())
+        }
         Err(e) => {
             tracing::error!(error = %e, "could not collect a shipped MediationReceipt");
             Err(Refusal::ReceiptStorageFailed)
@@ -1212,13 +1193,9 @@ where
             handle_fetch_audit_credentials(material.audit_creds.as_ref(), &material.served)
         }
         Ok(WorkloadApiCommand::FetchMediationKey) => {
-            // Like the broker secret: the signing key value is never logged.
+            // Retired: the material cannot carry a signing seed.
             debug!("workload API FETCH_MEDIATION_KEY for pod {}", pod_id);
-            handle_fetch_mediation_key(
-                material.mediation_signing_key.as_deref(),
-                material.mediation_spiffe_id.as_deref(),
-                &material.served,
-            )
+            handle_fetch_mediation_key()
         }
         Ok(WorkloadApiCommand::FetchPodSpec) => {
             // Not a secret and not once-only: it is this pod's own command,
@@ -2112,55 +2089,15 @@ mod tests {
         );
     }
 
-    /// The mediation signing key is served exactly once and never leaked in a
-    /// refusal — a workload that races for the mediator's receipt-signing key
-    /// after the proxy has it gets nothing.
     #[test]
-    fn the_mediation_key_is_served_exactly_once() {
-        let served = ServedLedger::new();
-        let first = wire(&handle_fetch_mediation_key(
-            Some("deadbeef"),
-            Some("spiffe://td/mediator/p"),
-            &served,
-        ));
-        let v: serde_json::Value = serde_json::from_str(&first).unwrap();
-        assert_eq!(
-            v["signing_key"], "deadbeef",
-            "the first request must be served"
-        );
-        assert_eq!(v["spiffe_id"], "spiffe://td/mediator/p");
-
-        let second = wire(&handle_fetch_mediation_key(
-            Some("deadbeef"),
-            Some("spiffe://td/mediator/p"),
-            &served,
-        ));
-        assert!(
-            second.contains("already served"),
-            "a second request must be refused: {second}"
-        );
-        assert!(
-            !second.contains("deadbeef"),
-            "and must not leak the key in the refusal: {second}"
-        );
-    }
-
-    /// With no key (or no SPIFFE id), the signer stays off — an error, never a
-    /// partial reply — and the one-shot flag is NOT spent, so a real provision
-    /// later can still be served.
-    #[test]
-    fn the_mediation_key_is_withheld_when_unprovisioned() {
-        let served = ServedLedger::new();
-        let none = wire(&handle_fetch_mediation_key(
-            None,
-            Some("spiffe://td/x"),
-            &served,
-        ));
-        assert!(none.contains("error"), "no key ⇒ error: {none}");
-        assert!(
-            !served.is_served(OneShot::MediationKey),
-            "the not-provisioned path must not spend the one-shot"
-        );
+    fn mediation_keys_are_never_served_including_the_first_request() {
+        for _ in 0..3 {
+            let reply = wire(&handle_fetch_mediation_key());
+            let value: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert!(value.get("error").is_some());
+            assert!(value.get("signing_key").is_none());
+            assert!(value.get("spiffe_id").is_none());
+        }
     }
 
     /// **The port travels with the secret.** A proxy given one and not the other

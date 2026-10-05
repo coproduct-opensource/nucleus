@@ -101,8 +101,11 @@ FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a7
 # The same host packages the Lima template installs (scripts/lima/
 # nucleus-aarch64.yaml), plus curl/openssl so the spike harness can talk mTLS
 # to the node from inside the container.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl dnsmasq e2fsprogs iproute2 iptables openssl procps \
+# Workspace seeds use mke2fs tar input, absent from bookworm's 1.47.0.
+# libarchive is loaded at runtime and is not a hard e2fsprogs dependency.
+RUN printf 'deb http://deb.debian.org/debian bookworm-backports main\n' > /etc/apt/sources.list.d/nucleus-backports.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl dnsmasq e2fsprogs=1.47.2-3~bpo12+1 libext2fs2=1.47.2-3~bpo12+1 libarchive13 iproute2 iptables openssl procps \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=artifacts /out/bin/ /usr/local/bin/
@@ -131,4 +134,6 @@ ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080 \
     RUST_LOG=info
 
 EXPOSE 8080
-ENTRYPOINT ["/usr/local/bin/nucleus-node"]
+# Move PID 1 into a leaf before the jailer enables domain controllers. Future
+# children inherit the leaf; no other container/host process is moved.
+ENTRYPOINT ["/usr/local/bin/nucleus-hostctl", "run-node"]

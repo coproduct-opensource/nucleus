@@ -203,6 +203,157 @@ digest. It alone constructs the private, deadline-bound `VerifiedArtifacts`.
 Checking just the receipt cannot construct that witness. It proves the captured
 bytes, not that the build passed: the observed exit remains part of the claim.
 
+The operator CLI exposes these APIs using the provisioned mTLS identity:
+
+```sh
+nucleus node workload <pod-uuid> result
+nucleus node workload <pod-uuid> logs stdout --output workload.stdout
+nucleus node workload <pod-uuid> logs stderr --output workload.stderr
+nucleus node workload <pod-uuid> collect --output execution-receipt.json
+nucleus node workload <pod-uuid> collect --artifacts outputs.json --output execution-bundle.json
+nucleus node workload <pod-uuid> collect --wait-secs 600 --output execution-receipt.json
+nucleus node workload <pod-uuid> collect --wait-secs 600 \
+  --output execution-receipt.json --logs-dir raw-logs
+```
+
+`outputs.json` is the selection object itself, for example
+`{"patch":"changes.patch","tests":"test-results.json"}`. These names and paths
+must already appear in the launched spec's `workload.artifacts`. Collect while
+the pod's proxy is available, before cancelling the pod. Without `--artifacts`,
+the output is the signed receipt; with it, the output is the node's JSON bundle
+containing `receipt` and base64 `artifacts`. Collection exports evidence; it does
+not perform independent signature or execution-policy verification.
+
+`--logs-dir` additionally fetches both raw streams before publishing the receipt
+file. It creates a new private directory containing `stdout.bin` and `stderr.bin`,
+including empty files for empty streams. It works with or without `--artifacts`.
+An unavailable log or a filesystem failure returns an error and leaves the pod
+available for inspection. Existing files/directories are never overwritten; a
+partial filesystem write reports the directory to inspect. Independently verify
+the saved bytes with `nucleus-audit verify-logs`; when collecting artifacts,
+extract the bundle's `receipt` field for that command and separately verify the
+artifact bundle with `verify-artifacts`.
+
+`--wait-secs` polls the authenticated workload result once per second until it
+reports completion, up to the chosen limit (1–86400 seconds). That deadline
+includes observation requests; the subsequent receipt/artifact request uses its
+normal request timeout. No workload, an unavailable observation, or a failed
+request returns an error immediately. A timeout leaves the pod running so the
+operator can inspect it or collect later. Completed failed or signalled workloads
+can still have useful evidence: waiting does not turn their exit status into
+success. Without this flag, collection remains an immediate request. Neither
+mode cancels the pod, and neither can manufacture an execution receipt for a
+host-side agent run without a supervised guest workload.
+
+Logs are saved as exact bytes instead of being interpreted as terminal output.
+Output files are published only after writing succeeds and never replace an
+existing file. A running workload, unavailable logs, or a failed artifact read
+surfaces the node's error with a failing CLI exit status. `result` reports the
+workload state as JSON; a completed workload's nonzero exit code is data in that
+observation, separate from whether the CLI request succeeded.
+
+Verify exported evidence with the shared execution verifier:
+
+First save the host's admission inventory over the authenticated node connection:
+
+```sh
+nucleus node workload "$POD_ID" admission --output admitted.json
+```
+
+This reads the host's effective program digest, source labels, declared artifact
+paths, architecture, session and public executor key without contacting the
+workload or reading its receipt. Admission can replace a requested profile with
+an effective inline policy, so hashing the original request is not sufficient.
+The export contains no workload environment values or private signing material.
+Its trust comes from the authenticated node connection, not the JSON file itself;
+compare the public key with an existing controller pin when one is configured.
+
+Retain this record separately from collected evidence. Prepare expectations offline
+using a node public key enrolled through a trusted channel, separate from the
+receipt supplier:
+
+On a trusted host, export only the public half of its existing executor key:
+
+```sh
+nucleus-hostctl public-key /srv/state/executor_signing_key.der
+```
+
+For the Apple Container host, run that command with
+`container exec nucleus-microvm-host nucleus-hostctl public-key /srv/state/executor_signing_key.der`.
+Save the resulting 64-character hex value through your trusted enrollment channel.
+The command reads the node's PKCS#8 encoding without creating or rotating a key;
+the private key stays on the host. Enrollment trusts that host and access channel,
+and does not establish external platform attestation. Use the enrolled value below:
+
+```sh
+nucleus-audit prepare-execution \
+  --admission admitted.json \
+  --signer-key-hex ENROLLED_64_HEX_CHARACTER_PUBLIC_KEY \
+  --environment-inputs intended-environment.json \
+  --valid-until-micros CONTROLLER_DEADLINE_UNIX_MICROSECONDS > expected.json
+```
+
+The environment file is a JSON object mapping names to intended values. Include
+all effective inputs: explicitly pin `HOME`, `PATH`, `LANG` and `TZ` in the
+workload spec to avoid inherited defaults, and include any configured egress
+forwarder bindings. Omit `NUCLEUS_TOOL_PROXY_URL` and
+`NUCLEUS_TOOL_PROXY_AUTH_SECRET`, which are per-attempt mediator bindings rather
+than inputs. For a workload with no other inputs, a pinned example is:
+
+```json
+{"HOME":"/work/.home","PATH":"/usr/bin:/bin","LANG":"C","TZ":"UTC"}
+```
+
+Use the same values in `spec.workload.env`. Preparation commits these inputs to a
+hash; it never reads the receipt or emits the environment values. Keep any secret
+input file private. The command checks the admission signer against the supplied
+pin and derives the window's lower bound from the admission timestamp. Choose a
+future deadline that covers both receipt issuance and verification consumption;
+preparation refuses an expired deadline. Admission metadata does not establish
+execution success or choose the controller's freshness policy.
+
+By default, preparation selects no artifacts for receipt-only verification. For a
+bundle, pass `--artifacts selected-artifacts.json`, using the same name/path map
+as collection; every selected entry must match the admission record. The original
+admission file remains unchanged. Controllers can also supply `RecordedExecution`
+JSON directly when they need a different lower bound or already retain all these
+inputs in their attempt store.
+
+```sh
+nucleus-audit verify-execution --receipt execution-receipt.json --expectations expected.json
+nucleus-audit verify-artifacts --bundle execution-bundle.json --expectations expected.json
+nucleus-audit verify-artifacts --bundle execution-bundle.json --expectations expected.json \
+  --output-dir verified-files
+```
+
+`--output-dir` saves the verified bytes in a new directory, using artifact names
+as filenames. For the selection `{"patch":"changes.patch"}`, the output is
+`verified-files/patch`; the guest's workspace path does not select a local
+destination. The directory must not already exist and its parent must exist.
+On Unix it is private (0700), with non-executable files (0600). Verification and
+the witness's deadline check happen before creating it. An I/O failure returns
+an error and may leave partial files in the named directory; no existing
+directory or file is overwritten. The JSON report names the export directory
+only after all writes succeed. Keep the original bundle and independently
+supplied expectations for later verification; exported files alone are not
+signed evidence. A verified nonzero workload exit remains a nonzero exit in the
+report, even when its artifacts are exported successfully.
+
+`expected.json` uses the existing `RecordedExecution` schema from
+`nucleus-ci-verdict::execution`: pod ID, source commit/tree, gate, program digest,
+architecture, environment-input digest, selected artifact name/path map, session
+ID, issuer key ID, the pinned 32-byte public key as a JSON byte array, and the
+issuance window in Unix microseconds. Obtain these expectations from the trusted
+admission/controller record; copying them from the supplied receipt would not
+establish the intended run or signer. The verifier checks the issuance window
+and requires its deadline to remain valid when verification completes.
+
+The JSON report includes the authenticated execution claim and its observed exit
+code. `artifact_bytes_verified` is the number of verified artifacts for a bundle
+and null for receipt-only verification. A zero verifier exit status authenticates
+the evidence; it does not mean the workload's tests passed. This verifier requires
+protected Firecracker execution and refuses local/container execution receipts.
+
 Live mTLS/local-driver evidence: binary output containing NUL and invalid UTF-8
 survived collection unchanged. OpenSSL independently verified the host signature,
 and independently computed size/hash matched the signed descriptor. Symlink

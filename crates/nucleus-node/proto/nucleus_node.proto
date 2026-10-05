@@ -94,8 +94,8 @@ message GetPodResponse {
   PodInfo pod = 1;
 }
 
-// Execution receipt — cryptographic proof of pod execution outcome.
-// Built from the tool-proxy's exit report plus node-level metadata.
+// Node-signed receipt of an exit report plus node-level metadata.
+// A node signature does not establish the truth of guest-reported content.
 message ExecutionReceipt {
   // === v1.0 FROZEN fields (field numbers 1-8) ===
   string pod_id = 1;
@@ -108,7 +108,8 @@ message ExecutionReceipt {
   string spiffe_id = 8;
   // === v1.0 versioning extension ===
   // Schema version (1 for v1.0). Verifiers that don't understand
-  // version N can still verify v1_content_hash over fields 1-8.
+  // version N can still recompute v1_content_hash. That hash alone authenticates
+  // neither the receipt nor the truth of its report-derived claims.
   uint32 version = 9;
   // SHA-256 of canonical v1 fields — verifiable by v1-only verifiers
   string v1_content_hash = 10;
@@ -138,6 +139,10 @@ message ExecutionReceipt {
   // The root public key that made it, hex, so a relying party can verify
   // without asking the signer.
   string signer_pubkey = 17;
+  // v2: signed provenance of report-derived hashes, counts, usage and time.
+  // "guest_reported" is not independent host measurement; an absent value in
+  // older receipts is unspecified, never implicitly host-observed.
+  string report_provenance = 18;
 }
 
 message GetReceiptRequest {

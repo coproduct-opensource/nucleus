@@ -1,6 +1,4 @@
-//! Setup command - one-line macOS setup for Nucleus
-//!
-//! Provisions a Lima VM with Firecracker, downloads artifacts, and generates secrets.
+//! Configure an Apple host or provision the legacy Lima/Linux installation.
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
@@ -12,9 +10,14 @@ use crate::config;
 use crate::keychain::{self, SecretKind, SecretStore};
 use crate::provision::{self, ArtifactSource, Tier2Host};
 
-/// Set up nucleus environment (Lima VM, artifacts, secrets)
+mod apple_host;
+
+/// Set up the selected nucleus host
 #[derive(Args, Debug)]
 pub struct SetupArgs {
+    /// Configure an Apple Container host from JSON instead of provisioning Lima
+    #[arg(long, conflicts_with_all = ["force", "skip_vm", "vm_name", "vm_cpus", "vm_memory_gib", "vm_disk_gib", "rotate_secrets", "skip_artifacts", "install_deps", "artifacts"])]
+    pub apple_host_config: Option<PathBuf>,
     /// Force re-setup even if already configured
     #[arg(long)]
     pub force: bool,
@@ -175,7 +178,15 @@ impl MacOSVersion {
 }
 
 /// Execute the setup command
-pub async fn execute(args: SetupArgs) -> Result<()> {
+pub async fn execute(args: SetupArgs, config_path: &str) -> Result<()> {
+    let configured = config::Config::load(config_path)?;
+    if let Some(path) = args
+        .apple_host_config
+        .as_ref()
+        .or(configured.node.apple_host_config.as_ref())
+    {
+        return apple_host::execute(&args, path, config_path).await;
+    }
     println!("Nucleus Setup");
     println!("=============\n");
 

@@ -64,6 +64,9 @@ pub const UPSTREAM_IDLE: std::time::Duration = std::time::Duration::from_secs(30
 pub const GUEST_REPLY_WAIT: std::time::Duration =
     std::time::Duration::from_secs(UPSTREAM_IDLE.as_secs() + 30);
 
+/// Maximum optional pause for operator approval before credentials or dispatch.
+pub const MAX_APPROVAL_WAIT_SECONDS: u64 = 120;
+
 /// How long the guest waits for the head, from the open frame: the upload and
 /// the upstream's first answer together. Finite, so a host that never answers
 /// cannot hold a workload's call forever.

@@ -161,6 +161,9 @@ fn default_true() -> bool {
 /// nucleus-node configuration
 #[derive(Debug, Serialize, Deserialize)]
 pub struct NodeConfig {
+    /// Default Apple host configuration; explicit connection flags override it
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apple_host_config: Option<PathBuf>,
     /// nucleus-node HTTP endpoint
     #[serde(default = "default_node_url")]
     pub url: String,
@@ -177,6 +180,7 @@ pub struct NodeConfig {
 impl Default for NodeConfig {
     fn default() -> Self {
         Self {
+            apple_host_config: None,
             url: default_node_url(),
             grpc_url: None,
             actor: default_actor(),
@@ -187,8 +191,9 @@ impl Default for NodeConfig {
 fn default_node_url() -> String {
     // https:// since Move B: the node's HTTP listener requires mTLS
     // unconditionally, with no plaintext/HMAC fallback left.
-    "https://127.0.0.1:8080".to_string()
+    DEFAULT_NODE_URL.to_string()
 }
+pub(crate) const DEFAULT_NODE_URL: &str = "https://127.0.0.1:8080";
 fn default_actor() -> String {
     "nucleus-cli".to_string()
 }
@@ -284,7 +289,15 @@ impl Config {
         }
 
         let content = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+        if let Some(host) = &mut config.node.apple_host_config {
+            if host.is_relative() {
+                *host = std::path::absolute(path)?
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(&*host);
+            }
+        }
         Ok(config)
     }
 
@@ -353,6 +366,9 @@ pub fn show(config_path: &str) -> Result<()> {
     println!();
 
     println!("[node]");
+    if let Some(host) = &config.node.apple_host_config {
+        println!("  apple_host_config = {}", serde_json::to_string(host)?);
+    }
     println!("  url = \"{}\"", config.node.url);
     if let Some(grpc) = &config.node.grpc_url {
         println!("  grpc_url = \"{}\"", grpc);
@@ -388,6 +404,23 @@ pub fn show(config_path: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn saved_host_path_resolves_beside_the_global_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        std::fs::write(&path, "[node]\napple_host_config = 'host.json'\n").unwrap();
+        let config = Config::load(path.to_str().unwrap()).unwrap();
+        assert_eq!(
+            config.node.apple_host_config,
+            Some(temp.path().join("host.json"))
+        );
+        assert_eq!(config.node.url, super::DEFAULT_NODE_URL);
+        assert!(!temp.path().join("host.json").exists());
+        let old: Config = toml::from_str("[node]\nurl = 'https://old.example:8080'\n").unwrap();
+        assert!(old.node.apple_host_config.is_none());
+        assert_eq!(old.node.url, "https://old.example:8080");
+    }
 
     /// Every artifact the default config NAMES must be one `nucleus setup`
     /// actually installs.

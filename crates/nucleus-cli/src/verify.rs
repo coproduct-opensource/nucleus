@@ -16,7 +16,11 @@
 //! fetched and never handed to the proxy, and a health budget set before the
 //! guest did host round-trips. Every one needed a pod that boots.
 //!
-//! # What is asserted, and why each one
+//! Apple hosts use the shared setup workload verifier: authenticated admission,
+//! signed Firecracker/UID-isolation evidence, exit status and exact fresh output.
+//! The legacy Linux/Lima checks below cover a different conformance surface.
+//!
+//! # What the legacy checks assert, and why each one
 //!
 //! 1. The pod is created at all — `POST /v1/pods` returns 200 with a proxy.
 //! 2. A permitted command runs **inside the microVM** and reports Linux.
@@ -51,13 +55,20 @@ use crate::provision::{
 /// Verify that Tier 2 actually works on this machine.
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
+    /// Verify a signed, supervised workload on this machine's installed node.
+    /// Requires a node configured to enforce its host-supplied PodSpec.
+    #[arg(long, requires_all = ["tier2", "here"], conflicts_with_all = ["apple_host_config", "vm_name", "pins"])]
+    pub execution: bool,
+    /// Verify a supervised Firecracker workload on the selected Apple host
+    #[arg(long, requires = "tier2", conflicts_with_all = ["here", "vm_name", "pins"])]
+    pub apple_host_config: Option<std::path::PathBuf>,
     /// Boot a real nucleus pod and assert what the guest did.
     #[arg(long)]
     pub tier2: bool,
 
     /// Lima VM to verify through (macOS). Ignored on Linux.
-    #[arg(long, default_value = "nucleus")]
-    pub vm_name: String,
+    #[arg(long)]
+    pub vm_name: Option<String>,
 
     /// Run the checks on this machine rather than delegating into a VM.
     ///
@@ -148,18 +159,53 @@ fn mint_admission() -> Result<AdmissionMaterial> {
     })
 }
 
-pub async fn execute(args: VerifyArgs) -> Result<()> {
+pub async fn execute(args: VerifyArgs, config_path: &str) -> Result<()> {
     if args.pins {
         return print_pins();
     }
     if !args.tier2 {
         bail!("nothing to verify; did you mean `nucleus verify --tier2`?");
     }
+    if args.execution {
+        let manifest =
+            tokio::task::spawn_blocking(crate::workload_verification::Manifest::installed)
+                .await??;
+        let report =
+            crate::workload_verification::verify(mtls_client()?, NODE_URL, manifest).await?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    let configured = crate::config::Config::load(config_path)?;
+    if let Some(path) = apple_selection(&args, &configured) {
+        let host = crate::microvm_host::settings::ready(path).await?;
+        let report = crate::microvm_host::verification::verify(&host).await?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "backend":"apple-container", "workload_verification":report,
+            }))?
+        );
+        return Ok(());
+    }
     if args.here || cfg!(target_os = "linux") {
         verify_here().await
     } else {
-        verify_tier2(&Tier2Host::Lima(args.vm_name.clone()), &args.vm_name).await
+        let vm = args.vm_name.as_deref().unwrap_or("nucleus");
+        verify_tier2(&Tier2Host::Lima(vm.into()), vm).await
     }
+}
+
+fn apple_selection<'a>(
+    args: &'a VerifyArgs,
+    config: &'a crate::config::Config,
+) -> Option<&'a std::path::Path> {
+    args.apple_host_config.as_deref().or_else(|| {
+        if args.here || args.vm_name.is_some() {
+            None
+        } else {
+            config.node.apple_host_config.as_deref()
+        }
+    })
 }
 
 /// Emit the pin manifest, so CI checks the same constants the installer uses.
@@ -1172,6 +1218,46 @@ fn check_guest_facts(host: &Tier2Host, pod: &Pod) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apple_selection_respects_explicit_host_choices() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: VerifyArgs,
+        }
+        let mut config = crate::config::Config::default();
+        config.node.apple_host_config = Some("saved.json".into());
+        for (flags, expected) in [
+            (vec!["--tier2"], Some("saved.json")),
+            (vec!["--tier2", "--here"], None),
+            (vec!["--tier2", "--vm-name", "other"], None),
+            (
+                vec!["--tier2", "--apple-host-config", "explicit.json"],
+                Some("explicit.json"),
+            ),
+        ] {
+            let args = Parse::try_parse_from(std::iter::once("verify").chain(flags))
+                .unwrap()
+                .args;
+            assert_eq!(
+                apple_selection(&args, &config),
+                expected.map(std::path::Path::new)
+            );
+        }
+        for extra in [
+            vec![],
+            vec!["--tier2", "--here"],
+            vec!["--tier2", "--vm-name", "other"],
+            vec!["--tier2", "--pins"],
+        ] {
+            let input = ["verify", "--apple-host-config", "explicit.json"]
+                .into_iter()
+                .chain(extra);
+            assert!(Parse::try_parse_from(input).is_err());
+        }
+    }
 
     /// The forbidden read must be denied by a PATH rule, and matched by more
     /// than one, so a single rule changing does not silently turn this check

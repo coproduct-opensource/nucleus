@@ -152,13 +152,18 @@ impl Tier2Host {
                 if !status.success() {
                     bail!("limactl copy of {} into {vm} failed", local.display());
                 }
-                self.sh(&put_script(remote, &staged, &tmp, mode))?;
+                self.sh(&put_script(
+                    remote,
+                    &staged,
+                    InstallSource::Temporary(&tmp),
+                    mode,
+                ))?;
             }
             Self::Local => {
                 self.sh(&put_script(
                     remote,
                     &staged,
-                    &local.display().to_string(),
+                    InstallSource::Borrowed(&local.display().to_string()),
                     mode,
                 ))?;
             }
@@ -174,6 +179,13 @@ impl Tier2Host {
     }
 }
 
+/// Cleanup authority belongs only to a temporary copy created for transport.
+/// Local build outputs and cached downloads are borrowed installer inputs.
+enum InstallSource<'a> {
+    Borrowed(&'a str),
+    Temporary(&'a str),
+}
+
 /// The root shell that lands a staged file at its destination.
 ///
 /// Pure, so the one case that bit can be tested without a VM: when `remote` is
@@ -187,12 +199,17 @@ impl Tier2Host {
 /// file whose final mode is `0600` (a private key) is never briefly readable at
 /// the root umask's `0644` between `cp` and `chmod`. The umask is scoped to the
 /// `cp` so directories `mkdir -p` creates keep their ordinary mode.
-fn put_script(remote: &str, staged: &str, source: &str, mode: &str) -> String {
-    // Only clean up a source that is not the destination.
-    let cleanup = if source == remote {
-        String::new()
-    } else {
-        format!("\n                     rm -f {source}")
+fn put_script(remote: &str, staged: &str, source: InstallSource<'_>, mode: &str) -> String {
+    let (source, cleanup) = match source {
+        InstallSource::Borrowed(path) => (path, String::new()),
+        InstallSource::Temporary(path) => (
+            path,
+            if path == remote {
+                String::new()
+            } else {
+                format!("\n                     rm -f {path}")
+            },
+        ),
     };
     format!(
         "set -e
@@ -886,7 +903,12 @@ pub fn mtls_client_if_provisioned() -> Result<Option<reqwest::Client>> {
 }
 
 pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
-    let tls = provisioned_node_tls()?;
+    mtls_client_from_identity_dir(&crate::config::Config::identity_dir()?)
+}
+
+/// Load an explicitly selected node identity without default-directory fallback.
+pub(crate) fn mtls_client_from_identity_dir(dir: &Path) -> Result<reqwest::Client> {
+    let tls = node_tls_from_pems(read_identity_pems_in(dir)?)?;
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .tls_backend_preconfigured(tls)
@@ -1001,7 +1023,7 @@ const CLI_IDENTITY_RENEW_WITHIN_DAYS: i64 = 30;
 /// `ca`'s root, and the leaf has more than [`CLI_IDENTITY_RENEW_WITHIN_DAYS`]
 /// left. `Err` says why not, and the caller mints — the only thing a wrong
 /// answer here costs is a fresh identity.
-fn reusable_cli_identity(
+pub(crate) fn reusable_cli_identity(
     ca: &nucleus_identity::SelfSignedCa,
     trust_domain: &str,
     dir: &Path,
@@ -1313,29 +1335,39 @@ pub(crate) async fn mint_cli_identity(
         trust_bundle: trust_bundle_path,
     } = MtlsIdentityPaths::in_dir(identity_dir);
 
-    std::fs::write(&cli_cert, cert.chain_pem())
-        .with_context(|| format!("failed to write {}", cli_cert.display()))?;
-    std::fs::write(&cli_key, cert.private_key_pem())
-        .with_context(|| format!("failed to write {}", cli_key.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cli_key, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to restrict permissions on {}", cli_key.display()))?;
-    }
+    atomic_identity_file(&cli_cert, cert.chain_pem().as_bytes())?;
+    atomic_identity_file(&cli_key, cert.private_key_pem().as_bytes())?;
 
     // The trust bundle IS the CA's own root cert — a single-entry bundle
     // today, written as one because `--trust-bundle` accepts a concatenated
     // PEM bundle in general (matching tool-proxy/node's own `--trust-bundle`
     // convention), not because this CA ever issues more than one root.
-    std::fs::write(&trust_bundle_path, ca.root_cert_pem())
-        .with_context(|| format!("failed to write {}", trust_bundle_path.display()))?;
+    atomic_identity_file(&trust_bundle_path, ca.root_cert_pem().as_bytes())?;
 
     Ok(MtlsIdentityPaths {
         cli_cert,
         cli_key,
         trust_bundle: trust_bundle_path,
     })
+}
+
+/// Publish one complete identity file from an owner-only temporary file.
+/// Renewal is per-file atomic, not a transaction across the three files; a
+/// partial set is revalidated and renewed by the next setup/host-up invocation.
+fn atomic_identity_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let directory = path
+        .parent()
+        .context("identity file has no parent directory")?;
+    let mut staged = tempfile::NamedTempFile::new_in(directory)
+        .with_context(|| format!("staging identity in {}", directory.display()))?;
+    staged.write_all(bytes)?;
+    staged.as_file().sync_all()?;
+    staged
+        .persist(path)
+        .with_context(|| format!("publishing {}", path.display()))?;
+    std::fs::File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 /// Write the node's environment file and unit onto `host`.
@@ -1509,7 +1541,7 @@ mod tests {
         let same = put_script(
             "/tmp/a.tar.gz",
             "/tmp/a.tar.gz.new",
-            "/tmp/a.tar.gz",
+            InstallSource::Temporary("/tmp/a.tar.gz"),
             "0644",
         );
         // The staged path is cleared before the copy; the source never is.
@@ -1527,10 +1559,39 @@ mod tests {
         let differ = put_script(
             "/usr/local/bin/nucleus",
             "/usr/local/bin/nucleus.new",
-            "/tmp/n",
+            InstallSource::Temporary("/tmp/n"),
             "0755",
         );
         assert!(differ.contains("rm -f /tmp/n"), "must clean up:\n{differ}");
+    }
+
+    #[test]
+    fn local_installation_preserves_source_for_reuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("built-node");
+        let destination = directory.path().join("installed-node");
+        let next = directory.path().join("installed-node.new");
+        std::fs::write(&source, b"built artifact").unwrap();
+        for _ in 0..2 {
+            let script = put_script(
+                destination.to_str().unwrap(),
+                next.to_str().unwrap(),
+                InstallSource::Borrowed(source.to_str().unwrap()),
+                "0755",
+            );
+            let output = Command::new("sh").args(["-c", &script]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                source.is_file(),
+                "installing a borrowed build artifact deleted its source"
+            );
+            assert_eq!(std::fs::read(&source).unwrap(), b"built artifact");
+            assert_eq!(std::fs::read(&destination).unwrap(), b"built artifact");
+        }
     }
 
     /// The rename must be the last thing that touches the destination.
@@ -1539,7 +1600,7 @@ mod tests {
         let s = put_script(
             "/usr/local/bin/nucleus",
             "/usr/local/bin/nucleus.new",
-            "/tmp/n",
+            InstallSource::Temporary("/tmp/n"),
             "0755",
         );
         assert!(
@@ -1713,7 +1774,7 @@ mod tests {
         // Exactly what `provision_mtls_identity` produces, minus the
         // Tier2Host round trip -- the CA itself is already in hand here,
         // same as `load_or_seed_host_ca` would return.
-        let paths = mint_cli_identity(&ca, trust_domain, dir.path())
+        mint_cli_identity(&ca, trust_domain, dir.path())
             .await
             .unwrap();
 
@@ -1752,20 +1813,9 @@ mod tests {
             .unwrap();
         });
 
-        // Read back exactly what was written to disk -- proving the FILES
-        // are usable, not just the in-memory `WorkloadCertificate`.
-        let mut identity_pem = std::fs::read(&paths.cli_cert).unwrap();
-        identity_pem.push(b'\n');
-        identity_pem.extend(std::fs::read(&paths.cli_key).unwrap());
-        let bundle_pem = std::fs::read(&paths.trust_bundle).unwrap();
-
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let tls =
-            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
-        let client = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls)
-            .build()
-            .unwrap();
+        // Exercise the same explicit-directory client used by `run` and host
+        // selection, including disk reads and SPIFFE server identity checking.
+        let client = mtls_client_from_identity_dir(dir.path()).unwrap();
 
         let resp = client
             .get(format!("https://{addr}/v1/health"))
@@ -1823,7 +1873,7 @@ mod tests {
             let script = put_script(
                 &file.remote,
                 &format!("{}.nucleus-new", file.remote),
-                &file.local.display().to_string(),
+                InstallSource::Borrowed(&file.local.display().to_string()),
                 file.mode,
             );
             let out = std::process::Command::new("sh")
@@ -2065,7 +2115,7 @@ mod tests {
             let script = put_script(
                 &file.remote,
                 &format!("{}.nucleus-new", file.remote),
-                "/tmp/staged",
+                InstallSource::Temporary("/tmp/staged"),
                 file.mode,
             );
             assert!(!script.contains("-----"), "PEM in the script:\n{script}");
@@ -2090,7 +2140,7 @@ mod tests {
         let s = put_script(
             "/root/k.pem",
             "/root/k.pem.nucleus-new",
-            "/tmp/k.pem",
+            InstallSource::Temporary("/tmp/k.pem"),
             "0600",
         );
         let cp = s

@@ -439,9 +439,16 @@ where
     });
 
     let response: hyper::Response<Incoming> = sender.send_request(request).await?;
-    let (parts, body) = response.into_parts();
+    let (mut parts, body) = response.into_parts();
     let collected = body.collect().await?;
     let bytes = collected.to_bytes();
+
+    // Collection decodes the upstream's transfer framing. The new exact-size
+    // body gets its own framing from Axum; retaining `chunked` alongside its
+    // generated Content-Length makes Hyper reject the response outright.
+    // Trailers were consumed with that stream and are not forwarded here.
+    parts.headers.remove(axum::http::header::TRANSFER_ENCODING);
+    parts.headers.remove(axum::http::header::TRAILER);
 
     Ok(axum::http::Response::from_parts(parts, Body::from(bytes)))
 }
@@ -460,6 +467,72 @@ fn proxy_error(status: StatusCode, message: String) -> AxumResponse {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_chunked_request_is_reframed_before_forwarding() {
+        use axum::routing::post;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let backend = Router::new().route("/echo", post(|body: String| async move { body }));
+        let server = tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
+        let proxy = SignedProxy::start(address, Arc::new(b"test-secret".to_vec()), None, None)
+            .await
+            .unwrap();
+        let mut stream = TcpStream::connect(proxy.listen_addr()).await.unwrap();
+        stream.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n").await.unwrap();
+        let mut reply = Vec::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            stream.read_to_end(&mut reply),
+        )
+        .await;
+        proxy.shutdown().await;
+        server.abort();
+        result.unwrap().unwrap();
+        assert!(
+            reply.starts_with(b"HTTP/1.1 200 "),
+            "{}",
+            String::from_utf8_lossy(&reply)
+        );
+        assert!(
+            reply.ends_with(b"onetwo"),
+            "{}",
+            String::from_utf8_lossy(&reply)
+        );
+    }
+    #[tokio::test]
+    async fn a_chunked_guest_response_survives_the_buffering_proxy() {
+        use axum::routing::get;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let backend = Router::new().route(
+            "/reply",
+            get(|| async {
+                Body::from_stream(tokio_stream::iter([
+                    Ok::<_, std::io::Error>(axum::body::Bytes::from_static(b"one")),
+                    Ok(axum::body::Bytes::from_static(b"two")),
+                ]))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
+        let proxy = SignedProxy::start(address, Arc::new(b"test-secret".to_vec()), None, None)
+            .await
+            .unwrap();
+        let request = Request::builder()
+            .uri(format!("http://{}/reply", proxy.listen_addr()))
+            .header(axum::http::header::HOST, proxy.listen_addr().to_string())
+            .body(Full::new(axum::body::Bytes::new()))
+            .unwrap();
+        let response = send_over(
+            TcpStream::connect(proxy.listen_addr()).await.unwrap(),
+            request,
+        )
+        .await;
+        proxy.shutdown().await;
+        server.abort();
+        let bytes = to_bytes(response.unwrap().into_body(), 1024).await.unwrap();
+        assert_eq!(&bytes[..], b"onetwo");
+    }
     use super::*;
 
     /// **The framing contract with the guest-side verifier, pinned as bytes.**

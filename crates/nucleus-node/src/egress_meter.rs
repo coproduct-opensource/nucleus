@@ -8,16 +8,16 @@
 //! # Why on the host
 //!
 //! The guest can rewrite anything it runs, so a counter inside it is advisory.
-//! Every send this meter charges is performed BY THE HOST on the guest's
-//! behalf, after the charge is decided — the guest cannot reach the network on
-//! that path except through it.
+//! Broker sends reserve bytes before host I/O. Direct guest IP packets stay
+//! queued in the kernel until this meter authorizes their packet length.
+//! Both paths share total and fixed-window allowances before accepting sends.
 //!
 //! # One per pod, shared by every path
 //!
 //! [`EgressMeter`] is built once per pod and handed, as the same `Arc`, to every
 //! egress path that pod has (ADR 0007 G). Today that is the credential broker's
-//! perform path; the pod link's kernel counter folds into the same ledger via
-//! `EgressLedger::record_observed` when it lands. Two meters for one pod would
+//! PERFORM and streaming paths plus namespace packet admission. All reserve
+//! from this ledger before sending. Two meters for one pod would
 //! each admit up to the ceiling.
 //!
 //! # Exhaustion leaves a record
@@ -31,6 +31,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub mod body;
+mod upload;
+pub use upload::UploadCharge;
+
 use portcullis::{
     EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
     EgressRefusal, EgressSettlement,
@@ -39,7 +43,8 @@ use portcullis::{
 /// One pod's egress balance, as the host holds it.
 #[derive(Debug)]
 pub struct EgressMeter {
-    ledger: Mutex<EgressLedger>,
+    // None means accounting failed; it never means an unlimited balance (B-2).
+    ledger: Mutex<Option<EgressLedger>>,
     /// Where the exhaustion record goes: this pod's directory.
     pod_dir: PathBuf,
     /// The pod, as the record names it.
@@ -51,7 +56,7 @@ impl EgressMeter {
     #[must_use]
     pub fn new(ceiling: EgressCeiling, pod_dir: PathBuf, pod_id: String) -> Arc<Self> {
         Arc::new(Self {
-            ledger: Mutex::new(EgressLedger::new(ceiling)),
+            ledger: Mutex::new(Some(EgressLedger::new(ceiling))),
             pod_dir,
             pod_id,
         })
@@ -80,7 +85,10 @@ impl EgressMeter {
         // A poisoned lock means a holder panicked mid-update: the balance
         // cannot be trusted, and "could not look" is a refusal (ADR 0007 A-1).
         let decision = match self.ledger.lock() {
-            Ok(mut ledger) => ledger.reserve(bytes, now_unix),
+            Ok(mut ledger) => match ledger.as_mut() {
+                Some(ledger) => ledger.reserve(bytes, now_unix),
+                None => EgressDecision::Refused(EgressRefusal::LedgerFault, EgressNovelty::Repeat),
+            },
             Err(_) => EgressDecision::Refused(EgressRefusal::LedgerFault, EgressNovelty::First),
         };
         match decision {
@@ -97,12 +105,37 @@ impl EgressMeter {
         }
     }
 
+    /// A packet-accounting failure disables new sends through every path (A-2).
+    pub async fn fault(&self) {
+        let first = self
+            .ledger
+            .lock()
+            .map(|mut ledger| ledger.take().is_some())
+            .unwrap_or(true);
+        if first {
+            self.record(&EgressRefusal::LedgerFault).await;
+        }
+    }
+
+    pub async fn record_packets(&self, bytes: u64, rejected: u64) {
+        crate::lifecycle::write_lifecycle_audit(
+            &self.pod_dir,
+            "egress_packet_queue_closed",
+            &self.pod_id,
+            &format!(
+                "accepted IP bytes: {bytes}; rejected packets: {rejected}; pre-send reservations"
+            ),
+        )
+        .await;
+    }
+
     /// Bytes this pod has sent or has in flight.
     #[cfg(test)]
     pub fn counted(&self) -> EgressBytes {
         self.ledger
             .lock()
-            .map(|l| l.counted())
+            .ok()
+            .and_then(|l| l.as_ref().map(EgressLedger::counted))
             .unwrap_or(EgressBytes::MAX)
     }
 
@@ -142,7 +175,8 @@ impl EgressMeter {
     fn settle(&self, hold: EgressHold, outcome: EgressSettlement) {
         // Poisoned: the hold cannot be settled, so its bytes stay reserved —
         // counted as sent, the fail-closed reading.
-        if let Ok(mut ledger) = self.ledger.lock() {
+        if let Ok(mut state) = self.ledger.lock() {
+            let Some(ledger) = state.as_mut() else { return };
             // Unreachable from `EgressCharge`, which borrows the meter that
             // decided its hold. Reported rather than dropped: the bytes stay
             // reserved (fail-closed), and a fault here is a defect to find.
@@ -174,6 +208,7 @@ impl EgressCharge<'_> {
     }
 
     /// Provably nothing left the host: refund the bytes.
+    #[cfg(test)]
     pub fn not_sent(mut self) {
         if let Some(hold) = self.hold.take() {
             self.meter.settle(hold, EgressSettlement::NotSent);

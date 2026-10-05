@@ -15,16 +15,21 @@
 //! agreements and disagreements over real traffic, and a record of every
 //! disagreement naming both outcomes and the operation.
 //!
-//! # One channel
+//! # Pod policy, channel protocol
 //!
 //! A connection is one channel, and a channel is the host's view of one guest
 //! kernel session (the HTTP transport's kernel and the MCP transport's are two
-//! sessions, so two channels). Per channel the host holds:
+//! sessions, so two channels). The pod shares across every channel:
 //!
 //! * a [`Kernel`] built from the pod's certificate — the same constructor the
 //!   guest uses (`Kernel::from_certificate`), so the two start equal;
 //! * a [`HostTaint`] — owner decision D2: the host's own label, which a guest
-//!   `Observe` can only raise (it is the lattice join, and no frame lowers it);
+//!   `Observe` can only raise (it is the lattice join, and no frame lowers it).
+//!
+//! Observation and decision serialize under one pod policy lock; a poisoned
+//! lock closes the channel. Reconnecting cannot reset this history. Each
+//! channel separately holds:
+//!
 //! * a [`SeqGate`] — the host numbers the frames, the guest only echoes;
 //! * a [`DecisionLedger`] under an epoch no earlier channel on this node used
 //!   ([`EpochSource`]), so an id from a closed channel is `ForeignEpoch` on the
@@ -42,8 +47,7 @@
 //!
 //! # What can make an honest pair disagree
 //!
-//! Listed so a disagreement is read as data, not noise. Each is guest-only
-//! state the host does not yet see; P9 moves each to the host:
+//! Listed so a disagreement is read as data, not noise:
 //!
 //! * a human approval grant (`issue_approved_token` moves the guest's exposure);
 //! * DLC admission and declassification keys provisioned into the guest kernel;
@@ -51,17 +55,20 @@
 //!   one label, so it is never less restrictive than the graph);
 //! * a poisoned guest graph, which the guest reports as the top label but which
 //!   also denies reads;
-//! * a channel reopened after a failure: its kernel starts fresh while the
-//!   guest's has history.
+//! * another channel or a replacement guest with less history than the host:
+//!   the host retains the pod's cumulative observations and kernel state.
 
 // The listener is started from `spawn_firecracker_pod`, which is linux-only; a
 // macOS build compiles none of its callers.
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
+pub(crate) mod effects;
+pub(crate) mod evidence;
+
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use nucleus_decision_protocol::host::{
@@ -290,10 +297,11 @@ struct Pending {
     right: Right,
 }
 
-/// Why the host closed a channel. Every one is the guest breaking the protocol
-/// (or the channel's own bounds), so every one is counted as a fault.
+/// Why the host closed a channel: protocol faults, bounds, or unavailable policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChannelError {
+    /// Shared pod policy was revoked or cannot be trusted after a panic.
+    PolicyUnavailable,
     /// The frame's number was not the one the host expected.
     Sequence(SeqError),
     /// The bytes were not a frame.
@@ -345,13 +353,128 @@ pub(crate) struct Step {
     pub compared: Option<Comparison>,
 }
 
+/// Policy history belongs to the pod, not to a guest-selected connection.
+/// Access is serialized with observation and decision in one critical section.
+pub(crate) struct PodPolicy {
+    kernel: Kernel,
+    budget: crate::pod_authority::budget::SharedBudget,
+    taint: HostTaint,
+    approvals: effects::Approvals,
+    evidence: evidence::Evidence,
+    revoked: tokio::sync::watch::Sender<bool>,
+}
+
+/// One policy history shared by the decision and credential listeners.
+pub(crate) type SharedPodPolicy = Arc<Mutex<PodPolicy>>;
+
+/// Restoring a certificate does not restore observations or spent runtime budget.
+pub(crate) enum PolicyHistory {
+    Fresh,
+    Live(SharedPodPolicy),
+    UnavailableAfterRestart,
+}
+
+impl PodPolicy {
+    fn ensure_live(&self) -> Result<(), ChannelError> {
+        if *self.revoked.borrow() {
+            Err(ChannelError::PolicyUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn revoke(policy: &SharedPodPolicy) {
+        let state = policy
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.revoked.send_replace(true);
+    }
+
+    pub(crate) fn revocation(
+        policy: &SharedPodPolicy,
+    ) -> Result<tokio::sync::watch::Receiver<bool>, ChannelError> {
+        let state = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
+        state.ensure_live()?;
+        Ok(state.revoked.subscribe())
+    }
+
+    pub(crate) fn available(policy: &SharedPodPolicy) -> Result<(), ChannelError> {
+        policy
+            .lock()
+            .map_err(|_| ChannelError::PolicyUnavailable)?
+            .ensure_live()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new(kernel: Kernel, evidence: evidence::Evidence) -> SharedPodPolicy {
+        let budget = crate::pod_authority::budget::SharedBudget::memory(
+            portcullis::BudgetLedger::for_parent(&kernel.effective().budget),
+        );
+        Self::with_budget(kernel, evidence, budget)
+    }
+
+    pub(crate) fn with_budget(
+        kernel: Kernel,
+        evidence: evidence::Evidence,
+        budget: crate::pod_authority::budget::SharedBudget,
+    ) -> SharedPodPolicy {
+        Arc::new(Mutex::new(Self {
+            kernel,
+            budget,
+            taint: HostTaint::clean(),
+            approvals: effects::Approvals::new(),
+            evidence,
+            revoked: tokio::sync::watch::channel(false).0,
+        }))
+    }
+
+    /// Record host-delivered external content before making it visible to the
+    /// guest. A guest report is not needed and cannot undo this observation.
+    pub(crate) fn observe_response(policy: &SharedPodPolicy, now: u64) -> Result<(), ChannelError> {
+        let mut policy = policy.lock().map_err(|_| ChannelError::PolicyUnavailable)?;
+        policy.ensure_live()?;
+        policy
+            .taint
+            .raise(nucleus_decision_protocol::LabelRaise::new(
+                nucleus_decision_protocol::IFCLabel::web_content(now),
+            ));
+        Ok(())
+    }
+
+    pub(crate) fn decide(
+        &mut self,
+        op: Operation,
+        subject: &str,
+    ) -> (
+        portcullis::kernel::Decision,
+        Option<portcullis::kernel::DecisionToken>,
+    ) {
+        // The kernel's budget is a derived projection, never an independent
+        // spending counter. Missing budget state projects to exhausted.
+        let max = self.kernel.effective().budget.max_cost_usd;
+        let available = self
+            .budget
+            .available()
+            .unwrap_or(rust_decimal::Decimal::ZERO)
+            .min(max);
+        self.kernel.refund(self.kernel.consumed_usd());
+        let _ = self.kernel.charge(max - available);
+        self.kernel
+            .decide_term_with_flow(ActionTerm::from_operation(op, subject), Some(&self.taint))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_policy(policy: portcullis::PermissionLattice) -> SharedPodPolicy {
+    PodPolicy::new(Kernel::new(policy), evidence::Evidence::memory())
+}
+
 /// One decision channel's host state. See the module docs.
 pub(crate) struct Channel {
     pod: Uuid,
     gate: SeqGate,
     ledger: DecisionLedger,
-    kernel: Kernel,
-    taint: HostTaint,
+    policy: SharedPodPolicy,
     pending: Option<Pending>,
 }
 
@@ -365,14 +488,22 @@ impl std::fmt::Debug for Channel {
 }
 
 impl Channel {
-    /// A fresh channel for `pod`, deciding with `kernel`, issuing under `epoch`.
+    /// Isolated policy state for unit tests; production opens from PodDecide.
+    #[cfg(test)]
     pub fn open(pod: Uuid, kernel: Kernel, epoch: u64) -> Self {
+        Self::with_policy(
+            pod,
+            PodPolicy::new(kernel, evidence::Evidence::memory()),
+            epoch,
+        )
+    }
+
+    fn with_policy(pod: Uuid, policy: SharedPodPolicy, epoch: u64) -> Self {
         Self {
             pod,
             gate: SeqGate::new(),
             ledger: DecisionLedger::new(epoch),
-            kernel,
-            taint: HostTaint::clean(),
+            policy,
             pending: None,
         }
     }
@@ -383,22 +514,27 @@ impl Channel {
         self.ledger.epoch()
     }
 
-    /// The host's taint on this channel.
+    /// The host's shared pod taint, snapshotted for tests.
     #[cfg(test)]
-    pub fn taint(&self) -> &HostTaint {
-        &self.taint
+    pub fn taint(&self) -> HostTaint {
+        self.policy.lock().expect("healthy policy").taint.clone()
     }
 
     /// Spend a decision id against this channel's ledger. By value: the
     /// ledger forgets a spent id, so a second presentation — a copy decoded
     /// from the same bytes — is `Retired`, and an id from another channel is
     /// `ForeignEpoch`.
-    pub fn spend(&mut self, id: DecisionId) -> Result<Spent, LedgerError> {
-        self.ledger.consume(id)
+    pub fn spend(
+        &mut self,
+        id: DecisionId,
+        digest: nucleus_decision_protocol::ArgsDigest,
+    ) -> Result<Spent, LedgerError> {
+        self.ledger.consume(id, digest)
     }
 
     /// Answer one guest frame.
     pub fn step(&mut self, frame: GuestFrame) -> Result<Step, ChannelError> {
+        PodPolicy::available(&self.policy)?;
         self.gate.admit(frame.seq())?;
         match frame {
             GuestFrame::Decide {
@@ -408,7 +544,11 @@ impl Channel {
                 args_digest: digest,
             } => self.decide(seq, op, subject, digest),
             GuestFrame::Observe { seq, label_raise } => {
-                self.taint.raise(label_raise);
+                self.policy
+                    .lock()
+                    .map_err(|_| ChannelError::PolicyUnavailable)?
+                    .taint
+                    .raise(label_raise);
                 Ok(Step {
                     reply: HostFrame::Observed { seq }.encode()?,
                     compared: None,
@@ -458,10 +598,14 @@ impl Channel {
         }
         // The guest's two decision points both call exactly this:
         // `decide_term_with_flow(ActionTerm::from_operation(op, subject), graph)`.
-        let (decision, token) = self.kernel.decide_term_with_flow(
-            ActionTerm::from_operation(op, subject.as_str()),
-            Some(&self.taint),
-        );
+        let (decision, token) = {
+            let mut policy = self
+                .policy
+                .lock()
+                .map_err(|_| ChannelError::PolicyUnavailable)?;
+            policy.ensure_live()?;
+            policy.decide(op, subject.as_str())
+        };
         // The host performs nothing in shadow mode; the token authorizes I/O
         // nobody will do.
         drop(token);
@@ -469,11 +613,11 @@ impl Channel {
         let host_detail = kernel_detail(&decision.verdict);
         let verdict = match host {
             Outcome::Allowed => Verdict::Allowed {
-                decision_id: self.ledger.allow()?,
+                decision_id: self.ledger.allow(digest)?,
             },
             Outcome::Denied { reason } => Verdict::Denied { reason },
             Outcome::ApprovalRequired => Verdict::ApprovalRequired {
-                approval_id: self.ledger.require_approval()?,
+                approval_id: self.ledger.require_approval(digest)?,
             },
         };
         let frame = HostFrame::Verdict { seq, verdict };
@@ -531,7 +675,7 @@ impl Channel {
             right,
         } = p;
         let agreement = Agreement::of(host, local);
-        let retired_decision = self.retire(right)?;
+        let retired_decision = self.retire(right, args_digest(op, &subject))?;
         let compared = Comparison {
             pod: self.pod,
             epoch: self.ledger.epoch(),
@@ -553,15 +697,19 @@ impl Channel {
     /// Retire the right a verdict carried. Nothing in shadow mode acts on it,
     /// and an approval has no host approver yet, so it is refused and redeemed
     /// to nothing.
-    fn retire(&mut self, right: Right) -> Result<Option<u64>, ChannelError> {
+    fn retire(
+        &mut self,
+        right: Right,
+        digest: nucleus_decision_protocol::ArgsDigest,
+    ) -> Result<Option<u64>, ChannelError> {
         match right {
             Right::Nothing => Ok(None),
-            Right::Decision(id) => Ok(Some(self.spend(id)?.decision())),
+            Right::Decision(id) => Ok(Some(self.spend(id, digest)?.decision())),
             Right::Approval(id) => {
                 self.ledger.refuse(id.number())?;
                 match self.ledger.redeem(id)? {
                     Redemption::Refused => Ok(None),
-                    Redemption::Granted(d) => Ok(Some(self.spend(d)?.decision())),
+                    Redemption::Granted(d) => Ok(Some(self.spend(d, digest)?.decision())),
                     Redemption::Pending(_) => Err(ChannelError::ApprovalUnsettled),
                 }
             }
@@ -668,6 +816,7 @@ where
 pub(crate) struct PodDecide {
     pub pod: Uuid,
     pub authority: Arc<crate::pod_authority::PodAuthority>,
+    policy: SharedPodPolicy,
     pub epochs: Arc<EpochSource>,
     pub recorder: Recorder,
 }
@@ -682,10 +831,27 @@ impl std::fmt::Debug for PodDecide {
 }
 
 impl PodDecide {
-    /// Open a channel: a fresh kernel from the pod's certificate, a fresh epoch.
+    /// Verify once to initialize the pod's durable-in-memory policy history.
+    async fn new(
+        pod: Uuid,
+        authority: Arc<crate::pod_authority::PodAuthority>,
+        epochs: Arc<EpochSource>,
+        recorder: Recorder,
+    ) -> Result<Self, crate::pod_authority::HostKernelError> {
+        let policy = authority.host_policy(pod).await?;
+        Ok(Self {
+            pod,
+            authority,
+            epochs,
+            recorder,
+            policy,
+        })
+    }
+
+    /// Reverify admission and give the channel fresh protocol bookkeeping.
+    /// The resulting kernel is discarded: reopening must not reset policy history.
     async fn open(&self) -> Result<Channel, String> {
-        let kernel = self
-            .authority
+        self.authority
             .host_kernel(self.pod)
             .await
             .map_err(|e| e.to_string())?;
@@ -693,7 +859,11 @@ impl PodDecide {
             .epochs
             .next()
             .map_err(|EpochsExhausted| "the node has no decision epochs left".to_string())?;
-        Ok(Channel::open(self.pod, kernel, epoch))
+        Ok(Channel::with_policy(
+            self.pod,
+            Arc::clone(&self.policy),
+            epoch,
+        ))
     }
 }
 
@@ -823,18 +993,22 @@ pub(crate) async fn start_for_pod(
     pod_dir: &Path,
     jail_owner: Option<(u32, u32)>,
 ) -> Option<DecideListener> {
-    if let Err(e) = state.authority.host_kernel(pod).await {
-        tracing::info!(pod = %pod, reason = %e, "host-decide shadow not started");
-        return None;
-    }
-    let decide = PodDecide {
+    let decide = match PodDecide::new(
         pod,
-        authority: Arc::clone(&state.authority),
-        epochs: Arc::clone(&state.decision_epochs),
-        recorder: Recorder {
+        Arc::clone(&state.authority),
+        Arc::clone(&state.decision_epochs),
+        Recorder {
             tally: Arc::new(ShadowTally::default()),
             log: Some(pod_dir.join(DISAGREEMENT_LOG)),
         },
+    )
+    .await
+    {
+        Ok(decide) => decide,
+        Err(e) => {
+            tracing::info!(pod = %pod, reason = %e, "host-decide shadow not started");
+            return None;
+        }
     };
     match DecideListener::start(
         vsock_path,

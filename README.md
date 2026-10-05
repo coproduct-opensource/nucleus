@@ -143,6 +143,24 @@ Tier 1 is process-level. For kernel-level isolation you need a Linux VM with
 **nested virtualization**, because Firecracker is a KVM-based VMM — without
 `/dev/kvm` it does not run slowly, it does not run at all.
 
+On M3-or-newer Macs with macOS 26 and Apple Container 1.4.1 or newer, use the
+[Apple Container host guide](docs/quickstart/apple-container.md) for the current
+source-built workflow. It assembles matched local node/guest artifacts and a
+KVM-capable host kernel, then verifies a supervised Firecracker workload:
+
+```bash
+nucleus setup --apple-host-config host.json
+nucleus verify --tier2
+nucleus node health
+```
+
+Create `host.json` with the image and kernel paths as described in that guide.
+Setup saves the selection for subsequent commands. These are local build
+artifacts; a current host image is not yet published. The guide also covers
+workspace seeding and independent execution/log/artifact verification.
+
+For the Lima release-artifact installation, use:
+
 ```bash
 nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # installs Firecracker + kernel + rootfs + node
@@ -501,7 +519,7 @@ Documented in [`SECURITY_TODO.md`](docs/SECURITY_TODO.md) and [`docs/production-
 - **`nucleus-policy` is an orphan crate.** It has a full Cargo.toml but is not a workspace member and is not wired into anything — it must be integrated or documented as a stub.
 - **The constitutional kernel is a library, not yet runtime-wired.** It decides admissibility in isolation; it does not yet gate the live sandbox, and signature enforcement is opt-in.
 - **The public verifier service is not hosted.** It is self-hostable and deploy-ready (`fly.toml`; 26 integration / 70 total tests); no hosted endpoint resolves today. The `@coproduct/verify` npm package and `/verify/` demo are publish-gated.
-- **Tier 2 isolation needs KVM.** A macOS host reaches it through a Lima VM with nested virtualisation (M3+/macOS 15+); a passing `cargo test` on macOS does not imply a live VM boot, which is what `nucleus verify --tier2` is for. CI boots a real pod on **x86_64** only — GitHub has no hosted arm64 runner with `/dev/kvm` — so the aarch64 boot is verified by hand before a release.
+- **Tier 2 isolation needs KVM.** A supported macOS host reaches it through the [Apple Container host](docs/quickstart/apple-container.md) or a Lima VM with nested virtualisation. Their version and artifact requirements differ; a passing `cargo test` on macOS does not imply a live VM boot, which is what `nucleus verify --tier2` is for. CI boots a real pod on **x86_64** only — GitHub has no hosted arm64 runner with `/dev/kvm` — so the aarch64 boot is verified by hand before a release.
 - **`bash -c` bypasses command-level checks.** Firecracker network policy is the real defense.
 - **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log HMAC verification *is* real; C2PA verification is feature-gated.
 - **Issuance/signing of identities is demo-only.** `LocalIssuer` is `dev`-feature-gated; there is no SPIRE-backed JWT-SVID issuer in this repo.

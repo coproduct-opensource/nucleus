@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -68,7 +69,11 @@ struct Configuration {
     #[serde(default)]
     virtualization: bool,
     #[serde(default)]
+    use_init: bool,
+    #[serde(default)]
     cap_add: Vec<String>,
+    #[serde(default)]
+    readonly_paths: Option<Vec<String>>,
     image: ImageRef,
     #[serde(default)]
     mounts: Vec<Mount>,
@@ -106,6 +111,28 @@ struct PublishedPort {
 #[derive(Debug, Deserialize)]
 struct Status {
     state: String,
+    #[serde(default)]
+    networks: Vec<Network>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Network {
+    network: String,
+    #[serde(rename = "ipv4Address")]
+    ipv4_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Connection {
+    PublishedLoopback,
+    ContainerIp,
+}
+
+impl Connection {
+    pub fn published() -> Self {
+        Self::PublishedLoopback
+    }
 }
 
 /// The Mac-side ports a host container publishes, read back from the
@@ -116,6 +143,47 @@ pub struct HostPorts {
     pub node: u16,
     /// `(container port, Mac port)` for each relay slot, in slot order.
     pub relays: Vec<(u16, u16)>,
+    container_ipv4: Result<Ipv4Addr, String>,
+}
+
+impl HostPorts {
+    pub fn node_address(&self, connection: Connection) -> Result<SocketAddr, String> {
+        match connection {
+            Connection::PublishedLoopback => Ok((Ipv4Addr::LOCALHOST, self.node).into()),
+            Connection::ContainerIp => self.container_ipv4.clone().map(|ip| (ip, NODE_PORT).into()),
+        }
+    }
+}
+
+fn container_ipv4(status: &Status) -> Result<Ipv4Addr, String> {
+    let networks: Vec<_> = status
+        .networks
+        .iter()
+        .filter(|n| n.network == "default")
+        .collect();
+    let [network] = networks.as_slice() else {
+        return Err("container IP requires exactly one default network assignment".into());
+    };
+    let address = network
+        .ipv4_address
+        .as_deref()
+        .ok_or("container has no IPv4 address on the default network")?;
+    let (ip, prefix) = address
+        .split_once('/')
+        .ok_or("container IPv4 address lacks prefix")?;
+    let ip: Ipv4Addr = ip.parse().map_err(|_| "invalid container IPv4 address")?;
+    let prefix: u8 = prefix
+        .parse()
+        .map_err(|_| "invalid container IPv4 prefix")?;
+    if prefix > 32
+        || ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+    {
+        return Err("container IPv4 address is not a usable assigned endpoint".into());
+    }
+    Ok(ip)
 }
 
 /// Why an existing container cannot be used as it is.
@@ -173,7 +241,7 @@ pub fn host_state(list_json: &str, want: &Expected) -> Result<HostState, String>
         });
     }
     match e.status.state.as_str() {
-        "running" => match ports(&e.configuration) {
+        "running" => match ports(&e.configuration, &e.status) {
             Ok(p) => Ok(HostState::Running(owned, p)),
             Err(what) => Ok(HostState::Stale {
                 reason: StaleReason::Drifted { owned, what },
@@ -194,6 +262,9 @@ pub fn host_state(list_json: &str, want: &Expected) -> Result<HostState, String>
 /// The kernel is not in the list output, so it cannot be checked here; the
 /// in-container probe is what catches a host without KVM.
 fn drift(c: &Configuration, want: &Expected) -> Option<String> {
+    if c.use_init {
+        return Some("runtime init prevents run-node from preparing cgroups as PID 1".into());
+    }
     if !c.virtualization {
         return Some("started without --virtualization".into());
     }
@@ -204,6 +275,22 @@ fn drift(c: &Configuration, want: &Expected) -> Option<String> {
         .collect();
     if !missing.is_empty() {
         return Some(format!("missing capabilities {missing:?}"));
+    }
+    let expected: std::collections::BTreeSet<&str> =
+        nucleus_spec::microvm_host::HOST_READONLY_PATHS
+            .iter()
+            .copied()
+            .collect();
+    let actual = c.readonly_paths.as_ref().map(|paths| {
+        paths
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    if actual.as_ref() != Some(&expected) {
+        return Some(
+            "read-only path policy does not allow the trusted host's network sysctls".into(),
+        );
     }
     if !same_image(&c.image.reference, want.image) {
         return Some(format!(
@@ -224,7 +311,7 @@ fn drift(c: &Configuration, want: &Expected) -> Option<String> {
     None
 }
 
-fn ports(c: &Configuration) -> Result<HostPorts, String> {
+fn ports(c: &Configuration, status: &Status) -> Result<HostPorts, String> {
     let on_loopback = |container: u16| {
         c.published_ports
             .iter()
@@ -244,7 +331,11 @@ fn ports(c: &Configuration) -> Result<HostPorts, String> {
             None => return Err(format!("relay port {cp} is not published")),
         }
     }
-    Ok(HostPorts { node, relays })
+    Ok(HostPorts {
+        node,
+        relays,
+        container_ipv4: container_ipv4(status),
+    })
 }
 
 /// Volume names from `container volume list --format json`.
@@ -278,6 +369,8 @@ pub struct MicroVmHost {
     ports: HostPorts,
     identity_dir: PathBuf,
     state_dir: PathBuf,
+    connection: Connection,
+    node_address: SocketAddr,
 }
 
 impl MicroVmHost {
@@ -288,12 +381,22 @@ impl MicroVmHost {
 
     /// The node's API on the Mac.
     pub fn node_url(&self) -> String {
-        format!("https://127.0.0.1:{}", self.ports.node)
+        format!("https://{}", self.node_address)
     }
 
     /// The published relay slots.
     pub fn relay_ports(&self) -> &[(u16, u16)] {
         &self.ports.relays
+    }
+
+    pub fn relay_address(&self, container_port: u16, published_port: u16) -> SocketAddr {
+        SocketAddr::new(
+            self.node_address.ip(),
+            match self.connection {
+                Connection::PublishedLoopback => published_port,
+                Connection::ContainerIp => container_port,
+            },
+        )
     }
 
     /// The CLI identity the node trusts.
@@ -368,6 +471,7 @@ pub struct HostConfig {
     pub trust_domain: String,
     /// How long the node may take to answer health after a start.
     pub ready_timeout: Duration,
+    pub connection: Connection,
 }
 
 impl HostConfig {
@@ -414,10 +518,11 @@ pub fn ensure_ready(cli: &ContainerCli, cfg: &HostConfig) -> Result<MicroVmHost,
             }]));
         }
     }
+    let node_address = ports.node_address(cfg.connection).map_err(Refusal::State)?;
     wait_healthy(
         cli,
         &owned,
-        ports.node,
+        node_address,
         &cfg.identity_dir(),
         cfg.ready_timeout,
     )?;
@@ -426,6 +531,8 @@ pub fn ensure_ready(cli: &ContainerCli, cfg: &HostConfig) -> Result<MicroVmHost,
         ports,
         identity_dir: cfg.identity_dir(),
         state_dir: cfg.state_dir.clone(),
+        connection: cfg.connection,
+        node_address,
     })
 }
 
@@ -605,7 +712,19 @@ fn prepare_identity(cfg: &HostConfig) -> Result<(), Refusal> {
     let state = |e: String| Refusal::State(e);
     let ca_dir = cfg.ca_dir();
     let (cert, key) = (ca_dir.join("ca-cert.pem"), ca_dir.join("ca-key.pem"));
-    let ca = if cert.is_file() && key.is_file() {
+    let cert_exists = cert
+        .try_exists()
+        .map_err(|e| state(format!("reading CA certificate state: {e}")))?;
+    let key_exists = key
+        .try_exists()
+        .map_err(|e| state(format!("reading CA key state: {e}")))?;
+    if cert_exists != key_exists {
+        return Err(state(format!(
+            "CA at {} is incomplete; restore the missing file before restarting this host",
+            ca_dir.display()
+        )));
+    }
+    let ca = if cert_exists {
         let read =
             |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
         SelfSignedCa::from_pem(
@@ -621,7 +740,8 @@ fn prepare_identity(cfg: &HostConfig) -> Result<(), Refusal> {
         write_private(&key, ca.root_key_pem().as_bytes())?;
         ca
     };
-    if !cfg.identity_dir().join("cli-cert.pem").is_file() {
+    if crate::provision::reusable_cli_identity(&ca, &cfg.trust_domain, &cfg.identity_dir()).is_err()
+    {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -674,23 +794,34 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
 }
 
 /// Poll the node's `/v1/health` over mTLS until it answers 200.
+pub fn wait_host_healthy(
+    cli: &ContainerCli,
+    owned: &Owned,
+    ports: &HostPorts,
+    cfg: &HostConfig,
+    timeout: Duration,
+) -> Result<Duration, Refusal> {
+    let address = ports.node_address(cfg.connection).map_err(Refusal::State)?;
+    wait_healthy(cli, owned, address, &cfg.identity_dir(), timeout)
+}
+
 pub fn wait_healthy(
     cli: &ContainerCli,
     owned: &Owned,
-    node_port: u16,
+    node_address: SocketAddr,
     identity_dir: &Path,
     timeout: Duration,
 ) -> Result<Duration, Refusal> {
     let client = crate::provision::mtls_blocking_client_in(identity_dir)
         .map_err(|e| Refusal::State(format!("{e:#}")))?;
-    let url = format!("https://127.0.0.1:{node_port}/v1/health");
+    let url = format!("https://{node_address}/v1/health");
     let started = Instant::now();
     let mut last = String::from("no attempt");
     while started.elapsed() < timeout {
         match client.get(&url).timeout(Duration::from_secs(5)).send() {
             Ok(r) if r.status().is_success() => return Ok(started.elapsed()),
             Ok(r) => last = format!("HTTP {}", r.status()),
-            Err(e) => last = format!("{e}"),
+            Err(e) => last = format!("{e:#}"),
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -703,9 +834,23 @@ pub fn wait_healthy(
         .take(10)
         .collect();
     Err(Refusal::NodeUnhealthy(format!(
-        "{last} after {timeout:?}; node log tail:\n{}",
+        "{last} after {timeout:?}; node log tail:\n{}\n\
+         If the node is listening inside the container, inspect `container system logs --last 5m` \
+         for port-forwarding errors. `No route to host` from container-runtime-linux can require \
+         enabling its Local Network access in macOS Privacy & Security settings.",
         tail.into_iter().rev().collect::<Vec<_>>().join("\n")
     )))
+}
+
+#[cfg(test)]
+pub(super) fn running_fixture() -> String {
+    include_str!("fixtures/list-running.json").replace(
+        "\"readOnly\": false,",
+        &format!(
+            "\"readonlyPaths\": {}, \"readOnly\": false,",
+            serde_json::to_string(nucleus_spec::microvm_host::HOST_READONLY_PATHS).unwrap()
+        ),
+    )
 }
 
 #[cfg(test)]
@@ -715,9 +860,18 @@ mod tests {
     /// `container list --all --format json` for the `nucleus-dev` host that
     /// `ensure_ready` created on an M5 Pro (macOS 26.6.2, container 1.4.1) on
     /// 2026-09-29, captured by the live test. Home paths are shortened and the
-    /// per-install secrets replaced. The stopped state differs only in
+    /// per-install secrets replaced. `useInit` updated to false on 2026-10-05:
+    /// run-node now owns PID 1 for cgroup preparation. The stopped state differs only in
     /// `status.state` (and empty `status.networks`), measured on the same Mac.
-    const RUNNING: &str = include_str!("fixtures/list-running.json");
+    const LEGACY_RUNNING: &str = include_str!("fixtures/list-running.json");
+
+    #[test]
+    fn legacy_readonly_defaults_require_host_reconfiguration() {
+        let state = host_state(LEGACY_RUNNING, &want()).unwrap();
+        assert!(
+            matches!(state, HostState::Stale { reason: StaleReason::Drifted { what, .. } } if what.contains("read-only path"))
+        );
+    }
 
     fn want() -> Expected<'static> {
         Expected {
@@ -726,13 +880,51 @@ mod tests {
         }
     }
 
+    #[test]
+    fn explicit_connection_selects_the_observed_network_or_published_port() {
+        let HostState::Running(owned, ports) = host_state(&running_fixture(), &want()).unwrap()
+        else {
+            panic!("running fixture");
+        };
+        assert_eq!(
+            ports
+                .node_address(Connection::ContainerIp)
+                .unwrap()
+                .to_string(),
+            "192.168.64.102:8080"
+        );
+        let published = ports.node_address(Connection::PublishedLoopback).unwrap();
+        assert!(published.ip().is_loopback());
+        assert_eq!(published.port(), ports.node);
+        let direct = MicroVmHost {
+            node_address: ports.node_address(Connection::ContainerIp).unwrap(),
+            connection: Connection::ContainerIp,
+            owned,
+            ports,
+            identity_dir: PathBuf::new(),
+            state_dir: PathBuf::new(),
+        };
+        assert_eq!(direct.node_url(), "https://192.168.64.102:8080");
+        assert_eq!(
+            direct.relay_address(7101, 54321).to_string(),
+            "192.168.64.102:7101"
+        );
+        let mut raw: serde_json::Value = serde_json::from_str(&running_fixture()).unwrap();
+        raw[0]["status"]["networks"] = serde_json::json!([]);
+        let HostState::Running(_, ports) = host_state(&raw.to_string(), &want()).unwrap() else {
+            panic!("running fixture without network assignment");
+        };
+        assert!(ports.node_address(Connection::ContainerIp).is_err());
+        assert!(ports.node_address(Connection::PublishedLoopback).is_ok());
+    }
+
     fn with_state(state: &str) -> String {
-        RUNNING.replace("\"state\": \"running\"", &format!("\"state\": \"{state}\""))
+        running_fixture().replace("\"state\": \"running\"", &format!("\"state\": \"{state}\""))
     }
 
     #[test]
     fn a_running_host_reads_as_running_with_its_ports() {
-        let s = host_state(RUNNING, &want()).expect("parse");
+        let s = host_state(&running_fixture(), &want()).expect("parse");
         let HostState::Running(owned, ports) = s else {
             panic!("{s:?}")
         };
@@ -772,7 +964,7 @@ mod tests {
 
     #[test]
     fn our_name_without_our_label_is_never_ours() {
-        let unlabelled = RUNNING.replace(OWNER_LABEL, "org.example.other");
+        let unlabelled = running_fixture().replace(OWNER_LABEL, "org.example.other");
         assert_eq!(
             host_state(&unlabelled, &want()),
             Ok(HostState::Stale {
@@ -784,6 +976,7 @@ mod tests {
     #[test]
     fn drift_is_named() {
         let cases = [
+            ("\"useInit\": false", "\"useInit\": true", "PID 1"),
             (
                 "\"virtualization\": true",
                 "\"virtualization\": false",
@@ -806,8 +999,8 @@ mod tests {
             ),
         ];
         for (from, to, needle) in cases {
-            let changed = RUNNING.replacen(from, to, 1);
-            assert_ne!(changed, RUNNING, "fixture lacks {from}");
+            let changed = running_fixture().replacen(from, to, 1);
+            assert_ne!(changed, running_fixture(), "fixture lacks {from}");
             match host_state(&changed, &want()) {
                 Ok(HostState::Stale {
                     reason: StaleReason::Drifted { what, .. },
@@ -819,7 +1012,7 @@ mod tests {
 
     #[test]
     fn a_node_port_off_loopback_is_drift() {
-        let exposed = RUNNING.replacen(
+        let exposed = running_fixture().replacen(
             "\"hostAddress\": \"127.0.0.1\"",
             "\"hostAddress\": \"0.0.0.0\"",
             1,
@@ -897,5 +1090,113 @@ mod tests {
             write_private(&path, b"again").is_err(),
             "must not overwrite"
         );
+    }
+
+    fn identity_config(dir: &Path) -> HostConfig {
+        HostConfig {
+            names: HostNames::DEV,
+            image: "identity-fixture".into(),
+            kernel: dir.join("Image"),
+            state_dir: dir.to_path_buf(),
+            cpus: 2,
+            memory: "2g".into(),
+            trust_domain: "nucleus.local".into(),
+            ready_timeout: Duration::from_secs(1),
+            connection: crate::microvm_host::lifecycle::Connection::PublishedLoopback,
+        }
+    }
+
+    #[test]
+    fn repeated_up_keeps_current_identity_and_repairs_missing_client_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = identity_config(dir.path());
+        prepare_identity(&cfg).unwrap();
+        let cert = cfg.identity_dir().join("cli-cert.pem");
+        let key = cfg.identity_dir().join("cli-key.pem");
+        let original = std::fs::read(&cert).unwrap();
+        let ca = std::fs::read(cfg.ca_dir().join("ca-cert.pem")).unwrap();
+        let secrets = std::fs::read(cfg.env_file()).unwrap();
+        prepare_identity(&cfg).unwrap();
+        assert_eq!(std::fs::read(&cert).unwrap(), original);
+        std::fs::remove_file(&key).unwrap();
+        prepare_identity(&cfg).unwrap();
+        assert_ne!(std::fs::read(&cert).unwrap(), original);
+        assert_eq!(std::fs::read(cfg.ca_dir().join("ca-cert.pem")).unwrap(), ca);
+        assert_eq!(std::fs::read(cfg.env_file()).unwrap(), secrets);
+        let client = crate::provision::mtls_blocking_client_in(&cfg.identity_dir()).unwrap();
+        drop(client);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn partial_ca_pair_is_preserved_without_generating_another_half() {
+        for missing in ["ca-cert.pem", "ca-key.pem"] {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = identity_config(dir.path());
+            prepare_identity(&cfg).unwrap();
+            let other = if missing == "ca-cert.pem" {
+                "ca-key.pem"
+            } else {
+                "ca-cert.pem"
+            };
+            let preserved = std::fs::read(cfg.ca_dir().join(other)).unwrap();
+            std::fs::remove_file(cfg.ca_dir().join(missing)).unwrap();
+            assert!(
+                prepare_identity(&cfg)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("incomplete")
+            );
+            assert!(!cfg.ca_dir().join(missing).exists());
+            assert_eq!(std::fs::read(cfg.ca_dir().join(other)).unwrap(), preserved);
+        }
+    }
+
+    #[test]
+    fn near_expiry_client_is_renewed_under_the_existing_ca() {
+        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa};
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = identity_config(dir.path());
+        prepare_identity(&cfg).unwrap();
+        let ca_cert = std::fs::read_to_string(cfg.ca_dir().join("ca-cert.pem")).unwrap();
+        let ca_key = std::fs::read_to_string(cfg.ca_dir().join("ca-key.pem")).unwrap();
+        let ca = SelfSignedCa::from_pem("nucleus.local", &ca_cert, &ca_key).unwrap();
+        let identity = Identity::new("nucleus.local", "system", "cli");
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let short = runtime
+            .block_on(ca.sign_csr(
+                csr.csr(),
+                csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        let cert_path = cfg.identity_dir().join("cli-cert.pem");
+        std::fs::write(&cert_path, short.chain_pem()).unwrap();
+        std::fs::write(
+            cfg.identity_dir().join("cli-key.pem"),
+            short.private_key_pem(),
+        )
+        .unwrap();
+        prepare_identity(&cfg).unwrap();
+        assert_ne!(
+            std::fs::read_to_string(cert_path).unwrap(),
+            short.chain_pem()
+        );
+        assert_eq!(
+            std::fs::read_to_string(cfg.ca_dir().join("ca-cert.pem")).unwrap(),
+            ca_cert
+        );
+        crate::provision::reusable_cli_identity(&ca, "nucleus.local", &cfg.identity_dir()).unwrap();
     }
 }

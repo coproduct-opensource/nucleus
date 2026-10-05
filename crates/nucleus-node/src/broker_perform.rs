@@ -16,44 +16,25 @@
 //! is no credential in the guest to steal, so guest compromise does not yield
 //! one. The guest receives the RESULT of the call, which is what it needed.
 //!
-//! What this does NOT do is mediate. `FlowTracker`, the session taint ceiling,
-//! the lethal-trifecta guard and the egress allowlist all live in the tool-proxy
-//! inside the guest, and none of them is reachable from here. The host applies
-//! its own [PDP decision](crate::broker::pdp_decide), which is a coarse
-//! capability check and an independent one — but it is a SECOND gate, not a
-//! replacement for the first.
+//! The host evaluates its own shared pod kernel before credential access and
+//! immediately before execution, including WebFetch authority for the actual
+//! HTTP request. Required operator approvals name the resolved URL, method,
+//! media type, credential header, operation and host-computed payload hash.
+//! The upstream call requires a private, non-cloneable execution permit.
 //!
-//! So the property that makes this safe is not stated in this file:
-//!
-//! > every frame that reaches the broker came from the mediating proxy
-//!
-//! and it holds because of the broker secret. The host refuses any frame not
-//! signed under a per-pod secret delivered once, before any workload exists, to
-//! a process the workload cannot read (`frame_is_authentic`). Without that,
-//! routing egress through the host would let a workload skip the kernel by
-//! opening a socket — weakening security while appearing to strengthen it. That
-//! is why the capability landed first and this landed second.
-//!
-//! **The other half of that argument is not yet built.** Nothing today proves
-//! the proxy preflights before it asks, because the proxy cannot yet ask at all.
-//! When the guest side lands, its obligation is that a `PerformRequest` is only
-//! ever composed past a minted `DischargedBundle` — the same discharge
-//! `credentialed_egress` already takes before it forwards in-process. Recorded
-//! here as a stated debt, not an assumption.
-//!
-//! # Why `nucleus-node` making an outbound call does not re-scope the gate
-//!
-//! `check-mediation.sh` excludes this crate as "operator/host authority, outside
-//! the agent threat model", and a call whose path and body come from an agent
-//! visibly strains that description. The exclusion still holds, for the reason
-//! the script itself gives for `nucleus-mcp-guard`: there is no agent session or
-//! task token here to mint a `DischargedBundle` against, so re-scoping would
-//! produce a gate that cannot be satisfied rather than one that catches
-//! anything. The discharge happens in the guest, where the session lives.
+//! The per-pod frame secret authenticates the channel; it is not evidence that
+//! a compromised guest performed its own policy checks. Host observations raise
+//! taint independently of guest reports. Trusted mapping of remote API semantics,
+//! revocation and cost settlement remain open. Host-signed records distinguish
+//! authorization from transport observations; neither proves remote action success.
 
+pub(crate) mod effect;
+
+pub(crate) use effect::{CONTENT_TYPE, METHOD};
+use nucleus_decision_protocol::ArgsDigest;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use nucleus_cred_broker::{PodIdentity, TaskRequestEnvelope};
 use nucleus_cred_protocol::{PerformReply, PerformRequest};
@@ -204,16 +185,17 @@ fn check_fields(fields: &[(&'static str, &String)]) -> Result<(), FrameError> {
 /// *where* this goes: `url` came from
 /// [`CredentialedEgressSpec::url_for`](nucleus_spec::CredentialedEgressSpec::url_for),
 /// which refuses a path that tries to leave the configured base.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct UpstreamCall {
+    _permit: crate::host_decide::effects::ExecutingEffect,
     /// Absolute URL, already resolved against the pod spec's fixed base.
     pub url: String,
     /// Header the credential goes in, from the spec.
     pub header_name: String,
     /// The credential, with the spec's prefix applied. Never logged.
     pub header_value: String,
-    /// Request body, verbatim from the guest.
-    pub body: Vec<u8>,
+    /// Exact host-bound request bytes, yielded under the shared egress pace.
+    pub body: crate::egress_meter::body::UploadBody,
 }
 
 /// What came back.
@@ -231,6 +213,9 @@ pub struct UpstreamResponse {
 /// more: every field here is per-pod, and grouping them makes it visible that
 /// nothing in a perform decision is global.
 pub struct PerformContext<'a> {
+    /// The pod authority's shared host policy history.
+    pub host_policy: &'a crate::host_decide::SharedPodPolicy,
+
     /// Who is asking, from which socket accepted the connection — never from
     /// the frame.
     pub identity: &'a PodIdentity,
@@ -247,7 +232,7 @@ pub struct PerformContext<'a> {
     pub ledger: &'a IdempotencyLedger,
     /// This pod's egress balance — the SAME meter every egress path of this
     /// pod draws from (#2905).
-    pub egress: &'a crate::egress_meter::EgressMeter,
+    pub egress: &'a Arc<crate::egress_meter::EgressMeter>,
 }
 
 /// The bytes a perform request sends toward the network that the GUEST chose.
@@ -268,20 +253,33 @@ enum Entry {
     InFlight {
         /// When the reservation was taken, for TTL eviction.
         since: u64,
+        effect: ArgsDigest,
     },
     /// A call under this key finished, and this is what it returned.
     Settled {
         /// When it settled, for TTL eviction.
         at: u64,
+        effect: ArgsDigest,
         /// The reply to hand back to a repeat.
         reply: PerformReply,
     },
 }
 
 impl Entry {
+    fn effect(&self) -> ArgsDigest {
+        match self {
+            Self::InFlight { since: _, effect }
+            | Self::Settled {
+                at: _,
+                effect,
+                reply: _,
+            } => *effect,
+        }
+    }
+
     fn stamp(&self) -> u64 {
         match self {
-            Entry::InFlight { since } => *since,
+            Entry::InFlight { since, effect: _ } => *since,
             Entry::Settled { at, .. } => *at,
         }
     }
@@ -296,6 +294,8 @@ pub enum Reservation {
     Replay(Box<PerformReply>),
     /// Seen and still running. A concurrent duplicate.
     InFlight,
+    /// This key names a different effect; it is not a retry.
+    Conflict,
     /// The ledger is full of unexpired keys.
     Full,
 }
@@ -335,7 +335,7 @@ impl IdempotencyLedger {
     ///
     /// Expired entries are dropped first, so the capacity bound is on
     /// *unexpired* keys and a quiet pod never fills.
-    pub fn reserve(&self, key: &str, now_unix: u64) -> Reservation {
+    pub fn reserve(&self, key: &str, effect: ArgsDigest, now_unix: u64) -> Reservation {
         let Ok(mut entries) = self.entries.lock() else {
             // A poisoned lock means a previous holder panicked mid-update. The
             // ledger's contents cannot be trusted, and the fail-open reading —
@@ -345,25 +345,33 @@ impl IdempotencyLedger {
         entries.retain(|_, e| now_unix.saturating_sub(e.stamp()) < IDEMPOTENCY_TTL_SECS);
 
         match entries.get(key) {
+            Some(entry) if entry.effect() != effect => Reservation::Conflict,
             Some(Entry::Settled { reply, .. }) => Reservation::Replay(Box::new(reply.clone())),
             Some(Entry::InFlight { .. }) => Reservation::InFlight,
             None => {
                 if entries.len() >= IDEMPOTENCY_CAPACITY {
                     return Reservation::Full;
                 }
-                entries.insert(key.to_string(), Entry::InFlight { since: now_unix });
+                entries.insert(
+                    key.to_string(),
+                    Entry::InFlight {
+                        since: now_unix,
+                        effect,
+                    },
+                );
                 Reservation::Fresh
             }
         }
     }
 
     /// Record what a reserved key returned, so a repeat gets the same answer.
-    pub fn settle(&self, key: &str, now_unix: u64, reply: PerformReply) {
+    pub fn settle(&self, key: &str, effect: ArgsDigest, now_unix: u64, reply: PerformReply) {
         if let Ok(mut entries) = self.entries.lock() {
             entries.insert(
                 key.to_string(),
                 Entry::Settled {
                     at: now_unix,
+                    effect,
                     reply,
                 },
             );
@@ -413,6 +421,19 @@ fn refused(reason: &str) -> PerformReply {
         reason: reason.to_string(),
         status: 0,
         body: Vec::new(),
+    }
+}
+
+/// Cached responses cross the same observation boundary as fresh responses.
+fn observe_reply(
+    reply: PerformReply,
+    policy: &crate::host_decide::SharedPodPolicy,
+    now: u64,
+) -> PerformReply {
+    if reply.granted && crate::host_decide::PodPolicy::observe_response(policy, now).is_err() {
+        refused("host policy unavailable")
+    } else {
+        reply
     }
 }
 
@@ -592,8 +613,39 @@ where
     F: FnOnce(UpstreamCall) -> Fut,
     Fut: Future<Output = Result<UpstreamResponse, String>>,
 {
+    perform_until(
+        req,
+        ctx,
+        now_unix,
+        tokio::time::Instant::now() + nucleus_cred_protocol::stream::UPSTREAM_IDLE,
+        call,
+    )
+    .await
+}
+
+async fn perform_until<F, Fut>(
+    req: &PerformRequest,
+    ctx: &PerformContext<'_>,
+    now_unix: u64,
+    deadline: tokio::time::Instant,
+    call: F,
+) -> PerformReply
+where
+    F: FnOnce(UpstreamCall) -> Fut,
+    Fut: Future<Output = Result<UpstreamResponse, String>>,
+{
+    let started = std::time::Instant::now();
+    let current_time = || {
+        let elapsed = started.elapsed();
+        now_unix
+            .saturating_add(elapsed.as_secs())
+            .saturating_add(u64::from(elapsed.subsec_nanos() != 0))
+    };
     // 1–3. Decide, resolve the name, fix the path: `resolve`, shared with the
     //      streamed path so the two cannot decide differently.
+    if crate::host_decide::PodPolicy::available(ctx.host_policy).is_err() {
+        return refused("host policy unavailable");
+    }
     let Some(resolved) = resolve(
         &Asked {
             operation: &req.operation,
@@ -608,19 +660,28 @@ where
     ) else {
         return refused("not permitted");
     };
+    let call_charge = match resolved.entry().call_charge() {
+        Ok(charge) => charge,
+        Err(reason) => return refused(reason),
+    };
     let spec = resolved.entry.spec();
     let url = resolved.url.clone();
+    // Hash the checked destination and exact bytes, never a guest digest.
+    let Ok(effect) = effect::digest(req, &resolved) else {
+        return refused("could not bind effect");
+    };
 
     // 4. Claim the key. Everything above could refuse without an effect, so
     //    nothing above is recorded.
-    match ctx.ledger.reserve(&req.idempotency_key, now_unix) {
+    match ctx.ledger.reserve(&req.idempotency_key, effect, now_unix) {
         Reservation::Fresh => {}
-        Reservation::Replay(prior) => return *prior,
+        Reservation::Replay(prior) => return observe_reply(*prior, ctx.host_policy, now_unix),
         // Distinguishable from "not permitted" ON PURPOSE. It says nothing about
         // policy or about which credentials exist — it reports the state of a
         // key the GUEST chose, which the guest already knows. Collapsing it into
         // the policy refusal would tell an agent its request was denied when it
         // was in fact running.
+        Reservation::Conflict => return refused("idempotency key names a different effect"),
         Reservation::InFlight => return refused("already in progress"),
         Reservation::Full => return refused("too many outstanding requests"),
     }
@@ -631,7 +692,7 @@ where
     //     exchange. A refusal is NAMED to the guest: the counts are its own
     //     traffic, and "not permitted" would hide the one remedy (a larger
     //     declared ceiling) from the person who has to apply it.
-    let charge = match ctx.egress.admit(upload_bytes(req), now_unix).await {
+    let mut charge = match ctx.egress.reserve_upload(upload_bytes(req)).await {
         Ok(charge) => charge,
         Err(refusal) => {
             ctx.ledger.release(&req.idempotency_key);
@@ -639,8 +700,74 @@ where
         }
     };
 
+    let preflight = match ctx.host_policy.lock() {
+        Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
+            Some(op) => {
+                let result =
+                    policy.preflight_effect(effect, op, &url, now_unix, call_charge, false);
+                if result.is_err() {
+                    effect::capture_review(&mut policy, req, &resolved, effect, now_unix)
+                        .and(result)
+                } else {
+                    result
+                }
+            }
+            None => Err("unknown operation".into()),
+        },
+        Err(_) => Err("host policy unavailable".into()),
+    };
+    match preflight {
+        Ok(()) => (),
+        Err(reason) => {
+            ctx.ledger.release(&req.idempotency_key);
+            charge.not_sent();
+            return refused(&reason);
+        }
+    };
+
+    if !matches!(
+        tokio::time::timeout_at(
+            deadline,
+            crate::egress_meter::body::pace_open(
+                &mut charge,
+                req.path.len() as u64,
+                current_time()
+            ),
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        ctx.ledger.release(&req.idempotency_key);
+        charge.not_sent();
+        return refused("upstream call failed");
+    }
+    // Waiting for a window can outlive the credential grant. Recheck the same
+    // immutable request inputs before retrieving or minting a credential.
+    let Some(resolved) = resolve(
+        &Asked {
+            operation: &req.operation,
+            target: &req.target,
+            justification: &req.justification,
+            path: &req.path,
+        },
+        ctx.identity,
+        ctx.policy,
+        ctx.upstreams,
+        current_time(),
+    ) else {
+        ctx.ledger.release(&req.idempotency_key);
+        charge.not_sent();
+        return refused("not permitted");
+    };
+
     // 5–6. Mint (for a federated upstream), then fetch: `credential_header`.
-    let header = match credential_header(&resolved, ctx.credentials, now_unix).await {
+    let header = match tokio::time::timeout_at(
+        deadline,
+        credential_header(&resolved, ctx.credentials, current_time()),
+    )
+    .await
+    .unwrap_or(Err(CredentialMiss::MintFailed))
+    {
         Ok(header) => Some(header),
         // No upstream call was made, so the key is released, not settled.
         Err(CredentialMiss::MintFailed) => {
@@ -656,40 +783,104 @@ where
             value: header_value,
             federated,
         }) => {
+            // Credential retrieval can await an exchange. Recheck shared state
+            // and approval expiry now; only this check spends the approval.
+            // Round up because the supplied Unix timestamp has second precision.
+            // Rounding down could keep an approval live beyond its deadline.
+            let current_time = current_time();
+            let permit = match ctx.host_policy.lock() {
+                Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
+                    Some(op) => {
+                        let result = policy.authorize_effect(
+                            effect,
+                            op,
+                            &url,
+                            current_time,
+                            call_charge,
+                            false,
+                        );
+                        if result.is_err() {
+                            effect::capture_review(
+                                &mut policy,
+                                req,
+                                &resolved,
+                                effect,
+                                current_time,
+                            )
+                            .and(result)
+                        } else {
+                            result
+                        }
+                    }
+                    None => Err("unknown operation".into()),
+                },
+                Err(_) => Err("host policy unavailable".into()),
+            };
+            let permit = match permit {
+                Ok(permit) => permit,
+                Err(reason) => {
+                    ctx.ledger.release(&req.idempotency_key);
+                    charge.not_sent();
+                    return refused(&reason);
+                }
+            };
             // Charged as sent whatever the outcome: a transport failure is
             // ambiguous about whether the upstream saw the body.
-            charge.sent();
-            let outcome = call(UpstreamCall {
-                url,
-                header_name: spec.header.clone(),
-                header_value,
-                body: req.body.clone(),
-            })
-            .await;
-            match outcome {
-                // The upstream refused the minted token. Holding on to it would
-                // only fail the next call the same way, so it is evicted and the
-                // next call mints afresh. NOT retried here: the call is a POST
-                // that may have had an effect, and the key settles below as it
-                // would for any other outcome.
-                Ok(resp) if federated && resp.status == 401 => {
-                    ctx.credentials.evict(&spec.name);
-                    refused("upstream call failed")
+            let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time);
+            let outcome = tokio::time::timeout_at(
+                deadline,
+                call(UpstreamCall {
+                    _permit: permit,
+                    url,
+                    header_name: spec.header.clone(),
+                    header_value,
+                    body: crate::egress_meter::body::UploadBody::from_bytes(
+                        req.body.clone(),
+                        charge,
+                        current_time,
+                    ),
+                }),
+            )
+            .await
+            .unwrap_or_else(|_| Err("upstream deadline elapsed".into()));
+            use nucleus_spec::host_effect::outcome::Termination;
+            let termination = match &outcome {
+                Ok(resp) => {
+                    observation.response(resp.status);
+                    observation.bytes(&resp.body);
+                    // This caller's response type does not attest that it read EOF.
+                    Termination::ResponseRead
                 }
-                Ok(mut resp) => {
-                    resp.body.truncate(MAX_UPSTREAM_BODY_BYTES);
-                    PerformReply {
-                        granted: true,
-                        reason: "granted".to_string(),
-                        status: resp.status,
-                        body: resp.body,
+                Err(_) => Termination::TransportFailure,
+            };
+            if observation.finish(termination).is_err() {
+                refused("host outcome evidence unavailable")
+            } else {
+                match outcome {
+                    // The upstream refused the minted token. Holding on to it would
+                    // only fail the next call the same way, so it is evicted and the
+                    // next call mints afresh. NOT retried here: the call is a POST
+                    // that may have had an effect, and the key settles below as it
+                    // would for any other outcome.
+                    Ok(resp) if federated && resp.status == 401 => {
+                        ctx.credentials.evict(&spec.name);
+                        refused("upstream call failed")
                     }
+                    Ok(mut resp) => {
+                        resp.body.truncate(MAX_UPSTREAM_BODY_BYTES);
+                        PerformReply {
+                            granted: true,
+                            reason: "granted".to_string(),
+                            status: resp.status,
+                            body: resp.body,
+                        }
+                    }
+                    // Coarse, and carrying nothing of the error: a transport error
+                    // string can contain the URL, and a resolver error can contain
+                    // the upstream host. Neither is the guest's to learn from a
+                    // failure it caused.
+                    Err(_) => refused("upstream call failed"),
                 }
-                // Coarse, and carrying nothing of the error: a transport error
-                // string can contain the URL, and a resolver error can contain
-                // the upstream host. Neither is the guest's to learn from a
-                // failure it caused.
-                Err(_) => refused("upstream call failed"),
             }
         }
         // Same reason a policy refusal gives, so a guest cannot probe which
@@ -701,13 +892,15 @@ where
         }
     };
 
+    let reply = observe_reply(reply, ctx.host_policy, current_time());
     ctx.ledger
-        .settle(&req.idempotency_key, now_unix, reply.clone());
+        .settle(&req.idempotency_key, effect, current_time(), reply.clone());
     reply
 }
 
 #[cfg(test)]
 mod tests {
+    mod paced;
     use super::*;
     use nucleus_cred_broker::Credential;
     use portcullis::CapabilityLevel;
@@ -782,6 +975,7 @@ mod tests {
         identity: &'a PodIdentity,
     ) -> PerformContext<'a> {
         PerformContext {
+            host_policy: Box::leak(Box::new(crate::host_decide::test_policy(policy.clone()))),
             identity,
             policy,
             credentials,
@@ -793,7 +987,7 @@ mod tests {
 
     /// A meter no test outside the egress ones comes near: the default
     /// ceiling. Leaked because `PerformContext` borrows it for the test's life.
-    fn generous_egress() -> &'static crate::egress_meter::EgressMeter {
+    fn generous_egress() -> &'static Arc<crate::egress_meter::EgressMeter> {
         let meter = crate::egress_meter::EgressMeter::new(
             portcullis::EgressCeiling::undeclared(),
             std::env::temp_dir(),
@@ -806,6 +1000,383 @@ mod tests {
         PerformRequest {
             idempotency_key: key.into(),
             ..request()
+        }
+    }
+
+    #[tokio::test]
+    async fn operator_review_contains_the_exact_buffered_body_without_injected_credentials() {
+        use crate::host_decide::effects::Operator;
+        use base64::Engine as _;
+        let mut policy = PermissionLattice::permissive();
+        policy.obligations.insert(portcullis::Operation::WebFetch);
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream()];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let req = request();
+        let net = Upstream::default();
+        assert!(
+            !handle_perform(&req, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 0);
+        let operator = || Operator::authenticate("operator", "operator").unwrap();
+        {
+            let mut state = context.host_policy.lock().unwrap();
+            let pending = state.list_effect_approvals(operator(), NOW);
+            assert_eq!(pending.len(), 1);
+            let review = state.effect_review(operator(), pending[0].id, NOW).unwrap();
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&review.body_base64)
+                    .unwrap(),
+                req.body
+            );
+            assert_eq!(
+                hex::encode(review.request.digest().unwrap()),
+                pending[0].effect_sha256
+            );
+            assert_eq!(review.request.url, "https://upstream.invalid/v1/messages");
+            assert!(!serde_json::to_string(&review).unwrap().contains(SECRET));
+            state
+                .settle_effect_approval(operator(), pending[0].id, true, NOW)
+                .unwrap();
+        }
+        assert!(
+            handle_perform(&req, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 1);
+        let call = net.calls.lock().unwrap().remove(0);
+        assert_eq!(call.body.collect_bytes().await, req.body);
+    }
+
+    #[tokio::test]
+    async fn operator_charges_share_one_budget_across_calls_retries_and_listener_replacement() {
+        let mut policy = PermissionLattice::permissive();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::new(2, 0);
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream().with_call_charge(1_000_000)];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let net = Upstream::default();
+        let first = with_key("first");
+        assert!(
+            handle_perform(&first, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert!(
+            handle_perform(&first, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(
+            net.count(),
+            1,
+            "a cached retry has no second charge or call"
+        );
+        let second = with_key("second");
+        let third = with_key("third");
+        let (second, third) = tokio::join!(
+            handle_perform(&second, &context, NOW, net.caller()),
+            handle_perform(&third, &context, NOW, net.caller())
+        );
+        assert_eq!(usize::from(second.granted) + usize::from(third.granted), 1);
+        assert_eq!(net.count(), 2);
+        let new_ledger = IdempotencyLedger::new();
+        let mut replacement = ctx(&policy, &credentials, &upstreams, &new_ledger, &identity);
+        replacement.host_policy = context.host_policy;
+        assert!(
+            !handle_perform(&with_key("reopened"), &replacement, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 2);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_transport_failure_is_charged_and_price_changes_invalidate_retry_binding() {
+        let mut policy = PermissionLattice::permissive();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        let credentials = store();
+        let identity = who();
+        let upstreams = [upstream().with_call_charge(1_000_000)];
+        let ledger = IdempotencyLedger::new();
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let failed = handle_perform(&request(), &context, NOW, |_| async {
+            Err("connection lost after send".into())
+        })
+        .await;
+        assert!(!failed.granted);
+        let net = Upstream::default();
+        assert!(
+            !handle_perform(&with_key("fresh"), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        let changed = [upstream().with_call_charge(500_000)];
+        let mut repriced = ctx(&policy, &credentials, &changed, &ledger, &identity);
+        repriced.host_policy = context.host_policy;
+        let reply = handle_perform(&request(), &repriced, NOW, net.caller()).await;
+        assert_eq!(reply.reason, "idempotency key names a different effect");
+        assert_eq!(net.count(), 0);
+    }
+
+    #[tokio::test]
+    async fn unpriced_calls_and_missing_credentials_never_consume_the_host_budget() {
+        let registry = crate::upstreams::UpstreamRegistry::from_toml_str(
+            r#"
+[[upstream]]
+name = "model-api"
+base_url = "https://model-api.example/v1"
+header = "authorization"
+[upstream.credential.env]
+var = "LLM_API_TOKEN"
+"#,
+        )
+        .unwrap();
+        let unpriced = registry.resolve(registry.entries());
+        let mut policy = PermissionLattice::permissive();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        let credentials = store();
+        let ledger = IdempotencyLedger::new();
+        let identity = who();
+        let mut context = ctx(&policy, &credentials, &unpriced, &ledger, &identity);
+        let net = Upstream::default();
+        let reply = handle_perform(&request(), &context, NOW, net.caller()).await;
+        assert_eq!(reply.reason, "upstream has no operator call charge");
+        let priced = [upstream().with_call_charge(1_000_000)];
+        context.upstreams = &priced;
+        let absent = PodCredentials::static_only(nucleus_cred_broker::CredentialStore::new());
+        context.credentials = &absent;
+        assert!(
+            !handle_perform(&with_key("missing-credential"), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        context.credentials = &credentials;
+        assert!(
+            handle_perform(&with_key("funded"), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn durable_host_evidence_precedes_the_call_and_a_storage_fault_blocks_io() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[17; 32]));
+        let evidence = crate::host_decide::evidence::Evidence::create(
+            uuid::Uuid::new_v4(),
+            dir.path(),
+            key.clone(),
+        )
+        .unwrap();
+        let policy = PermissionLattice::permissive();
+        let host_policy = crate::host_decide::PodPolicy::new(
+            portcullis::kernel::Kernel::new(policy.clone()),
+            evidence,
+        );
+        let (credentials, upstreams, ledger, identity) = (
+            store(),
+            vec![upstream().with_call_charge(125_000)],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let mut context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        context.host_policy = &host_policy;
+        let log = dir.path().join(nucleus_spec::host_effect::LOG_FILE);
+        let caller = |_| {
+            let record: nucleus_spec::host_effect::SignedAuthorization =
+                serde_json::from_str(std::fs::read_to_string(&log).unwrap().trim()).unwrap();
+            assert_eq!(record.authorization.call_charge_micro_usd, 125_000);
+            let signature =
+                ed25519_dalek::Signature::from_slice(&hex::decode(record.signature).unwrap())
+                    .unwrap();
+            key.verifying_key()
+                .verify_strict(
+                    &nucleus_spec::host_effect::signing_bytes(&record.authorization).unwrap(),
+                    &signature,
+                )
+                .unwrap();
+            std::future::ready(Ok(UpstreamResponse {
+                status: 200,
+                body: b"{}".to_vec(),
+            }))
+        };
+        assert!(
+            handle_perform(&request(), &context, NOW, caller)
+                .await
+                .granted
+        );
+        let never = |_| -> std::future::Ready<Result<UpstreamResponse, String>> {
+            panic!("no second effect may execute")
+        };
+        assert!(
+            handle_perform(&request(), &context, NOW, never)
+                .await
+                .granted,
+            "replay uses existing evidence"
+        );
+        assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+        std::fs::remove_file(&log).unwrap();
+        std::fs::create_dir(&log).unwrap();
+        let refused = handle_perform(&with_key("storage-failed"), &context, NOW, never).await;
+        assert!(!refused.granted);
+        assert!(refused.reason.contains("evidence storage failed"));
+    }
+
+    #[tokio::test]
+    async fn broker_response_taints_the_host_without_a_guest_report() {
+        let (policy, credentials, upstreams, ledger, identity) = (
+            PermissionLattice::permissive(),
+            store(),
+            vec![upstream()],
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let decide = || {
+            let (decision, _token) = context
+                .host_policy
+                .lock()
+                .unwrap()
+                .decide(portcullis::Operation::GitCommit, "commit");
+            nucleus_decision_protocol::kernel::outcome_of(&decision.verdict)
+        };
+        assert_eq!(decide(), nucleus_decision_protocol::Outcome::Allowed);
+        let net = Upstream::default();
+        assert!(
+            handle_perform(&request(), &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(
+            decide(),
+            nucleus_decision_protocol::Outcome::Denied {
+                reason: nucleus_decision_protocol::DenyReason::FlowRefused,
+            }
+        );
+        // Even a cached response may not cross when the shared state is faulty.
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = context.host_policy.lock().unwrap();
+            panic!("policy update interrupted");
+        }));
+        assert!(fault.is_err());
+        let replay = handle_perform(&request(), &context, NOW, net.caller()).await;
+        assert!(!replay.granted);
+        assert!(replay.body.is_empty());
+        assert_eq!(replay.reason, "host policy unavailable");
+        let fresh =
+            handle_perform(&with_key("fresh-after-fault"), &context, NOW, net.caller()).await;
+        assert!(!fresh.granted);
+        assert_eq!(fresh.reason, "host policy unavailable");
+        assert_eq!(net.count(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retry_key_cannot_name_a_different_effect() {
+        let (policy, credentials, ledger, identity) = (
+            PermissionLattice::permissive(),
+            store(),
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let mut alias = upstream().spec().clone();
+        alias.name = "another-api".into();
+        let upstreams = vec![upstream(), RegistryEntry::env(alias)];
+        let context = ctx(&policy, &credentials, &upstreams, &ledger, &identity);
+        let net = Upstream::default();
+        let original = request();
+        let reply = handle_perform(&original, &context, NOW, net.caller()).await;
+        assert!(reply.granted);
+        let mut body = original.clone();
+        body.body.push(0);
+        let mut path = original.clone();
+        path.path = "/other-resource".into();
+        let mut operation = original.clone();
+        operation.operation = "WriteFiles".into();
+        let mut target = original.clone();
+        target.target = "another-api".into();
+        for changed in [body, path, operation, target] {
+            let rejected = handle_perform(&changed, &context, NOW, net.caller()).await;
+            assert!(!rejected.granted);
+            assert_eq!(rejected.reason, "idempotency key names a different effect");
+        }
+        // Audit rationale is not authority, and does not change the effect.
+        let mut retry = original;
+        retry.justification = "retry after losing the response".into();
+        assert_eq!(
+            handle_perform(&retry, &context, NOW, net.caller()).await,
+            reply
+        );
+        assert_eq!(
+            net.count(),
+            1,
+            "only the original request reached the upstream"
+        );
+    }
+
+    #[test]
+    fn an_in_flight_key_cannot_be_substituted_or_overwritten() {
+        let ledger = IdempotencyLedger::new();
+        let original = ArgsDigest::new([1; 32]);
+        let changed = ArgsDigest::new([2; 32]);
+        assert_eq!(ledger.reserve("key", original, NOW), Reservation::Fresh);
+        assert_eq!(ledger.reserve("key", changed, NOW), Reservation::Conflict);
+        assert_eq!(ledger.reserve("key", original, NOW), Reservation::InFlight);
+        ledger.settle("key", original, NOW, refused("upstream call failed"));
+        assert_eq!(ledger.reserve("key", changed, NOW), Reservation::Conflict);
+        assert!(matches!(
+            ledger.reserve("key", original, NOW),
+            Reservation::Replay(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn retry_binding_includes_the_host_resolved_destination_and_header() {
+        for change_header in [false, true] {
+            let (policy, credentials, ledger, identity) = (
+                PermissionLattice::permissive(),
+                store(),
+                IdempotencyLedger::new(),
+                who(),
+            );
+            let original = vec![upstream()];
+            let net = Upstream::default();
+            assert!(
+                handle_perform(
+                    &request(),
+                    &ctx(&policy, &credentials, &original, &ledger, &identity),
+                    NOW,
+                    net.caller(),
+                )
+                .await
+                .granted
+            );
+            let mut spec = upstream().spec().clone();
+            if change_header {
+                spec.header = "x-api-key".into();
+            } else {
+                spec.upstream = "https://replacement.invalid/v1".into();
+            }
+            let changed = vec![RegistryEntry::env(spec)];
+            let reply = handle_perform(
+                &request(),
+                &ctx(&policy, &credentials, &changed, &ledger, &identity),
+                NOW,
+                net.caller(),
+            )
+            .await;
+            assert_eq!(reply.reason, "idempotency key names a different effect");
+            assert!(!reply.granted);
+            assert_eq!(net.count(), 1);
         }
     }
 
@@ -919,11 +1490,11 @@ mod tests {
         assert_eq!(reply.body, b"{\"ok\":true}");
         assert_eq!(net.count(), 1);
 
-        let calls = net.calls.lock().unwrap();
-        assert_eq!(calls[0].url, "https://upstream.invalid/v1/messages");
-        assert_eq!(calls[0].header_name, "authorization");
-        assert_eq!(calls[0].header_value, format!("Bearer {SECRET}"));
-        assert_eq!(calls[0].body, b"{\"prompt\":\"hi\"}");
+        let call = net.calls.lock().unwrap().remove(0);
+        assert_eq!(call.url, "https://upstream.invalid/v1/messages");
+        assert_eq!(call.header_name, "authorization");
+        assert_eq!(call.header_value, format!("Bearer {SECRET}"));
+        assert_eq!(call.body.collect_bytes().await, b"{\"prompt\":\"hi\"}");
     }
 
     /// **The credential does not come back.** The guest gets the result of the
@@ -1186,9 +1757,12 @@ mod tests {
     #[tokio::test]
     async fn a_concurrent_duplicate_does_not_reach_the_upstream() {
         let ledger = IdempotencyLedger::new();
-        assert_eq!(ledger.reserve("k", NOW), Reservation::Fresh);
         assert_eq!(
-            ledger.reserve("k", NOW),
+            ledger.reserve("k", ArgsDigest::new([0; 32]), NOW),
+            Reservation::Fresh
+        );
+        assert_eq!(
+            ledger.reserve("k", ArgsDigest::new([0; 32]), NOW),
             Reservation::InFlight,
             "a second caller was told to go ahead while the first was running"
         );
@@ -1198,13 +1772,22 @@ mod tests {
     #[test]
     fn a_key_is_forgotten_after_its_ttl() {
         let ledger = IdempotencyLedger::new();
-        ledger.settle("k", NOW, refused("upstream call failed"));
+        ledger.settle(
+            "k",
+            ArgsDigest::new([0; 32]),
+            NOW,
+            refused("upstream call failed"),
+        );
         assert!(matches!(
-            ledger.reserve("k", NOW + IDEMPOTENCY_TTL_SECS - 1),
+            ledger.reserve(
+                "k",
+                ArgsDigest::new([0; 32]),
+                NOW + IDEMPOTENCY_TTL_SECS - 1
+            ),
             Reservation::Replay(_)
         ));
         assert_eq!(
-            ledger.reserve("k", NOW + IDEMPOTENCY_TTL_SECS),
+            ledger.reserve("k", ArgsDigest::new([0; 32]), NOW + IDEMPOTENCY_TTL_SECS),
             Reservation::Fresh,
             "the key was remembered past its window"
         );
@@ -1216,9 +1799,15 @@ mod tests {
     fn a_full_ledger_refuses_a_new_key() {
         let ledger = IdempotencyLedger::new();
         for i in 0..IDEMPOTENCY_CAPACITY {
-            assert_eq!(ledger.reserve(&format!("k{i}"), NOW), Reservation::Fresh);
+            assert_eq!(
+                ledger.reserve(&format!("k{i}"), ArgsDigest::new([0; 32]), NOW),
+                Reservation::Fresh
+            );
         }
-        assert_eq!(ledger.reserve("one-more", NOW), Reservation::Full);
+        assert_eq!(
+            ledger.reserve("one-more", ArgsDigest::new([0; 32]), NOW),
+            Reservation::Full
+        );
         assert_eq!(
             ledger.len(),
             IDEMPOTENCY_CAPACITY,
@@ -1226,7 +1815,10 @@ mod tests {
         );
         // And an EXISTING key still replays — full must not break the pod's
         // outstanding requests, only refuse new ones.
-        assert_eq!(ledger.reserve("k0", NOW), Reservation::InFlight);
+        assert_eq!(
+            ledger.reserve("k0", ArgsDigest::new([0; 32]), NOW),
+            Reservation::InFlight
+        );
     }
 
     /// Expiry frees capacity, so a long-lived pod under the rate limit never
@@ -1235,11 +1827,18 @@ mod tests {
     fn expiry_frees_capacity() {
         let ledger = IdempotencyLedger::new();
         for i in 0..IDEMPOTENCY_CAPACITY {
-            ledger.reserve(&format!("k{i}"), NOW);
+            ledger.reserve(&format!("k{i}"), ArgsDigest::new([0; 32]), NOW);
         }
-        assert_eq!(ledger.reserve("later", NOW), Reservation::Full);
         assert_eq!(
-            ledger.reserve("later", NOW + IDEMPOTENCY_TTL_SECS),
+            ledger.reserve("later", ArgsDigest::new([0; 32]), NOW),
+            Reservation::Full
+        );
+        assert_eq!(
+            ledger.reserve(
+                "later",
+                ArgsDigest::new([0; 32]),
+                NOW + IDEMPOTENCY_TTL_SECS
+            ),
             Reservation::Fresh
         );
     }

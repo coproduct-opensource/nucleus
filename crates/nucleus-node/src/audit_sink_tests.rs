@@ -73,9 +73,12 @@ fn a_sink_name_is_defined_once() {
 /// No file, no sink: the flag unset is an empty set, and an empty file is too.
 #[test]
 fn no_file_configures_no_sink() {
-    let unset = AuditSinkArgs { audit_sinks: None }
-        .load()
-        .expect("unset loads");
+    let unset = AuditSinkArgs {
+        audit_sinks: None,
+        audit_minter_socket: None,
+    }
+    .load()
+    .expect("unset loads");
     assert!(matches!(
         unset.resolve_for(&spec(r#"{"sink":"audit"}"#)),
         Err(PostureRefused::AuditSinkUnknown { .. })

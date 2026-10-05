@@ -34,16 +34,28 @@ pub enum BootError {
         error: String,
     },
     /// A directory init needs could not be created.
-    Dir { path: String, error: String },
+    Dir {
+        path: String,
+        error: String,
+    },
     /// No pod spec at either location. There is no shell fallback: a guest
     /// with nothing to run has nothing to do, and a shell as PID 1 would be
     /// an unmediated workload.
-    PodSpecMissing { primary: String, fallback: String },
+    PodSpecMissing {
+        primary: String,
+        fallback: String,
+    },
     /// The host supplied a spec and it could not be written. NOT a fallback to
     /// the baked spec: the host believes it dispatched a different job, and
     /// running the image's own command while it thinks so is the two of them
     /// disagreeing about what ran.
-    PodSpecUnwritable { path: String },
+    PodSpecUnwritable {
+        path: String,
+    },
+    RequiredHostSpecMissing {
+        path: String,
+    },
+    InvalidHostSpecMode,
     /// `remount / read-only` failed: refusing to start the workload rather
     /// than run it on a writable rootfs.
     SealFailed(String),
@@ -69,6 +81,11 @@ impl std::fmt::Display for BootError {
                 f,
                 "the host supplied a pod spec and {path} could not be written — refusing to boot: running this image's own command while the host believes it dispatched another is the two of them disagreeing about what ran"
             ),
+            BootError::RequiredHostSpecMissing { path } => write!(
+                f,
+                "required host spec missing at {path}; refusing baked-spec fallback"
+            ),
+            BootError::InvalidHostSpecMode => write!(f, "invalid or repeated host spec boot mode"),
             BootError::SealFailed(err) => write!(
                 f,
                 "remount / read-only failed: {err} — refusing to start the workload rather than run it on a writable rootfs"
@@ -227,8 +244,8 @@ pub struct SealedProof {
 /// reported as "I looked and it was fine" (ADR 0007 A-2) with a command
 /// attached.
 ///
-/// `None` — the host had nothing to say — is not a failure: that is every pod
-/// today, and it keeps its baked spec.
+/// `None` means no spec was supplied. The caller decides whether the selected
+/// delivery mode allows a baked fallback.
 pub fn place_host_spec(
     primary: &str,
     fetched: Option<&str>,
@@ -244,6 +261,48 @@ pub fn place_host_spec(
             path: primary.to_string(),
         })
     }
+}
+
+/// Parse the node-owned selection mode. Malformed or duplicate mode tokens
+/// cannot silently restore baked-spec precedence.
+pub fn requires_host_spec(cmdline: &str) -> Result<bool, BootError> {
+    let token = nucleus_spec::guest_layout::HOST_SPEC_REQUIRED_ARG;
+    let key = token.split_once('=').expect("constant has a value").0;
+    let mut required = false;
+    for arg in cmdline.split_whitespace() {
+        if arg.split('=').next() == Some(key) {
+            if required || arg != token {
+                return Err(BootError::InvalidHostSpecMode);
+            }
+            required = true;
+        }
+    }
+    Ok(required)
+}
+
+/// Enforcing guests take only the host's spec. Legacy guests keep their baked
+/// spec precedence, including the host fallback for generic snapshot bases.
+pub fn resolve_launch_spec(
+    required: bool,
+    host: &str,
+    primary: &str,
+    fallback: &str,
+    exists: impl Fn(&str) -> bool,
+    copy: impl FnOnce(&str, &str) -> bool,
+) -> Result<String, BootError> {
+    if required {
+        return if exists(host) {
+            Ok(host.to_string())
+        } else {
+            Err(BootError::RequiredHostSpecMissing {
+                path: host.to_string(),
+            })
+        };
+    }
+    if !exists(primary) && !exists(fallback) && exists(host) {
+        return Ok(host.to_string());
+    }
+    resolve_pod_spec(primary, fallback, exists, copy)
 }
 
 pub fn resolve_pod_spec(
@@ -384,6 +443,36 @@ mod tests {
 #[cfg(test)]
 mod host_spec_tests {
     use super::*;
+
+    #[test]
+    fn required_host_spec_overrides_baked_specs_and_never_falls_back() {
+        let select = |required, host_exists| {
+            resolve_launch_spec(
+                required,
+                "/run/host.yaml",
+                "/etc/nucleus/pod.yaml",
+                "/pod.yaml",
+                |p| p != "/run/host.yaml" || host_exists,
+                |_, _| panic!("no copy needed"),
+            )
+        };
+        assert_eq!(select(true, true).unwrap(), "/run/host.yaml");
+        assert!(matches!(
+            select(true, false),
+            Err(BootError::RequiredHostSpecMissing { .. })
+        ));
+        assert_eq!(select(false, true).unwrap(), "/etc/nucleus/pod.yaml");
+    }
+
+    #[test]
+    fn invalid_host_spec_modes_cannot_restore_legacy_selection() {
+        let required = nucleus_spec::guest_layout::HOST_SPEC_REQUIRED_ARG;
+        assert!(requires_host_spec(required).unwrap());
+        assert!(!requires_host_spec("console=ttyS0").unwrap());
+        assert!(requires_host_spec(&format!("{required} {required}")).is_err());
+        assert!(requires_host_spec("nucleus.host_spec=optional").is_err());
+        assert!(requires_host_spec("nucleus.host_spec").is_err());
+    }
 
     /// The host's spec is written where `resolve_pod_spec` looks, so the two
     /// compose: place, then resolve.

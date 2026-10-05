@@ -799,6 +799,7 @@ mod through_the_broker {
             r#"
 [[upstream]]
 name = "model-api"
+call_charge_micro_usd = 0
 base_url = "{up}/v1"
 header = "authorization"
 value_prefix = "Bearer "
@@ -868,6 +869,9 @@ policy_id = "example-policy-0001"
 
         async fn call_as(&self, req: &PerformRequest, now: u64) -> PerformReply {
             let ctx = PerformContext {
+                host_policy: Box::leak(Box::new(crate::host_decide::test_policy(
+                    self.policy.clone(),
+                ))),
                 identity: &self.identity,
                 policy: &self.policy,
                 credentials: &self.credentials,
@@ -895,6 +899,99 @@ policy_id = "example-policy-0001"
                 .read(|s| format!("{s:?}").contains(target))
                 .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn operator_tariffs_refuse_before_mint_and_failed_mint_does_not_spend() {
+        let tokens = TokenEndpoint::start(Some(3600), Duration::ZERO, &[400]).await;
+        let up = Upstream::start(&[]).await;
+        let pod = Pod::new(POD_A, &source(), registry(&tokens, &up), NOW + DAY);
+        let mut policy = pod.policy.clone();
+        policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        let host_policy = crate::host_decide::test_policy(policy.clone());
+        let expensive: Vec<_> = pod
+            .upstreams
+            .iter()
+            .cloned()
+            .map(|entry| entry.with_call_charge(2_000_000))
+            .collect();
+        let affordable: Vec<_> = pod
+            .upstreams
+            .iter()
+            .cloned()
+            .map(|entry| entry.with_call_charge(1_000_000))
+            .collect();
+        let mut ctx = PerformContext {
+            host_policy: &host_policy,
+            identity: &pod.identity,
+            policy: &policy,
+            credentials: &pod.credentials,
+            upstreams: &expensive,
+            ledger: &pod.ledger,
+            egress: &pod.egress,
+        };
+        let reply = handle_perform(&perform("priced"), &ctx, NOW, |call| (pod.caller)(call)).await;
+        assert!(reply.reason.contains("budget exhausted"));
+        assert!(tokens.assertions().await.is_empty());
+        ctx.upstreams = &affordable;
+        let failed = handle_perform(&perform("priced"), &ctx, NOW, |call| (pod.caller)(call)).await;
+        assert_eq!(failed.reason, "upstream call failed");
+        assert!(up.seen().is_empty());
+        let retried =
+            handle_perform(&perform("priced"), &ctx, NOW, |call| (pod.caller)(call)).await;
+        assert!(
+            retried.granted,
+            "failed mint must preserve the entire budget"
+        );
+        let exhausted = handle_perform(&perform("after-charge"), &ctx, NOW, |call| {
+            (pod.caller)(call)
+        })
+        .await;
+        assert!(!exhausted.granted);
+        assert_eq!(up.seen().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn taint_arriving_during_credential_mint_prevents_the_effect() {
+        let tokens = TokenEndpoint::start(Some(3600), Duration::from_millis(100), &[]).await;
+        let up = Upstream::start(&[]).await;
+        let source = source();
+        let pod = Pod::new(POD_A, &source, registry(&tokens, &up), NOW + DAY);
+        let host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        let ctx = PerformContext {
+            host_policy: &host_policy,
+            identity: &pod.identity,
+            policy: &pod.policy,
+            credentials: &pod.credentials,
+            upstreams: &pod.upstreams,
+            ledger: &pod.ledger,
+            egress: &pod.egress,
+        };
+        let mut req = perform("mint-race");
+        req.operation = "GitCommit".into();
+        let calls = AtomicUsize::new(0);
+        let effect = handle_perform(&req, &ctx, NOW, |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(Err("must not call upstream".into()))
+        });
+        let observation = async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while tokens.minted() == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("preflight allowed the mint");
+            crate::host_decide::PodPolicy::observe_response(&host_policy, NOW).unwrap();
+        };
+        let (reply, ()) = tokio::join!(effect, observation);
+        assert!(!reply.granted, "{reply:?}");
+        assert!(
+            reply.reason.starts_with("host policy refused:"),
+            "{reply:?}"
+        );
+        assert_eq!(tokens.minted(), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
     fn approval(pod: &str, now: u64) -> Approved {
@@ -937,6 +1034,9 @@ policy_id = "example-policy-0001"
         );
         let (client, server) = tokio::io::duplex(512 * 1024);
         let serving = BrokerServing {
+            host_policy: Box::leak(Box::new(crate::host_decide::test_policy(
+                PermissionLattice::permissive(),
+            ))),
             identity: &pod.identity,
             policy: &pod.policy,
             credentials: &pod.credentials,
@@ -1080,9 +1180,12 @@ policy_id = "example-policy-0001"
         let pod = Pod::new(POD_A, &source(), registry(&tokens, &up), NOW + 600);
 
         assert!(pod.call("k1", NOW).await.granted);
-        assert!(pod.call("k2", NOW + 539).await.granted);
+        // PERFORM refreshes credential authorization after pacing and rounds
+        // elapsed subsecond time up, just as it does for final host approval.
+        // These supplied timestamps therefore reach the cache at +539/+540.
+        assert!(pod.call("k2", NOW + 538).await.granted);
         assert_eq!(tokens.minted(), 1);
-        assert!(pod.call("k3", NOW + 540).await.granted);
+        assert!(pod.call("k3", NOW + 539).await.granted);
         assert_eq!(
             tokens.minted(),
             2,

@@ -73,6 +73,9 @@ use crate::spec_posture::PostureRefused;
 /// The node's audit sink flag, flattened into `Args`.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct AuditSinkArgs {
+    /// Host-only Unix socket of the operator scoped audit credential service.
+    #[arg(long, env = "NUCLEUS_NODE_AUDIT_MINTER_SOCKET")]
+    pub audit_minter_socket: Option<PathBuf>,
     /// TOML file of the audit sinks this node ships pod audit logs to. A pod spec may only name one
     /// of these and narrow its prefix, and its uploader signs with a credential minted for that
     /// prefix alone, never the node's own. Unset: no sink, and a spec that names one is refused at
@@ -82,6 +85,14 @@ pub(crate) struct AuditSinkArgs {
 }
 
 impl AuditSinkArgs {
+    pub(crate) fn minter(
+        &self,
+    ) -> Result<Option<std::sync::Arc<dyn credentials::ScopedCredentialMinter>>, String> {
+        self.audit_minter_socket
+            .as_deref()
+            .map(credentials::socket::connect_config)
+            .transpose()
+    }
     /// The sinks in force. A file that does not load stops the node: an operator who wrote one
     /// expects it to be used.
     pub(crate) fn load(&self) -> Result<AuditSinks, String> {

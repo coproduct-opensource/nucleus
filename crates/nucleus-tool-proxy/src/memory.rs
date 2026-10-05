@@ -15,9 +15,9 @@
 //!   `declassify`-promoted record (k-of-n signed witness) is not tainting and may
 //!   inform an action.
 //!
-//! The handlers are thin: memory ops touch only the in-process
-//! [`ProvenanceMemorySet`] + the flow graph — no filesystem sandbox, approval,
-//! or verdict-sink machinery (those are for file/exec tools). The security logic
+//! The handlers use the provenance set and flow graph; an operator-configured
+//! journal also durably stores accepted records and revalidates them on restart.
+//! Persistence uses runtime-owned storage outside the workspace. The security logic
 //! lives in the two `*_core` functions so it is unit-testable without a full
 //! `AppState`. The two handlers ([`memory_write`], [`memory_recall`]) live here
 //! beside them rather than in `main.rs`, so the preflight a handler mints and the
@@ -356,7 +356,8 @@ pub(crate) async fn memory_write(
     };
     let mut set = state.provenance_memory.lock().await;
     let registry = state.memory_transforms.as_ref();
-    Ok(Json(memory_write_core(&mut set, registry, req, authority)?))
+    let prepared = set.prepare(registry, req, authority)?;
+    Ok(Json(prepared.commit().await?))
 }
 
 /// POST `/v1/memory/recall` — taint-labeled recall gated through the IFC flow
@@ -405,7 +406,7 @@ pub(crate) async fn memory_recall(
     // the egress verdict reads.
     let mut graph = state.flow_graph.lock().await;
     let resp = memory_recall_core(
-        &set,
+        set.records()?,
         &mut graph,
         state.declassify_trusted_keys.as_ref(),
         state.declassify_threshold,

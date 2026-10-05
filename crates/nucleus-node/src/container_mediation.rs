@@ -69,6 +69,21 @@ pub(crate) struct ContainerLaunch {
     pub(crate) cmd: Option<Vec<String>>,
 }
 
+/// Translate the admitted host workspace into the container's mount namespace.
+/// Raw YAML retains extension fields such as the orchestrator's task.
+pub(crate) fn pod_yaml(
+    spec: &nucleus_spec::PodSpec,
+    raw: Option<&str>,
+) -> Result<String, crate::ApiError> {
+    let mut value: serde_yaml::Value = match raw {
+        Some(raw) => serde_yaml::from_str(raw),
+        None => serde_yaml::to_value(spec),
+    }
+    .map_err(crate::ApiError::Serde)?;
+    value["spec"]["work_dir"] = serde_yaml::Value::String("/workspace".into());
+    serde_yaml::to_string(&value).map_err(crate::ApiError::Serde)
+}
+
 /// The container's image and command for a pod, from node configuration and the env the node
 /// built. Nothing here reads the spec: its only influence is `NUCLEUS_TASK_CMD`, which reaches
 /// `env` through admitted `credentials.env` and is used only on an unmediated node.
@@ -202,5 +217,34 @@ mod tests {
 
         let plain = launch(ContainerMediation::Unmediated, "img", &[]);
         assert_eq!((plain.entrypoint, plain.cmd), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    #[test]
+    fn container_spec_translates_workspace_and_keeps_extension_fields() {
+        let raw = r#"apiVersion: nucleus/v1
+kind: Pod
+spec:
+  work_dir: /srv/workspaces/project
+  task: run the standard tests
+"#;
+        let spec =
+            serde_yaml::from_str(&raw.replace("  task: run the standard tests\n", "")).unwrap();
+        let translated = super::pod_yaml(&spec, Some(raw)).unwrap();
+        let value: serde_yaml::Value = serde_yaml::from_str(&translated).unwrap();
+        assert_eq!(value["spec"]["work_dir"].as_str(), Some("/workspace"));
+        assert_eq!(
+            value["spec"]["task"].as_str(),
+            Some("run the standard tests")
+        );
+        let typed: nucleus_spec::PodSpec =
+            serde_yaml::from_str(&super::pod_yaml(&spec, None).unwrap()).unwrap();
+        assert_eq!(typed.spec.work_dir, std::path::Path::new("/workspace"));
+        assert_eq!(
+            spec.spec.work_dir,
+            std::path::Path::new("/srv/workspaces/project")
+        );
     }
 }

@@ -43,10 +43,10 @@ mod lockdown;
 mod manifest;
 mod mediation;
 // The Apple `container` microVM host. It compiles everywhere so its tests run
-// in CI; the change that wires it into `shell` and `run` gates it to macOS.
+// in CI; its user-facing command checks macOS before invoking the backend.
 #[expect(
     dead_code,
-    reason = "not wired into shell/run until the host-tier wiring lands"
+    reason = "relay and supervisor APIs await automatic shell/run host selection"
 )]
 mod microvm_host;
 mod node;
@@ -65,10 +65,13 @@ mod trust;
 // Completeness by 2-safety: the observation function, the canonicaliser and the
 // comparison. Reached from `nucleus two-safety` via `twosafety_boot`, which is
 // the implementation of its `Boot` trait that boots real pods.
+#[cfg(test)]
+mod host_evidence_live;
 mod twosafety;
 mod twosafety_boot;
 mod verify;
 mod verify_attestation;
+mod workload_verification;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
@@ -108,8 +111,11 @@ enum Commands {
     /// Launch an interactive agent session with nucleus security context
     Shell(shell::ShellArgs),
 
-    /// Set up nucleus environment (Lima VM, artifacts, secrets)
+    /// Configure an Apple Container or Lima host and verify a real workload
     Setup(setup::SetupArgs),
+
+    /// Run a Firecracker host using Apple Container on macOS
+    MicrovmHost(microvm_host::command::HostArgs),
 
     /// Prove Tier 2 works by booting a real nucleus pod
     Verify(verify::VerifyArgs),
@@ -117,10 +123,10 @@ enum Commands {
     /// Boot a pod twice differing only in a secret, and compare (2-safety)
     TwoSafety(twosafety_boot::TwoSafetyArgs),
 
-    /// Start nucleus-node in the Lima VM
+    /// Start the selected Apple or Lima host and check node readiness
     Start(start::StartArgs),
 
-    /// Stop nucleus-node and optionally the Lima VM
+    /// Stop the selected host (Apple state is retained)
     Stop(stop::StopArgs),
 
     /// Emergency lockdown — drop all agents to read-only
@@ -153,7 +159,7 @@ enum Commands {
     /// Publish, inspect and rotate a node's federation issuer key (ADR 0010)
     Federation(federation::FederationArgs),
 
-    /// Interact with a running nucleus-node (test utilities)
+    /// Manage pods, review effect approvals, and collect execution evidence
     Node(node::NodeArgs),
 
     /// Walk the data-lineage DAG for a SPIFFE call ID
@@ -219,13 +225,14 @@ async fn main() -> Result<()> {
         }
         Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Shell(args) => shell::execute(args).await,
-        Commands::Setup(args) => setup::execute(args).await,
-        Commands::Verify(args) => verify::execute(args).await,
+        Commands::Setup(args) => setup::execute(args, &config_path).await,
+        Commands::MicrovmHost(args) => microvm_host::command::execute(args).await,
+        Commands::Verify(args) => verify::execute(args, &config_path).await,
         Commands::TwoSafety(args) => twosafety_boot::execute(args).await,
-        Commands::Start(args) => start::execute(args).await,
-        Commands::Stop(args) => stop::execute(args).await,
+        Commands::Start(args) => start::execute(args, &config_path).await,
+        Commands::Stop(args) => stop::execute(args, &config_path).await,
         Commands::Lockdown(args) => lockdown::execute(args).await,
-        Commands::Doctor => doctor::diagnose().await,
+        Commands::Doctor => doctor::diagnose(&config_path).await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
         Commands::Observe(args) => observe::execute(args),
@@ -235,7 +242,7 @@ async fn main() -> Result<()> {
         Commands::Trust(args) => trust::execute(args),
         Commands::Identity(args) => identity::execute(args),
         Commands::Federation(args) => federation::execute(args),
-        Commands::Node(args) => node::execute(args).await,
+        Commands::Node(args) => node::execute(args, &config_path).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
         Commands::Envelope(args) => envelope::execute(args),

@@ -21,6 +21,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["pkcs8", "alloc"] }
 hex = { workspace = true }
 # `measure_artifact`: the digest the node holds `scratch_digest` to. One
 # function for the fact, not a second hash here (ADR 0007 G-1).
@@ -35,6 +36,7 @@ tar = { version = "0.4", default-features = false }
 # The pinned mke2fs.conf and the probe's smoke build live in a temp dir.
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "fs"] }
+zeroize = "1"
 
 # Safe wrappers over the KVM ioctls, from the crate the VMM itself is built on,
 # so the probe adds no `unsafe` to the workspace. Linux-only by nature.

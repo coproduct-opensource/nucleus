@@ -114,7 +114,11 @@ fn container_driver_rejects_network_policy_fail_closed() {
 /// arrange than shipping a specific vulnerable build.
 #[tokio::test]
 async fn vmm_preflight_refuses_a_binary_it_cannot_run() {
-    let verdict = vmm_preflight(Path::new("/nonexistent/firecracker")).await;
+    let verdict = vmm_preflight(
+        Path::new("/nonexistent/firecracker"),
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    )
+    .await;
     assert!(
         !verdict.is_acceptable(),
         "an unrunnable VMM must be refused, got {verdict:?}"
@@ -125,12 +129,58 @@ async fn vmm_preflight_refuses_a_binary_it_cannot_run() {
 /// `/bin/echo --version` prints something, but not a Firecracker banner.
 #[tokio::test]
 async fn vmm_preflight_refuses_output_without_a_version() {
-    let verdict = vmm_preflight(Path::new("/usr/bin/true")).await;
+    let verdict = vmm_preflight(
+        Path::new("/usr/bin/true"),
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    )
+    .await;
     assert!(
         !verdict.is_acceptable(),
         "output with no version triple must be refused, got {verdict:?}"
     );
 }
+#[tokio::test]
+async fn vmm_preflight_bounds_a_stalled_probe_and_skips_expired_launches() {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = std::env::current_exe().unwrap();
+    let dir = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+    let probe = dir.path().join("probe");
+    std::fs::write(
+        &probe,
+        "#!/bin/sh\necho started > \"$0.started\"\nexec sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let expired = vmm_preflight(&probe, tokio::time::Instant::now()).await;
+    assert!(!expired.is_acceptable());
+    assert!(!dir.path().join("probe.started").exists());
+    let verdict = tokio::time::timeout(
+        Duration::from_secs(5),
+        vmm_preflight(&probe, tokio::time::Instant::now() + Duration::from_secs(1)),
+    )
+    .await
+    .expect("stalled probe did not obey its deadline");
+    assert!(dir.path().join("probe.started").exists());
+    assert!(
+        matches!(verdict, nucleus_spec::vmm_version::VmmVerdict::Unparseable { raw } if raw.contains("timed out"))
+    );
+    let ready = dir.path().join("ready");
+    std::fs::write(
+        &ready,
+        format!(
+            "#!/bin/sh\nprintf 'Firecracker v{}\\n'\n",
+            nucleus_spec::vmm_version::PINNED_STR
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ready, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        vmm_preflight(&ready, tokio::time::Instant::now() + Duration::from_secs(1))
+            .await
+            .is_acceptable()
+    );
+}
+
 // ── Egress chain: correspondence with the Lean confinement theorem ────────
 
 use crate::net::{ResolvedDnsEntry, RuleKind, egress_chain, model_chain};
@@ -883,7 +933,7 @@ fn create_pod_internal_still_consults_the_authority_gate() {
         body.contains("reservation.release().await;") && body.contains("reservation.commit();"),
         "a failed spawn hands the budget reservation back, and only a registered pod keeps it \
          (a dropped create releases through the guard's Drop, #3032). `Reservation::release` \
-         is the unspawned arm: nothing ran, so the spend is zero, where `release_child(_, None)` \
+         is the unspawned arm: nothing ran, so the spend is zero, where `release_child(_)` \
          would fold the WHOLE allocation into the parent"
     );
     // Both entry points build an Admission — neither bypasses the gate.
@@ -949,6 +999,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         .await
         .expect("start container");
     let pod = ContainerPod {
+        launch_intent: None,
         container_id: created.id.clone(),
         docker,
         signed_proxy: Mutex::new(None),
@@ -963,12 +1014,14 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
             .expect("minimal spec"),
         created_at: 1_757_000_000,
+        execution_deadline: tokio::time::Instant::now() + Duration::from_secs(3600),
         log_path: std::env::temp_dir().join("container-cancel-test.log"),
         proxy_addr: Mutex::new(None),
         driver_state: DriverState::Container(Box::new(pod)),
         parent_pod_id: None,
         posture_stamp: None,
         owner: None,
+        capacity: tokio::sync::Mutex::new(None),
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;
@@ -1044,9 +1097,9 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         &state,
         &spec,
         Uuid::new_v4(),
-        crate::container_mediation::ContainerMediation::ToolProxy,
         "test-token-123",
         "",
+        None,
         None,
     )
     .await;
@@ -1064,13 +1117,15 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
 
     // Direct mode runs no tool-proxy, so there is nothing to arm and the
     // credentials stay out of the workload's environment.
+    let mut direct_state = state.clone();
+    direct_state.container_mediation = crate::container_mediation::ContainerMediation::Unmediated;
     let direct = container_env(
-        &state,
+        &direct_state,
         &spec,
         Uuid::new_v4(),
-        crate::container_mediation::ContainerMediation::Unmediated,
         "test-token-123",
         "",
+        None,
         None,
     )
     .await;
@@ -1160,10 +1215,10 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
         &state,
         &spec,
         Uuid::new_v4(),
-        crate::container_mediation::ContainerMediation::ToolProxy,
         "test-token-123",
         "",
         Some(&grant),
+        None,
     )
     .await;
     let leaked: Vec<&str> = env

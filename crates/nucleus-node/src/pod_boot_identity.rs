@@ -17,24 +17,132 @@ pub(crate) struct IdentityParts {
 }
 
 #[must_use]
-pub(crate) struct PreparedIdentity(Option<IdentityParts>);
+pub(crate) struct PreparedIdentity {
+    parts: Option<IdentityParts>,
+    withholding: Option<crate::cred_split::Withheld>,
+}
 
 impl PreparedIdentity {
     pub(crate) fn identity(&self) -> Option<&nucleus_identity::Identity> {
-        self.0.as_ref().and_then(|parts| parts.identity.as_ref())
+        self.parts
+            .as_ref()
+            .and_then(|parts| parts.identity.as_ref())
     }
 
-    /// The caller holds prepared services through spawn and confinement checks.
-    pub(crate) fn spawn(
-        &self,
-        command: &mut tokio::process::Command,
-    ) -> std::io::Result<tokio::process::Child> {
-        boot_trace::time_sync("firecracker.spawn", || command.spawn())
+    /// Broker admission and binding must finish before a VMM can be spawned.
+    /// A refusal consumes and drops the identity preparation (D-1, C-4).
+    pub(crate) async fn with_broker(
+        self,
+        state: &NodeState,
+        spec: &PodSpec,
+        vsock_path: &Path,
+        id: Uuid,
+        capability: broker_launch::VerifyToken,
+        jail_owner: Option<(u32, u32)>,
+    ) -> Result<PreparedBroker, ApiError> {
+        let egress = crate::egress_meter::EgressMeter::for_pod(
+            spec,
+            crate::lifecycle::pod_dir(&state.state_dir, id),
+            id,
+        );
+        let broker = broker_launch::start_broker_for_pod(broker_launch::BrokerInputs {
+            state,
+            spec,
+            vsock_path,
+            registered: self.identity(),
+            id,
+            capability,
+            jail_owner,
+            withheld: self.withholding.as_ref(),
+            egress: Arc::clone(&egress),
+        })
+        .await?;
+        Ok(PreparedBroker {
+            identity: self,
+            broker,
+            egress,
+        })
     }
 
     /// Transfer cleanup responsibility to the running pod, by value (C-4).
     pub(crate) fn into_parts(mut self) -> IdentityParts {
-        self.0.take().expect("prepared identity is consumed once")
+        self.parts
+            .take()
+            .expect("prepared identity is consumed once")
+    }
+}
+
+/// Broker readiness precedes explicit network-accounting preparation (D-1).
+#[must_use]
+pub(crate) struct PreparedBroker {
+    identity: PreparedIdentity,
+    broker: Option<broker_transport::BrokerListener>,
+    egress: Arc<crate::egress_meter::EgressMeter>,
+}
+
+impl PreparedBroker {
+    pub(crate) async fn with_network_meter(
+        self,
+        plan: Option<&net::NetPlan>,
+    ) -> Result<PreparedPod, ApiError> {
+        let link = match plan {
+            Some(plan) => Some(crate::egress_link::LinkMonitor::start(plan, self.egress).await?),
+            None => None,
+        };
+        Ok(PreparedPod {
+            identity: self.identity,
+            broker: self.broker,
+            link,
+        })
+    }
+}
+
+/// Only completed broker and network preparation can expose VMM spawn.
+#[must_use]
+pub(crate) struct PreparedPod {
+    identity: PreparedIdentity,
+    broker: Option<broker_transport::BrokerListener>,
+    link: Option<crate::egress_link::LinkMonitor>,
+}
+
+impl PreparedPod {
+    pub(crate) fn spawn(
+        &self,
+        command: &mut tokio::process::Command,
+    ) -> std::io::Result<tokio::process::Child> {
+        // Any later launch error must drop a killing child, not detach a VMM.
+        command.kill_on_drop(true);
+        boot_trace::time_sync("firecracker.spawn", || command.spawn())
+    }
+
+    pub(crate) async fn gate(
+        &self,
+        addr: SocketAddr,
+        pod_dir: &Path,
+        spec: &PodSpec,
+        id: Uuid,
+        child: &mut tokio::process::Child,
+    ) -> Result<(), ApiError> {
+        net::confinement::gate(addr, pod_dir, spec, id, child).await?;
+        if self.identity.withholding.is_some() {
+            let console = tokio::fs::read_to_string(pod_dir.join("firecracker.log"))
+                .await
+                .map_err(|e| {
+                    ApiError::Driver(format!("host spec acknowledgment unavailable: {e}"))
+                })?;
+            crate::cred_split::verify_guest_ack(&console)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        IdentityParts,
+        Option<broker_transport::BrokerListener>,
+        Option<crate::egress_link::LinkMonitor>,
+    ) {
+        (self.identity.into_parts(), self.broker, self.link)
     }
 }
 
@@ -45,7 +153,7 @@ impl Drop for PreparedIdentity {
             manager,
             registry_key,
             bridge,
-        }) = self.0.take()
+        }) = self.parts.take()
         {
             tokio::spawn(async move {
                 if let Some(bridge) = bridge {
@@ -101,12 +209,15 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         measured,
     } = inputs;
     let identity_source = net::identity_registration(state.identity_manager.as_ref(), grant);
-    let mut ready = PreparedIdentity(Some(IdentityParts {
-        identity: None,
-        manager: None,
-        registry_key: None,
-        bridge: None,
-    }));
+    let mut ready = PreparedIdentity {
+        parts: Some(IdentityParts {
+            identity: None,
+            manager: None,
+            registry_key: None,
+            bridge: None,
+        }),
+        withholding: None,
+    };
     if let Some(manager) = identity_source {
         let identity = manager.pod_identity(id);
         let registry_key = id.to_string();
@@ -114,7 +225,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             .register_pod(registry_key.clone(), identity.clone())
             .await;
         // Own registration before any further await can fail or be cancelled.
-        ready.0 = Some(IdentityParts {
+        ready.parts = Some(IdentityParts {
             identity: Some(identity.clone()),
             manager: Some(manager.clone()),
             registry_key: Some(registry_key),
@@ -165,13 +276,16 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             }
         }
 
+        let (guest_spec, withheld) =
+            crate::cred_split::guest_spec_yaml(spec, state.broker_enforcing)
+                .map_err(|e| ApiError::Driver(format!("guest spec serialization failed: {e}")))?;
         let bridge = workload_api_vsock::WorkloadApiVsockBridge::start(
             vsock_path,
             state.identity_vsock_port,
             id,
             manager.clone(),
             workload_api_vsock::PodMaterial {
-                pod_spec_yaml: serde_yaml::to_string(spec).ok(),
+                pod_spec_yaml: Some(guest_spec),
                 // The same token that rides the kernel command line today.
                 // Serving it here is what lets the cmdline copy go: a value
                 // fetched after boot is not baked into a snapshot base.
@@ -210,10 +324,6 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // command line (the C1 exposure). Minted for this pod's
                 // resolved sink; the node's own key is never served (#3160).
                 audit_creds,
-                // A per-pod ed25519 seed the guest proxy signs receipts with,
-                // served ONCE before the workload exists. See `mediation`.
-                mediation_signing_key: mediation::new_seed_hex(pod_dir),
-                mediation_spiffe_id: Some(mediation::spiffe_id(manager.trust_domain(), id)),
                 // Where the host durably collects SHIP_RECEIPT receipts.
                 receipt_dir: Some(pod_dir.to_path_buf()),
                 pod_registry: state.pods.clone(),
@@ -225,7 +335,12 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             ApiError::Driver(format!("workload API must be ready before VMM spawn: {e}"))
         })?;
         info!(socket = %bridge.socket_path().display(), "workload API ready before VMM spawn");
-        ready.0.as_mut().expect("guard owns registration").bridge = Some(bridge);
+        ready
+            .parts
+            .as_mut()
+            .expect("guard owns registration")
+            .bridge = Some(bridge);
+        ready.withholding = withheld;
     }
     Ok(ready)
 }
@@ -233,6 +348,10 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
 impl FirecrackerPod {
     /// Cleans up identity resources (unregister from VM registry, forget certificate).
     pub(super) async fn cleanup_identity(&self) {
+        // Revoke effects before waiting for any other identity service to drain.
+        if let Some(listener) = self.broker.lock().await.as_ref() {
+            listener.revoke();
+        }
         // Shut down workload API bridge
         if let Some(bridge) = self.workload_api_bridge.lock().await.take() {
             bridge.shutdown().await;

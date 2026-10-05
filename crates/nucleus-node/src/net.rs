@@ -22,8 +22,10 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+
+mod cleanup;
 
 use ipnet::IpNet;
 use nucleus_ifc_kernel::extracted::egress::Rule as EgressRule;
@@ -88,7 +90,7 @@ const GUEST_PREFIX: u8 = 30;
 #[derive(Debug)]
 pub struct NetworkAllocator {
     /// Available indices in the pool (returned indices are recycled)
-    available: Mutex<Vec<usize>>,
+    available: Arc<Mutex<Vec<usize>>>,
     /// Next index to use when pool is empty (monotonic growth)
     next: AtomicUsize,
     /// Maximum number of allocations (computed from CIDR)
@@ -103,7 +105,7 @@ impl NetworkAllocator {
         }
         let max = 1usize << (POD_PREFIX - NET_POOL_PREFIX) as usize;
         Self {
-            available: Mutex::new(Vec::new()),
+            available: Arc::new(Mutex::new(Vec::new())),
             next: AtomicUsize::new(0),
             max,
         }
@@ -149,7 +151,10 @@ impl NetworkAllocator {
         let bridge = format!("br{short}");
 
         Ok(NetPlan {
-            index,
+            lease: Some(NetworkLease {
+                available: self.available.clone(),
+                index,
+            }),
             netns,
             host_veth,
             peer_veth,
@@ -165,21 +170,31 @@ impl NetworkAllocator {
             dns: DEFAULT_DNS,
         })
     }
+}
 
-    /// Release an index back to the pool for reuse.
-    pub fn release(&self, index: usize) {
-        let mut available = self.available.lock().unwrap();
-        // Avoid duplicates
-        if !available.contains(&index) {
-            available.push(index);
+#[derive(Debug)]
+struct NetworkLease {
+    available: Arc<Mutex<Vec<usize>>>,
+    index: usize,
+}
+
+impl NetworkLease {
+    fn release(self) -> Result<(), Self> {
+        let available = self.available.clone();
+        match available.lock() {
+            Ok(mut pool) => {
+                pool.push(self.index);
+                Ok(())
+            }
+            Err(_) => Err(self),
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct NetPlan {
-    /// Pool index for this allocation (used for reclamation)
-    pub index: usize,
+    // Exclusive reclamation right; retired plans carry no reusable allocation.
+    lease: Option<NetworkLease>,
     pub netns: String,
     pub host_veth: String,
     pub peer_veth: String,
@@ -201,6 +216,10 @@ pub struct NetPlan {
 }
 
 impl NetPlan {
+    #[cfg(test)]
+    fn index(&self) -> usize {
+        self.lease.as_ref().expect("live network allocation").index
+    }
     pub fn kernel_arg(&self) -> String {
         format!(
             "nucleus.net={}/{},gw={},dns={}",
@@ -489,36 +508,12 @@ pub async fn apply_default_deny(_netns: &str) -> Result<(), ApiError> {
     ))
 }
 
-#[cfg(target_os = "linux")]
-pub async fn cleanup_network(plan: &NetPlan) -> Result<(), ApiError> {
-    // Exactly the list `setup_network` installed. Best-effort like the rest of teardown: a rule
-    // setup never reached is absent, and `-D` on an absent rule is the only failure expected.
-    for rule in host_link::host_link_rules(&plan.host_veth, plan.subnet) {
-        let _ = Command::new("iptables").args(rule.delete_argv()).status();
-    }
-    let _ = Command::new("ip")
-        .args(["link", "del", &plan.host_veth])
-        .status();
-    let _ = Command::new("ip")
-        .args(["netns", "del", &plan.netns])
-        .status();
-    Ok(())
+pub async fn cleanup_network(plan: &mut NetPlan) -> Result<(), ApiError> {
+    cleanup::network(plan).await
 }
 
-#[cfg(not(target_os = "linux"))]
-pub async fn cleanup_network(_plan: &NetPlan) -> Result<(), ApiError> {
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
 pub async fn cleanup_netns(name: &str) -> Result<(), ApiError> {
-    let _ = Command::new("ip").args(["netns", "del", name]).status();
-    Ok(())
-}
-
-#[cfg(not(target_os = "linux"))]
-pub async fn cleanup_netns(_name: &str) -> Result<(), ApiError> {
-    Ok(())
+    cleanup::namespace(name).await
 }
 
 #[cfg(target_os = "linux")]
@@ -1696,9 +1691,9 @@ mod tests {
         let plan3 = allocator.allocate(pod3, "ns3".into()).unwrap();
 
         // Indices should be different
-        assert_eq!(plan1.index, 0);
-        assert_eq!(plan2.index, 1);
-        assert_eq!(plan3.index, 2);
+        assert_eq!(plan1.index(), 0);
+        assert_eq!(plan2.index(), 1);
+        assert_eq!(plan3.index(), 2);
 
         // IPs should be different
         // Guest addresses are now CONSTANT by design (#2202): the index must not
@@ -1708,38 +1703,38 @@ mod tests {
         assert_ne!(plan1.peer_ip, plan2.peer_ip);
 
         // Release plan2
-        allocator.release(plan2.index);
+        let recycled_ip = plan2.host_ip;
+        plan2.lease.unwrap().release().unwrap();
 
         // Next allocation should reuse the released index
         let pod4 = Uuid::new_v4();
         let plan4 = allocator.allocate(pod4, "ns4".into()).unwrap();
-        assert_eq!(plan4.index, 1); // Reused!
-        assert_eq!(plan4.host_ip, plan2.host_ip); // Same link range, recycled
+        assert_eq!(plan4.index(), 1); // Reused!
+        assert_eq!(plan4.host_ip, recycled_ip); // Same link range, recycled
 
         // Next new allocation should get index 3
         let pod5 = Uuid::new_v4();
         let plan5 = allocator.allocate(pod5, "ns5".into()).unwrap();
-        assert_eq!(plan5.index, 3);
+        assert_eq!(plan5.index(), 3);
     }
 
     #[test]
-    fn network_allocator_release_is_idempotent() {
+    fn network_allocation_owns_one_reclamation_right() {
         let allocator = NetworkAllocator::new();
         let pod = Uuid::new_v4();
-        let plan = allocator.allocate(pod, "ns".into()).unwrap();
+        let mut plan = allocator.allocate(pod, "ns".into()).unwrap();
 
-        // Release twice should not cause duplicates
-        allocator.release(plan.index);
-        allocator.release(plan.index);
+        plan.lease.take().unwrap().release().unwrap();
+        assert!(plan.lease.is_none());
 
         // Should only get one reuse
         let pod2 = Uuid::new_v4();
         let plan2 = allocator.allocate(pod2, "ns2".into()).unwrap();
-        assert_eq!(plan2.index, 0);
+        assert_eq!(plan2.index(), 0);
 
         let pod3 = Uuid::new_v4();
         let plan3 = allocator.allocate(pod3, "ns3".into()).unwrap();
-        assert_eq!(plan3.index, 1); // Not 0 again
+        assert_eq!(plan3.index(), 1); // Not 0 again
     }
 
     #[cfg(target_os = "linux")]
@@ -1805,7 +1800,7 @@ COMMIT
                 let plan = allocator
                     .allocate(Uuid::new_v4(), "nuc-test".to_string())
                     .expect("pool not exhausted for small n");
-                prop_assert!(indices.insert(plan.index), "duplicate pool index");
+                prop_assert!(indices.insert(plan.index()), "duplicate pool index");
                 // The LINK address is what must be unique per live pod; the
                 // guest address is deliberately shared (#2202).
                 prop_assert!(link_ips.insert(plan.host_ip), "duplicate link IP");
@@ -2093,9 +2088,9 @@ mod guest_address_is_constant_tests {
 /// enumerate them. The guard reaps on ANY unwind out of the creation path, and
 /// the success path says so explicitly with [`NetnsGuard::disarm`].
 ///
-/// `Drop` cannot await, which is fine: `cleanup_netns` is itself a blocking
-/// `Command` — the `async` on it is decorative — so the guard runs the same
-/// command directly rather than needing a runtime handle.
+/// `Drop` cannot await, which is fine: the guard can only attempt a synchronous best-effort
+/// namespace deletion. Registered pods use the checked asynchronous cleanup
+/// path; a failed launch never recycles its network index without that check.
 pub struct NetnsGuard {
     name: Option<String>,
 }

@@ -119,6 +119,8 @@ pub enum Operation {
     /// needs to stop itself already can, locally, through its own circuit breaker. RECEIVING
     /// lockdown commands (`WatchLockdown`) is a different operation and stays with the pods.
     Lockdown,
+    /// Inspect or decide an action-bound host approval; configured operator only.
+    ApproveEffect,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -415,7 +417,7 @@ impl AuthorizationPolicy {
                 | Operation::PodManagement => Ok(()),
                 // A lockdown is the operator's control (see the variant), and a
                 // tenant is never the operator.
-                Operation::SnapshotPod | Operation::Lockdown => {
+                Operation::SnapshotPod | Operation::Lockdown | Operation::ApproveEffect => {
                     Err(AuthorizationError::NotAuthorized {
                         identity: spiffe_id.to_string(),
                         operation: format!("{op:?}"),
@@ -437,6 +439,13 @@ impl AuthorizationPolicy {
         if self.operator_identities.iter().any(|id| id == spiffe_id) {
             tracing::debug!(spiffe_id = %spiffe_id, operation = ?op, "Authorized operator operation");
             return Ok(());
+        }
+
+        if op == Operation::ApproveEffect {
+            return Err(AuthorizationError::NotAuthorized {
+                identity: spiffe_id.to_string(),
+                operation: format!("{op:?}"),
+            });
         }
 
         // Check if this is an orchestrator identity (full access)
@@ -472,7 +481,7 @@ impl AuthorizationPolicy {
                         return Ok(());
                     }
                     // Falls through to the refusal below: see the variant's doc comment.
-                    Operation::Lockdown => {}
+                    Operation::Lockdown | Operation::ApproveEffect => {}
                 }
             }
         }
@@ -498,7 +507,7 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod | Operation::Lockdown => {}
+                    Operation::SnapshotPod | Operation::Lockdown | Operation::ApproveEffect => {}
                 }
             }
         }
@@ -638,10 +647,20 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         (&axum::http::Method::GET, ["v1", "pods", _id, "receipt"]) => Some(Operation::GetReceipt),
         (
             &axum::http::Method::GET,
-            ["v1", "pods", _id, "workload-result" | "execution-receipt"],
+            [
+                "v1",
+                "pods",
+                _id,
+                "workload-admission" | "workload-result" | "execution-receipt",
+            ],
         ) => Some(Operation::GetReceipt),
         (&axum::http::Method::POST, ["v1", "pods", _id, "execution-receipt"]) => {
             Some(Operation::GetReceipt)
+        }
+        (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals"])
+        | (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals", _])
+        | (&axum::http::Method::POST, ["v1", "pods", _id, "effect-approvals", _]) => {
+            Some(Operation::ApproveEffect)
         }
         _ => None,
     }

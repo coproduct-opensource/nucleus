@@ -35,6 +35,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Verify host broker journals after a real guest transaction on Linux/KVM.
+    HostEvidenceLive {
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        /// Run the compiled integration as root through sudo.
+        #[arg(long)]
+        sudo: bool,
+    },
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -68,6 +76,19 @@ enum Command {
         /// instead of building them.
         #[arg(long)]
         prebuilt: Option<std::path::PathBuf>,
+    },
+    /// Stage explicit ARM64 Linux host binaries and guest artifacts for Apple Container.
+    MicrovmHostContext {
+        /// Directory containing node, hostctl, CLI, MCP, Firecracker and jailer executables.
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        #[arg(long)]
+        guest_kernel: std::path::PathBuf,
+        #[arg(long)]
+        guest_rootfs: std::path::PathBuf,
+        /// New output directory, never an existing build context.
+        #[arg(long)]
+        out: std::path::PathBuf,
     },
     /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
     /// defect patched into a scratch worktree at HEAD, every mode run against it.
@@ -481,6 +502,7 @@ mod gate_defs;
 mod gatehouse_pin;
 mod gates_can_fail;
 mod guest_layer;
+mod host_evidence_live;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
@@ -489,6 +511,7 @@ mod life;
 mod line_ratchet;
 mod local_coverage;
 mod mediate;
+mod microvm_host_context;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -509,7 +532,16 @@ mod workspace_members;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::HostEvidenceLive { bin_dir, sudo } => {
+            host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
+        }
         Command::Scripts => scripts(),
+        Command::MicrovmHostContext {
+            bin_dir,
+            guest_kernel,
+            guest_rootfs,
+            out,
+        } => microvm_host_context::run(&bin_dir, &guest_kernel, &guest_rootfs, &out),
         Command::GuestLayer {
             arch,
             out,

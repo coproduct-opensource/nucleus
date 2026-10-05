@@ -278,8 +278,8 @@ fn run() -> Result<(), String> {
     // These 28 values used to be `std::env::set_var`. Two things were wrong
     // with that. Edition 2024 makes `set_var` unsafe — mutating the environment
     // races any concurrent reader — so keeping it meant 28 `unsafe` blocks.
-    // And several of these are secrets (broker secret, mediation signing key,
-    // AWS secret key, task token): writing them into init's own environment
+    // And several of these are secrets (broker secret, cloud credentials,
+    // task token): writing them into init's own environment
     // published them to `/proc/self/environ` and to EVERY later child, when
     // only the tool-proxy needs them. `Command::envs` scopes them to the one
     // process that does.
@@ -341,7 +341,12 @@ fn run() -> Result<(), String> {
 
     // Read secrets from kernel command line (preferred) or files (legacy/fallback)
     let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let host_spec_required = boot::requires_host_spec(&cmdline).map_err(|e| e.to_string())?;
 
+    // Local HTTP adapters are useful even in a vsock-only pod. This enables
+    // loopback only; external routes and the egress fence are configured below.
+    #[cfg(target_os = "linux")]
+    timed("loopback", net::configure_loopback).map_err(|e| e.to_string())?;
     let net_config = net::parse_cmdline(&cmdline);
 
     if let Some(net) = net_config.as_ref() {
@@ -407,39 +412,26 @@ fn run() -> Result<(), String> {
                 // dispatched a different job.
                 Err(e) => return Err(e.to_string()),
             },
-            // The host having nothing to say is every pod today.
+            // Enforcing guests may not substitute the baked workload on any fetch failure.
+            Err(e) if host_spec_required => {
+                return Err(format!("required host spec fetch failed: {e}"));
+            }
             Err(e) => eprintln!("no pod spec over vsock (keeping the baked one): {e}"),
         }
     }
 
-    // Never a shell: a missing spec is a named boot error.
-    // THE BAKED SPEC WINS WHEN THERE IS ONE, and the fetched one is the fallback.
-    //
-    // This was the other way round — host wins — and it broke every existing
-    // pod: `NUCLEUS_WORKLOAD_PROBE: PASS` stopped appearing because the node
-    // serves a spec for EVERY pod, so every pod switched to the fetched path at
-    // once. A new mechanism made the default for everything is not additive, it
-    // is a migration nobody asked for.
-    //
-    // The fetched spec exists for the case that has NO baked one: a snapshot
-    // base, whose whole point is a rootfs that names no command. There the
-    // resolution below fails and this is the only spec there is. A pod with a
-    // baked spec keeps it, and behaves exactly as it did before.
-    let spec_path = if !Path::new(POD_SPEC_PATH).exists()
-        && !Path::new(FALLBACK_POD_SPEC).exists()
-        && Path::new(HOST_POD_SPEC).exists()
-    {
-        eprintln!("no baked pod spec; using the one fetched from the host");
-        HOST_POD_SPEC.to_string()
-    } else {
-        boot::resolve_pod_spec(
-            POD_SPEC_PATH,
-            FALLBACK_POD_SPEC,
-            |p| Path::new(p).exists(),
-            |from, to| fs::copy(from, to).is_ok(),
-        )
-        .map_err(|e| e.to_string())?
-    };
+    let spec_path = boot::resolve_launch_spec(
+        host_spec_required,
+        HOST_POD_SPEC,
+        POD_SPEC_PATH,
+        FALLBACK_POD_SPEC,
+        |p| Path::new(p).exists(),
+        |from, to| fs::copy(from, to).is_ok(),
+    )
+    .map_err(|e| e.to_string())?;
+    if host_spec_required {
+        eprintln!("{}", nucleus_spec::guest_layout::HOST_SPEC_READY);
+    }
     if let Some(port) = workload_api_port {
         // Announce the barrier before asking for anything. After the first fetch below this VM
         // is one particular pod, and a snapshot of it would hand that pod's identity to every
@@ -516,25 +508,9 @@ fn run() -> Result<(), String> {
             Err(err) => eprintln!("no broker capability over vsock: {err}"),
         }
 
-        // The mediation signing key, fetched with the same before-`exec_proxy`
-        // ordering: the host serves it once, before any workload exists, so the
-        // key that signs this pod's MediationReceipts is out of the workload's
-        // reach. Absent ⇒ no receipts (additive forensics), never a boot failure.
-        // The key VALUE is never logged — only its presence.
-        match timed("mediation_key", || identity::fetch_mediation_key(port)) {
-            Ok(Some(mk)) => {
-                export!("NUCLEUS_MEDIATION_SIGNING_KEY", &mk.signing_key);
-                export!("NUCLEUS_MEDIATION_SPIFFE_ID", &mk.spiffe_id);
-                // Where the proxy ships what it signs. Not a secret — it is
-                // where to connect — and exported only alongside a key, since
-                // a proxy with nothing to sign has nothing to ship (#2541).
-                export!("NUCLEUS_WORKLOAD_API_PORT", port.to_string());
-                eprintln!("fetched mediation signing key over vsock (receipts enabled)");
-            }
-            Ok(None) => eprintln!("no mediation key provisioned — receipts disabled"),
-            Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
-            Err(err) => eprintln!("no mediation key over vsock (receipts disabled): {err}"),
-        }
+        // The host signs its own authorizations. Keep the audit/report transport
+        // available without exporting any receipt-signing seed into the guest.
+        export!("NUCLEUS_WORKLOAD_API_PORT", port.to_string());
 
         // The S3 audit-sink credentials, fetched with the same before-
         // `exec_proxy` ordering as the broker capability (the host serves them
@@ -814,27 +790,6 @@ fn run() -> Result<(), String> {
         .seal(remount_root_ro)
         .map_err(|e| e.to_string())?;
 
-    // NOTE: the loopback interface is DOWN here. Measured in a booted guest —
-    // `/sys/class/net/lo/flags` reads `0x8` (LOOPBACK without IFF_UP) and
-    // `operstate` is `down`. Nothing in this image brings it up, and the rootfs
-    // is Debian slim, so it has neither `ip` nor `ifconfig`.
-    //
-    // That is harmless TODAY, and the reason is worth recording because it is
-    // not obvious: the tool-proxy's `--listen` defaults to `127.0.0.1:0`, but it
-    // serves vsock EXCLUSIVELY when the spec declares one, and
-    // `spawn_firecracker_pod` REFUSES a spec without vsock. So the TCP listener
-    // is unreachable on every path this init serves and `bind()` never touches
-    // loopback.
-    //
-    // A fix was written and then removed. It worked — flags went 0x8 to 0x9 in a
-    // booted guest — but building a rootfs WITHOUT it and booting produced an
-    // identical result, because the condition it guarded cannot occur here. The
-    // real cause of the bind failure that prompted it was a test config with no
-    // vsock DEVICE.
-    //
-    // Anything that makes the guest bind a TCP socket — a spec without vsock, a
-    // second listener, a health endpoint on 127.0.0.1 — reintroduces the need,
-    // and `EADDRNOTAVAIL` from PID 1 panics the kernel rather than logging.
     let err = boot.exec(|proof| exec_proxy(proof, &spec_path, child_env));
     Err(format!("failed to exec {PROXY_BIN}: {err}"))
 }
@@ -894,7 +849,17 @@ pub(crate) enum GuestFs {
     },
     Sysfs,
     Devtmpfs,
-    Tmpfs,
+    Tmpfs {
+        access: TmpfsAccess,
+    },
+}
+
+/// Every writable tmpfs root needs an explicit ownership policy. The kernel's
+/// default 0777 permits workload replacement of names inside runtime directories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TmpfsAccess {
+    Runtime,
+    SharedTemporary,
 }
 
 /// procfs `hidepid`: what a process sees of another uid's `/proc/<pid>`.
@@ -933,7 +898,7 @@ impl GuestFs {
             GuestFs::Proc { .. } => "proc",
             GuestFs::Sysfs => "sysfs",
             GuestFs::Devtmpfs => "devtmpfs",
-            GuestFs::Tmpfs => "tmpfs",
+            GuestFs::Tmpfs { access: _ } => "tmpfs",
         }
     }
 
@@ -948,7 +913,11 @@ impl GuestFs {
     pub(crate) const fn data(self) -> Option<&'static str> {
         match self {
             GuestFs::Proc { hidepid } => Some(hidepid.option()),
-            GuestFs::Sysfs | GuestFs::Devtmpfs | GuestFs::Tmpfs => None,
+            GuestFs::Sysfs | GuestFs::Devtmpfs => None,
+            GuestFs::Tmpfs { access } => Some(match access {
+                TmpfsAccess::Runtime => "mode=0755",
+                TmpfsAccess::SharedTemporary => "mode=1777",
+            }),
         }
     }
 }
@@ -1052,7 +1021,9 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "tmpfs",
         target: "/tmp",
-        fs: GuestFs::Tmpfs,
+        fs: GuestFs::Tmpfs {
+            access: TmpfsAccess::SharedTemporary,
+        },
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -1061,7 +1032,9 @@ pub(crate) const GUEST_MOUNTS: &[GuestMount] = &[
     GuestMount {
         source: "tmpfs",
         target: "/run",
-        fs: GuestFs::Tmpfs,
+        fs: GuestFs::Tmpfs {
+            access: TmpfsAccess::Runtime,
+        },
         nosuid: true,
         nodev: true,
         noexec: true,
@@ -1318,8 +1291,8 @@ fn exec_proxy(
     child_env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
 ) -> std::io::Error {
     // Article 12 record-keeping ON for the live path (EU AI Act Art. 12): every
-    // mediation verdict is recorded, and — when a mediator key was delivered
-    // (`fetch_mediation_key` above) — signed into a MediationReceipt. The log
+    // guest mediation verdict is recorded as guest testimony. The host signs
+    // its own broker authorizations with a key that never enters this VM. The log
     // lives on the `/run` tmpfs: writable, root-owned before the uid drop (so the
     // workload cannot tamper), and NOT under the agent workspace (which the
     // proxy's own path check would refuse). The chain is session-derived when no
@@ -1556,6 +1529,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_tmpfs_is_not_workload_writable_and_shared_tmp_is_sticky() {
+        for (target, options) in [("/run", "mode=0755"), ("/tmp", "mode=1777")] {
+            let mount = super::GUEST_MOUNTS
+                .iter()
+                .find(|m| m.target == target)
+                .unwrap();
+            assert_eq!(
+                mount.fs.data(),
+                Some(options),
+                "{target} must set its root directory mode"
+            );
+        }
+    }
+
     /// P3d (#2696): `/proc` is mounted `hidepid=invisible`, so a workload under
     /// its own uid cannot see PID 1 (the tool-proxy, root) at all.
     ///
@@ -1582,16 +1570,18 @@ mod tests {
         );
     }
 
-    /// Non-vacuity for the test above: only procfs takes data, so the option
-    /// is not riding on every mount, where `tmpfs` would reject it and the
-    /// load-bearing mount would abort the boot.
+    /// Options belong only to filesystems whose policy requires them. In
+    /// particular the procfs hidepid option must never be passed to tmpfs.
     #[test]
-    fn only_procfs_carries_mount_data() {
+    fn only_configured_filesystems_carry_mount_data() {
         for m in super::GUEST_MOUNTS {
-            let is_proc = matches!(m.fs, super::GuestFs::Proc { .. });
+            let configured = matches!(
+                m.fs,
+                super::GuestFs::Proc { .. } | super::GuestFs::Tmpfs { .. }
+            );
             assert_eq!(
                 m.fs.data().is_some(),
-                is_proc,
+                configured,
                 "{} ({}) has unexpected mount data {:?}",
                 m.target,
                 m.fs.fstype(),

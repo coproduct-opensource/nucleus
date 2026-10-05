@@ -6,11 +6,14 @@ pub mod dlc_admission;
 pub mod egress_budget;
 pub mod exit_report_auth;
 pub mod guest_layout;
+pub mod host_effect;
+pub mod host_effect_approval;
 pub mod identity;
 pub mod microvm_host;
 mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod vmm_version;
+pub mod workload_admission;
 pub mod workload_result;
 
 use std::collections::BTreeMap;
@@ -130,6 +133,8 @@ pub struct PodSpecInner {
     pub work_dir: PathBuf,
     /// Timeout in seconds for pod execution. It also bounds the pod's
     /// certificate and task token, and the node refuses more than 30 days.
+    /// The node starts a monotonic deadline before launch and cancels still-running
+    /// pods on its next reaper pass after expiry; cleanup is not an exact-time kill.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
     /// Permission policy.

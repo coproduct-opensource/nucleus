@@ -54,6 +54,7 @@ mod lockdown_signal;
 mod mcp;
 mod mediation;
 mod memory;
+mod memory_store;
 mod node_client;
 mod node_identity;
 mod pod_cert;
@@ -103,6 +104,8 @@ fn unsandboxed_opt_in(given: bool) -> nucleus::UnsandboxedOptIn {
 #[command(name = "nucleus-tool-proxy", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Tool proxy server running inside nucleus pods")]
 struct Args {
+    #[command(flatten)]
+    memory: memory_store::MemoryStoreArgs,
     /// Pod spec YAML path.
     #[arg(long, env = "NUCLEUS_POD_SPEC")]
     spec: PathBuf,
@@ -631,8 +634,7 @@ pub(crate) struct AppState {
     /// into the single authoritative `flow_graph` so the IFC gate governs whether it
     /// may inform an action. Process-wide, same per-pod-session rationale as the
     /// shared kernel.
-    pub(crate) provenance_memory:
-        Arc<tokio::sync::Mutex<nucleus_provenance_memory::ProvenanceMemorySet>>,
+    pub(crate) provenance_memory: Arc<tokio::sync::Mutex<memory_store::Store>>,
     /// Deterministic transforms used to recompute-verify `Deterministic` memory
     /// records. Empty by default ⇒ deterministic records fail closed (`Invalid`).
     pub(crate) memory_transforms: Arc<nucleus_provenance_memory::TransformRegistry>,
@@ -1542,10 +1544,11 @@ async fn main() -> Result<(), ApiError> {
 
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
     // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
-    let provenance_memory = Arc::new(tokio::sync::Mutex::new(
-        nucleus_provenance_memory::ProvenanceMemorySet::new(),
-    ));
     let memory_transforms = Arc::new(nucleus_provenance_memory::TransformRegistry::new());
+    let provenance_memory = Arc::new(tokio::sync::Mutex::new(
+        args.memory
+            .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
+    ));
     let declassify_trusted_keys = Arc::new(memory::parse_trusted_keys_env(
         std::env::var("NUCLEUS_DECLASSIFY_TRUSTED_KEYS")
             .ok()

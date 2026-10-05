@@ -79,8 +79,13 @@ pub const ETC_NUCLEUS: &str = etc_nucleus!("");
 /// The guest layer's binaries, as a name prefix.
 pub const NUCLEUS_BIN_PREFIX: &str = nucleus_bin!("");
 
-/// The baked pod spec. Wins over the one fetched from the host when present.
+/// The baked pod spec. Wins only in legacy mode; enforced guests require the host spec.
 pub const POD_SPEC_PATH: &str = etc_nucleus!("pod.yaml");
+
+/// Node-owned boot configuration: a sanitized host spec must replace baked specs.
+pub const HOST_SPEC_REQUIRED_ARG: &str = "nucleus.host_spec=required";
+/// Guest compatibility acknowledgment, not host-authoritative execution evidence.
+pub const HOST_SPEC_READY: &str = "NUCLEUS_HOST_SPEC: READY";
 
 /// The legacy location of the baked pod spec, copied to [`POD_SPEC_PATH`] when
 /// that is absent. Reserved because it outranks the host-fetched spec: an image
@@ -153,9 +158,11 @@ pub enum GuestBinary {
     /// The MCP bridge (`nucleus-mcp`), which an agent run in the pod uses to
     /// reach its tools through the workload door (#2696 P2).
     Mcp,
+    /// Local HTTP compatibility adapter for the credentialed workload door.
+    EgressHttp,
 }
 
-/// `(guest path, cargo package)` for a binary installed under
+/// `(guest path, binary target)` for a binary installed under
 /// [`NUCLEUS_BIN_PREFIX`]: both halves from one name, so they cannot disagree.
 macro_rules! guest_bin {
     ($name:literal) => {
@@ -165,7 +172,7 @@ macro_rules! guest_bin {
 
 impl GuestBinary {
     /// Every binary the guest layer ships.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Init,
         Self::ToolProxy,
         Self::EgressProbe,
@@ -174,10 +181,10 @@ impl GuestBinary {
         Self::PodlistProbe,
         Self::AdversaryProbe,
         Self::Mcp,
+        Self::EgressHttp,
     ];
 
-    /// `(guest path, cargo package)`. Each package's binary target carries the
-    /// package's own name.
+    /// `(guest path, binary target)`.
     const fn parts(self) -> (&'static str, &'static str) {
         match self {
             Self::Init => (INIT, "nucleus-guest-init"),
@@ -188,6 +195,7 @@ impl GuestBinary {
             Self::PodlistProbe => guest_bin!("podlist-probe"),
             Self::AdversaryProbe => guest_bin!("adversary-probe"),
             Self::Mcp => guest_bin!("mcp"),
+            Self::EgressHttp => guest_bin!("egress-http"),
         }
     }
 
@@ -197,10 +205,26 @@ impl GuestBinary {
         self.parts().0
     }
 
-    /// The cargo package (and binary target) that builds it.
+    /// The executable name; a package may produce more than one.
+    #[must_use]
+    pub const fn binary(self) -> &'static str {
+        self.parts().1
+    }
+
+    /// The cargo package that builds the executable.
     #[must_use]
     pub const fn package(self) -> &'static str {
-        self.parts().1
+        match self {
+            Self::Init
+            | Self::ToolProxy
+            | Self::EgressHttp
+            | Self::EgressProbe
+            | Self::NetProbe
+            | Self::WorkloadProbe
+            | Self::PodlistProbe
+            | Self::AdversaryProbe
+            | Self::Mcp => self.binary(),
+        }
     }
 }
 
@@ -405,6 +429,7 @@ mod tests {
             GuestBinary::PodlistProbe => 5,
             GuestBinary::AdversaryProbe => 6,
             GuestBinary::Mcp => 7,
+            GuestBinary::EgressHttp => 8,
         };
         for (i, b) in GuestBinary::ALL.iter().enumerate() {
             assert_eq!(slot(*b), i, "{b:?} out of place in ALL");
@@ -426,15 +451,15 @@ mod tests {
     }
 
     /// Every guest binary is reserved, and every one but `/init` sits under the
-    /// binary prefix with its package's name.
+    /// binary prefix with its binary target's name.
     #[test]
-    fn guest_binaries_are_reserved_and_named_by_their_package() {
+    fn guest_binaries_are_reserved_and_named_by_their_binary_target() {
         for b in GuestBinary::ALL {
             assert!(reserved_by(b.path()).is_some(), "{b:?} not reserved");
             if b != GuestBinary::Init {
                 assert_eq!(
                     b.path().strip_prefix("/usr/local/bin/"),
-                    Some(b.package()),
+                    Some(b.binary()),
                     "{b:?}"
                 );
             }

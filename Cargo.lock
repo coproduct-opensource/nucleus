@@ -6581,12 +6581,15 @@ name = "nucleus-audit"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "base64 0.23.1",
  "c2pa",
  "chrono",
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
  "hmac 0.13.0",
+ "nucleus-ci-verdict",
+ "nucleus-receipt",
  "nucleus-spec",
  "portcullis",
  "portcullis-core",
@@ -6691,6 +6694,7 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "nucleus-bundle-cas",
+ "nucleus-ci-verdict",
  "nucleus-client",
  "nucleus-envelope",
  "nucleus-federation",
@@ -6701,6 +6705,7 @@ dependencies = [
  "nucleus-oci-rootfs",
  "nucleus-proto",
  "nucleus-provenance-memory",
+ "nucleus-receipt",
  "nucleus-spec",
  "nucleus-task-compiler",
  "pem 4.0.0",
@@ -6722,6 +6727,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.12+spec-1.1.0",
  "tonic",
  "tracing",
  "tracing-subscriber 0.3.23",
@@ -6890,6 +6896,21 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "nucleus-egress-http"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "clap",
+ "nix",
+ "reqwest 0.13.5",
+ "rustls",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower",
 ]
 
 [[package]]
@@ -7207,6 +7228,7 @@ name = "nucleus-microvm-host"
 version = "1.0.0"
 dependencies = [
  "clap",
+ "ed25519-dalek 3.0.0",
  "hex",
  "kvm-ioctls",
  "nucleus-identity",
@@ -7217,6 +7239,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -7241,6 +7264,8 @@ dependencies = [
  "ipnet",
  "jsonwebtoken",
  "libc",
+ "netlink-sys 0.9.0",
+ "nix",
  "nucleus",
  "nucleus-ci-verdict",
  "nucleus-client",
@@ -7286,6 +7311,7 @@ dependencies = [
  "toml 1.1.6+spec-1.1.0",
  "tonic",
  "tonic-prost",
+ "tower",
  "tracing",
  "tracing-subscriber 0.3.23",
  "uuid",
@@ -7639,6 +7665,7 @@ dependencies = [
  "serde_yaml",
  "sha2 0.11.0",
  "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
@@ -7692,6 +7719,7 @@ dependencies = [
  "hmac 0.13.0",
  "http-body-util",
  "libc",
+ "nix",
  "nucleus",
  "nucleus-authority-exchange",
  "nucleus-client",
@@ -11991,6 +12019,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.3",
 ]
 

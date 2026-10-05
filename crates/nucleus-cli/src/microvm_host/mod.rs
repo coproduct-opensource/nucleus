@@ -13,13 +13,21 @@
 //! - [`supervisor`]: restart a dead host within a budget, and audit it.
 //! - [`transport`]: reach a pod's proxy from the Mac through a relay.
 //!
-//! Not wired into `shell` or `run` yet; that is the next change.
+//! `nucleus microvm-host up/status` exposes host readiness and inspection.
+//! `run --apple-host-config` explicitly selects readiness and a session relay.
+//! `setup --apple-host-config` verifies a workload and saves the host selection.
+//! Integration with `shell` remains separate.
 
+pub(crate) mod command;
 pub mod container_cli;
 pub mod lifecycle;
+pub(crate) mod operator;
 pub mod preflight;
+pub(crate) mod settings;
 pub mod supervisor;
 pub mod transport;
+pub(crate) mod verification;
+mod workspace;
 
 #[cfg(test)]
 mod live;

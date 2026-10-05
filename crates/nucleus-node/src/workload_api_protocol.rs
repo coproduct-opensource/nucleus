@@ -170,12 +170,8 @@ pub enum WorkloadApiCommand {
     /// so this gets the broker secret's delivery discipline, not the task
     /// token's.
     FetchAuditCredentials,
-    /// `FETCH_MEDIATION_KEY` — the per-pod signing key the tool-proxy signs
-    /// forensic `MediationReceipt`s with. Served with the broker secret's
-    /// delivery discipline: exactly once, before any workload exists, value never
-    /// logged. Possession lets the holder sign receipts as this mediator, so a
-    /// workload that grabbed it could forge them — the one-shot before-workload
-    /// delivery is what keeps it out of the workload's reach.
+    /// Legacy `FETCH_MEDIATION_KEY`: recognized but always refused. Host
+    /// authorization signing keys are never material delivered to a guest.
     FetchMediationKey,
     /// `POD_LIST` — request the pod summaries THIS pod is entitled to manage:
     /// itself and its direct children, never a sibling.

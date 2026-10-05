@@ -97,7 +97,7 @@ async fn guest_kernel(auth: &PodAuthority, pod: Uuid) -> Kernel {
 }
 
 /// A pod's real listener, on a socket in `dir`.
-fn listen(
+async fn listen(
     dir: &Path,
     auth: &Arc<PodAuthority>,
     pod: Uuid,
@@ -106,15 +106,17 @@ fn listen(
     DecideListener::start(
         &dir.join("v.sock"),
         DECISION_VSOCK_PORT,
-        PodDecide {
+        PodDecide::new(
             pod,
-            authority: Arc::clone(auth),
-            epochs: Arc::clone(epochs),
-            recorder: Recorder {
+            Arc::clone(auth),
+            Arc::clone(epochs),
+            Recorder {
                 tally: Arc::new(ShadowTally::default()),
                 log: Some(dir.join(DISAGREEMENT_LOG)),
             },
-        },
+        )
+        .await
+        .expect("pod policy"),
         None,
     )
     .expect("listener binds")
@@ -432,7 +434,7 @@ async fn host_and_guest_agree_over_the_corpus() {
         let auth = authority(dir.path());
         let pod = admit(&auth, s.policy.clone()).await;
         let epochs = Arc::new(EpochSource::seeded());
-        let listener = listen(dir.path(), &auth, pod, &epochs);
+        let listener = listen(dir.path(), &auth, pod, &epochs).await;
         let tally = listener.tally();
         let mut guest = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
         let mut here = 0u64;
@@ -512,7 +514,7 @@ async fn a_divergent_host_policy_is_recorded() {
     let host_pod = admit(&auth, PermissionLattice::restrictive()).await;
     let guest_pod = admit(&auth, PermissionLattice::permissive()).await;
     let epochs = Arc::new(EpochSource::seeded());
-    let listener = listen(dir.path(), &auth, host_pod, &epochs);
+    let listener = listen(dir.path(), &auth, host_pod, &epochs).await;
     let tally = listener.tally();
     let mut guest = Guest::new(
         guest_kernel(&auth, guest_pod).await,
@@ -611,6 +613,63 @@ async fn a_misreported_outcome_is_a_disagreement() {
 
 // ── epochs ──────────────────────────────────────────────────────────────────
 
+#[tokio::test]
+async fn authority_owns_policy_across_listener_replacement_but_not_certificate_restore() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let broker_policy = auth.host_policy(pod).await.unwrap();
+    PodPolicy::observe_response(&broker_policy, 1).unwrap();
+    for _ in 0..2 {
+        let listener = PodDecide::new(
+            pod,
+            Arc::clone(&auth),
+            Arc::new(EpochSource::seeded()),
+            Recorder {
+                tally: Arc::new(ShadowTally::default()),
+                log: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(Arc::ptr_eq(&broker_policy, &listener.policy));
+        let mut channel = listener.open().await.unwrap();
+        assert!(matches!(
+            HostFrame::decode(&decide_step(
+                &mut channel,
+                0,
+                Operation::GitCommit,
+                "commit"
+            ))
+            .unwrap(),
+            HostFrame::Verdict {
+                verdict: Verdict::Denied {
+                    reason: DenyReason::FlowRefused
+                },
+                ..
+            }
+        ));
+    }
+    let another_pod = admit(&auth, PermissionLattice::permissive()).await;
+    assert!(!Arc::ptr_eq(
+        &broker_policy,
+        &auth.host_policy(another_pod).await.unwrap()
+    ));
+    drop(auth);
+    let restored = authority(dir.path());
+    assert_eq!(restored.restore_from_disk().await, 2);
+    assert!(
+        restored.host_kernel(pod).await.is_ok(),
+        "certificate itself is valid"
+    );
+    assert!(matches!(
+        restored.host_policy(pod).await,
+        Err(crate::pod_authority::HostKernelError::HistoryUnavailable)
+    ));
+    let fresh = admit(&restored, PermissionLattice::permissive()).await;
+    assert!(restored.host_policy(fresh).await.is_ok());
+}
+
 /// Two channels for ONE pod, and a channel reopened after it closed: every one
 /// issues under its own epoch, observed on the wire in the ids it hands out.
 #[tokio::test]
@@ -619,7 +678,7 @@ async fn every_channel_has_its_own_epoch() {
     let auth = authority(dir.path());
     let pod = admit(&auth, PermissionLattice::permissive()).await;
     let epochs = Arc::new(EpochSource::seeded());
-    let listener = listen(dir.path(), &auth, pod, &epochs);
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
 
     async fn epoch_of(g: &mut Guest<tokio::net::UnixStream>) -> u64 {
         let x = g.decide(Operation::ReadFiles, "a").await;
@@ -661,7 +720,10 @@ async fn an_id_from_another_channel_is_a_foreign_epoch() {
     let id = allowed_id(&reply);
     let epoch = id.epoch();
     assert_eq!(
-        second.spend(id),
+        second.spend(
+            id,
+            args_digest(Operation::ReadFiles, &Subject::new("a").unwrap())
+        ),
         Err(LedgerError::ForeignEpoch {
             expected: second.epoch(),
             got: epoch
@@ -671,7 +733,10 @@ async fn an_id_from_another_channel_is_a_foreign_epoch() {
     drop(first);
     let mut replacement = open(auth.host_kernel(pod).await.unwrap());
     assert!(matches!(
-        replacement.spend(allowed_id(&reply)),
+        replacement.spend(
+            allowed_id(&reply),
+            args_digest(Operation::ReadFiles, &Subject::new("a").unwrap())
+        ),
         Err(LedgerError::ForeignEpoch { .. })
     ));
 }
@@ -690,6 +755,104 @@ fn the_epoch_counter_never_wraps_onto_a_used_epoch() {
 
 // ── replay ──────────────────────────────────────────────────────────────────
 
+#[tokio::test]
+async fn taint_survives_another_channel_and_reconnect() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let listener = listen(dir.path(), &auth, pod, &Arc::new(EpochSource::seeded())).await;
+    let mut observer = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    let mut peer = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    assert_eq!(
+        observer.decide(Operation::GitCommit, "commit").await.host,
+        Outcome::Allowed
+    );
+    observer.observe(NodeKind::WebContent);
+    let denied = Outcome::Denied {
+        reason: DenyReason::FlowRefused,
+    };
+    assert_eq!(
+        observer.decide(Operation::GitCommit, "commit").await.host,
+        denied
+    );
+    // This connection existed before the observation, and reports clean.
+    let exchange = peer.decide(Operation::GitCommit, "commit").await;
+    assert_eq!(
+        exchange.guest,
+        Outcome::Allowed,
+        "positive control: fresh guest allows"
+    );
+    assert_eq!(exchange.host, denied);
+    drop((observer, peer));
+    let mut replacement = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    assert_eq!(
+        replacement
+            .decide(Operation::GitCommit, "commit")
+            .await
+            .host,
+        denied
+    );
+    drop(replacement);
+    let tally = listener.shutdown().await;
+    assert_eq!(tally.faults, 0);
+    assert_eq!(
+        tally.disagree, 2,
+        "clean guest reports cannot reset host history"
+    );
+}
+
+#[tokio::test]
+async fn policy_history_and_faults_survive_channel_replacement() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let decide = PodDecide::new(
+        pod,
+        auth,
+        Arc::new(EpochSource::seeded()),
+        Recorder {
+            tally: Arc::new(ShadowTally::default()),
+            log: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mut original = decide.open().await.unwrap();
+    let _id = allowed_id(&decide_step(&mut original, 0, Operation::ReadFiles, "a"));
+    // Simulate a host charge to the authority-owned balance. Reopening must
+    // retain the charge in the kernel's derived decision view.
+    {
+        let state = decide.policy.lock().unwrap();
+        let remaining = state.budget.available().unwrap();
+        state.budget.commit(remaining, || Ok(())).unwrap();
+    }
+    drop(original);
+    let mut replacement = decide.open().await.unwrap();
+    assert!(matches!(
+        HostFrame::decode(&decide_step(&mut replacement, 0, Operation::ReadFiles, "a")).unwrap(),
+        HostFrame::Verdict {
+            verdict: Verdict::Denied {
+                reason: DenyReason::BudgetExhausted
+            },
+            ..
+        }
+    ));
+    let policy = Arc::clone(&decide.policy);
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _guard = policy.lock().unwrap();
+        panic!("interrupt a policy update");
+    }));
+    assert!(panic.is_err());
+    let mut poisoned = decide.open().await.unwrap();
+    assert!(matches!(
+        poisoned.step(GuestFrame::Observe {
+            seq: Seq::FIRST,
+            label_raise: taint_report(&FlowGraph::new()),
+        }),
+        Err(ChannelError::PolicyUnavailable)
+    ));
+}
+
 fn decide_step(c: &mut Channel, seq: u64, op: Operation, subject: &str) -> Vec<u8> {
     let subject = Subject::new(subject).unwrap();
     let digest = args_digest(op, &subject);
@@ -701,6 +864,25 @@ fn decide_step(c: &mut Channel, seq: u64, op: Operation, subject: &str) -> Vec<u
     })
     .expect("decided")
     .reply
+}
+
+#[test]
+fn revoked_policy_refuses_existing_and_replacement_decision_channels() {
+    let policy = test_policy(PermissionLattice::permissive());
+    let pod = Uuid::new_v4();
+    let mut existing = Channel::with_policy(pod, policy.clone(), 7);
+    decide_step(&mut existing, 0, Operation::ReadFiles, "src/lib.rs");
+    PodPolicy::revoke(&policy);
+    let mut replacement = Channel::with_policy(pod, policy.clone(), 8);
+    for (channel, seq) in [(&mut existing, 1), (&mut replacement, 0)] {
+        assert!(matches!(
+            channel.step(GuestFrame::Observe {
+                seq: Seq::new(seq),
+                label_raise: taint_report(&FlowGraph::new())
+            }),
+            Err(ChannelError::PolicyUnavailable)
+        ));
+    }
 }
 
 /// Decode the id an `Allowed` reply carries — as many times as anyone likes,
@@ -715,6 +897,37 @@ fn allowed_id(reply: &[u8]) -> DecisionId {
     }
 }
 
+/// A decision obtained for a harmless read cannot be spent for a write or
+/// another path, even when all three actions would separately be permitted.
+#[tokio::test]
+async fn a_decision_is_bound_to_the_host_checked_action() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let mut channel = Channel::open(pod, auth.host_kernel(pod).await.unwrap(), 44);
+    let reply = decide_step(&mut channel, 0, Operation::ReadFiles, "public.txt");
+    for (op, path) in [
+        (Operation::WriteFiles, "public.txt"),
+        (Operation::ReadFiles, "secret.txt"),
+    ] {
+        let id = allowed_id(&reply);
+        let number = id.number();
+        assert_eq!(
+            channel.spend(id, args_digest(op, &Subject::new(path).unwrap())),
+            Err(LedgerError::ArgumentsMismatch { decision: number })
+        );
+    }
+    let digest = args_digest(Operation::ReadFiles, &Subject::new("public.txt").unwrap());
+    let spent = channel
+        .spend(allowed_id(&reply), digest)
+        .expect("original action");
+    assert_eq!(spent.args_digest(), digest);
+    assert!(matches!(
+        channel.spend(allowed_id(&reply), digest),
+        Err(LedgerError::Retired { .. })
+    ));
+}
+
 /// **A replayed DecisionId is refused by the host ledger.** Two copies decoded
 /// from the one reply: the first spends, the second is `Retired`.
 #[tokio::test]
@@ -727,9 +940,19 @@ async fn a_replayed_decision_id_is_refused() {
     let (first, replay) = (allowed_id(&reply), allowed_id(&reply));
     assert_eq!(first, replay, "bytes decode to equal ids");
     let number = first.number();
-    assert!(c.spend(first).is_ok(), "the first presentation spends");
+    assert!(
+        c.spend(
+            first,
+            args_digest(Operation::WriteFiles, &Subject::new("out.txt").unwrap())
+        )
+        .is_ok(),
+        "the first presentation spends"
+    );
     assert_eq!(
-        c.spend(replay),
+        c.spend(
+            replay,
+            args_digest(Operation::WriteFiles, &Subject::new("out.txt").unwrap())
+        ),
         Err(LedgerError::Retired { decision: number })
     );
 }
@@ -753,7 +976,10 @@ async fn the_report_retires_the_hosts_id() {
     let compared = step.compared.expect("a comparison");
     assert_eq!(compared.retired_decision, Some(allowed_id(&reply).number()));
     assert!(matches!(
-        c.spend(allowed_id(&reply)),
+        c.spend(
+            allowed_id(&reply),
+            args_digest(Operation::ReadFiles, &Subject::new("a").unwrap())
+        ),
         Err(LedgerError::Retired { .. })
     ));
 }
@@ -862,7 +1088,7 @@ async fn garbage_is_a_counted_fault_and_the_listener_survives() {
     let auth = authority(dir.path());
     let pod = admit(&auth, PermissionLattice::permissive()).await;
     let epochs = Arc::new(EpochSource::seeded());
-    let listener = listen(dir.path(), &auth, pod, &epochs);
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
     let mut junk = connect(&listener).await;
     junk.write_all(&[0, 0, 0, 3, 9, 9, 9]).await.unwrap();
     let mut buf = [0u8; 1];
@@ -901,7 +1127,7 @@ async fn the_hosts_taint_only_rises() {
     })
     .unwrap();
     assert!(portcullis::exposure_core::EgressAggregates::is_tainted(
-        c.taint()
+        &c.taint()
     ));
     let reply = decide_step(&mut c, 2, Operation::GitCommit, "commit");
     assert_eq!(

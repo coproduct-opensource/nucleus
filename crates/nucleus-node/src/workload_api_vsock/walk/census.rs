@@ -239,7 +239,7 @@ async fn slots_touched(
 const FULL: Provision = Provision {
     broker_secret: true,
     mediation_key: true,
-    mediation_spiffe_id: true,
+
     audit_creds: true,
     pod_spec: true,
     dlc_admission: true,
@@ -252,7 +252,7 @@ const FULL: Provision = Provision {
 const EMPTY: Provision = Provision {
     broker_secret: false,
     mediation_key: false,
-    mediation_spiffe_id: false,
+
     audit_creds: false,
     pod_spec: false,
     dlc_admission: false,
@@ -284,7 +284,11 @@ async fn run(
     if !start.receipts.is_empty() {
         let mut lines = start.receipts.join("\n");
         lines.push('\n');
-        std::fs::write(dir.path().join("collected-receipts.jsonl"), lines).expect("receipts");
+        std::fs::write(
+            crate::mediation_receipt_collector::receipt_log_path(dir.path()),
+            lines,
+        )
+        .expect("receipts");
     }
     if !start.spend.is_empty() {
         let mut lines = start.spend.join("\n");
@@ -330,9 +334,11 @@ async fn run(
         };
         seen.push(s);
     }
-    let receipts = std::fs::read_to_string(dir.path().join("collected-receipts.jsonl"))
-        .map(|s| s.lines().map(str::to_string).collect())
-        .unwrap_or_default();
+    let receipts = std::fs::read_to_string(crate::mediation_receipt_collector::receipt_log_path(
+        dir.path(),
+    ))
+    .map(|s| s.lines().map(str::to_string).collect())
+    .unwrap_or_default();
     let spend = std::fs::read_to_string(dir.path().join("spend-receipts.jsonl"))
         .map(|s| s.lines().map(str::to_string).collect())
         .unwrap_or_default();
@@ -500,7 +506,7 @@ fn footprint(letter: Letter) -> Footprint<Resource> {
             match cmd {
                 Cmd::SnapshotReady => fp.set(Resource::AtBarrier),
                 Cmd::FetchBrokerSecret => fp.update(Resource::Served(OneShot::BrokerSecret)),
-                Cmd::FetchMediationKey => fp.update(Resource::Served(OneShot::MediationKey)),
+                Cmd::FetchMediationKey => fp,
                 Cmd::FetchAuditCredentials => {
                     fp.update(Resource::Served(OneShot::AuditCredentials))
                 }

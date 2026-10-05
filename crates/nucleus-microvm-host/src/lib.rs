@@ -14,9 +14,10 @@
 //!   host, unprivileged, after replaying its journal.
 //!
 //! - [`relay`]: forward a published container port to a pod's loopback proxy.
+//! - [`node_entrypoint`]: prepare the container PID-1 cgroup, then exec the node.
 //!
 //! The `nucleus-hostctl` binary exposes them as `probe`, `seed`, `harvest` and
-//! `relay`, for the process that hosts the node.
+//! `relay`, and `run-node`, for the process that hosts the node.
 
 #![cfg_attr(
     not(test),
@@ -33,6 +34,7 @@
 
 pub mod ext4;
 pub mod jail_user;
+pub mod node_entrypoint;
 pub mod probe;
 pub mod relay;
 pub mod scratch_readback;

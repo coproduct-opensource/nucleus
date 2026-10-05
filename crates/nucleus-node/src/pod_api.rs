@@ -9,6 +9,8 @@
 //!
 //! Nothing about the behaviour changes in this move.
 
+pub(crate) mod effect_approvals;
+
 use crate::auth::CallerScope;
 use crate::{ApiError, NodeState, PodHandle, PodInfo};
 use axum::Json;
@@ -588,7 +590,7 @@ async fn snapshot_running_pod(
     }
 }
 
-/// Serve a pod's execution receipt.
+/// Serve the node-signed guest exit report and host metadata.
 ///
 /// The route the SDKs have been calling all along. `Operation::GetReceipt` has existed in the
 /// authorization enum since receipts did, and the gRPC surface has served them — but over HTTP
@@ -606,14 +608,11 @@ pub(crate) async fn get_receipt(
     let pod = get_pod_for_caller(&state, id, &caller).await?;
     match crate::pod_receipt::build(&pod, &state.authority).await {
         Ok(built) => Ok(Json(built.receipt)),
-        // A pod that has not finished has no receipt YET, which is not the same as not having one
-        // — and neither is the same as not existing. `NoExitReport` maps to NotFound because the
-        // artifact genuinely is not there; the others say what they are.
+        // A present pod may have no available exit report. Keep that distinct
+        // from lookup's NotFound; neither is the same as a still-running pod.
         Err(e @ ReceiptError::NotExited) => Err(ApiError::Driver(e.to_string())),
-        Err(ReceiptError::NoExitReport(_)) => Err(ApiError::NotFound),
+        Err(ReceiptError::NoExitReport(_)) => Err(ApiError::ExitReportUnavailable),
         Err(e @ ReceiptError::Malformed(_)) => Err(ApiError::Driver(e.to_string())),
-        // Named, not NotFound: the report IS there, and it is not the supervisor's.
-        Err(e @ ReceiptError::Unauthenticated(_)) => Err(ApiError::Authority(e.to_string())),
     }
 }
 
@@ -1221,6 +1220,7 @@ pub(crate) mod handler_tests {
             state_dir: a.state_dir.clone(),
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
             pod_ceilings: a.pod_ceilings.ceilings(),
+            node_capacity: crate::node_capacity::Capacity::new(65536, 128),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
             local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
@@ -1250,6 +1250,11 @@ pub(crate) mod handler_tests {
             proxy_actor: None,
             trusted_postures: crate::posture::PostureRegistry::from_operator_str(""),
             audit_sinks: Arc::new(a.audit_sinks.load().expect("audit sinks")),
+            memory: Arc::new(
+                a.memory
+                    .load(&a.host_paths.ensure(&a.state_dir).unwrap())
+                    .unwrap(),
+            ),
             audit_minter: None,
             drand_config: None,
             identity_manager: None,
@@ -1257,6 +1262,10 @@ pub(crate) mod handler_tests {
             broker_listen: a.broker_listen,
             broker_enforcing: a.broker_enforcing,
             broker_vsock_port: a.broker_vsock_port,
+            staging_budget: crate::broker_stream::staging_budget::Budget::new(
+                crate::broker_stream::staging_budget::DEFAULT_BYTES,
+            )
+            .unwrap(),
             egress_stream_limits: crate::broker_stream::StreamLimits::new(
                 a.egress_stream_max_request_bytes,
                 a.egress_stream_max_response_bytes,
@@ -1288,6 +1297,7 @@ pub(crate) mod handler_tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().expect("tempdir");
         let mut st = state(&dir);
+        st.node_capacity = crate::node_capacity::Capacity::new(640, 1);
         // The script must be EXECUTABLE where it lives, and a temp dir need not
         // be: a hardened host mounts /tmp noexec (the guest does, see
         // nucleus-guest-init's GUEST_MOUNTS), the exec fails at once, the spawn's
@@ -1334,6 +1344,12 @@ pub(crate) mod handler_tests {
             panic!("the create must still be booting when it is dropped; it returned {early:?}");
         }
 
+        drop(
+            st.node_capacity
+                .reserve(&spec())
+                .expect("dropped create returns node capacity"),
+        );
+
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while st.authority.live_children(parent).await != Some(0) {
             assert!(
@@ -1342,6 +1358,19 @@ pub(crate) mod handler_tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn completed_teardown_returns_node_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(&dir);
+        st.node_capacity = crate::node_capacity::Capacity::new(640, 1);
+        let id = register(&st, None).await;
+        let pod = st.pods.lock().await.get(&id).unwrap().clone();
+        *pod.capacity.lock().await = Some(st.node_capacity.reserve(&pod.spec).unwrap());
+        assert!(st.node_capacity.reserve(&pod.spec).is_err());
+        pod.cancel().await.unwrap();
+        drop(st.node_capacity.reserve(&pod.spec).unwrap());
     }
 
     /// A registered pod, running, optionally owned by `parent`.
@@ -1389,6 +1418,7 @@ pub(crate) mod handler_tests {
             .expect("a child spawns");
         let handle = Arc::new(crate::PodHandle {
             id,
+            execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
             spec,
             created_at: 1_757_000_000,
             log_path: st.state_dir.join("pod.log"),
@@ -1400,6 +1430,7 @@ pub(crate) mod handler_tests {
             parent_pod_id: parent,
             posture_stamp: None,
             owner: owner.map(str::to_string),
+            capacity: tokio::sync::Mutex::new(None),
         });
         st.pods.lock().await.insert(id, handle);
         id
@@ -1437,6 +1468,7 @@ pub(crate) mod handler_tests {
         spec.spec.work_dir = dir.path().to_path_buf();
         let handle = crate::PodHandle {
             id: uuid::Uuid::new_v4(),
+            execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
             spec,
             created_at: 1_757_000_000,
             log_path: st.state_dir.join("pod.log"),
@@ -1448,13 +1480,14 @@ pub(crate) mod handler_tests {
             parent_pod_id: None,
             posture_stamp: None,
             owner: None,
+            capacity: tokio::sync::Mutex::new(None),
         };
         assert!(matches!(
             handle.status().await,
             crate::PodState::Exited { .. }
         ));
 
-        handle.cleanup_after_exit().await;
+        handle.cleanup_after_exit().await.unwrap();
 
         // The direct observable, and the defect's own shape: cleanup TOOK the proxy and awaited
         // its shutdown. `LocalPod::teardown` does `.take()` then `SignedProxy::shutdown().await`,
@@ -1670,20 +1703,10 @@ pub(crate) mod handler_tests {
         );
     }
 
-    /// **A pod that exists gets `404 pod not found` from the receipt route.**
-    ///
-    /// `get_receipt` maps `NoExitReport` onto `ApiError::NotFound`, whose
-    /// message is "pod not found" — so a cancelled pod, still listed by
-    /// `GET /v1/pods` and still fetchable by id, is reported missing when the
-    /// only missing thing is the exit report the proxy writes at shutdown.
-    ///
-    /// The mapping is deliberate (the comment at the call site argues the
-    /// artifact genuinely is not there) and the MESSAGE is what misleads. This
-    /// test pins the behaviour as it is rather than asserting the wording I
-    /// would prefer; changing `ApiError::NotFound`'s text is a decision for a
-    /// change that is about denials, not for this one.
+    /// Cancellation retains the pod, but may leave no exit report. Preserve
+    /// the receipt route's 404 while telling the operator which fact is absent.
     #[tokio::test]
-    async fn a_pod_with_no_exit_report_is_reported_as_a_missing_pod() {
+    async fn a_pod_with_no_exit_report_is_not_reported_as_a_missing_pod() {
         let dir = tempfile::tempdir().expect("tempdir");
         let st = state(&dir);
         let id = register(&st, None).await;
@@ -1695,9 +1718,8 @@ pub(crate) mod handler_tests {
         .await
         .expect("cancels");
 
-        // The pod is demonstrably still there ...
+        // The pod still exists; only its report is unavailable.
         assert!(get_pod(&st, id).await.is_ok());
-        // ... and the receipt route says it is not.
         let Err(err) = get_receipt(
             axum::extract::State(st.clone()),
             axum::Extension(CallerScope::NodeWide),
@@ -1707,13 +1729,14 @@ pub(crate) mod handler_tests {
         else {
             panic!("no exit report, so no receipt");
         };
-        assert!(matches!(err, ApiError::NotFound), "{err:?}");
-        assert_eq!(
-            err.to_string(),
-            "pod not found",
-            "recorded because it names the wrong thing: the POD is found, the \
-             exit report is not"
-        );
+        assert!(matches!(err, ApiError::ExitReportUnavailable), "{err:?}");
+        use axum::response::IntoResponse as _;
+        use http_body_util::BodyExt as _;
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "pod exit report is unavailable");
     }
 
     /// A receipt is refused for a pod that has not exited — the handler carries

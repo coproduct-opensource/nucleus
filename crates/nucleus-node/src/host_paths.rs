@@ -194,6 +194,10 @@ impl RootName {
 }
 
 impl Roots {
+    pub(crate) fn workspace_root(&self) -> &Path {
+        &self.workspace
+    }
+
     fn get(&self, name: RootName) -> &Path {
         match name {
             RootName::Artifacts => &self.artifacts,

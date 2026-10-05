@@ -1,5 +1,6 @@
 [package]
 name = "nucleus-tool-proxy"
+default-run = "nucleus-tool-proxy"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -68,7 +69,7 @@ ed25519-dalek = { workspace = true }
 libc = "0.2"
 dirs = "7.0"
 whoami = "2"
-reqwest = { workspace = true, features = ["rustls-no-provider", "json", "query"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "json", "query", "stream"] }
 url = "2.5"
 uuid = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
@@ -130,6 +131,7 @@ aws-config = { workspace = true, optional = true }
 tokio-vsock = "0.7"
 
 [dev-dependencies]
+nix = { version = "0.31", default-features = false, features = ["fs", "process"] }
 # Credential minting for the DLC admission provisioning tests (same rev as
 # portcullis's dlc-d pin).
 dlc-crypto = { git = "https://github.com/coproduct-opensource/delegation_calc.git", rev = "34358234cb46279c4ce8a8729736a4135174f65a" }

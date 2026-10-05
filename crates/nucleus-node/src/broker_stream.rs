@@ -14,37 +14,28 @@
 //! larger, and the reply arrives over minutes as server-sent events. Raising
 //! the bound would make the host buffer whatever the guest sends.
 //!
-//! Here only the OPEN frame is signed and buffered (8 KiB, a query's bound).
-//! The body follows on the same connection as bounded chunks
-//! ([`nucleus_cred_protocol::stream`]), each one charged to the pod's egress
-//! balance BEFORE the host forwards it, and the reply comes back the same way.
-//! The host never holds more than one chunk of either direction.
+//! The signed OPEN is followed by bounded chunks. The host stages the complete
+//! upload in an anonymous temporary file, bounded by [`StreamLimits`], and hashes
+//! the bytes it owns. It then applies the same host policy and action-bound
+//! approval mechanism as PERFORM, reserves the full egress charge, retrieves the
+//! credential, and rechecks current policy before committing the effect.
+//! The HTTP body consumes the shared rate allowance as it yields staged slices;
+//! the total reservation stays owned until the body is dropped. The upload and
+//! response-head deadline also bounds time spent waiting for rate windows.
 //!
-//! # The decision is the perform path's, not a copy of it
+//! Allowed uploads keep only chunks in memory. Approval-gated uploads retain
+//! their full payload under the per-pod review limit. The file is removed on close, including
+//! refusal and cancellation. The upstream sees nothing before staging and host
+//! authorization finish. Request streaming therefore incurs local disk I/O and
+//! waits for upload completion; response streaming, including SSE, is preserved.
 //!
-//! Decide, resolve the name, fix the path: [`crate::broker_perform::resolve`].
-//! Mint and fetch the credential: [`crate::broker_perform::credential_header`].
-//! Both are the functions `handle_perform` calls, so a streamed call can never
-//! be permitted where the same perform would be refused (ADR 0007 G).
-//!
-//! # The balance is the pod's ONE balance
-//!
-//! [`StreamContext::egress`] is the same `Arc<EgressMeter>` the perform path
-//! and every other egress path of this pod hold (#2905). The open frame's
-//! guest-chosen bytes (path and media type) are charged first, then each chunk
-//! as it arrives. A chunk the ledger refuses is never forwarded: the upstream
-//! request is aborted, and the guest is told why by name, because the counts
-//! are its own traffic and the remedy (a larger declared ceiling) is the
-//! operator's to apply.
-//!
-//! # What this does not do
-//!
-//! It does not mediate. The kernel decision, the flow graph and the effect
-//! gate ran in the guest's proxy before it signed the open frame, exactly as
-//! for a perform; see `broker_perform`'s module docs for why the host's own
-//! decision is a second gate rather than a replacement. Download bytes are not
-//! charged (the ledger counts upload only, see `portcullis::egress_budget`);
-//! they are bounded per call by [`StreamLimits`].
+//! The decision includes actual WebFetch authority and the guest's declared
+//! operation. Trusted mappings of remote API semantics, revocation, and runtime
+//! cost settlement remain separate work. Download bytes are not charged by the
+//! upload-only egress ledger; [`StreamLimits`] bounds each response.
+
+mod staged;
+pub(crate) mod staging_budget;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -60,6 +51,8 @@ use tokio::sync::mpsc;
 use crate::broker_perform::{Asked, CredentialMiss, InjectedHeader};
 use crate::federated_credential::PodCredentials;
 use crate::upstreams::RegistryEntry;
+
+use crate::egress_meter::body as upload;
 
 /// The per-call request-body ceiling when the operator sets none: 32 MiB.
 ///
@@ -194,9 +187,10 @@ impl StreamNonces {
 /// A streamed call the host is about to make on the guest's behalf.
 ///
 /// As [`crate::broker_perform::UpstreamCall`]: nothing the guest set decides
-/// where this goes. `body` yields the guest's chunks as the host admits them,
+/// where this goes. `body` yields the authorized file's chunks,
 /// and an `Err` in it aborts the request.
 pub struct StreamCall {
+    _permit: crate::host_decide::effects::ExecutingEffect,
     /// Absolute URL, already resolved against the operator's fixed base.
     pub url: String,
     /// Header the credential goes in, from the operator's entry.
@@ -206,7 +200,7 @@ pub struct StreamCall {
     /// The body's media type, as the guest declared it (validated, counted).
     pub content_type: String,
     /// The request body, chunk by chunk.
-    pub body: mpsc::Receiver<Result<Vec<u8>, std::io::Error>>,
+    pub body: upload::UploadBody,
 }
 
 /// What came back, with the body still arriving.
@@ -216,7 +210,35 @@ pub struct StreamResponse {
     /// The upstream's `content-type`, or empty.
     pub content_type: String,
     /// The reply, chunk by chunk. An `Err` is an upstream failure part way.
-    pub body: mpsc::Receiver<Result<Vec<u8>, String>>,
+    pub body: ResponseBody,
+}
+
+/// The response reader belongs to the serving future. Dropping the request
+/// drops its HTTP response rather than leaving a detached reader waiting on it.
+pub enum ResponseBody {
+    Http(reqwest::Response),
+    #[cfg(test)]
+    Channel(mpsc::Receiver<Result<ResponseChunk, String>>),
+}
+
+impl ResponseBody {
+    async fn recv(&mut self) -> Option<Result<ResponseChunk, String>> {
+        match self {
+            Self::Http(response) => Some(match response.chunk().await {
+                Ok(Some(bytes)) => Ok(ResponseChunk::Data(bytes.to_vec())),
+                Ok(None) => Ok(ResponseChunk::End),
+                Err(error) => Err(error.to_string()),
+            }),
+            #[cfg(test)]
+            Self::Channel(receiver) => receiver.recv().await,
+        }
+    }
+}
+
+pub enum ResponseChunk {
+    Data(Vec<u8>),
+    /// The upstream reader observed EOF; channel closure alone is not evidence.
+    End,
 }
 
 /// How the host makes a streamed outbound call. Injected for the reason
@@ -248,10 +270,9 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
     Arc::new(move |call: StreamCall| {
         let client = client.clone();
         Box::pin(async move {
-            let body =
-                reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(call.body));
+            let body = reqwest::Body::wrap_stream(call.body);
             let resp = client
-                .post(&call.url)
+                .request(crate::broker_perform::effect::METHOD, &call.url)
                 .header(&call.header_name, &call.header_value)
                 .header(reqwest::header::CONTENT_TYPE, &call.content_type)
                 .body(body)
@@ -265,28 +286,10 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
-            // Bounded: the relay below reads one chunk at a time, so an
-            // upstream faster than the guest is held to four chunks here.
-            let (tx, rx) = mpsc::channel(4);
-            tokio::spawn(async move {
-                let mut resp = resp;
-                loop {
-                    let next = match resp.chunk().await {
-                        Ok(Some(bytes)) => Ok(bytes.to_vec()),
-                        Ok(None) => break,
-                        Err(e) => Err(e.to_string()),
-                    };
-                    let failed = next.is_err();
-                    // The relay hung up: stop reading the upstream.
-                    if tx.send(next).await.is_err() || failed {
-                        break;
-                    }
-                }
-            });
             Ok(StreamResponse {
                 status,
                 content_type,
-                body: rx,
+                body: ResponseBody::Http(resp),
             })
         })
     })
@@ -294,6 +297,7 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
 
 /// One pod's streamed-call machinery, held for the listener's life.
 pub struct PodStreams {
+    staging: staging_budget::Budget,
     /// How to make the call.
     pub caller: StreamCaller,
     /// Per-call bounds.
@@ -304,9 +308,22 @@ pub struct PodStreams {
 
 impl PodStreams {
     /// A pod's streams, with an empty nonce memory.
-    #[must_use]
+    #[cfg(test)]
     pub fn new(caller: StreamCaller, limits: StreamLimits) -> Self {
+        Self::with_staging(
+            caller,
+            limits,
+            staging_budget::Budget::new(staging_budget::DEFAULT_BYTES).unwrap(),
+        )
+    }
+
+    pub(crate) fn with_staging(
+        caller: StreamCaller,
+        limits: StreamLimits,
+        staging: staging_budget::Budget,
+    ) -> Self {
         Self {
+            staging,
             caller,
             limits,
             nonces: StreamNonces::new(),
@@ -317,6 +334,9 @@ impl PodStreams {
 /// Everything the host needs to serve a streamed call for one pod. Every field
 /// is per pod, as for [`crate::broker_perform::PerformContext`].
 pub struct StreamContext<'a> {
+    /// The pod authority's shared host policy history.
+    pub host_policy: &'a crate::host_decide::SharedPodPolicy,
+
     /// Who is asking, from which socket accepted the connection.
     pub identity: &'a PodIdentity,
     /// This pod's policy.
@@ -326,7 +346,7 @@ pub struct StreamContext<'a> {
     /// The upstreams this pod may reach.
     pub upstreams: &'a [RegistryEntry],
     /// This pod's ONE egress balance (#2905).
-    pub egress: &'a crate::egress_meter::EgressMeter,
+    pub egress: &'a Arc<crate::egress_meter::EgressMeter>,
     /// This pod's caller, bounds and nonce memory.
     pub streams: &'a PodStreams,
 }
@@ -357,17 +377,6 @@ impl Refusal {
     }
 }
 
-/// How the upload half ended.
-#[derive(Debug)]
-enum PumpStop {
-    /// Refused part way, by name. The upstream request was aborted.
-    Refused(String),
-    /// The guest broke the framing or went quiet. The request was aborted.
-    Guest,
-    /// The upstream stopped reading (it answered early). Not a refusal.
-    UpstreamStoppedReading,
-}
-
 /// What one call came to, for its audit record.
 struct CallRecord {
     outcome: &'static str,
@@ -375,13 +384,6 @@ struct CallRecord {
     status: u16,
     upload_bytes: u64,
     download_bytes: u64,
-}
-
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// A media type the host will put in a request header: visible ASCII and
@@ -485,18 +487,25 @@ where
     W: AsyncWrite + Unpin,
 {
     // 1–3. The perform path's own decision, resolution and path fixing.
-    let Some(resolved) = crate::broker_perform::resolve(
-        &Asked {
-            operation: &req.operation,
-            target: &req.target,
-            justification: &req.justification,
-            path: &req.path,
-        },
-        ctx.identity,
-        ctx.policy,
-        ctx.upstreams,
-        now,
-    ) else {
+    if crate::host_decide::PodPolicy::available(ctx.host_policy).is_err() {
+        return refuse(
+            &Refusal::Named("host policy unavailable".into()),
+            0,
+            Remaining::MayFollow,
+            reader,
+            writer,
+        )
+        .await;
+    }
+    let asked = Asked {
+        operation: &req.operation,
+        target: &req.target,
+        justification: &req.justification,
+        path: &req.path,
+    };
+    let Some(resolved) =
+        crate::broker_perform::resolve(&asked, ctx.identity, ctx.policy, ctx.upstreams, now)
+    else {
         return refuse(
             &Refusal::NotPermitted,
             0,
@@ -523,15 +532,11 @@ where
         }
     }
 
-    // 4b. The open frame's guest-chosen bytes, charged before the mint so an
-    //     exhausted pod costs no token exchange (as for a perform).
-    let open_bytes =
-        u64::try_from(req.path.len().saturating_add(req.content_type.len())).unwrap_or(u64::MAX);
-    let open_charge = match ctx.egress.admit(open_bytes, now).await {
+    let call_charge = match resolved.entry().call_charge() {
         Ok(charge) => charge,
-        Err(refusal) => {
+        Err(reason) => {
             return refuse(
-                &Refusal::Named(refusal.to_string()),
+                &Refusal::Named(reason.into()),
                 0,
                 Remaining::MayFollow,
                 reader,
@@ -540,53 +545,202 @@ where
             .await;
         }
     };
-
-    // 5–6. Mint and fetch: the perform path's own function.
+    // No credentials or upstream I/O until the complete bounded upload is owned.
+    let started = std::time::Instant::now();
+    let mut staged = match staged::StagedBody::read(
+        reader,
+        ctx.streams.limits.max_request_bytes(),
+        &ctx.streams.staging,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(reason) => return refuse(&reason, 0, Remaining::MayFollow, reader, writer).await,
+    };
+    let current_time = || {
+        let elapsed = started.elapsed();
+        now.saturating_add(elapsed.as_secs())
+            .saturating_add(u64::from(elapsed.subsec_nanos() != 0))
+    };
+    let mut effect_request = crate::broker_perform::effect::describe_body(
+        &req.operation,
+        &resolved,
+        &req.content_type,
+        staged.digest(),
+        staged.len(),
+    );
+    effect_request.require_approval = req.require_approval;
+    let effect = match effect_request.digest() {
+        Ok(effect) => nucleus_decision_protocol::ArgsDigest::new(effect),
+        Err(_) => return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await,
+    };
+    let preflight = || match ctx.host_policy.lock() {
+        Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
+            Some(op) => policy.preflight_effect(
+                effect,
+                op,
+                resolved.url(),
+                current_time(),
+                call_charge,
+                req.require_approval,
+            ),
+            None => Err("unknown operation".into()),
+        },
+        Err(_) => Err("host policy unavailable".into()),
+    };
+    if let Err(reason) = preflight() {
+        let review = capture_review(
+            ctx.host_policy,
+            req,
+            &resolved,
+            &mut staged,
+            effect,
+            current_time(),
+        )
+        .await;
+        let pause = match review {
+            Err(error) => Err(error),
+            Ok(()) if req.approval_wait_seconds == 0 => Err(reason),
+            Ok(()) => {
+                use tokio::io::AsyncReadExt as _;
+                let mut extra = [0u8; 1];
+                tokio::select! {
+                    result = crate::host_decide::effects::wait::for_effect(ctx.host_policy, effect, current_time(), req.approval_wait_seconds) => match result {
+                        Ok(crate::host_decide::effects::wait::WaitOutcome::Granted) => Ok(()),
+                        Ok(crate::host_decide::effects::wait::WaitOutcome::NoPendingApproval) => Err(reason),
+                        Err(error) => Err(error),
+                    },
+                    _ = reader.read(&mut extra) => Err("approval wait ended: guest disconnected or sent unexpected data".into()),
+                }
+            }
+        };
+        if let Err(reason) = pause.and_then(|()| preflight()) {
+            return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
+        }
+    }
+    let uploaded = staged.len();
+    let open_bytes = req.path.len().saturating_add(req.content_type.len()) as u64;
+    let mut charge = match ctx
+        .egress
+        .reserve_upload(open_bytes.saturating_add(uploaded))
+        .await
+    {
+        Ok(charge) => charge,
+        Err(reason) => {
+            return refuse(
+                &Refusal::Named(reason.to_string()),
+                0,
+                Remaining::Ended,
+                reader,
+                writer,
+            )
+            .await;
+        }
+    };
+    let upload_deadline = tokio::time::Instant::now() + UPSTREAM_IDLE_TIMEOUT;
+    if !matches!(
+        tokio::time::timeout_at(
+            upload_deadline,
+            upload::pace_open(&mut charge, open_bytes, current_time())
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        charge.not_sent();
+        return refuse(
+            &Refusal::UpstreamFailed,
+            0,
+            Remaining::Ended,
+            reader,
+            writer,
+        )
+        .await;
+    }
+    // Staging, operator review and pace waits can outlive the credential PDP witness.
+    // Re-run its checker (ADR 0007 C-1), never extend a stale grant's expiry.
+    // These immutable inputs resolve the same effect; the shared host policy
+    // was checked above and is checked again when committing below.
+    let Some(resolved) = crate::broker_perform::resolve(
+        &asked,
+        ctx.identity,
+        ctx.policy,
+        ctx.upstreams,
+        current_time(),
+    ) else {
+        charge.not_sent();
+        return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await;
+    };
     let InjectedHeader {
         value: header_value,
         federated,
-    } = match crate::broker_perform::credential_header(&resolved, ctx.credentials, now).await {
+    } = match crate::broker_perform::credential_header(&resolved, ctx.credentials, current_time())
+        .await
+    {
         Ok(header) => header,
         Err(miss) => {
-            open_charge.not_sent();
-            let refusal = match miss {
+            charge.not_sent();
+            let reason = match miss {
                 CredentialMiss::MintFailed => Refusal::UpstreamFailed,
                 CredentialMiss::NotHeld => Refusal::NotPermitted,
             };
-            return refuse(&refusal, 0, Remaining::MayFollow, reader, writer).await;
+            return refuse(&reason, 0, Remaining::Ended, reader, writer).await;
         }
     };
-    open_charge.sent();
-
-    // 7. Call, with the body pumped from the guest as the ledger admits it.
+    // Staging and minting await other work; commit over current shared policy.
+    let permit = match ctx.host_policy.lock() {
+        Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
+            Some(op) => policy.authorize_effect(
+                effect,
+                op,
+                resolved.url(),
+                current_time(),
+                call_charge,
+                req.require_approval,
+            ),
+            None => Err("unknown operation".into()),
+        },
+        Err(_) => Err("host policy unavailable".into()),
+    };
+    let permit = match permit {
+        Ok(permit) => permit,
+        Err(reason) => {
+            charge.not_sent();
+            let reason = capture_review(
+                ctx.host_policy,
+                req,
+                &resolved,
+                &mut staged,
+                effect,
+                current_time(),
+            )
+            .await
+            .err()
+            .unwrap_or(reason);
+            return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
+        }
+    };
     let spec = resolved.entry().spec();
     let (tx, rx) = mpsc::channel(4);
+    use nucleus_spec::host_effect::outcome::Termination;
+    let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
+    // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {
+        _permit: permit,
         url: resolved.url().to_string(),
         header_name: spec.header.clone(),
         header_value,
         content_type: req.content_type.clone(),
-        body: rx,
+        body: upload::UploadBody::new(rx, charge, current_time()),
     });
-    let mut uploaded: u64 = 0;
-    let pump = pump(reader, tx, ctx, &mut uploaded);
-    let (pumped, called) = tokio::join!(pump, tokio::time::timeout(UPSTREAM_IDLE_TIMEOUT, call));
-
-    let remaining = match pumped {
-        Ok(()) => Remaining::Ended,
-        Err(_) => Remaining::MayFollow,
-    };
-    let refusal = match (&pumped, &called) {
-        (Err(PumpStop::Refused(reason)), _) => Some(Refusal::Named(reason.clone())),
-        (Err(PumpStop::Guest), _) => Some(Refusal::Malformed),
-        (_, Err(_) | Ok(Err(_))) => Some(Refusal::UpstreamFailed),
-        (Ok(()) | Err(PumpStop::UpstreamStoppedReading), Ok(Ok(_))) => None,
-    };
-    if let Some(refusal) = refusal {
-        return refuse(&refusal, uploaded, remaining, reader, writer).await;
-    }
-    let Ok(Ok(mut response)) = called else {
-        // Unreachable: every other shape refused above.
+    // One deadline covers both upload and response headers, including a caller
+    // which retains but never drains the body channel.
+    let result = tokio::time::timeout_at(upload_deadline, async {
+        tokio::join!(staged.send(tx), call)
+    })
+    .await;
+    let remaining = Remaining::Ended;
+    let Ok((Ok(()), Ok(mut response))) = result else {
+        let _ = observation.finish(Termination::TransportFailure);
         return refuse(
             &Refusal::UpstreamFailed,
             uploaded,
@@ -597,9 +751,12 @@ where
         .await;
     };
 
+    observation.response(response.status);
+
     // The upstream refused a minted token: evict it so the next call mints
     // afresh. Not retried; see `handle_perform`.
     if federated && response.status == 401 {
+        let _ = observation.finish(Termination::ResponseRejected);
         ctx.credentials.evict(&spec.name);
         return refuse(
             &Refusal::UpstreamFailed,
@@ -611,6 +768,18 @@ where
         .await;
     }
 
+    // The host records what it is about to deliver, even if the guest omits
+    // its observation report. No upstream status, headers or bytes cross first.
+    if crate::host_decide::PodPolicy::observe_response(ctx.host_policy, current_time()).is_err() {
+        return refuse(
+            &Refusal::Named("host policy unavailable".into()),
+            uploaded,
+            Remaining::Ended,
+            reader,
+            writer,
+        )
+        .await;
+    }
     // 8. Granted: the head, then the reply as it arrives, then the end.
     let head = StreamHead {
         granted: true,
@@ -631,20 +800,22 @@ where
     };
     if write_line(writer, &encode_line(&head)).await.is_err() {
         record.outcome = "guest_gone";
+        let _ = observation.finish(Termination::GuestDisconnected);
         return record;
     }
     let max = ctx.streams.limits.max_response_bytes();
-    let end = loop {
+    let mut end = loop {
         let next = tokio::time::timeout(UPSTREAM_IDLE_TIMEOUT, response.body.recv()).await;
         let bytes = match next {
-            Ok(None) => {
+            Ok(Some(Ok(ResponseChunk::End))) => {
+                observation.body_complete();
                 break StreamEnd {
                     complete: true,
                     reason: String::new(),
                 };
             }
-            Ok(Some(Ok(bytes))) => bytes,
-            Ok(Some(Err(_))) => {
+            Ok(Some(Ok(ResponseChunk::Data(bytes)))) => bytes,
+            Ok(Some(Err(_))) | Ok(None) => {
                 break StreamEnd {
                     complete: false,
                     reason: "upstream call failed".to_string(),
@@ -660,12 +831,14 @@ where
                 };
             }
         };
+        observation.bytes(&bytes);
         let len = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         let room = max.saturating_sub(record.download_bytes);
         let over = len > room;
         let keep = usize::try_from(room.min(len)).unwrap_or(bytes.len());
         if write_chunks(writer, &bytes[..keep]).await.is_err() {
             record.outcome = "guest_gone";
+            let _ = observation.finish(Termination::GuestDisconnected);
             return record;
         }
         record.download_bytes = record
@@ -683,6 +856,15 @@ where
     };
     // Dropping the receiver stops the upstream read when the reply was cut.
     drop(response);
+    let termination = if end.complete {
+        Termination::ResponseRead
+    } else {
+        Termination::ResponseTruncated
+    };
+    if observation.finish(termination).is_err() {
+        end.complete = false;
+        end.reason = "host outcome evidence unavailable".into();
+    }
     if !end.complete {
         record.outcome = "truncated";
         record.reason.clone_from(&end.reason);
@@ -692,58 +874,43 @@ where
     record
 }
 
-/// The upload half: read the guest's chunks, charge each to the pod's ONE
-/// egress balance, and only then hand it to the upstream request.
-///
-/// On a refusal or a framing failure, an `Err` is sent into the request body
-/// so the HTTP client aborts the request rather than completing a truncated
-/// one the upstream might act on.
-async fn pump<R>(
-    reader: &mut R,
-    tx: mpsc::Sender<Result<Vec<u8>, std::io::Error>>,
-    ctx: &StreamContext<'_>,
-    uploaded: &mut u64,
-) -> Result<(), PumpStop>
-where
-    R: AsyncRead + Unpin,
-{
-    let stop = loop {
-        let chunk = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, read_chunk(reader)).await {
-            Ok(Ok(chunk)) => chunk,
-            Ok(Err(_)) | Err(_) => break PumpStop::Guest,
-        };
-        let data = match chunk {
-            // The whole body arrived and was forwarded: dropping `tx` ends
-            // the request body cleanly.
-            Chunk::End => return Ok(()),
-            Chunk::Data(data) => data,
-        };
-        let len = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let max = ctx.streams.limits.max_request_bytes();
-        if uploaded.saturating_add(len) > max {
-            break PumpStop::Refused(format!(
-                "the request body exceeds this node's per-call maximum of {max} bytes \
-                 (--egress-stream-max-request-bytes)"
-            ));
+async fn capture_review(
+    policy: &crate::host_decide::SharedPodPolicy,
+    request: &nucleus_cred_protocol::StreamRequest,
+    resolved: &crate::broker_perform::Resolved<'_>,
+    staged: &mut staged::StagedBody,
+    effect: nucleus_decision_protocol::ArgsDigest,
+    now: u64,
+) -> Result<(), String> {
+    let needed = policy
+        .lock()
+        .map_err(|_| "host policy unavailable")?
+        .review_requested(effect, now);
+    if !needed {
+        return Ok(());
+    }
+    let mut metadata = crate::broker_perform::effect::describe_body(
+        &request.operation,
+        resolved,
+        &request.content_type,
+        staged.digest(),
+        staged.len(),
+    );
+    metadata.require_approval = request.require_approval;
+    let body = match staged.review_bytes().await {
+        Ok(body) => body,
+        Err(error) => {
+            policy
+                .lock()
+                .map_err(|_| "host policy unavailable")?
+                .refuse_missing_review(effect);
+            return Err(error);
         }
-        // Charged BEFORE it is forwarded: a refused chunk never leaves.
-        let charge = match ctx.egress.admit(len, now_unix()).await {
-            Ok(charge) => charge,
-            Err(refusal) => break PumpStop::Refused(refusal.to_string()),
-        };
-        if tx.send(Ok(data)).await.is_err() {
-            // The request is gone, so these bytes provably were not sent.
-            charge.not_sent();
-            return Err(PumpStop::UpstreamStoppedReading);
-        }
-        // Handed to the client: sent, or may have been (ambiguous is sent).
-        charge.sent();
-        *uploaded = uploaded.saturating_add(len);
     };
-    let _ = tx
-        .send(Err(std::io::Error::other("the host stopped this upload")))
-        .await;
-    Err(stop)
+    policy
+        .lock()
+        .map_err(|_| "host policy unavailable")?
+        .attach_review(effect, metadata, &body, now)
 }
 
 #[cfg(test)]
@@ -755,12 +922,16 @@ mod tests {
     //! the upstream is a generic SSE endpoint and the credential is a
     //! placeholder.
 
+    mod approval_wait;
+    mod paced;
+
     use super::*;
     use crate::broker_perform::IdempotencyLedger;
     use crate::broker_transport::{BrokerServing, refusing_caller, serve_connection_with_timeout};
     use nucleus_cred_broker::{Credential, CredentialStore};
     use nucleus_cred_protocol::stream::MAX_STREAM_LINE_BYTES;
     use nucleus_cred_protocol::stream::io::read_line;
+    use sha2::{Digest, Sha256};
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio_stream::StreamExt;
 
@@ -781,6 +952,7 @@ mod tests {
         authorization: Option<String>,
         content_type: Option<String>,
         body_len: usize,
+        body_sha256: [u8; 32],
         /// Whether the request body arrived whole. An aborted upload is not.
         complete: bool,
     }
@@ -794,10 +966,14 @@ mod tests {
     ) -> axum::response::Response {
         let mut data = body.into_data_stream();
         let mut body_len = 0;
+        let mut hash = Sha256::new();
         let mut complete = true;
         while let Some(part) = data.next().await {
             match part {
-                Ok(bytes) => body_len += bytes.len(),
+                Ok(bytes) => {
+                    body_len += bytes.len();
+                    hash.update(&bytes);
+                }
                 Err(_) => {
                     complete = false;
                     break;
@@ -814,6 +990,7 @@ mod tests {
             authorization: header("authorization"),
             content_type: header("content-type"),
             body_len,
+            body_sha256: hash.finalize().into(),
             complete,
         });
         let (tx, rx) = mpsc::channel::<Result<Vec<u8>, std::convert::Infallible>>(4);
@@ -851,6 +1028,7 @@ mod tests {
 
     /// One pod, as the listener would hold it.
     struct Pod {
+        host_policy: crate::host_decide::SharedPodPolicy,
         identity: PodIdentity,
         policy: PermissionLattice,
         credentials: PodCredentials,
@@ -878,6 +1056,7 @@ mod tests {
             }
             let dir = tempfile::tempdir().expect("tempdir");
             Self {
+                host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/stream"),
                 policy: PermissionLattice::permissive(),
                 credentials: PodCredentials::static_only(store),
@@ -901,6 +1080,7 @@ mod tests {
 
         fn serving(&self) -> BrokerServing<'_> {
             BrokerServing {
+                host_policy: &self.host_policy,
                 identity: &self.identity,
                 policy: &self.policy,
                 credentials: &self.credentials,
@@ -920,6 +1100,8 @@ mod tests {
 
     fn open(target: &str, nonce: &str) -> StreamRequest {
         StreamRequest {
+            require_approval: false,
+            approval_wait_seconds: 0,
             operation: "WebFetch".into(),
             target: target.into(),
             justification: "credentialed egress".into(),
@@ -942,6 +1124,15 @@ mod tests {
     /// Be the guest: send the signed open frame and `body` as chunks, and read
     /// the head, the reply and its end, all over the real serving path.
     async fn drive(pod: &Pod, req: &StreamRequest, body: &[u8]) -> Heard {
+        drive_before_end(pod, req, body, || {}).await
+    }
+
+    async fn drive_before_end(
+        pod: &Pod,
+        req: &StreamRequest,
+        body: &[u8],
+        before_end: impl FnOnce(),
+    ) -> Heard {
         let open_line = format!(
             "{}\n",
             nucleus_cred_protocol::frame::sign(KEY, &serde_json::to_string(req).expect("json"))
@@ -955,6 +1146,7 @@ mod tests {
             if w.write_all(open_line.as_bytes()).await.is_ok()
                 && write_chunks(&mut w, body).await.is_ok()
             {
+                before_end();
                 let _ = write_end(&mut w).await;
             }
         };
@@ -993,6 +1185,248 @@ mod tests {
         (0..MIB).map(|i| b"0123456789abcdef"[i % 16]).collect()
     }
 
+    #[tokio::test]
+    async fn streamed_calls_debit_the_same_operator_tariff_budget() {
+        let (base, seen) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        pod.policy.budget.max_cost_usd = rust_decimal::Decimal::ONE;
+        pod.host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        pod.upstreams = pod
+            .upstreams
+            .into_iter()
+            .map(|entry| entry.with_call_charge(1_000_000))
+            .collect();
+        let first = drive(&pod, &open("model-api", "paid"), b"request").await;
+        assert!(first.head.granted);
+        let second = drive(&pod, &open("model-api", "exhausted"), b"request").await;
+        assert!(!second.head.granted);
+        assert!(second.head.reason.contains("budget exhausted"));
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn streamed_outcomes_are_host_signed_and_distinguish_truncation() {
+        use nucleus_spec::host_effect::{self, outcome};
+        for truncated in [false, true] {
+            let (base, _) = upstream().await;
+            let limits = if truncated {
+                StreamLimits::new(1024, 2).unwrap()
+            } else {
+                StreamLimits::DEFAULT
+            };
+            let mut pod = Pod::new(&base, 1 << 30, limits);
+            let key = ed25519_dalek::SigningKey::from_bytes(&[37; 32]);
+            let evidence = crate::host_decide::evidence::Evidence::create(
+                uuid::Uuid::new_v4(),
+                pod.dir.path(),
+                Arc::new(key.clone()),
+            )
+            .unwrap();
+            pod.host_policy = crate::host_decide::PodPolicy::new(
+                portcullis::kernel::Kernel::new(pod.policy.clone()),
+                evidence,
+            );
+            let heard = drive(&pod, &open("model-api", "observed"), b"request").await;
+            assert!(heard.head.granted);
+            assert_eq!(heard.end.unwrap().complete, !truncated);
+            let record: outcome::SignedOutcome = serde_json::from_str(
+                std::fs::read_to_string(pod.dir.path().join(outcome::LOG_FILE))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap();
+            let auth: host_effect::SignedAuthorization = serde_json::from_str(
+                std::fs::read_to_string(pod.dir.path().join(host_effect::LOG_FILE))
+                    .unwrap()
+                    .trim(),
+            )
+            .unwrap();
+            assert_eq!(
+                record.outcome.authorization_record_sha256,
+                host_effect::record_hash(&auth).unwrap()
+            );
+            let response = record.outcome.response.as_ref().unwrap();
+            assert_eq!(response.status, 200);
+            assert_eq!(response.body_complete, !truncated);
+            if truncated {
+                assert_eq!(
+                    record.outcome.termination,
+                    outcome::Termination::ResponseTruncated
+                );
+                assert!(response.body_bytes > heard.body.len() as u64);
+            } else {
+                assert_eq!(
+                    record.outcome.termination,
+                    outcome::Termination::ResponseRead
+                );
+                assert_eq!(
+                    response.body_sha256,
+                    hex::encode(Sha256::digest(&heard.body))
+                );
+            }
+            let signature =
+                ed25519_dalek::Signature::from_slice(&hex::decode(&record.signature).unwrap())
+                    .unwrap();
+            key.verifying_key()
+                .verify_strict(
+                    &outcome::signing_bytes(&record.outcome).unwrap(),
+                    &signature,
+                )
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_stream_leaves_an_interrupted_host_outcome() {
+        use nucleus_spec::host_effect::outcome;
+        let (base, _) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        let evidence = crate::host_decide::evidence::Evidence::create(
+            uuid::Uuid::new_v4(),
+            pod.dir.path(),
+            Arc::new(ed25519_dalek::SigningKey::from_bytes(&[37; 32])),
+        )
+        .unwrap();
+        pod.host_policy = crate::host_decide::PodPolicy::new(
+            portcullis::kernel::Kernel::new(pod.policy.clone()),
+            evidence,
+        );
+        let (entered, mut observed) = mpsc::channel(1);
+        pod.streams.caller = Arc::new(move |_call| {
+            let entered = entered.clone();
+            Box::pin(async move {
+                entered.send(()).await.unwrap();
+                std::future::pending().await
+            })
+        });
+        let request = open("model-api", "cancelled");
+        let mut serving = Box::pin(drive(&pod, &request, b"request"));
+        tokio::select! {
+            _ = &mut serving => panic!("upstream must remain pending"),
+            signal = observed.recv() => assert_eq!(signal, Some(())),
+        }
+        // Drop the actual serving future, rather than inventing a terminal event.
+        drop(serving);
+        let record: outcome::SignedOutcome = serde_json::from_str(
+            std::fs::read_to_string(pod.dir.path().join(outcome::LOG_FILE))
+                .unwrap()
+                .trim(),
+        )
+        .unwrap();
+        assert_eq!(
+            record.outcome.termination,
+            outcome::Termination::Interrupted
+        );
+        assert!(record.outcome.response.is_none());
+    }
+
+    #[tokio::test]
+    async fn dropping_a_stream_response_closes_the_real_upstream_reader() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+                head.push(byte[0]);
+            }
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1048576\r\n\r\nx")
+                .await
+                .unwrap();
+            let mut tail = [0u8; 1024];
+            while socket.read(&mut tail).await.unwrap_or(0) != 0 {}
+        });
+        let policy = crate::host_decide::test_policy(PermissionLattice::permissive());
+        let permit = policy
+            .lock()
+            .unwrap()
+            .authorize_effect(
+                nucleus_decision_protocol::ArgsDigest::new([1; 32]),
+                portcullis::Operation::WebFetch,
+                "http://upstream",
+                100,
+                crate::upstreams::CallCharge::free(),
+                false,
+            )
+            .unwrap();
+        let (permit, _observation) = permit.observe(policy.clone(), 100);
+        let (tx, rx) = mpsc::channel(1);
+        drop(tx);
+        let caller = http_stream_caller(reqwest::Client::new());
+        let mut response = caller(StreamCall {
+            _permit: permit,
+            url: format!("http://{address}/call"),
+            header_name: "authorization".into(),
+            header_value: "test-token".into(),
+            content_type: "application/json".into(),
+            body: upload::UploadBody::new(
+                rx,
+                crate::egress_meter::EgressMeter::new(
+                    portcullis::EgressCeiling::new(1_000, portcullis::EgressPace::Unpaced),
+                    std::env::temp_dir(),
+                    "response-owner".into(),
+                )
+                .reserve_upload(0)
+                .await
+                .unwrap(),
+                100,
+            ),
+        })
+        .await
+        .unwrap();
+        assert!(matches!(
+            response.body.recv().await,
+            Some(Ok(ResponseChunk::Data(_)))
+        ));
+        drop(response);
+        tokio::time::timeout(Duration::from_secs(3), upstream)
+            .await
+            .expect("the upstream reader must not outlive its owner")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn upstream_reader_disappearance_is_not_a_complete_response() {
+        let (base, _) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        pod.streams.caller = Arc::new(|mut call| {
+            Box::pin(async move {
+                while call.body.recv().await.is_some() {}
+                let (tx, rx) = mpsc::channel(1);
+                drop(tx); // A stopped reader never observed or sent an EOF witness.
+                Ok(StreamResponse {
+                    status: 200,
+                    content_type: String::new(),
+                    body: ResponseBody::Channel(rx),
+                })
+            })
+        });
+        let heard = drive(&pod, &open("model-api", "reader-gone"), b"request").await;
+        assert!(heard.head.granted);
+        assert!(!heard.end.unwrap().complete);
+    }
+
+    #[tokio::test]
+    async fn a_faulted_host_policy_refuses_a_stream_before_upstream_io() {
+        let (base, seen) = upstream().await;
+        let pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        let fault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = pod.host_policy.lock().unwrap();
+            panic!("policy update interrupted");
+        }));
+        assert!(fault.is_err());
+        let heard = drive(&pod, &open("model-api", "after-fault"), b"request").await;
+        assert!(!heard.head.granted);
+        assert_eq!(heard.head.reason, "host policy unavailable");
+        assert!(heard.body.is_empty());
+        assert!(seen.lock().unwrap().is_empty());
+    }
+
     /// **#2696 P4's headline.** A 1 MiB request body streams through the host
     /// to the upstream, and the upstream's server-sent events stream back, in
     /// order and whole. The host injected the credential: the upstream saw
@@ -1008,6 +1442,18 @@ mod tests {
         let heard = drive(&pod, &open("model-api", "n-1"), &mebibyte()).await;
 
         assert!(heard.head.granted, "{:?}", heard.head);
+        // The guest never sent an Observe frame. The broker owns this fact.
+        let (decision, _token) = pod
+            .host_policy
+            .lock()
+            .unwrap()
+            .decide(portcullis::Operation::GitCommit, "commit");
+        assert_eq!(
+            nucleus_decision_protocol::kernel::outcome_of(&decision.verdict),
+            nucleus_decision_protocol::Outcome::Denied {
+                reason: nucleus_decision_protocol::DenyReason::FlowRefused,
+            }
+        );
         assert_eq!(heard.head.status, 200);
         assert_eq!(heard.head.content_type, "text/event-stream");
         assert_eq!(
@@ -1026,6 +1472,10 @@ mod tests {
         assert_eq!(seen.len(), 1, "exactly one upstream call: {seen:?}");
         assert!(seen[0].complete, "the upload arrived whole");
         assert_eq!(seen[0].body_len, MIB);
+        assert_eq!(
+            seen[0].body_sha256,
+            <[u8; 32]>::from(Sha256::digest(mebibyte()))
+        );
         assert_eq!(
             seen[0].authorization.as_deref(),
             Some("Bearer test-token-123"),
@@ -1052,11 +1502,9 @@ mod tests {
         );
     }
 
-    /// **Exhaustion mid-stream is refused by name**, and the chunk that would
-    /// pass the ceiling is never forwarded: the upstream sees an aborted
-    /// request, never a whole one.
+    /// Full-upload reservation refuses before any upstream I/O.
     #[tokio::test]
-    async fn egress_exhaustion_mid_upload_is_refused_by_name() {
+    async fn egress_exhaustion_refuses_the_staged_upload_before_upstream_io() {
         let (base, seen) = upstream().await;
         let ceiling = 200 * 1024;
         let pod = Pod::new(&base, ceiling, StreamLimits::DEFAULT);
@@ -1075,12 +1523,206 @@ mod tests {
             pod.egress.counted() <= ceiling,
             "nothing past the ceiling was charged"
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        for call in seen.lock().expect("log").iter() {
-            assert!(!call.complete, "the upstream got a whole request: {call:?}");
-            assert!(u64::try_from(call.body_len).expect("fits") <= ceiling);
-        }
+        assert!(seen.lock().expect("log").is_empty(), "no upstream call");
+        assert_eq!(pod.egress.counted(), 0, "unsent bytes are not charged");
         assert!(pod.audit().contains("egress_budget_exhausted"));
+    }
+
+    #[tokio::test]
+    async fn host_approval_binds_the_complete_stream_and_is_consumed_once() {
+        use crate::host_decide::effects::{ApprovalStatus, Operator};
+        let (base, seen) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        pod.policy
+            .obligations
+            .insert(portcullis::Operation::WebFetch);
+        pod.host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        let req = open("model-api", "request-approval");
+        let body = mebibyte();
+        let refused = drive(&pod, &req, &body).await;
+        assert!(!refused.head.granted);
+        assert!(refused.head.reason.starts_with("host approval required:"));
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(pod.egress.counted(), 0);
+        let operator = || Operator::authenticate("operator", "operator").unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let id = {
+            let mut policy = pod.host_policy.lock().unwrap();
+            let pending = policy.list_effect_approvals(operator(), now);
+            assert_eq!(pending.len(), 1);
+            let id = pending[0].id;
+            let review = policy.effect_review(operator(), id, now).unwrap();
+            use base64::Engine as _;
+            assert_eq!(
+                base64::engine::general_purpose::STANDARD
+                    .decode(&review.body_base64)
+                    .unwrap(),
+                body
+            );
+            assert_eq!(
+                hex::encode(review.request.digest().unwrap()),
+                pending[0].effect_sha256
+            );
+            assert!(!serde_json::to_string(&review).unwrap().contains(TOKEN));
+            policy
+                .settle_effect_approval(operator(), id, true, now)
+                .unwrap();
+            id
+        };
+        // Same OPEN metadata with an altered late payload byte cannot use it.
+        let mut changed = body.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(
+            !drive(&pod, &open("model-api", "changed-payload"), &changed)
+                .await
+                .head
+                .granted
+        );
+        let mut content_type = open("model-api", "changed-media");
+        content_type.content_type = "text/plain".into();
+        assert!(!drive(&pod, &content_type, &body).await.head.granted);
+        let mut path = open("model-api", "changed-path");
+        path.path = "/different".into();
+        assert!(!drive(&pod, &path, &body).await.head.granted);
+        assert!(seen.lock().unwrap().is_empty());
+        let granted = drive(&pod, &open("model-api", "approved"), &body).await;
+        assert!(granted.head.granted, "{:?}", granted.head);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(
+            !drive(&pod, &open("model-api", "reused-approval"), &body)
+                .await
+                .head
+                .granted
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(
+            pod.host_policy
+                .lock()
+                .unwrap()
+                .list_effect_approvals(operator(), now)
+                .iter()
+                .find(|v| v.id == id)
+                .unwrap()
+                .status,
+            ApprovalStatus::Spent
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_transport_cannot_duplicate_an_approved_effect() {
+        use crate::host_decide::effects::Operator;
+        let (base, seen) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        pod.policy
+            .obligations
+            .insert(portcullis::Operation::WebFetch);
+        pod.host_policy = crate::host_decide::test_policy(pod.policy.clone());
+        let req = open("model-api", "approval-request");
+        assert!(!drive(&pod, &req, b"{}").await.head.granted);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let operator = || Operator::authenticate("operator", "operator").unwrap();
+        {
+            let mut policy = pod.host_policy.lock().unwrap();
+            let pending = policy.list_effect_approvals(operator(), now);
+            policy
+                .settle_effect_approval(operator(), pending[0].id, true, now)
+                .unwrap();
+        }
+        let buffered = nucleus_cred_protocol::PerformRequest {
+            operation: req.operation,
+            target: req.target,
+            justification: req.justification,
+            idempotency_key: "buffered-attempt".into(),
+            path: req.path,
+            body: b"{}".to_vec(),
+        };
+        let ctx = crate::broker_perform::PerformContext {
+            host_policy: &pod.host_policy,
+            identity: &pod.identity,
+            policy: &pod.policy,
+            credentials: &pod.credentials,
+            upstreams: &pod.upstreams,
+            ledger: &pod.ledger,
+            egress: &pod.egress,
+        };
+        let caller = crate::broker_transport::http_caller(reqwest::Client::new());
+        let reply =
+            crate::broker_perform::handle_perform(&buffered, &ctx, now, |c| caller(c)).await;
+        assert!(reply.granted, "{reply:?}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(
+            !drive(&pod, &open("model-api", "streamed-again"), b"{}")
+                .await
+                .head
+                .granted
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn no_upstream_call_precedes_upload_end_and_late_taint_is_enforced() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (base, seen) = upstream().await;
+        let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let invoked = calls.clone();
+        let caller = pod.streams.caller.clone();
+        pod.streams.caller = Arc::new(move |call| {
+            invoked.fetch_add(1, Ordering::SeqCst);
+            caller(call)
+        });
+        let mut req = open("model-api", "late-taint");
+        req.operation = "GitCommit".into();
+        // More than the duplex capacity: completing this upload requires the
+        // host to read it, so the assertion cannot pass just from no scheduling.
+        let heard = drive_before_end(&pod, &req, &mebibyte(), || {
+            assert_eq!(calls.load(Ordering::SeqCst), 0);
+            crate::host_decide::PodPolicy::observe_response(&pod.host_policy, 0).unwrap();
+        })
+        .await;
+        assert!(!heard.head.granted, "{:?}", heard.head);
+        assert!(heard.head.reason.starts_with("host policy refused:"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(seen.lock().unwrap().is_empty());
+        assert_eq!(pod.egress.counted(), 0);
+    }
+
+    #[tokio::test]
+    async fn stream_host_gate_refuses_budget_taint_and_false_operation_labels() {
+        for scenario in ["budget", "taint", "network"] {
+            let (base, seen) = upstream().await;
+            let mut pod = Pod::new(&base, 1 << 30, StreamLimits::DEFAULT);
+            let mut req = open("model-api", "denied");
+            let mut host_policy = pod.policy.clone();
+            match scenario {
+                "budget" => host_policy.budget.max_cost_usd = rust_decimal::Decimal::ZERO,
+                "network" => {
+                    host_policy.capabilities.web_fetch = portcullis::CapabilityLevel::Never;
+                    req.operation = "ReadFiles".into();
+                }
+                "taint" => req.operation = "GitCommit".into(),
+                _ => unreachable!(),
+            }
+            pod.host_policy = crate::host_decide::test_policy(host_policy);
+            if scenario == "taint" {
+                crate::host_decide::PodPolicy::observe_response(&pod.host_policy, 0).unwrap();
+            }
+            let heard = drive(&pod, &req, b"{}").await;
+            assert!(!heard.head.granted, "{scenario}: {:?}", heard.head);
+            assert!(
+                heard.head.reason.starts_with("host policy refused:"),
+                "{scenario}: {:?}",
+                heard.head
+            );
+            assert!(seen.lock().unwrap().is_empty());
+            assert_eq!(pod.egress.counted(), 0);
+        }
     }
 
     /// **A name the operator did not configure is refused**, with the policy
@@ -1146,8 +1788,8 @@ mod tests {
             "{}",
             heard.head.reason
         );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(seen.lock().expect("log").iter().all(|c| !c.complete));
+        assert!(seen.lock().expect("log").is_empty());
+        assert_eq!(pod.egress.counted(), 0);
     }
 
     /// A reply past the per-call ceiling is cut and the END says why, so a

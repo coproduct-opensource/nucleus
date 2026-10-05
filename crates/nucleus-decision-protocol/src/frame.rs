@@ -177,11 +177,11 @@ impl Subject {
     }
 }
 
-/// A digest of an operation's full arguments, so a decision is bound to the
-/// exact call it was taken for and not merely to its operation and subject.
+/// An action digest carried by the decision protocol and bound by the ledger.
 ///
-/// 32 bytes. The digest function is the canonical-args encoder's choice, made
-/// where the arguments are canonicalised (P8); this protocol only carries it.
+/// 32 bytes. The caller defines the canonical preimage. P8 shadow mode uses
+/// operation and subject only (`kernel::args_digest`); effect enforcement must
+/// bind the complete arguments and recompute them at the execution boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArgsDigest([u8; ArgsDigest::LEN]);
 

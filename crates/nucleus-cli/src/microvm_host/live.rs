@@ -152,6 +152,7 @@ fn ensure_ready_then_survive_a_kill() {
         memory: "4g".into(),
         trust_domain: "nucleus.local".into(),
         ready_timeout: Duration::from_secs(120),
+        connection: crate::microvm_host::lifecycle::Connection::PublishedLoopback,
     };
     let started = Instant::now();
     let ready = lifecycle::ensure_ready(&cli, &cfg);

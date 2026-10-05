@@ -22,23 +22,9 @@
 //! so `nucleus_recompute::verify_receipt` re-derives the outputs with the
 //! proven kernel and says [`RecomputeOutcome::Match`] or names the field that
 //! diverged. This checks internal consistency, not the origin of the inputs.
-//! The signed spend record binds the trusted mediator to this clearing and
-//! its payer and amount; a signed but inconsistent clearing still fails here.
-//!
-//! Two things are checked before a receipt is stored:
-//!
-//! 1. it recomputes, and
-//! 2. its content hash is derived locally, so the log is keyed by a name the
-//!    signed spend receipt's `basis` can resolve.
-//!
-//! # The binding, and why it is load-bearing
-//!
-//! [`resolve_spend_basis`] checks the signed payer and amount against a
-//! winning payment in the referenced, recomputed clearing. Missing evidence,
-//! a losing payer, or a mismatched amount is **not credited**.
-//! `PodAuthority::release_child` folds the full allocation in that case, the
-//! same as for a missing receipt. Evidence that changes no decision is not
-//! evidence, so the discount is conditional on the evidence being here.
+//! The spend signature authenticates a legacy guest-held key. Even a complete
+//! recomputable claim does not prove actual spend or authorize a budget refund.
+//! These records remain available as guest assertions for inspection.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -147,7 +133,7 @@ pub fn verified_clearings(pod_dir: &Path) -> BTreeMap<String, ClearingReceipt> {
 ///
 /// `None` for a basis this collector does not understand, so a future basis
 /// kind cannot silently read as unresolved: the caller decides what an unknown
-/// basis means, and today `release_child` treats it as "could not look".
+/// basis means; unknown bases cannot substantiate even a guest-reported total.
 #[must_use]
 pub fn resolve_spend_basis(
     clearings: &BTreeMap<String, ClearingReceipt>,
@@ -163,28 +149,12 @@ pub fn resolve_spend_basis(
     }))
 }
 
-/// What the node may credit a pod as having SPENT, or `None` for "could not
-/// look".
-///
-/// This is the whole evidence chain in one place, and it is deliberately not in
-/// `pod_authority.rs`: that file decides authority, and
-/// `docs/econ-layer-boundary.md` keeps economics out of it. The authority side
-/// receives a number and clamps it to the allocation; everything that reads a
-/// receipt happens here.
-///
-/// `Some(total)` requires ALL of:
-///
-/// * the spend receipts verify under the key the node minted for this pod, and
-/// * their sequence is exactly `1..=n`, followed by a signed terminal record
-///   committing to their count and total, so a missing tail cannot earn credit, and
-/// * every receipt's `basis` names a clearing receipt this host holds and can
-///   RECOMPUTE, and its signed payer and amount match a winning payment.
-///
-/// Any gap gives `None`, and `release_child` then folds the full allocation.
-/// That is what makes the corpus load-bearing: a pod that wants the discount
-/// has to ship the evidence, and the evidence has to survive recomputation.
+/// The total claimed by a complete legacy guest-signed spend chain whose
+/// declared clearing inputs recompute. This is guest-reported evidence only:
+/// neither the signature nor recomputation establishes actual host spending.
+/// Never use this total to restore authority or refund an allocation.
 #[must_use]
-pub fn creditable_spend(pod_dir: &Path, pod_id: &str) -> Option<rust_decimal::Decimal> {
+pub fn guest_reported_spend(pod_dir: &Path, pod_id: &str) -> Option<rust_decimal::Decimal> {
     use portcullis::spend_receipt::VerifiedSpend;
 
     let spends = crate::spend_receipt_collector::verified_spend_receipts(pod_dir, pod_id);
@@ -203,8 +173,7 @@ pub fn creditable_spend(pod_dir: &Path, pod_id: &str) -> Option<rust_decimal::De
                             seq = s.seq,
                             basis = %s.basis,
                             "a spend receipt names a clearing receipt this host does not \
-                             hold or cannot recompute; the pod is charged its full \
-                             allocation"
+                             hold or cannot recompute; the guest-reported total is unavailable"
                         );
                         return None;
                     }
@@ -236,7 +205,7 @@ pub fn creditable_spend(pod_dir: &Path, pod_id: &str) -> Option<rust_decimal::De
             tracing::warn!(
                 pod = pod_id,
                 missing_seq = at_seq,
-                "spend receipts have a gap; the pod is charged its full allocation"
+                "spend claims have a gap; the guest-reported total is unavailable"
             );
             None
         }
@@ -351,11 +320,10 @@ mod tests {
         );
     }
 
-    /// THE BINDING, end to end: a spend receipt is credited only when the host
-    /// holds a clearing receipt that recomputes for its basis. This is the test
-    /// that moved out of `pod_authority.rs` when the evidence chain did.
+    /// A guest claim requires internally consistent clearing evidence. This
+    /// does not establish that the guest disclosed every actual charge.
     #[tokio::test]
-    async fn a_spend_is_credited_only_when_its_basis_is_here_and_recomputes() {
+    async fn a_spend_claim_requires_a_recomputable_basis() {
         use ed25519_dalek::SigningKey;
         use portcullis::spend_receipt::SpendReceipt;
 
@@ -399,27 +367,25 @@ mod tests {
             &seal_line
         ));
 
-        // Spend present, evidence absent: NOT credited. This is the state the
-        // node was in before the pod shipped clearing receipts at all — it held
-        // a hash pointing at nothing.
+        // A signed claim alone lacks its referenced clearing evidence.
         assert_eq!(
-            creditable_spend(dir.path(), POD),
+            guest_reported_spend(dir.path(), POD),
             None,
-            "a basis the host cannot resolve must not be credited"
+            "a basis the host cannot resolve must not be included in the guest-reported total"
         );
 
-        // Evidence arrives: credited, and at the amount the receipt signed.
+        // The clearing substantiates the claimed amount, not actual spending.
         let kept = append_clearing(dir.path(), &clearing_line).await.unwrap();
         assert!(kept.proves(&clearing_log_path(dir.path()), &clearing_line));
         assert_eq!(
-            creditable_spend(dir.path(), POD),
+            guest_reported_spend(dir.path(), POD),
             Some(rust_decimal::Decimal::from_i128_with_scale(2_000_000, 6)),
-            "with the clearing receipt here, the signed amount is credited"
+            "with the clearing receipt here, the signed amount is included in the guest-reported total"
         );
 
-        // A second spend naming a round nobody shipped poisons the credit
+        // A second spend naming a round nobody shipped invalidates the claimed total
         // rather than being skipped: the host cannot see every charge, so it
-        // credits none of them.
+        // reports no total.
         let orphan = SpendReceipt::issue(
             "spiffe://t/mediator",
             POD,
@@ -453,9 +419,9 @@ mod tests {
             &seal_line
         ));
         assert_eq!(
-            creditable_spend(dir.path(), POD),
+            guest_reported_spend(dir.path(), POD),
             None,
-            "one unresolvable basis must not leave the rest silently credited"
+            "one unresolvable basis must not leave the rest silently included in the guest-reported total"
         );
     }
 
@@ -490,7 +456,7 @@ mod tests {
             ));
         }
         assert_eq!(
-            creditable_spend(dir.path(), POD),
+            guest_reported_spend(dir.path(), POD),
             None,
             "the recomputed winner paid two dollars, not the signed one dollar"
         );
@@ -528,7 +494,7 @@ mod tests {
         ));
         // The second receipt was issued but its background delivery was lost.
         assert_eq!(
-            creditable_spend(dir.path(), POD),
+            guest_reported_spend(dir.path(), POD),
             None,
             "receipt 1 alone does not prove that receipt 2 was never issued"
         );

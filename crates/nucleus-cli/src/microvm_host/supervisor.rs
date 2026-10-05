@@ -157,11 +157,11 @@ impl Supervisor {
                 }];
             }
             Ok(HostState::Running(owned, ports)) => {
-                match lifecycle::wait_healthy(
+                match lifecycle::wait_host_healthy(
                     &self.cli,
                     &owned,
-                    ports.node,
-                    &self.cfg.state_dir.join("identity"),
+                    &ports,
+                    &self.cfg,
                     Duration::from_secs(5),
                 ) {
                     Ok(_) => return vec![HostEvent::Healthy],
@@ -221,11 +221,11 @@ impl Supervisor {
             }
         }
         match lifecycle::observe_state(&self.cli, &self.cfg)? {
-            HostState::Running(owned, ports) => lifecycle::wait_healthy(
+            HostState::Running(owned, ports) => lifecycle::wait_host_healthy(
                 &self.cli,
                 &owned,
-                ports.node,
-                &self.cfg.state_dir.join("identity"),
+                &ports,
+                &self.cfg,
                 self.cfg.ready_timeout,
             )
             .map(|_| ()),
@@ -346,6 +346,7 @@ mod tests {
             memory: "1g".into(),
             trust_domain: "nucleus.local".into(),
             ready_timeout: Duration::from_secs(1),
+            connection: crate::microvm_host::lifecycle::Connection::PublishedLoopback,
         };
         // `false` exits 1 at once: `container list` "failed".
         let mut s = Supervisor::new(ContainerCli::at(PathBuf::from("/usr/bin/false")), cfg);

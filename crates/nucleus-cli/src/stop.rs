@@ -1,17 +1,19 @@
-//! Stop command - stop nucleus-node and optionally the Lima VM
-//!
-//! Cleanly shuts down nucleus-node and related services.
+//! Stop the selected installation, retaining persistent Apple host state.
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use std::process::Command;
 
-/// Stop nucleus-node and optionally the Lima VM
+/// Stop the selected host, or the Lima node and optionally its VM
 #[derive(Args, Debug)]
 pub struct StopArgs {
-    /// Lima VM name
-    #[arg(long, default_value = "nucleus")]
-    pub vm_name: String,
+    /// Explicitly select a Lima VM (otherwise use saved host; Lima default: nucleus)
+    #[arg(long)]
+    pub vm_name: Option<String>,
+
+    /// Select an Apple host from JSON instead of the saved installation
+    #[arg(long, conflicts_with = "vm_name")]
+    pub apple_host_config: Option<std::path::PathBuf>,
 
     /// Also stop the Lima VM (to save resources)
     #[arg(long)]
@@ -22,17 +24,37 @@ pub struct StopArgs {
     pub force: bool,
 }
 
+impl StopArgs {
+    fn vm_name(&self) -> &str {
+        self.vm_name
+            .as_deref()
+            .unwrap_or(crate::microvm_host::operator::DEFAULT_LIMA_NAME)
+    }
+}
+
 /// Execute the stop command
-pub async fn execute(args: StopArgs) -> Result<()> {
+pub async fn execute(args: StopArgs, config_path: &str) -> Result<()> {
+    let config = crate::config::Config::load(config_path)?;
+    if let Some(path) = crate::microvm_host::operator::selection(
+        args.apple_host_config.as_deref(),
+        args.vm_name.is_some(),
+        config.node.apple_host_config.as_deref(),
+    ) {
+        anyhow::ensure!(
+            !args.force && !args.stop_vm,
+            "Apple host stop retains its state and stops the container; Lima stop flags do not apply"
+        );
+        return crate::microvm_host::operator::stop(path).await;
+    }
     println!("Stopping Nucleus...\n");
 
     // Check if VM exists and is running
-    let vm_status = get_lima_vm_status(&args.vm_name)?;
+    let vm_status = get_lima_vm_status(args.vm_name())?;
 
     if vm_status.is_empty() {
         println!(
             "Lima VM '{}' does not exist. Nothing to stop.",
-            args.vm_name
+            args.vm_name()
         );
         return Ok(());
     }
@@ -40,7 +62,8 @@ pub async fn execute(args: StopArgs) -> Result<()> {
     if vm_status != "Running" {
         println!(
             "Lima VM '{}' is not running (status: {}). Nothing to stop.",
-            args.vm_name, vm_status
+            args.vm_name(),
+            vm_status
         );
         return Ok(());
     }
@@ -81,7 +104,7 @@ fn stop_nucleus_node(args: &StopArgs) -> Result<()> {
     let output = Command::new("limactl")
         .args([
             "shell",
-            &args.vm_name,
+            args.vm_name(),
             "--",
             "systemctl",
             "is-active",
@@ -97,7 +120,7 @@ fn stop_nucleus_node(args: &StopArgs) -> Result<()> {
 
         // Also check for any running nucleus-node processes
         let output = Command::new("limactl")
-            .args(["shell", &args.vm_name, "--", "pgrep", "-x", "nucleus-node"])
+            .args(["shell", args.vm_name(), "--", "pgrep", "-x", "nucleus-node"])
             .output()
             .context("Failed to check for nucleus-node process")?;
 
@@ -117,7 +140,7 @@ fn stop_nucleus_node(args: &StopArgs) -> Result<()> {
     let result = Command::new("limactl")
         .args([
             "shell",
-            &args.vm_name,
+            args.vm_name(),
             "--",
             "sudo",
             "systemctl",
@@ -149,7 +172,7 @@ fn stop_nucleus_node_process(args: &StopArgs) -> Result<()> {
     let result = Command::new("limactl")
         .args([
             "shell",
-            &args.vm_name,
+            args.vm_name(),
             "--",
             "sudo",
             "pkill",
@@ -174,7 +197,7 @@ fn stop_nucleus_node_process(args: &StopArgs) -> Result<()> {
 }
 
 fn stop_lima_vm(args: &StopArgs) -> Result<()> {
-    println!("Stopping Lima VM '{}'...", args.vm_name);
+    println!("Stopping Lima VM '{}'...", args.vm_name());
 
     let mut cmd_args = vec!["stop"];
 
@@ -182,7 +205,7 @@ fn stop_lima_vm(args: &StopArgs) -> Result<()> {
         cmd_args.push("--force");
     }
 
-    cmd_args.push(&args.vm_name);
+    cmd_args.push(args.vm_name());
 
     let result = Command::new("limactl")
         .args(&cmd_args)
@@ -190,10 +213,10 @@ fn stop_lima_vm(args: &StopArgs) -> Result<()> {
         .context("Failed to stop Lima VM")?;
 
     if !result.success() {
-        bail!("Failed to stop Lima VM '{}'", args.vm_name);
+        bail!("Failed to stop Lima VM '{}'", args.vm_name());
     }
 
-    println!("Lima VM '{}' stopped", args.vm_name);
+    println!("Lima VM '{}' stopped", args.vm_name());
     Ok(())
 }
 
@@ -203,12 +226,12 @@ fn print_success_message(args: &StopArgs) {
     println!();
 
     if args.stop_vm {
-        println!("Lima VM '{}' has been stopped.", args.vm_name);
+        println!("Lima VM '{}' has been stopped.", args.vm_name());
         println!("To restart: nucleus start");
     } else {
         println!(
             "nucleus-node has been stopped, but Lima VM '{}' is still running.",
-            args.vm_name
+            args.vm_name()
         );
         println!("To restart nucleus-node: nucleus start");
         println!("To stop the VM: nucleus stop --stop-vm");
@@ -221,13 +244,26 @@ mod tests {
 
     #[test]
     fn test_default_args() {
-        let args = StopArgs {
-            vm_name: "nucleus".to_string(),
-            stop_vm: false,
-            force: false,
-        };
-        assert_eq!(args.vm_name, "nucleus");
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: StopArgs,
+        }
+        let args = Parse::try_parse_from(["stop"]).unwrap().args;
+        assert_eq!(args.vm_name(), "nucleus");
+        assert!(args.vm_name.is_none() && args.apple_host_config.is_none());
         assert!(!args.stop_vm);
         assert!(!args.force);
+        assert!(
+            Parse::try_parse_from([
+                "stop",
+                "--apple-host-config",
+                "host.json",
+                "--vm-name",
+                "other"
+            ])
+            .is_err()
+        );
     }
 }

@@ -24,6 +24,10 @@ use crate::config::Config;
 use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles;
 
+mod agent_process;
+mod apple_host;
+mod pod_session;
+
 /// Resolved configuration from args, config file, and Keychain
 pub(crate) struct ResolvedConfig {
     node_url: String,
@@ -43,9 +47,13 @@ pub(crate) struct ResolvedConfig {
 
 /// Resolve configuration from multiple sources (args > keychain > config > defaults).
 ///
-/// Returns `None` when `--local` is set (no node config needed).
+/// Returns `None` for local mode or deferred Apple host readiness.
 pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConfig>> {
     if args.local {
+        return Ok(None);
+    }
+    if let Some(path) = &args.apple_host_config {
+        apple_host::configuration(path)?;
         return Ok(None);
     }
 
@@ -67,13 +75,18 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
     // mTLS first: the identity `nucleus setup` provisions (Move A step 6),
     // used automatically when present — see `node.rs`'s
     // `apply_provisioned_identity_defaults` for the same pattern.
-    let node_mtls_client = crate::provision::mtls_client_if_provisioned()?;
+    let node_mtls_client = match &args.identity_dir {
+        Some(dir) => Some(crate::provision::mtls_client_from_identity_dir(dir)?),
+        None => crate::provision::mtls_client_if_provisioned()?,
+    };
 
     // Node auth secret: args > keychain > (required only if mTLS isn't
     // available). A node updated past Move B has no HMAC tier to check this
     // against at all — it exists for a not-yet-migrated node / a transition
     // window, not as the normal path.
-    let node_auth_secret = if let Some(ref secret) = args.node_auth_secret {
+    let node_auth_secret = if node_mtls_client.is_some() {
+        None
+    } else if let Some(ref secret) = args.node_auth_secret {
         if !secret.is_empty() {
             Some(secret.clone())
         } else {
@@ -266,6 +279,18 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_NODE_URL")]
     pub node_url: Option<String>,
 
+    /// Node mTLS identity directory (cli-cert.pem, cli-key.pem, trust-bundle.pem)
+    #[arg(long, env = "NUCLEUS_IDENTITY_DIR", conflicts_with = "local")]
+    pub identity_dir: Option<PathBuf>,
+
+    /// Apple host JSON configuration; start/check host and relay the pod proxy
+    #[arg(long, conflicts_with_all = ["local", "hook", "node_url", "identity_dir", "node_auth_secret"])]
+    pub apple_host_config: Option<PathBuf>,
+
+    /// Existing workspace directory inside the guest (does not upload host files)
+    #[arg(long, conflicts_with_all = ["local", "hook"], value_parser = absolute_guest_dir)]
+    pub guest_work_dir: Option<PathBuf>,
+
     /// Auth secret for nucleus-node API (HMAC).
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
     pub node_auth_secret: Option<String>,
@@ -303,16 +328,15 @@ pub struct RunArgs {
 }
 
 /// Execute the run command
-pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
+pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> {
+    let global_config = Config::load(global_config_path)?;
+    apple_host::apply_default(&mut args, &global_config);
     if args.goal.is_some() {
         return crate::goal::execute(args, global_config_path).await;
     }
     if args.grant.is_some() {
         return crate::goal::execute_grant(args, global_config_path).await;
     }
-
-    // Load global config
-    let global_config = Config::load(global_config_path)?;
 
     // Resolve secrets and paths from config/keychain/env
     let resolved = resolve_config(&args, &global_config)?;
@@ -392,6 +416,12 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
             println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
             println!("  Rootfs read-only: {}", args.rootfs_read_only);
         }
+        if let Some(path) = &args.apple_host_config {
+            println!(
+                "  Apple host configuration: {} (not started)",
+                path.display()
+            );
+        }
         println!();
         print!(
             "{}",
@@ -419,11 +449,14 @@ pub(crate) async fn dispatch(
 
     if args.local {
         run_local(args, policy, work_dir, prompt).await
+    } else if let Some(path) = &args.apple_host_config {
+        let (resolved, host) = apple_host::ready(path, args).await?;
+        run_enforced(args, &resolved, policy, work_dir, prompt, Some(host)).await
     } else {
         let resolved = resolved.ok_or_else(|| {
             anyhow!("node config required for Firecracker mode. Use --local for CI.")
         })?;
-        run_enforced(args, &resolved, policy, work_dir, prompt).await
+        run_enforced(args, &resolved, policy, work_dir, prompt, None).await
     }
 }
 
@@ -696,13 +729,13 @@ async fn run_local(
     );
 
     let start = Instant::now();
-    let output = run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir)?;
+    let output = run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir).await;
     let duration = start.elapsed();
 
     // Kill tool-proxy
     let _ = proxy_child.kill().await;
 
-    render_output(&output, duration, args.output.as_str())
+    render_output(&output?, duration, args.output.as_str())
 }
 
 /// `--pod-cert` / `--cert-root-pubkey` for the tool-proxy when this run is
@@ -795,6 +828,7 @@ async fn run_enforced(
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
+    host: Option<crate::microvm_host::lifecycle::MicroVmHost>,
 ) -> Result<()> {
     warn_unimplemented_caps(policy);
 
@@ -817,7 +851,7 @@ async fn run_enforced(
 
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
 
-    let proxy_addr = create_pod_via_node(
+    let pod = create_pod_via_node(
         &resolved.node_url,
         &pod_spec,
         resolved.node_mtls_client.as_ref(),
@@ -825,53 +859,102 @@ async fn run_enforced(
         &resolved.node_actor,
     )
     .await?;
-    let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
-        proxy_addr
-    } else {
-        format!("http://{proxy_addr}")
+    let endpoint = match (host, pod.proxy_addr.clone()) {
+        (Some(host), Some(proxy)) => tokio::task::spawn_blocking(move || {
+            crate::microvm_host::transport::open(
+                &crate::microvm_host::container_cli::ContainerCli::system(),
+                &host,
+                &proxy,
+                Duration::from_secs(30),
+            )
+            .map(Some)
+            .map_err(|error| anyhow!("{error}"))
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result),
+        _ => Ok(None),
     };
+    let result = async {
+        let proxy_addr = pod
+            .proxy_addr
+            .as_deref()
+            .ok_or_else(|| anyhow!("node did not return proxy address"))?;
+        let endpoint = endpoint.as_ref().map_err(|error| anyhow!("{error:#}"))?;
+        let proxy_url = if let Some(endpoint) = endpoint {
+            endpoint.proxy_url()
+        } else if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
+            proxy_addr.to_owned()
+        } else {
+            format!("http://{proxy_addr}")
+        };
 
-    write_mcp_config(
-        &mcp_config_path,
-        &mcp_command_path,
-        &McpEnvConfig {
-            proxy_url: &proxy_url,
-            // The node's SignedProxy signs every request it forwards, so the
-            // bridge holds no secret, and says so rather than leaving it out.
-            auth: McpProxyAuth::SignedUpstream,
-            spec_path: &spec_path,
-            kernel_trace: args.kernel_trace.as_deref(),
-            sandbox_token: None, // provided by node in enforced mode
-        },
-    )?;
+        write_mcp_config(
+            &mcp_config_path,
+            &mcp_command_path,
+            &McpEnvConfig {
+                proxy_url: &proxy_url,
+                // The node's SignedProxy signs every request it forwards, so the
+                // bridge holds no secret, and says so rather than leaving it out.
+                auth: McpProxyAuth::SignedUpstream,
+                spec_path: &spec_path,
+                kernel_trace: args.kernel_trace.as_deref(),
+                sandbox_token: None, // provided by node in enforced mode
+            },
+        )?;
 
-    let allowed_tools = build_mcp_allowed_tools(policy);
-    if allowed_tools.is_empty() {
-        return Err(anyhow!(
-            "no allowed MCP tools for enforced mode (policy is too restrictive)"
-        ));
+        let allowed_tools = build_mcp_allowed_tools(policy);
+        if allowed_tools.is_empty() {
+            return Err(anyhow!(
+                "no allowed MCP tools for enforced mode (policy is too restrictive)"
+            ));
+        }
+
+        // Same confinement guard as local mode: prove complete mediation before the
+        // approval bypass. The node has provisioned the enforcing tool-proxy; the
+        // guard verifies every allowed tool is lattice-routed.
+        let guard = MediationGuard::establish(&allowed_tools).ok_or_else(|| {
+            anyhow!(
+                "cannot establish confinement guard: allowed tools are not fully lattice-mediated"
+            )
+        })?;
+
+        info!(
+            allowed_tools = %allowed_tools.join(","),
+            model = args.model.as_deref().unwrap_or("<agent default>"),
+            "Spawning agent CLI (enforced MCP mode)"
+        );
+
+        let start = Instant::now();
+        let output =
+            match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir).await {
+                Ok(output) => output,
+                Err(err) => return Err(err),
+            };
+        let duration = start.elapsed();
+        render_output(&output, duration, args.output.as_str())
     }
+    .await;
+    let cleanup = pod_session::cancel(resolved, pod.id).await;
+    drop(endpoint);
+    pod_session::finish(result, cleanup, pod.id)
+}
 
-    // Same confinement guard as local mode: prove complete mediation before the
-    // approval bypass. The node has provisioned the enforcing tool-proxy; the
-    // guard verifies every allowed tool is lattice-routed.
-    let guard = MediationGuard::establish(&allowed_tools).ok_or_else(|| {
-        anyhow!("cannot establish confinement guard: allowed tools are not fully lattice-mediated")
-    })?;
+fn absolute_guest_dir(value: &str) -> std::result::Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err("guest workspace must be an absolute path inside the guest".into())
+    }
+}
 
-    info!(
-        allowed_tools = %allowed_tools.join(","),
-        model = args.model.as_deref().unwrap_or("<agent default>"),
-        "Spawning agent CLI (enforced MCP mode)"
-    );
-
-    let start = Instant::now();
-    let output = match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir) {
-        Ok(output) => output,
-        Err(err) => return Err(err),
-    };
-    let duration = start.elapsed();
-    render_output(&output, duration, args.output.as_str())
+fn guest_work_dir(args: &RunArgs, host_work_dir: &Path) -> PathBuf {
+    match &args.guest_work_dir {
+        Some(path) => path.clone(),
+        None if args.apple_host_config.is_some() => nucleus_spec::guest_layout::WORK_DIR.into(),
+        None => host_work_dir.to_path_buf(),
+    }
 }
 
 fn build_pod_spec(
@@ -882,7 +965,7 @@ fn build_pod_spec(
     rootfs_path: &str,
 ) -> Result<SpecPodSpec> {
     let mut spec = SpecPodSpec::new(PodSpecInner {
-        work_dir: work_dir.to_path_buf(),
+        work_dir: guest_work_dir(args, work_dir),
         timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
@@ -925,8 +1008,7 @@ fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {
 
 #[derive(Deserialize)]
 struct CreatePodResponse {
-    #[serde(rename = "id")]
-    _id: Uuid,
+    id: Uuid,
     proxy_addr: Option<String>,
 }
 
@@ -945,7 +1027,7 @@ async fn create_pod_via_node(
     mtls_client: Option<&reqwest::Client>,
     auth_secret: Option<&str>,
     actor: &str,
-) -> Result<String> {
+) -> Result<CreatePodResponse> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
 
@@ -969,9 +1051,7 @@ async fn create_pod_via_node(
             .json()
             .await
             .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-        return parsed
-            .proxy_addr
-            .ok_or_else(|| anyhow!("node did not return proxy address"));
+        return Ok(parsed);
     }
 
     let auth_secret = auth_secret
@@ -1004,9 +1084,7 @@ async fn create_pod_via_node(
                     .body_mut()
                     .read_json()
                     .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-                parsed
-                    .proxy_addr
-                    .ok_or_else(|| anyhow!("node did not return proxy address"))
+                Ok(parsed)
             }
         }
         Err(err) => Err(anyhow!("node request failed: {err}")),
@@ -1171,7 +1249,7 @@ impl MediationGuard {
     }
 }
 
-fn run_agent_mcp(
+async fn run_agent_mcp(
     args: &RunArgs,
     policy: &PermissionLattice,
     mcp_config_path: &Path,
@@ -1232,8 +1310,7 @@ fn run_agent_mcp(
     cmd.arg("--dangerously-skip-permissions");
     cmd.arg("--permission-mode").arg("bypassPermissions");
 
-    cmd.output()
-        .with_context(|| format!("failed to spawn {}", crate::constants::AGENT_CLI_BIN))
+    agent_process::output(cmd).await
 }
 
 pub fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
@@ -1309,6 +1386,95 @@ fn render_output(output: &std::process::Output, duration: Duration, mode: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_workspace_is_distinct_from_the_host_agent_directory() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let mut args =
+            Parse::try_parse_from(["run", "ordinary task", "--apple-host-config", "host.json"])
+                .unwrap()
+                .args;
+        let host = Path::new("/private/tmp/project");
+        let policy = PermissionLattice::restrictive();
+        let spec = build_pod_spec(&args, &policy, host, "/kernel", "/rootfs").unwrap();
+        assert_eq!(
+            spec.spec.work_dir,
+            Path::new(nucleus_spec::guest_layout::WORK_DIR)
+        );
+        args.guest_work_dir = Some("/tmp/project".into());
+        let spec = build_pod_spec(&args, &policy, host, "/kernel", "/rootfs").unwrap();
+        assert_eq!(spec.spec.work_dir, Path::new("/tmp/project"));
+        args.apple_host_config = None;
+        args.guest_work_dir = None;
+        assert_eq!(guest_work_dir(&args, host), host);
+        assert!(
+            Parse::try_parse_from(["run", "ordinary task", "--guest-work-dir", "relative",])
+                .is_err()
+        );
+        assert!(
+            Parse::try_parse_from([
+                "run",
+                "ordinary task",
+                "--guest-work-dir",
+                "/work",
+                "--local",
+            ])
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_host_identity_resolves_and_missing_files_do_not_fall_back() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let parsed = Parse::try_parse_from([
+            "run",
+            "check the project",
+            "--identity-dir",
+            path,
+            "--node-url",
+            "https://127.0.0.1:8080",
+            "--kernel-path",
+            "/var/lib/nucleus/artifacts/vmlinux",
+            "--rootfs-path",
+            "/var/lib/nucleus/artifacts/rootfs.ext4",
+        ])
+        .unwrap();
+        let mut config = Config::default();
+        config.auth.use_keychain = true;
+        assert!(resolve_config(&parsed.args, &config).is_err());
+        let ca = nucleus_identity::SelfSignedCa::new("selected-host.nucleus.local").unwrap();
+        crate::provision::mint_cli_identity(&ca, "selected-host.nucleus.local", dir.path())
+            .await
+            .unwrap();
+        let resolved = resolve_config(&parsed.args, &config).unwrap().unwrap();
+        assert!(resolved.node_mtls_client.is_some());
+        assert!(resolved.node_auth_secret.is_none());
+        assert_eq!(resolved.node_url, "https://127.0.0.1:8080");
+        std::fs::remove_file(dir.path().join("cli-key.pem")).unwrap();
+        assert!(resolve_config(&parsed.args, &config).is_err());
+        assert!(
+            Parse::try_parse_from([
+                "run",
+                "check the project",
+                "--local",
+                "--identity-dir",
+                path,
+            ])
+            .is_err()
+        );
+    }
 
     // Confinement-guard tests: exercise the REAL invariant that
     // `run_agent_mcp` depends on — the agent may be launched with the approval
@@ -1430,24 +1596,50 @@ mod tests {
         let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp_listener.local_addr().unwrap();
         let server_handle = tokio::spawn(async move {
-            let (stream, _peer) = tcp_listener.accept().await.unwrap();
             let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
                 .build_acceptor()
                 .unwrap();
-            let mut tls = acceptor.accept(stream).await.unwrap();
-            let mut buf = [0u8; 1024];
-            let n = tls.read(&mut buf).await.unwrap();
-            assert!(
-                String::from_utf8_lossy(&buf[..n]).starts_with("POST /v1/pods"),
-                "server should have received the real request the client sent, \
-                 with no HMAC headers to sign"
-            );
-            tls.write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 72\r\n\r\n\
-                  {\"id\":\"550e8400-e29b-41d4-a716-446655440000\",\"proxy_addr\":\"127.0.0.1:9\"}",
-            )
-            .await
-            .unwrap();
+            for (path, status, body) in [
+                (
+                    "/v1/pods",
+                    "200 OK",
+                    r#"{"id":"550e8400-e29b-41d4-a716-446655440000","proxy_addr":"127.0.0.1:9"}"#,
+                ),
+                (
+                    "/v1/pods/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "200 OK",
+                    r#"{"status":"cancelled"}"#,
+                ),
+                (
+                    "/v1/pods/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "503 Service Unavailable",
+                    r#"{"error":"temporarily unavailable"}"#,
+                ),
+                (
+                    "/v1/pods",
+                    "200 OK",
+                    r#"{"id":"550e8400-e29b-41d4-a716-446655440000","proxy_addr":null}"#,
+                ),
+                (
+                    "/v1/pods/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "200 OK",
+                    r#"{"status":"cancelled"}"#,
+                ),
+            ] {
+                let (stream, _) = tcp_listener.accept().await.unwrap();
+                let mut tls = acceptor.accept(stream).await.unwrap();
+                let mut buf = [0u8; 4096];
+                let n = tls.read(&mut buf).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&buf[..n])
+                        .starts_with(&format!("POST {path} HTTP/1.1"))
+                );
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                tls.write_all(response.as_bytes()).await.unwrap();
+            }
         });
 
         let spec: SpecPodSpec =
@@ -1462,7 +1654,45 @@ mod tests {
         )
         .await
         .expect("a real mTLS handshake against the SAME CA must succeed");
-        assert_eq!(proxy_addr, "127.0.0.1:9");
+        assert_eq!(proxy_addr.proxy_addr.as_deref(), Some("127.0.0.1:9"));
+        let config = ResolvedConfig {
+            node_url: format!("https://{addr}"),
+            node_mtls_client: Some(client),
+            node_auth_secret: None,
+            node_actor: "test-actor".into(),
+            kernel_path: String::new(),
+            rootfs_path: String::new(),
+        };
+        pod_session::cancel(&config, proxy_addr.id).await.unwrap();
+        let error = pod_session::cancel(&config, proxy_addr.id)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("503"));
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let args = Parse::try_parse_from(["run", "ordinary task", "--mcp-path", "/bin/true"])
+            .unwrap()
+            .args;
+        let work = tempfile::tempdir().unwrap();
+        let error = run_enforced(
+            &args,
+            &config,
+            &PermissionLattice::restrictive(),
+            work.path(),
+            "ordinary task",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("node did not return proxy address")
+        );
 
         server_handle.await.unwrap();
     }

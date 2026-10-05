@@ -11,7 +11,12 @@
 # Regenerate with `cargo xtask ci-spec inline-gates > ci/inline-gates.txt`
 # (annotations are carried forward).
 #
-# UNCOVERED_CEILING = 93
+# UNCOVERED_CEILING = 91
+#
+# 2026-10-05: 93 → 91. The two quickstart guest-signing receipt steps moved
+# to `cargo xtask host-evidence-live`, which verifies host-issued journals from
+# a real guest transaction. A missing-journal input failed the live check; the
+# restored check passed. See docs/design/secure-coding-release-plan.md.
 #
 # 2026-10-02: 91 → 93. The two podlist-probe steps that 2026-09-11 left out as
 # pre-existing drift (below) come in now, because the job they belong to became
@@ -130,8 +135,6 @@ quickstart-boot.yml::boot-a-real-pod::Build the guest rootfs | UNCOVERED: no fal
 quickstart-boot.yml::boot-a-real-pod::The in-guest posture probe actually ran (presence, not just verdict) | UNCOVERED: no falsifier yet
 quickstart-boot.yml::boot-a-real-pod::The in-guest egress backstop actually held (C6 phase 2, presence + verdict) | UNCOVERED: no falsifier yet
 quickstart-boot.yml::boot-a-real-pod::The in-guest adversary was contained (active attacker, presence + verdict) | UNCOVERED: no falsifier yet
-quickstart-boot.yml::boot-a-real-pod::A signed MediationReceipt was emitted on the live path (presence + shape) | UNCOVERED: no falsifier yet
-quickstart-boot.yml::boot-a-real-pod::A relying party verifies the pod's receipts against a node-anchored key | UNCOVERED: no falsifier yet
 quickstart-boot.yml::boot-a-real-pod::Delivery conformance (observed inventory vs the extracted oracle) | UNCOVERED: no falsifier yet
 red-team-agent.yml::live-adversary::Anti-vacuity — the lane resolved to a known state (never silent-green) | UNCOVERED: no falsifier yet
 release.yml::dry-run-assert::Every build job must have succeeded | UNCOVERED: no falsifier yet
