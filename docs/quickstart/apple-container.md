@@ -33,6 +33,11 @@ The defaults are four CPUs, 4096 MiB of memory and a 120-second readiness timeou
 settings apply when creating a container; they do not resize an existing host.
 Host-side state defaults to `~/.config/nucleus/microvm-host`; `--state-dir`
 selects another directory. Preserve this directory along with the state volume.
+Current client credentials are reused byte for byte; missing, invalid or
+within-30-days-of-expiry credentials are renewed under the same CA. A partial
+CA pair refuses startup and must be restored; `up` does not replace its remaining
+half. Client files are replaced atomically one at a time. If renewal is interrupted
+between files, the next `up` validates and repairs the client identity.
 
 For an isolated development installation, add `--development`. It uses
 `nucleus-dev-microvm-host`, its separate state volume, and

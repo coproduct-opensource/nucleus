@@ -1856,3 +1856,22 @@ acceptance node stayed healthy. Validation: 313 CLI unit tests passed, two ignor
 32 focused host tests passed, one ignored; scoped Clippy passed. This adds a usable
 command surface and fixes startup wiring, not automatic shell/run host selection,
 a published artifact set, or either outstanding model-driven coding journey.
+
+### Apple host identity reuse and renewal (2026-10-05)
+
+Host `up` now uses setup's existing client identity validation instead of treating
+an existing certificate filename as proof of usable credentials. Complete, current
+credentials remain byte-identical; missing/invalid credentials and certificates
+within 30 days of expiry are renewed under the existing root. A partial CA pair
+is refused before either half is written, preserving the remaining recovery
+material. The shared CLI minter stages each identity file privately, syncs it,
+renames it into place and syncs its parent directory. This is per-file atomicity;
+an interrupted three-file renewal is validated and repaired at the next startup.
+
+The CLI suite passed 315 tests with two ignored before the additional near-expiry
+case; that focused case also passed. Tests exercise idempotent reuse, a missing
+client key, renewal of a one-hour certificate, preservation of both partial-CA
+shapes, unchanged node secrets/root and owner-only replacement key permissions.
+These checks use actual generated certificates and the real client identity
+validator. This change does not resolve the separately recorded Apple Container
+published-port forwarding problem or the missing model configuration.

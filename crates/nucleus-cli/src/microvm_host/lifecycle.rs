@@ -610,7 +610,19 @@ fn prepare_identity(cfg: &HostConfig) -> Result<(), Refusal> {
     let state = |e: String| Refusal::State(e);
     let ca_dir = cfg.ca_dir();
     let (cert, key) = (ca_dir.join("ca-cert.pem"), ca_dir.join("ca-key.pem"));
-    let ca = if cert.is_file() && key.is_file() {
+    let cert_exists = cert
+        .try_exists()
+        .map_err(|e| state(format!("reading CA certificate state: {e}")))?;
+    let key_exists = key
+        .try_exists()
+        .map_err(|e| state(format!("reading CA key state: {e}")))?;
+    if cert_exists != key_exists {
+        return Err(state(format!(
+            "CA at {} is incomplete; restore the missing file before restarting this host",
+            ca_dir.display()
+        )));
+    }
+    let ca = if cert_exists {
         let read =
             |p: &Path| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
         SelfSignedCa::from_pem(
@@ -626,7 +638,8 @@ fn prepare_identity(cfg: &HostConfig) -> Result<(), Refusal> {
         write_private(&key, ca.root_key_pem().as_bytes())?;
         ca
     };
-    if !cfg.identity_dir().join("cli-cert.pem").is_file() {
+    if crate::provision::reusable_cli_identity(&ca, &cfg.trust_domain, &cfg.identity_dir()).is_err()
+    {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -907,5 +920,112 @@ mod tests {
             write_private(&path, b"again").is_err(),
             "must not overwrite"
         );
+    }
+
+    fn identity_config(dir: &Path) -> HostConfig {
+        HostConfig {
+            names: HostNames::DEV,
+            image: "identity-fixture".into(),
+            kernel: dir.join("Image"),
+            state_dir: dir.to_path_buf(),
+            cpus: 2,
+            memory: "2g".into(),
+            trust_domain: "nucleus.local".into(),
+            ready_timeout: Duration::from_secs(1),
+        }
+    }
+
+    #[test]
+    fn repeated_up_keeps_current_identity_and_repairs_missing_client_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = identity_config(dir.path());
+        prepare_identity(&cfg).unwrap();
+        let cert = cfg.identity_dir().join("cli-cert.pem");
+        let key = cfg.identity_dir().join("cli-key.pem");
+        let original = std::fs::read(&cert).unwrap();
+        let ca = std::fs::read(cfg.ca_dir().join("ca-cert.pem")).unwrap();
+        let secrets = std::fs::read(cfg.env_file()).unwrap();
+        prepare_identity(&cfg).unwrap();
+        assert_eq!(std::fs::read(&cert).unwrap(), original);
+        std::fs::remove_file(&key).unwrap();
+        prepare_identity(&cfg).unwrap();
+        assert_ne!(std::fs::read(&cert).unwrap(), original);
+        assert_eq!(std::fs::read(cfg.ca_dir().join("ca-cert.pem")).unwrap(), ca);
+        assert_eq!(std::fs::read(cfg.env_file()).unwrap(), secrets);
+        let client = crate::provision::mtls_blocking_client_in(&cfg.identity_dir()).unwrap();
+        drop(client);
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn partial_ca_pair_is_preserved_without_generating_another_half() {
+        for missing in ["ca-cert.pem", "ca-key.pem"] {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = identity_config(dir.path());
+            prepare_identity(&cfg).unwrap();
+            let other = if missing == "ca-cert.pem" {
+                "ca-key.pem"
+            } else {
+                "ca-cert.pem"
+            };
+            let preserved = std::fs::read(cfg.ca_dir().join(other)).unwrap();
+            std::fs::remove_file(cfg.ca_dir().join(missing)).unwrap();
+            assert!(
+                prepare_identity(&cfg)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("incomplete")
+            );
+            assert!(!cfg.ca_dir().join(missing).exists());
+            assert_eq!(std::fs::read(cfg.ca_dir().join(other)).unwrap(), preserved);
+        }
+    }
+
+    #[test]
+    fn near_expiry_client_is_renewed_under_the_existing_ca() {
+        use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa};
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = identity_config(dir.path());
+        prepare_identity(&cfg).unwrap();
+        let ca_cert = std::fs::read_to_string(cfg.ca_dir().join("ca-cert.pem")).unwrap();
+        let ca_key = std::fs::read_to_string(cfg.ca_dir().join("ca-key.pem")).unwrap();
+        let ca = SelfSignedCa::from_pem("nucleus.local", &ca_cert, &ca_key).unwrap();
+        let identity = Identity::new("nucleus.local", "system", "cli");
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let short = runtime
+            .block_on(ca.sign_csr(
+                csr.csr(),
+                csr.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+            ))
+            .unwrap();
+        let cert_path = cfg.identity_dir().join("cli-cert.pem");
+        std::fs::write(&cert_path, short.chain_pem()).unwrap();
+        std::fs::write(
+            cfg.identity_dir().join("cli-key.pem"),
+            short.private_key_pem(),
+        )
+        .unwrap();
+        prepare_identity(&cfg).unwrap();
+        assert_ne!(
+            std::fs::read_to_string(cert_path).unwrap(),
+            short.chain_pem()
+        );
+        assert_eq!(
+            std::fs::read_to_string(cfg.ca_dir().join("ca-cert.pem")).unwrap(),
+            ca_cert
+        );
+        crate::provision::reusable_cli_identity(&ca, "nucleus.local", &cfg.identity_dir()).unwrap();
     }
 }

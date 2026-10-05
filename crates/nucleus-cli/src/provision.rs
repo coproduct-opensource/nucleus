@@ -1001,7 +1001,7 @@ const CLI_IDENTITY_RENEW_WITHIN_DAYS: i64 = 30;
 /// `ca`'s root, and the leaf has more than [`CLI_IDENTITY_RENEW_WITHIN_DAYS`]
 /// left. `Err` says why not, and the caller mints — the only thing a wrong
 /// answer here costs is a fresh identity.
-fn reusable_cli_identity(
+pub(crate) fn reusable_cli_identity(
     ca: &nucleus_identity::SelfSignedCa,
     trust_domain: &str,
     dir: &Path,
@@ -1313,29 +1313,39 @@ pub(crate) async fn mint_cli_identity(
         trust_bundle: trust_bundle_path,
     } = MtlsIdentityPaths::in_dir(identity_dir);
 
-    std::fs::write(&cli_cert, cert.chain_pem())
-        .with_context(|| format!("failed to write {}", cli_cert.display()))?;
-    std::fs::write(&cli_key, cert.private_key_pem())
-        .with_context(|| format!("failed to write {}", cli_key.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&cli_key, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to restrict permissions on {}", cli_key.display()))?;
-    }
+    atomic_identity_file(&cli_cert, cert.chain_pem().as_bytes())?;
+    atomic_identity_file(&cli_key, cert.private_key_pem().as_bytes())?;
 
     // The trust bundle IS the CA's own root cert — a single-entry bundle
     // today, written as one because `--trust-bundle` accepts a concatenated
     // PEM bundle in general (matching tool-proxy/node's own `--trust-bundle`
     // convention), not because this CA ever issues more than one root.
-    std::fs::write(&trust_bundle_path, ca.root_cert_pem())
-        .with_context(|| format!("failed to write {}", trust_bundle_path.display()))?;
+    atomic_identity_file(&trust_bundle_path, ca.root_cert_pem().as_bytes())?;
 
     Ok(MtlsIdentityPaths {
         cli_cert,
         cli_key,
         trust_bundle: trust_bundle_path,
     })
+}
+
+/// Publish one complete identity file from an owner-only temporary file.
+/// Renewal is per-file atomic, not a transaction across the three files; a
+/// partial set is revalidated and renewed by the next setup/host-up invocation.
+fn atomic_identity_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let directory = path
+        .parent()
+        .context("identity file has no parent directory")?;
+    let mut staged = tempfile::NamedTempFile::new_in(directory)
+        .with_context(|| format!("staging identity in {}", directory.display()))?;
+    staged.write_all(bytes)?;
+    staged.as_file().sync_all()?;
+    staged
+        .persist(path)
+        .with_context(|| format!("publishing {}", path.display()))?;
+    std::fs::File::open(directory)?.sync_all()?;
+    Ok(())
 }
 
 /// Write the node's environment file and unit onto `host`.
