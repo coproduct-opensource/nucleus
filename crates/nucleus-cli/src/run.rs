@@ -24,6 +24,8 @@ use crate::config::Config;
 use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles;
 
+mod pod_session;
+
 /// Resolved configuration from args, config file, and Keychain
 pub(crate) struct ResolvedConfig {
     node_url: String,
@@ -826,7 +828,7 @@ async fn run_enforced(
 
     let mcp_command_path = resolve_binary_path(&args.mcp_path)?;
 
-    let proxy_addr = create_pod_via_node(
+    let pod = create_pod_via_node(
         &resolved.node_url,
         &pod_spec,
         resolved.node_mtls_client.as_ref(),
@@ -834,53 +836,63 @@ async fn run_enforced(
         &resolved.node_actor,
     )
     .await?;
-    let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
-        proxy_addr
-    } else {
-        format!("http://{proxy_addr}")
-    };
+    let result = (|| -> Result<()> {
+        let proxy_addr = pod
+            .proxy_addr
+            .as_deref()
+            .ok_or_else(|| anyhow!("node did not return proxy address"))?;
+        let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
+            proxy_addr.to_owned()
+        } else {
+            format!("http://{proxy_addr}")
+        };
 
-    write_mcp_config(
-        &mcp_config_path,
-        &mcp_command_path,
-        &McpEnvConfig {
-            proxy_url: &proxy_url,
-            // The node's SignedProxy signs every request it forwards, so the
-            // bridge holds no secret, and says so rather than leaving it out.
-            auth: McpProxyAuth::SignedUpstream,
-            spec_path: &spec_path,
-            kernel_trace: args.kernel_trace.as_deref(),
-            sandbox_token: None, // provided by node in enforced mode
-        },
-    )?;
+        write_mcp_config(
+            &mcp_config_path,
+            &mcp_command_path,
+            &McpEnvConfig {
+                proxy_url: &proxy_url,
+                // The node's SignedProxy signs every request it forwards, so the
+                // bridge holds no secret, and says so rather than leaving it out.
+                auth: McpProxyAuth::SignedUpstream,
+                spec_path: &spec_path,
+                kernel_trace: args.kernel_trace.as_deref(),
+                sandbox_token: None, // provided by node in enforced mode
+            },
+        )?;
 
-    let allowed_tools = build_mcp_allowed_tools(policy);
-    if allowed_tools.is_empty() {
-        return Err(anyhow!(
-            "no allowed MCP tools for enforced mode (policy is too restrictive)"
-        ));
-    }
+        let allowed_tools = build_mcp_allowed_tools(policy);
+        if allowed_tools.is_empty() {
+            return Err(anyhow!(
+                "no allowed MCP tools for enforced mode (policy is too restrictive)"
+            ));
+        }
 
-    // Same confinement guard as local mode: prove complete mediation before the
-    // approval bypass. The node has provisioned the enforcing tool-proxy; the
-    // guard verifies every allowed tool is lattice-routed.
-    let guard = MediationGuard::establish(&allowed_tools).ok_or_else(|| {
-        anyhow!("cannot establish confinement guard: allowed tools are not fully lattice-mediated")
-    })?;
+        // Same confinement guard as local mode: prove complete mediation before the
+        // approval bypass. The node has provisioned the enforcing tool-proxy; the
+        // guard verifies every allowed tool is lattice-routed.
+        let guard = MediationGuard::establish(&allowed_tools).ok_or_else(|| {
+            anyhow!(
+                "cannot establish confinement guard: allowed tools are not fully lattice-mediated"
+            )
+        })?;
 
-    info!(
-        allowed_tools = %allowed_tools.join(","),
-        model = args.model.as_deref().unwrap_or("<agent default>"),
-        "Spawning agent CLI (enforced MCP mode)"
-    );
+        info!(
+            allowed_tools = %allowed_tools.join(","),
+            model = args.model.as_deref().unwrap_or("<agent default>"),
+            "Spawning agent CLI (enforced MCP mode)"
+        );
 
-    let start = Instant::now();
-    let output = match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir) {
-        Ok(output) => output,
-        Err(err) => return Err(err),
-    };
-    let duration = start.elapsed();
-    render_output(&output, duration, args.output.as_str())
+        let start = Instant::now();
+        let output = match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir) {
+            Ok(output) => output,
+            Err(err) => return Err(err),
+        };
+        let duration = start.elapsed();
+        render_output(&output, duration, args.output.as_str())
+    })();
+    let cleanup = pod_session::cancel(resolved, pod.id).await;
+    pod_session::finish(result, cleanup, pod.id)
 }
 
 fn build_pod_spec(
@@ -934,8 +946,7 @@ fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {
 
 #[derive(Deserialize)]
 struct CreatePodResponse {
-    #[serde(rename = "id")]
-    _id: Uuid,
+    id: Uuid,
     proxy_addr: Option<String>,
 }
 
@@ -954,7 +965,7 @@ async fn create_pod_via_node(
     mtls_client: Option<&reqwest::Client>,
     auth_secret: Option<&str>,
     actor: &str,
-) -> Result<String> {
+) -> Result<CreatePodResponse> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
 
@@ -978,9 +989,7 @@ async fn create_pod_via_node(
             .json()
             .await
             .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-        return parsed
-            .proxy_addr
-            .ok_or_else(|| anyhow!("node did not return proxy address"));
+        return Ok(parsed);
     }
 
     let auth_secret = auth_secret
@@ -1013,9 +1022,7 @@ async fn create_pod_via_node(
                     .body_mut()
                     .read_json()
                     .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-                parsed
-                    .proxy_addr
-                    .ok_or_else(|| anyhow!("node did not return proxy address"))
+                Ok(parsed)
             }
         }
         Err(err) => Err(anyhow!("node request failed: {err}")),
@@ -1487,24 +1494,50 @@ mod tests {
         let tcp_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp_listener.local_addr().unwrap();
         let server_handle = tokio::spawn(async move {
-            let (stream, _peer) = tcp_listener.accept().await.unwrap();
             let acceptor = TlsServerConfig::new(server_cert, trust_bundle)
                 .build_acceptor()
                 .unwrap();
-            let mut tls = acceptor.accept(stream).await.unwrap();
-            let mut buf = [0u8; 1024];
-            let n = tls.read(&mut buf).await.unwrap();
-            assert!(
-                String::from_utf8_lossy(&buf[..n]).starts_with("POST /v1/pods"),
-                "server should have received the real request the client sent, \
-                 with no HMAC headers to sign"
-            );
-            tls.write_all(
-                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 72\r\n\r\n\
-                  {\"id\":\"550e8400-e29b-41d4-a716-446655440000\",\"proxy_addr\":\"127.0.0.1:9\"}",
-            )
-            .await
-            .unwrap();
+            for (path, status, body) in [
+                (
+                    "/v1/pods",
+                    "200 OK",
+                    r#"{"id":"550e8400-e29b-41d4-a716-446655440000","proxy_addr":"127.0.0.1:9"}"#,
+                ),
+                (
+                    "/v1/pods/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "200 OK",
+                    r#"{"status":"cancelled"}"#,
+                ),
+                (
+                    "/v1/pods/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "503 Service Unavailable",
+                    r#"{"error":"temporarily unavailable"}"#,
+                ),
+                (
+                    "/v1/pods",
+                    "200 OK",
+                    r#"{"id":"550e8400-e29b-41d4-a716-446655440000","proxy_addr":null}"#,
+                ),
+                (
+                    "/v1/pods/550e8400-e29b-41d4-a716-446655440000/cancel",
+                    "200 OK",
+                    r#"{"status":"cancelled"}"#,
+                ),
+            ] {
+                let (stream, _) = tcp_listener.accept().await.unwrap();
+                let mut tls = acceptor.accept(stream).await.unwrap();
+                let mut buf = [0u8; 4096];
+                let n = tls.read(&mut buf).await.unwrap();
+                assert!(
+                    String::from_utf8_lossy(&buf[..n])
+                        .starts_with(&format!("POST {path} HTTP/1.1"))
+                );
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                tls.write_all(response.as_bytes()).await.unwrap();
+            }
         });
 
         let spec: SpecPodSpec =
@@ -1519,7 +1552,44 @@ mod tests {
         )
         .await
         .expect("a real mTLS handshake against the SAME CA must succeed");
-        assert_eq!(proxy_addr, "127.0.0.1:9");
+        assert_eq!(proxy_addr.proxy_addr.as_deref(), Some("127.0.0.1:9"));
+        let config = ResolvedConfig {
+            node_url: format!("https://{addr}"),
+            node_mtls_client: Some(client),
+            node_auth_secret: None,
+            node_actor: "test-actor".into(),
+            kernel_path: String::new(),
+            rootfs_path: String::new(),
+        };
+        pod_session::cancel(&config, proxy_addr.id).await.unwrap();
+        let error = pod_session::cancel(&config, proxy_addr.id)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("503"));
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let args = Parse::try_parse_from(["run", "ordinary task", "--mcp-path", "/bin/true"])
+            .unwrap()
+            .args;
+        let work = tempfile::tempdir().unwrap();
+        let error = run_enforced(
+            &args,
+            &config,
+            &PermissionLattice::restrictive(),
+            work.path(),
+            "ordinary task",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("node did not return proxy address")
+        );
 
         server_handle.await.unwrap();
     }

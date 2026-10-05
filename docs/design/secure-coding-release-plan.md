@@ -1990,3 +1990,22 @@ The next Apple run integration step is to retain a per-session relay: node pod
 creation currently returns a container-local proxy address. Explicit identity
 selection alone does not wire automatic host startup or make that address
 reachable. The Apple quickstart records that limitation.
+
+### Run pod teardown before relay integration (2026-10-05)
+
+The existing run path discarded the admitted pod ID and never cancelled its pod
+when the agent finished or failed. It now retains that ID, executes the session,
+and sends cancellation through the selected node authentication after every
+ordinary return path, including a missing proxy address, MCP configuration,
+agent startup and output errors. Cancellation has a 30-second request deadline.
+A cleanup failure is an error even after a successful run; simultaneous run and
+cleanup failures retain both causes and identify the pod for recovery. Cancellation
+stops resources but does not remove the node's retained pod registry entry.
+
+The real mTLS run test now checks creation, exact cancellation routing, a service
+unavailable response, and cleanup after a created pod has no proxy address. The
+full CLI suite passes 318 tests with two ignored; scoped Clippy passes. This
+closes the ordinary teardown gap needed before holding an Apple relay for the
+session. It does not yet wire that relay, export receipts before teardown, or
+provide crash/SIGKILL cleanup guarantees. Pod timeout remains relevant when the
+CLI cannot execute its cleanup path.
