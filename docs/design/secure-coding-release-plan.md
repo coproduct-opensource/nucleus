@@ -2591,3 +2591,18 @@ idle host was trimmed and stopped with its state retained. This proves fresh
 installation from that explicit local image; it is not a published-artifact
 installation or a model-driven journey. Four prepush gates, convergence,
 dependency visibility and all cargo-deny categories also passed.
+
+### Repeat Apple installation verification (2026-10-05)
+
+`verify --tier2` now honors the saved Apple host selection, and accepts an
+explicit `--apple-host-config`. It uses the same supervised execution verifier
+as setup, without rewriting CLI configuration. Explicit `--here` and `--vm-name`
+retain the legacy Linux/Lima checks; the Apple JSON identifies its backend and
+does not claim those legacy conformance checks ran.
+
+The command restarted the stopped fresh installation and verified pod
+`a614cc76-93a9-49d6-8424-1a1b2581dc86`: signed Firecracker execution, isolated
+workload UID, exact 57-byte stdout, empty stderr and exit 0. Cancellation was
+confirmed. The result is retained in
+`/tmp/nucleus-fresh-apple-setup/standalone-verification.json`. All 344 CLI unit
+tests passed (two ignored), along with integration suites and scoped Clippy.

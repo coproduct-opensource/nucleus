@@ -224,7 +224,7 @@ async fn main() -> Result<()> {
         Commands::Shell(args) => shell::execute(args).await,
         Commands::Setup(args) => setup::execute(args, &config_path).await,
         Commands::MicrovmHost(args) => microvm_host::command::execute(args).await,
-        Commands::Verify(args) => verify::execute(args).await,
+        Commands::Verify(args) => verify::execute(args, &config_path).await,
         Commands::TwoSafety(args) => twosafety_boot::execute(args).await,
         Commands::Start(args) => start::execute(args).await,
         Commands::Stop(args) => stop::execute(args).await,

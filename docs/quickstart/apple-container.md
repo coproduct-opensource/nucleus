@@ -261,6 +261,7 @@ After building the local image and saving `host.json`, run:
 
 ```sh
 nucleus setup --apple-host-config host.json
+nucleus verify --tier2
 nucleus node health
 nucleus run "check the project" --dry-run
 ```
@@ -288,6 +289,14 @@ cancel the temporary pod once its ID is known. A cancellation failure names the
 pod for operator cleanup. Process crashes or interruption during the initial
 create request can still require manual inspection. This is an installation
 check; it does not run either model-driven coding journey.
+
+`verify --tier2` repeats this same signed-workload check using the saved Apple
+selection without rewriting configuration. To select a host for just one check,
+use `verify --tier2 --apple-host-config host.json`. Its JSON result identifies
+`backend: apple-container` and the verified workload. It may restart the owned
+host and cancels its temporary pod when done. This checks supervised execution;
+it is not the legacy Linux/Lima conformance suite. Explicit `--here` or
+`--vm-name` selects that legacy path even when an Apple default is saved.
 
 ## Save the host selection manually
 
