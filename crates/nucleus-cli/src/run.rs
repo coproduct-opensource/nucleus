@@ -67,13 +67,18 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
     // mTLS first: the identity `nucleus setup` provisions (Move A step 6),
     // used automatically when present — see `node.rs`'s
     // `apply_provisioned_identity_defaults` for the same pattern.
-    let node_mtls_client = crate::provision::mtls_client_if_provisioned()?;
+    let node_mtls_client = match &args.identity_dir {
+        Some(dir) => Some(crate::provision::mtls_client_from_identity_dir(dir)?),
+        None => crate::provision::mtls_client_if_provisioned()?,
+    };
 
     // Node auth secret: args > keychain > (required only if mTLS isn't
     // available). A node updated past Move B has no HMAC tier to check this
     // against at all — it exists for a not-yet-migrated node / a transition
     // window, not as the normal path.
-    let node_auth_secret = if let Some(ref secret) = args.node_auth_secret {
+    let node_auth_secret = if node_mtls_client.is_some() {
+        None
+    } else if let Some(ref secret) = args.node_auth_secret {
         if !secret.is_empty() {
             Some(secret.clone())
         } else {
@@ -265,6 +270,10 @@ pub struct RunArgs {
     /// nucleus-node base URL (required for Firecracker mode).
     #[arg(long, env = "NUCLEUS_NODE_URL")]
     pub node_url: Option<String>,
+
+    /// Node mTLS identity directory (cli-cert.pem, cli-key.pem, trust-bundle.pem)
+    #[arg(long, env = "NUCLEUS_IDENTITY_DIR", conflicts_with = "local")]
+    pub identity_dir: Option<PathBuf>,
 
     /// Auth secret for nucleus-node API (HMAC).
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
@@ -1309,6 +1318,54 @@ fn render_output(output: &std::process::Output, duration: Duration, mode: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn explicit_host_identity_resolves_and_missing_files_do_not_fall_back() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_str().unwrap();
+        let parsed = Parse::try_parse_from([
+            "run",
+            "check the project",
+            "--identity-dir",
+            path,
+            "--node-url",
+            "https://127.0.0.1:8080",
+            "--kernel-path",
+            "/var/lib/nucleus/artifacts/vmlinux",
+            "--rootfs-path",
+            "/var/lib/nucleus/artifacts/rootfs.ext4",
+        ])
+        .unwrap();
+        let mut config = Config::default();
+        config.auth.use_keychain = true;
+        assert!(resolve_config(&parsed.args, &config).is_err());
+        let ca = nucleus_identity::SelfSignedCa::new("selected-host.nucleus.local").unwrap();
+        crate::provision::mint_cli_identity(&ca, "selected-host.nucleus.local", dir.path())
+            .await
+            .unwrap();
+        let resolved = resolve_config(&parsed.args, &config).unwrap().unwrap();
+        assert!(resolved.node_mtls_client.is_some());
+        assert!(resolved.node_auth_secret.is_none());
+        assert_eq!(resolved.node_url, "https://127.0.0.1:8080");
+        std::fs::remove_file(dir.path().join("cli-key.pem")).unwrap();
+        assert!(resolve_config(&parsed.args, &config).is_err());
+        assert!(
+            Parse::try_parse_from([
+                "run",
+                "check the project",
+                "--local",
+                "--identity-dir",
+                path,
+            ])
+            .is_err()
+        );
+    }
 
     // Confinement-guard tests: exercise the REAL invariant that
     // `run_agent_mcp` depends on — the agent may be launched with the approval

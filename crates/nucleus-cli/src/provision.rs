@@ -886,7 +886,12 @@ pub fn mtls_client_if_provisioned() -> Result<Option<reqwest::Client>> {
 }
 
 pub fn mtls_client_from_provisioned_identity() -> Result<reqwest::Client> {
-    let tls = provisioned_node_tls()?;
+    mtls_client_from_identity_dir(&crate::config::Config::identity_dir()?)
+}
+
+/// Load an explicitly selected node identity without default-directory fallback.
+pub(crate) fn mtls_client_from_identity_dir(dir: &Path) -> Result<reqwest::Client> {
+    let tls = node_tls_from_pems(read_identity_pems_in(dir)?)?;
     reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .tls_backend_preconfigured(tls)
@@ -1723,7 +1728,7 @@ mod tests {
         // Exactly what `provision_mtls_identity` produces, minus the
         // Tier2Host round trip -- the CA itself is already in hand here,
         // same as `load_or_seed_host_ca` would return.
-        let paths = mint_cli_identity(&ca, trust_domain, dir.path())
+        mint_cli_identity(&ca, trust_domain, dir.path())
             .await
             .unwrap();
 
@@ -1762,20 +1767,9 @@ mod tests {
             .unwrap();
         });
 
-        // Read back exactly what was written to disk -- proving the FILES
-        // are usable, not just the in-memory `WorkloadCertificate`.
-        let mut identity_pem = std::fs::read(&paths.cli_cert).unwrap();
-        identity_pem.push(b'\n');
-        identity_pem.extend(std::fs::read(&paths.cli_key).unwrap());
-        let bundle_pem = std::fs::read(&paths.trust_bundle).unwrap();
-
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let tls =
-            nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).unwrap();
-        let client = reqwest::Client::builder()
-            .tls_backend_preconfigured(tls)
-            .build()
-            .unwrap();
+        // Exercise the same explicit-directory client used by `run` and host
+        // selection, including disk reads and SPIFFE server identity checking.
+        let client = mtls_client_from_identity_dir(dir.path()).unwrap();
 
         let resp = client
             .get(format!("https://{addr}/v1/health"))

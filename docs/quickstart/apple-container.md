@@ -107,6 +107,17 @@ nucleus node --url https://127.0.0.1:RETURNED_PORT \
 nucleus microvm-host status --image nucleus-microvm-host:local
 ```
 
+For `nucleus run`, select the returned identity directory with
+`--identity-dir /RETURNED_IDENTITY_DIR` (or `NUCLEUS_IDENTITY_DIR`) and the node
+URL with `--node-url`. The directory must contain all three identity files;
+missing or invalid files are an error, with no fallback to the default identity.
+The default remains `~/.config/nucleus/identity` when no directory is selected.
+The selector cannot be used with `--local`.
+
+This selects authentication for node calls only. Automatic Apple host startup
+and the per-pod relay are not yet wired into `run`; a successful node connection
+alone does not make its container-local proxy address reachable from the Mac.
+
 `status` only reads container state. `running` is not a health assertion;
 `health_checked` is false. Run `up` again to verify readiness. Add
 `--development` when inspecting the development installation.

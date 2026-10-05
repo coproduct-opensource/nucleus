@@ -1968,3 +1968,25 @@ the separately retained node pin, with no receipt-derived expectations. Evidence
 `/tmp/nucleus-package-evidence-pinned-prepared-{expectations,verified}.json`.
 This improves the supported verification workflow; it does not complete either
 model-driven journey or establish fresh-install publication readiness.
+
+### Explicit run identity selection (2026-10-05)
+
+`nucleus run --identity-dir` (also `NUCLEUS_IDENTITY_DIR`) now accepts the separate
+identity directory returned by Apple host startup. Explicit selection requires
+all three files and valid TLS material; it does not fall back to another identity
+or HMAC when loading fails. The shared provisioned client loader retains the
+SPIFFE node identity check. The selector conflicts with local mode.
+
+A dry run using the development host's actual identity exposed a legacy Keychain
+lookup even after mTLS was successfully selected. Run now resolves legacy HMAC
+credentials only when mTLS is unavailable, so that unrelated Keychain failure no
+longer blocks an authenticated configuration. The same dry run subsequently
+passed. This is configuration evidence, not a newly launched coding workload.
+The existing real mTLS handshake test now exercises the production directory
+loader, and the selection test covers generated credentials, missing key files,
+Keychain-enabled configuration and the local-mode conflict.
+
+The next Apple run integration step is to retain a per-session relay: node pod
+creation currently returns a container-local proxy address. Explicit identity
+selection alone does not wire automatic host startup or make that address
+reachable. The Apple quickstart records that limitation.
