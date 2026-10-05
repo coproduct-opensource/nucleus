@@ -255,6 +255,12 @@ pub(crate) async fn credentialed_egress(
                 .to_string(),
         ));
     };
+    // What the call IS, from the one classifier the host also runs: a push is
+    // decided as `GitPush` here and labelled so, and the host refuses a frame
+    // whose label disagrees with its own reading.
+    let operation =
+        nucleus_cred_protocol::egress::operation_for(call.method, &path, call.query.as_deref());
+
     // Per-effect gate (ADR 0004): the method the host will perform is the
     // shape a granted effect must vouch for.
     if let Ok(parsed) = url::Url::parse(&url) {
@@ -267,8 +273,14 @@ pub(crate) async fn credentialed_egress(
     }
 
     // Preserve local hard denials, but carry an approval deferral to the host.
-    // Submission does not mint an execution token or satisfy the deferral.
-    let submission = crate::mediation::admit_to_broker(&state, &url).await?;
+    // Submission does not mint an execution token or satisfy the deferral. A
+    // push is decided as a push as well as a network effect, so a profile
+    // without push is refused here before a frame exists.
+    let gated = match operation {
+        nucleus_cred_protocol::egress::EgressOperation::WebFetch => Operation::WebFetch,
+        nucleus_cred_protocol::egress::EgressOperation::GitPush => Operation::GitPush,
+    };
+    let submission = crate::mediation::admit_to_broker(&state, &url, gated).await?;
 
     // ── The credential is NOT read here, and cannot be ─────────────────────
     //
@@ -329,7 +341,7 @@ pub(crate) async fn credentialed_egress(
     let request = call.open_frame(
         &name,
         &path,
-        "WebFetch",
+        operation,
         submission.require_approval(),
         request_approval_wait(&headers)?,
     );
@@ -425,14 +437,14 @@ impl WorkloadCall {
         &self,
         name: &str,
         path: &str,
-        operation: &str,
+        operation: nucleus_cred_protocol::egress::EgressOperation,
         require_approval: bool,
         approval_wait_seconds: u64,
     ) -> nucleus_cred_protocol::StreamRequest {
         nucleus_cred_protocol::StreamRequest {
             require_approval,
             approval_wait_seconds,
-            operation: operation.to_string(),
+            operation: operation.label().to_string(),
             target: name.to_string(),
             justification: "credentialed egress".to_string(),
             nonce: uuid::Uuid::new_v4().to_string(),
@@ -884,7 +896,12 @@ mod tests {
                     Ok(call) => call,
                     Err(e) => return axum::response::IntoResponse::into_response(e),
                 };
-                let request = call.open_frame(&name, &path, "WebFetch", false, 0);
+                let operation = nucleus_cred_protocol::egress::operation_for(
+                    call.method,
+                    &path,
+                    call.query.as_deref(),
+                );
+                let request = call.open_frame(&name, &path, operation, false, 0);
                 let line = format!(
                     "{}\n",
                     nucleus_cred_protocol::frame::sign(
@@ -963,7 +980,8 @@ mod tests {
 
     /// **A smart-HTTP ref advertisement crosses the door as a GET with its
     /// query (#3210).** The frame the host receives names GET, carries the
-    /// query, proposes the protocol header, and carries neither the workload's `Authorization`
+    /// query, is labelled a push by the shared classifier, proposes the
+    /// protocol header, and carries neither the workload's `Authorization`
     /// placeholder nor any body.
     #[tokio::test]
     async fn a_get_with_a_query_reaches_the_host_as_a_get() {
@@ -972,7 +990,7 @@ mod tests {
         let door = serve_door(dir.path(), host);
         let reply = workload_raw(
             &door,
-            "GET /v1/egress/model-api/org/repo.git/info/refs?service=git-upload-pack \
+            "GET /v1/egress/model-api/org/repo.git/info/refs?service=git-receive-pack \
              HTTP/1.1\r\nHost: x\r\nGit-Protocol: version=2\r\nAuthorization: Basic \
              placeholder\r\nCookie: a=b\r\nConnection: close\r\n\r\n",
         )
@@ -987,8 +1005,8 @@ mod tests {
             serde_json::from_str(payload).expect("a stream open");
         assert_eq!(frame.method, nucleus_cred_protocol::EgressMethod::Get);
         assert_eq!(frame.path, "org/repo.git/info/refs");
-        assert_eq!(frame.query.as_deref(), Some("service=git-upload-pack"));
-        assert_eq!(frame.operation, "WebFetch");
+        assert_eq!(frame.query.as_deref(), Some("service=git-receive-pack"));
+        assert_eq!(frame.operation, "GitPush");
         assert_eq!(
             frame.headers.get("git-protocol").map(String::as_str),
             Some("version=2")

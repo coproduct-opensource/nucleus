@@ -55,9 +55,9 @@ What the workload does **not** use:
 - `GET …/info/refs?service=git-upload-pack` and `POST …/git-upload-pack`
   (fetch, clone, ls-remote) are reads and are decided as `web_fetch`.
 - `GET …/info/refs?service=git-receive-pack` and `POST …/git-receive-pack`
-  (push) are, until the follow-up change that maps them to `git_push`, also
-  decided as `web_fetch` only. Until then a profile's `git_push: never` does
-  not stop a push made this way.
+  (push) are decided as `git_push` **and** `web_fetch`. A profile with
+  `git_push: never`, such as `safe-pr-fixer`, is refused by the guest's
+  kernel and again by the host's PDP before any byte leaves the node.
 - The method, the query and the forwarded headers are bound into the host's
   effect digest, so an operator approval for the GET advertisement cannot be
   spent on the POST that carries the pack.

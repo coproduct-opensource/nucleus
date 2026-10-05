@@ -555,6 +555,18 @@ where
         )
         .await;
     }
+    // The label must be what the call DOES. A push labelled as a fetch would
+    // otherwise be decided under the read capability only (#3210).
+    if !label_matches_effect(req) {
+        return refuse(
+            &Refusal::NotPermitted,
+            0,
+            Remaining::MayFollow,
+            reader,
+            writer,
+        )
+        .await;
+    }
     let asked = Asked {
         operation: &req.operation,
         target: &req.target,
@@ -959,6 +971,20 @@ fn describe_stream(
     effect.method = req.method.as_str().into();
     effect.request_headers.clone_from(forwarded);
     effect
+}
+
+/// Whether the frame's operation label is what the call does.
+///
+/// [`nucleus_cred_protocol::egress::operation_for`] is the one classifier; the
+/// guest labels with it and the host recomputes it here. A call it calls a
+/// plain `WebFetch` may carry a stricter label (the host then decides that
+/// operation too); a call it calls anything else must carry exactly that
+/// label, so a push cannot be decided as a fetch.
+fn label_matches_effect(req: &StreamRequest) -> bool {
+    let effect =
+        nucleus_cred_protocol::egress::operation_for(req.method, &req.path, req.query.as_deref());
+    effect == nucleus_cred_protocol::egress::EgressOperation::WebFetch
+        || req.operation == effect.label()
 }
 
 /// The guest's proposed headers this upstream forwards: the operator listed the

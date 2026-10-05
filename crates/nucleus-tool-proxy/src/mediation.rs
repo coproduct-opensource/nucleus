@@ -405,17 +405,18 @@ impl BrokerSubmission {
     }
 }
 
+/// Decide a host-performed call before its frame exists: always as the
+/// network effect it is (`WebFetch`), and, when the call is more than a read,
+/// as that operation too, exactly as the host's `check_effect` decides it. A
+/// push under a profile without `git_push` is refused here, by the guest's
+/// own kernel, and again by the host's PDP.
 pub(crate) fn decide_for_broker(
     env: MediationEnv<'_>,
     kernel: &mut Kernel,
     graph: &FlowGraph,
     subject: &str,
+    operation: Operation,
 ) -> Result<BrokerSubmission, ApiError> {
-    // The term is the one `nucleus run --egress` checks the run's policy
-    // against before a pod exists (#3218), so an early refusal there and a
-    // denial here cannot disagree about which grant a call needs (G-1).
-    let term = nucleus_spec::CredentialedEgressSpec::call_term(subject);
-    let operation = term.operation();
     let MediationEnv {
         sink,
         actor,
@@ -423,32 +424,46 @@ pub(crate) fn decide_for_broker(
         grants: _,
         shadow,
     } = env;
-    let (decision, _token) = kernel.decide_term_with_flow(term, Some(graph));
-    shadow.submit(kernel, graph, operation, subject, &decision.verdict);
-    crate::verdict_sink::record_kernel_decision(
-        sink,
-        &decision,
-        operation,
-        subject,
-        actor,
-        transport,
-        kernel.session_id(),
-    );
-    match decision.verdict {
-        Verdict::Allow => Ok(BrokerSubmission {
-            require_approval: false,
-        }),
-        Verdict::RequiresApproval => Ok(BrokerSubmission {
-            require_approval: true,
-        }),
-        Verdict::Deny(DenyReason::IfcUnsafe { detail }) => Err(ApiError::IfcDenied(detail)),
-        Verdict::Deny(reason) => Err(kernel_denial_to_api_error(operation, subject, reason)),
+    // The network term is the one `nucleus run --egress` checks the run's
+    // policy against before a pod exists (#3218), so an early refusal there
+    // and a denial here cannot disagree about which grant a call needs (G-1).
+    // A call that is more than that read is then decided as its own
+    // operation too.
+    let network = nucleus_spec::CredentialedEgressSpec::call_term(subject);
+    let further =
+        (operation != network.operation()).then(|| ActionTerm::from_operation(operation, subject));
+    let mut require_approval = false;
+    for term in std::iter::once(network).chain(further) {
+        let operation = term.operation();
+        let (decision, _token) = kernel.decide_term_with_flow(term, Some(graph));
+        shadow.submit(kernel, graph, operation, subject, &decision.verdict);
+        crate::verdict_sink::record_kernel_decision(
+            sink,
+            &decision,
+            operation,
+            subject,
+            actor.clone(),
+            transport,
+            kernel.session_id(),
+        );
+        match decision.verdict {
+            Verdict::Allow => {}
+            Verdict::RequiresApproval => require_approval = true,
+            Verdict::Deny(DenyReason::IfcUnsafe { detail }) => {
+                return Err(ApiError::IfcDenied(detail));
+            }
+            Verdict::Deny(reason) => {
+                return Err(kernel_denial_to_api_error(operation, subject, reason));
+            }
+        }
     }
+    Ok(BrokerSubmission { require_approval })
 }
 
 pub(crate) async fn admit_to_broker(
     state: &crate::AppState,
     subject: &str,
+    operation: Operation,
 ) -> Result<BrokerSubmission, ApiError> {
     let mut kernel = state.kernel.lock().await;
     let graph = state.flow_graph.lock().await;
@@ -466,6 +481,7 @@ pub(crate) async fn admit_to_broker(
         &mut kernel,
         &graph,
         subject,
+        operation,
     );
     if let Ok(mut cell) = state.kernel_exposure.write() {
         *cell = kernel.exposure().clone();
@@ -513,6 +529,7 @@ mod broker_tests {
             &mut Kernel::new(policy),
             graph,
             "https://api.invalid/request",
+            Operation::WebFetch,
         )
     }
     #[test]
@@ -534,6 +551,39 @@ mod broker_tests {
             assert_eq!(matches!(records[0], VerdictOutcome::Allow), !required);
         }
     }
+    /// A push through host-performed egress (#3210) is decided as a push AND
+    /// as the network effect it is: refused by a profile without `git_push`
+    /// even though that profile fetches, and recorded as two decisions where
+    /// push is granted.
+    #[test]
+    fn a_push_is_decided_as_a_push_as_well_as_a_fetch() {
+        let decide = |policy: PermissionLattice, operation: Operation, sink: &Sink| {
+            decide_for_broker(
+                MediationEnv {
+                    sink,
+                    actor: ActorIdentity::Unknown,
+                    transport: "http",
+                    grants: &GuestGrant,
+                    shadow: &crate::host_decide::HostDecide::Off,
+                },
+                &mut Kernel::new(policy),
+                &FlowGraph::new(),
+                "https://forge.invalid/org/repo.git/git-receive-pack",
+                operation,
+            )
+        };
+        let mut no_push = PermissionLattice::permissive();
+        no_push.capabilities.git_push = CapabilityLevel::Never;
+        assert!(decide(no_push.clone(), Operation::GitPush, &Sink::default()).is_err());
+        assert!(
+            decide(no_push, Operation::WebFetch, &Sink::default()).is_ok(),
+            "the control: the same profile fetches"
+        );
+        let sink = Sink::default();
+        assert!(decide(PermissionLattice::permissive(), Operation::GitPush, &sink).is_ok());
+        assert_eq!(sink.0.lock().unwrap().len(), 2, "WebFetch, then GitPush");
+    }
+
     #[test]
     fn guest_capability_and_flow_denials_never_become_broker_submissions() {
         let mut denied = PermissionLattice::network_only();
