@@ -55,6 +55,10 @@ use crate::provision::{
 /// Verify that Tier 2 actually works on this machine.
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
+    /// Verify a signed, supervised workload on this machine's installed node.
+    /// Requires a node configured to enforce its host-supplied PodSpec.
+    #[arg(long, requires_all = ["tier2", "here"], conflicts_with_all = ["apple_host_config", "vm_name", "pins"])]
+    pub execution: bool,
     /// Verify a supervised Firecracker workload on the selected Apple host
     #[arg(long, requires = "tier2", conflicts_with_all = ["here", "vm_name", "pins"])]
     pub apple_host_config: Option<std::path::PathBuf>,
@@ -161,6 +165,15 @@ pub async fn execute(args: VerifyArgs, config_path: &str) -> Result<()> {
     }
     if !args.tier2 {
         bail!("nothing to verify; did you mean `nucleus verify --tier2`?");
+    }
+    if args.execution {
+        let manifest =
+            tokio::task::spawn_blocking(crate::workload_verification::Manifest::installed)
+                .await??;
+        let report =
+            crate::workload_verification::verify(mtls_client()?, NODE_URL, manifest).await?;
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
     }
     let configured = crate::config::Config::load(config_path)?;
     if let Some(path) = apple_selection(&args, &configured) {

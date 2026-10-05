@@ -3167,3 +3167,23 @@ retired by this implementation. Its replacement must check host-issued evidence;
 that migration is pending. Gatehouse's informational shadow jobs also could not
 complete their control-plane authentication. Deployment access still requires
 operator reauthentication. Neither failure is recorded as a passing check.
+
+### Portable supervised-workload verification (2026-10-05)
+
+The Apple setup verifier now delegates to a shared Rust workload verifier.
+`nucleus verify --tier2 --here --execution` exposes the same check for an
+installed local node. It hashes the operator's installed kernel/rootfs before
+admission, accepts the supported x86_64 and aarch64 architectures, enrolls the
+signer over mTLS independently of the receipt, and checks the requested program,
+environment, Firecracker/UID isolation, exit status and exact nonce-bearing logs.
+It cancels each pod after a returned creation ID, including on verification error.
+The local node must enforce its host-supplied PodSpec; legacy baked workloads
+cannot satisfy this check. Apple setup still requires an aarch64 input manifest.
+
+The shared verifier passed the real Apple workload
+`9dc078dc-5a72-4aa8-a66b-5b9a89f7ace4` against the publication-08f74b39b image:
+exit zero, 57 stdout bytes, empty stderr, signed evidence verified and pod
+cancelled. The two-architecture program-identity test and scoped all-target
+Clippy passed. This is an execution check, not broker authorization evidence or a
+model-driven journey. The obsolete quickstart receipt steps are still present;
+their migration remains pending rather than silently narrowing that gate.
