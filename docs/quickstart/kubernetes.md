@@ -91,6 +91,11 @@ spec:
           value: "0.0.0.0:8080"
         - name: NUCLEUS_NODE_DRIVER
           value: "firecracker"
+        # Guests must run the admitted spec, not a pod.yaml baked into the
+        # rootfs. This is the Firecracker default, so the line only makes it
+        # visible. It needs guest rootfs 2.3.0 or later.
+        - name: NUCLEUS_NODE_BROKER_ENFORCING
+          value: "true"
         - name: NUCLEUS_NODE_FIRECRACKER_NETNS
           value: "true"
         volumeMounts:

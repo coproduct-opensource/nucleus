@@ -166,6 +166,34 @@ and selecting non-default seccomp policies. Do not enable this feature in
 production. Failures name `JailerRequired`, `JailerRootUid`, `SeccompDisabled`, or
 `SeccompUnpinned` so operators can identify the rejected setting.
 
+## Host-spec enforcement
+
+`--broker-enforcing` / `NUCLEUS_NODE_BROKER_ENFORCING` decides whether a guest
+must run the spec this node admitted. When it is on, the node puts
+`nucleus.host_spec=required` on the guest kernel command line and withholds
+`credentials.env` values from the served spec. Guest-init then refuses a
+`pod.yaml` baked into the rootfs. Before the node reports the pod running, it
+waits for guest-init's `NUCLEUS_HOST_SPEC: READY`.
+
+Since 2026-10-05 (#3205) this is on by default for the Firecracker driver. The
+node resolves the setting once at startup, from the driver:
+
+| Driver | Unset | `true` | `false` |
+|---|---|---|---|
+| `firecracker` | enforced | enforced | not enforced; startup logs a warn naming the weakened posture |
+| `container`, `local`, `apple-vz` | not enforced | startup refused | not enforced |
+
+- **Guest rootfs.** Enforcement needs guest-init that prints the `READY`
+  handshake: the pinned 2.3.0 rootfs, or one built from this tree. To boot an
+  older rootfs on Firecracker, set `NUCLEUS_NODE_BROKER_ENFORCING=false`.
+- **`nucleus setup`.** The `node.env` it writes sets
+  `NUCLEUS_NODE_DRIVER=firecracker` and `NUCLEUS_NODE_BROKER_ENFORCING=true`
+  explicitly.
+- **Broad egress.** Under enforcement, a pod whose network policy allows public
+  address space without naming one host gets no workload API, so it cannot be
+  served its spec. It fails to launch, where before it booted without an
+  identity.
+
 ## Sealed rootfs syscall boundary
 
 2026-10-04: the exemplar unsafe-block baseline moves from 4 to 7 for the three

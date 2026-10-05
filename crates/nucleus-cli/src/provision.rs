@@ -24,6 +24,7 @@
 //! the actual cause is an encoding mismatch two crates away.
 
 use anyhow::{Context, Result, anyhow, bail};
+use nucleus_spec::microvm_host::HOST_ENFORCEMENT_ENV;
 use nucleus_spec::tier2_artifacts::{self, Tier2Artifact};
 use nucleus_spec::vmm_version;
 use sha2::{Digest, Sha256};
@@ -749,6 +750,11 @@ fn discard_staged(host: &Tier2Host, s: &StagedBinary) -> Result<()> {
 /// nothing to look for and refuses to run — which is correct, but made the check
 /// reachable only from CI, since CI was the only thing that planted a canary.
 /// See #2372.
+///
+/// The driver and host-spec enforcement are written explicitly (#3205) even
+/// though both are the node's Firecracker defaults: the guest must run the spec
+/// the node admitted, never a `pod.yaml` baked into the rootfs, and an operator
+/// reading this file should see that rather than infer it from a default.
 pub fn node_env_body(
     auth_hex: &str,
     proxy_hex: &str,
@@ -757,6 +763,8 @@ pub fn node_env_body(
 ) -> String {
     format!(
         "# Written by `nucleus setup`. Contains HMAC secrets - keep mode 0600.\n\
+         NUCLEUS_NODE_DRIVER=firecracker\n\
+         {HOST_ENFORCEMENT_ENV}=true\n\
          NUCLEUS_NODE_LISTEN=0.0.0.0:8080\n\
          NUCLEUS_NODE_GRPC_LISTEN=0.0.0.0:9180\n\
          NUCLEUS_NODE_STATE_DIR={HOST_STATE_DIR}\n\
@@ -1545,6 +1553,53 @@ mod tests {
             "NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=",
         ] {
             assert!(body.contains(required), "node.env is missing {required}");
+        }
+    }
+
+    /// Whether an env-file body makes a Firecracker node require the admitted
+    /// spec: the last assignment of each variable wins, as in systemd's
+    /// `EnvironmentFile=`, and the driver must be Firecracker (set or default).
+    fn env_requires_the_admitted_spec(body: &str) -> bool {
+        let value = |name: &str| {
+            body.lines()
+                .filter_map(|l| l.split_once('='))
+                .filter(|(k, _)| k.trim() == name)
+                .map(|(_, v)| v.trim().to_string())
+                .next_back()
+        };
+        let firecracker = value("NUCLEUS_NODE_DRIVER").as_deref() == Some("firecracker");
+        firecracker && value(HOST_ENFORCEMENT_ENV).as_deref() == Some("true")
+    }
+
+    /// The node.env `nucleus setup` writes is a host launch path too (#3205):
+    /// it must require the admitted spec explicitly, alongside the host recipes
+    /// `nucleus_spec::microvm_host::tests::every_host_recipe_requires_the_admitted_spec` covers.
+    #[test]
+    fn setup_node_env_requires_the_admitted_spec() {
+        let body = node_env_body("aa", "bb", "cc", "dd");
+        assert!(
+            env_requires_the_admitted_spec(&body),
+            "node.env must set NUCLEUS_NODE_DRIVER=firecracker and {HOST_ENFORCEMENT_ENV}=true:\n{body}"
+        );
+    }
+
+    /// The check has teeth: with the line dropped, set false, or the driver
+    /// changed, the same body is refused.
+    #[test]
+    fn a_node_env_without_enforcement_is_refused() {
+        let body = node_env_body("aa", "bb", "cc", "dd");
+        let line = format!("{HOST_ENFORCEMENT_ENV}=true\n");
+        for (from, to) in [
+            (line.as_str(), String::new()),
+            (line.as_str(), format!("{HOST_ENFORCEMENT_ENV}=false\n")),
+            (
+                "NUCLEUS_NODE_DRIVER=firecracker\n",
+                "NUCLEUS_NODE_DRIVER=container\n".to_string(),
+            ),
+        ] {
+            let edited = body.replace(from, &to);
+            assert_ne!(edited, body, "the substitution of {from:?} matched nothing");
+            assert!(!env_requires_the_admitted_spec(&edited), "{edited}");
         }
     }
 
