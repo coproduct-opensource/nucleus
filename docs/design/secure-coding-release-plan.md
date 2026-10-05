@@ -3086,3 +3086,23 @@ HTTP adapter also built successfully for `x86_64-unknown-linux-musl`. This is a
 cross-build result, not live x86 KVM evidence. The log is
 `/tmp/nucleus-final-ea6057adb/x86-runtime-build.log`. Model-driven journeys remain
 zero, pending the previously requested operator model configuration.
+
+
+### Confirmed Docker removal without an exit observation (2026-10-05)
+
+A graceful-stop or inspect error can be followed by successful forced removal.
+That path previously left no cached terminal state, so subsequent status could
+report Docker's missing-container error even though cancellation had succeeded.
+Confirmed removal (including Docker's already-absent response) now records
+`Exited` with an unknown code when no exit was observed. An existing observed
+exit code is preserved. Neither removal errors nor daemon unavailability count
+as confirmation, and capacity remains held until teardown succeeds.
+
+All three container lifecycle tests and scoped all-target/all-feature Clippy
+passed. The new ordinary lifecycle regression fails on the original behavior
+at the terminal-state assertion and passes with the correction; it covers both
+forced removal after a failed graceful stop and an already-absent container.
+Existing tests retain the capacity-on-removal-failure and observed-exit checks.
+Evidence is under `/tmp/nucleus-container-terminal-*.log`. This change follows
+the recorded Apple image checkpoint and affects Docker status reporting; that
+image is not evidence for this later source revision.

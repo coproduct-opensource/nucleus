@@ -78,6 +78,12 @@ impl ContainerPod {
                 )));
             }
         }
+        // Forced removal can succeed even when stop/inspect did not produce an
+        // exit code. Confirmed absence is terminal, but does not imply exit 0.
+        self.cached_exit
+            .lock()
+            .await
+            .get_or_insert(PodState::Exited { code: None });
         if let Some(intent) = &self.launch_intent {
             intent.clear().await?;
         }
@@ -164,6 +170,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn removal_without_an_observed_exit_preserves_unknown_terminal_status() {
+        for (inspect_status, remove_status) in [(200, 204), (404, 404)] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(500)
+                        .set_body_json(serde_json::json!({"message":"graceful stop unavailable"})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let inspect = if inspect_status == 200 {
+                serde_json::json!({"State":{"Running":true}})
+            } else {
+                serde_json::json!({"message":"No such container"})
+            };
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(inspect_status).set_body_json(inspect))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .respond_with(
+                    ResponseTemplate::new(remove_status)
+                        .set_body_json(serde_json::json!({"message":"removed or already absent"})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let (_dir, state, id, pool) = fixture(&server).await;
+            let pod = state.pods.lock().await.get(&id).unwrap().clone();
+            let crate::DriverState::Container(container) = &pod.driver_state else {
+                panic!("fixture must use the container driver");
+            };
+            *container.cached_exit.lock().await = None;
+            pod.cancel().await.unwrap();
+            assert!(matches!(
+                pod.status().await,
+                PodState::Exited { code: None }
+            ));
+            assert_eq!(pool.available_permits(), 1);
+            drop(state.node_capacity.reserve(&pod.spec).unwrap());
+            server.verify().await;
+        }
+    }
+
+    #[tokio::test]
     async fn already_removed_container_returns_capacity() {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
@@ -177,6 +230,10 @@ mod tests {
         let (_dir, state, id, pool) = fixture(&server).await;
         let pod = state.pods.lock().await.get(&id).unwrap().clone();
         pod.cleanup_after_exit().await.unwrap();
+        assert!(matches!(
+            pod.status().await,
+            PodState::Exited { code: Some(0) }
+        ));
         assert_eq!(pool.available_permits(), 1);
         drop(state.node_capacity.reserve(&pod.spec).unwrap());
     }

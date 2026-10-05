@@ -17,6 +17,9 @@ reservation is released. Other removal errors remain visible to cancellation
 callers, and the reaper retries cleanup on its next pass before recording the
 exit and releasing authority. Docker daemon unavailability does not count as
 successful removal.
+If removal succeeds without an observed process exit code, status is `Exited`
+with an unknown code. This confirms termination without reporting a successful
+workload exit; a previously observed code is retained.
 
 `--node-memory-mib` and `--node-vcpus` set the operator's total capacity.
 Linux memory defaults to MemTotal, capped by finite visible cgroup-v2 ancestor
