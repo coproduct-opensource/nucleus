@@ -35,6 +35,28 @@ use tokio::net::lookup_host;
 use uuid::Uuid;
 
 use crate::ApiError;
+use nucleus_microvm_host::probe::{CheckedCommands, HostCommand};
+
+// The host programs each stage below runs. ONE declaration per stage, read
+// both by the stage (to demand the preflight's witness for them) and by
+// `NetnsPlan::host_commands` (to declare them to the preflight), so the two
+// cannot drift apart (ADR 0007 G-1). A program spawned by a stage but missing
+// from its list here is the residual gap: nothing types a `Command::new` literal.
+const CREATE_NETNS_TOOLS: &[HostCommand] = &[HostCommand::Ip];
+// `ip netns exec <ns> iptables ...`.
+const DEFAULT_DENY_TOOLS: &[HostCommand] = &[HostCommand::Ip, HostCommand::Iptables];
+const SETUP_NETWORK_TOOLS: &[HostCommand] =
+    &[HostCommand::Ip, HostCommand::Iptables, HostCommand::Sysctl];
+// `ip netns exec <ns> dnsmasq ...`.
+const DNS_PROXY_TOOLS: &[HostCommand] = &[HostCommand::Ip, HostCommand::Dnsmasq];
+const HOST_POLICY_TOOLS: &[HostCommand] = &[HostCommand::Nsenter, HostCommand::Iptables];
+const SNAPSHOT_TOOLS: &[HostCommand] = &[HostCommand::Nsenter, HostCommand::IptablesSave];
+
+/// Demand the preflight's witness for a stage's programs. Pure: no probe here.
+#[cfg(target_os = "linux")]
+fn require_tools(checked: &CheckedCommands, tools: &[HostCommand]) -> Result<(), ApiError> {
+    checked.require(tools).map_err(ApiError::Driver)
+}
 
 const NET_BASE: Ipv4Addr = Ipv4Addr::new(10, 200, 0, 0);
 const NET_POOL_PREFIX: u8 = 24;
@@ -279,6 +301,40 @@ impl NetnsPlan {
             reject_unsupported_policy: !firecracker_netns && has_policy,
         }
     }
+
+    /// Every host program this plan's launch will run, for the preflight to
+    /// observe BEFORE anything is built (#3027).
+    ///
+    /// The host policy (`apply_host_policy`) is applied in every pod netns,
+    /// with or without a policy on the spec, so `nsenter` belongs to any plan
+    /// that creates one. `dns_allow` adds the resolver; the node's drift check
+    /// adds `iptables-save`.
+    pub fn host_commands(
+        &self,
+        network: Option<&NetworkSpec>,
+        drift_check: bool,
+    ) -> Vec<HostCommand> {
+        let mut stages: Vec<&[HostCommand]> = Vec::new();
+        if self.create_netns {
+            stages.extend([CREATE_NETNS_TOOLS, HOST_POLICY_TOOLS]);
+            if drift_check {
+                stages.push(SNAPSHOT_TOOLS);
+            }
+        }
+        if self.apply_default_deny {
+            stages.push(DEFAULT_DENY_TOOLS);
+        }
+        if self.allocate_net_plan {
+            stages.push(SETUP_NETWORK_TOOLS);
+            if network.is_some_and(|n| !n.dns_allow.is_empty()) {
+                stages.push(DNS_PROXY_TOOLS);
+            }
+        }
+        let mut commands: Vec<HostCommand> = stages.concat();
+        commands.sort();
+        commands.dedup();
+        commands
+    }
 }
 
 /// Whether a chain rule accepts or drops. Public because `egress_chain`
@@ -355,6 +411,7 @@ pub fn validate_policy(policy: &NetworkSpec) -> Result<(), ApiError> {
 #[cfg(target_os = "linux")]
 #[tracing::instrument(skip_all, fields(boot.stage = "net.dns_proxy"))]
 pub async fn start_dns_proxy(
+    checked: &CheckedCommands,
     plan: &mut NetPlan,
     policy: &NetworkSpec,
     pod_dir: &Path,
@@ -362,7 +419,7 @@ pub async fn start_dns_proxy(
     if policy.dns_allow.is_empty() {
         return Ok(None);
     }
-    ensure_command("dnsmasq")?;
+    require_tools(checked, DNS_PROXY_TOOLS)?;
     let entries = resolve_dns_allowlist(policy).await?;
     if entries.is_empty() {
         return Ok(None);
@@ -403,6 +460,7 @@ pub async fn start_dns_proxy(
 
 #[cfg(not(target_os = "linux"))]
 pub async fn start_dns_proxy(
+    _checked: &CheckedCommands,
     _plan: &mut NetPlan,
     _policy: &NetworkSpec,
     _pod_dir: &Path,
@@ -414,8 +472,8 @@ pub async fn start_dns_proxy(
 
 #[cfg(target_os = "linux")]
 #[tracing::instrument(skip_all, fields(boot.stage = "net.create_netns"))]
-pub async fn create_netns(name: &str) -> Result<(), ApiError> {
-    ensure_command("ip")?;
+pub async fn create_netns(checked: &CheckedCommands, name: &str) -> Result<(), ApiError> {
+    require_tools(checked, CREATE_NETNS_TOOLS)?;
     let status = Command::new("ip")
         .args(["netns", "add", name])
         .status()
@@ -429,7 +487,7 @@ pub async fn create_netns(name: &str) -> Result<(), ApiError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn create_netns(_name: &str) -> Result<(), ApiError> {
+pub async fn create_netns(_checked: &CheckedCommands, _name: &str) -> Result<(), ApiError> {
     Err(ApiError::Driver(
         "network namespaces require Linux".to_string(),
     ))
@@ -440,8 +498,8 @@ pub async fn create_netns(_name: &str) -> Result<(), ApiError> {
 /// race conditions where a process could exfiltrate data before policy applies.
 #[cfg(target_os = "linux")]
 #[tracing::instrument(skip_all, fields(boot.stage = "net.default_deny"))]
-pub async fn apply_default_deny(netns: &str) -> Result<(), ApiError> {
-    ensure_command("iptables")?;
+pub async fn apply_default_deny(checked: &CheckedCommands, netns: &str) -> Result<(), ApiError> {
+    require_tools(checked, DEFAULT_DENY_TOOLS)?;
 
     // Flush any existing rules
     run_netns(netns, &["iptables", "-w", "-F"]).await?;
@@ -502,7 +560,7 @@ pub async fn apply_default_deny(netns: &str) -> Result<(), ApiError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn apply_default_deny(_netns: &str) -> Result<(), ApiError> {
+pub async fn apply_default_deny(_checked: &CheckedCommands, _netns: &str) -> Result<(), ApiError> {
     Err(ApiError::Driver(
         "default-deny policy requires Linux".to_string(),
     ))
@@ -518,10 +576,8 @@ pub async fn cleanup_netns(name: &str) -> Result<(), ApiError> {
 
 #[cfg(target_os = "linux")]
 #[tracing::instrument(skip_all, fields(boot.stage = "net.setup"))]
-pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
-    ensure_command("ip")?;
-    ensure_command("iptables")?;
-    ensure_command("sysctl")?;
+pub async fn setup_network(checked: &CheckedCommands, plan: &NetPlan) -> Result<(), ApiError> {
+    require_tools(checked, SETUP_NETWORK_TOOLS)?;
     ensure_bridge_netfilter()?;
 
     // Two subnets now, and the split is the whole point:
@@ -665,7 +721,7 @@ pub async fn setup_network(plan: &NetPlan) -> Result<(), ApiError> {
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn setup_network(_plan: &NetPlan) -> Result<(), ApiError> {
+pub async fn setup_network(_checked: &CheckedCommands, _plan: &NetPlan) -> Result<(), ApiError> {
     Err(ApiError::Driver(
         "host network setup requires Linux".to_string(),
     ))
@@ -757,13 +813,13 @@ pub fn model_chain(chain: &[NetRule]) -> Option<Vec<EgressRule>> {
 
 #[cfg(target_os = "linux")]
 pub async fn apply_host_policy(
+    checked: &CheckedCommands,
     pid: u32,
     policy: &NetworkSpec,
     dns_entries: Option<&[ResolvedDnsEntry]>,
     dns_server: Option<Ipv4Addr>,
 ) -> Result<(), ApiError> {
-    ensure_command("nsenter")?;
-    ensure_command("iptables")?;
+    require_tools(checked, HOST_POLICY_TOOLS)?;
     // The chain is decided as a value, then applied in exactly that order. The
     // ordering guarantee the Lean theorem relies on lives in `egress_chain`,
     // not scattered through the application loop below.
@@ -861,9 +917,8 @@ pub async fn apply_host_policy(
 }
 
 #[cfg(target_os = "linux")]
-pub async fn snapshot_iptables(pid: u32) -> Result<String, ApiError> {
-    ensure_command("nsenter")?;
-    ensure_command("iptables-save")?;
+pub async fn snapshot_iptables(checked: &CheckedCommands, pid: u32) -> Result<String, ApiError> {
+    require_tools(checked, SNAPSHOT_TOOLS)?;
     let output = tokio::process::Command::new("nsenter")
         .arg(format!("--net=/proc/{pid}/ns/net"))
         .arg("--")
@@ -882,6 +937,7 @@ pub async fn snapshot_iptables(pid: u32) -> Result<String, ApiError> {
 
 #[cfg(not(target_os = "linux"))]
 pub async fn apply_host_policy(
+    _checked: &CheckedCommands,
     _pid: u32,
     _policy: &NetworkSpec,
     _dns_entries: Option<&[ResolvedDnsEntry]>,
@@ -893,7 +949,7 @@ pub async fn apply_host_policy(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn snapshot_iptables(_pid: u32) -> Result<String, ApiError> {
+pub async fn snapshot_iptables(_checked: &CheckedCommands, _pid: u32) -> Result<String, ApiError> {
     Err(ApiError::Driver(
         "host network policy requires Linux".to_string(),
     ))
@@ -1132,25 +1188,6 @@ fn ensure_bridge_netfilter() -> Result<(), ApiError> {
         return Ok(());
     }
     Err(ApiError::Driver(bridge_netfilter_remedy()))
-}
-
-#[cfg(target_os = "linux")]
-fn ensure_command(command: &str) -> Result<(), ApiError> {
-    let mut cmd = Command::new(command);
-    if command == "ip" {
-        cmd.arg("-V");
-    } else {
-        cmd.arg("--version");
-    }
-    let status = cmd
-        .status()
-        .map_err(|e| ApiError::Driver(format!("missing {command}: {e}")))?;
-    if !status.success() {
-        return Err(ApiError::Driver(format!(
-            "{command} not available (exit {status})"
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -2170,5 +2207,94 @@ mod netns_guard_tests {
         let mut g = NetnsGuard::new("nuc-abc12345");
         g.name = None;
         assert_eq!(g.armed_name(), None);
+    }
+}
+
+#[cfg(test)]
+mod host_command_tests {
+    use super::*;
+
+    fn with_dns() -> NetworkSpec {
+        let mut n = NetworkSpec::nothing_listed();
+        n.dns_allow = vec!["example.test".into()];
+        n
+    }
+
+    /// #3027: every stage a plan will run has its programs declared to the
+    /// preflight, so none is first discovered after Firecracker is running.
+    /// Checked over every combination of node mode, spec policy, `dns_allow`
+    /// and drift check.
+    #[test]
+    fn every_stage_a_plan_runs_has_its_programs_declared() {
+        let bare = NetworkSpec::nothing_listed();
+        let dns = with_dns();
+        for netns in [false, true] {
+            for network in [None, Some(&bare), Some(&dns)] {
+                for drift in [false, true] {
+                    let plan = NetnsPlan::decide(netns, network);
+                    let declared = plan.host_commands(network, drift);
+                    let mut runs: Vec<&[HostCommand]> = Vec::new();
+                    // Mirrors the launch path in main.rs.
+                    if plan.create_netns {
+                        runs.extend([CREATE_NETNS_TOOLS, HOST_POLICY_TOOLS]);
+                    }
+                    if plan.apply_default_deny {
+                        runs.push(DEFAULT_DENY_TOOLS);
+                    }
+                    if plan.allocate_net_plan {
+                        runs.push(SETUP_NETWORK_TOOLS);
+                        if network.is_some_and(|n| !n.dns_allow.is_empty()) {
+                            runs.push(DNS_PROXY_TOOLS);
+                        }
+                    }
+                    if plan.create_netns && drift {
+                        runs.push(SNAPSHOT_TOOLS);
+                    }
+                    for tool in runs.concat() {
+                        assert!(
+                            declared.contains(&tool),
+                            "{tool:?} runs but is not declared (netns={netns}, \
+                             network={}, drift={drift})",
+                            network.is_some()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The case the issue was filed for: a netns pod applies the host policy
+    /// with `nsenter` whether or not its spec has a network block, so the
+    /// preflight must observe it for both.
+    #[test]
+    fn a_netns_pod_declares_nsenter_with_or_without_a_policy() {
+        for network in [None, Some(&NetworkSpec::nothing_listed())] {
+            let plan = NetnsPlan::decide(true, network);
+            assert!(
+                plan.host_commands(network, false)
+                    .contains(&HostCommand::Nsenter),
+                "network={}",
+                network.is_some()
+            );
+        }
+    }
+
+    /// Non-vacuity, in both directions: a node with no netns runs none of them,
+    /// and `dnsmasq` / `iptables-save` are declared only when they will run —
+    /// demanding them otherwise would refuse launches that would have worked.
+    #[test]
+    fn programs_that_will_not_run_are_not_demanded() {
+        let none = NetnsPlan::decide(false, None).host_commands(None, true);
+        assert!(none.is_empty(), "{none:?}");
+
+        let bare = NetworkSpec::nothing_listed();
+        let plain = NetnsPlan::decide(true, Some(&bare)).host_commands(Some(&bare), false);
+        assert!(!plain.contains(&HostCommand::Dnsmasq), "{plain:?}");
+        assert!(!plain.contains(&HostCommand::IptablesSave), "{plain:?}");
+
+        let dns = with_dns();
+        let full = NetnsPlan::decide(true, Some(&dns)).host_commands(Some(&dns), true);
+        assert!(full.contains(&HostCommand::Dnsmasq), "{full:?}");
+        assert!(full.contains(&HostCommand::IptablesSave), "{full:?}");
     }
 }

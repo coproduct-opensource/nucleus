@@ -1851,7 +1851,34 @@ async fn spawn_firecracker_pod(
         //
         // See `host_requirements` for the table and why the decision is split
         // from the observation.
-        host_requirements::preflight(spec.spec.network.is_some()).map_err(ApiError::Driver)?;
+        //
+        // The network plan is decided FIRST because it says what the preflight
+        // must observe: a netns needs CAP_NET_ADMIN whether or not the spec has
+        // a policy (keying on `spec.network` missed that), and every host
+        // program the plan will run is probed here rather than when first used
+        // — `nsenter` used to be found missing only after a running,
+        // seccomp-filtered Firecracker (#3027). The witness that comes back is
+        // what the network code below needs to run any of those programs.
+        //
+        // Pure + property-tested in net.rs:
+        // `netns_plan_never_omits_netns_or_default_deny`. The imperative path
+        // below performs the side effects in the order the security model
+        // requires — default-deny is applied BEFORE any workload process runs.
+        let netns_plan =
+            net::NetnsPlan::decide(state.firecracker_netns, spec.spec.network.as_ref());
+        if netns_plan.reject_unsupported_policy {
+            return Err(ApiError::Driver(
+                "network policy requires --firecracker-netns=true".to_string(),
+            ));
+        }
+        let host_tools = host_requirements::preflight(
+            netns_plan.create_netns,
+            &netns_plan.host_commands(
+                spec.spec.network.as_ref(),
+                state.firecracker_netns_drift_check,
+            ),
+        )
+        .map_err(ApiError::Driver)?;
         // The node's limits for this pod, merged with what the spec may lower (#3130). Admitted
         // at create by the same function, so an error here is a node fault, not a spec one.
         let node_cgroup = pod_resources::node_cgroup(spec, pod_resources::CgroupVersion::detect())
@@ -1892,17 +1919,7 @@ async fn spawn_firecracker_pod(
         let mut netns_name: Option<String> = None;
         let mut dns_proxy: Option<net::DnsProxyState> = None;
 
-        // Decide the network isolation plan up front (pure + property-tested in
-        // net.rs: `netns_plan_never_omits_netns_or_default_deny`). The imperative
-        // path below performs the side effects in the order the security model
-        // requires — default-deny is applied BEFORE any workload process runs.
-        let netns_plan =
-            net::NetnsPlan::decide(state.firecracker_netns, spec.spec.network.as_ref());
-        if netns_plan.reject_unsupported_policy {
-            return Err(ApiError::Driver(
-                "network policy requires --firecracker-netns=true".to_string(),
-            ));
-        }
+        // `netns_plan` was decided before the host preflight, above.
         // Declared OUT here on purpose. The namespace is made inside the block
         // below but must survive until this function succeeds, so a guard scoped
         // to that block would reap a live pod's namespace the moment the block
@@ -1910,7 +1927,7 @@ async fn spawn_firecracker_pod(
         let mut netns_guard: Option<net::NetnsGuard> = None;
         if netns_plan.create_netns {
             let name = net::netns_name(id);
-            net::create_netns(&name).await?;
+            net::create_netns(&host_tools, &name).await?;
             // Armed from here to the single success return. Every `?` and early
             // `return` between the two now reaps, including ones added later by
             // someone who never read this comment.
@@ -1921,7 +1938,7 @@ async fn spawn_firecracker_pod(
             // data before the full policy is applied. `apply_default_deny` is
             // guaranteed true whenever `create_netns` is (see NetnsPlan).
             if netns_plan.apply_default_deny {
-                if let Err(err) = net::apply_default_deny(&name).await {
+                if let Err(err) = net::apply_default_deny(&host_tools, &name).await {
                     let _ = net::cleanup_netns(&name).await;
                     return Err(err);
                 }
@@ -1945,7 +1962,7 @@ async fn spawn_firecracker_pod(
                         return Err(err);
                     }
                 };
-                if let Err(err) = net::setup_network(&plan).await {
+                if let Err(err) = net::setup_network(&host_tools, &plan).await {
                     if let Err(cleanup) = net::cleanup_network(&mut plan).await {
                         error!(%cleanup, "failed launch retains its network allocation");
                     }
@@ -1957,7 +1974,7 @@ async fn spawn_firecracker_pod(
                     }
                     return Err(err);
                 }
-                match net::start_dns_proxy(&mut plan, network, pod_dir).await {
+                match net::start_dns_proxy(&host_tools, &mut plan, network, pod_dir).await {
                     Ok(proxy) => {
                         dns_proxy = proxy;
                     }
@@ -2410,7 +2427,9 @@ async fn spawn_firecracker_pod(
             let dns_server = dns_proxy
                 .as_ref()
                 .and_then(|_| net_plan.as_ref().map(|plan| plan.gateway_ip));
-            if let Err(err) = net::apply_host_policy(pid, policy, dns_entries, dns_server).await {
+            if let Err(err) =
+                net::apply_host_policy(&host_tools, pid, policy, dns_entries, dns_server).await
+            {
                 let _ = child.kill().await;
                 cleanup_net_resources(
                     &mut net_plan,
@@ -2422,7 +2441,7 @@ async fn spawn_firecracker_pod(
                 return Err(err);
             }
             if state.firecracker_netns_drift_check {
-                match net::snapshot_iptables(pid).await {
+                match net::snapshot_iptables(&host_tools, pid).await {
                     Ok(snapshot) => {
                         let baseline_path = pod_dir.join("net.iptables.baseline");
                         if let Err(err) =
@@ -2566,7 +2585,7 @@ async fn spawn_firecracker_pod(
                         if stop.load(Ordering::Relaxed) {
                             break;
                         }
-                        match net::snapshot_iptables(pid).await {
+                        match net::snapshot_iptables(&host_tools, pid).await {
                             Ok(snapshot) => {
                                 if snapshot != baseline {
                                     let _ =

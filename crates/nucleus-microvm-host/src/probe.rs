@@ -12,6 +12,11 @@
 //! * `CAP_NET_ADMIN` was not checked at all. Without it `ip`/`iptables` exit
 //!   non-zero somewhere inside `setup_network`, after a partial namespace, a
 //!   veth pair, or a bridge already exist.
+//! * `nsenter`, `ip`, `iptables`, `iptables-save`, `sysctl` and `dnsmasq` were
+//!   each probed by the network code at the moment it first ran them. On a host
+//!   without `nsenter` the launch got as far as a running, seccomp-filtered
+//!   Firecracker before failing (#3027). They are [`Probe::Command`]s now, and
+//!   the network code needs the [`CheckedCommands`] witness to run them.
 //!
 //! `/dev/kvm` was already checked on the launch path and is folded in here so
 //! there is one place that says what a host must provide.
@@ -52,6 +57,144 @@ pub enum Probe {
         path: &'static str,
         any_of: &'static [&'static str],
     },
+    /// A program the launch path runs, which must be an executable file on
+    /// `PATH` — the same lookup `Command::new` performs when it spawns it.
+    Command(HostCommand),
+}
+
+/// A host program the launch path runs to build a pod's network.
+///
+/// A closed set rather than a `&str`, so the node can only ask the preflight's
+/// witness ([`CheckedCommands`]) for a program this table knows how to probe
+/// and how to tell an operator to install (#3027).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum HostCommand {
+    /// iproute2's `ip`: namespaces, veth pairs, the bridge, `ip netns exec`.
+    Ip,
+    /// `iptables`: the default-deny baseline and the egress chain.
+    Iptables,
+    /// `iptables-save`: the drift monitor's baseline and its comparisons.
+    IptablesSave,
+    /// `sysctl`: forwarding on the host side of the pod's link.
+    Sysctl,
+    /// util-linux's `nsenter`: applying the egress chain inside the running
+    /// VMM's network namespace.
+    Nsenter,
+    /// `dnsmasq`: the per-pod resolver, only when the spec has `dns_allow`.
+    Dnsmasq,
+}
+
+impl HostCommand {
+    /// The program name spawned, and looked up on `PATH`.
+    pub fn program(self) -> &'static str {
+        match self {
+            Self::Ip => "ip",
+            Self::Iptables => "iptables",
+            Self::IptablesSave => "iptables-save",
+            Self::Sysctl => "sysctl",
+            Self::Nsenter => "nsenter",
+            Self::Dnsmasq => "dnsmasq",
+        }
+    }
+
+    /// The requirement this program imposes, with the package that provides it.
+    pub fn requirement(self) -> HostRequirement {
+        let (because, remedy) = match self {
+            Self::Ip => (
+                "the pod's network namespace, veth pair and bridge are made with `ip`; without \
+                 it the launch fails at the first namespace operation",
+                "install iproute2 (apt-get install iproute2 / apk add iproute2)",
+            ),
+            Self::Iptables => (
+                "the default-deny baseline and the egress chain are iptables rules; without it \
+                 a namespace exists with no policy applied and the launch fails",
+                "install iptables (apt-get install iptables / apk add iptables)",
+            ),
+            Self::IptablesSave => (
+                "the netns drift monitor snapshots the rule set with iptables-save; without it \
+                 the launch fails after Firecracker is already running",
+                "install iptables, which ships iptables-save (apt-get install iptables / apk add \
+                 iptables), or run the node with the netns drift check off",
+            ),
+            Self::Sysctl => (
+                "forwarding on the host side of the pod's link is enabled with sysctl",
+                "install procps (apt-get install procps / apk add procps)",
+            ),
+            Self::Nsenter => (
+                "the egress chain is applied inside the running VMM's namespace with nsenter; \
+                 without it the launch fails after Firecracker is already running",
+                "install util-linux, which ships nsenter (apt-get install util-linux / apk add \
+                 util-linux-misc); BusyBox does not provide it",
+            ),
+            Self::Dnsmasq => (
+                "a spec with `dns_allow` gets a per-pod resolver, which is dnsmasq",
+                "install dnsmasq (apt-get install dnsmasq / apk add dnsmasq)",
+            ),
+        };
+        HostRequirement {
+            what: self.program(),
+            probe: Probe::Command(self),
+            because,
+            remedy,
+        }
+    }
+}
+
+/// Witness that the launch preflight found every command in it on `PATH`.
+///
+/// Minted only by [`preflight`], after [`unmet`] returned nothing for a
+/// requirement set that included each of these commands. The node's network
+/// code takes one of these instead of probing for a program at the moment it
+/// is used, which is how `nsenter` came to be discovered missing only after a
+/// seccomp-filtered Firecracker was already running (#3027).
+///
+/// [`Self::require`] asks whether a program was DECLARED to the preflight; it
+/// does no I/O. A stage that needs a program its plan never declared fails on
+/// every host, so the omission is found by the first test or run, not by the
+/// first host that lacks the binary. ADR 0007 C-1: the evidence has a private
+/// constructor and is minted by the checker. Not one-shot, so `Clone` is fine:
+/// the drift monitor keeps using it for the pod's whole life.
+#[derive(Debug, Clone)]
+pub struct CheckedCommands {
+    commands: Vec<HostCommand>,
+}
+
+impl CheckedCommands {
+    /// `Ok` when every one of `needed` was observed by the preflight.
+    pub fn require(&self, needed: &[HostCommand]) -> Result<(), String> {
+        let undeclared: Vec<&str> = needed
+            .iter()
+            .filter(|c| !self.commands.contains(c))
+            .map(|c| c.program())
+            .collect();
+        if undeclared.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "host command(s) {} were never declared to the launch preflight, so nothing \
+                 checked they exist before the pod was built; declare them in the plan's host \
+                 commands",
+                undeclared.join(", ")
+            ))
+        }
+    }
+}
+
+/// `program` is an executable regular file in one of `path`'s directories.
+///
+/// The lookup `Command::new` does when spawning a bare name, minus the spawn.
+/// Running `<cmd> --version` instead (the old `ensure_command`) also depended
+/// on each tool's flag spelling — BusyBox applets exit 1 for `--version`.
+#[cfg(unix)]
+pub fn on_path(program: &str, path: Option<&std::ffi::OsStr>) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(path) = path else {
+        return false;
+    };
+    std::env::split_paths(path).any(|dir| {
+        std::fs::metadata(dir.join(program))
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
 }
 
 /// One thing the launch path needs from the host.
@@ -194,19 +337,48 @@ pub fn observe(probe: &Probe) -> bool {
         Probe::SysfsValue { path, any_of } => {
             sysfs_satisfied(std::fs::read_to_string(path).ok().as_deref(), any_of)
         }
+        Probe::Command(c) => on_path(c.program(), std::env::var_os("PATH").as_deref()),
     }
 }
 
-/// The launch preflight: every requirement a pod needs, observed now, and one
-/// message naming all that are missing.
-#[cfg(target_os = "linux")]
-pub fn preflight(needs_network: bool) -> Result<(), String> {
-    let missing = unmet(&requirements(needs_network), observe);
+/// [`requirements`] plus one requirement per host command the launch will run.
+pub fn launch_requirements(needs_network: bool, commands: &[HostCommand]) -> Vec<HostRequirement> {
+    let mut reqs = requirements(needs_network);
+    let mut commands = commands.to_vec();
+    commands.sort();
+    commands.dedup();
+    reqs.extend(commands.into_iter().map(HostCommand::requirement));
+    reqs
+}
+
+/// The launch decision, split from the observation so it is testable on a host
+/// with none of these things: the witness exactly when nothing is unmet.
+///
+/// Private on purpose: with `satisfied` injectable, a public version would mint
+/// the witness for `|_| true`. Outside this module only [`preflight`] can.
+#[cfg(any(target_os = "linux", test))]
+fn preflight_with(
+    needs_network: bool,
+    commands: &[HostCommand],
+    satisfied: impl Fn(&Probe) -> bool,
+) -> Result<CheckedCommands, String> {
+    let missing = unmet(&launch_requirements(needs_network, commands), satisfied);
     if missing.is_empty() {
-        Ok(())
+        Ok(CheckedCommands {
+            commands: commands.to_vec(),
+        })
     } else {
         Err(explain(&missing))
     }
+}
+
+/// The launch preflight: every requirement a pod needs — devices, capability,
+/// and each host command the launch will run — observed now, BEFORE anything
+/// is built, and one message naming all that are missing. On success, the
+/// witness the network code needs to run any of those commands.
+#[cfg(target_os = "linux")]
+pub fn preflight(needs_network: bool, commands: &[HostCommand]) -> Result<CheckedCommands, String> {
+    preflight_with(needs_network, commands, observe)
 }
 
 /// Whether a sysfs reading satisfies a requirement. Pure, so the polarity is testable.
@@ -360,6 +532,84 @@ mod tests {
             assert!(msg.contains(r.what), "{} missing from the message", r.what);
             assert!(msg.contains(r.remedy), "no remedy given for {}", r.what);
         }
+    }
+
+    /// #3027: a host without `nsenter` is refused by the preflight, before
+    /// anything is built, with the package that provides it — not after a
+    /// running Firecracker by the network code.
+    #[test]
+    fn a_host_missing_a_declared_command_is_refused_before_anything_is_built() {
+        let commands = [HostCommand::Ip, HostCommand::Iptables, HostCommand::Nsenter];
+        let missing_nsenter = |p: &Probe| !matches!(p, Probe::Command(HostCommand::Nsenter));
+        let err = preflight_with(true, &commands, missing_nsenter)
+            .expect_err("a host without nsenter must not pass the preflight");
+        assert!(err.contains("nsenter"), "{err}");
+        assert!(
+            err.contains("util-linux"),
+            "the remedy names the package: {err}"
+        );
+        assert!(
+            !err.contains("  * ip "),
+            "only what is missing is listed: {err}"
+        );
+
+        // Non-vacuity: the same declaration on a complete host passes and
+        // yields a witness for exactly those commands.
+        let checked = preflight_with(true, &commands, all_present).expect("complete host");
+        assert!(checked.require(&commands).is_ok());
+    }
+
+    /// The witness answers for what was DECLARED, not for what a host happens
+    /// to have: a stage needing a program its plan never declared is refused on
+    /// every host, so the omission cannot hide behind a well-provisioned one.
+    #[test]
+    fn the_witness_refuses_a_command_the_preflight_never_declared() {
+        let checked = preflight_with(true, &[HostCommand::Ip], all_present).expect("passes");
+        assert!(checked.require(&[HostCommand::Ip]).is_ok());
+        let err = checked
+            .require(&[HostCommand::Ip, HostCommand::Nsenter])
+            .expect_err("nsenter was never declared");
+        assert!(err.contains("nsenter") && !err.contains("ip,"), "{err}");
+    }
+
+    /// Every host command has a requirement probed as a command, naming the
+    /// program, with a remedy that says how to install it.
+    #[test]
+    fn every_host_command_is_probed_and_has_an_install_remedy() {
+        use HostCommand::*;
+        for c in [Ip, Iptables, IptablesSave, Sysctl, Nsenter, Dnsmasq] {
+            let r = c.requirement();
+            assert_eq!(r.probe, Probe::Command(c));
+            assert_eq!(r.what, c.program());
+            assert!(r.remedy.contains("install"), "{}: {}", r.what, r.remedy);
+        }
+        // Declared twice, required once.
+        let reqs = launch_requirements(false, &[Ip, Ip]);
+        assert_eq!(reqs.iter().filter(|r| r.what == "ip").count(), 1);
+    }
+
+    /// The PATH lookup the probe makes: an executable file counts, a
+    /// non-executable one and a directory do not, nor does an unset PATH.
+    #[cfg(unix)]
+    #[test]
+    fn on_path_finds_executables_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let exe = dir.path().join("tool-x");
+        std::fs::write(&exe, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let plain = dir.path().join("tool-y");
+        std::fs::write(&plain, "").expect("write");
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+        std::fs::create_dir(dir.path().join("tool-z")).expect("mkdir");
+
+        let path = std::env::join_paths(["/nonexistent-3027", dir.path().to_str().unwrap()])
+            .expect("join");
+        assert!(on_path("tool-x", Some(&path)));
+        assert!(!on_path("tool-y", Some(&path)), "not executable");
+        assert!(!on_path("tool-z", Some(&path)), "a directory");
+        assert!(!on_path("tool-missing", Some(&path)));
+        assert!(!on_path("tool-x", None), "no PATH finds nothing");
     }
 
     /// CAP_NET_ADMIN is bit 12. A wrong constant would silently probe a
