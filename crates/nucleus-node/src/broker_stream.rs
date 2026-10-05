@@ -19,6 +19,9 @@
 //! the bytes it owns. It then applies the same host policy and action-bound
 //! approval mechanism as PERFORM, reserves the full egress charge, retrieves the
 //! credential, and rechecks current policy before committing the effect.
+//! The HTTP body consumes the shared rate allowance as it yields staged slices;
+//! the total reservation stays owned until the body is dropped. The upload and
+//! response-head deadline also bounds time spent waiting for rate windows.
 //!
 //! Allowed uploads keep only chunks in memory. Approval-gated uploads retain
 //! their full payload under the per-pod review limit. The file is removed on close, including
@@ -48,6 +51,8 @@ use tokio::sync::mpsc;
 use crate::broker_perform::{Asked, CredentialMiss, InjectedHeader};
 use crate::federated_credential::PodCredentials;
 use crate::upstreams::RegistryEntry;
+
+mod upload;
 
 /// The per-call request-body ceiling when the operator sets none: 32 MiB.
 ///
@@ -195,7 +200,7 @@ pub struct StreamCall {
     /// The body's media type, as the guest declared it (validated, counted).
     pub content_type: String,
     /// The request body, chunk by chunk.
-    pub body: mpsc::Receiver<Result<Vec<u8>, std::io::Error>>,
+    pub body: upload::UploadBody,
 }
 
 /// What came back, with the body still arriving.
@@ -265,8 +270,7 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
     Arc::new(move |call: StreamCall| {
         let client = client.clone();
         Box::pin(async move {
-            let body =
-                reqwest::Body::wrap_stream(tokio_stream::wrappers::ReceiverStream::new(call.body));
+            let body = reqwest::Body::wrap_stream(call.body);
             let resp = client
                 .request(crate::broker_perform::effect::METHOD, &call.url)
                 .header(&call.header_name, &call.header_value)
@@ -342,7 +346,7 @@ pub struct StreamContext<'a> {
     /// The upstreams this pod may reach.
     pub upstreams: &'a [RegistryEntry],
     /// This pod's ONE egress balance (#2905).
-    pub egress: &'a crate::egress_meter::EgressMeter,
+    pub egress: &'a Arc<crate::egress_meter::EgressMeter>,
     /// This pod's caller, bounds and nonce memory.
     pub streams: &'a PodStreams,
 }
@@ -614,24 +618,11 @@ where
             return refuse(&Refusal::Named(reason), 0, Remaining::Ended, reader, writer).await;
         }
     }
-    // Staging and operator review can outlive the credential PDP witness.
-    // Re-run its checker (ADR 0007 C-1), never extend a stale grant's expiry.
-    // These immutable inputs resolve the same effect; the shared host policy
-    // was checked above and is checked again when committing below.
-    let Some(resolved) = crate::broker_perform::resolve(
-        &asked,
-        ctx.identity,
-        ctx.policy,
-        ctx.upstreams,
-        current_time(),
-    ) else {
-        return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await;
-    };
     let uploaded = staged.len();
     let open_bytes = req.path.len().saturating_add(req.content_type.len()) as u64;
-    let charge = match ctx
+    let mut charge = match ctx
         .egress
-        .admit(open_bytes.saturating_add(uploaded), current_time())
+        .reserve_upload(open_bytes.saturating_add(uploaded))
         .await
     {
         Ok(charge) => charge,
@@ -645,6 +636,39 @@ where
             )
             .await;
         }
+    };
+    let upload_deadline = tokio::time::Instant::now() + UPSTREAM_IDLE_TIMEOUT;
+    if !matches!(
+        tokio::time::timeout_at(
+            upload_deadline,
+            upload::pace_open(&mut charge, open_bytes, current_time())
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        charge.not_sent();
+        return refuse(
+            &Refusal::UpstreamFailed,
+            0,
+            Remaining::Ended,
+            reader,
+            writer,
+        )
+        .await;
+    }
+    // Staging, operator review and pace waits can outlive the credential PDP witness.
+    // Re-run its checker (ADR 0007 C-1), never extend a stale grant's expiry.
+    // These immutable inputs resolve the same effect; the shared host policy
+    // was checked above and is checked again when committing below.
+    let Some(resolved) = crate::broker_perform::resolve(
+        &asked,
+        ctx.identity,
+        ctx.policy,
+        ctx.upstreams,
+        current_time(),
+    ) else {
+        charge.not_sent();
+        return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await;
     };
     let InjectedHeader {
         value: header_value,
@@ -699,18 +723,18 @@ where
     let (tx, rx) = mpsc::channel(4);
     use nucleus_spec::host_effect::outcome::Termination;
     let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time());
-    charge.sent(); // Once handed to HTTP, a transport failure is ambiguous.
+    // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {
         _permit: permit,
         url: resolved.url().to_string(),
         header_name: spec.header.clone(),
         header_value,
         content_type: req.content_type.clone(),
-        body: rx,
+        body: upload::UploadBody::new(rx, charge, current_time()),
     });
     // One deadline covers both upload and response headers, including a caller
     // which retains but never drains the body channel.
-    let result = tokio::time::timeout(UPSTREAM_IDLE_TIMEOUT, async {
+    let result = tokio::time::timeout_at(upload_deadline, async {
         tokio::join!(staged.send(tx), call)
     })
     .await;
@@ -899,6 +923,7 @@ mod tests {
     //! placeholder.
 
     mod approval_wait;
+    mod paced;
 
     use super::*;
     use crate::broker_perform::IdempotencyLedger;
@@ -1339,7 +1364,18 @@ mod tests {
             header_name: "authorization".into(),
             header_value: "test-token".into(),
             content_type: "application/json".into(),
-            body: rx,
+            body: upload::UploadBody::new(
+                rx,
+                crate::egress_meter::EgressMeter::new(
+                    portcullis::EgressCeiling::new(1_000, portcullis::EgressPace::Unpaced),
+                    std::env::temp_dir(),
+                    "response-owner".into(),
+                )
+                .reserve_upload(0)
+                .await
+                .unwrap(),
+                100,
+            ),
         })
         .await
         .unwrap();

@@ -14,6 +14,15 @@ work, not an instruction to repeat those exercises. Continue with shared outboun
 accounting and normal integration checks; complete the two coding journeys once
 model endpoint configuration is available.
 
+Paced broker replay now reserves the complete upload volume once and admits
+body slices at HTTP consumption through the same fixed window as direct packet
+reservations. Staging and effect hashes remain unchanged. Initial path and
+content-type accounting waits before credential resolution; the body owns the
+reservation through transport cancellation. One finite deadline covers the pace
+wait, upload and response headers. PERFORM still uses batch admission, and
+broker accounting covers body plus guest path/content-type lengths, not physical
+HTTP/TLS wire bytes. See the paced replay validation entry below.
+
 ## 1. Host-authoritative enforcement (P0)
 
 Issues: #2702, #3114, #3115, #3116, #3117.
@@ -405,7 +414,7 @@ the response observation timestamp, all 100 broker tests passed. Removing the
 payload hash from the canonical binding made the late-byte substitution test
 fail; restoring it passed. The Linux ARM64 musl build passed.
 
-Paced egress admission currently treats the complete staged upload as one batch;
+At this checkpoint, paced egress admission treated the complete staged upload as one batch;
 a body larger than the configured rate window is refused instead of replayed at
 a throttled rate. Preserve this limitation in the P1 egress work: useful large
 uploads under a paced policy need explicit paced replay with conserved total
@@ -1465,6 +1474,38 @@ This bounds IP bytes at the queue, not physical wire bytes. Ethernet/ARP and
 framing added after queue admission are separate, and broker accounting still
 counts request bodies rather than HTTP/TLS overhead. Direct pacing is a
 fixed-window policer: it drops excess packets and relies on transport retries,
-not a smooth shaper. Broker staged uploads still must fit within one window;
+not a smooth shaper. At this checkpoint broker staged uploads still had to fit within one window;
 the unmediated container/local drivers remain outside this packet gate. The
 broader egress milestone and complete coding journeys remain open.
+
+
+### Paced staged broker replay (2026-10-04)
+
+STREAM now reserves the complete staged charge once, then consumes the shared
+fixed-window allowance as HTTP polls the body. The producer can buffer file
+chunks, but those chunks receive no pace admission until the consumer yields
+them. A non-clone upload token limits the sum of all yielded slices and stays
+bound to its original ledger. Total-ceiling refusal of another request does not
+invalidate volume this upload already reserved; accounting faults still stop
+further slices. Direct packets and other uploads share that same window.
+
+The counted path/content-type metadata waits before credentials are resolved.
+After that wait, the credential checker runs again, and host effect authorization
+still commits against the complete staged payload hash and current policy.
+Failures before HTTP handoff explicitly refund the total reservation; dropping
+the body after handoff conservatively charges the complete reservation. The
+existing 300-second upload/response-head deadline includes pacing time. Very
+slow policies can therefore still time out, and PERFORM remains batch-admitted.
+This measures application body plus path/content-type lengths, not HTTP/TLS wire
+bytes or injected credentials.
+
+Ordinary loopback HTTP validation sent a 250-byte body through 100-byte windows:
+it took at least two seconds, completed, and arrived with its SHA-256 unchanged.
+Cancellation while waiting retained the full charge and closed the staging
+channel. All 28 stream regressions and 15 egress-ledger tests passed; the Linux
+ARM64 production build and node Clippy passed. The full node suite passed 873
+unit tests (one ignored) and three integration tests. After making the upload
+token's ledger epoch explicit, both paced-upload checks and the ledger tests
+passed again. All four repository gates passed; the lifecycle floor rose from
+13/20 to 14/21 bounded affine rights. These checks do not establish the two
+outstanding model-driven coding journeys or cover unmediated drivers.

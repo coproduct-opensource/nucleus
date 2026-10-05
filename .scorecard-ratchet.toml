@@ -364,9 +364,12 @@ population_floor = 91
 # reconnect that no single ledger could see. All three now carry their
 # ledger's epoch, and consume/redeem refuse a foreign one
 # (LedgerError::ForeignEpoch) before the number is looked up. 13/20, 65.00%.
-floor_bp = 6500
+# 2026-10-04: EgressUploadHold carries the original ledger id/epoch directly;
+# pace admission and settlement check that binding. The new affine right is
+# bounded, bringing life from 13/20 to 14/21 (66.66%).
+floor_bp = 6666
 floor_set = "measurement"
-population_floor = 20
+population_floor = 21
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

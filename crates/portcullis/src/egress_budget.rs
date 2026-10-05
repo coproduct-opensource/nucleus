@@ -63,6 +63,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::budget_ledger::{ChildId, LedgerCore, LedgerError};
 
+mod upload;
+pub use upload::{EgressUploadHold, UploadPace};
+
 /// The quantity an [`EgressLedger`] conserves: bytes sent toward the network.
 ///
 /// `u64` on purpose — the unit the conservation proofs are stated at.
@@ -253,7 +256,7 @@ pub enum EgressNovelty {
 ///
 /// Affine: not `Clone`, `#[must_use]`, and settled BY VALUE
 /// ([`EgressLedger::settle`]) so one hold cannot be refunded twice (ADR 0007
-/// C-4). Only [`EgressLedger::reserve`] constructs one. A hold that is dropped
+/// C-4). Only the ledger constructs one. A hold that is dropped
 /// unsettled stays allocated — the bytes remain unavailable, which is the
 /// fail-closed reading of "we do not know whether they were sent".
 ///
@@ -460,15 +463,7 @@ impl EgressLedger {
         } = self.ceiling.pace
         {
             let len = u64::from(window_secs.get());
-            if now_unix.saturating_sub(self.window.started_at) >= len
-                || now_unix < self.window.started_at
-            {
-                self.window = Window {
-                    started_at: now_unix,
-                    counted: 0,
-                    refused: false,
-                };
-            }
+            self.refresh_window(now_unix, len);
             if self.window.counted.saturating_add(bytes) > per_window {
                 let novelty = if self.window.refused {
                     EgressNovelty::Repeat
@@ -488,13 +483,32 @@ impl EgressLedger {
             }
         }
 
+        let decision = self.allocate(bytes);
+        if matches!(decision, EgressDecision::Admitted(_))
+            && matches!(self.ceiling.pace, EgressPace::PerWindow { .. })
+        {
+            self.window.counted = self.window.counted.saturating_add(bytes);
+        }
+        decision
+    }
+
+    fn refresh_window(&mut self, now_unix: u64, len: u64) {
+        if now_unix.saturating_sub(self.window.started_at) >= len
+            || now_unix < self.window.started_at
+        {
+            self.window = Window {
+                started_at: now_unix,
+                counted: 0,
+                refused: false,
+            };
+        }
+    }
+
+    fn allocate(&mut self, bytes: EgressBytes) -> EgressDecision {
         let id = self.next_id;
         match self.core.try_allocate(id, bytes) {
             Ok(()) => {
                 self.next_id = self.next_id.saturating_add(1);
-                if let EgressPace::PerWindow { .. } = self.ceiling.pace {
-                    self.window.counted = self.window.counted.saturating_add(bytes);
-                }
                 EgressDecision::Admitted(EgressHold {
                     id,
                     bytes,

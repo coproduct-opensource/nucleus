@@ -31,6 +31,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+mod upload;
+pub use upload::UploadCharge;
+
 use portcullis::{
     EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
     EgressRefusal, EgressSettlement,

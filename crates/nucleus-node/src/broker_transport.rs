@@ -427,7 +427,7 @@ pub struct BrokerServing<'a> {
     /// This pod's idempotency memory.
     pub ledger: &'a IdempotencyLedger,
     /// This pod's egress balance.
-    pub egress: &'a crate::egress_meter::EgressMeter,
+    pub egress: &'a Arc<crate::egress_meter::EgressMeter>,
     /// How to make the call.
     pub upstream_caller: UpstreamCaller,
     /// How to make a streamed call, and its bounds and nonce memory.
@@ -716,7 +716,7 @@ pub(crate) mod serving_tests {
 
     /// The default (finite) ceiling, which no test here approaches. Leaked
     /// because `BrokerServing` borrows it for the test's life.
-    pub(super) fn test_egress() -> &'static crate::egress_meter::EgressMeter {
+    pub(super) fn test_egress() -> &'static Arc<crate::egress_meter::EgressMeter> {
         Box::leak(Box::new(test_egress_arc()))
     }
 
