@@ -9,7 +9,7 @@
 //! All tool endpoints MUST validate inputs through this module before processing.
 //! Error messages MUST be sanitized before returning to clients.
 
-use std::path::Path;
+use std::path::PathBuf;
 use thiserror::Error;
 
 /// Maximum length for glob/regex patterns (1KB).
@@ -320,18 +320,54 @@ fn parse_max_repetition(range: &str) -> Option<usize> {
 /// the internal structure of the sandbox or host system.
 ///
 /// # What Gets Sanitized
-/// - Absolute paths are replaced with `[path]`
-/// - Sandbox root paths are replaced with `[sandbox]`
+/// - Each sandbox root, where it ends at a path-component boundary, is
+///   replaced with `[sandbox]`
 /// - Home directory paths are replaced with `[home]`
+/// - Remaining absolute paths longer than five characters become `[path]`
+///
+/// `sandbox_roots` is every spelling of the root an error may carry (as
+/// configured, and canonical). The tool-proxy's production caller is
+/// [`crate::api_error::ApiError::response_body`], which passes the roots
+/// registered at startup — before #2402 it passed none, so this branch ran
+/// only in this module's tests and a five-character root such as `/work`
+/// slipped under the generic `[path]` heuristic verbatim.
 ///
 /// # Example
 /// ```ignore
-/// let msg = "failed to read /var/sandbox/abc123/secrets/token.txt";
-/// let sanitized = sanitize_error_message(msg, Path::new("/var/sandbox/abc123"));
-/// assert_eq!(sanitized, "failed to read [sandbox]/secrets/token.txt");
+/// let msg = "failed to open /work: permission denied";
+/// let sanitized = sanitize_error_message(msg, &[PathBuf::from("/work")]);
+/// assert_eq!(sanitized, "failed to open [sandbox]: permission denied");
 /// ```
-pub fn sanitize_error_message(message: &str, sandbox_root: Option<&Path>) -> String {
-    sanitize_error_message_with(message, sandbox_root, std::env::var("HOME").ok().as_deref())
+pub fn sanitize_error_message(message: &str, sandbox_roots: &[PathBuf]) -> String {
+    sanitize_error_message_with(message, sandbox_roots, std::env::var("HOME").ok().as_deref())
+}
+
+/// Characters that continue a path component. A root followed by one of these
+/// is a prefix of a DIFFERENT name (`/work` inside `/workspace`), not the root.
+fn continues_component(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-' || c == '.'
+}
+
+/// Replace `root` with `[sandbox]` wherever it ends at a component boundary.
+///
+/// A bare `str::replace` would rewrite `/workspace/x` as `[sandbox]space/x`
+/// for a root of `/work` — harmless while this branch never ran, misleading
+/// once it does.
+fn replace_root(message: &str, root: &str) -> String {
+    if root.is_empty() {
+        return message.to_string();
+    }
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(i) = rest.find(root) {
+        let end = i + root.len();
+        out.push_str(&rest[..i]);
+        let at_boundary = rest[end..].chars().next().is_none_or(|c| !continues_component(c));
+        out.push_str(if at_boundary { "[sandbox]" } else { root });
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A prefix worth redacting. `/` and the empty string are NOT.
@@ -352,17 +388,24 @@ fn is_meaningful_prefix(p: &str) -> bool {
 /// the degenerate cases can be checked without mutating process state.
 fn sanitize_error_message_with(
     message: &str,
-    sandbox_root: Option<&Path>,
+    sandbox_roots: &[PathBuf],
     home: Option<&str>,
 ) -> String {
     let mut result = message.to_string();
 
-    // Replace sandbox root first (most specific)
-    if let Some(root) = sandbox_root
-        && let Some(root_str) = root.to_str()
-        && is_meaningful_prefix(root_str)
-    {
-        result = result.replace(root_str, "[sandbox]");
+    // Replace sandbox roots first (most specific), longest first so a
+    // canonical spelling that extends the configured one is consumed whole.
+    let mut roots: Vec<&str> = sandbox_roots
+        .iter()
+        .filter_map(|r| r.to_str())
+        .map(|r| r.trim_end_matches('/'))
+        // After trimming: `//` must not become an empty root, which
+        // `replace_root` would match at every position.
+        .filter(|r| is_meaningful_prefix(r))
+        .collect();
+    roots.sort_by_key(|r| std::cmp::Reverse(r.len()));
+    for root in roots {
+        result = replace_root(&result, root);
     }
 
     // Replace home directory
@@ -582,9 +625,9 @@ mod tests {
 
     #[test]
     fn test_sanitize_error_with_sandbox_root() {
-        let sandbox = Path::new("/var/sandbox/abc123");
+        let sandbox = PathBuf::from("/var/sandbox/abc123");
         let msg = "failed to read /var/sandbox/abc123/secrets/token.txt";
-        let sanitized = sanitize_error_message(msg, Some(sandbox));
+        let sanitized = sanitize_error_message(msg, &[sandbox]);
         assert!(sanitized.contains("[sandbox]"));
         assert!(!sanitized.contains("abc123"));
         assert!(!sanitized.contains("/var/sandbox"));
@@ -593,7 +636,7 @@ mod tests {
     #[test]
     fn test_sanitize_error_absolute_paths() {
         let msg = "cannot access /etc/passwd: permission denied";
-        let sanitized = sanitize_error_message(msg, None);
+        let sanitized = sanitize_error_message(msg, &[]);
         assert!(!sanitized.contains("/etc/passwd"));
         assert!(sanitized.contains("[path]"));
     }
@@ -601,14 +644,14 @@ mod tests {
     #[test]
     fn test_sanitize_preserves_safe_content() {
         let msg = "validation error: pattern too long";
-        let sanitized = sanitize_error_message(msg, None);
+        let sanitized = sanitize_error_message(msg, &[]);
         assert_eq!(sanitized, msg);
     }
 
     #[test]
     fn test_sanitize_multiple_paths() {
         let msg = "copy from /source/file to /dest/file failed";
-        let sanitized = sanitize_error_message(msg, None);
+        let sanitized = sanitize_error_message(msg, &[]);
         // Both paths should be sanitized
         assert!(!sanitized.contains("/source/file"));
         assert!(!sanitized.contains("/dest/file"));
@@ -626,7 +669,7 @@ mod home_redaction_tests {
     #[test]
     fn a_root_home_does_not_eat_every_separator() {
         let msg = "access denied: path './audit' blocked by policy";
-        let out = sanitize_error_message_with(msg, None, Some("/"));
+        let out = sanitize_error_message_with(msg, &[], Some("/"));
         assert!(
             out.contains("./audit"),
             "the caller must still see which path was refused, got {out:?}"
@@ -638,7 +681,7 @@ mod home_redaction_tests {
     #[test]
     fn a_root_sandbox_root_does_not_eat_every_separator() {
         let msg = "sandbox escape: path '/work/audit' resolves outside sandbox root";
-        let out = sanitize_error_message_with(msg, Some(Path::new("/")), None);
+        let out = sanitize_error_message_with(msg, &[PathBuf::from("/")], None);
         assert!(
             !out.contains("[sandbox]work[sandbox]"),
             "a `/` sandbox root must not be substituted separator-by-separator, got {out:?}"
@@ -650,7 +693,7 @@ mod home_redaction_tests {
     #[test]
     fn a_real_home_is_still_redacted() {
         let msg = "failed to read /home/agent/.ssh/id_rsa";
-        let out = sanitize_error_message_with(msg, None, Some("/home/agent"));
+        let out = sanitize_error_message_with(msg, &[], Some("/home/agent"));
         assert!(out.contains("[home]"), "got {out:?}");
         assert!(!out.contains("/home/agent"), "got {out:?}");
     }
@@ -660,7 +703,7 @@ mod home_redaction_tests {
     #[test]
     fn an_empty_home_is_not_spliced_between_every_character() {
         let msg = "path './audit' blocked";
-        let out = sanitize_error_message_with(msg, None, Some(""));
+        let out = sanitize_error_message_with(msg, &[], Some(""));
         assert_eq!(out, msg, "an empty HOME must be ignored, got {out:?}");
     }
 
@@ -668,15 +711,66 @@ mod home_redaction_tests {
     /// bug: the scanner entered path mode at the `/` in `./audit`.
     #[test]
     fn a_relative_path_is_not_redacted_as_an_absolute_one() {
-        let out = sanitize_error_message_with("read ./src/main.rs failed", None, None);
+        let out = sanitize_error_message_with("read ./src/main.rs failed", &[], None);
         assert!(out.contains("./src/main.rs"), "got {out:?}");
     }
 
     /// Non-vacuity for the above: a genuine absolute path must STILL be redacted.
     #[test]
     fn a_genuine_absolute_path_is_still_redacted() {
-        let out = sanitize_error_message_with("failed to open /var/lib/nucleus/state", None, None);
+        let out = sanitize_error_message_with("failed to open /var/lib/nucleus/state", &[], None);
         assert!(out.contains("[path]"), "got {out:?}");
         assert!(!out.contains("/var/lib/nucleus"), "got {out:?}");
+    }
+}
+
+#[cfg(test)]
+mod sandbox_root_redaction_tests {
+    use super::*;
+
+    /// #2402: the pod's root is `/work`, exactly five characters, so the
+    /// generic heuristic (runs longer than five) lets it through. Only the
+    /// root-specific branch catches it.
+    #[test]
+    fn a_five_character_root_is_redacted_only_by_the_root_branch() {
+        let msg = "failed to open /work: permission denied";
+        assert!(
+            sanitize_error_message_with(msg, &[], None).contains("/work"),
+            "precondition: without the root the generic heuristic must miss it, \
+             or this test proves nothing"
+        );
+        let out = sanitize_error_message_with(msg, &[PathBuf::from("/work")], None);
+        assert_eq!(out, "failed to open [sandbox]: permission denied");
+    }
+
+    /// A root is a whole path component: `/work` is not a prefix of `/workspace`.
+    #[test]
+    fn a_root_is_not_substituted_inside_a_longer_name() {
+        let out = sanitize_error_message_with(
+            "failed to open /workspace/x",
+            &[PathBuf::from("/work")],
+            None,
+        );
+        assert!(!out.contains("[sandbox]space"), "got {out:?}");
+    }
+
+    /// The configured and canonical spellings are both redacted, the longer
+    /// one whole.
+    #[test]
+    fn every_spelling_of_the_root_is_redacted() {
+        let roots = [PathBuf::from("/var/w"), PathBuf::from("/private/var/w")];
+        let out = sanitize_error_message_with(
+            "open /private/var/w: denied; open /var/w: denied",
+            &roots,
+            None,
+        );
+        assert_eq!(out, "open [sandbox]: denied; open [sandbox]: denied");
+    }
+
+    /// `//` trims to nothing; an empty root would match at every position.
+    #[test]
+    fn a_degenerate_root_terminates_and_is_ignored() {
+        let out = sanitize_error_message_with("path './a' blocked", &[PathBuf::from("//")], None);
+        assert_eq!(out, "path './a' blocked");
     }
 }

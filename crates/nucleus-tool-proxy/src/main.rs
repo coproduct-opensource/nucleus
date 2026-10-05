@@ -1154,6 +1154,9 @@ async fn main() -> Result<(), ApiError> {
         move |request: &ApprovalRequest| approvals.consume(request.operation())
     });
     let runtime = runtime.with_approver(Arc::new(approver))?;
+    // Every refusal from here on is redacted against this root (#2402).
+    api_error::register_sandbox_root(runtime.sandbox().root_path())
+        .map_err(|e| ApiError::Spec(e.to_string()))?;
     st.mark("runtime_build");
 
     // Split the verified certificate: the sealed permissions go into the

@@ -43,11 +43,12 @@ impl std::fmt::Display for PathDenial {
             // sandbox root is host layout. The field stays on the value for
             // host-side logging; only the rendering withholds it.
             //
-            // Not theoretical: the tool-proxy's only production call is
-            // `sanitize_error_message(msg, None)`, so the `[sandbox]` redaction
-            // branch never runs, and the generic absolute-path fallback only
-            // rewrites runs longer than five characters — `/work` is exactly
-            // five and would have travelled verbatim.
+            // Not theoretical: until #2402 the tool-proxy's only production
+            // call was `sanitize_error_message(msg, None)`, so the `[sandbox]`
+            // redaction branch never ran, and the generic absolute-path
+            // fallback only rewrites runs longer than five characters —
+            // `/work` is exactly five and travelled verbatim. Withholding it
+            // here stays the first line of defence; redaction is the second.
             Self::EscapesSandbox { .. } => {
                 write!(f, "resolves outside the sandbox root")
             }
