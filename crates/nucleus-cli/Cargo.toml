@@ -34,6 +34,8 @@ nucleus-federation = { path = "../nucleus-federation" }
 nucleus-oci-rootfs = { path = "../nucleus-oci-rootfs" }
 # One atomic append per audit record (the microVM host supervisor).
 nucleus-jsonl = { path = "../nucleus-jsonl" }
+nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+nucleus-receipt = { path = "../nucleus-receipt" }
 
 # Content-addressed bundle transport (topology #4). iroh/iroh-blobs are
 # pre-1.0; see nucleus-bundle-cas for version pins + rationale.
@@ -55,6 +57,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
 toml = { workspace = true }
+toml_edit = "0.25"
 
 # Error handling
 anyhow = { workspace = true }

@@ -530,7 +530,7 @@ fn node_error_detail(body: &[u8]) -> String {
 ///
 /// One function rather than a copy at each call site: five copies of a
 /// formatting decision drift, and the drift is silent (ADR 0007 G-1).
-fn ensure_ok(status: u16, body: &[u8], what: &str) -> Result<()> {
+pub(crate) fn ensure_ok(status: u16, body: &[u8], what: &str) -> Result<()> {
     if status < 300 {
         return Ok(());
     }

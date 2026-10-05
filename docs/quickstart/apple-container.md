@@ -195,7 +195,7 @@ Apple host and acquire a relay, use the explicit host configuration below.
 
 Stop an idle host with `container stop nucleus-microvm-host` (or the development
 name). This retains its container and volume. `up` restarts it. This command does
-not select the backend automatically for `setup` or `shell`, nor does host
+not select the backend automatically for `shell`, nor does host
 readiness prove that a model-driven coding journey has completed.
 
 ## Select the Apple host for a run
@@ -255,7 +255,41 @@ need the existing node/guest provisioning path. Selecting `/work` does not copy
 the host project into it. It also does not yet collect execution evidence before teardown. The two
 complete guest-harness journeys remain a separate release requirement.
 
-## Save the host selection
+## Configure and check the installation
+
+After building the local image and saving `host.json`, run:
+
+```sh
+nucleus setup --apple-host-config host.json
+nucleus node health
+nucleus run "check the project" --dry-run
+```
+
+Setup checks host readiness, boots a short supervised workload and verifies its
+signed execution receipt plus exact stdout/stderr with the shared verifier. The
+check requires Firecracker execution, a distinct workload UID, exit 0 and the
+expected Linux output. It predicts the admitted program from the selected
+image's input manifest and the shared policy/isolation rules. The signer is
+enrolled through the authenticated node admission endpoint, separately from the
+receipt; trust comes from this installation's provisioned CA and selected image,
+not external platform attestation.
+
+After the check and confirmed pod cancellation, setup saves the host selection
+in the global configuration. It preserves existing settings and comments and
+refuses to replace a file edited while verification ran. Use global `--config`
+for a separate CLI configuration. Subsequent `setup` calls use the saved Apple
+selection. Apple setup uses the image, kernel and state from JSON; Lima VM,
+artifact-download and secret-rotation options are rejected.
+
+`--skip-verify` explicitly skips the guest workload check. Host readiness is
+still required, and the result reports `verification_skipped: true` with no
+workload verification. Verification failures leave the config unchanged and
+cancel the temporary pod once its ID is known. A cancellation failure names the
+pod for operator cleanup. Process crashes or interruption during the initial
+create request can still require manual inspection. This is an installation
+check; it does not run either model-driven coding journey.
+
+## Save the host selection manually
 
 To make this host the default for `run` and `node`, add its configuration path
 to `~/.config/nucleus/config.toml` (or the file selected by global `--config`):
@@ -276,8 +310,8 @@ or `--node-auth-secret` for `run`; `--url`, identity flags or legacy credential
 flags for `node`. Corresponding environment variables count as explicit input.
 `run --local` and `run --hook` use their selected mode. An explicit
 `--apple-host-config` selects that file instead. A saved host that fails readiness
-returns an error; it does not switch to Lima or another node. Legacy `setup` and
-`shell` do not yet use this saved selection.
+returns an error; it does not switch to Lima or another node. `setup` also uses
+this saved selection; `shell` does not yet use it.
 
 Without an Apple selection, `node` now reads `node.url` from the same global
 configuration. An explicit `--url` still wins, even if it equals the built-in

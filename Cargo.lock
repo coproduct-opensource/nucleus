@@ -6694,6 +6694,7 @@ dependencies = [
  "iroh",
  "iroh-blobs",
  "nucleus-bundle-cas",
+ "nucleus-ci-verdict",
  "nucleus-client",
  "nucleus-envelope",
  "nucleus-federation",
@@ -6704,6 +6705,7 @@ dependencies = [
  "nucleus-oci-rootfs",
  "nucleus-proto",
  "nucleus-provenance-memory",
+ "nucleus-receipt",
  "nucleus-spec",
  "nucleus-task-compiler",
  "pem 4.0.0",
@@ -6725,6 +6727,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "toml 1.1.6+spec-1.1.0",
+ "toml_edit 0.25.12+spec-1.1.0",
  "tonic",
  "tracing",
  "tracing-subscriber 0.3.23",
@@ -12014,6 +12017,7 @@ dependencies = [
  "indexmap 2.14.0",
  "toml_datetime 1.1.1+spec-1.1.0",
  "toml_parser",
+ "toml_writer",
  "winnow 1.0.3",
 ]
 

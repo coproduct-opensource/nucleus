@@ -2543,3 +2543,51 @@ integration suites, scoped Clippy, convergence and four prepush gates passed.
 The user's global configuration was not changed. Legacy setup/shell still need
 Apple integration, and model-driven
 coding journeys remain unverified.
+
+
+### Apple setup with a verified ordinary workload (2026-10-05)
+
+`setup --apple-host-config host.json` now uses the selected Apple host and saves
+that selection for subsequent setup, run and node commands. Setup reads the
+matched local image's input manifest, pins the guest kernel/rootfs, resolves the
+requested inline policy and predicts isolation labels through the same shared
+decider the node uses. It boots a short UID-1000 shell workload, obtains signer
+information through authenticated admission, and checks the receipt with the
+shared execution verifier. That verifier requires microVM execution and UID
+isolation; setup additionally requires exit 0 and exact fresh stdout plus empty
+stderr. The expected program and environment are computed before reading the
+receipt. Signer enrollment trusts the provisioned local CA and operator-selected
+image; it is not external platform attestation.
+
+The temporary pod is cancelled before configuration is committed. Normal
+verification errors and Ctrl-C after a pod ID is known also reach cancellation;
+cleanup failures name the pod and retain the verification result in the error.
+An initial-create interruption or process crash can still require manual cleanup.
+Only `node.apple_host_config` is changed, using a comment-preserving TOML edit and
+atomic private-file replacement. A concurrent config edit refuses replacement.
+`--skip-verify` still requires host readiness, but reports the skipped workload
+check explicitly. Incompatible Lima provisioning flags are refused.
+
+Initial live checks correctly refused the requested/admitted digest mismatch and
+cancelled their pods without writing config. Matching the host's existing
+isolation labels and inline-policy normalization resolved that mismatch; the
+binding comparison was retained. Pod `acd8306a-4b85-4f20-9755-18b2a1c1bddc`
+then passed receipt and exact-log verification (57 stdout bytes, zero stderr,
+exit 0) and confirmed cancellation. The new isolated config subsequently drove
+saved-host setup, authenticated node health and run dry-run. Evidence is in
+`/tmp/nucleus-apple-setup-live-report.json` and adjacent setup logs/config. All
+343 CLI unit tests passed, two ignored; integration suites and scoped Clippy
+passed. This used the existing development host and local image, not a published
+fresh host image or either required model-driven coding journey.
+
+The subsequent fresh-install check first confirmed that both the normal
+`nucleus-microvm-host` container and `nucleus-microvm-host-srv` volume were absent.
+Setup then created both from `nucleus-local-host:workspace-a125a6c43`, using new
+state and identity under `/tmp/nucleus-fresh-apple-setup/`. Its ordinary pod
+`7e952ef6-e342-4aa5-a9d2-7bdebf7b3e38` passed signed Firecracker/UID-isolation,
+exit and exact-output checks, and was cancelled. The saved config then passed
+authenticated health, reported the pod exited and supported run dry-run. The
+idle host was trimmed and stopped with its state retained. This proves fresh
+installation from that explicit local image; it is not a published-artifact
+installation or a model-driven journey. Four prepush gates, convergence,
+dependency visibility and all cargo-deny categories also passed.

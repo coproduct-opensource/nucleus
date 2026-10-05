@@ -15,7 +15,8 @@
 //!
 //! `nucleus microvm-host up/status` exposes host readiness and inspection.
 //! `run --apple-host-config` explicitly selects readiness and a session relay.
-//! Automatic use from `setup` and `shell` remains separate.
+//! `setup --apple-host-config` verifies a workload and saves the host selection.
+//! Integration with `shell` remains separate.
 
 pub(crate) mod command;
 pub mod container_cli;
@@ -24,6 +25,7 @@ pub mod preflight;
 pub(crate) mod settings;
 pub mod supervisor;
 pub mod transport;
+pub(crate) mod verification;
 mod workspace;
 
 #[cfg(test)]
