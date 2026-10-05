@@ -8,8 +8,10 @@ use crate::workload_verification::{self, Manifest};
 pub(crate) async fn verify(host: &MicroVmHost) -> Result<Value> {
     let owned = host.container().clone();
     let manifest: Manifest = tokio::task::spawn_blocking(move || -> Result<Manifest> {
-        let outcome =
-            ContainerCli::system().exec(&owned, &["cat", "/usr/share/nucleus/host-inputs.json"]);
+        let outcome = ContainerCli::system().exec(
+            &owned,
+            &["cat", nucleus_spec::microvm_host::HOST_INPUT_MANIFEST_PATH],
+        );
         let raw = outcome.stdout().with_context(|| {
             format!("reading local host input manifest: {}", outcome.describe())
         })?;

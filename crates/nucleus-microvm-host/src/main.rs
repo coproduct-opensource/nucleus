@@ -13,6 +13,9 @@
 //! - `relay --listen <addr> --to <loopback addr>` forwards TCP to a pod's proxy
 //!   until the proxy is gone.
 //! - `public-key <key-file>` exports an existing Ed25519 key's public half.
+//! - `input-manifest --out <file>` measures the image's installed binaries,
+//!   guest kernel and rootfs into a new host input manifest. The release image
+//!   recipe runs it as a build step.
 
 #![cfg_attr(
     not(test),
@@ -98,6 +101,13 @@ enum Command {
     },
     /// Replay an image's journal and copy its tree into an empty directory.
     Harvest { image: PathBuf, out: PathBuf },
+    /// Measure the installed host inputs into a new manifest at `out`: every
+    /// release host binary in the image's bin dir, and the guest kernel (which
+    /// must be the pinned one) and rootfs. Refuses an existing file.
+    InputManifest {
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Forward TCP from `listen` to a pod proxy on loopback until it is gone.
     Relay {
         #[arg(long)]
@@ -192,12 +202,36 @@ fn main() -> ExitCode {
             }
             Err(e) => fail(&e.to_string()),
         },
+        Command::InputManifest { out } => run_input_manifest(&out),
         Command::Relay {
             listen,
             to,
             liveness_secs,
             ready_file,
         } => run_relay(listen, to, Duration::from_secs(liveness_secs), ready_file),
+    }
+}
+
+fn run_input_manifest(out: &std::path::Path) -> ExitCode {
+    use nucleus_microvm_host::input_manifest;
+    use nucleus_spec::{microvm_host as pins, tier2_artifacts};
+    let measured = input_manifest::measure_installed(
+        std::path::Path::new(pins::BIN_DIR),
+        std::path::Path::new(tier2_artifacts::HOST_ARTIFACTS_DIR),
+        pins::RELEASE_HOST_BINARIES,
+        std::env::consts::ARCH,
+    )
+    .and_then(|manifest| input_manifest::write_new(&manifest, out).map(|()| manifest));
+    match measured {
+        Ok(manifest) => {
+            eprintln!(
+                "nucleus-hostctl: wrote {} ({} inputs)",
+                out.display(),
+                manifest.files.len()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(e) => fail(&e.to_string()),
     }
 }
 

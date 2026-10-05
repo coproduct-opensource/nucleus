@@ -49,6 +49,6 @@ base64 = { workspace = true }
 # `gates-can-fail` restores a perturbed file on SIGINT/SIGTERM before it exits: a
 # half-perturbed tree left behind by an interrupted run is worse than no check.
 signal-hook = "0.4"
-
-[dev-dependencies]
+# `microvm-host-release-context` stages the workspace sources as one tarball,
+# because Apple Container drops nested files from a directory `COPY` (#3206).
 tar = { version = "0.4", default-features = false }

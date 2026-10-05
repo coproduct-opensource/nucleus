@@ -168,8 +168,7 @@ pub async fn execute(args: VerifyArgs, config_path: &str) -> Result<()> {
     }
     if args.execution {
         let manifest =
-            tokio::task::spawn_blocking(crate::workload_verification::Manifest::installed)
-                .await??;
+            tokio::task::spawn_blocking(crate::workload_verification::installed_manifest).await??;
         let report =
             crate::workload_verification::verify(mtls_client()?, NODE_URL, manifest).await?;
         println!("{}", serde_json::to_string_pretty(&report)?);

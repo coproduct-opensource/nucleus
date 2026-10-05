@@ -13,6 +13,22 @@ matched node and guest artifacts, Firecracker/jailer, and `nucleus-hostctl` as
 the `run-node` entrypoint. The older release pairing in
 `docker/Containerfile.microvm-host` is not a current source-built guest.
 
+That release recipe also builds from a staged flat context, never the
+repository root:
+
+```sh
+cargo xtask microvm-host-release-context --out /tmp/nucleus-release-context
+container build --file /tmp/nucleus-release-context/Containerfile \
+  --tag nucleus-microvm-host:release /tmp/nucleus-release-context
+```
+
+The staging writes the recipe, `kvm-probe.c`, and the tracked workspace
+sources as one `nucleus-source.tar` that the recipe `ADD`s. Its last build step
+runs `nucleus-hostctl input-manifest`. That step writes
+`/usr/share/nucleus/host-inputs.json` from the installed bytes, refuses a guest
+kernel that is not the pinned one, and fails the build if `nucleus-hostctl` or
+any pinned input is missing.
+
 ## Assemble a local host image
 
 Build the ARM64 Linux host tools from this checkout:
@@ -57,7 +73,7 @@ installation, a directory-only `COPY` omitted nested files; the explicit-file
 recipe was verified by comparing hashes inside the built image. The recipe
 installs OS packages but downloads no replacement node, VMM or guest artifacts,
 and contains no default authentication secrets. `microvm-host up` provisions
-those secrets for the installation. The local recipe enables host enforcement,
+those secrets for the installation. Both host recipes enable host enforcement,
 including the requirement that guests execute the admitted host workload rather
 than a spec baked into their rootfs.
 
