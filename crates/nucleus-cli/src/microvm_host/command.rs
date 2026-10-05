@@ -156,9 +156,9 @@ mod tests {
 
     #[test]
     fn running_status_does_not_claim_readiness() {
-        let raw = include_str!("fixtures/list-running.json");
+        let raw = lifecycle::running_fixture();
         let state = lifecycle::host_state(
-            raw,
+            &raw,
             &Expected {
                 names: &HostNames::DEV,
                 image: "nucleus-dev-microvm-host:local",

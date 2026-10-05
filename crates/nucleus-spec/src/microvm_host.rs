@@ -38,6 +38,13 @@ pub const LOCAL_HOST_CONTAINERFILE: &str =
 /// under a colliding name is refused rather than clobbered.
 pub const OWNER_LABEL: &str = "org.nucleus.microvm-host";
 
+/// Explicit Apple Container read-only paths for the trusted microVM host.
+/// Its default `/proc/sys` restriction prevents namespace forwarding setup.
+/// Preserve the other documented defaults; masked paths remain at runtime defaults.
+/// https://github.com/apple/container/blob/main/docs/runtime-configuration.md
+pub const HOST_READONLY_PATHS: &[&str] =
+    &["/proc/bus", "/proc/fs", "/proc/irq", "/proc/sysrq-trigger"];
+
 /// The `container` names one host tier installation uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostNames {

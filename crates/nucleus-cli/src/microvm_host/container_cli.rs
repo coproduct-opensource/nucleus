@@ -233,6 +233,10 @@ impl RunSpec {
         for cap in &self.caps {
             a.extend(["--cap-add".into(), cap.clone()]);
         }
+        a.extend(["--read-only-path".into(), "NONE".into()]);
+        for path in nucleus_spec::microvm_host::HOST_READONLY_PATHS {
+            a.extend(["--read-only-path".into(), (*path).into()]);
+        }
         for (src, dst) in &self.mounts {
             a.extend(["--volume".into(), format!("{src}:{dst}")]);
         }
@@ -479,10 +483,14 @@ mod tests {
             "--publish 127.0.0.1:40001:8080",
             "--label org.nucleus.microvm-host=nucleus-dev-microvm-host",
             "--env-file /s/node.env",
+            "--read-only-path NONE",
         ] {
             assert!(argv.contains(want), "{want} missing from {argv}");
         }
         assert!(argv.ends_with("nucleus-dev-microvm-host:local"));
+        for path in nucleus_spec::microvm_host::HOST_READONLY_PATHS {
+            assert!(argv.contains(&format!("--read-only-path {path}")));
+        }
         assert!(
             !argv.contains("0.0.0.0"),
             "a port was published beyond loopback"

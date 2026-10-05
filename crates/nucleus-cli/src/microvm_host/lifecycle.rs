@@ -72,6 +72,8 @@ struct Configuration {
     use_init: bool,
     #[serde(default)]
     cap_add: Vec<String>,
+    #[serde(default)]
+    readonly_paths: Option<Vec<String>>,
     image: ImageRef,
     #[serde(default)]
     mounts: Vec<Mount>,
@@ -273,6 +275,22 @@ fn drift(c: &Configuration, want: &Expected) -> Option<String> {
         .collect();
     if !missing.is_empty() {
         return Some(format!("missing capabilities {missing:?}"));
+    }
+    let expected: std::collections::BTreeSet<&str> =
+        nucleus_spec::microvm_host::HOST_READONLY_PATHS
+            .iter()
+            .copied()
+            .collect();
+    let actual = c.readonly_paths.as_ref().map(|paths| {
+        paths
+            .iter()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>()
+    });
+    if actual.as_ref() != Some(&expected) {
+        return Some(
+            "read-only path policy does not allow the trusted host's network sysctls".into(),
+        );
     }
     if !same_image(&c.image.reference, want.image) {
         return Some(format!(
@@ -825,6 +843,17 @@ pub fn wait_healthy(
 }
 
 #[cfg(test)]
+pub(super) fn running_fixture() -> String {
+    include_str!("fixtures/list-running.json").replace(
+        "\"readOnly\": false,",
+        &format!(
+            "\"readonlyPaths\": {}, \"readOnly\": false,",
+            serde_json::to_string(nucleus_spec::microvm_host::HOST_READONLY_PATHS).unwrap()
+        ),
+    )
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -834,7 +863,15 @@ mod tests {
     /// per-install secrets replaced. `useInit` updated to false on 2026-10-05:
     /// run-node now owns PID 1 for cgroup preparation. The stopped state differs only in
     /// `status.state` (and empty `status.networks`), measured on the same Mac.
-    const RUNNING: &str = include_str!("fixtures/list-running.json");
+    const LEGACY_RUNNING: &str = include_str!("fixtures/list-running.json");
+
+    #[test]
+    fn legacy_readonly_defaults_require_host_reconfiguration() {
+        let state = host_state(LEGACY_RUNNING, &want()).unwrap();
+        assert!(
+            matches!(state, HostState::Stale { reason: StaleReason::Drifted { what, .. } } if what.contains("read-only path"))
+        );
+    }
 
     fn want() -> Expected<'static> {
         Expected {
@@ -845,7 +882,8 @@ mod tests {
 
     #[test]
     fn explicit_connection_selects_the_observed_network_or_published_port() {
-        let HostState::Running(owned, ports) = host_state(RUNNING, &want()).unwrap() else {
+        let HostState::Running(owned, ports) = host_state(&running_fixture(), &want()).unwrap()
+        else {
             panic!("running fixture");
         };
         assert_eq!(
@@ -871,7 +909,7 @@ mod tests {
             direct.relay_address(7101, 54321).to_string(),
             "192.168.64.102:7101"
         );
-        let mut raw: serde_json::Value = serde_json::from_str(RUNNING).unwrap();
+        let mut raw: serde_json::Value = serde_json::from_str(&running_fixture()).unwrap();
         raw[0]["status"]["networks"] = serde_json::json!([]);
         let HostState::Running(_, ports) = host_state(&raw.to_string(), &want()).unwrap() else {
             panic!("running fixture without network assignment");
@@ -881,12 +919,12 @@ mod tests {
     }
 
     fn with_state(state: &str) -> String {
-        RUNNING.replace("\"state\": \"running\"", &format!("\"state\": \"{state}\""))
+        running_fixture().replace("\"state\": \"running\"", &format!("\"state\": \"{state}\""))
     }
 
     #[test]
     fn a_running_host_reads_as_running_with_its_ports() {
-        let s = host_state(RUNNING, &want()).expect("parse");
+        let s = host_state(&running_fixture(), &want()).expect("parse");
         let HostState::Running(owned, ports) = s else {
             panic!("{s:?}")
         };
@@ -926,7 +964,7 @@ mod tests {
 
     #[test]
     fn our_name_without_our_label_is_never_ours() {
-        let unlabelled = RUNNING.replace(OWNER_LABEL, "org.example.other");
+        let unlabelled = running_fixture().replace(OWNER_LABEL, "org.example.other");
         assert_eq!(
             host_state(&unlabelled, &want()),
             Ok(HostState::Stale {
@@ -961,8 +999,8 @@ mod tests {
             ),
         ];
         for (from, to, needle) in cases {
-            let changed = RUNNING.replacen(from, to, 1);
-            assert_ne!(changed, RUNNING, "fixture lacks {from}");
+            let changed = running_fixture().replacen(from, to, 1);
+            assert_ne!(changed, running_fixture(), "fixture lacks {from}");
             match host_state(&changed, &want()) {
                 Ok(HostState::Stale {
                     reason: StaleReason::Drifted { what, .. },
@@ -974,7 +1012,7 @@ mod tests {
 
     #[test]
     fn a_node_port_off_loopback_is_drift() {
-        let exposed = RUNNING.replacen(
+        let exposed = running_fixture().replacen(
             "\"hostAddress\": \"127.0.0.1\"",
             "\"hostAddress\": \"0.0.0.0\"",
             1,

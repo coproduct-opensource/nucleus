@@ -82,6 +82,13 @@ probes KVM, and checks `/v1/health` over mTLS. Successful stdout is JSON with
 `state: ready`, `node_url`, `identity_dir`, `state_dir` and relay port mappings.
 Logs and errors go to stderr. An error exits nonzero and does not report readiness.
 
+The trusted host leaves `/proc/sys` writable so the node can configure forwarding
+inside pod network namespaces. It retains Apple's other default read-only paths
+and default masked paths, and uses its existing capabilities. This changes the
+host's mount policy; workloads still run inside nested Firecracker microVMs.
+An owned host with the older read-only policy is treated as configuration drift
+and replaced on readiness, so finish active pods before updating the CLI.
+
 The default connection is `--connection published-loopback`. If local published
 ports do not work but the Mac can reach the container network, explicitly choose
 `--connection container-ip`. The CLI reads the owned container's current IPv4

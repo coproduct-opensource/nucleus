@@ -2736,3 +2736,38 @@ node unit tests (one ignored), three integrations, scoped Clippy, the Linux
 ARM64 build, convergence and four prepush gates passed. Existing Clippy
 configuration warnings remain. A plain cross-target cargo check required an
 uninstalled musl GCC; the configured Zig build completed successfully.
+
+### Apple host forwarding and live network lease reuse (2026-10-05)
+
+The trusted Apple Container host now explicitly leaves `/proc/sys` writable.
+Apple Container 1.4.1's default read-only mount prevented the node from setting
+forwarding inside a pod network namespace, even with its existing capabilities.
+The remaining documented read-only paths and default masked paths are retained;
+no additional capabilities are requested. This is a host default authority
+change, not a change to the nested Firecracker guest's isolation. Lifecycle
+inspection treats an absent or different read-only policy as configuration drift.
+
+All 348 CLI unit tests (two ignored), integrations, scoped Clippy and four
+prepush gates passed. The updated CLI replaced the idle normal host and setup
+verified a signed ordinary workload. The local image refreshed only the node
+from `b696c721e`; guest and other host inputs remain the previously recorded
+base. Image index:
+`sha256:e5515e43533b79a1b15d9cb422277bad789ffcd8cbbc24358b1ca506445f39fc`.
+Node SHA-256:
+`4ef5940f7fe298ee24943692a6d864db8a4f1a6794dcd26600337d1031e1d2ca`.
+
+Two sequential ordinary network-enabled microVM workloads exited zero:
+`58d8e115-0994-4221-ba02-355856757d3e` and
+`3f24fd61-e2ee-494d-95fe-0bcc002c21e2`. After each cancellation, successful host
+inventories showed its named namespace, link and firewall references absent.
+Both used host address `10.200.0.1` on `10.200.0.0/30`, proving allocation reuse
+after cleanup in the running node. Repeating cancellation of the first pod
+while the second existed preserved the second pod's resources. This validates
+network lifecycle, not outbound delivery or durable recovery across restart.
+
+Evidence is under `/tmp/nucleus-network-refresh-b696c721e/`. Earlier attempts
+exposed the read-only mount, a fixture allowlist too broad for SPIFFE issuance,
+and host disk exhaustion during guest-disk copying. The successful fixture uses
+a single-host allowlist and keeps broker enforcement enabled. A fixture parser
+was corrected to accept cancellation's text output. Preserving native tools and
+running `cargo clean` reclaimed 3.8 GiB before the successful retry.
