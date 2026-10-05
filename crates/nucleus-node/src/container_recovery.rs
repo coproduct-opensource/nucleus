@@ -85,6 +85,7 @@ pub(crate) async fn drain(
     state_dir: &Path,
     authority: &crate::pod_authority::PodAuthority,
 ) -> Result<(), ApiError> {
+    crate::container_intent::recover(docker, state_dir, authority).await?;
     let owner = owner(state_dir)?;
     let pods = state_dir.canonicalize()?.join("pods");
     let containers = docker

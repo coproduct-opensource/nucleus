@@ -65,8 +65,20 @@ keeps capacity reserved until that named container is found and removed; an
 initial not-found response does not settle an in-flight create. If Docker never
 created it, this conservative reservation remains held pending operator recovery.
 This handoff does not prove the remote client received the HTTP/gRPC response.
-These tasks survive request-task cancellation, not node process termination.
-Startup inventory cannot yet settle remote creates that complete after its inventory.
+These tasks survive request-task cancellation. Before contacting Docker, the
+node also atomically writes and syncs a launch record under
+`<state>/container-launches/`. It records the observed Docker ID before starting
+or removing the container, and syncs record removal before returning resources.
+
+On process restart, these records are reconciled before the container inventory
+and before new admissions. A known container can be removed, or confirmed
+already absent. An unresolved create that is still absent prevents startup and
+names its retained record in the error; absence alone cannot settle a remote
+request that might finish later. Once it appears, a later startup can confirm
+ownership, persist its ID, and remove it. If it never appears, operator
+reconciliation is still required. Do not erase a pending record merely because
+an inventory is empty. This also covers a crash after container removal but
+before record removal: the previously recorded ID makes absence conclusive.
 
 `--egress-staging-max-bytes` bounds reserved upload payload storage across all
 pods, defaulting to 256 MiB. Each streamed upload reserves its configured

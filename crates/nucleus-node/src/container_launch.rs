@@ -67,27 +67,37 @@ impl Drop for Delivery {
     }
 }
 
-/// Kept inside the launch task, so its capacity and concurrency reservations
-/// remain held. For an uncertain create transport outcome, a 404 alone cannot
-/// prove that Docker will not finish that create later.
-pub(crate) async fn rollback(docker: &bollard::Docker, id: &str, absence_is_final: bool) {
+/// What the node knows about the completed create request.
+pub(crate) enum Outcome<'a> {
+    Unknown,
+    Replied,
+    Created(&'a str),
+}
+
+/// Reservations remain owned until durable cleanup settles the external create.
+pub(crate) async fn rollback(
+    docker: &bollard::Docker,
+    intent: &crate::container_intent::Intent,
+    outcome: Outcome<'_>,
+) {
+    let mut outcome = Some(outcome);
     loop {
-        let result = docker
-            .remove_container(
-                id,
-                Some(bollard::query_parameters::RemoveContainerOptions {
-                    force: true,
-                    ..Default::default()
-                }),
-            )
-            .await;
-        match result {
+        let recorded = match &outcome {
+            Some(Outcome::Replied) => intent.replied().await,
+            Some(Outcome::Created(id)) => intent.observed(id).await,
+            _ => Ok(()),
+        };
+        let cleaned = match recorded {
+            Ok(()) => {
+                outcome = None;
+                intent.cleanup(docker).await
+            }
+            Err(error) => Err(error),
+        };
+        match cleaned {
             Ok(()) => return,
-            Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 404, ..
-            }) if absence_is_final => return,
             Err(error) => {
-                tracing::warn!(container = id, %error, "container launch rollback pending; retaining resource reservations")
+                tracing::warn!(pod = %intent.pod, %error, "container launch rollback pending; retaining resource reservations")
             }
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -268,24 +278,35 @@ mod tests {
     async fn uncertain_create_waits_for_the_late_container_before_releasing() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let intent = crate::container_intent::Intent::begin(dir.path(), Uuid::new_v4())
+            .await
+            .unwrap();
+        let labels = crate::container_recovery::labels(dir.path(), intent.pod).unwrap();
         let requests = Arc::new(AtomicUsize::new(0));
         let counted = requests.clone();
-        Mock::given(method("DELETE"))
+        Mock::given(method("GET"))
             .respond_with(move |_: &wiremock::Request| {
                 if counted.fetch_add(1, Ordering::SeqCst) == 0 {
                     ResponseTemplate::new(404)
                         .set_body_json(serde_json::json!({"message":"create still pending"}))
                 } else {
-                    ResponseTemplate::new(204)
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"Id":"late", "Config":{"Labels":labels}}))
                 }
             })
             .expect(2)
             .mount(&server)
             .await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
         let docker =
             bollard::Docker::connect_with_http(&server.uri(), 2, bollard::API_DEFAULT_VERSION)
                 .unwrap();
-        rollback(&docker, "pending-create", false).await;
+        rollback(&docker, &intent, Outcome::Unknown).await;
         assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 }

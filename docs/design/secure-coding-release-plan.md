@@ -1304,3 +1304,29 @@ This is request-task cancellation handling, not proof that the remote client
 received a response. Durable pending-create reconciliation across node process
 termination remains open; startup inventory alone cannot settle a late remote
 create that appears after that inventory.
+
+### Durable container create records (2026-10-04)
+
+The node now writes and syncs a launch record before sending Docker a create
+request. It reuses the existing atomic, file-and-directory-synced record writer.
+Records distinguish an unresolved request, a returned Docker response and an
+observed container ID. A concrete ID is persisted before start or removal;
+record deletion is synced before normal teardown returns capacity.
+
+Startup reconciles these records before inventory and before opening API
+listeners. A pending create that is absent remains unsettled and prevents
+startup, identifying the retained record. Once a late container appears, its
+ownership labels are checked and its ID persisted before removal. A crash
+after removal but before clearing the record is recoverable: absence of the
+recorded ID settles it. Confirmed cleanup releases restored authority and records
+a lifecycle event. Workspace files are preserved. If an unresolved create never
+appears, operator reconciliation remains necessary; an empty inventory alone is
+not evidence that a remote request cannot finish later.
+
+The container-focused suite passed 24 tests (one ignored), including reconstruction
+from disk, a late create after restart, the checkpoint-before-delete ordering,
+already-removed recovery and existing cancellation/rollback behavior. Linux ARM64
+build and all four repository gates passed. Clippy completed with existing
+configuration warnings. Docker behavior was exercised with HTTP fixtures, not a
+live daemon or a filesystem power-loss experiment. Broader release acceptance
+and the two model-driven coding journeys remain open.

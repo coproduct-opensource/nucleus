@@ -949,6 +949,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         .await
         .expect("start container");
     let pod = ContainerPod {
+        launch_intent: None,
         container_id: created.id.clone(),
         docker,
         signed_proxy: Mutex::new(None),

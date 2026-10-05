@@ -78,6 +78,9 @@ impl ContainerPod {
                 )));
             }
         }
+        if let Some(intent) = &self.launch_intent {
+            intent.clear().await?;
+        }
         self.permit.lock().await.take();
         Ok(())
     }
@@ -108,6 +111,7 @@ mod tests {
             let pod = Arc::get_mut(pods.get_mut(&id).unwrap()).unwrap();
             pod.cancel().await.unwrap();
             pod.driver_state = crate::DriverState::Container(Box::new(ContainerPod {
+                launch_intent: None,
                 container_id: "ordinary-container".into(),
                 docker: bollard::Docker::connect_with_http(
                     &server.uri(),

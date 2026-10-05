@@ -1689,7 +1689,7 @@ async fn persist_external(
 /// Write `bytes` to `path` whole or not at all: a sibling written owner
 /// read-only (0o400) and synced, then renamed over `path`. A reader sees the
 /// old record or the new one, never part of either.
-async fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) async fn write_whole(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let path = path.to_path_buf();
     let bytes = bytes.to_vec();
     tokio::task::spawn_blocking(move || write_whole_sync(&path, &bytes))

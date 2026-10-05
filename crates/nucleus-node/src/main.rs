@@ -33,6 +33,7 @@ mod art12_collector;
 mod audit_sink;
 mod auth;
 mod clearing_receipt_collector;
+mod container_intent;
 mod container_launch;
 mod container_lifecycle;
 mod container_recovery;
@@ -615,6 +616,7 @@ struct FirecrackerPod {
 /// (`--container-image`, `--container-mediation`); see `container_mediation` (#3133).
 #[derive(Debug)]
 struct ContainerPod {
+    launch_intent: Option<container_intent::Intent>,
     container_id: String,
     docker: bollard::Docker,
     /// Only present when the node mediates its container pods.
@@ -1691,7 +1693,8 @@ async fn spawn_container_pod(
         ..Default::default()
     };
 
-    let container_name = format!("nucleus-{id}");
+    let intent = container_intent::Intent::begin(&state.state_dir, id).await?;
+    let container_name = intent.name();
     let container = match docker
         .create_container(
             Some(bollard::query_parameters::CreateContainerOptions {
@@ -1712,19 +1715,26 @@ async fn spawn_container_pod(
                     ..
                 }
             ) {
+                intent.clear().await?;
                 return Err(ApiError::Driver(format!("create container: {error}")));
             }
             let final_response = matches!(
                 error,
                 bollard::errors::Error::DockerResponseServerError { .. }
             );
-            container_launch::rollback(docker, &container_name, final_response).await;
+            let outcome = if final_response {
+                container_launch::Outcome::Replied
+            } else {
+                container_launch::Outcome::Unknown
+            };
+            container_launch::rollback(docker, &intent, outcome).await;
             return Err(ApiError::Driver(format!("create container: {error}")));
         }
     };
 
     let container_id = container.id.clone();
     let result = async {
+        intent.observed(&container_id).await?;
         docker
             .start_container(
                 &container_id,
@@ -1812,6 +1822,7 @@ async fn spawn_container_pod(
             .await;
 
         let handle = ContainerPod {
+            launch_intent: Some(intent.clone()),
             container_id,
             docker: docker.as_ref().clone(),
             signed_proxy: Mutex::new(signed_proxy_opt),
@@ -1833,7 +1844,12 @@ async fn spawn_container_pod(
             Ok((DriverState::Container(container), address, log))
         }
         Err(error) => {
-            container_launch::rollback(docker, &container.id, true).await;
+            container_launch::rollback(
+                docker,
+                &intent,
+                container_launch::Outcome::Created(&container.id),
+            )
+            .await;
             Err(error)
         }
         Ok(_) => unreachable!("container launch returns a container driver"),
