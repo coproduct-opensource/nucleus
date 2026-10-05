@@ -8,6 +8,12 @@
 //! * `xtask scorecard`;
 //! * `xtask line-ratchet --strict`.
 //!
+//! Plus `fmt`, the one required gatehouse gate that needs nothing but the tree. On 2026-10-05
+//! two PRs (#3191, #3192) were pushed after a green prepush and both went red on Rustfmt and
+//! `gatehouse/required`, each costing a full five-gate cycle. Its command is not restated here:
+//! it is read from the gate definition the executor runs (`.gatehouse/gates/fmt.json`), so the
+//! two cannot drift (ADR 0007 G-1).
+//!
 //! Every gate gets a typed [`Verdict`]: `Pass`, `Fail(reason)` or `CouldNotRun(reason)`.
 //! `CouldNotRun` is never a pass (ADR 0007 A): a missing `cargo-audit` is a red with the install
 //! command in it, not a skip. The run exits non-zero on any verdict that is not `Pass`.
@@ -21,6 +27,7 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use serde::Deserialize;
 
 /// The pinned cargo-audit, matching `.github/workflows/audit.yml` and the Fly runner image.
 const AUDIT_INSTALL: &str =
@@ -163,6 +170,89 @@ fn cargo_audit(root: &Path) -> Verdict {
     }
 }
 
+/// The required gatehouse `fmt` gate's definition — the file the executor runs. Its steps are
+/// the command; prepush does not keep a second copy of it (ADR 0007 G-1).
+const FMT_GATE_DEF: &str = ".gatehouse/gates/fmt.json";
+
+/// The part of a gate definition that says what to execute. Other fields (scope, capability,
+/// image) describe the sandbox, not the command, and are ignored here.
+#[derive(Debug, Deserialize)]
+struct GateCommand {
+    #[serde(default)]
+    cmd: Vec<serde_json::Value>,
+    #[serde(default)]
+    steps: Vec<GateStep>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct GateStep {
+    program: String,
+    args: Vec<String>,
+}
+
+/// The steps a gate definition runs. Only the `steps` shape is accepted: a definition that
+/// moved to `cmd`, or has neither, is a shape this reader does not know, and guessing would run
+/// something other than what the gate runs. That is a could-not-run, never a pass.
+fn gate_steps(def: &str) -> Result<Vec<GateStep>, String> {
+    let g: GateCommand =
+        serde_json::from_str(def).map_err(|e| format!("{FMT_GATE_DEF} does not parse: {e}"))?;
+    match (g.cmd.is_empty(), g.steps.is_empty()) {
+        (true, false) => Ok(g.steps),
+        (false, _) => Err(format!(
+            "{FMT_GATE_DEF} declares `cmd`; prepush reads only `steps` — teach it the new shape"
+        )),
+        (true, true) => Err(format!("{FMT_GATE_DEF} declares no steps")),
+    }
+}
+
+/// A formatting step's exit status: 0 is formatted, any other code is the gate's red (a diff, or
+/// a file rustfmt cannot parse — both red the required gate), and a signal never finished.
+fn classify_status(code: Option<i32>, output: &str) -> Verdict {
+    match code {
+        Some(0) => Verdict::Pass,
+        Some(c) => Verdict::Fail(format!("exit {c}\n{output}")),
+        None => Verdict::CouldNotRun(format!("killed by a signal\n{output}")),
+    }
+}
+
+/// The required gatehouse `fmt` gate, run with the steps its definition declares.
+fn fmt_gate(root: &Path) -> Verdict {
+    let def = match std::fs::read_to_string(root.join(FMT_GATE_DEF)) {
+        Ok(d) => d,
+        Err(e) => return Verdict::CouldNotRun(format!("reading {FMT_GATE_DEF}: {e}")),
+    };
+    let steps = match gate_steps(&def) {
+        Ok(s) => s,
+        Err(e) => return Verdict::CouldNotRun(e),
+    };
+    // A missing rustfmt component makes `cargo fmt` exit 1, the same code as a diff. Probe it
+    // first so "not installed" is a could-not-run with the fix, not a formatting red.
+    let mut probe = Command::new("cargo");
+    probe.args(["fmt", "--version"]);
+    match run_child(probe, root) {
+        Ok(out) if out.status.success() => {}
+        Ok(_) | Err(_) => {
+            return Verdict::CouldNotRun(
+                "rustfmt is not installed: rustup component add rustfmt".to_string(),
+            );
+        }
+    }
+    for step in &steps {
+        let shown = format!("{} {}", step.program, step.args.join(" "));
+        let mut cmd = Command::new(&step.program);
+        cmd.args(&step.args);
+        match run_child(cmd, root) {
+            Ok(out) => match classify_status(out.status.code(), &combined(&out)) {
+                Verdict::Pass => {}
+                Verdict::Fail(r) => return Verdict::Fail(format!("{shown}: {r}")),
+                Verdict::CouldNotRun(r) => return Verdict::CouldNotRun(format!("{shown}: {r}")),
+            },
+            Err(e) => return Verdict::CouldNotRun(format!("spawning {shown}: {e}")),
+        }
+    }
+    Verdict::Pass
+}
+
 /// The gates, by name. A fn pointer per gate so the list is data and the runner is one loop.
 type Gate = (&'static str, fn(&Path) -> Verdict);
 
@@ -173,6 +263,7 @@ const GATES: &[Gate] = &[
     ("line ratchet --strict", |root| {
         xtask_gate(root, &["line-ratchet", "--strict"])
     }),
+    ("fmt (gatehouse gate)", fmt_gate),
 ];
 
 fn reason(v: &Verdict) -> Option<&str> {
@@ -335,13 +426,49 @@ mod tests {
     }
 
     #[test]
-    fn the_four_owner_named_gates_are_all_listed() {
+    fn the_owner_named_gates_and_fmt_are_all_listed() {
         let names: Vec<&str> = GATES.iter().map(|(n, _)| *n).collect();
-        for want in ["exemplar", "cargo-audit", "scorecard", "line ratchet"] {
+        for want in ["exemplar", "cargo-audit", "scorecard", "line ratchet", "fmt"] {
             assert!(
                 names.iter().any(|n| n.contains(want)),
                 "{want} missing from {names:?}"
             );
         }
+    }
+
+    /// The command prepush runs is the one the committed gate definition declares, read from the
+    /// real file: a change to the gate is a change to prepush (ADR 0007 G-1).
+    #[test]
+    fn fmt_runs_the_committed_gate_definitions_steps() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let def = std::fs::read_to_string(root.join(FMT_GATE_DEF)).expect("fmt gate definition");
+        let steps = gate_steps(&def).expect("fmt gate declares steps");
+        assert!(
+            steps
+                .iter()
+                .any(|s| s.program == "cargo" && s.args.first().map(String::as_str) == Some("fmt")),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_gate_shape_could_not_run_rather_than_guess() {
+        assert!(gate_steps(r#"{"cmd":["cargo","fmt"],"steps":[]}"#).is_err());
+        assert!(gate_steps(r#"{"cmd":[],"steps":[]}"#).is_err());
+        assert!(gate_steps("not json").is_err());
+        assert_eq!(
+            gate_steps(r#"{"steps":[{"program":"p","args":["a"]}]}"#),
+            Ok(vec![GateStep {
+                program: "p".into(),
+                args: vec!["a".into()]
+            }])
+        );
+    }
+
+    #[test]
+    fn fmt_exit_codes_map_to_verdicts() {
+        assert_eq!(classify_status(Some(0), ""), Verdict::Pass);
+        assert!(matches!(classify_status(Some(1), "diff"), Verdict::Fail(_)));
+        assert!(matches!(classify_status(None, ""), Verdict::CouldNotRun(_)));
     }
 }

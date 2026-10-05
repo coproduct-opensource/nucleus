@@ -142,7 +142,9 @@ enum Command {
         plan: std::path::PathBuf,
     },
     /// The cheap tree-only gates, before a push: exemplar ratchet, cargo-audit, scorecard,
-    /// line ratchet. Each gets Pass / Fail / CouldNotRun; anything but Pass exits non-zero.
+    /// line ratchet, and the required gatehouse `fmt` gate (its command read from
+    /// `.gatehouse/gates/fmt.json`). Each gets Pass / Fail / CouldNotRun; anything but Pass
+    /// exits non-zero.
     /// See crates/xtask/src/prepush.rs.
     Prepush,
     /// A SHA of this repo pinned by this repo must still match the working tree.
