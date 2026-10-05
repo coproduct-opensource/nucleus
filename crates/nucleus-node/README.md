@@ -51,6 +51,15 @@ Stop the old node before starting a replacement, including when upgrading from
 a version that did not take this lock. Keep the `node.lock` file in place; an
 unlocked file left after exit is normal.
 
+A Firecracker launch holds everything it acquires in one handle until the pod is
+registered: the launch slot, network namespace and allocation, DNS proxy, jail
+directory, VMM process, cgroup leaf, vsock bridge and signed proxy. A launch that
+fails at any point stops its VMM and releases all of them before the error is
+returned. The VMM and DNS proxy are spawned kill-on-drop, so a VMM whose handle the
+node drops is killed rather than left running without an owner. This covers drops
+inside a running node only. The node installs no signal handler, so a node stopped
+by a signal runs no destructors and its VMs keep running; stop pods first.
+
 With the container driver, startup lists containers on the configured Docker
 daemon and removes this state directory's leftovers before serving requests.
 Runtime authorization history is not resumable, so these workloads are stopped,

@@ -125,13 +125,19 @@ pub(super) async fn namespace(name: &str) -> Result<(), ApiError> {
     namespace_with(&System, name).await
 }
 
+/// Recycle against an inventory reporting everything absent: the real lease logic, unprivileged.
+#[cfg(test)]
+pub(super) async fn network_confirmed_absent(plan: &mut NetPlan) -> Result<(), ApiError> {
+    network_with(&tests::Fixture::absent(), plan).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::net::NetworkAllocator;
     use std::{os::unix::process::ExitStatusExt, sync::Mutex};
 
-    struct Fixture {
+    pub(super) struct Fixture {
         namespaces: String,
         links: String,
         rules: String,
@@ -139,7 +145,7 @@ mod tests {
         commands: Mutex<Vec<String>>,
     }
     impl Fixture {
-        fn absent() -> Self {
+        pub(super) fn absent() -> Self {
             Self {
                 namespaces: "unrelated (id: 4)\n".into(),
                 links: r#"[{"ifname":"lo"}]"#.into(),

@@ -239,7 +239,7 @@ pub struct NetPlan {
 
 impl NetPlan {
     #[cfg(test)]
-    fn index(&self) -> usize {
+    pub(crate) fn index(&self) -> usize {
         self.lease.as_ref().expect("live network allocation").index
     }
     pub fn kernel_arg(&self) -> String {
@@ -454,7 +454,8 @@ pub async fn start_dns_proxy(
         .stdout(log_file.try_clone().map_err(ApiError::Io)?)
         .stderr(log_file);
 
-    let child = command.spawn().map_err(ApiError::Io)?;
+    // A launch that fails after this drops the child; it must not outlive the launch (#2579).
+    let child = command.kill_on_drop(true).spawn().map_err(ApiError::Io)?;
     Ok(Some(DnsProxyState { child, entries }))
 }
 
@@ -572,6 +573,12 @@ pub async fn cleanup_network(plan: &mut NetPlan) -> Result<(), ApiError> {
 
 pub async fn cleanup_netns(name: &str) -> Result<(), ApiError> {
     cleanup::namespace(name).await
+}
+
+/// `cleanup_network` against an inventory that reports everything absent. Test-only.
+#[cfg(test)]
+pub(crate) async fn cleanup_network_observed_absent(plan: &mut NetPlan) -> Result<(), ApiError> {
+    cleanup::network_confirmed_absent(plan).await
 }
 
 #[cfg(target_os = "linux")]
@@ -2108,105 +2115,6 @@ mod guest_address_is_constant_tests {
             !pool.contains(&IpAddr::V4(GUEST_GATEWAY)),
             "the constant gateway is inside the link pool"
         );
-    }
-}
-
-/// Deletes a network namespace on drop unless the caller disarms it.
-///
-/// Pod creation makes a netns early and can fail at a dozen later points —
-/// config serialisation, Firecracker spawn, the proxy health wait, a guest that
-/// panics before it answers. Each of those sites has to remember to reap the
-/// namespace, and the ones added later did not: a host with **zero** live
-/// Firecracker processes was found holding orphaned namespaces
-/// `nuc-f45b3cc8` and `nuc-59c6d719` — exactly the two pods whose guests had
-/// kernel-panicked. Every pod that booted cleanly reaped its own.
-///
-/// Enumerating error paths is the thing that failed here, so this does not
-/// enumerate them. The guard reaps on ANY unwind out of the creation path, and
-/// the success path says so explicitly with [`NetnsGuard::disarm`].
-///
-/// `Drop` cannot await, which is fine: the guard can only attempt a synchronous best-effort
-/// namespace deletion. Registered pods use the checked asynchronous cleanup
-/// path; a failed launch never recycles its network index without that check.
-pub struct NetnsGuard {
-    name: Option<String>,
-}
-
-impl NetnsGuard {
-    /// Guard `name`, reaping it on drop until disarmed.
-    pub fn new(name: impl Into<String>) -> Self {
-        Self {
-            name: Some(name.into()),
-        }
-    }
-
-    /// The pod owns its namespace now; stop reaping it.
-    ///
-    /// Called only where creation has actually succeeded. Anything that returns
-    /// before this point — including a `?` added years from now by someone who
-    /// never read this file — still reaps.
-    pub fn disarm(mut self) {
-        self.name = None;
-    }
-
-    /// The namespace still under guard.
-    ///
-    /// Test-only: the runtime path never asks, it only arms and disarms. Kept
-    /// so the tests can assert the guard's state without reaching into the
-    /// private field.
-    #[cfg(test)]
-    pub fn armed_name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-}
-
-impl Drop for NetnsGuard {
-    fn drop(&mut self) {
-        let Some(name) = self.name.take() else {
-            return;
-        };
-        tracing::warn!(
-            netns = %name,
-            "pod creation did not complete; reaping its network namespace"
-        );
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("ip").args(["netns", "del", &name]).status();
-        }
-    }
-}
-
-#[cfg(test)]
-mod netns_guard_tests {
-    use super::*;
-
-    /// The guard holds a name until told otherwise. This is the state that makes
-    /// an early return reap rather than leak.
-    #[test]
-    fn a_new_guard_is_armed() {
-        let g = NetnsGuard::new("nuc-abc12345");
-        assert_eq!(g.armed_name(), Some("nuc-abc12345"));
-    }
-
-    /// Disarming is what the SUCCESS path does, and it must actually stop the
-    /// reap -- a guard that reaped anyway would delete a live pod's namespace,
-    /// which is far worse than the leak it was written to prevent.
-    #[test]
-    fn disarming_consumes_the_guard_and_stops_the_reap() {
-        let g = NetnsGuard::new("nuc-abc12345");
-        g.disarm();
-        // `disarm` takes `self`, so a disarmed guard cannot be re-armed or
-        // dropped-armed by accident: the type prevents the dangerous case
-        // rather than a comment asking callers not to hit it.
-    }
-
-    /// Non-vacuity: `armed_name` must be capable of returning `None`, otherwise
-    /// the test above would pass against a guard that never disarms.
-    #[test]
-    fn the_armed_name_can_be_absent() {
-        let mut g = NetnsGuard::new("nuc-abc12345");
-        g.name = None;
-        assert_eq!(g.armed_name(), None);
     }
 }
 
