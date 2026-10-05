@@ -12,8 +12,8 @@
 //! A-19: these tests were run red against `main` (where `check_translation`
 //! accepted the crate's own 2.5x-distorting fixture) before the fix landed.
 
-use nucleus_rubric::{faithful_total, Criterion, Provenance, Rubric, Scorecard};
-use nucleus_rubric_olog::{check_translation, RubricMapping};
+use nucleus_rubric::{Criterion, Provenance, Rubric, Scorecard, faithful_total};
+use nucleus_rubric_olog::{RubricMapping, check_translation};
 use proptest::prelude::*;
 
 fn crit(id: &str, p: Provenance, w: u32, max: u32) -> Criterion {
