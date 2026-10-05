@@ -2889,3 +2889,65 @@ probe, then a successful pinned-version probe. The Linux ARM64 build passed.
 The preceding complete node suite remains 901 passing tests plus three
 integrations; this focused change adds one unit test and does not claim a new
 full-suite result.
+
+### Matched host and guest installation (2026-10-05)
+
+All nine rootfs binaries and the host binaries were built from `728972a74` for
+Linux ARM64 musl. The guest-init build omitted CI instrumentation; tool-proxy
+used its production `mcp,spire,remote-audit,otel` features. The standard probe
+binaries were packaged for completeness, without executing adversarial probes.
+The retained harness base archive supplied the ordinary system and harness
+runtimes. Every guest binary was read back from the assembled ext4 image and
+matched its staged SHA-256 digest.
+
+The resulting local image is `nucleus-local-host:matched-728972a74`, index
+`sha256:0ec5d9cf44afdb46bd1ed216c17f8079796a83586af3e18d86ffe296afc4e60f`.
+Rootfs SHA-256 is
+`4eefd49e21be0d3e4f5baec45f4a946aa953b6a7def91ffc73514ac0235ed8b7`;
+node SHA-256 is
+`b71e647befc6bc6f091055fcd2037490ce94be2a80ee194ab44725fb59ce936a`.
+Build manifests, logs and readback digests are retained under
+`/tmp/nucleus-matched-728972a74/`.
+
+After privately cloning the stopped prior test volume, only that test host and
+volume were replaced. Fresh setup created a new identity and verified pod
+`f97f67b0-d6b7-41b8-91cb-607535dd3979`: Firecracker, UID isolation, exit zero,
+exact expected output, and a valid host-signed execution receipt. Saved-host
+`verify --tier2` independently repeated this with
+`dc0febaf-88d7-40cb-8f1f-d34fc9fccdb4`. Both were cancelled by verification.
+
+Pod `5bfd4652-e33d-4377-988f-05c16b8ce711` then ran the packaged managed HTTP
+adapter at UID 1000. Its child received the bound loopback URL, cloned the
+unchanged coding fixture, checked its commit and input hashes, observed the
+expected nine-test failing baseline, and successfully invoked both installed
+harness help commands. Independent verification used a separately read host
+public key and intended environment, accepting all four artifacts and exact
+stdout/stderr bytes. The pod was cancelled and the volume trimmed. No upstream
+request or model call was part of this packaging preflight. Completed model
+journeys remain zero; these results establish local packaging and installation,
+not a published release or model compatibility.
+
+The image build initially exhausted local disk, leaving the shared builder's
+filesystem `emergency_ro` and an incomplete cached source snapshot. Reclaiming
+unused Cargo targets and recreating the idle disposable builder resolved this;
+the other active hosts and Apple Container service were not reset. The full
+node suite on `728972a74` subsequently passed: **902 unit tests**, one ignored,
+and **three integration tests**.
+
+### Supported executor public-key enrollment (2026-10-05)
+
+The verification exercise exposed a missing operator step: OpenSSL did not read
+the persisted Ed25519 PKCS#8 v2 encoding, so separately enrolling the public key
+required manual decoding. `nucleus-hostctl public-key <key-file>` now reads the
+existing key with the same crypto library and prints only its public half as
+64 hex characters. It never creates or rotates a key. Raw DER input is bounded
+and zeroized on return. The receipt handoff documents invoking this on the
+trusted Apple host and retaining the public pin separately from evidence.
+
+The process integration checks exact public-only output, preservation of the
+existing file, and refusal of missing or incomplete files without creating or
+replacing them. All 45 library tests, two CLI tests and that integration passed,
+as did scoped Clippy, the Linux ARM64 build and four prepush gates. A temporary
+copy of the new binary on the fresh host returned the same independently
+enrolled public key and was removed after verification. This addition follows
+the matched image above and is not yet included in that image's recorded digest.

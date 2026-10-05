@@ -272,9 +272,22 @@ Retain this record separately from collected evidence. Prepare expectations offl
 using a node public key enrolled through a trusted channel, separate from the
 receipt supplier:
 
+On a trusted host, export only the public half of its existing executor key:
+
+```sh
+nucleus-hostctl public-key /srv/state/executor_signing_key.der
+```
+
+For the Apple Container host, run that command with
+`container exec nucleus-microvm-host nucleus-hostctl public-key /srv/state/executor_signing_key.der`.
+Save the resulting 64-character hex value through your trusted enrollment channel.
+The command reads the node's PKCS#8 encoding without creating or rotating a key;
+the private key stays on the host. Enrollment trusts that host and access channel,
+and does not establish external platform attestation. Use the enrolled value below:
+
 ```sh
 nucleus-audit prepare-execution \
-  --admission admission.json \
+  --admission admitted.json \
   --signer-key-hex ENROLLED_64_HEX_CHARACTER_PUBLIC_KEY \
   --environment-inputs intended-environment.json \
   --valid-until-micros CONTROLLER_DEADLINE_UNIX_MICROSECONDS > expected.json

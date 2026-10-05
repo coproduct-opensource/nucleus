@@ -12,6 +12,7 @@
 //! - `harvest <image> <out>` replays the image's journal and copies its tree out.
 //! - `relay --listen <addr> --to <loopback addr>` forwards TCP to a pod's proxy
 //!   until the proxy is gone.
+//! - `public-key <key-file>` exports an existing Ed25519 key's public half.
 
 #![cfg_attr(
     not(test),
@@ -41,6 +42,8 @@ use nucleus_microvm_host::{relay, workspace};
 #[cfg(target_os = "linux")]
 use serde::Serialize;
 
+mod public_key;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "nucleus-hostctl",
@@ -53,6 +56,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Export only the public Ed25519 key as hex for independent enrollment.
+    /// Run on the trusted host; never copy its private key to a verifier.
+    PublicKey {
+        /// Existing unencrypted PKCS#8 DER key. Never created or rotated.
+        key_file: PathBuf,
+    },
     /// Container PID-1 entrypoint: prepare cgroup v2, then exec nucleus-node.
     RunNode {
         /// Arguments passed unchanged to nucleus-node.
@@ -137,6 +146,13 @@ struct Report {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
+        Command::PublicKey { key_file } => match public_key::read(&key_file) {
+            Ok(key) => {
+                println!("{}", hex::encode(key.as_bytes()));
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(&error),
+        },
         Command::RunNode { args } => match nucleus_microvm_host::node_entrypoint::run(args) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => fail(&format!("preparing container node: {e}")),

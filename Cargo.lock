@@ -7228,6 +7228,7 @@ name = "nucleus-microvm-host"
 version = "1.0.0"
 dependencies = [
  "clap",
+ "ed25519-dalek 3.0.0",
  "hex",
  "kvm-ioctls",
  "nucleus-identity",
@@ -7238,6 +7239,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "zeroize",
 ]
 
 [[package]]
