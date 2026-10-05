@@ -3241,3 +3241,13 @@ handshake, and scoped all-target CLI Clippy passed. The same CI run also require
 the unguarded-pipeline pin to decrease from 44 to 43 after the shell receipt
 steps moved to Rust; the measured pin check passes at 43. Final x86 receipt
 verification and merge checks remain required.
+
+On `ae77c819c`, **9,353 workspace tests passed / 48 skipped**, documentation
+tests passed, and coverage passed at **83.38% workspace lines / 90.42%
+portcullis lines**. Dylint and the real x86 pod-list check also passed. The x86
+host-evidence gate advanced past the installer precondition, then correctly
+refused its networked pod because the runner had not loaded `br_netfilter`.
+No fixture upstream call occurred. The workflow now explicitly loads that
+kernel dependency before the transaction; host admission and verification remain
+unchanged. CI configuration and all four prepush checks pass. A successful x86
+transaction remains unverified until the next run completes.

@@ -552,6 +552,10 @@ jobs:
           done
           echo "in-guest adversary: CONTAINED present, BREACH absent, control live, all stages attempted"
 
+      - name: Load bridge filtering for the host-evidence pod network
+        if: steps.scope.outputs.relevant == 'true'
+        run: sudo modprobe br_netfilter
+
       - name: Host authorization and transport evidence verifies on a real guest
         if: steps.scope.outputs.relevant == 'true'
         # The signing key stays on the host. The Rust gate boots a separate
