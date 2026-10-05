@@ -2173,3 +2173,54 @@ Validation: 328 CLI unit tests passed, two ignored, and the CLI integration
 suites passed; scoped Clippy and all four prepush gates passed. The dispatched
 CI run has passed its detector and proof ratchet; coverage and mutation jobs
 were still queued at this check. Actual model-driven journeys remain zero.
+
+### Workspace image package compatibility (2026-10-05)
+
+Both Apple host recipes installed bookworm's e2fsprogs 1.47.0, while the existing
+workspace seeder requires tar-capable 1.47.1–1.47.x. The running development
+host's actual `seed` command reproduced the version refusal. Both recipes now
+pin e2fsprogs and its matching libext2fs2 to Debian bookworm-backports
+`1.47.2-3~bpo12+1` and explicitly install runtime-loaded `libarchive13`.
+Pinning e2fsprogs alone first failed package resolution because apt selected the
+old library; the matching library pin resolves that measured build failure.
+Package source: https://packages.debian.org/bookworm-backports/e2fsprogs .
+
+The exact revised package layer plus the retained Linux hostctl built as
+`nucleus-workspace-package-check:a125a6c43` (manifest-list digest
+`6d9f166551ae8a00d5f6c5a76d8b3b20e0bb7f1151aca2fbd2bb57fa1e2f59ca`). An isolated
+Apple container ran two real seed operations on the same nested tree, producing
+byte-identical images with SHA-256
+`9485bbd165edbd47352faec3356cfe77bae8b981a8d88c56d568f908aa4af896`. The disk file
+was owned by jailer 65534:65534 with mode 0600; debugfs confirmed guest files
+owned by workload 1000:1000. Harvest preserved both regular files and the
+relative symlink. Provenance recorded mke2fs 1.47.2 and tar input. The temporary
+container was automatically removed. Its context remains at
+`/tmp/nucleus-workspace-package-context`.
+
+The full matched runtime image then built as
+`nucleus-local-host:workspace-a125a6c43`, manifest-list digest
+`74f1d513b45d3429d7a4b9bab4badc550c09f1fdc96f6bd5006e9546a518352a`. All retained
+runtime inputs matched their manifest; only the package recipe changed. After
+confirming its three registered pods were exited, the development container was
+replaced with this image, retaining its state volume and identity. The supported
+`microvm-host up` passed KVM/mTLS readiness at `https://192.168.64.161:8080`.
+The primary acceptance container was untouched. The full build log and readiness
+report are `/tmp/nucleus-workspace-full-build.log` and
+`/tmp/nucleus-workspace-host-up.json`; updated settings are
+`/tmp/nucleus-workspace-run-settings.json`.
+
+On the revised host, a seed owned by workload 1000:1000 was handed to the node's
+jailer 123:100 and admitted with its measured scratch digest. Firecracker pod
+`f837301e-0595-4fbb-b0e6-063914bc8cf4` copied a seeded input, appended an ordinary
+edit, deleted the original, synced and exited zero. Independent artifact
+verification accepted the execution plus the declared 27-byte output; readback
+after cancellation confirmed both the edit and deletion persisted. Evidence is
+under `/tmp/nucleus-workspace-seed-live-evidence`, including the spec, separate
+admission, selected outputs, bundle, expectations and verified report. The
+cancelled pod's unused volume blocks were trimmed, and the duplicate rootfs used
+for staging was removed only after successful import; both images retain it.
+
+All three context-staging tests and four prepush gates passed. Public CLI
+workspace transfer and actual model-driven harness execution remain open. The
+existing mutation CI job is now running; the workspace coverage job is still
+queued.

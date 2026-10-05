@@ -61,6 +61,12 @@ those secrets for the installation. The local recipe enables host enforcement,
 including the requirement that guests execute the admitted host workload rather
 than a spec baked into their rootfs.
 
+Workspace seeding additionally needs mke2fs tar-input support. Both host recipes
+install e2fsprogs and libext2fs2 `1.47.2-3~bpo12+1` from Debian bookworm-backports
+and explicitly install `libarchive13`, which mke2fs loads at runtime. Bookworm's
+default 1.47.0 is refused by `nucleus-hostctl seed`; installing only that default
+package does not provide a working workspace builder.
+
 ## Bring up the host
 
 ```sh

@@ -1,8 +1,11 @@
 # Input context: `cargo xtask microvm-host-context`. All runtime artifacts are
 # local inputs; there is no implicit download of a different node or guest.
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl dnsmasq e2fsprogs iproute2 iptables openssl procps \
+# Workspace seeds use mke2fs tar input, absent from bookworm's 1.47.0.
+# libarchive is loaded at runtime and is not a hard e2fsprogs dependency.
+RUN printf 'deb http://deb.debian.org/debian bookworm-backports main\n' > /etc/apt/sources.list.d/nucleus-backports.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl dnsmasq e2fsprogs=1.47.2-3~bpo12+1 libext2fs2=1.47.2-3~bpo12+1 libarchive13 iproute2 iptables openssl procps \
     && rm -rf /var/lib/apt/lists/*
 COPY nucleus-node nucleus-hostctl nucleus nucleus-mcp firecracker jailer /usr/local/bin/
 COPY vmlinux rootfs.ext4 /var/lib/nucleus/artifacts/
