@@ -297,7 +297,22 @@ inputs in their attempt store.
 ```sh
 nucleus-audit verify-execution --receipt execution-receipt.json --expectations expected.json
 nucleus-audit verify-artifacts --bundle execution-bundle.json --expectations expected.json
+nucleus-audit verify-artifacts --bundle execution-bundle.json --expectations expected.json \
+  --output-dir verified-files
 ```
+
+`--output-dir` saves the verified bytes in a new directory, using artifact names
+as filenames. For the selection `{"patch":"changes.patch"}`, the output is
+`verified-files/patch`; the guest's workspace path does not select a local
+destination. The directory must not already exist and its parent must exist.
+On Unix it is private (0700), with non-executable files (0600). Verification and
+the witness's deadline check happen before creating it. An I/O failure returns
+an error and may leave partial files in the named directory; no existing
+directory or file is overwritten. The JSON report names the export directory
+only after all writes succeed. Keep the original bundle and independently
+supplied expectations for later verification; exported files alone are not
+signed evidence. A verified nonzero workload exit remains a nonzero exit in the
+report, even when its artifacts are exported successfully.
 
 `expected.json` uses the existing `RecordedExecution` schema from
 `nucleus-ci-verdict::execution`: pod ID, source commit/tree, gate, program digest,

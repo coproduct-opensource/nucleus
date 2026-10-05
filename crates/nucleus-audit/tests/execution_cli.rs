@@ -94,7 +94,7 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
         let output = Command::new(env!("CARGO_BIN_EXE_nucleus-audit"))
             .arg(command)
             .arg(flag)
-            .arg(input)
+            .arg(&input)
             .arg("--expectations")
             .arg(&expectations)
             .output()
@@ -108,5 +108,48 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
         assert_eq!(report["execution_verified"], true);
         assert_eq!(report["artifact_bytes_verified"], count);
         assert_eq!(report["claim"]["exit_code"], 7);
+        if command == "verify-artifacts" {
+            let destination = dir.path().join("verified-files");
+            let export = || {
+                Command::new(env!("CARGO_BIN_EXE_nucleus-audit"))
+                    .args(["verify-artifacts", "--bundle"])
+                    .arg(&input)
+                    .arg("--expectations")
+                    .arg(&expectations)
+                    .arg("--output-dir")
+                    .arg(&destination)
+                    .output()
+                    .unwrap()
+            };
+            let output = export();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(std::fs::read(destination.join("tests")).unwrap(), artifact);
+            assert!(!destination.join("test-results.bin").exists());
+            let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(report["claim"]["exit_code"], 7);
+            assert_eq!(report["artifacts_directory"], destination.to_str().unwrap());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                for path in [&destination, &destination.join("tests")] {
+                    assert_eq!(
+                        std::fs::metadata(path).unwrap().permissions().mode() & 0o077,
+                        0
+                    );
+                }
+            }
+            std::fs::write(destination.join("tests"), b"retained local note").unwrap();
+            let repeated = export();
+            assert!(!repeated.status.success());
+            assert!(String::from_utf8_lossy(&repeated.stderr).contains("must not exist"));
+            assert_eq!(
+                std::fs::read(destination.join("tests")).unwrap(),
+                b"retained local note"
+            );
+        }
     }
 }

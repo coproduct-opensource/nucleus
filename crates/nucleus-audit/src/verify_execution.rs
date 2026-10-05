@@ -9,6 +9,7 @@ use nucleus_ci_verdict::execution::{RecordedExecution, verify_artifacts, verify_
 use nucleus_receipt::Receipt;
 use serde::Deserialize;
 
+mod export;
 mod prepare;
 
 #[derive(clap::Subcommand, Debug)]
@@ -30,6 +31,9 @@ pub(crate) enum Command {
         /// RecordedExecution JSON including pinned signer and selected artifact paths
         #[arg(long)]
         expectations: PathBuf,
+        /// Save verified bytes by artifact name in a new directory
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
     },
 }
 
@@ -62,7 +66,7 @@ impl Command {
     }
 
     fn verify(self) -> Result<()> {
-        let (claim, artifact_count) = match self {
+        let (claim, artifact_count, output_dir) = match self {
             Self::PrepareExecution(args) => {
                 println!("{}", serde_json::to_string_pretty(&args.prepare(now()?)?)?);
                 return Ok(());
@@ -74,11 +78,12 @@ impl Command {
                 let expected: RecordedExecution = read(&expectations)?;
                 let receipt: Receipt = read(&receipt)?;
                 let verified = verify_execution(&receipt, &expected.as_expected())?;
-                (verified.into_claim(now()?)?, None)
+                (verified.into_claim(now()?)?, None, None)
             }
             Self::VerifyArtifacts {
                 bundle,
                 expectations,
+                output_dir,
             } => {
                 let expected: RecordedExecution = read(&expectations)?;
                 let bundle: Bundle = read(&bundle)?;
@@ -93,8 +98,12 @@ impl Command {
                     })
                     .collect::<Result<BTreeMap<_, _>>>()?;
                 let verified = verify_artifacts(&bundle.receipt, &expected.as_expected(), bytes)?;
-                let (claim, bytes) = verified.into_parts(now()?)?;
-                (claim, Some(bytes.len()))
+                let claim = match &output_dir {
+                    Some(path) => export::save(verified, path, now()?)?,
+                    None => verified.into_parts(now()?)?.0,
+                };
+                let count = claim.artifacts.len();
+                (claim, Some(count), output_dir)
             }
         };
         println!(
@@ -102,6 +111,7 @@ impl Command {
             serde_json::to_string_pretty(&serde_json::json!({
                 "execution_verified": true,
                 "artifact_bytes_verified": artifact_count,
+                "artifacts_directory": output_dir,
                 "claim": claim,
             }))?
         );

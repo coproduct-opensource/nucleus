@@ -2263,3 +2263,26 @@ the rootfs recovery record now points to `nucleus-local-host:workspace-a125a6c43
 This command exposes source transfer for explicit PodSpecs. It does not yet
 connect `run --dir` to an in-guest harness or automate output collection, and
 no actual model-driven coding journey has completed.
+
+### Export independently verified artifacts (2026-10-05)
+
+`nucleus-audit verify-artifacts --output-dir NEW_DIRECTORY` now materializes
+checked bytes for local review. Export consumes `VerifiedArtifacts` with its
+deadline check before creating output, uses artifact names as single filenames
+rather than guest workspace paths, and requires a new directory. Unix output
+is private (0700 directory, 0600 non-executable files). Each file is created
+without overwriting, written completely and synced before success is reported.
+An I/O error reports the potentially partial directory. This is a checked copy,
+not an additional signed receipt; retain the original bundle and expectations.
+
+The real bundle from pod `0b38c00a-f92c-4cea-8102-1e42022acb53` exported to
+`/tmp/nucleus-cli-workspace-evidence/exported/updated`. Its exact 40 bytes and
+SHA-256 matched both intended output and the authenticated artifact identity.
+Directory/file modes were 0700/0600. The retained report is
+`/tmp/nucleus-cli-workspace-evidence/export-report.json`.
+
+All 137 audit unit/integration tests passed, including export of binary bytes,
+preserving an existing destination, and preserving a failed workload exit as
+data. Scoped Clippy and all four prepush gates passed. Workspace coverage on
+the previously dispatched implementation commit is still queued; its mutation
+job remains active. Actual model-driven journeys remain incomplete.
