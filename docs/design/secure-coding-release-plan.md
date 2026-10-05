@@ -1603,3 +1603,34 @@ Network-enabled container and local-driver accounting still need implementation.
 Their launch topology differs from Firecracker's pre-created private namespace;
 attaching a meter only after starting a workload would leave an unaccounted
 interval and is not the intended design.
+
+### Coding journey repository preflight (2026-10-04)
+
+Added `examples/coding-journey/`: an intentionally incomplete, standard-library
+usage-record summarizer with nine ordinary functional tests and a bounded repair
+task. Two independent local checkouts start at commit
+`e67eaa9b63e4a7f80e517d9554eb6614b679d8c8`; a separate retained test copy supports
+verification. The baseline tests fail as expected. No scripted repair or model
+stub has been substituted for a harness run.
+
+Apple Container hosted Firecracker pod
+`ac57ecef-5e20-4333-9d97-05f3e33f9d95` cloned the baseline Git bundle with
+`--branch main`, checked the commit and input hashes, ran the failing baseline
+tests, and successfully invoked both installed harness help commands as UID 1000.
+The preflight wrapper exited zero. An earlier clone without an explicit branch
+failed because the branch-only bundle did not advertise a default HEAD; selecting
+the branch corrected the checkout.
+
+The independent artifact verifier accepted the execution and all four artifacts
+using host admission metadata, the separately pinned executor public key, expected
+environment inputs, and an issuance window. Evidence is retained locally under
+`/tmp/nucleus-coding-journeys/checkout-{bundle,admission,expectations,verified-report}.json`.
+The pod was cancelled, the temporary node stopped, and the primary node remained
+healthy.
+
+Model calls: zero. Completed coding journeys: zero. The next dependency is the
+operator's model endpoint, model identifier, and existing host credential reference;
+no model credential environment variable or endpoint configuration was available
+in the inspected local configuration. After configuration, each harness must do
+the actual edit, pass the retained tests, exercise scoped approval, and produce
+independently verified evidence before the authorized PR and Gatehouse merge.
