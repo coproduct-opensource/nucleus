@@ -2314,3 +2314,26 @@ the prior image reference is retained in
 `/tmp/nucleus-runner-capacity-rollback.json`. GCP Gatehouse controller/lanes and
 its paused scheduler were unchanged. A fresh fetch still finds upstream main at
 `7f240fe66` with no commits missing from this branch.
+
+
+### Interruptible host-agent cleanup (2026-10-05)
+
+The legacy host-side agent wait now runs asynchronously and handles Ctrl-C by
+stopping and reaping its immediate child before returning through the existing
+pod-cancellation path. Ordinary output and nonzero exit statuses are preserved.
+Local-driver runs also stop their proxy before propagating an agent wait error.
+This handles interruption while waiting for the agent; it does not promise
+cleanup after SIGKILL, a host crash, or for arbitrary detached descendants.
+
+A protocol fixture performed a real MCP glob through the Apple relay before a
+SIGINT was sent to the CLI. The CLI returned the interruption error, the agent
+PID was gone, pod `e0a6a365-777f-4452-83f7-db92f8da41d0` was Exited, and the
+relay endpoint was unavailable. Evidence is `/tmp/nucleus-interrupt-live.json`,
+`/tmp/nucleus-interrupt-protocol-evidence.json` and
+`/tmp/nucleus-interrupt-pods.json`. This was not a model-driven journey.
+
+Validation: 332 CLI unit tests passed, two ignored; ordinary integration suites,
+scoped Clippy and all four prepush gates passed. The earlier workspace coverage
+run failed before measuring coverage: the compile-time read population grew
+from its ceiling of 12 to 13. That separate dependency regression is being
+resolved; its failure cancelled the workflow's mutation job.

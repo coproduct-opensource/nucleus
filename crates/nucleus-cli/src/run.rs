@@ -24,6 +24,7 @@ use crate::config::Config;
 use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles;
 
+mod agent_process;
 mod apple_host;
 mod pod_session;
 
@@ -729,13 +730,13 @@ async fn run_local(
     );
 
     let start = Instant::now();
-    let output = run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir)?;
+    let output = run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir).await;
     let duration = start.elapsed();
 
     // Kill tool-proxy
     let _ = proxy_child.kill().await;
 
-    render_output(&output, duration, args.output.as_str())
+    render_output(&output?, duration, args.output.as_str())
 }
 
 /// `--pod-cert` / `--cert-root-pubkey` for the tool-proxy when this run is
@@ -875,7 +876,7 @@ async fn run_enforced(
         .and_then(|result| result),
         _ => Ok(None),
     };
-    let result = (|| -> Result<()> {
+    let result = async {
         let proxy_addr = pod
             .proxy_addr
             .as_deref()
@@ -926,13 +927,15 @@ async fn run_enforced(
         );
 
         let start = Instant::now();
-        let output = match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir) {
-            Ok(output) => output,
-            Err(err) => return Err(err),
-        };
+        let output =
+            match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir).await {
+                Ok(output) => output,
+                Err(err) => return Err(err),
+            };
         let duration = start.elapsed();
         render_output(&output, duration, args.output.as_str())
-    })();
+    }
+    .await;
     let cleanup = pod_session::cancel(resolved, pod.id).await;
     drop(endpoint);
     pod_session::finish(result, cleanup, pod.id)
@@ -1247,7 +1250,7 @@ impl MediationGuard {
     }
 }
 
-fn run_agent_mcp(
+async fn run_agent_mcp(
     args: &RunArgs,
     policy: &PermissionLattice,
     mcp_config_path: &Path,
@@ -1308,8 +1311,7 @@ fn run_agent_mcp(
     cmd.arg("--dangerously-skip-permissions");
     cmd.arg("--permission-mode").arg("bypassPermissions");
 
-    cmd.output()
-        .with_context(|| format!("failed to spawn {}", crate::constants::AGENT_CLI_BIN))
+    agent_process::output(cmd).await
 }
 
 pub fn build_mcp_allowed_tools(policy: &PermissionLattice) -> Vec<String> {
