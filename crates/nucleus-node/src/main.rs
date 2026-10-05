@@ -1788,17 +1788,24 @@ async fn wait_for_container_announce(
 /// exercise it here.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[tracing::instrument(skip_all, fields(boot.stage = "vmm.preflight"))]
-async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::VmmVerdict {
+async fn vmm_preflight(
+    firecracker_path: &Path,
+    launch_deadline: tokio::time::Instant,
+) -> nucleus_spec::vmm_version::VmmVerdict {
     use nucleus_spec::vmm_version::{VmmVerdict, judge};
 
     // Fully qualified: the `Command` import is feature/platform-gated, and this
     // function deliberately is not.
-    match tokio::process::Command::new(firecracker_path)
-        .arg("--version")
-        .output()
-        .await
-    {
-        Ok(out) => {
+    let deadline = launch_deadline.min(tokio::time::Instant::now() + Duration::from_secs(10));
+    if tokio::time::Instant::now() >= deadline {
+        return VmmVerdict::Unparseable {
+            raw: "execution deadline elapsed before VMM version probe".into(),
+        };
+    }
+    let mut command = tokio::process::Command::new(firecracker_path);
+    command.arg("--version").kill_on_drop(true);
+    match tokio::time::timeout_at(deadline, command.output()).await {
+        Ok(Ok(out)) => {
             // Firecracker has printed its banner on stdout across releases, but
             // judge both streams rather than depend on which.
             let mut text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -1806,8 +1813,11 @@ async fn vmm_preflight(firecracker_path: &Path) -> nucleus_spec::vmm_version::Vm
             text.push_str(&String::from_utf8_lossy(&out.stderr));
             judge(&text)
         }
-        Err(e) => VmmVerdict::Unparseable {
+        Ok(Err(e)) => VmmVerdict::Unparseable {
             raw: format!("{} could not be executed: {e}", firecracker_path.display()),
+        },
+        Err(_) => VmmVerdict::Unparseable {
+            raw: format!("{} version probe timed out", firecracker_path.display()),
         },
     }
 }
@@ -1855,7 +1865,7 @@ async fn spawn_firecracker_pod(
         // `doctor` is advisory and nobody has to run it — the launch path is the
         // only place a refusal actually binds. Fail closed: an unreadable
         // version is refused, not assumed safe.
-        let verdict = vmm_preflight(&state.firecracker_path).await;
+        let verdict = vmm_preflight(&state.firecracker_path, deadline).await;
         if !verdict.is_acceptable() {
             return Err(ApiError::Driver(format!(
                 "refusing to launch a microVM: {verdict}"

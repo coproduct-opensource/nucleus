@@ -2872,3 +2872,20 @@ Clippy configuration warnings remain. This proves handling of cancelled
 handler futures; it is not a client receipt acknowledgment protocol or durable
 recovery across node-process termination. A lost response after handler
 completion can still require operator inspection and execution-timeout cleanup.
+
+### Bound the VMM version probe before launch (2026-10-05)
+
+The Firecracker version probe now has a ten-second maximum and shares the
+admitted execution deadline when that is earlier. An already-expired request
+does not start the probe. A timeout refuses launch and dropping the command's
+output future requests termination of its direct child through Tokio's
+`kill_on_drop`. It does not claim descendant containment or an exact-time
+kill guarantee. Previously this subprocess wait had no bound, before the pod
+was registered and therefore outside the reaper's reach.
+
+Three focused preflight tests passed: missing executable, completed output
+without a version, and a fixture exercising expiry-before-spawn, a stalled
+probe, then a successful pinned-version probe. The Linux ARM64 build passed.
+The preceding complete node suite remains 901 passing tests plus three
+integrations; this focused change adds one unit test and does not claim a new
+full-suite result.

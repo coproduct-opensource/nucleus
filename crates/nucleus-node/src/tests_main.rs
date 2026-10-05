@@ -114,7 +114,11 @@ fn container_driver_rejects_network_policy_fail_closed() {
 /// arrange than shipping a specific vulnerable build.
 #[tokio::test]
 async fn vmm_preflight_refuses_a_binary_it_cannot_run() {
-    let verdict = vmm_preflight(Path::new("/nonexistent/firecracker")).await;
+    let verdict = vmm_preflight(
+        Path::new("/nonexistent/firecracker"),
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    )
+    .await;
     assert!(
         !verdict.is_acceptable(),
         "an unrunnable VMM must be refused, got {verdict:?}"
@@ -125,12 +129,58 @@ async fn vmm_preflight_refuses_a_binary_it_cannot_run() {
 /// `/bin/echo --version` prints something, but not a Firecracker banner.
 #[tokio::test]
 async fn vmm_preflight_refuses_output_without_a_version() {
-    let verdict = vmm_preflight(Path::new("/usr/bin/true")).await;
+    let verdict = vmm_preflight(
+        Path::new("/usr/bin/true"),
+        tokio::time::Instant::now() + Duration::from_secs(1),
+    )
+    .await;
     assert!(
         !verdict.is_acceptable(),
         "output with no version triple must be refused, got {verdict:?}"
     );
 }
+#[tokio::test]
+async fn vmm_preflight_bounds_a_stalled_probe_and_skips_expired_launches() {
+    use std::os::unix::fs::PermissionsExt;
+    let executable = std::env::current_exe().unwrap();
+    let dir = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
+    let probe = dir.path().join("probe");
+    std::fs::write(
+        &probe,
+        "#!/bin/sh\necho started > \"$0.started\"\nexec sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let expired = vmm_preflight(&probe, tokio::time::Instant::now()).await;
+    assert!(!expired.is_acceptable());
+    assert!(!dir.path().join("probe.started").exists());
+    let verdict = tokio::time::timeout(
+        Duration::from_secs(5),
+        vmm_preflight(&probe, tokio::time::Instant::now() + Duration::from_secs(1)),
+    )
+    .await
+    .expect("stalled probe did not obey its deadline");
+    assert!(dir.path().join("probe.started").exists());
+    assert!(
+        matches!(verdict, nucleus_spec::vmm_version::VmmVerdict::Unparseable { raw } if raw.contains("timed out"))
+    );
+    let ready = dir.path().join("ready");
+    std::fs::write(
+        &ready,
+        format!(
+            "#!/bin/sh\nprintf 'Firecracker v{}\\n'\n",
+            nucleus_spec::vmm_version::PINNED_STR
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&ready, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(
+        vmm_preflight(&ready, tokio::time::Instant::now() + Duration::from_secs(1))
+            .await
+            .is_acceptable()
+    );
+}
+
 // ── Egress chain: correspondence with the Lean confinement theorem ────────
 
 use crate::net::{ResolvedDnsEntry, RuleKind, egress_chain, model_chain};
