@@ -43,10 +43,10 @@ mod lockdown;
 mod manifest;
 mod mediation;
 // The Apple `container` microVM host. It compiles everywhere so its tests run
-// in CI; the change that wires it into `shell` and `run` gates it to macOS.
+// in CI; its user-facing command checks macOS before invoking the backend.
 #[expect(
     dead_code,
-    reason = "not wired into shell/run until the host-tier wiring lands"
+    reason = "relay and supervisor APIs await automatic shell/run host selection"
 )]
 mod microvm_host;
 mod node;
@@ -110,6 +110,9 @@ enum Commands {
 
     /// Set up nucleus environment (Lima VM, artifacts, secrets)
     Setup(setup::SetupArgs),
+
+    /// Run a Firecracker host using Apple Container on macOS
+    MicrovmHost(microvm_host::command::HostArgs),
 
     /// Prove Tier 2 works by booting a real nucleus pod
     Verify(verify::VerifyArgs),
@@ -220,6 +223,7 @@ async fn main() -> Result<()> {
         Commands::Run(args) => run::execute(*args, &config_path).await,
         Commands::Shell(args) => shell::execute(args).await,
         Commands::Setup(args) => setup::execute(args).await,
+        Commands::MicrovmHost(args) => microvm_host::command::execute(args).await,
         Commands::Verify(args) => verify::execute(args).await,
         Commands::TwoSafety(args) => twosafety_boot::execute(args).await,
         Commands::Start(args) => start::execute(args).await,

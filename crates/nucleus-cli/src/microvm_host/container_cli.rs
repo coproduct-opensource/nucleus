@@ -211,7 +211,8 @@ impl RunSpec {
         let mut a: Vec<String> = vec![
             "run".into(),
             "--detach".into(),
-            "--init".into(),
+            // The image's run-node entrypoint prepares the cgroup as PID 1.
+            // A runtime-injected init would make that preparation refuse.
             "--name".into(),
             self.name.clone(),
             "--label".into(),
@@ -449,6 +450,7 @@ mod tests {
             publish: vec![(40001, 8080)],
             env_file: PathBuf::from("/s/node.env"),
         };
+        assert!(!spec.argv().iter().any(|arg| arg == "--init"));
         let argv = spec.argv().join(" ");
         for want in [
             "--virtualization",

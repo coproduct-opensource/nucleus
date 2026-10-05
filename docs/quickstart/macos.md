@@ -1,5 +1,8 @@
 # macOS Quickstart (Tier 2 — real microVM isolation)
 
+> For the explicit Apple Container backend, see the [Apple Container guide](apple-container.md).
+> The `setup` flow below still provisions Lima.
+
 One command takes an Apple Silicon Mac from nothing to a booted nucleus pod:
 
 ```bash

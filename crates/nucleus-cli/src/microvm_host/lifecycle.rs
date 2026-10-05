@@ -68,6 +68,8 @@ struct Configuration {
     #[serde(default)]
     virtualization: bool,
     #[serde(default)]
+    use_init: bool,
+    #[serde(default)]
     cap_add: Vec<String>,
     image: ImageRef,
     #[serde(default)]
@@ -194,6 +196,9 @@ pub fn host_state(list_json: &str, want: &Expected) -> Result<HostState, String>
 /// The kernel is not in the list output, so it cannot be checked here; the
 /// in-container probe is what catches a host without KVM.
 fn drift(c: &Configuration, want: &Expected) -> Option<String> {
+    if c.use_init {
+        return Some("runtime init prevents run-node from preparing cgroups as PID 1".into());
+    }
     if !c.virtualization {
         return Some("started without --virtualization".into());
     }
@@ -690,7 +695,7 @@ pub fn wait_healthy(
         match client.get(&url).timeout(Duration::from_secs(5)).send() {
             Ok(r) if r.status().is_success() => return Ok(started.elapsed()),
             Ok(r) => last = format!("HTTP {}", r.status()),
-            Err(e) => last = format!("{e}"),
+            Err(e) => last = format!("{e:#}"),
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -703,7 +708,10 @@ pub fn wait_healthy(
         .take(10)
         .collect();
     Err(Refusal::NodeUnhealthy(format!(
-        "{last} after {timeout:?}; node log tail:\n{}",
+        "{last} after {timeout:?}; node log tail:\n{}\n\
+         If the node is listening inside the container, inspect `container system logs --last 5m` \
+         for port-forwarding errors. `No route to host` from container-runtime-linux can require \
+         enabling its Local Network access in macOS Privacy & Security settings.",
         tail.into_iter().rev().collect::<Vec<_>>().join("\n")
     )))
 }
@@ -715,7 +723,8 @@ mod tests {
     /// `container list --all --format json` for the `nucleus-dev` host that
     /// `ensure_ready` created on an M5 Pro (macOS 26.6.2, container 1.4.1) on
     /// 2026-09-29, captured by the live test. Home paths are shortened and the
-    /// per-install secrets replaced. The stopped state differs only in
+    /// per-install secrets replaced. `useInit` updated to false on 2026-10-05:
+    /// run-node now owns PID 1 for cgroup preparation. The stopped state differs only in
     /// `status.state` (and empty `status.networks`), measured on the same Mac.
     const RUNNING: &str = include_str!("fixtures/list-running.json");
 
@@ -784,6 +793,7 @@ mod tests {
     #[test]
     fn drift_is_named() {
         let cases = [
+            ("\"useInit\": false", "\"useInit\": true", "PID 1"),
             (
                 "\"virtualization\": true",
                 "\"virtualization\": false",

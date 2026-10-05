@@ -148,7 +148,7 @@
       "runtimeHandler": "container-runtime-linux",
       "ssh": false,
       "sysctls": {},
-      "useInit": true,
+      "useInit": false,
       "virtualization": true
     },
     "id": "nucleus-dev-microvm-host",

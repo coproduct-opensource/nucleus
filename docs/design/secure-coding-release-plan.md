@@ -1819,3 +1819,40 @@ chain, private key/directory modes, workspace translation and preservation of ra
 extension fields, and rollback/resource release after an exited proxy.
 Firecracker memory transport and host-authoritative memory effects remain open;
 this check is not one of the two outstanding model-driven coding journeys.
+
+### Apple Container host CLI and live startup diagnosis (2026-10-05)
+
+`nucleus microvm-host up/status` now exposes the existing backend. `up` requires
+an explicit local image and L1 kernel with its build config, selects installation
+or isolated development names, prepares identity/state, probes KVM and checks the
+published node URL over mTLS. It returns connection metadata only after readiness.
+`status` is read-only and explicitly reports `health_checked=false` for a running
+container. Blocking backend calls run outside Tokio's worker threads. The new
+Apple Container quickstart distinguishes this explicit path from Lima `setup` and
+from unpublished image/guest release work.
+
+The live CLI check found that the old backend added `--init`, conflicting with
+`nucleus-hostctl run-node` requiring PID 1 for cgroup preparation. Launch now omits
+that flag and configuration observation recognizes an init-enabled owned host as
+drifted, allowing replacement while preserving its volume. Tests cover this
+configuration change and the CLI's readiness/status distinction.
+
+After replacement, KVM probing passed and the node answered a real mTLS request
+at its container IP. Its client certificate verified against the running node's
+CA. Published loopback connections were reset, and Apple Container's service log
+reported `backend - connect failed: No route to host` in container-runtime-linux.
+Both IPv4-only and dual-stack node listeners showed the same result. The upstream
+[Apple Container report](https://github.com/apple/container/issues/2029) describes
+a matching Local Network permission pattern; that is a diagnostic lead, not a
+confirmed local permission diagnosis. `up` correctly exited nonzero and did not
+claim readiness. The error now includes a forwarding/Local Network diagnostic.
+A successful fresh host CLI journey remains unverified until the published port
+works. No system privacy settings or shared container service were changed.
+
+Evidence is under `/tmp/nucleus-host-command-live/` (status, readiness error, CA
+verification input, service log and local image inputs). The isolated development
+host was stopped, retaining its volume and identity for follow-up. The existing
+acceptance node stayed healthy. Validation: 313 CLI unit tests passed, two ignored;
+32 focused host tests passed, one ignored; scoped Clippy passed. This adds a usable
+command surface and fixes startup wiring, not automatic shell/run host selection,
+a published artifact set, or either outstanding model-driven coding journey.
