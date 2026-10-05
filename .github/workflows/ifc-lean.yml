@@ -99,7 +99,7 @@ jobs:
 
       - name: Build Lean project with cached artifacts
         if: steps.scope.outputs.relevant == 'true'
-        uses: leanprover/lean-action@50fcf42d2e460296f1a34b402e990d1b24f8b596 # v1
+        uses: leanprover/lean-action@f061402b660e0c34644504b324e830f2991d4865 # v1
         env:
           LEAN_NUM_THREADS: "4"
         with:
