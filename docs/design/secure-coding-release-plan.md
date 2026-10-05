@@ -1788,3 +1788,34 @@ backend support, ambient-setting removal, root permissions/separation, and the
 container environment. Live container storage, Firecracker transport and
 host-authoritative memory effects remain open. The broader release goal and
 model-driven coding journeys are not complete.
+
+### Mediated container memory across node replacement (2026-10-05)
+
+The ordinary live container check found two startup defects: Unix-mode proxies
+had no bootstrap identity, and their spec named the host workspace even though
+Docker mounts it at `/workspace`. The node now issues the pod an ordinary SVID
+from its persistent CA, creates its identity directory/key privately from the
+start, and translates the container spec's workspace path. Local orchestrator
+pods share the same identity-file provisioning. This identity does not claim
+microVM attestation. A proxy that exits, cannot be inspected, or times out before
+announcing readiness now fails launch and goes through confirmed container
+rollback; it no longer returns success with a null proxy address.
+
+Inside the existing Apple Container host, mediated Docker pod
+`d57b24e5-1b2e-4e40-835c-86378e280c38` wrote the project note under namespace
+`container-project`. After cancellation and a node restart, replacement pod
+`0d9b9612-d67f-4ca6-bb29-8b06c78343f3` recalled the same record hash
+`af250b233a8dc30f6c45293897fbeff34752814c82bc355d0291e97d71472bdf`, value and
+label, with `declassified=false`, through the node's signed proxy. The minimal
+validation image needed the host CA bundle for its HTTPS client initialization.
+Both pods were cancelled, no Docker containers remained, and the temporary node
+and Docker daemon were stopped. The primary node remained healthy over mTLS.
+Evidence: `/tmp/nucleus-container-memory-live/{pod-a,pod-b,write,recall}.json`.
+
+Validation: 891 node unit tests passed (one ignored); after workspace translation,
+31 focused container tests passed (one ignored). Scoped Clippy and the ARM64 Linux
+build passed. Regression checks cover the issued certificate's identity and CA
+chain, private key/directory modes, workspace translation and preservation of raw
+extension fields, and rollback/resource release after an exited proxy.
+Firecracker memory transport and host-authoritative memory effects remain open;
+this check is not one of the two outstanding model-driven coding journeys.

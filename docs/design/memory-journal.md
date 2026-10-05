@@ -60,3 +60,10 @@ Unmediated containers and VM drivers refuse the selector because no memory
 transport has been provisioned for them. The local driver retains its documented
 unsandboxed-host limitations; directory selection does not make it an isolation
 boundary.
+
+A live mediated Docker check inside Apple Container verified write → cancellation
+→ node restart → replacement pod → recall with the same record and label. Unix
+container proxies receive a node-issued pod SVID and use `/workspace` in their
+container-local spec. Failed proxy readiness rolls the launch back rather than
+returning a pod with no proxy address. This establishes the container storage
+lifecycle, not microVM storage or host-authoritative memory admission.

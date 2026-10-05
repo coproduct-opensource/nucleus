@@ -266,6 +266,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn exited_proxy_rolls_back_before_returning_capacity() {
+        let (_dir, server, mut state, spec, admission) =
+            fixture(204, 536870912, Some("none")).await;
+        state.container_mediation = crate::container_mediation::ContainerMediation::ToolProxy;
+        let error = create(&state, spec.clone(), None, None, admission)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exited before announcing"));
+        assert!(state.pods.lock().await.is_empty());
+        assert!(
+            server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| request.method.as_str() == "DELETE")
+        );
+        drop(state.node_capacity.reserve(&spec).unwrap());
+        assert_eq!(
+            state.container_pool.as_ref().unwrap().available_permits(),
+            1
+        );
+        assert_eq!(
+            std::fs::read_dir(state.state_dir.join("container-launches"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn successful_handoff_retains_the_running_pod() {
         let (_dir, _server, state, spec, admission) = fixture(204, 536870912, Some("none")).await;
         let (id, _) = create(&state, spec.clone(), None, None, admission)

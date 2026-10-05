@@ -54,6 +54,7 @@ mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
 mod pod_caller_identity;
+mod pod_identity_files;
 mod pod_receipt;
 mod pod_resources;
 mod pod_view;
@@ -1454,43 +1455,8 @@ async fn spawn_local_pod(
         // Node-assigned `ns/pods/sa/<uuid>`: the shape `AuthorizationPolicy`'s
         // pod class authorizes for pod management and nothing else. What the
         // pod may CREATE is decided by its certificate, not by this prefix.
-        let manager = state
-            .identity_manager
-            .as_ref()
-            .expect("identity_manager is unconditionally constructed above (Move B)");
-        let orchestrator_identity = manager.pod_identity(id);
-        let orchestrator_cert = manager
-            .fetch_certificate(&orchestrator_identity)
-            .await
-            .map_err(|e| {
-                ApiError::Driver(format!(
-                    "failed to mint orchestrator pod {id}'s SVID for pod management: {e}"
-                ))
-            })?;
-        let identity_dir = pod_dir.join("identity");
-        tokio::fs::create_dir_all(&identity_dir).await?;
-        let identity_cert_path = identity_dir.join("cert.pem");
-        let identity_key_path = identity_dir.join("key.pem");
-        let identity_bundle_path = identity_dir.join("trust-bundle.pem");
-        tokio::fs::write(&identity_cert_path, orchestrator_cert.chain_pem()).await?;
-        tokio::fs::write(&identity_key_path, orchestrator_cert.private_key_pem()).await?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&identity_key_path, std::fs::Permissions::from_mode(0o600))
-                .await?;
-        }
-        let bundle_pem = manager
-            .trust_bundle()
-            .roots()
-            .iter()
-            .map(|r| r.to_pem().to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        tokio::fs::write(&identity_bundle_path, bundle_pem).await?;
-        command.env("NUCLEUS_IDENTITY_CERT", &identity_cert_path);
-        command.env("NUCLEUS_IDENTITY_KEY", &identity_key_path);
-        command.env("NUCLEUS_IDENTITY_TRUST_BUNDLE", &identity_bundle_path);
+        let files = pod_identity_files::provision(state, pod_dir, id).await?;
+        command.envs(files.env());
         // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
         command.env("NUCLEUS_POD_ID", id.to_string());
         command.env(
@@ -1572,12 +1538,8 @@ async fn spawn_container_pod(
     let announce_path = pod_dir.join("proxy.addr");
     let audit_path = pod_dir.join("audit.log");
 
-    // Prefer raw YAML (preserves free-form fields like `task:` that aren't in PodInner).
-    // Fall back to re-serialized typed spec if raw isn't available.
-    let spec_yaml = match raw_yaml {
-        Some(raw) => raw.to_string(),
-        None => serde_yaml::to_string(spec).map_err(ApiError::Serde)?,
-    };
+    // Keep extension fields while translating the host checkout to its container mount.
+    let spec_yaml = container_mediation::pod_yaml(spec, raw_yaml)?;
     let spec_yaml_hash = {
         use sha2::{Digest, Sha256};
         hex::encode(Sha256::digest(spec_yaml.as_bytes()))
@@ -1593,7 +1555,15 @@ async fn spawn_container_pod(
     // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
     let mediation = state.container_mediation;
     let proxy_mode = mediation.runs_tool_proxy();
-    let env = container_env(state, spec, id, &sandbox_token, &spec_yaml, audit, memory).await;
+    let mut env = container_env(state, spec, id, &sandbox_token, &spec_yaml, audit, memory).await;
+    if proxy_mode && state.container_proxy_unix {
+        pod_identity_files::provision(state, pod_dir, id).await?;
+        env.extend(
+            pod_identity_files::Files::at(Path::new("/data/pod"))
+                .env()
+                .map(|(key, path)| format!("{key}={}", path.display())),
+        );
+    }
     let launch = container_mediation::launch(mediation, &state.container_image, &env);
     let image = launch.image.clone();
 
@@ -1741,26 +1711,22 @@ async fn spawn_container_pod(
         let mut signed_proxy_opt = None;
 
         if proxy_mode {
-            proxy_addr =
-                wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await;
-
-            if let Some(ref addr) = proxy_addr {
-                let target = container_transport::target(state, &pod_dir_abs, addr)?;
-                let proxy = signed_proxy::SignedProxy::start_with_drand(
-                    target,
-                    Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-                    // Env-provisioned container: shared-secret approvals.
-                    Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
-                        state.proxy_approval_secret.as_bytes().to_vec(),
-                    ))),
-                    state.proxy_actor.clone(),
-                    state.drand_config.clone(),
-                )
-                .await
-                .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
-                proxy_addr = Some(format!("http://{}", proxy.listen_addr()));
-                signed_proxy_opt = Some(proxy);
-            }
+            let addr = wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await?;
+            let target = container_transport::target(state, &pod_dir_abs, &addr)?;
+            let proxy = signed_proxy::SignedProxy::start_with_drand(
+                target,
+                Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
+                // Env-provisioned container: shared-secret approvals.
+                Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
+                    state.proxy_approval_secret.as_bytes().to_vec(),
+                ))),
+                state.proxy_actor.clone(),
+                state.drand_config.clone(),
+            )
+            .await
+            .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+            proxy_addr = Some(format!("http://{}", proxy.listen_addr()));
+            signed_proxy_opt = Some(proxy);
         }
 
         // Touch audit log so it exists even in direct mode (for inspection)
@@ -1815,42 +1781,41 @@ async fn wait_for_container_announce(
     announce_path: &Path,
     docker: &bollard::Docker,
     container_id: &str,
-) -> Option<String> {
+) -> Result<String, ApiError> {
     use bollard::query_parameters::InspectContainerOptions;
 
-    let wait_result = timeout(Duration::from_secs(10), async {
+    timeout(Duration::from_secs(10), async {
         loop {
-            if let Ok(addr) = tokio::fs::read_to_string(announce_path).await {
-                let trimmed = addr.trim();
-                if !trimmed.is_empty() {
-                    return Some(trimmed.to_string());
-                }
+            match tokio::fs::read_to_string(announce_path).await {
+                Ok(addr) if !addr.trim().is_empty() => return Ok(addr.trim().to_string()),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
             }
-
-            // Check if container exited early
-            match docker
+            let info = docker
                 .inspect_container(container_id, None::<InspectContainerOptions>)
                 .await
-            {
-                Ok(info) => {
-                    let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
-                    if !running {
-                        error!("container exited before announcing proxy address");
-                        return None;
-                    }
+                .map_err(|error| {
+                    ApiError::Driver(format!("container readiness inspect failed: {error}"))
+                })?;
+            match info.state.and_then(|state| state.running) {
+                Some(true) => {}
+                Some(false) => {
+                    return Err(ApiError::Driver(
+                        "container exited before announcing proxy address".into(),
+                    ));
                 }
-                Err(e) => {
-                    error!("container inspect error: {e}");
-                    return None;
+                None => {
+                    return Err(ApiError::Driver(
+                        "container readiness inspect omitted running state".into(),
+                    ));
                 }
             }
-
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
-    .await;
-
-    wait_result.unwrap_or_default()
+    .await
+    .map_err(|_| ApiError::Driver("container proxy readiness timed out".into()))?
 }
 
 /// Ask the VMM its version and judge it against the floor.
