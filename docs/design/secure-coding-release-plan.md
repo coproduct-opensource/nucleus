@@ -2115,3 +2115,29 @@ after space recovery. The quickstart now documents unused-block reclamation.
 Validation: 323 CLI tests passed, two ignored; scoped Clippy passed. The complete
 model-driven journeys, workspace transfer and evidence export before run teardown
 remain open.
+
+### Pre-publication integration and CI check (2026-10-05 05:27 UTC)
+
+Fetched upstream main; it remains `7f240fe66`, with no commits missing from this
+branch. At implementation commit `1ac6b8d77` the branch has 69 commits above main
+and changes 184 files (+20,038/-2,357 lines). These are diff measurements, not a
+completion claim. The validated branch was pushed without opening or enqueueing
+a PR; PR publication remains scheduled for the recorded 08:00 Eastern deadline.
+The existing Coverage Matrix workflow was dispatched at that exact code commit:
+https://github.com/coproduct-opensource/nucleus/actions/runs/37267840622 .
+It includes full workspace coverage and the workflow's ordinary mutation tests;
+its result was pending when dispatched. Local targeted tests do not substitute
+for the workspace coverage floor.
+
+The live GitHub merge queue now matches `ci/merge-queue.toml` at one concurrent
+build entry, resolving the previously recorded configuration drift. The latest
+main Gatehouse required check succeeded on October 4. A current controller
+health request failed to connect, and GCP inventory confirms the controller and
+all six lanes are stopped; the lane-waker scheduler is paused too. The stop audit
+attributes the controller stop to the owner's account. Fly-based GitHub coverage
+runners are independently active. Preserve the stopped/paused deployment during
+implementation; the authorized Gatehouse merge will need deliberate controller
+and worker recovery, not an assumption that queued jobs wake these lanes today.
+The deployment SPIFFE wrapper currently requires interactive sudo; the existing
+user gcloud login was sufficient for read-only inventory and audit queries.
+No infrastructure or queue policy was changed in this review.
