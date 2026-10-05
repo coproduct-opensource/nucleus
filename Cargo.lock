@@ -7244,6 +7244,8 @@ dependencies = [
  "ipnet",
  "jsonwebtoken",
  "libc",
+ "netlink-sys 0.9.0",
+ "nix",
  "nucleus",
  "nucleus-ci-verdict",
  "nucleus-client",

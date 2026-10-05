@@ -88,27 +88,40 @@ before record removal: the previously recorded ID makes absence conclusive.
 ## Outbound byte accounting
 
 Firecracker pods share one `network.egress` ledger between broker PERFORM,
-streamed broker uploads and direct namespace traffic. The default allowance is
-1 GiB when no byte ceiling is declared. Broker paths reserve request-body bytes
-before sending. For pods with a network link, the node samples host-veth RX
-every 100 ms, counting traffic from the namespace, including packet overhead
-and retransmissions. Download bodies traverse the opposite direction; their
-outgoing acknowledgments still count.
+streamed broker uploads and direct IP traffic. The default allowance is 1 GiB
+when no byte ceiling is declared. Broker paths reserve request-body bytes before
+sending. Direct packets wait in a namespace-local NFQUEUE until the node reserves
+their kernel-reported IP length from that same total and fixed-window allowance.
+The node requests kernel segmentation before queueing offloaded packets.
 
-The link reader is prepared before guest launch. Exhaustion disconnects the
-link without changing the iptables baseline; new broker admissions also refuse.
-An unreadable or reset counter makes the shared budget unavailable. Teardown
-closes the link and takes a final sample before deleting network resources.
-Cutoff failures retain the monitor for retry, including across cancelled
-teardown requests. Lifecycle records include exhaustion and observed link bytes
-at closure.
+The queue covers IPv4 and IPv6 packets leaving the pod namespace through its
+peer veth, after filtering and before forwarding. Download bodies travel in the
+opposite direction; outgoing acknowledgments and retransmissions still count.
+The accounting unit is IP bytes at the queue, not physical wire bytes: Ethernet,
+ARP and framing added after the queue are outside this count. Broker HTTP/TLS
+transport overhead is also separate from its request-body accounting.
 
-Link accounting is periodic and can overshoot between samples or while cutoff
-is pending; it does not enforce the optional pace on direct traffic. Broker
-reservations enforce their byte and fixed-window limits before sending. A strict
-shared packet ceiling and direct-link pacing remain implementation work. These
-link guarantees apply to the Firecracker namespace path, not unmediated
-container or local-driver traffic.
+An over-budget packet is dropped before acceptance and total exhaustion closes
+the queue for the pod's remaining life. A pace refusal drops the packet while
+leaving the queue active, so normal TCP retries can progress in later windows.
+This is a fixed-window policer, not a smooth traffic shaper. A single packet
+larger than the per-window allowance cannot proceed; choose an allowance large
+enough for ordinary packets. Streamed broker uploads still reserve the complete
+staged body as one batch and must fit within one window.
+
+Queue setup must complete before guest spawn. The host needs `ip`, `iptables`,
+`ip6tables`, namespace privileges and `CONFIG_NETFILTER_NETLINK_QUEUE` plus the
+NFQUEUE target. The Apple Container kernel fragment retains these features.
+The [Netfilter queue API](https://netfilter.org/projects/libnetfilter_queue/doxygen/html/group__nfq__verd.html)
+describes listener absence and bypass behavior.
+Rules never enable queue bypass or fail-open: a missing listener or full queue
+cannot allow unaccounted packets. Receiver failures disable new broker admissions
+too. Shutdown closes the binding before network teardown; cancelled shutdown
+retains the receiver for retry. A lifecycle record reports accepted IP bytes and
+packets explicitly refused by the receiver (not kernel-only drops).
+
+These guarantees apply to the Firecracker namespace path, not unmediated
+container or local-driver traffic. They replace periodic link-counter accounting.
 
 `--egress-staging-max-bytes` bounds reserved upload payload storage across all
 pods, defaulting to 256 MiB. Each streamed upload reserves its configured

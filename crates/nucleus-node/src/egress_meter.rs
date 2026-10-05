@@ -8,17 +8,16 @@
 //! # Why on the host
 //!
 //! The guest can rewrite anything it runs, so a counter inside it is advisory.
-//! Broker sends reserve bytes before host I/O. Direct guest traffic is counted
-//! by the host's kernel and observed after sending; the link monitor closes
-//! that path at exhaustion. The latter can overshoot between samples and is
-//! not a pre-send reservation or a pacing mechanism.
+//! Broker sends reserve bytes before host I/O. Direct guest IP packets stay
+//! queued in the kernel until this meter authorizes their packet length.
+//! Both paths share total and fixed-window allowances before accepting sends.
 //!
 //! # One per pod, shared by every path
 //!
 //! [`EgressMeter`] is built once per pod and handed, as the same `Arc`, to every
 //! egress path that pod has (ADR 0007 G). Today that is the credential broker's
-//! PERFORM and streaming paths; the pod link's kernel counter folds into the
-//! same ledger via [`EgressMeter::observe`]. Two meters for one pod would
+//! PERFORM and streaming paths plus namespace packet admission. All reserve
+//! from this ledger before sending. Two meters for one pod would
 //! each admit up to the ceiling.
 //!
 //! # Exhaustion leaves a record
@@ -34,7 +33,7 @@ use std::sync::{Arc, Mutex};
 
 use portcullis::{
     EgressBytes, EgressCeiling, EgressDecision, EgressHold, EgressLedger, EgressNovelty,
-    EgressObservation, EgressRefusal, EgressSettlement,
+    EgressRefusal, EgressSettlement,
 };
 
 /// One pod's egress balance, as the host holds it.
@@ -102,33 +101,7 @@ impl EgressMeter {
         }
     }
 
-    /// Account for link bytes already sent. This cannot enforce a packet-level
-    /// ceiling or pace; an exhausted observation requires closing the link.
-    pub async fn observe(&self, bytes: EgressBytes) -> Result<(), EgressRefusal> {
-        let observation = match self.ledger.lock() {
-            Ok(mut ledger) => match ledger.as_mut() {
-                Some(ledger) => ledger.record_observed(bytes),
-                None => {
-                    EgressObservation::Exhausted(EgressRefusal::LedgerFault, EgressNovelty::Repeat)
-                }
-            },
-            Err(_) => {
-                EgressObservation::Exhausted(EgressRefusal::LedgerFault, EgressNovelty::First)
-            }
-        };
-        match observation {
-            EgressObservation::WithinCeiling { remaining: _ } => Ok(()),
-            EgressObservation::Exhausted(refusal, novelty) => {
-                if novelty == EgressNovelty::First {
-                    self.record(&refusal).await;
-                }
-                Err(refusal)
-            }
-        }
-    }
-
-    /// An unreadable counter leaves the shared balance unknown, including to
-    /// the broker. Refuse later sends instead of treating it as zero (A-2).
+    /// A packet-accounting failure disables new sends through every path (A-2).
     pub async fn fault(&self) {
         let first = self
             .ledger
@@ -140,13 +113,13 @@ impl EgressMeter {
         }
     }
 
-    pub async fn record_link(&self, bytes: u64) {
+    pub async fn record_packets(&self, bytes: u64, rejected: u64) {
         crate::lifecycle::write_lifecycle_audit(
             &self.pod_dir,
-            "egress_link_closed",
+            "egress_packet_queue_closed",
             &self.pod_id,
             &format!(
-                "observed outbound link bytes: {bytes}; includes link overhead; sampled accounting"
+                "accepted IP bytes: {bytes}; rejected packets: {rejected}; pre-send reservations"
             ),
         )
         .await;

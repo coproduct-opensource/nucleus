@@ -113,10 +113,11 @@ Give audit uploaders short-lived credentials restricted to the
 resolved bucket/prefix, without ambient credentials in workload or uploader
 environments. Keep provider implementations behind the vendor-neutral boundary.
 
-**In progress:** Firecracker direct-link accounting now shares the broker's
-ledger. Kernel counter sampling closes the link at exhaustion, but can overshoot
-between observations and does not implement direct-link pacing. Strict shared
-packet admission and review of the remaining outbound paths are still open.
+**In progress:** Firecracker direct IP packets now reserve from the broker's
+ledger before kernel acceptance, including the optional fixed-window allowance.
+This replaces counter sampling. Broker request-body and direct IP byte accounting
+remain distinct units; broker transport overhead, other drivers and review of
+the remaining outbound paths are still open.
 
 ## 4. Resource admission (P1)
 
@@ -1378,6 +1379,8 @@ open, including the two complete model-driven coding journeys.
 
 ### Shared Firecracker link and broker accounting (2026-10-04)
 
+Historical sampled implementation, superseded by packet admission below.
+
 Pod preparation now creates the egress ledger and passes the same Arc to both
 broker paths and the direct-link monitor. The link reader must initialize before
 VMM spawn. It samples the host veth's RX counter every 100 ms: namespace uploads,
@@ -1417,3 +1420,51 @@ accounting and eventual cutoff, not a strict packet ceiling: bytes can leave
 between samples or during cutoff retries, and direct-link pacing is still open.
 The unmediated container/local drivers are not covered by this link monitor.
 The broader egress milestone and two complete coding journeys remain open.
+
+### Kernel packet admission and ordinary paced uploads (2026-10-04)
+
+Periodic link sampling is replaced by namespace-local NFQUEUE admission.
+IPv4 and IPv6 POSTROUTING rules queue packets leaving the peer veth after the
+namespace's filter policy. The node reserves the kernel-reported IP length from
+the same ledger used by both broker paths before issuing ACCEPT. The transport
+requires the reservation by value (C-4/H-1); packet handles also receive one
+consumed verdict. GSO is disabled on the queue so the kernel segments before
+admission. A total refusal drops the packet and closes the receiver; pace
+refusals drop packets while retaining the receiver for later windows.
+
+The netlink socket is close-on-exec, uses async readiness, and is created on a
+dedicated OS thread inside the pod namespace. That thread terminates after
+socket creation rather than changing a reused executor thread's namespace.
+Binding and configuration acknowledgments precede rule installation and VM
+spawn. No queue-bypass or fail-open flags are enabled. Shutdown closes the
+binding before removing the namespace; pending packets and later packets cannot
+be accepted without a listener. The existing cancelled-teardown ownership rule
+is preserved. Kernel queue support is an explicit launch requirement and is
+retained in the Apple Container kernel fragment.
+
+Ordinary Linux checks ran in Apple Container. A 15-byte UDP upload charged 43 IP
+bytes alongside 100 broker bytes. A 4096-byte download consumed no upload
+allowance. A subsequent 128-byte IP packet could not fit the 200-byte total and
+was not delivered; closing the listener preserved that refusal. A separate
+78-byte-per-two-second allowance accepted the first upload, dropped the next,
+and accepted another after the window advanced. A 128 KiB TCP upload completed
+in 3.84 seconds under a 32 KiB-per-second allowance, charging 135,916 IP bytes.
+These are normal traffic and functional budget checks, not red-team exercises.
+
+The first live attempt exposed valid kernel metadata without trailing alignment
+padding. The decoder now accepts that framing, with a focused Linux test.
+The full node suite passed 871 unit tests (one ignored) and three integration
+tests; four packet-ledger/ownership tests, three live network checks and the
+Linux decoder test passed. A production Firecracker pod,
+`97df55a6-81d2-41b5-9111-3440acf70a8c`, completed the ordinary file-producing
+workflow with exit code zero. Cancellation recorded 168 accepted IP bytes and
+zero receiver refusals. The temporary node was stopped and its links removed;
+the original node remains healthy.
+
+This bounds IP bytes at the queue, not physical wire bytes. Ethernet/ARP and
+framing added after queue admission are separate, and broker accounting still
+counts request bodies rather than HTTP/TLS overhead. Direct pacing is a
+fixed-window policer: it drops excess packets and relies on transport retries,
+not a smooth shaper. Broker staged uploads still must fit within one window;
+the unmediated container/local drivers remain outside this packet gate. The
+broader egress milestone and complete coding journeys remain open.
