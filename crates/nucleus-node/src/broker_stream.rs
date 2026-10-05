@@ -199,6 +199,14 @@ pub struct StreamCall {
     pub header_value: String,
     /// The body's media type, as the guest declared it (validated, counted).
     pub content_type: String,
+    /// The staged body's exact length in bytes, sent as `Content-Length`.
+    ///
+    /// The host has already staged and counted the whole body before it calls,
+    /// so the length is known. Without the header an HTTP/1.1 client frames a
+    /// streamed body as chunked, and some upstreams do not accept a chunked
+    /// request: one OpenAI-compatible endpoint answers `200 text/html` with the
+    /// body `Bad Request`, which reads as a successful call that returned junk.
+    pub content_length: u64,
     /// The request body, chunk by chunk.
     pub body: upload::UploadBody,
 }
@@ -275,6 +283,7 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
                 .request(crate::broker_perform::effect::METHOD, &call.url)
                 .header(&call.header_name, &call.header_value)
                 .header(reqwest::header::CONTENT_TYPE, &call.content_type)
+                .header(reqwest::header::CONTENT_LENGTH, call.content_length)
                 .body(body)
                 .send()
                 .await
@@ -730,6 +739,7 @@ where
         header_name: spec.header.clone(),
         header_value,
         content_type: req.content_type.clone(),
+        content_length: staged.len(),
         body: upload::UploadBody::new(rx, charge, current_time()),
     });
     // One deadline covers both upload and response headers, including a caller
@@ -1320,6 +1330,94 @@ mod tests {
         assert!(record.outcome.response.is_none());
     }
 
+    /// The staged body goes out with its length, not chunked. An upstream that
+    /// refuses a chunked request may still answer `200` (one OpenAI-compatible
+    /// endpoint replies `200 text/html` `Bad Request`), so a chunked body turns
+    /// every call into a successful-looking call with a junk reply.
+    #[tokio::test]
+    async fn a_staged_body_is_sent_with_its_length_not_chunked() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let payload = br#"{"model":"m","messages":[]}"#.to_vec();
+        let expected_len = payload.len();
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap().to_ascii_lowercase();
+            let mut body = vec![0u8; expected_len];
+            socket.read_exact(&mut body).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
+                .await
+                .unwrap();
+            (head, body)
+        });
+        let policy = crate::host_decide::test_policy(PermissionLattice::permissive());
+        let permit = policy
+            .lock()
+            .unwrap()
+            .authorize_effect(
+                nucleus_decision_protocol::ArgsDigest::new([1; 32]),
+                portcullis::Operation::WebFetch,
+                "http://upstream",
+                100,
+                crate::upstreams::CallCharge::free(),
+                false,
+            )
+            .unwrap();
+        let (permit, _observation) = permit.observe(policy.clone(), 100);
+        let (tx, rx) = mpsc::channel(1);
+        let caller = http_stream_caller(reqwest::Client::new());
+        let sent = payload.clone();
+        let sender = tokio::spawn(async move {
+            // Two chunks: the body is a stream, as the staged replay sends it.
+            let (a, b) = sent.split_at(5);
+            tx.send(Ok(a.to_vec())).await.unwrap();
+            tx.send(Ok(b.to_vec())).await.unwrap();
+        });
+        let response = caller(StreamCall {
+            _permit: permit,
+            url: format!("http://{address}/call"),
+            header_name: "authorization".into(),
+            header_value: "test-token".into(),
+            content_type: "application/json".into(),
+            content_length: payload.len() as u64,
+            body: upload::UploadBody::new(
+                rx,
+                crate::egress_meter::EgressMeter::new(
+                    portcullis::EgressCeiling::new(1_000, portcullis::EgressPace::Unpaced),
+                    std::env::temp_dir(),
+                    "length-owner".into(),
+                )
+                .reserve_upload(payload.len() as u64)
+                .await
+                .unwrap(),
+                100,
+            ),
+        })
+        .await
+        .unwrap();
+        assert_eq!(response.status, 200);
+        sender.await.unwrap();
+        let (head, body) = tokio::time::timeout(Duration::from_secs(5), upstream)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            head.contains(&format!("content-length: {}\r\n", payload.len())),
+            "{head}"
+        );
+        assert!(!head.contains("transfer-encoding"), "{head}");
+        assert_eq!(body, payload);
+    }
+
     #[tokio::test]
     async fn dropping_a_stream_response_closes_the_real_upstream_reader() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1364,6 +1462,7 @@ mod tests {
             header_name: "authorization".into(),
             header_value: "test-token".into(),
             content_type: "application/json".into(),
+            content_length: 0,
             body: upload::UploadBody::new(
                 rx,
                 crate::egress_meter::EgressMeter::new(
