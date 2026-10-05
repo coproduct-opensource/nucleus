@@ -185,9 +185,11 @@ mod tests {
     /// `confine_to_nucleus_settings` call from `launch` and this reds.
     #[test]
     fn every_launch_is_confined_after_the_users_args() {
-        let agent =
-            AgentCommand::named(Some("my-agent"), &["--setting-sources".to_string(), "user".to_string()])
-                .expect("named");
+        let agent = AgentCommand::named(
+            Some("my-agent"),
+            &["--setting-sources".to_string(), "user".to_string()],
+        )
+        .expect("named");
         let args = argv(&agent.launch());
         assert_eq!(
             args,

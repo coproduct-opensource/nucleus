@@ -403,7 +403,8 @@ and clamped under the ceiling like everything else, so it can only narrow.
 
 The confirmation is the approval, so it should be given once. `--save-grant PATH`
 seals the grant you accept into a signed file, and `--grant PATH` runs it again
-without asking:
+without asking (a run launches the agent named by `--agent` or `NUCLEUS_AGENT`;
+see [examples/agents/](../examples/agents/README.md)):
 
 ```
 $ nucleus run --goal "run the tests" --save-grant tests.grant     # confirm once: [R]un · [s]eal only

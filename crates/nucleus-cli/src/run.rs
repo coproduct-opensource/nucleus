@@ -974,21 +974,20 @@ async fn run_enforced(
         );
 
         let start = Instant::now();
-        let output =
-            match run_agent_mcp(
-                args,
-                agent,
-                policy,
-                &mcp_config_path,
-                &guard,
-                prompt,
-                work_dir,
-            )
-            .await
-            {
-                Ok(output) => output,
-                Err(err) => return Err(err),
-            };
+        let output = match run_agent_mcp(
+            args,
+            agent,
+            policy,
+            &mcp_config_path,
+            &guard,
+            prompt,
+            work_dir,
+        )
+        .await
+        {
+            Ok(output) => output,
+            Err(err) => return Err(err),
+        };
         let duration = start.elapsed();
         render_output(&output, duration, args.output.as_str())
     }
@@ -1776,8 +1775,10 @@ mod tests {
             .unwrap()
             .args;
         let work = tempfile::tempdir().unwrap();
+        let agent = crate::agent::AgentCommand::named(Some("unused-agent"), &[]).unwrap();
         let error = run_enforced(
             &args,
+            &agent,
             &config,
             &PermissionLattice::restrictive(),
             work.path(),

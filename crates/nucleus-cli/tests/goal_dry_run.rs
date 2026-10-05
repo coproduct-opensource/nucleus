@@ -83,12 +83,43 @@ fn technical_disclosure_adds_the_grid() {
     assert!(stdout.contains("read_files:"), "{stdout}");
 }
 
+/// Nucleus has no default agent: a run that names none is refused, with
+/// directions, before the goal is compiled or anything is spawned.
+#[test]
+fn a_run_that_names_no_agent_is_refused_before_anything_starts() {
+    let dir = repo();
+    let config = dir.path().join("no-such-config.toml");
+    for goal_or_prompt in [&["--goal", "fix the failing CI build"][..], &["fix it"][..]] {
+        let out = nucleus()
+            .env_remove("NUCLEUS_AGENT")
+            .env("NUCLEUS_CONFIG", &config)
+            .arg("run")
+            .args(goal_or_prompt)
+            .args(["--local", "--tool-proxy-path", "/definitely/not/a/binary"])
+            .arg("-d")
+            .arg(dir.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{stderr}");
+        assert!(stderr.contains("no agent command named"), "{stderr}");
+        assert!(stderr.contains("examples/agents"), "{stderr}");
+        assert!(
+            !stderr.contains("Goal:"),
+            "refused before the goal was compiled and shown:\n{stderr}"
+        );
+    }
+}
+
 #[test]
 fn without_a_tty_and_without_yes_it_refuses_before_running() {
     let dir = repo();
     let out = nucleus()
         .args([
             "run",
+            "--agent",
+            "test-agent",
             "--goal",
             "fix the failing CI build",
             "--local",
