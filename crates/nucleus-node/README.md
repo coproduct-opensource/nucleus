@@ -32,6 +32,11 @@ after the memory limit. Pod settings may lower these ceilings but cannot raise
 them. The host must expose the corresponding swap-accounting control; a failed
 limit write prevents launch. Container pods already set their combined
 memory-plus-swap allowance equal to their memory allowance.
+Before starting a container, the node reads Docker's accepted HostConfig back
+and requires the admitted memory, memory-plus-swap, CPU and process limits.
+A daemon that silently rewrites or omits a required limit causes launch rollback
+with a named configuration error. This checks Docker's accepted configuration;
+the daemon and host still provide the kernel enforcement.
 
 The [v2 swap control](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 limits swap separately. The [v1 memory controller](https://docs.kernel.org/admin-guide/cgroup-v1/memory.html)

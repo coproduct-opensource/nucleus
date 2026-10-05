@@ -1330,3 +1330,36 @@ build and all four repository gates passed. Clippy completed with existing
 configuration warnings. Docker behavior was exercised with HTTP fixtures, not a
 live daemon or a filesystem power-loss experiment. Broader release acceptance
 and the two model-driven coding journeys remain open.
+
+### Live Docker lifecycle and resource readback (2026-10-04)
+
+A real Docker 20.10.24 daemon (API 1.41) ran inside the Apple Container validation
+host using vfs storage and disabled bridge/IP-forwarding configuration. A separate
+node used the container driver and explicit unmediated mode for an ordinary
+shell fixture. This is container-driver lifecycle evidence, not mediation or
+microVM execution evidence. The small fixture image produced a workspace file
+and remained running so cancellation and restart behavior could be observed.
+
+The first create exposed a real configuration gap: Docker accepted the request
+but rewrote the requested combined memory/swap limit to `-1`, emitting a warning.
+The node now inspects accepted HostConfig before starting the container and
+requires the admitted memory, swap, CPU and process limits. Missing or rewritten
+values trigger the existing launch rollback with a named resource error. A
+regression fixture verifies that rewritten swap never reaches Docker's start
+endpoint and that cleanup returns reservations. This readback establishes the
+daemon's accepted configuration; kernel enforcement still belongs to the host.
+
+On a subsequent live create, Docker retained all limits. The actual cgroup read
+back `memory.max=536870912`, `memory.swap.max=0`, `cpu.max=100000 100000` and
+`pids.max=4096`. Pod `d4b9c437-9213-447e-b01b-604a65f88615` remained running
+after the separate node process was killed. Restarting that node recovered the
+observed-ID journal, removed the surviving container, cleared the launch record,
+recorded `pod_recovered_stopped`, preserved the workspace file and served mTLS
+health. A new pod was then admitted and cancelled successfully. All test
+containers were removed and the extra node and Docker daemon were stopped.
+
+The container-focused suite passed 26 tests (one ignored). Linux ARM64 build
+and all four repository gates passed; Clippy completed with existing configuration
+warnings. The late-create/unknown-outcome cases still have fixture coverage,
+not a live interrupted Docker-create demonstration. The full release goal remains
+open, including the two complete model-driven coding journeys.

@@ -37,6 +37,7 @@ mod container_intent;
 mod container_launch;
 mod container_lifecycle;
 mod container_recovery;
+mod container_resources;
 mod firecracker_api;
 mod firecracker_config;
 mod grpc_tls;
@@ -1735,6 +1736,7 @@ async fn spawn_container_pod(
     let container_id = container.id.clone();
     let result = async {
         intent.observed(&container_id).await?;
+        container_resources::verify(docker, &container_id, size).await?;
         docker
             .start_container(
                 &container_id,
