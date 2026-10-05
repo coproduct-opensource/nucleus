@@ -428,7 +428,13 @@ mod tests {
     #[test]
     fn the_owner_named_gates_and_fmt_are_all_listed() {
         let names: Vec<&str> = GATES.iter().map(|(n, _)| *n).collect();
-        for want in ["exemplar", "cargo-audit", "scorecard", "line ratchet", "fmt"] {
+        for want in [
+            "exemplar",
+            "cargo-audit",
+            "scorecard",
+            "line ratchet",
+            "fmt",
+        ] {
             assert!(
                 names.iter().any(|n| n.contains(want)),
                 "{want} missing from {names:?}"
