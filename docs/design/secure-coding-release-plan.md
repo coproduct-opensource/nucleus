@@ -2771,3 +2771,40 @@ and host disk exhaustion during guest-disk copying. The successful fixture uses
 a single-host allowlist and keeps broker enforcement enabled. A fixture parser
 was corrected to accept cancellation's text output. Preserving native tools and
 running `cargo clean` reclaimed 3.8 GiB before the successful retry.
+
+### Bound queued launches by the admitted execution lifetime (2026-10-05)
+
+Firecracker and container launches now acquire their driver slots against the
+same monotonic deadline computed at admission. Before registration, the reaper
+cannot see a queued launch; the previous semaphore wait could retain capacity
+and delegated budget indefinitely. The shared acquisition helper refuses an
+already-expired launch, bounds a pending wait, and rechecks after acquisition.
+It preserves ownership of slots held by other workloads. This bounds queueing,
+not every later driver operation or the full launch wall time.
+
+A container admission test uses the real authority and capacity ledgers with a
+held driver slot. Expiry occurs before any Docker request, leaves no registered
+pod, and returns aggregate capacity and delegated budget. The helper tests also
+cover successful subsequent acquisition and an unavailable pool. All 900 node
+unit tests (one ignored), three integrations, scoped Clippy and the Linux ARM64
+build passed. A first full run failed the existing state-lock test on immediate
+reacquisition; that test passed in isolation and the complete rerun passed.
+Existing Clippy configuration warnings remain.
+
+### Adapter process lifetime validation and entry-point documentation (2026-10-05)
+
+Coverage job `111695089444` on branch checkpoint `bf8aa11e5` failed before its
+coverage verdict: the managed adapter unit test could still connect immediately
+after its in-process helper returned. Listener teardown is now checked by an
+integration test of the actual executable, avoiding shared unit-test process
+descriptors during concurrent subprocess creation. The unit test still checks
+the workload URL and exit code. The integration checks the announced loopback
+address against the workload's environment, preserves exit code 7, and requires
+the listener to be unreachable after the adapter process is reaped. Eight unit
+tests and the process integration passed locally. This does not change adapter
+runtime behavior or lower a coverage threshold; remote verification of the
+updated branch is still required.
+
+The README and macOS entry point now lead with the supported source-built Apple
+Container workflow, including saved host selection and its local-artifact
+requirements. Lima's release-artifact installation remains documented separately.
