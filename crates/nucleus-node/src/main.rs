@@ -106,6 +106,7 @@ mod federation_ingress;
 mod guest_socket;
 mod host_decide;
 mod host_paths;
+mod launch_resources;
 mod lifecycle;
 mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
@@ -1907,88 +1908,6 @@ async fn spawn_firecracker_pod(
         let permit =
             lifecycle::acquire_launch_slot(state.firecracker_pool.as_ref(), deadline).await?;
 
-        // Resolved once: every consumer below takes a rootfs that is a host file by construction.
-        let image = rootfs_source::HostImage::of_spec(spec)?;
-        let vsock_spec = spec
-            .spec
-            .vsock
-            .as_ref()
-            .ok_or_else(|| ApiError::Driver("missing spec.vsock".to_string()))?;
-
-        let mut net_plan: Option<net::NetPlan> = None;
-        let mut netns_name: Option<String> = None;
-        let mut dns_proxy: Option<net::DnsProxyState> = None;
-
-        // `netns_plan` was decided before the host preflight, above.
-        // Declared OUT here on purpose. The namespace is made inside the block
-        // below but must survive until this function succeeds, so a guard scoped
-        // to that block would reap a live pod's namespace the moment the block
-        // ended — worse than the leak it exists to prevent.
-        let mut netns_guard: Option<net::NetnsGuard> = None;
-        if netns_plan.create_netns {
-            let name = net::netns_name(id);
-            net::create_netns(&host_tools, &name).await?;
-            // Armed from here to the single success return. Every `?` and early
-            // `return` between the two now reaps, including ones added later by
-            // someone who never read this comment.
-            netns_guard = Some(net::NetnsGuard::new(&name));
-
-            // Apply default-deny iptables policy BEFORE any process spawns.
-            // This closes the race window where a process could exfiltrate
-            // data before the full policy is applied. `apply_default_deny` is
-            // guaranteed true whenever `create_netns` is (see NetnsPlan).
-            if netns_plan.apply_default_deny {
-                if let Err(err) = net::apply_default_deny(&host_tools, &name).await {
-                    let _ = net::cleanup_netns(&name).await;
-                    return Err(err);
-                }
-            }
-            netns_name = Some(name.clone());
-
-            if netns_plan.allocate_net_plan {
-                let network = spec
-                    .spec
-                    .network
-                    .as_ref()
-                    .expect("allocate_net_plan implies a network policy is present");
-                if let Err(err) = net::validate_policy(network) {
-                    let _ = net::cleanup_netns(&name).await;
-                    return Err(err);
-                }
-                let mut plan = match state.network_allocator.allocate(id, name.clone()) {
-                    Ok(plan) => plan,
-                    Err(err) => {
-                        let _ = net::cleanup_netns(&name).await;
-                        return Err(err);
-                    }
-                };
-                if let Err(err) = net::setup_network(&host_tools, &plan).await {
-                    if let Err(cleanup) = net::cleanup_network(&mut plan).await {
-                        error!(%cleanup, "failed launch retains its network allocation");
-                    }
-                    return Err(err);
-                }
-                if let Err(err) = net::write_policy_files(pod_dir, Some(network)).await {
-                    if let Err(cleanup) = net::cleanup_network(&mut plan).await {
-                        error!(%cleanup, "failed launch retains its network allocation");
-                    }
-                    return Err(err);
-                }
-                match net::start_dns_proxy(&host_tools, &mut plan, network, pod_dir).await {
-                    Ok(proxy) => {
-                        dns_proxy = proxy;
-                    }
-                    Err(err) => {
-                        if let Err(cleanup) = net::cleanup_network(&mut plan).await {
-                            error!(%cleanup, "failed launch retains its network allocation");
-                        }
-                        return Err(err);
-                    }
-                }
-                net_plan = Some(plan);
-            }
-        }
-
         // THE JAILER CUTOVER. When enabled (the default) Firecracker is launched
         // by the jailer, which establishes the cgroup, chroots into a fresh mount
         // namespace and drops privileges BEFORE `exec()`. The direct-spawn path
@@ -2025,549 +1944,484 @@ async fn spawn_firecracker_pod(
             None => pod_dir.join("vsock.sock"),
         };
 
-        // IDENTITY IS GATED ON EGRESS CONFINEMENT.
-        //
-        // A SPIFFE SVID bounds how LONG a credential is useful (short-lived,
-        // rotated). What bounds WHERE it can be presented is the egress policy.
-        // A pod allowed to reach the open internet holds a credential
-        // presentable to any endpoint, including an attacker's — the temporal
-        // bound survives and the spatial one is simply absent.
-        //
-        // So the two are offered as a trade rather than a prohibition: keep the
-        // broad allowlist and boot WITHOUT a workload API, or narrow it to named
-        // hosts and get an identity. The pod still runs either way; refusing the
-        // launch would make this a ban instead of a choice.
-        let identity_grant = net::decide_identity_grant(spec.spec.network.as_ref());
-        if let net::IdentityGrant::Denied { .. } = &identity_grant {
-            tracing::warn!(pod = %id, "{identity_grant}");
-        }
-        let workload_api_port = net::workload_api_port_for(
-            state.identity_manager.is_some(),
-            &identity_grant,
-            state.identity_vsock_port,
-        );
-        // #2789: give the pod a writable `/work`. Decided before the config that
-        // declares the drive, so a disk that cannot be made means no drive
-        // rather than a dead boot.
-        let (effective_image, scratch_is_node_provisioned) = firecracker_config::scratch_for_pod(
-            &image,
-            jail_layout.as_ref(),
-            state.jailer_uid.get(),
-            state.jailer_gid,
-        );
-        let image = &effective_image;
-        // Live-path: mint the session capability token. It is served to the
-        // guest over the workload API (`FETCH_TASK_TOKEN`, per-pod socket) — no
-        // longer written to the kernel cmdline — so `from_spec` does not take
-        // it; only `PodMaterial` below does.
-        let task_token = pod_authority::mint_task_token_for_spec(state, spec, id).await;
-        let pod_certificate = state.authority.boot_certificate(id).await;
-        let config = firecracker_config::FirecrackerConfig::from_spec(
-            spec,
-            &log_path,
-            &vsock_path,
-            image,
-            net_plan.as_ref(),
-            // The PUBLIC half only — the signing half stays in this process.
-            &hex::encode(state.approval_signer.verifying_key().to_bytes()),
-            workload_api_port,
-            audit.map(audit_sink::credentials::AuditGrant::target),
-            jail_layout.as_ref(),
-        )
-        .requiring_host_spec(state.broker_enforcing);
-        let config_json = match serde_json::to_vec_pretty(&config) {
-            Ok(data) => data,
-            Err(err) => {
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(ApiError::Driver(format!("config serialize failed: {err}")));
-            }
-        };
-        // The host copy at `config_path` stays for operators to inspect; the
-        // authoritative one the VMM reads is the copy `prepare_jail` puts inside.
-        let jail_config_json = config_json.clone();
-        if let Err(err) = tokio::fs::write(&config_path, config_json).await {
-            cleanup_net_resources(
-                &mut net_plan,
-                &mut netns_name,
-                &mut dns_proxy,
-                jail_layout.as_ref(),
-            )
-            .await;
-            return Err(ApiError::Driver(format!("config write failed: {err}")));
+        /// What the launch body hands the registration below, besides the resources.
+        struct Booted {
+            prepared_pod: pod_boot_identity::PreparedPod,
+            proxy_addr: String,
+            netns_pid: Option<u32>,
+            netns_baseline: Option<String>,
+            config: firecracker_config::FirecrackerConfig,
         }
 
-        // Build the jail's contents. The jailer creates the chroot dir itself and
-        // tolerates one that already exists, but it does NOT bring resources in —
-        // the kernel, rootfs, scratch and seccomp filter are ours to place, and the
-        // config has to be written where the jailed VMM will read it.
-        if let Some(ref jail) = jail_layout {
-            if let Err(err) = firecracker_config::prepare_jail(
-                jail,
-                image,
-                spec,
-                &jail_config_json,
-                state.jailer_uid.get(),
-                state.jailer_gid,
-                scratch_is_node_provisioned,
-            ) {
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(ApiError::Driver(format!("jail preparation failed: {err}")));
-            }
-        }
-
-        // Hold the artifacts to what the spec pinned, AFTER placement: in the jail these are the
-        // inodes that will boot (hard links, or a clone of a sealed copy for the rootfs).
-        // A pinned read-only rootfs is swapped for a clone of the node's sealed copy, measured
-        // once per node life (`sealed_rootfs.rs`); `None` leaves it to `verify` to read.
-        let sealed = match (&state.sealed_rootfs, &jail_layout, &image.rootfs_digest) {
-            (Some(store), Some(jail), Some(pin)) if image.read_only => {
-                let dest = jail.host_path(firecracker_config::in_jail::ROOTFS);
-                let owner = (state.jailer_uid.get(), state.jailer_gid);
-                store.place(image.rootfs_path(), pin, &dest, owner).await
-            }
-            _ => None,
-        };
-        let measured = match image_identity::verify(image, jail_layout.as_ref(), sealed).await {
-            Ok(measured) => measured,
-            Err(err) => {
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(ApiError::Driver(err));
-            }
-        };
-
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "ADR 0007 G-1 does not apply: a byte stream (the VMM's console), not a record log"
-        )]
-        let log_stdout = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|err| ApiError::Driver(format!("failed to open firecracker log: {err}")))?;
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "ADR 0007 G-1 does not apply: a byte stream (the VMM's console), not a record log"
-        )]
-        let log_stderr = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .map_err(|err| ApiError::Driver(format!("failed to open firecracker log: {err}")))?;
-
-        let netns_path = netns_name
-            .as_ref()
-            .map(|name| format!("/var/run/netns/{name}"));
-        let mut command = if let Some(ref jail) = jail_layout {
-            if state.firecracker_netns && netns_path.is_none() {
-                firecracker_config::cleanup_jail(jail);
-                return Err(ApiError::Driver(
-                    "network namespace name missing".to_string(),
-                ));
-            }
-            // `--netns` replaces the `ip netns exec` wrapper: the jailer joins the
-            // namespace itself, pre-exec, so there is no intermediate `ip` process.
-            // The cgroup goes in the same argv and is likewise applied before exec,
-            // which is what closes the window `apply_cgroup` left open.
-            let firecracker_path = state.firecracker_path.to_string_lossy();
-            let chroot_base = state.jailer_chroot_base.to_string_lossy();
-            let plan = firecracker_config::JailerPlan {
-                firecracker_path: &firecracker_path,
-                pod_id: &jail_id,
-                chroot_base: &chroot_base,
-                uid: state.jailer_uid,
-                gid: state.jailer_gid,
-                netns: netns_path.as_deref(),
-                cgroup: &node_cgroup,
-                config_file_in_jail: (!state.firecracker_api_boot)
-                    .then_some(firecracker_config::in_jail::CONFIG),
-            };
-            let mut cmd = Command::new(&state.jailer_path);
-            // `jailer_args` already terminates with `--` and Firecracker's own
-            // `--config-file`, so anything appended after this lands in the VMM's
-            // argv rather than the jailer's.
-            cmd.args(firecracker_config::jailer_args(&plan));
-            cmd
-        } else if state.firecracker_netns {
-            let Some(ref name) = netns_name else {
-                return Err(ApiError::Driver(
-                    "network namespace name missing".to_string(),
-                ));
-            };
-            let mut cmd = Command::new("ip");
-            cmd.args(["netns", "exec", name, "--"]);
-            cmd.arg(&state.firecracker_path);
-            if !state.firecracker_api_boot {
-                cmd.arg("--config-file").arg(&config_path);
-            }
-            // Per-pod, for the same reason as the plain branch below. A netns
-            // isolates the network, not the filesystem, so the default API
-            // socket path is still shared with every other pod on the host.
-            cmd.arg("--api-sock")
-                .arg(pod_dir.join("firecracker.socket"));
-            cmd
-        } else {
-            let mut cmd = Command::new(&state.firecracker_path);
-            if !state.firecracker_api_boot {
-                cmd.arg("--config-file").arg(&config_path);
-            }
-            // WITHOUT THIS, ONE POD AT A TIME. Firecracker defaults its API
-            // socket to the global `/run/firecracker.socket`, so a second
-            // concurrent launch fails to bind it and exits immediately.
-            //
-            // The jailed path never hit this because the jailer chroots each
-            // pod, which is why it went unnoticed: the default configuration is
-            // fine and the unjailed one silently serialises.
-            //
-            // The failure is also badly misleading. Firecracker exits before
-            // creating its vsock socket, so the node reports "vsock socket not
-            // found"; and if the node gets far enough to check seccomp it reads
-            // the mode of a process that has already died and reports
-            // "seccomp mode 0 (expected 2 = filter)" — a fail-closed security
-            // check stating a true fact about the wrong process. Both were
-            // observed and both cost real time before the cause was understood.
-            cmd.arg("--api-sock")
-                .arg(pod_dir.join("firecracker.socket"));
-            cmd
-        };
-        firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
-        let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
-        let prepared_pod = match async {
-            let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
-                measured,
-                state,
-                pod_dir,
-                spec,
-                image,
-                id,
-                grant: &identity_grant,
-                vsock_path: &vsock_path,
-                jail_owner: jail_layout
+        // From here every resource the launch acquires is moved into one handle the moment it
+        // exists, and `run` is the launch's only exit: `Ok` commits them to the pod below, and
+        // any `?` or `return Err` in the body releases everything held (#2579). There is no
+        // per-site cleanup to forget; see `launch_resources.rs`.
+        let resources = launch_resources::LaunchResources::new(permit, &launch_resources::HostNet);
+        let (booted, held) = resources
+            .run(async |res: &mut launch_resources::LaunchResources| {
+                if let Some(jail) = &jail_layout {
+                    res.hold_jail(jail.clone());
+                }
+                // Resolved once: every consumer below takes a rootfs that is a host file by construction.
+                let image = rootfs_source::HostImage::of_spec(spec)?;
+                let vsock_spec = spec
+                    .spec
+                    .vsock
                     .as_ref()
-                    .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-                task_token: task_token.clone(),
-                pod_certificate: pod_certificate.clone(),
-                broker_serve,
-                // Served once over FETCH_AUDIT_CREDENTIALS: the credential minted for this pod's
-                // resolved sink, never the node's own (#3160).
-                audit_creds: audit.map(audit_sink::credentials::AuditGrant::served_credentials),
-            })
-            .await?;
-            identity
-                .with_broker(
-                    state,
-                    spec,
-                    &vsock_path,
-                    id,
-                    broker_verify,
-                    jail_layout
-                        .as_ref()
-                        .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
-                )
-                .await?
-                .with_network_meter(net_plan.as_ref())
-                .await
-        }
-        .await
-        {
-            Ok(ready) => ready,
-            Err(err) => {
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(err);
-            }
-        };
-        command.stdout(log_stdout).stderr(log_stderr);
-        let mut child = match prepared_pod.spawn(&mut command) {
-            Ok(child) => child,
-            Err(err) => {
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(ApiError::Driver(format!(
-                    "failed to spawn firecracker: {err}"
-                )));
-            }
-        };
-        let pid = child.id();
+                    .ok_or_else(|| ApiError::Driver("missing spec.vsock".to_string()))?;
 
-        // API mode builds the machine before anything reads the sandbox, because Firecracker
-        // installs its seccomp filter when the vCPUs start, NOT at exec.
-        //
-        // MEASURED, and it contradicts the obvious design. The appeal of the API socket was
-        // supposed to be verify-then-boot: a VMM idling in its API loop with its filter already
-        // on, checked while still stopped. It does not work — a Firecracker left idle for five
-        // seconds after exec still reports `seccomp mode 0`, and the launch aborts fail-closed
-        // on a sandbox that was about to be correct. So the check stays downstream of the boot
-        // here exactly as it is for a config file, and the ordering win the API was expected to
-        // buy is simply not available.
-        if state.firecracker_api_boot {
-            let jail = jail_layout.as_ref();
-            let sock = firecracker_api::api_socket_path(jail, pod_dir);
-            let base = snapshot_restore::base_for(state, &config, spec, &verdict, jail);
-            let booted = snapshot_restore::bring_up(&sock, &config, base.as_ref(), jail).await;
-            if let Err(reason) = booted {
-                let _ = child.kill().await;
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
-                    jail_layout.as_ref(),
-                )
-                .await;
-                return Err(ApiError::Driver(format!("api boot failed: {reason}")));
-            }
-        }
+                // `netns_plan` was decided before the host preflight, above.
+                let mut netns_name: Option<String> = None;
+                if netns_plan.create_netns {
+                    let name = net::netns_name(id);
+                    net::create_netns(&host_tools, &name).await?;
+                    res.hold_netns(name.clone());
 
-        // Verify seccomp is active on the Firecracker process (unless explicitly disabled).
-        // Seccomp mode 2 = SECCOMP_MODE_FILTER (BPF filter active).
-        //
-        // FAIL-CLOSED (most-paranoid #3): when `firecracker_seccomp_verify` is set
-        // (the default), a process whose seccomp filter cannot be confirmed active
-        // is killed and the launch is aborted rather than left running unconfined.
-        // The previous behavior only logged a warning and continued (fail-open).
-        if !matches!(spec.spec.seccomp, Some(nucleus_spec::SeccompSpec::Disabled)) {
-            // Bounded poll, not a single read: the filter is installed by
-            // Firecracker after `exec`, and under the jailer this pid is the jailer
-            // for the whole chroot/privilege-drop sequence before that. A snapshot
-            // taken here would see mode 0 and abort a launch that was about to be
-            // correctly confined. Still fail-closed — the deadline decides, not the
-            // absence of an answer.
-            let verified = match pid {
-                Some(fc_pid) => match firecracker_config::verify_seccomp_active_within(
-                    fc_pid,
-                    std::time::Duration::from_secs(5),
-                )
-                .await
-                {
-                    Ok(()) => {
-                        tracing::info!(
-                            pid = fc_pid,
-                            "seccomp filter verified active on firecracker process"
-                        );
-                        Ok(())
+                    // Apply default-deny iptables policy BEFORE any process spawns.
+                    // This closes the race window where a process could exfiltrate
+                    // data before the full policy is applied. `apply_default_deny` is
+                    // guaranteed true whenever `create_netns` is (see NetnsPlan).
+                    if netns_plan.apply_default_deny {
+                        net::apply_default_deny(&host_tools, &name).await?;
                     }
-                    Err(e) => Err(format!("seccomp verification failed for pid {fc_pid}: {e}")),
-                },
-                None => Err("firecracker pid unavailable; cannot verify seccomp".to_string()),
-            };
-            if let Err(reason) = verified {
-                if state.firecracker_seccomp_verify {
-                    let _ = child.kill().await;
-                    cleanup_net_resources(
-                        &mut net_plan,
-                        &mut netns_name,
-                        &mut dns_proxy,
-                        jail_layout.as_ref(),
-                    )
-                    .await;
-                    return Err(ApiError::Driver(format!(
-                        "{reason} — aborting launch (fail-closed). Set \
-                         NUCLEUS_FIRECRACKER_SECCOMP_VERIFY=false only if this environment \
-                         legitimately cannot read /proc and the risk is accepted."
-                    )));
+                    netns_name = Some(name.clone());
+
+                    if netns_plan.allocate_net_plan {
+                        let network = spec
+                            .spec
+                            .network
+                            .as_ref()
+                            .expect("allocate_net_plan implies a network policy is present");
+                        net::validate_policy(network)?;
+                        let plan = res.hold_network(state.network_allocator.allocate(id, name)?);
+                        net::setup_network(&host_tools, plan).await?;
+                        net::write_policy_files(pod_dir, Some(network)).await?;
+                        if let Some(proxy) =
+                            net::start_dns_proxy(&host_tools, plan, network, pod_dir).await?
+                        {
+                            res.hold_dns(proxy);
+                        }
+                    }
                 }
-                tracing::warn!(
-                    %reason,
-                    "seccomp verification failed but firecracker_seccomp_verify=false; continuing (UNSAFE)"
+
+                // IDENTITY IS GATED ON EGRESS CONFINEMENT.
+                //
+                // A SPIFFE SVID bounds how LONG a credential is useful (short-lived,
+                // rotated). What bounds WHERE it can be presented is the egress policy.
+                // A pod allowed to reach the open internet holds a credential
+                // presentable to any endpoint, including an attacker's — the temporal
+                // bound survives and the spatial one is simply absent.
+                //
+                // So the two are offered as a trade rather than a prohibition: keep the
+                // broad allowlist and boot WITHOUT a workload API, or narrow it to named
+                // hosts and get an identity. The pod still runs either way; refusing the
+                // launch would make this a ban instead of a choice.
+                let identity_grant = net::decide_identity_grant(spec.spec.network.as_ref());
+                if let net::IdentityGrant::Denied { .. } = &identity_grant {
+                    tracing::warn!(pod = %id, "{identity_grant}");
+                }
+                let workload_api_port = net::workload_api_port_for(
+                    state.identity_manager.is_some(),
+                    &identity_grant,
+                    state.identity_vsock_port,
                 );
-            }
-        }
-
-        let mut netns_baseline: Option<String> = None;
-        let mut netns_pid: Option<u32> = None;
-
-        if state.firecracker_netns {
-            let default_policy = NetworkSpec::nothing_listed();
-            let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
-            let pid = match pid {
-                Some(pid) => pid,
-                None => {
-                    let _ = child.kill().await;
-                    cleanup_net_resources(
-                        &mut net_plan,
-                        &mut netns_name,
-                        &mut dns_proxy,
+                // #2789: give the pod a writable `/work`. Decided before the config that
+                // declares the drive, so a disk that cannot be made means no drive
+                // rather than a dead boot.
+                let (effective_image, scratch_is_node_provisioned) =
+                    firecracker_config::scratch_for_pod(
+                        &image,
                         jail_layout.as_ref(),
-                    )
-                    .await;
-                    return Err(ApiError::Driver(
-                        "firecracker process id unavailable for network policy".to_string(),
-                    ));
-                }
-            };
-            netns_pid = Some(pid);
-            let dns_entries = dns_proxy.as_ref().map(|proxy| proxy.entries.as_slice());
-            let dns_server = dns_proxy
-                .as_ref()
-                .and_then(|_| net_plan.as_ref().map(|plan| plan.gateway_ip));
-            if let Err(err) =
-                net::apply_host_policy(&host_tools, pid, policy, dns_entries, dns_server).await
-            {
-                let _ = child.kill().await;
-                cleanup_net_resources(
-                    &mut net_plan,
-                    &mut netns_name,
-                    &mut dns_proxy,
+                        state.jailer_uid.get(),
+                        state.jailer_gid,
+                    );
+                let image = &effective_image;
+                // Live-path: mint the session capability token. It is served to the
+                // guest over the workload API (`FETCH_TASK_TOKEN`, per-pod socket) — no
+                // longer written to the kernel cmdline — so `from_spec` does not take
+                // it; only `PodMaterial` below does.
+                let task_token = pod_authority::mint_task_token_for_spec(state, spec, id).await;
+                let pod_certificate = state.authority.boot_certificate(id).await;
+                let config = firecracker_config::FirecrackerConfig::from_spec(
+                    spec,
+                    &log_path,
+                    &vsock_path,
+                    image,
+                    res.net_plan(),
+                    // The PUBLIC half only — the signing half stays in this process.
+                    &hex::encode(state.approval_signer.verifying_key().to_bytes()),
+                    workload_api_port,
+                    audit.map(audit_sink::credentials::AuditGrant::target),
                     jail_layout.as_ref(),
                 )
-                .await;
-                return Err(err);
-            }
-            if state.firecracker_netns_drift_check {
-                match net::snapshot_iptables(&host_tools, pid).await {
-                    Ok(snapshot) => {
-                        let baseline_path = pod_dir.join("net.iptables.baseline");
-                        if let Err(err) =
-                            tokio::fs::write(&baseline_path, snapshot.as_bytes()).await
+                .requiring_host_spec(state.broker_enforcing);
+                let config_json = serde_json::to_vec_pretty(&config)
+                    .map_err(|err| ApiError::Driver(format!("config serialize failed: {err}")))?;
+                // The host copy at `config_path` stays for operators to inspect; the
+                // authoritative one the VMM reads is the copy `prepare_jail` puts inside.
+                let jail_config_json = config_json.clone();
+                tokio::fs::write(&config_path, config_json)
+                    .await
+                    .map_err(|err| ApiError::Driver(format!("config write failed: {err}")))?;
+
+                // Build the jail's contents. The jailer creates the chroot dir itself and
+                // tolerates one that already exists, but it does NOT bring resources in —
+                // the kernel, rootfs, scratch and seccomp filter are ours to place, and the
+                // config has to be written where the jailed VMM will read it.
+                if let Some(ref jail) = jail_layout {
+                    firecracker_config::prepare_jail(
+                        jail,
+                        image,
+                        spec,
+                        &jail_config_json,
+                        state.jailer_uid.get(),
+                        state.jailer_gid,
+                        scratch_is_node_provisioned,
+                    )
+                    .map_err(|err| ApiError::Driver(format!("jail preparation failed: {err}")))?;
+                }
+
+                // Hold the artifacts to what the spec pinned, AFTER placement: in the jail these are the
+                // inodes that will boot (hard links, or a clone of a sealed copy for the rootfs).
+                // A pinned read-only rootfs is swapped for a clone of the node's sealed copy, measured
+                // once per node life (`sealed_rootfs.rs`); `None` leaves it to `verify` to read.
+                let sealed = match (&state.sealed_rootfs, &jail_layout, &image.rootfs_digest) {
+                    (Some(store), Some(jail), Some(pin)) if image.read_only => {
+                        let dest = jail.host_path(firecracker_config::in_jail::ROOTFS);
+                        let owner = (state.jailer_uid.get(), state.jailer_gid);
+                        store.place(image.rootfs_path(), pin, &dest, owner).await
+                    }
+                    _ => None,
+                };
+                let measured = image_identity::verify(image, jail_layout.as_ref(), sealed)
+                    .await
+                    .map_err(ApiError::Driver)?;
+
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 G-1 does not apply: a byte stream (the VMM's console), not a record log"
+                )]
+                let log_stdout = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .map_err(|err| {
+                        ApiError::Driver(format!("failed to open firecracker log: {err}"))
+                    })?;
+                #[expect(
+                    clippy::disallowed_methods,
+                    reason = "ADR 0007 G-1 does not apply: a byte stream (the VMM's console), not a record log"
+                )]
+                let log_stderr = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .map_err(|err| {
+                        ApiError::Driver(format!("failed to open firecracker log: {err}"))
+                    })?;
+
+                let netns_path = netns_name
+                    .as_ref()
+                    .map(|name| format!("/var/run/netns/{name}"));
+                let mut command = if jail_layout.is_some() {
+                    if state.firecracker_netns && netns_path.is_none() {
+                        return Err(ApiError::Driver(
+                            "network namespace name missing".to_string(),
+                        ));
+                    }
+                    // `--netns` replaces the `ip netns exec` wrapper: the jailer joins the
+                    // namespace itself, pre-exec, so there is no intermediate `ip` process.
+                    // The cgroup goes in the same argv and is likewise applied before exec,
+                    // which is what closes the window `apply_cgroup` left open.
+                    let firecracker_path = state.firecracker_path.to_string_lossy();
+                    let chroot_base = state.jailer_chroot_base.to_string_lossy();
+                    let plan = firecracker_config::JailerPlan {
+                        firecracker_path: &firecracker_path,
+                        pod_id: &jail_id,
+                        chroot_base: &chroot_base,
+                        uid: state.jailer_uid,
+                        gid: state.jailer_gid,
+                        netns: netns_path.as_deref(),
+                        cgroup: &node_cgroup,
+                        config_file_in_jail: (!state.firecracker_api_boot)
+                            .then_some(firecracker_config::in_jail::CONFIG),
+                    };
+                    let mut cmd = Command::new(&state.jailer_path);
+                    // `jailer_args` already terminates with `--` and Firecracker's own
+                    // `--config-file`, so anything appended after this lands in the VMM's
+                    // argv rather than the jailer's.
+                    cmd.args(firecracker_config::jailer_args(&plan));
+                    cmd
+                } else if state.firecracker_netns {
+                    let Some(ref name) = netns_name else {
+                        return Err(ApiError::Driver(
+                            "network namespace name missing".to_string(),
+                        ));
+                    };
+                    let mut cmd = Command::new("ip");
+                    cmd.args(["netns", "exec", name, "--"]);
+                    cmd.arg(&state.firecracker_path);
+                    if !state.firecracker_api_boot {
+                        cmd.arg("--config-file").arg(&config_path);
+                    }
+                    // Per-pod, for the same reason as the plain branch below. A netns
+                    // isolates the network, not the filesystem, so the default API
+                    // socket path is still shared with every other pod on the host.
+                    cmd.arg("--api-sock")
+                        .arg(pod_dir.join("firecracker.socket"));
+                    cmd
+                } else {
+                    let mut cmd = Command::new(&state.firecracker_path);
+                    if !state.firecracker_api_boot {
+                        cmd.arg("--config-file").arg(&config_path);
+                    }
+                    // WITHOUT THIS, ONE POD AT A TIME. Firecracker defaults its API
+                    // socket to the global `/run/firecracker.socket`, so a second
+                    // concurrent launch fails to bind it and exits immediately.
+                    //
+                    // The jailed path never hit this because the jailer chroots each
+                    // pod, which is why it went unnoticed: the default configuration is
+                    // fine and the unjailed one silently serialises.
+                    //
+                    // The failure is also badly misleading. Firecracker exits before
+                    // creating its vsock socket, so the node reports "vsock socket not
+                    // found"; and if the node gets far enough to check seccomp it reads
+                    // the mode of a process that has already died and reports
+                    // "seccomp mode 0 (expected 2 = filter)" — a fail-closed security
+                    // check stating a true fact about the wrong process. Both were
+                    // observed and both cost real time before the cause was understood.
+                    cmd.arg("--api-sock")
+                        .arg(pod_dir.join("firecracker.socket"));
+                    cmd
+                };
+                firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
+                let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
+                let prepared_pod = async {
+                    let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
+                        measured,
+                        state,
+                        pod_dir,
+                        spec,
+                        image,
+                        id,
+                        grant: &identity_grant,
+                        vsock_path: &vsock_path,
+                        jail_owner: jail_layout
+                            .as_ref()
+                            .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                        task_token: task_token.clone(),
+                        pod_certificate: pod_certificate.clone(),
+                        broker_serve,
+                        // Served once over FETCH_AUDIT_CREDENTIALS: the credential minted for this pod's
+                        // resolved sink, never the node's own (#3160).
+                        audit_creds: audit
+                            .map(audit_sink::credentials::AuditGrant::served_credentials),
+                    })
+                    .await?;
+                    identity
+                        .with_broker(
+                            state,
+                            spec,
+                            &vsock_path,
+                            id,
+                            broker_verify,
+                            jail_layout
+                                .as_ref()
+                                .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                        )
+                        .await?
+                        .with_network_meter(res.net_plan())
+                        .await
+                }
+                .await?;
+                command.stdout(log_stdout).stderr(log_stderr);
+                let spawned = prepared_pod.spawn(&mut command);
+                let child = spawned
+                    .map_err(|err| ApiError::Driver(format!("failed to spawn firecracker: {err}")))?;
+                let pid = child.id();
+                res.hold_vmm(child);
+
+                // API mode builds the machine before anything reads the sandbox, because Firecracker
+                // installs its seccomp filter when the vCPUs start, NOT at exec.
+                //
+                // MEASURED, and it contradicts the obvious design. The appeal of the API socket was
+                // supposed to be verify-then-boot: a VMM idling in its API loop with its filter already
+                // on, checked while still stopped. It does not work — a Firecracker left idle for five
+                // seconds after exec still reports `seccomp mode 0`, and the launch aborts fail-closed
+                // on a sandbox that was about to be correct. So the check stays downstream of the boot
+                // here exactly as it is for a config file, and the ordering win the API was expected to
+                // buy is simply not available.
+                if state.firecracker_api_boot {
+                    let jail = jail_layout.as_ref();
+                    let sock = firecracker_api::api_socket_path(jail, pod_dir);
+                    let base = snapshot_restore::base_for(state, &config, spec, &verdict, jail);
+                    snapshot_restore::bring_up(&sock, &config, base.as_ref(), jail)
+                        .await
+                        .map_err(|reason| ApiError::Driver(format!("api boot failed: {reason}")))?;
+                }
+
+                // Verify seccomp is active on the Firecracker process (unless explicitly disabled).
+                // Seccomp mode 2 = SECCOMP_MODE_FILTER (BPF filter active).
+                //
+                // FAIL-CLOSED (most-paranoid #3): when `firecracker_seccomp_verify` is set
+                // (the default), a process whose seccomp filter cannot be confirmed active
+                // is killed and the launch is aborted rather than left running unconfined.
+                // The previous behavior only logged a warning and continued (fail-open).
+                if !matches!(spec.spec.seccomp, Some(nucleus_spec::SeccompSpec::Disabled)) {
+                    // Bounded poll, not a single read: the filter is installed by
+                    // Firecracker after `exec`, and under the jailer this pid is the jailer
+                    // for the whole chroot/privilege-drop sequence before that. A snapshot
+                    // taken here would see mode 0 and abort a launch that was about to be
+                    // correctly confined. Still fail-closed — the deadline decides, not the
+                    // absence of an answer.
+                    let verified = match pid {
+                        Some(fc_pid) => match firecracker_config::verify_seccomp_active_within(
+                            fc_pid,
+                            std::time::Duration::from_secs(5),
+                        )
+                        .await
                         {
-                            let _ = child.kill().await;
-                            cleanup_net_resources(
-                                &mut net_plan,
-                                &mut netns_name,
-                                &mut dns_proxy,
-                                jail_layout.as_ref(),
-                            )
-                            .await;
+                            Ok(()) => {
+                                tracing::info!(
+                                    pid = fc_pid,
+                                    "seccomp filter verified active on firecracker process"
+                                );
+                                Ok(())
+                            }
+                            Err(e) => {
+                                Err(format!("seccomp verification failed for pid {fc_pid}: {e}"))
+                            }
+                        },
+                        None => Err("firecracker pid unavailable; cannot verify seccomp".to_string()),
+                    };
+                    if let Err(reason) = verified {
+                        if state.firecracker_seccomp_verify {
                             return Err(ApiError::Driver(format!(
-                                "failed to write iptables baseline: {err}"
+                                "{reason} — aborting launch (fail-closed). Set \
+                                 NUCLEUS_FIRECRACKER_SECCOMP_VERIFY=false only if this environment \
+                                 legitimately cannot read /proc and the risk is accepted."
                             )));
                         }
+                        tracing::warn!(
+                            %reason,
+                            "seccomp verification failed but firecracker_seccomp_verify=false; continuing (UNSAFE)"
+                        );
+                    }
+                }
+
+                let mut netns_baseline: Option<String> = None;
+                let mut netns_pid: Option<u32> = None;
+
+                if state.firecracker_netns {
+                    let default_policy = NetworkSpec::nothing_listed();
+                    let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
+                    let pid = pid.ok_or_else(|| {
+                        ApiError::Driver(
+                            "firecracker process id unavailable for network policy".to_string(),
+                        )
+                    })?;
+                    netns_pid = Some(pid);
+                    let dns_entries = res.dns().map(|proxy| proxy.entries.as_slice());
+                    let dns_server = res
+                        .dns()
+                        .and_then(|_| res.net_plan().map(|plan| plan.gateway_ip));
+                    net::apply_host_policy(&host_tools, pid, policy, dns_entries, dns_server)
+                        .await?;
+                    if state.firecracker_netns_drift_check {
+                        let snapshot = net::snapshot_iptables(&host_tools, pid).await?;
+                        let baseline_path = pod_dir.join("net.iptables.baseline");
+                        tokio::fs::write(&baseline_path, snapshot.as_bytes())
+                            .await
+                            .map_err(|err| {
+                                ApiError::Driver(format!(
+                                    "failed to write iptables baseline: {err}"
+                                ))
+                            })?;
                         netns_baseline = Some(snapshot);
                     }
-                    Err(err) => {
-                        let _ = child.kill().await;
-                        cleanup_net_resources(
-                            &mut net_plan,
-                            &mut netns_name,
-                            &mut dns_proxy,
-                            jail_layout.as_ref(),
+                }
+
+                // CGROUPS. Under the jailer these are already applied — it wrote every
+                // `--cgroup file=value` and put its own pid in the cgroup BEFORE `exec()`,
+                // so the limits existed before the VMM did. Re-applying here would be
+                // harmless but misleading: it would keep alive the impression that the
+                // post-spawn path is what enforces limits, when the whole point of the
+                // cutover is that it no longer has to.
+                //
+                // On the direct-spawn path it remains the only mechanism, and it remains
+                // late — the guest runs briefly before its limits exist. That is the window
+                // the jailer closes, and the reason `--firecracker-jailer` defaults on.
+                if jail_layout.is_none() {
+                    // Always placed (#3130): in the spec's directory if it names one, else the node's.
+                    let dir = spec
+                        .spec
+                        .cgroup
+                        .as_ref()
+                        .map_or_else(|| cgroup::node_dir(&jail_id), |c| c.path.clone());
+                    let pid = pid.ok_or_else(|| {
+                        ApiError::Driver(
+                            "firecracker process id unavailable for cgroup placement".to_string(),
                         )
-                        .await;
-                        return Err(err);
-                    }
+                    })?;
+                    res.hold_cgroup(cgroup::apply_cgroup(pid, &dir, &node_cgroup).await?);
                 }
-            }
-        }
 
-        // CGROUPS. Under the jailer these are already applied — it wrote every
-        // `--cgroup file=value` and put its own pid in the cgroup BEFORE `exec()`,
-        // so the limits existed before the VMM did. Re-applying here would be
-        // harmless but misleading: it would keep alive the impression that the
-        // post-spawn path is what enforces limits, when the whole point of the
-        // cutover is that it no longer has to.
-        //
-        // On the direct-spawn path it remains the only mechanism, and it remains
-        // late — the guest runs briefly before its limits exist. That is the window
-        // the jailer closes, and the reason `--firecracker-jailer` defaults on.
-        let mut direct_cgroup = None;
-        if jail_layout.is_none() {
-            // Always placed (#3130): in the spec's directory if it names one, else the node's.
-            let dir = spec
-                .spec
-                .cgroup
-                .as_ref()
-                .map_or_else(|| cgroup::node_dir(&jail_id), |c| c.path.clone());
-            let placed = match pid {
-                Some(pid) => cgroup::apply_cgroup(pid, &dir, &node_cgroup).await,
-                None => Err(ApiError::Driver(
-                    "firecracker process id unavailable for cgroup placement".to_string(),
-                )),
-            };
-            match placed {
-                Ok(placement) => direct_cgroup = Some(placement),
-                Err(err) => {
-                    let _ = child.kill().await;
-                    cleanup_net_resources(
-                        &mut net_plan,
-                        &mut netns_name,
-                        &mut dns_proxy,
-                        jail_layout.as_ref(),
-                    )
-                    .await;
-                    return Err(err);
-                }
-            }
-        }
+                wait_for_vsock_socket(&vsock_path).await?;
+                let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
+                    .await
+                    .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
+                let bridge_addr = bridge.listen_addr();
+                res.hold_bridge(bridge);
 
-        if let Err(err) = wait_for_vsock_socket(&vsock_path).await {
-            let _ = child.kill().await;
-            cleanup_net_resources(
-                &mut net_plan,
-                &mut netns_name,
-                &mut dns_proxy,
-                jail_layout.as_ref(),
-            )
-            .await;
-            return Err(err);
-        }
-        let bridge = vsock_bridge::VsockBridge::start(vsock_path.clone(), vsock_spec.port)
-            .await
-            .map_err(|e| ApiError::Driver(format!("vsock bridge failed: {e}")))?;
+                let proxy = signed_proxy::SignedProxy::start_with_drand(
+                    bridge_addr,
+                    Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
+                    // Firecracker pod: it verifies approvals against the node's PUBLIC
+                    // key (nucleus.approval_pubkeys), so approvals are Ed25519-signed
+                    // and no approval secret exists in the guest.
+                    Some(signed_proxy::ApprovalSigning::Ed25519(Arc::clone(
+                        &state.approval_signer,
+                    ))),
+                    state.proxy_actor.clone(),
+                    state.drand_config.clone(),
+                )
+                .await
+                .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
+                let proxy_addr = format!("http://{}", proxy.listen_addr());
+                let health_addr = proxy.listen_addr();
+                res.hold_proxy(proxy);
 
-        let mut proxy_addr = format!("http://{}", bridge.listen_addr());
-        let proxy = signed_proxy::SignedProxy::start_with_drand(
-            bridge.listen_addr(),
-            Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-            // Firecracker pod: it verifies approvals against the node's PUBLIC
-            // key (nucleus.approval_pubkeys), so approvals are Ed25519-signed
-            // and no approval secret exists in the guest.
-            Some(signed_proxy::ApprovalSigning::Ed25519(Arc::clone(
-                &state.approval_signer,
-            ))),
-            state.proxy_actor.clone(),
-            state.drand_config.clone(),
-        )
-        .await
-        .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
-        proxy_addr = format!("http://{}", proxy.listen_addr());
-        let health_addr = proxy.listen_addr();
-        let signed_proxy = Some(proxy);
-
-        if let Err(err) = prepared_pod
-            .gate(health_addr, pod_dir, spec, id, &mut child)
-            .await
-        {
-            if let Some(proxy) = signed_proxy {
-                proxy.shutdown().await;
-            }
-            bridge.shutdown().await;
-            let _ = child.kill().await;
-            cleanup_net_resources(
-                &mut net_plan,
-                &mut netns_name,
-                &mut dns_proxy,
-                jail_layout.as_ref(),
-            )
-            .await;
-            return Err(err);
-        }
+                prepared_pod
+                    .gate(health_addr, pod_dir, spec, id, res.vmm_mut()?)
+                    .await?;
+                Ok::<_, ApiError>(Booted {
+                    prepared_pod,
+                    proxy_addr,
+                    netns_pid,
+                    netns_baseline,
+                    config,
+                })
+            })
+            .await?;
+        let Booted {
+            prepared_pod,
+            proxy_addr,
+            netns_pid,
+            netns_baseline,
+            config,
+        } = booted;
+        let launch_resources::Committed {
+            permit,
+            netns: netns_name,
+            net_plan,
+            dns: dns_proxy,
+            jail,
+            vmm: child,
+            cgroup: direct_cgroup,
+            bridge,
+            proxy: signed_proxy,
+        } = held;
 
         let child = Arc::new(Mutex::new(child));
         let drift_stop = Arc::new(AtomicBool::new(false));
@@ -2638,9 +2492,9 @@ async fn spawn_firecracker_pod(
         let handle = FirecrackerPod {
             direct_cgroup: Mutex::new(direct_cgroup),
             pod_dir: pod_dir.to_path_buf(),
-            jail: Mutex::new(jail_layout.clone()),
+            jail: Mutex::new(jail),
             child,
-            bridge: Mutex::new(Some(bridge)),
+            bridge: Mutex::new(bridge),
             signed_proxy: Mutex::new(signed_proxy),
             permit: Mutex::new(permit),
             net_plan: Mutex::new(net_plan),
@@ -2660,46 +2514,11 @@ async fn spawn_firecracker_pod(
 
         info!("spawned firecracker pod {}", id);
 
-        // The pod owns its namespace from here; the reaper tears it down when
-        // the pod exits. This is the ONLY path that reaches this line, so it is
-        // the only place the guard should stand down.
-        if let Some(guard) = netns_guard.take() {
-            guard.disarm();
-        }
-
         Ok((
             DriverState::Firecracker(Box::new(handle)),
             Some(proxy_addr),
             log_path,
         ))
-    }
-}
-
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-async fn cleanup_net_resources(
-    net_plan: &mut Option<net::NetPlan>,
-    netns_name: &mut Option<String>,
-    dns_proxy: &mut Option<net::DnsProxyState>,
-    // The jail is torn down here rather than at each abort site ON PURPOSE. Every
-    // post-spawn failure path already funnels through this function, so threading
-    // the jail through it means a new abort path cannot forget to remove the jail:
-    // it will not compile without saying what to do about it.
-    jail: Option<&firecracker_config::JailLayout>,
-) {
-    if let Some(mut proxy) = dns_proxy.take() {
-        let _ = proxy.child.kill().await;
-    }
-    if let Some(mut plan) = net_plan.take() {
-        if let Err(error) = net::cleanup_network(&mut plan).await {
-            error!(%error, "failed launch retains its network allocation");
-        }
-    } else if let Some(name) = netns_name.take() {
-        let _ = net::cleanup_netns(&name).await;
-    }
-    // Last, and after the VMM has been killed by the caller: removing files out
-    // from under a live Firecracker is its own kind of bad.
-    if let Some(layout) = jail {
-        firecracker_config::cleanup_jail(layout);
     }
 }
 
