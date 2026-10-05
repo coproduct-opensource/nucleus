@@ -544,8 +544,14 @@ mod tests {
         let err = preflight_with(true, &commands, missing_nsenter)
             .expect_err("a host without nsenter must not pass the preflight");
         assert!(err.contains("nsenter"), "{err}");
-        assert!(err.contains("util-linux"), "the remedy names the package: {err}");
-        assert!(!err.contains("  * ip "), "only what is missing is listed: {err}");
+        assert!(
+            err.contains("util-linux"),
+            "the remedy names the package: {err}"
+        );
+        assert!(
+            !err.contains("  * ip "),
+            "only what is missing is listed: {err}"
+        );
 
         // Non-vacuity: the same declaration on a complete host passes and
         // yields a witness for exactly those commands.

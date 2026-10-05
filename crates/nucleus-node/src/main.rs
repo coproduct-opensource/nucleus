@@ -2427,7 +2427,9 @@ async fn spawn_firecracker_pod(
             let dns_server = dns_proxy
                 .as_ref()
                 .and_then(|_| net_plan.as_ref().map(|plan| plan.gateway_ip));
-            if let Err(err) = net::apply_host_policy(&host_tools, pid, policy, dns_entries, dns_server).await {
+            if let Err(err) =
+                net::apply_host_policy(&host_tools, pid, policy, dns_entries, dns_server).await
+            {
                 let _ = child.kill().await;
                 cleanup_net_resources(
                     &mut net_plan,
