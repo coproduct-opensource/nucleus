@@ -116,8 +116,24 @@ impl AgentCommand {
     /// The agent's command ON THIS HOST, confined: the program, the user's
     /// arguments, then the flags that deny the working directory any say in the
     /// agent's settings. The launch sites append the rest of the launch protocol.
+    ///
+    /// Takes the operator's `--unsandboxed` declaration by value (ADR 0007 C-4):
+    /// an agent on the host is outside every structural boundary nucleus has, so
+    /// there is no way to build its command without the opt-in that printed the
+    /// banner and wrote the audit record (owner decision D9, 2026-10-01).
     #[must_use]
-    pub fn launch(&self) -> Command {
+    pub fn launch(&self, _declared: crate::host_tier::HostAgentOptIn) -> Command {
+        self.confined()
+    }
+
+    /// The same confined command line, for a person to read and paste. Spawns
+    /// nothing, so it needs no opt-in; whoever pastes it makes that choice.
+    #[must_use]
+    pub fn printed_advice(&self) -> Command {
+        self.confined()
+    }
+
+    fn confined(&self) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
         crate::mediation::confine_to_nucleus_settings(&mut cmd);
@@ -156,7 +172,7 @@ pub const HOST_PATH_IN_POD: &str = "\
 names a file relative to this host, but the agent runs inside the pod and the guest resolves \
 the program against its own image. Name it by its absolute path in the guest image or by a \
 name on the guest's PATH; nucleus does not copy host binaries into the guest. To run the agent \
-on this host instead, use --local.";
+on this host instead, use --local --unsandboxed.";
 
 /// A command line someone will paste: program and arguments, each
 /// single-quoted when it is empty or carries a character a shell would read.
@@ -207,7 +223,7 @@ mod tests {
             &["--profile-dir".to_string(), "/x y".to_string()],
         )
         .expect("named");
-        let cmd = agent.launch();
+        let cmd = agent.launch(crate::host_tier::HostAgentOptIn::for_test());
         assert_eq!(cmd.get_program(), "my-agent");
         let args = argv(&cmd);
         assert_eq!(&args[..2], ["--profile-dir", "/x y"], "user args first");
@@ -223,7 +239,7 @@ mod tests {
             &["--setting-sources".to_string(), "user".to_string()],
         )
         .expect("named");
-        let args = argv(&agent.launch());
+        let args = argv(&agent.launch(crate::host_tier::HostAgentOptIn::for_test()));
         assert_eq!(
             args,
             vec![
@@ -241,7 +257,7 @@ mod tests {
     fn printed_advice_keeps_the_empty_setting_sources_value() {
         let agent = AgentCommand::named(Some("my agent"), &[]).expect("named");
         assert_eq!(
-            render_for_shell(&agent.launch()),
+            render_for_shell(&agent.printed_advice()),
             "'my agent' --setting-sources '' --strict-mcp-config",
             "an unquoted empty value vanishes when pasted, and the flag then \
              swallows the next argument"
@@ -291,7 +307,7 @@ mod tests {
         assert_eq!(program, "/opt/agent/bin/agent");
         assert_eq!(
             args,
-            argv(&agent.launch()),
+            argv(&agent.launch(crate::host_tier::HostAgentOptIn::for_test())),
             "the guest invocation and the host invocation confine identically"
         );
         assert_eq!(
@@ -317,7 +333,7 @@ mod tests {
                 msg.contains("does not copy host binaries into the guest"),
                 "{msg}"
             );
-            assert!(msg.contains("--local"), "names the way out: {msg}");
+            assert!(msg.contains("--unsandboxed"), "names the way out: {msg}");
         }
     }
 }

@@ -267,6 +267,13 @@ pub struct RunArgs {
     #[arg(long)]
     pub hook: bool,
 
+    /// Accept that the agent runs on THIS host, as your user, outside any
+    /// microVM. Required by --local and --hook; a microVM pod always runs its
+    /// agent inside the guest and refuses it. Prints a banner and records the
+    /// launch in ~/.config/nucleus/audit/host-agent-launches.jsonl.
+    #[arg(long, conflicts_with_all = ["apple_host_config", "guest_work_dir"])]
+    pub unsandboxed: bool,
+
     /// Environment variables to pass as credentials (KEY=VALUE).
     /// Can be specified multiple times: --env FOO=bar --env BAZ=qux
     #[arg(long = "env", value_name = "KEY=VALUE")]
@@ -412,9 +419,9 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
         println!(
             "  Mode: {}",
             if args.hook {
-                "hook (agent on this host)"
+                "hook (agent on this host; needs --unsandboxed)"
             } else if args.local {
-                "local (agent on this host)"
+                "local (agent on this host; needs --unsandboxed)"
             } else {
                 "microVM pod (agent inside the guest)"
             }
@@ -471,11 +478,21 @@ pub(crate) async fn dispatch(
     prompt: &str,
 ) -> Result<()> {
     let agent = named_agent(args)?;
-    if args.hook {
-        return run_hook(args, &agent, policy, work_dir, prompt).await;
-    }
-    if args.local {
-        return run_local(args, &agent, policy, work_dir, prompt).await;
+    if args.hook || args.local {
+        // The agent on this host: only on the operator's own `--unsandboxed`,
+        // with a banner and an audit record (owner decision D9).
+        let command = if args.hook {
+            "run --hook"
+        } else {
+            "run --local"
+        };
+        let declared =
+            crate::host_tier::HostAgentOptIn::declare(args.unsandboxed, command, &agent, work_dir)?;
+        return if args.hook {
+            run_hook(args, &agent, declared, policy, work_dir, prompt).await
+        } else {
+            run_local(args, &agent, declared, policy, work_dir, prompt).await
+        };
     }
 
     refuse_host_only_flags(args)?;
@@ -503,17 +520,23 @@ pub(crate) async fn dispatch(
 /// name for a pod run rather than dropped (ADR 0007 A-1: a flag that silently
 /// does nothing reads as one that worked).
 fn refuse_host_only_flags(args: &RunArgs) -> Result<()> {
+    if args.unsandboxed {
+        bail!(
+            "--unsandboxed launches the agent on this host and applies only to --local or \
+             --hook; a microVM pod always runs its agent inside the guest"
+        );
+    }
     if !args.envs.is_empty() {
         bail!(
             "--env is not delivered into a pod: the agent in the pod receives nothing from this \
              host's environment. A model upstream is a declared credentialed egress that the \
-             host performs for the pod (#3031); --env applies to --local."
+             host performs for the pod (#3031); --env applies to --local --unsandboxed."
         );
     }
     if args.kernel_trace.is_some() {
         bail!(
             "--kernel-trace records the MCP bridge's decisions on this host, but in a pod the \
-             bridge runs inside the guest; use --local to trace on this host"
+             bridge runs inside the guest; use --local --unsandboxed to trace on this host"
         );
     }
     Ok(())
@@ -586,6 +609,7 @@ impl Drop for TmpDirGuard {
 async fn run_hook(
     args: &RunArgs,
     agent: &crate::agent::AgentCommand,
+    declared: crate::host_tier::HostAgentOptIn,
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
@@ -625,7 +649,7 @@ async fn run_hook(
     let start = Instant::now();
 
     // Confined by construction: `launch` applies the confinement flags.
-    let mut cmd = agent.launch();
+    let mut cmd = agent.launch(declared);
     cmd.arg("--print");
     if let Some(model) = &args.model {
         cmd.arg("--model").arg(model);
@@ -653,6 +677,7 @@ async fn run_hook(
 async fn run_local(
     args: &RunArgs,
     agent: &crate::agent::AgentCommand,
+    declared: crate::host_tier::HostAgentOptIn,
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
@@ -793,6 +818,7 @@ async fn run_local(
     let output = run_agent_mcp(
         args,
         agent,
+        declared,
         policy,
         &mcp_config_path,
         &guard,
@@ -1312,9 +1338,15 @@ impl MediationGuard {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the host launch takes its --unsandboxed declaration by value (C-4) beside the \
+              inputs of the protocol it shares with the pod"
+)]
 async fn run_agent_mcp(
     args: &RunArgs,
     agent: &crate::agent::AgentCommand,
+    declared: crate::host_tier::HostAgentOptIn,
     policy: &PermissionLattice,
     mcp_config_path: &Path,
     guard: &MediationGuard,
@@ -1331,8 +1363,9 @@ async fn run_agent_mcp(
             .ok_or_else(|| anyhow!("mcp config path has no parent directory"))?,
     )?;
 
-    // Confined by construction: `launch` applies the confinement flags.
-    let mut cmd = agent.launch();
+    // Confined by construction: `launch` applies the confinement flags, and
+    // takes the operator's `--unsandboxed` declaration.
+    let mut cmd = agent.launch(declared);
     cmd.args(mcp_launch_protocol(
         args.model.as_deref(),
         mcp_config_path.as_os_str(),
@@ -1536,7 +1569,7 @@ mod tests {
         .args;
         assert_eq!(args.prompt.as_deref(), Some("fix the bug"));
         let agent = named_agent(&args).expect("named");
-        let cmd = agent.launch();
+        let cmd = agent.launch(crate::host_tier::HostAgentOptIn::for_test());
         assert_eq!(cmd.get_program(), "my-agent");
         let argv: Vec<_> = cmd
             .get_args()
@@ -1667,12 +1700,31 @@ mod tests {
         Parse::try_parse_from(argv).expect("parses").args
     }
 
+    /// D9: the agent reaches this host only on `--unsandboxed`. Without it,
+    /// `--local` and `--hook` refuse in `dispatch` before a tool-proxy, a temp
+    /// dir or a process exists. (The record written WITH it is pinned in
+    /// `host_tier`'s tests, against a temp audit log.)
+    #[tokio::test]
+    async fn the_local_tiers_refuse_a_host_agent_without_the_opt_in() {
+        let policy = PermissionLattice::permissive();
+        for mode in ["--local", "--hook"] {
+            let args = parse(&["run", mode, "--agent", "my-agent", "task"]);
+            let err = dispatch(&args, None, &policy, Path::new("/w"), "task")
+                .await
+                .expect_err("no host launch without --unsandboxed");
+            let msg = err.to_string();
+            assert!(msg.contains("--unsandboxed"), "{mode}: {msg}");
+            assert!(msg.contains("my-agent"), "{mode}: {msg}");
+        }
+    }
+
     /// The flags that only mean something for a host agent are refused for a
     /// pod by name, never silently dropped (A-1).
     #[test]
     fn a_pod_run_refuses_host_only_flags_by_name() {
         assert!(refuse_host_only_flags(&parse(&["run", "--agent", "a", "t"])).is_ok());
         for (flag, argv) in [
+            ("--unsandboxed", vec!["run", "--unsandboxed", "t"]),
             ("--env", vec!["run", "--env", "K=V", "t"]),
             (
                 "--kernel-trace",
@@ -1682,6 +1734,17 @@ mod tests {
             let err = refuse_host_only_flags(&parse(&argv)).expect_err(flag);
             assert!(err.to_string().contains(flag), "{flag}: {err}");
         }
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        assert!(
+            Parse::try_parse_from(["run", "--unsandboxed", "--apple-host-config", "h.json", "t"])
+                .is_err(),
+            "an Apple host is a microVM host: no host agent there"
+        );
     }
 
     /// The host launch and the pod workload speak one protocol: the pod's argv
