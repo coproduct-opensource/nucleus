@@ -134,7 +134,7 @@ use proto::node_service_server::{NodeService, NodeServiceServer};
 
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
-#[command(about = "Node daemon (kubelet analogue) for nucleus pods")]
+#[command(version, about = "Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
     #[arg(long, env = "NUCLEUS_NODE_LISTEN", default_value = "127.0.0.1:8080")]

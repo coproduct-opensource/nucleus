@@ -30,6 +30,14 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod binary;
+pub mod release;
+
+pub use binary::ReplaceBinaries;
+use binary::{BinaryInstall, InstalledBinary};
+use release::ReleaseAsset;
+pub use release::{ReleaseLookup, lookup_release};
+
 /// Where nucleus's artifacts live inside a Tier 2 host. Defined in
 /// `nucleus-spec`, which the Apple `container` host reads too, and which is
 /// also the node's default `--artifacts-root`.
@@ -347,63 +355,6 @@ pub enum ArtifactSource {
     Release,
 }
 
-/// One release asset, with the digest the release API reports for it.
-struct ReleaseAsset {
-    url: String,
-    name: String,
-    digest: String,
-}
-
-/// Ask the release API for the assets of `version`.
-///
-/// The digest returned here is an **integrity** check, not a provenance one —
-/// it travels from the same place the bytes do. `gh attestation verify` is the
-/// check that binds an asset to the workflow that built it, and
-/// [`verify_attestation`] runs it when `gh` is available.
-fn release_assets(version: &str) -> Result<Vec<ReleaseAsset>> {
-    let url = format!(
-        "https://api.github.com/repos/{}/releases/tags/v{version}",
-        tier2_artifacts::RELEASE_REPO
-    );
-    let body: serde_json::Value = ureq::get(&url)
-        .header("accept", "application/vnd.github+json")
-        .header("user-agent", "nucleus-cli")
-        .call()
-        .map_err(|e| {
-            anyhow!(
-                "cannot read release v{version} of {}: {e}\n\
-                 If that release does not exist yet, build artifacts locally instead:\n\
-                   nucleus setup --artifacts local",
-                tier2_artifacts::RELEASE_REPO
-            )
-        })?
-        .into_body()
-        .read_json()
-        .context("release API returned something that is not JSON")?;
-
-    let assets = body
-        .get("assets")
-        .and_then(|a| a.as_array())
-        .ok_or_else(|| anyhow!("release v{version} has no assets"))?;
-
-    Ok(assets
-        .iter()
-        .filter_map(|a| {
-            Some(ReleaseAsset {
-                url: a.get("browser_download_url")?.as_str()?.to_string(),
-                name: a.get("name")?.as_str()?.to_string(),
-                // Reported as "sha256:<hex>"; keep only the hex.
-                digest: a
-                    .get("digest")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or_default()
-                    .trim_start_matches("sha256:")
-                    .to_string(),
-            })
-        })
-        .collect())
-}
-
 /// Run `gh attestation verify` on a downloaded asset, if `gh` is available.
 ///
 /// Returns whether the check *ran and passed*. A missing `gh` is not a failure —
@@ -456,32 +407,44 @@ fn local_build_candidates(artifact: Tier2Artifact, arch: &str) -> Vec<PathBuf> {
     }
 }
 
-/// Install the rootfs and the node binary onto `host`.
+/// Where `setup` will take the guest rootfs and the two binaries from, decided
+/// before anything is downloaded or installed.
+#[derive(Debug)]
+pub enum Tier2Plan {
+    /// This working tree's build output, one path per [`Tier2Artifact`].
+    Local(Vec<(Tier2Artifact, PathBuf)>),
+    /// A published release, whose assets the API has already listed.
+    Release {
+        /// The release, without the `v`.
+        version: String,
+        /// Its assets, from [`release::lookup_release`].
+        assets: Vec<ReleaseAsset>,
+    },
+}
+
+/// Decide where the guest artifacts come from, and refuse a release that
+/// cannot be installed — not published, unreachable, or one this build cannot
+/// serve — before anything is downloaded or touched.
 ///
-/// Refuses a release that lacks any [`tier2_artifacts::GuestCapability`] rather
-/// than installing it: a guest this build's node cannot boot would look like
-/// nucleus being broken, which — with that artifact — it is.
-pub fn install_tier2_artifacts(
-    host: &Tier2Host,
+/// `lookup` is [`release::lookup_release`] in production and a stub in tests.
+/// It runs only when the plan is a release: a local build needs no network.
+pub fn plan_tier2_artifacts(
     arch: &str,
-    cache_dir: &Path,
     source: ArtifactSource,
-) -> Result<()> {
+    lookup: impl FnOnce(&str) -> ReleaseLookup,
+) -> Result<Tier2Plan> {
     // Prefer a local build when asked to, or when Auto finds one: a working tree
     // that has built the guest is almost certainly ahead of the last release,
     // and silently installing older artifacts over it is the surprising choice.
     let use_local = match source {
         ArtifactSource::Local => true,
         ArtifactSource::Release => false,
-        ArtifactSource::Auto => Tier2Artifact::all()
-            .iter()
-            .all(|a| local_build_candidates(*a, arch).iter().any(|p| p.is_file())),
+        ArtifactSource::Auto => local_build_is_complete(arch),
     };
-
     if use_local {
-        println!("  Guest artifacts from this working tree:");
+        let mut found = Vec::new();
         for artifact in Tier2Artifact::all() {
-            let found = local_build_candidates(*artifact, arch)
+            let path = local_build_candidates(*artifact, arch)
                 .into_iter()
                 .find(|p| p.is_file())
                 .ok_or_else(|| {
@@ -492,33 +455,92 @@ pub fn install_tier2_artifacts(
                         local_build_candidates(*artifact, arch)
                     )
                 })?;
-            install_one_local(host, *artifact, &found)?;
+            found.push((*artifact, path));
         }
-        return Ok(());
+        return Ok(Tier2Plan::Local(found));
     }
-
-    install_release_artifacts(host, arch, cache_dir, tier2_artifacts::GUEST_RELEASE)
+    let version = tier2_artifacts::GUEST_RELEASE;
+    let assets = release::plan_release(version, lookup)?;
+    Ok(Tier2Plan::Release {
+        version: version.to_string(),
+        assets,
+    })
 }
 
-/// Download the guest artifacts of release `version`, verify them and install
-/// them onto `host`. `version` is a parameter, not read from the pin here, so
-/// the refusal of a release this build cannot serve stays testable while the
-/// pin itself serves it.
-fn install_release_artifacts(
+/// Whether this working tree holds a build of every [`Tier2Artifact`] for
+/// `arch` — what `--artifacts auto` installs instead of the release.
+pub fn local_build_is_complete(arch: &str) -> bool {
+    Tier2Artifact::all()
+        .iter()
+        .all(|a| local_build_candidates(*a, arch).iter().any(|p| p.is_file()))
+}
+
+/// Install the rootfs, the node and the Linux CLI onto `host`, from `plan`.
+///
+/// Every binary is staged and compared with what is already installed BEFORE
+/// anything on the host changes, so a refused binary (#2396) leaves the host
+/// as it was rather than with a new rootfs beside an old node.
+pub fn install_tier2_artifacts(
     host: &Tier2Host,
     arch: &str,
     cache_dir: &Path,
-    version: &str,
+    plan: Tier2Plan,
+    replace: ReplaceBinaries,
 ) -> Result<()> {
-    // Before any download: a guest this build cannot serve is refused here, by
-    // name, rather than installed and left to die mid-boot with a diagnosis
-    // pointing somewhere else.
-    if let Err(skew) = tier2_artifacts::guest_skew(version) {
-        bail!("{skew}");
-    }
-    println!("  Guest artifacts from release v{version}:");
-    let assets = release_assets(version)?;
+    let (origin, files) = match plan {
+        Tier2Plan::Local(found) => {
+            println!("  Guest artifacts from this working tree:");
+            ("this working tree".to_string(), found)
+        }
+        Tier2Plan::Release { version, assets } => {
+            println!("  Guest artifacts from release v{version}:");
+            let files = download_release_artifacts(arch, cache_dir, &version, &assets)?;
+            (format!("release v{version}"), files)
+        }
+    };
 
+    // Phase 1: stage and decide every binary. Nothing at a destination moves.
+    let mut staged = Vec::new();
+    for (artifact, local) in &files {
+        let Some(bin) = binary_name(*artifact) else {
+            continue;
+        };
+        staged.push(stage_binary(host, local, bin, &origin, replace)?);
+    }
+    let refusals: Vec<String> = staged
+        .iter()
+        .filter_map(|s| match &s.decision {
+            BinaryInstall::Refuse(clash) => Some(clash.to_string()),
+            BinaryInstall::Fresh | BinaryInstall::Identical | BinaryInstall::Replace { .. } => None,
+        })
+        .collect();
+    if !refusals.is_empty() {
+        for s in &staged {
+            discard_staged(host, s)?;
+        }
+        bail!("{}", refusals.join("\n\n"));
+    }
+
+    // Phase 2: land everything.
+    for (artifact, local) in &files {
+        if *artifact == Tier2Artifact::Rootfs {
+            install_rootfs(host, local)?;
+        }
+    }
+    for s in &staged {
+        land_staged_binary(host, s)?;
+    }
+    Ok(())
+}
+
+/// Download and verify every guest artifact of a release into `cache_dir`.
+fn download_release_artifacts(
+    arch: &str,
+    cache_dir: &Path,
+    version: &str,
+    assets: &[ReleaseAsset],
+) -> Result<Vec<(Tier2Artifact, PathBuf)>> {
+    let mut files = Vec::new();
     for artifact in Tier2Artifact::all() {
         let name = artifact.asset_name(version, arch);
         let asset = assets
@@ -539,27 +561,30 @@ fn install_release_artifacts(
                 "      (install the gh CLI for a provenance check that the release API cannot fake)"
             );
         }
-        install_one_local(host, *artifact, &local)?;
+        files.push((*artifact, local));
     }
-    Ok(())
+    Ok(files)
 }
 
-/// Place one artifact, decompressing if the filename says it is compressed.
-fn install_one_local(host: &Tier2Host, artifact: Tier2Artifact, local: &Path) -> Result<()> {
-    let name = local.file_name().unwrap_or_default().to_string_lossy();
+/// The `/usr/local/bin` name of an artifact that is a binary.
+fn binary_name(artifact: Tier2Artifact) -> Option<&'static str> {
     match artifact {
-        Tier2Artifact::Rootfs => {
-            let dest = format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4");
-            if name.ends_with(".gz") {
-                let staged = format!("{HOST_ARTIFACTS_DIR}/{name}");
-                host.put(local, &staged, SHARED_ARTIFACT_MODE)?;
-                host.sh(&land_gzipped_shared_artifact(&staged, &dest))?;
-            } else {
-                host.put(local, &dest, SHARED_ARTIFACT_MODE)?;
-            }
-        }
-        Tier2Artifact::Node => install_binary(host, local, &name, "nucleus-node")?,
-        Tier2Artifact::Cli => install_binary(host, local, &name, "nucleus")?,
+        Tier2Artifact::Rootfs => None,
+        Tier2Artifact::Node => Some("nucleus-node"),
+        Tier2Artifact::Cli => Some("nucleus"),
+    }
+}
+
+/// Place the rootfs, decompressing if the filename says it is compressed.
+fn install_rootfs(host: &Tier2Host, local: &Path) -> Result<()> {
+    let name = local.file_name().unwrap_or_default().to_string_lossy();
+    let dest = format!("{HOST_ARTIFACTS_DIR}/rootfs.ext4");
+    if name.ends_with(".gz") {
+        let staged = format!("{HOST_ARTIFACTS_DIR}/{name}");
+        host.put(local, &staged, SHARED_ARTIFACT_MODE)?;
+        host.sh(&land_gzipped_shared_artifact(&staged, &dest))?;
+    } else {
+        host.put(local, &dest, SHARED_ARTIFACT_MODE)?;
     }
     Ok(())
 }
@@ -583,27 +608,131 @@ fn land_gzipped_shared_artifact(staged_gz: &str, dest: &str) -> String {
     )
 }
 
-/// Place a binary at `/usr/local/bin/<bin>`, unpacking it first if it is a tarball.
-fn install_binary(host: &Tier2Host, local: &Path, name: &str, bin: &str) -> Result<()> {
+/// A binary staged beside its destination, with the decision about it.
+struct StagedBinary {
+    bin: &'static str,
+    dest: String,
+    incoming: String,
+    decision: BinaryInstall,
+}
+
+/// Put `local` at `/usr/local/bin/<bin>.nucleus-incoming`, unpacking it first
+/// if it is a tarball, fingerprint it and what is at `/usr/local/bin/<bin>`,
+/// and decide.
+///
+/// Staged beside the destination for the reason `put` gives: the final step is
+/// then a same-directory rename, which succeeds against a running binary.
+fn stage_binary(
+    host: &Tier2Host,
+    local: &Path,
+    bin: &'static str,
+    origin: &str,
+    replace: ReplaceBinaries,
+) -> Result<StagedBinary> {
+    let dest = format!("/usr/local/bin/{bin}");
+    let incoming = format!("{dest}.nucleus-incoming");
+    let name = local.file_name().unwrap_or_default().to_string_lossy();
     if name.ends_with(".tar.gz") {
-        let staged = format!("/tmp/{name}");
-        host.put(local, &staged, "0644")?;
-        // Unpack beside the destination and rename into place, for the same
-        // reason `put` does: `mv` out of a `mktemp -d` under /tmp is very likely
-        // cross-filesystem, which degrades to copy+unlink and fails with
-        // ETXTBSY against a running binary.
+        let tarball = format!("/tmp/{name}");
+        host.put(local, &tarball, "0644")?;
         host.sh(&format!(
             "set -e
              tmp=$(mktemp -d)
-             tar -xzf {staged} -C \"$tmp\"
-             cp \"$tmp/{bin}\" /usr/local/bin/{bin}.nucleus-new
-             chmod 0755 /usr/local/bin/{bin}.nucleus-new
-             mv /usr/local/bin/{bin}.nucleus-new /usr/local/bin/{bin}
-             rm -rf \"$tmp\" {staged}"
+             tar -xzf {tarball} -C \"$tmp\"
+             rm -f {incoming}
+             cp \"$tmp/{bin}\" {incoming}
+             chmod 0755 {incoming}
+             rm -rf \"$tmp\" {tarball}"
         ))?;
     } else {
-        host.put(local, &format!("/usr/local/bin/{bin}"), "0755")?;
+        host.put(local, &incoming, "0755")?;
     }
+    let incoming_fp = match fingerprint_on_host(host, &incoming) {
+        InstalledBinary::Present(fp) => fp,
+        other => bail!(
+            "staged {incoming} but cannot fingerprint it: {}",
+            binary::describe_installed(&other)
+        ),
+    };
+    let installed = fingerprint_on_host(host, &dest);
+    let decision = binary::decide(&dest, installed, incoming_fp, origin, replace);
+    Ok(StagedBinary {
+        bin,
+        dest,
+        incoming,
+        decision,
+    })
+}
+
+/// What is at `path` on `host`, fingerprinted there.
+fn fingerprint_on_host(host: &Tier2Host, path: &str) -> InstalledBinary {
+    // Presence is asked as a question with two printed answers, so a failed
+    // `sudo` is an error here — Unreadable — and never reads as "absent".
+    match host.sh(&format!(
+        "if [ -e {path} ]; then echo present; else echo absent; fi"
+    )) {
+        Ok(answer) if answer == "absent" => return InstalledBinary::Absent,
+        Ok(answer) if answer == "present" => {}
+        Ok(answer) => {
+            return InstalledBinary::Unreadable {
+                reason: format!("unexpected answer to a presence check: {answer:?}"),
+            };
+        }
+        Err(e) => {
+            return InstalledBinary::Unreadable {
+                reason: format!("{e:#}"),
+            };
+        }
+    }
+    let line = match host.sh(&format!("sha256sum {path}")) {
+        Ok(line) => line,
+        Err(e) => {
+            return InstalledBinary::Unreadable {
+                reason: format!("{e:#}"),
+            };
+        }
+    };
+    // Best effort, bounded: an older node has no --version, and the version is
+    // only ever for the message.
+    let version = host.sh(&format!("timeout 10 {path} --version")).ok();
+    match binary::fingerprint_from(&line, version.as_deref()) {
+        Some(fp) => InstalledBinary::Present(fp),
+        None => InstalledBinary::Unreadable {
+            reason: format!("sha256sum printed no digest: {line:?}"),
+        },
+    }
+}
+
+/// Rename a staged binary into place, or drop it, as its decision says.
+fn land_staged_binary(host: &Tier2Host, s: &StagedBinary) -> Result<()> {
+    match &s.decision {
+        BinaryInstall::Fresh => {
+            host.sh(&format!("mv {} {}", s.incoming, s.dest))?;
+            println!("    {}: installed", s.dest);
+        }
+        BinaryInstall::Identical => {
+            discard_staged(host, s)?;
+            println!("    {}: already installed, identical — left as is", s.dest);
+        }
+        BinaryInstall::Replace { previous } => {
+            host.sh(&format!("mv {} {}", s.incoming, s.dest))?;
+            println!(
+                "    {}: REPLACED (--replace-binaries); it was {}",
+                s.dest,
+                binary::describe_installed(previous)
+            );
+        }
+        BinaryInstall::Refuse(clash) => {
+            discard_staged(host, s)?;
+            bail!("{clash}");
+        }
+    }
+    Ok(())
+}
+
+fn discard_staged(host: &Tier2Host, s: &StagedBinary) -> Result<()> {
+    host.sh(&format!("rm -f {}", s.incoming))
+        .with_context(|| format!("could not remove the staged {}", s.bin))?;
     Ok(())
 }
 
@@ -1668,32 +1797,71 @@ mod tests {
         }
     }
 
-    /// A release install must refuse a guest this build cannot serve before it
-    /// downloads or touches anything, and say why. It used to pass a floor of
-    /// 2.2.0 and install a guest this tree's node cannot boot; 2.2.0 was the pin
-    /// until 2.3.0, so it is the release this asks for. Hermetic: the refusal
-    /// comes before the release API and before the host, so a VM name that does
-    /// not exist is never reached.
+    // A release this build cannot serve (2.2.0) is refused before the release
+    // API is asked: `release::tests::a_skewed_release_is_refused_without_a_lookup`.
+
+    /// `setup --artifacts release` with a pin the API says does not exist
+    /// refuses at planning time — before Firecracker, the kernel or any guest
+    /// artifact is downloaded — and names the pin and the newest release.
     #[test]
-    fn a_release_install_refuses_a_guest_this_build_cannot_serve() {
-        let cache = tempfile::tempdir().expect("tempdir");
-        let err = install_release_artifacts(
-            &Tier2Host::Lima("nucleus-test-never-reached".into()),
-            "aarch64",
-            cache.path(),
-            "2.2.0",
-        )
-        .expect_err("2.2.0 predates #2365 and #2379");
+    fn a_release_plan_refuses_an_unpublished_pin() {
+        let err = plan_tier2_artifacts("aarch64", ArtifactSource::Release, |_| {
+            ReleaseLookup::NotPublished {
+                latest: release::LatestRelease::Version("2.2.0".into()),
+            }
+        })
+        .expect_err("an unpublished pin must be refused");
         let msg = format!("{err:#}");
-        assert!(msg.contains("#2365") && msg.contains("#2379"), "{msg}");
-        assert!(msg.contains("--artifacts local"), "{msg}");
         assert!(
-            std::fs::read_dir(cache.path())
-                .expect("cache")
-                .next()
-                .is_none(),
-            "nothing may be downloaded before the refusal"
+            msg.contains(&format!(
+                "this CLI pins guest release {}, which is not published yet (latest: 2.2.0)",
+                tier2_artifacts::GUEST_RELEASE
+            )),
+            "{msg}"
         );
+        assert!(msg.contains("--artifacts local"), "{msg}");
+    }
+
+    /// An unreachable API refuses too, and says it could not look rather than
+    /// that the release is missing.
+    #[test]
+    fn a_release_plan_that_could_not_look_says_so() {
+        let err = plan_tier2_artifacts("aarch64", ArtifactSource::Release, |_| {
+            ReleaseLookup::CouldNotLook {
+                reason: "connection refused".into(),
+            }
+        })
+        .expect_err("could not look must be refused");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("connection refused"), "{msg}");
+        assert!(msg.contains("not a missing release"), "{msg}");
+        assert!(!msg.contains("not published"), "{msg}");
+    }
+
+    /// A published pin plans a release install with the API's assets.
+    #[test]
+    fn a_release_plan_carries_the_published_assets() {
+        let plan = plan_tier2_artifacts("aarch64", ArtifactSource::Release, |v| {
+            assert_eq!(v, tier2_artifacts::GUEST_RELEASE);
+            ReleaseLookup::Published(Vec::new())
+        })
+        .expect("published");
+        assert!(
+            matches!(&plan, Tier2Plan::Release { version, .. } if version == tier2_artifacts::GUEST_RELEASE),
+            "{plan:?}"
+        );
+    }
+
+    /// A local install never asks the release API: whether the pin is
+    /// published is not its business.
+    #[test]
+    fn a_local_plan_never_asks_the_release_api() {
+        let planned = plan_tier2_artifacts("aarch64", ArtifactSource::Local, |_| {
+            panic!("--artifacts local must not look up the release")
+        });
+        if let Err(e) = planned {
+            assert!(format!("{e:#}").contains("no local build"), "{e:#}");
+        }
     }
 
     // ── mTLS identity provisioning (Move A step 6) ──────────────────────────
