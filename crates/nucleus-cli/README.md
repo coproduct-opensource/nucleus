@@ -17,20 +17,29 @@ helpers and the prebuilt release binary.
 Launch an AI coding session where every tool call flows through the permission lattice:
 
 ```bash
+export NUCLEUS_AGENT=my-agent                    # or pass --agent my-agent each time
 nucleus shell                                    # default codegen profile
 nucleus shell --profile safe_pr_fixer --dir ~/repo
 nucleus shell --profile code_review --max-cost 5.00
 nucleus shell --env LLM_API_TOKEN=your-token
 nucleus shell --kernel-trace ./trace.jsonl        # record decisions
+nucleus shell --agent my-agent -- --agent-flag    # arguments for the agent go after --
 ```
 
-**What happens:** Nucleus spawns `nucleus-tool-proxy` with your chosen profile, generates an MCP config routing all tools through the proxy, and launches the AI assistant with only sandboxed tools visible.
+**The agent is required.** Nucleus has no default agent CLI: name it with
+`--agent <PROGRAM>`, `NUCLEUS_AGENT`, or `[agent] command = ["PROGRAM", ...]` in
+`~/.config/nucleus/config.toml`, or `run`/`shell` refuse to start. The agent must
+accept the nucleus launch protocol, including the confinement flags that stop it
+loading hooks and MCP servers from the working directory; see
+[examples/agents/](../../examples/agents/README.md).
+
+**What happens:** Nucleus spawns `nucleus-tool-proxy` with your chosen profile, generates an MCP config routing all tools through the proxy, and launches the agent you named with only sandboxed tools visible.
 
 ## Run Tasks
 
 ```bash
-nucleus run --local --profile safe_pr_fixer "Fix issue #123"
-nucleus run --profile codegen --timeout 600 "Add unit tests for auth.rs"
+nucleus run --agent my-agent --local --profile safe_pr_fixer "Fix issue #123"
+nucleus run --agent my-agent --profile codegen --timeout 600 "Add unit tests for auth.rs"
 ```
 
 ## Permission Profiles

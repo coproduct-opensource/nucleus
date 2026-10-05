@@ -20,13 +20,8 @@
 pub const DISALLOWED_BUILTIN_TOOLS: &str =
     "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,NotebookEdit,Agent";
 
-/// Intrinsic interop — the external agent CLI executable that nucleus wraps and
-/// launches under enforcement. This is a genuine third-party binary name looked
-/// up on the user's `PATH` (NOT a nucleus component), so it is kept verbatim as
-/// a real interop identifier rather than neutralized. Centralized here so the
-/// single source of truth is explicit; the launch sites (`run`, `shell`)
-/// reference this constant instead of hardcoding the name.
-pub const AGENT_CLI_BIN: &str = "claude";
+// There is deliberately no agent-CLI program constant here: which agent runs is
+// the user's decision, named with `--agent` (see `crate::agent`).
 
 /// Intrinsic provenance — the sibling in-repo hook binary/crate name that
 /// `nucleus guard` and `nucleus run --hook` resolve and invoke

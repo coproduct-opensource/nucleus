@@ -747,8 +747,9 @@ adding current probe binaries allowed boot checks to reach the enforcing refusal
 
 The next P0 milestone is production launch wiring and rollback, followed by
 live approved/denied broker effects and the two complete harness journeys.
-`nucleus run` still selects a single external harness in `constants::AGENT_CLI_BIN`;
-it is not evidence of the required vendor-neutral two-harness workflow.
+`nucleus run` no longer selects a harness: the user names the agent with
+`--agent` (no default, #2696). That makes the launch vendor-neutral; it is still
+not evidence of the required two-harness workflow.
 
 ### Broker readiness before guest execution (2026-10-04)
 

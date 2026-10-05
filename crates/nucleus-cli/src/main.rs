@@ -6,14 +6,15 @@
 //! # Examples
 //!
 //! ```bash
-//! # Run with default permissions (restrictive)
-//! nucleus run "Fix the bug in src/main.rs"
+//! # Run with default permissions (restrictive). The agent CLI is always named:
+//! # nucleus has no default agent (see `agent` and examples/agents/).
+//! nucleus run --agent my-agent "Fix the bug in src/main.rs"
 //!
 //! # Run with a permission profile
-//! nucleus run --profile fix-issue "Implement the feature"
+//! nucleus run --agent my-agent --profile fix-issue "Implement the feature"
 //!
 //! # Run with custom config
-//! nucleus run --config permissions.toml "Review the code"
+//! nucleus run --agent my-agent --config permissions.toml "Review the code"
 //! ```
 
 use anyhow::Result;
@@ -21,6 +22,7 @@ use clap::{Parser, Subcommand};
 use tracing::info;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+mod agent;
 mod audit;
 mod bundle;
 mod config;
@@ -224,7 +226,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Commands::Run(args) => run::execute(*args, &config_path).await,
-        Commands::Shell(args) => shell::execute(args).await,
+        Commands::Shell(args) => shell::execute(args, &config_path).await,
         Commands::Setup(args) => setup::execute(args, &config_path).await,
         Commands::MicrovmHost(args) => microvm_host::command::execute(args).await,
         Commands::Verify(args) => verify::execute(args, &config_path).await,

@@ -13,7 +13,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 use tracing::info;
 use uuid::Uuid;
@@ -79,13 +78,31 @@ pub struct ShellArgs {
     #[arg(long)]
     pub print_config: bool,
 
-    /// Additional arguments to pass to the agent CLI
-    #[arg(last = true)]
+    /// The agent CLI to launch (required; no default). Its leading arguments
+    /// go after `--`. Falls back to `[agent] command` in the config file.
+    #[arg(long, env = "NUCLEUS_AGENT", value_name = "PROGRAM")]
+    pub agent: Option<String>,
+
+    /// Arguments for the agent program, placed before nucleus's own flags.
+    #[arg(last = true, value_name = "AGENT_ARGS")]
     pub agent_args: Vec<String>,
 }
 
 /// Execute the shell command
-pub async fn execute(args: ShellArgs) -> Result<()> {
+pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()> {
+    // Which agent runs is the user's decision; refuse before starting anything
+    // when none was named. `--print-config` launches nothing, so it may print
+    // its advice with a placeholder instead.
+    let global_config = crate::config::Config::load(global_config_path)?;
+    crate::agent::fold_config_default(&mut args.agent, &mut args.agent_args, &global_config.agent);
+    let agent = match crate::agent::AgentCommand::named(args.agent.as_deref(), &args.agent_args) {
+        Ok(agent) => agent,
+        Err(_) if args.print_config => {
+            crate::agent::AgentCommand::named(Some("<agent>"), &args.agent_args)?
+        }
+        Err(refusal) => return Err(refusal),
+    };
+
     // Resolve working directory
     let work_dir = shellexpand::tilde(&args.dir).to_string();
     let work_dir = PathBuf::from(&work_dir).canonicalize()?;
@@ -219,15 +236,17 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         println!("Launch the agent CLI with:");
         // The printed line is advice someone will paste, so it carries the
         // confinement flags too — without them the pasted command lets the
-        // working directory register its own hooks and MCP servers.
-        println!(
-            "  {} --setting-sources '{}' --strict-mcp-config --mcp-config {} --allowedTools {} --disallowedTools {}",
-            crate::constants::AGENT_CLI_BIN,
-            crate::mediation::SETTING_SOURCES,
-            mcp_config_path.display(),
-            allowed_tools.join(","),
-            crate::constants::DISALLOWED_BUILTIN_TOOLS,
-        );
+        // working directory register its own hooks and MCP servers. Rendered
+        // from the same constructor the launch uses, so the two cannot drift.
+        let mut advice = agent.launch();
+        advice
+            .arg("--mcp-config")
+            .arg(&mcp_config_path)
+            .arg("--allowedTools")
+            .arg(allowed_tools.join(","))
+            .arg("--disallowedTools")
+            .arg(crate::constants::DISALLOWED_BUILTIN_TOOLS);
+        println!("  {}", crate::agent::render_for_shell(&advice));
         println!();
         println!("Tool-proxy: {proxy_url}");
         println!("Audit log: {}", audit_path.display());
@@ -267,16 +286,18 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
     //   attempt to use them (they'd fail anyway, but this prevents wasted tokens
     //   on tool definitions and failed invocations).
     //
-    // The agent CLI's session env var (intrinsic interop: `CLAUDECODE`) must be
-    // removed to allow launching the agent CLI from within an existing agent
-    // session (e.g. testing nucleus shell from inside one).
     // Runtime complete mediation (see `crate::mediation`): the PreToolUse
     // hook denies every tool that is not an allowed nucleus MCP tool, so the
     // static denylist above is defence in depth rather than the boundary.
+    //
+    // Nothing agent-specific is removed from the environment here: an agent
+    // CLI that refuses to start inside its own session is launched with that
+    // variable unset by the caller (examples/agents/README.md).
     let settings_path = crate::mediation::write_hook_settings(&tmp_dir)?;
 
-    let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    crate::mediation::confine_to_nucleus_settings(&mut cmd);
+    // Confined by construction: `launch` applies the confinement flags, and
+    // the user's `-- ARGS` already lead the command line.
+    let mut cmd = agent.launch();
     cmd.arg("--mcp-config")
         .arg(&mcp_config_path)
         .arg("--allowedTools")
@@ -286,7 +307,6 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         .arg("--settings")
         .arg(settings_path.as_path())
         .env(crate::mediation::ALLOWED_TOOLS_ENV, allowed_tools.join(","))
-        .env_remove("CLAUDECODE")
         .current_dir(&work_dir);
 
     // Non-interactive prompt mode: run a single prompt and exit
@@ -294,17 +314,12 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         cmd.arg("-p").arg(prompt).arg("--output-format").arg("json");
     }
 
-    // Pass through any additional agent-CLI args
-    for arg in &args.agent_args {
-        cmd.arg(arg);
-    }
-
     let status = cmd
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
-        .with_context(|| format!("failed to spawn {}", crate::constants::AGENT_CLI_BIN))?;
+        .with_context(|| format!("failed to spawn agent `{}`", agent.program()))?;
 
     // Kill tool-proxy
     let _ = proxy_child.kill().await;
@@ -319,8 +334,8 @@ pub async fn execute(args: ShellArgs) -> Result<()> {
         Ok(())
     } else {
         bail!(
-            "{} exited with code {:?}",
-            crate::constants::AGENT_CLI_BIN,
+            "agent `{}` exited with code {:?}",
+            agent.program(),
             status.code()
         )
     }

@@ -350,7 +350,7 @@ def print-success [platform: record] {
     print "Quick start:"
     print "  nucleus doctor          # Check system status"
     print "  nucleus start           # Start nucleus-node"
-    print "  nucleus run 'uname -a'  # Run a command in a microVM"
+    print "  nucleus run --agent <PROGRAM> 'your task'  # Run an agent under enforcement"
     print ""
     print $"Documentation: https://github.com/($GITHUB_REPO)#readme"
     print ""

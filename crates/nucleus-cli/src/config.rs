@@ -62,6 +62,10 @@ pub struct Config {
     /// Time settings
     #[serde(default)]
     pub time: TimeConfig,
+
+    /// The agent `run` and `shell` launch. No default (see `crate::agent`).
+    #[serde(default)]
+    pub agent: crate::agent::AgentConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -355,6 +359,17 @@ pub fn show(config_path: &str) -> Result<()> {
 
     println!("[auth]");
     println!("  use_keychain = {}", config.auth.use_keychain);
+    println!();
+
+    println!("[agent]");
+    if config.agent.command.is_empty() {
+        println!("  # command = [\"PROGRAM\", \"ARG\"]  (not set: run/shell need --agent)");
+    } else {
+        println!(
+            "  command = {}",
+            serde_json::to_string(&config.agent.command)?
+        );
+    }
     println!();
 
     println!("[vm]");
