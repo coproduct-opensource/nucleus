@@ -33,6 +33,48 @@ No claim about it ships until a committed harness run produces it
 **The product test**, for any proposed change: *does this let someone safely delegate
 more agency, more precisely, more easily, or with greater confidence?*
 
+## Position: verifiable authority
+
+> **Other runtimes contain agents. Nucleus proves what they were allowed to do, and what
+> they did, to someone who does not trust the operator.**
+
+Isolation is not where Nucleus competes. By 2026 every agent platform runs a microVM per
+session. Many keep secrets outside the sandbox and inject credentials at an egress
+proxy, and gateways evaluate policy over tool arguments. Each of those asks the relying
+party to trust the platform: its logs, its policy engine, its word that the boundary
+held. A platform cannot credibly audit itself.
+
+Nucleus occupies the position those platforms cannot: **evidence a third party can
+check.** The sandbox is the means; the receipt is the product. Four commitments make
+the position defensible, and each one gives a reason to accept or decline a change:
+
+1. **Third-party-verifiable receipts.**
+   - Every effect leaves signed evidence.
+   - A verifier that shares no code path with the runtime's decision accepts the
+     evidence, or rejects it when tampered with.
+   - The decision point survives compromise of the guest it polices.
+2. **Authority that only attenuates.** Gateway policy answers "is this principal
+   allowed". Nucleus answers "who authorized this, through which chain, and did every
+   link narrow the one before". When agents delegate to agents, accountability becomes
+   a chain question.
+3. **Claims that cannot outrun the wiring.**
+   - Every claim names its falsifier.
+   - "Could not look" is never "looked and it was fine".
+   - What is not claimed is written down beside what is.
+   - The guest pin and patch cadence is published, not implied.
+4. **Neutrality as a requirement.** The party that verifies an agent's conduct cannot
+   be the model vendor or the platform running it. Vendor neutrality and
+   self-hostability are what give the receipt its value.
+
+**Not competed on:** cold-start latency, SDK breadth, managed hosting. These must be good
+enough for adoption (ℐ's integration-cost term). They are not the reason to choose
+Nucleus.
+
+**The position's own test:** a model-driven task completes on a published release, and a
+stranger verifies its receipt with only the public verifier and the published pins.
+Until that runs end to end, the position is a direction, not a claim (see
+`docs/design/secure-coding-release-plan.md`).
+
 ## The Constraint Surface
 
 ```
