@@ -1171,18 +1171,28 @@ async fn create_pod_internal(
             spawn_local_pod(state, &pod_dir, &spec, id, audit.as_ref(), memory.as_ref()).await
         }
         DriverKind::Firecracker => {
-            spawn_firecracker_pod(state, &pod_dir, &spec, id, audit.as_ref()).await
+            spawn_firecracker_pod(
+                state,
+                &pod_dir,
+                &spec,
+                id,
+                audit.as_ref(),
+                execution_deadline,
+            )
+            .await
         }
         DriverKind::Container => {
-            let raw = raw_yaml.as_deref();
             spawn_container_pod(
                 state,
                 &pod_dir,
                 &spec,
                 id,
-                raw,
-                audit.as_ref(),
-                memory.as_ref(),
+                container_launch::Inputs {
+                    raw_yaml: raw_yaml.as_deref(),
+                    audit: audit.as_ref(),
+                    memory: memory.as_ref(),
+                    deadline: execution_deadline,
+                },
             )
             .await
         }
@@ -1459,10 +1469,14 @@ async fn spawn_container_pod(
     pod_dir: &Path,
     spec: &PodSpec,
     id: Uuid,
-    raw_yaml: Option<&str>,
-    audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    inputs: container_launch::Inputs<'_>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
+    let container_launch::Inputs {
+        raw_yaml,
+        audit,
+        memory,
+        deadline,
+    } = inputs;
     // Fail-closed: reject a network egress policy the container driver cannot
     // enforce (parity with spawn_local_pod / firecracker reject_unsupported_policy)
     // — checked before acquiring the docker client so it rejects even without docker.
@@ -1474,15 +1488,7 @@ async fn spawn_container_pod(
         .ok_or_else(|| ApiError::Driver("Docker client not initialized".into()))?;
 
     // Acquire semaphore permit
-    let permit = match &state.container_pool {
-        Some(pool) => Some(
-            pool.clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| ApiError::Driver("container pool closed".into()))?,
-        ),
-        None => None,
-    };
+    let permit = lifecycle::acquire_launch_slot(state.container_pool.as_ref(), deadline).await?;
 
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
@@ -1811,10 +1817,11 @@ async fn spawn_firecracker_pod(
     spec: &PodSpec,
     id: Uuid,
     audit: Option<&audit_sink::credentials::AuditGrant>,
+    deadline: tokio::time::Instant,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (state, pod_dir, spec, id, audit);
+        let _ = (state, pod_dir, spec, id, audit, deadline);
         let why = "firecracker requires Linux; run nucleus-node inside Colima on macOS";
         Err(ApiError::Driver(why.to_string()))
     }
@@ -1859,15 +1866,8 @@ async fn spawn_firecracker_pod(
             ));
         }
 
-        let permit = match state.firecracker_pool.as_ref() {
-            Some(pool) => Some(
-                pool.clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|_| ApiError::Driver("firecracker pool closed".to_string()))?,
-            ),
-            None => None,
-        };
+        let permit =
+            lifecycle::acquire_launch_slot(state.firecracker_pool.as_ref(), deadline).await?;
 
         // Resolved once: every consumer below takes a rootfs that is a host file by construction.
         let image = rootfs_source::HostImage::of_spec(spec)?;

@@ -72,6 +72,33 @@ pub(crate) fn execution_deadline(
         .ok_or_else(|| ApiError::InvalidSpec("pod execution deadline exceeds clock range".into()))
 }
 
+/// Queueing precedes pod registration, so the reaper cannot bound it. Use the
+/// same admission-time deadline, and recheck after acquisition because a ready
+/// semaphore may win over a simultaneously elapsed timer.
+pub(crate) async fn acquire_launch_slot(
+    pool: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    deadline: tokio::time::Instant,
+) -> Result<Option<tokio::sync::OwnedSemaphorePermit>, ApiError> {
+    let expired =
+        || ApiError::Driver("pod execution deadline elapsed waiting for a driver slot".into());
+    if tokio::time::Instant::now() >= deadline {
+        return Err(expired());
+    }
+    let permit = match pool {
+        Some(pool) => Some(
+            tokio::time::timeout_at(deadline, pool.clone().acquire_owned())
+                .await
+                .map_err(|_| expired())?
+                .map_err(|_| ApiError::Driver("driver launch pool closed".into()))?,
+        ),
+        None => None,
+    };
+    if tokio::time::Instant::now() >= deadline {
+        return Err(expired());
+    }
+    Ok(permit)
+}
+
 impl PodHandle {
     pub(crate) async fn info(&self) -> PodInfo {
         let state = self.status().await;
@@ -122,6 +149,48 @@ impl PodHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn queued_launch_expires_without_consuming_a_later_slot() {
+        let pool = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let active = pool.clone().acquire_owned().await.unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(20);
+        let error = acquire_launch_slot(Some(&pool), deadline)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("deadline elapsed"));
+        assert_eq!(pool.available_permits(), 0);
+        drop(active);
+        let next = acquire_launch_slot(
+            Some(&pool),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(pool.available_permits(), 0);
+        drop(next);
+        assert_eq!(pool.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn expired_launch_refuses_even_with_available_or_unlimited_slots() {
+        let pool = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        for selected in [Some(&pool), None] {
+            let error = acquire_launch_slot(selected, tokio::time::Instant::now())
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("deadline elapsed"));
+        }
+        assert_eq!(pool.available_permits(), 1);
+        pool.close();
+        let error = acquire_launch_slot(
+            Some(&pool),
+            tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("pool closed"));
+    }
 
     /// Lifecycle events for one pod are written from more than one task (create,
     /// cancel, the reaper); each must land as one whole line.

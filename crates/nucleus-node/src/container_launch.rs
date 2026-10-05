@@ -5,6 +5,15 @@ use uuid::Uuid;
 
 type Result = std::result::Result<(Uuid, Option<String>), ApiError>;
 
+/// Admitted services and the original lifetime carried into container launch.
+/// Waiting for a driver slot must not start a fresh execution timeout.
+pub(crate) struct Inputs<'a> {
+    pub raw_yaml: Option<&'a str>,
+    pub audit: Option<&'a crate::audit_sink::credentials::AuditGrant>,
+    pub memory: Option<&'a crate::memory_provisioning::Grant>,
+    pub deadline: tokio::time::Instant,
+}
+
 pub(crate) async fn create(
     state: &NodeState,
     spec: PodSpec,
@@ -188,6 +197,40 @@ mod tests {
             .mount(&server)
             .await;
         (dir, server, state, spec, admission)
+    }
+
+    #[tokio::test]
+    async fn queued_launch_expiry_returns_capacity_and_delegated_budget_before_docker_io() {
+        let (_dir, server, state, mut spec, root) = fixture(204, 536870912, Some("none")).await;
+        server.reset().await;
+        let parent = Uuid::new_v4();
+        state
+            .authority
+            .admit_kept(&root, &spec, parent)
+            .await
+            .unwrap();
+        let admission = pod_authority::Admission {
+            caller_spiffe_id: format!("spiffe://nucleus.local/ns/pods/sa/{parent}"),
+            caller_pod: Some(parent),
+            header_cert: None,
+        };
+        spec.spec.timeout_seconds = 1;
+        let pool = state.container_pool.as_ref().unwrap();
+        let active = pool.clone().acquire_owned().await.unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            create(&state, spec.clone(), Some(parent), None, admission),
+        )
+        .await
+        .expect("queue wait must obey the pod's deadline");
+        assert!(result.unwrap_err().to_string().contains("deadline elapsed"));
+        assert!(server.received_requests().await.unwrap().is_empty());
+        assert!(state.pods.lock().await.is_empty());
+        assert_eq!(state.authority.live_children(parent).await, Some(0));
+        drop(state.node_capacity.reserve(&spec).unwrap());
+        assert_eq!(pool.available_permits(), 0);
+        drop(active);
+        assert_eq!(pool.available_permits(), 1);
     }
 
     async fn saw(server: &MockServer, method: &str) {
