@@ -1919,3 +1919,31 @@ exhaustion interrupted intermediate builds; confirmed failed attempts were retri
 after removing superseded validation copies/images and cleaning the cross-target
 Cargo cache (11.7 GiB reclaimed). Final image import completed successfully.
 The original model-driven journeys and published fresh-install release remain open.
+
+### Packaged execution verification and command declarations (2026-10-05)
+
+A second packaged workload with explicit HOME, PATH, LANG and TZ completed as
+pod `c794589e-a11d-419d-ba96-7649b84adf63`. The standalone `nucleus-audit
+verify-execution` accepted its receipt against a separately saved mTLS admission
+record, including the node's public signer, and an environment hash computed from
+the intended inputs. The issuance window starts at admission and allows five
+minutes after the verification attempt; the verifier also applies that upper
+bound to claim consumption. The accepted claim records Firecracker, UID isolation,
+exit 0 and stdout SHA-256
+`51a6423be91449746ce54076582bc316945eeb120ff55011ea64308e382f4237`.
+No artifact bytes were selected or verified. This is an ordinary packaged
+execution check, not either required model-driven journey.
+
+The initial verification expectation incorrectly treated an empty declared env
+as an empty effective env; HOME and selected inherited variables make that false.
+Pinning all four inputs makes this check reproducible without deriving expected
+values from the receipt. Evidence is saved under
+`/tmp/nucleus-package-evidence-pinned-{spec,pod,admission,receipt,expectations,verified}.json`.
+The pod was cancelled after verification. Published-port forwarding remains open;
+the authenticated node calls used the development container's direct IP.
+
+The command grammar gate now traverses the nested workload and approval groups
+and classifies their actual leaves, plus host up/status. All ten commands declare
+the reach band because they make node calls or execute the container client.
+The previously failing gate now reports 66 declared leaves; all four focused
+command grammar tests and scoped xtask Clippy pass.

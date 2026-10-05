@@ -130,6 +130,13 @@ const GROUPS: &[(&str, &str, &str)] = &[
     ("grant", "grant.rs", "GrantCommand"),
     ("identity", "identity.rs", "IdentityCommand"),
     ("node", "node.rs", "NodeCommand"),
+    (
+        "node effect-approvals",
+        "node/effect_approvals.rs",
+        "Command",
+    ),
+    ("node workload", "node/workload.rs", "Command"),
+    ("microvm-host", "microvm_host/command.rs", "Command"),
     ("bundle", "bundle.rs", "BundleCommand"),
     ("federation", "federation.rs", "FederationCommand"),
     ("image", "image.rs", "ImageCommand"),
@@ -150,7 +157,10 @@ pub fn leaves(root: &Path) -> Result<BTreeSet<String>> {
     }
     for (group, file, enum_name) in GROUPS {
         for variant in variants_of(&cli.join(file), enum_name)? {
-            out.insert(format!("{group} {}", kebab(&variant)));
+            let path = format!("{group} {}", kebab(&variant));
+            if !group_names.contains(path.as_str()) {
+                out.insert(path);
+            }
         }
     }
     Ok(out)
@@ -276,6 +286,12 @@ mod tests {
             "a kebab-cased leaf"
         );
         assert!(!leaves.contains("identity"), "a group is not itself a leaf");
+        assert!(leaves.contains("node effect-approvals grant"));
+        assert!(leaves.contains("node workload collect"));
+        assert!(leaves.contains("microvm-host up"));
+        assert!(!leaves.contains("node effect-approvals"));
+        assert!(!leaves.contains("node workload"));
+        assert!(!leaves.contains("microvm-host"));
     }
 
     /// The tree is clean. This is the gate's green half; the red half is A-19's
