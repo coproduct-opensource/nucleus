@@ -23,5 +23,5 @@ stub, version command, or baseline preflight as a completed coding run.
 
 Successful tests are one part of the release journey. Each run also needs the
 scoped approval flow and independently verified execution and artifact evidence.
-The release PR and Gatehouse merge follow the two completed journeys, as recorded
-in [the release plan](../../docs/design/secure-coding-release-plan.md).
+Publication timing and the remaining release requirements are recorded in
+[the release plan](../../docs/design/secure-coding-release-plan.md).

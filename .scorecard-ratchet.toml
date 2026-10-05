@@ -86,9 +86,11 @@
 # sites that were always there become visible (authority-exchange from_verified,
 # tool-proxy broker_client and run_gate, four in portcullis flow_graph); dropped
 # is unchanged at 33, so INERT_TOTAL still agrees. 192/193 = 99.48%.
-floor_bp = 9948
+# 2026-10-04: memory journal integration and its authority fixtures measure
+# 196/197 witness sites; tighten both pins to the scanner result.
+floor_bp = 9949
 floor_set = "measurement"
-population_floor = 193
+population_floor = 197
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -555,9 +557,11 @@ population_floor = 23
 # exceptions (including its local fixture). Measured 27 of 145 = 18.62%.
 # 2026-10-04: managed adapter launch adds a checked exception for the
 # unprivileged workload child. Measured 28 of 146 = 19.17%.
-floor_bp = 1917
+# 2026-10-04: the exclusive operator memory journal adds one checked I/O
+# exception. Measured 29/147; tighten both pins.
+floor_bp = 1972
 floor_set = "measurement"
-population_floor = 146
+population_floor = 147
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

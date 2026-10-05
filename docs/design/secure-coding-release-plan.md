@@ -7,11 +7,13 @@ produces evidence an external verifier can inspect. Two distinct harnesses must
 complete this journey. Gatehouse control-plane implementation stays outside this
 repository.
 
-Publication direction (2026-10-04): after both complete coding journeys and
-their independent evidence verification succeed, open a PR for this work and
-get it merged through Gatehouse. This is authorized by the user. Do not treat
-installed harness startup or an ordinary HTTP fixture as either completed
-journey; keep the broader release requirements below intact.
+Publication direction updated (2026-10-04): continue working toward the full
+release goal until **2026-10-05 08:00 America/New_York (12:00 UTC)**, then open
+the implementation PR and pursue its merge through Gatehouse. The user explicitly
+authorized this deadline and publication. At that point report the actual journey
+and verification status in the PR; do not count harness startup or fixture calls
+as completed coding journeys, and do not bypass required merge checks. This
+supersedes the earlier instruction to wait for both journeys before opening a PR.
 
 Current execution scope: implement the design and validate ordinary supported
 workflows. Red-teaming, adversarial probes and attack evaluations are paused at
@@ -1705,3 +1707,32 @@ A follow-up search of the inspected Nucleus/Gatehouse repository configuration
 found no model endpoint for the coding journeys; the Gatehouse API-base matches
 were GitHub routing. Model endpoint/model/credential-reference input remains
 necessary to perform either real model-driven journey.
+
+### Durable proxy memory journal (2026-10-04)
+
+The tool proxy now wires an operator-configured memory journal into startup and
+the live write/recall handlers. `--memory-store` and `--memory-namespace` select
+a private file outside the workspace. The process holds an exclusive file lock;
+startup checks the namespace and replays records through provenance validation
+in original admission order rather than accepting a serialized trusted set.
+Accepted writes spend authority, append, flush and sync before publishing their
+candidate state. A failed or cancelled write leaves the store unavailable for
+reads and writes until restart. Duplicate records remain idempotent.
+
+Focused ordinary tests cover restart retention of values/labels/derivations,
+parent-before-derived replay, duplicate writes, exclusive ownership, namespace
+mismatch, workspace-path refusal, incomplete-write recovery refusal and I/O
+failure without publishing candidate state. The I/O fixture exposed the need to
+explicitly flush Tokio's buffered write before sync; that is now required. The
+full proxy suite also found a duplicate Clap argument-group name, corrected by
+naming the new flattened group `MemoryStoreArgs`. Final validation passes 580
+proxy unit tests with all features, scoped Clippy, and Linux ARM64 musl build.
+Prepared writes exclusively borrow their original store until consumed by commit
+(ADR 0007 C-4/D), preventing stale or cross-store publication.
+
+See [`memory-journal.md`](memory-journal.md) for format, limits and recovery
+behavior. This is runtime persistence for a provisioned proxy directory; node
+provisioning across pod lifetimes, host-mediated memory authority, compaction
+and durable declassification burn history remain open. Real process-restart
+validation is still pending. Neither this change nor the audit service completes
+the two model-driven coding journeys.
