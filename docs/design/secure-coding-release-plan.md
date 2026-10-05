@@ -2514,3 +2514,32 @@ the existing PR/merge-group path scopes that gate to changed lines. No timeout,
 scope, threshold or test exclusion was changed. Coverage in the same run passed
 as recorded above. The full log is retained at
 `/tmp/nucleus-mutation-111643425662.log`.
+
+
+### Persist the Apple host selection (2026-10-05)
+
+`[node] apple_host_config = "host.json"` in the global CLI configuration now
+selects the existing Apple readiness path for ordinary `run` and `node` commands.
+It also reaches the goal/grant run path, preserving authorization before launch.
+Explicit host, URL, identity or credential flags win over the saved default;
+local and hook runs retain their selected mode. A failed saved host never falls
+back to another host. `node` now reads its configured URL when no explicit URL
+or Apple host is selected. Changing its argument to an option preserves the
+difference between no selection and an explicitly chosen localhost address.
+
+The saved JSON path resolves beside the global TOML file. Kernel/state paths
+inside host JSON now resolve beside that JSON file, so changing the caller's
+working directory cannot select another state directory. Direct `up` argument
+paths retain their existing current-directory interpretation. This is an
+intentional change for relative paths in existing host JSON files.
+
+An isolated global config selected the existing development host without any
+Apple-specific command flags: run dry-run, authenticated node health, create,
+admission, receipt+raw-log collection and cancel all completed. Independent
+verification accepted pod `f4f0f8c9-a8e5-47be-9d4c-307080ac92b4`'s exact 19/20
+stdout/stderr bytes and preserved exit 23. Evidence is under
+`/tmp/nucleus-apple-default-live/`. All 339 CLI unit tests passed, two ignored;
+integration suites, scoped Clippy, convergence and four prepush gates passed.
+The user's global configuration was not changed. Legacy setup/shell still need
+Apple integration, and model-driven
+coding journeys remain unverified.

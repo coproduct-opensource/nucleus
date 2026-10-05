@@ -217,7 +217,9 @@ Save an explicit host configuration, using the same inputs as `microvm-host up`:
 
 Only `image` and `kernel` are required. Other fields use the same defaults as
 `up`; omit `state_dir` to use the normal or development state directory. Relative
-paths resolve from the current directory. JSON field names use underscores.
+kernel and state paths in JSON resolve beside that JSON file. Paths supplied
+directly as `microvm-host up` arguments still resolve from the current directory.
+JSON field names use underscores.
 
 ```sh
 nucleus run "check the project" --apple-host-config host.json --dry-run
@@ -252,6 +254,34 @@ example, macOS resolves `/tmp` to `/private/tmp`). Workspaces and artifacts stil
 need the existing node/guest provisioning path. Selecting `/work` does not copy
 the host project into it. It also does not yet collect execution evidence before teardown. The two
 complete guest-harness journeys remain a separate release requirement.
+
+## Save the host selection
+
+To make this host the default for `run` and `node`, add its configuration path
+to `~/.config/nucleus/config.toml` (or the file selected by global `--config`):
+
+```toml
+[node]
+apple_host_config = "host.json"
+```
+
+The path resolves beside the TOML file. Keep the JSON file available: each command
+reads it and checks the host's current address, KVM and mTLS identity. The saved
+selection also applies to `run --goal` and `run --grant` after their existing
+authorization checks. `run --dry-run` validates the selection without starting
+anything. `node` commands may start the owned host, as with the explicit flag.
+
+Explicit connection flags override this default: `--node-url`, `--identity-dir`
+or `--node-auth-secret` for `run`; `--url`, identity flags or legacy credential
+flags for `node`. Corresponding environment variables count as explicit input.
+`run --local` and `run --hook` use their selected mode. An explicit
+`--apple-host-config` selects that file instead. A saved host that fails readiness
+returns an error; it does not switch to Lima or another node. Legacy `setup` and
+`shell` do not yet use this saved selection.
+
+Without an Apple selection, `node` now reads `node.url` from the same global
+configuration. An explicit `--url` still wins, even if it equals the built-in
+localhost default. `nucleus config` displays the resolved saved host path.
 
 ## Published-port troubleshooting
 

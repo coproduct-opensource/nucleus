@@ -22,15 +22,9 @@ pub struct NodeArgs {
     #[arg(long, conflicts_with_all = ["url", "secrets_file", "auth_secret", "tls_cert", "tls_key", "trust_bundle"])]
     pub apple_host_config: Option<PathBuf>,
 
-    /// nucleus-node HTTP URL. `https://` since Move B: the node's HTTP
-    /// listener requires mTLS unconditionally now — there is no plaintext
-    /// mode left to default to.
-    #[arg(
-        long,
-        default_value = "https://127.0.0.1:8080",
-        env = "NUCLEUS_NODE_URL"
-    )]
-    pub url: String,
+    /// Node URL; defaults to config's node.url, then https://127.0.0.1:8080
+    #[arg(long, env = "NUCLEUS_NODE_URL")]
+    pub url: Option<String>,
 
     /// Path to secrets.env file (or use --auth-secret)
     #[arg(long, env = "NUCLEUS_SECRETS_FILE")]
@@ -64,6 +58,14 @@ pub struct NodeArgs {
 
     #[command(subcommand)]
     pub command: NodeCommand,
+}
+
+impl NodeArgs {
+    fn url(&self) -> &str {
+        self.url
+            .as_deref()
+            .unwrap_or(crate::config::DEFAULT_NODE_URL)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -176,7 +178,9 @@ fn provisioned_identity_paths_in(dir: &std::path::Path) -> Option<(PathBuf, Path
 }
 
 /// Execute the node command
-pub async fn execute(mut args: NodeArgs) -> Result<()> {
+pub async fn execute(mut args: NodeArgs, config_path: &str) -> Result<()> {
+    let config = crate::config::Config::load(config_path)?;
+    apple_host::apply_default(&mut args, &config);
     apple_host::apply(&mut args).await?;
     apply_provisioned_identity_defaults(&mut args);
     let agent = create_client(&args)?;
@@ -185,28 +189,27 @@ pub async fn execute(mut args: NodeArgs) -> Result<()> {
         _ => resolve_auth(&args)?,
     };
 
+    let url = args.url().to_string();
     match args.command {
         NodeCommand::Workload { pod_id, command } => {
-            workload::run(&agent, &args.url, pod_id, &command).await
+            workload::run(&agent, &url, pod_id, &command).await
         }
         NodeCommand::EffectApprovals { pod_id, command } => {
             println!(
                 "{}",
-                effect_approvals::run(&agent, &args.url, pod_id, &command).await?
+                effect_approvals::run(&agent, &url, pod_id, &command).await?
             );
             Ok(())
         }
-        NodeCommand::Health => health(&agent, &args.url, auth_secret.as_deref(), &args.actor).await,
-        NodeCommand::Pods => {
-            list_pods(&agent, &args.url, auth_secret.as_deref(), &args.actor).await
-        }
+        NodeCommand::Health => health(&agent, &url, auth_secret.as_deref(), &args.actor).await,
+        NodeCommand::Pods => list_pods(&agent, &url, auth_secret.as_deref(), &args.actor).await,
         NodeCommand::Create {
             spec_file,
             parent_pod_id,
         } => {
             create_pod(
                 &agent,
-                &args.url,
+                &url,
                 auth_secret.as_deref(),
                 &args.actor,
                 &spec_file,
@@ -215,14 +218,7 @@ pub async fn execute(mut args: NodeArgs) -> Result<()> {
             .await
         }
         NodeCommand::Cancel { pod_id } => {
-            cancel_pod(
-                &agent,
-                &args.url,
-                auth_secret.as_deref(),
-                &args.actor,
-                &pod_id,
-            )
-            .await
+            cancel_pod(&agent, &url, auth_secret.as_deref(), &args.actor, &pod_id).await
         }
         NodeCommand::Logs {
             pod_id,
@@ -231,7 +227,7 @@ pub async fn execute(mut args: NodeArgs) -> Result<()> {
         } => {
             stream_logs(
                 &agent,
-                &args.url,
+                &url,
                 auth_secret.as_deref(),
                 &args.actor,
                 &pod_id,
@@ -903,7 +899,7 @@ mod tests {
     fn base_args() -> NodeArgs {
         NodeArgs {
             apple_host_config: None,
-            url: "https://127.0.0.1:0".to_string(),
+            url: Some("https://127.0.0.1:0".to_string()),
             secrets_file: None,
             auth_secret: None,
             actor: "test-cli".to_string(),
@@ -1128,7 +1124,7 @@ mod tests {
         });
 
         let mut args = base_args();
-        args.url = format!("https://{addr}");
+        args.url = Some(format!("https://{addr}"));
         args.tls_cert = Some(cert_path);
         args.tls_key = Some(key_path);
         args.trust_bundle = Some(bundle_path);
@@ -1140,7 +1136,7 @@ mod tests {
             "mTLS mode must not require an HMAC secret"
         );
 
-        health(&agent, &args.url, secret.as_deref(), &args.actor)
+        health(&agent, args.url(), secret.as_deref(), &args.actor)
             .await
             .expect("a real mTLS handshake against the SAME CA must succeed");
 
@@ -1226,7 +1222,7 @@ mod tests {
         });
 
         let mut args = base_args();
-        args.url = format!("https://{addr}");
+        args.url = Some(format!("https://{addr}"));
         args.tls_cert = Some(cert_path);
         args.tls_key = Some(key_path);
         args.trust_bundle = Some(bundle_path);
@@ -1234,7 +1230,7 @@ mod tests {
         let agent = create_client(&args).unwrap();
         let secret = resolve_auth(&args).unwrap();
 
-        let result = health(&agent, &args.url, secret.as_deref(), &args.actor).await;
+        let result = health(&agent, args.url(), secret.as_deref(), &args.actor).await;
         assert!(
             result.is_err(),
             "a server certificate from an unrelated CA must be refused, \
@@ -1302,13 +1298,13 @@ mod tests {
         });
 
         let mut args = base_args();
-        args.url = format!("https://{addr}");
+        args.url = Some(format!("https://{addr}"));
         args.tls_cert = Some(cert_path);
         args.tls_key = Some(key_path);
         args.trust_bundle = Some(bundle_path);
 
         let agent = create_client(&args).unwrap();
-        let result = health(&agent, &args.url, None, &args.actor).await;
+        let result = health(&agent, args.url(), None, &args.actor).await;
         assert!(
             result.is_err(),
             "a pod's certificate from the node's own CA must not be taken for the node"

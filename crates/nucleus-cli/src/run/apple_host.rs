@@ -5,6 +5,18 @@ use super::{ResolvedConfig, RunArgs};
 use crate::microvm_host::{lifecycle, settings};
 use anyhow::Result;
 
+pub(super) fn apply_default(args: &mut RunArgs, config: &crate::config::Config) {
+    if args.apple_host_config.is_none()
+        && !args.local
+        && !args.hook
+        && args.node_url.is_none()
+        && args.identity_dir.is_none()
+        && args.node_auth_secret.is_none()
+    {
+        args.apple_host_config = config.node.apple_host_config.clone();
+    }
+}
+
 pub(super) fn configuration(path: &Path) -> Result<lifecycle::HostConfig> {
     settings::configuration(path)
 }
@@ -41,6 +53,36 @@ mod tests {
     struct Parse {
         #[command(flatten)]
         args: RunArgs,
+    }
+
+    #[test]
+    fn saved_host_applies_to_ordinary_goal_and_grant_runs_but_not_explicit_modes() {
+        let mut config = crate::config::Config::default();
+        config.node.apple_host_config = Some("saved-host.json".into());
+        for arguments in [
+            vec!["ordinary task"],
+            vec!["--goal", "goal.json"],
+            vec!["--grant", "grant.json"],
+        ] {
+            let mut input = vec!["run"];
+            input.extend(arguments);
+            let mut parsed = Parse::try_parse_from(input).unwrap();
+            apply_default(&mut parsed.args, &config);
+            assert_eq!(parsed.args.apple_host_config, config.node.apple_host_config);
+        }
+        for extra in [
+            vec!["--local"],
+            vec!["--hook"],
+            vec!["--node-url", "https://selected.example"],
+            vec!["--identity-dir", "/selected"],
+            vec!["--node-auth-secret", "explicit"],
+        ] {
+            let mut input = vec!["run", "ordinary task"];
+            input.extend(extra);
+            let mut parsed = Parse::try_parse_from(input).unwrap();
+            apply_default(&mut parsed.args, &config);
+            assert!(parsed.args.apple_host_config.is_none());
+        }
     }
 
     #[test]

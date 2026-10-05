@@ -328,16 +328,15 @@ pub struct RunArgs {
 }
 
 /// Execute the run command
-pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
+pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> {
+    let global_config = Config::load(global_config_path)?;
+    apple_host::apply_default(&mut args, &global_config);
     if args.goal.is_some() {
         return crate::goal::execute(args, global_config_path).await;
     }
     if args.grant.is_some() {
         return crate::goal::execute_grant(args, global_config_path).await;
     }
-
-    // Load global config
-    let global_config = Config::load(global_config_path)?;
 
     // Resolve secrets and paths from config/keychain/env
     let resolved = resolve_config(&args, &global_config)?;

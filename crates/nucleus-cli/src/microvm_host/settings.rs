@@ -72,11 +72,24 @@ pub(crate) async fn ready(path: &std::path::Path) -> Result<super::lifecycle::Mi
 
 impl HostSettings {
     pub(crate) fn from_file(path: &std::path::Path) -> Result<Self> {
-        serde_json::from_slice(
+        let mut settings: Self = serde_json::from_slice(
             &std::fs::read(path)
                 .with_context(|| format!("reading Apple host configuration {}", path.display()))?,
         )
-        .context("invalid Apple host configuration")
+        .context("invalid Apple host configuration")?;
+        let absolute = std::path::absolute(path)?;
+        let parent = absolute
+            .parent()
+            .context("host configuration has no parent directory")?;
+        if settings.kernel.is_relative() {
+            settings.kernel = parent.join(&settings.kernel);
+        }
+        if let Some(state) = &mut settings.state_dir {
+            if state.is_relative() {
+                *state = parent.join(&*state);
+            }
+        }
+        Ok(settings)
     }
 
     pub(crate) fn config(self) -> Result<HostConfig> {
@@ -126,6 +139,23 @@ mod tests {
     struct Parse {
         #[command(flatten)]
         settings: HostSettings,
+    }
+
+    #[test]
+    fn file_paths_are_relative_to_the_host_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let kernel = temp.path().join("Image");
+        std::fs::write(&kernel, b"kernel input").unwrap();
+        let path = temp.path().join("host.json");
+        std::fs::write(
+            &path,
+            r#"{"image":"local-host","kernel":"Image","state_dir":"state"}"#,
+        )
+        .unwrap();
+        let config = HostSettings::from_file(&path).unwrap().config().unwrap();
+        assert_eq!(config.kernel, kernel.canonicalize().unwrap());
+        assert_eq!(config.state_dir, temp.path().join("state"));
+        assert!(!config.state_dir.exists());
     }
 
     #[test]

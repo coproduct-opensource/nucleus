@@ -55,7 +55,7 @@ async fn fixture_with_review(
     let url = format!("https://{}", listener.local_addr().unwrap());
     let client = create_client(&NodeArgs {
         apple_host_config: None,
-        url: url.clone(),
+        url: Some(url.clone()),
         secrets_file: None,
         auth_secret: None,
         actor: "operator".into(),

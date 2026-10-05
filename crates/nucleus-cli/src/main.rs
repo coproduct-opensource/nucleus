@@ -239,7 +239,7 @@ async fn main() -> Result<()> {
         Commands::Trust(args) => trust::execute(args),
         Commands::Identity(args) => identity::execute(args),
         Commands::Federation(args) => federation::execute(args),
-        Commands::Node(args) => node::execute(args).await,
+        Commands::Node(args) => node::execute(args, &config_path).await,
         Commands::Lineage(args) => lineage::execute(args),
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
         Commands::Envelope(args) => envelope::execute(args),
