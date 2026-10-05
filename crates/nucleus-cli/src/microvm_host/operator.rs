@@ -145,7 +145,9 @@ mod tests {
     }
 
     fn fixture() -> (tempfile::TempDir, ContainerCli, HostConfig, Value) {
-        let dir = tempfile::tempdir().unwrap();
+        // CI may mount /tmp noexec; executable fixtures live beside this binary.
+        let executable = std::env::current_exe().unwrap();
+        let dir = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
         let program = dir.path().join("container");
         std::fs::write(
             &program,

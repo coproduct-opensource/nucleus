@@ -26,7 +26,7 @@ model endpoint configuration is available.
 
 This is an implementation milestone, not a completed release journey. The latest
 local checkpoint has 902 passing node unit tests, three node integrations,
-348 CLI unit tests plus integrations, and the earlier 580-test all-feature proxy
+351 CLI unit tests and 16 integrations, and the earlier 580-test all-feature proxy
 suite plus integrations. Tests cover different source checkpoints as recorded
 below; the final PR and merge-group checks must still run.
 
@@ -54,6 +54,24 @@ consumer with a deadline covering credential retrieval, upload and response.
 Broker accounting covers body plus guest path lengths (and guest content-type
 length for STREAM), not physical HTTP/TLS wire bytes. See the paced replay
 validation entries below.
+
+## Review entry points
+
+The branch spans several runtime boundaries. Start with the operator behavior,
+then follow the owner of each state transition:
+
+| Area | Operator contract | Implementation entry points |
+|---|---|---|
+| Effect approval | [Review and grant the exact staged request](../host-effect-approvals.md) | [Shared pod authority](../../crates/nucleus-node/src/pod_authority.rs), [effect decisions](../../crates/nucleus-node/src/host_decide/effects.rs), [staged dispatch](../../crates/nucleus-node/src/broker_stream/staged.rs) |
+| Apple workflow | [Install, start, diagnose, seed and collect](../quickstart/apple-container.md) | [Host lifecycle](../../crates/nucleus-cli/src/microvm_host/lifecycle.rs), [operator commands](../../crates/nucleus-cli/src/microvm_host/operator.rs), [setup verification](../../crates/nucleus-cli/src/microvm_host/verification.rs) |
+| Independent evidence | [Receipt enrollment and verification](../handoffs/nucleus-build-receipts.md) | [Admission expectations](../../crates/nucleus-spec/src/workload_admission.rs), [execution verifier CLI](../../crates/nucleus-audit/src/verify_execution.rs), [raw log collection](../../crates/nucleus-cli/src/node/workload/collection.rs) |
+| Outbound accounting | [Scoped audit credential service](audit-credential-service.md) | [Shared egress meter](../../crates/nucleus-node/src/egress_meter.rs), [paced HTTP body](../../crates/nucleus-node/src/egress_meter/body.rs), [audit minter socket](../../crates/nucleus-node/src/audit_credential_socket.rs) |
+| Resource lifecycle | Admission before launch; release after confirmed cleanup | [Capacity reservation](../../crates/nucleus-node/src/node_capacity.rs), [owned launch handoff](../../crates/nucleus-node/src/pod_launch.rs), [expiry and cleanup](../../crates/nucleus-node/src/pod_reaper.rs) |
+| Persistent memory | [Owner namespace and journal behavior](memory-journal.md) | [Node provisioning](../../crates/nucleus-node/src/memory_provisioning.rs), [proxy journal](../../crates/nucleus-tool-proxy/src/memory_store.rs) |
+
+The checkpoint table above is the completion ledger. Historical sections below
+retain failed attempts and earlier measurements so later success does not erase
+their scope or imply that every checkpoint used the final source revision.
 
 ## 1. Host-authoritative enforcement (P0)
 
