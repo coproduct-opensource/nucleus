@@ -67,13 +67,20 @@ impl StoppedVm<'_> {
         if let Some(bridge) = pod.bridge.lock().await.take() {
             bridge.shutdown().await;
         }
-        if let Some(plan) = pod.net_plan.lock().await.take() {
-            // Network teardown currently remains best-effort. At least the
-            // stopped VM can no longer use an index returned to the allocator.
-            let _ = net::cleanup_network(&plan).await;
-            pod.network_allocator.release(plan.index);
-        } else if let Some(name) = pod.netns.lock().await.take() {
-            let _ = net::cleanup_netns(&name).await;
+        {
+            let mut plan = pod.net_plan.lock().await;
+            if let Some(plan) = plan.as_mut() {
+                net::cleanup_network(plan).await?;
+                // The plan's namespace was included in confirmed cleanup.
+                pod.netns.lock().await.take();
+            } else {
+                let mut name = pod.netns.lock().await;
+                if let Some(name) = name.as_ref() {
+                    net::cleanup_netns(name).await?;
+                }
+                name.take();
+            }
+            plan.take();
         }
         let mut placement = pod.direct_cgroup.lock().await;
         if let Some(group) = placement.as_mut() {
@@ -117,7 +124,6 @@ mod tests {
             drift_monitor: Mutex::new(None),
             egress_link: Mutex::new(None),
             drift_stop: Arc::default(),
-            network_allocator: Arc::new(net::NetworkAllocator::new()),
             identity: None,
             identity_manager: None,
             identity_registry_key: None,

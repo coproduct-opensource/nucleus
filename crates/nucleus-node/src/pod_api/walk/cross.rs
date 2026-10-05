@@ -234,7 +234,6 @@ impl Run {
             drift_monitor: Mutex::new(None),
             egress_link: Mutex::new(None),
             drift_stop: Arc::default(),
-            network_allocator: st.network_allocator.clone(),
             identity: Some(identity.clone()),
             identity_registry_key: Some(p.to_string()),
             identity_manager: Some(manager.clone()),

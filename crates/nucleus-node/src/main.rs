@@ -594,8 +594,6 @@ struct FirecrackerPod {
     drift_monitor: Mutex<Option<JoinHandle<()>>>,
     egress_link: Mutex<Option<egress_link::LinkMonitor>>,
     drift_stop: Arc<AtomicBool>,
-    /// Reference to network allocator for releasing indices on cleanup
-    network_allocator: Arc<net::NetworkAllocator>,
     /// SPIFFE identity for this pod (if identity management is enabled)
     #[allow(dead_code)]
     identity: Option<nucleus_identity::Identity>,
@@ -1937,13 +1935,15 @@ async fn spawn_firecracker_pod(
                     }
                 };
                 if let Err(err) = net::setup_network(&plan).await {
-                    state.network_allocator.release(plan.index);
-                    let _ = net::cleanup_network(&plan).await;
+                    if let Err(cleanup) = net::cleanup_network(&mut plan).await {
+                        error!(%cleanup, "failed launch retains its network allocation");
+                    }
                     return Err(err);
                 }
                 if let Err(err) = net::write_policy_files(pod_dir, Some(network)).await {
-                    state.network_allocator.release(plan.index);
-                    let _ = net::cleanup_network(&plan).await;
+                    if let Err(cleanup) = net::cleanup_network(&mut plan).await {
+                        error!(%cleanup, "failed launch retains its network allocation");
+                    }
                     return Err(err);
                 }
                 match net::start_dns_proxy(&mut plan, network, pod_dir).await {
@@ -1951,8 +1951,9 @@ async fn spawn_firecracker_pod(
                         dns_proxy = proxy;
                     }
                     Err(err) => {
-                        state.network_allocator.release(plan.index);
-                        let _ = net::cleanup_network(&plan).await;
+                        if let Err(cleanup) = net::cleanup_network(&mut plan).await {
+                            error!(%cleanup, "failed launch retains its network allocation");
+                        }
                         return Err(err);
                     }
                 }
@@ -2050,7 +2051,6 @@ async fn spawn_firecracker_pod(
             Ok(data) => data,
             Err(err) => {
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2065,7 +2065,6 @@ async fn spawn_firecracker_pod(
         let jail_config_json = config_json.clone();
         if let Err(err) = tokio::fs::write(&config_path, config_json).await {
             cleanup_net_resources(
-                &state.network_allocator,
                 &mut net_plan,
                 &mut netns_name,
                 &mut dns_proxy,
@@ -2090,7 +2089,6 @@ async fn spawn_firecracker_pod(
                 scratch_is_node_provisioned,
             ) {
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2117,7 +2115,6 @@ async fn spawn_firecracker_pod(
             Ok(measured) => measured,
             Err(err) => {
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2265,7 +2262,6 @@ async fn spawn_firecracker_pod(
             Ok(ready) => ready,
             Err(err) => {
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2280,7 +2276,6 @@ async fn spawn_firecracker_pod(
             Ok(child) => child,
             Err(err) => {
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2312,7 +2307,6 @@ async fn spawn_firecracker_pod(
             if let Err(reason) = booted {
                 let _ = child.kill().await;
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2359,7 +2353,6 @@ async fn spawn_firecracker_pod(
                 if state.firecracker_seccomp_verify {
                     let _ = child.kill().await;
                     cleanup_net_resources(
-                        &state.network_allocator,
                         &mut net_plan,
                         &mut netns_name,
                         &mut dns_proxy,
@@ -2390,7 +2383,6 @@ async fn spawn_firecracker_pod(
                 None => {
                     let _ = child.kill().await;
                     cleanup_net_resources(
-                        &state.network_allocator,
                         &mut net_plan,
                         &mut netns_name,
                         &mut dns_proxy,
@@ -2410,7 +2402,6 @@ async fn spawn_firecracker_pod(
             if let Err(err) = net::apply_host_policy(pid, policy, dns_entries, dns_server).await {
                 let _ = child.kill().await;
                 cleanup_net_resources(
-                    &state.network_allocator,
                     &mut net_plan,
                     &mut netns_name,
                     &mut dns_proxy,
@@ -2428,7 +2419,6 @@ async fn spawn_firecracker_pod(
                         {
                             let _ = child.kill().await;
                             cleanup_net_resources(
-                                &state.network_allocator,
                                 &mut net_plan,
                                 &mut netns_name,
                                 &mut dns_proxy,
@@ -2444,7 +2434,6 @@ async fn spawn_firecracker_pod(
                     Err(err) => {
                         let _ = child.kill().await;
                         cleanup_net_resources(
-                            &state.network_allocator,
                             &mut net_plan,
                             &mut netns_name,
                             &mut dns_proxy,
@@ -2486,7 +2475,6 @@ async fn spawn_firecracker_pod(
                 Err(err) => {
                     let _ = child.kill().await;
                     cleanup_net_resources(
-                        &state.network_allocator,
                         &mut net_plan,
                         &mut netns_name,
                         &mut dns_proxy,
@@ -2501,7 +2489,6 @@ async fn spawn_firecracker_pod(
         if let Err(err) = wait_for_vsock_socket(&vsock_path).await {
             let _ = child.kill().await;
             cleanup_net_resources(
-                &state.network_allocator,
                 &mut net_plan,
                 &mut netns_name,
                 &mut dns_proxy,
@@ -2543,7 +2530,6 @@ async fn spawn_firecracker_pod(
             bridge.shutdown().await;
             let _ = child.kill().await;
             cleanup_net_resources(
-                &state.network_allocator,
                 &mut net_plan,
                 &mut netns_name,
                 &mut dns_proxy,
@@ -2633,7 +2619,6 @@ async fn spawn_firecracker_pod(
             drift_monitor: Mutex::new(drift_monitor),
             egress_link: Mutex::new(egress_link),
             drift_stop,
-            network_allocator: state.network_allocator.clone(),
             identity: pod_identity,
             identity_registry_key: identity_registry_key.clone(),
             identity_manager,
@@ -2662,7 +2647,6 @@ async fn spawn_firecracker_pod(
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 async fn cleanup_net_resources(
-    allocator: &net::NetworkAllocator,
     net_plan: &mut Option<net::NetPlan>,
     netns_name: &mut Option<String>,
     dns_proxy: &mut Option<net::DnsProxyState>,
@@ -2675,10 +2659,10 @@ async fn cleanup_net_resources(
     if let Some(mut proxy) = dns_proxy.take() {
         let _ = proxy.child.kill().await;
     }
-    if let Some(plan) = net_plan.take() {
-        // Release the index back to the pool for reuse
-        allocator.release(plan.index);
-        let _ = net::cleanup_network(&plan).await;
+    if let Some(mut plan) = net_plan.take() {
+        if let Err(error) = net::cleanup_network(&mut plan).await {
+            error!(%error, "failed launch retains its network allocation");
+        }
     } else if let Some(name) = netns_name.take() {
         let _ = net::cleanup_netns(&name).await;
     }

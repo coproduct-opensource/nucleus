@@ -2711,3 +2711,28 @@ the existing development and primary acceptance hosts were not replaced.
 Native tools were preserved before `cargo clean` reclaimed 6.2 GiB. This is live
 microVM lifecycle evidence on a node refresh, not a newly published full image
 or either model-driven coding journey.
+
+### Confirm network cleanup before address reuse (2026-10-05)
+
+Network reclamation now owns a non-cloneable lease instead of accepting a raw
+pool index. Cleanup removes the pod's host rules, link and named namespace, then
+requires successful namespace, link and firewall inventories showing the owned
+resources absent. Deletion exit status alone is insufficient: an already-absent
+resource and a failed command can both return nonzero. Only confirmed absence
+consumes the lease and returns its index. A retired plan performs no further
+deletions, including after another pod acquires that index (ADR 0007 C-4).
+
+Registered Firecracker pods retain their plan and capacity when cleanup fails,
+so a later reaper pass can retry. Failed launches log cleanup failures and leave
+an unconfirmed index unavailable in that node process rather than recycling it.
+This does not provide durable network-allocation recovery across node restart;
+that remains open. Namespace guards on failed launch are still best-effort, but
+their drop cannot return a network lease. Cleanup commands are asynchronous and
+individually bounded by ten seconds.
+
+Functional tests cover confirmed absence, retained ownership while resources
+remain or inventory fails, successful retry and once-only recycling. All 897
+node unit tests (one ignored), three integrations, scoped Clippy, the Linux
+ARM64 build, convergence and four prepush gates passed. Existing Clippy
+configuration warnings remain. A plain cross-target cargo check required an
+uninstalled musl GCC; the configured Zig build completed successfully.
