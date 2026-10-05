@@ -97,7 +97,7 @@ pub(crate) fn run(bin_dir: &Path, kernel: &Path, rootfs: &Path, out: &Path) -> R
     inputs.insert("rootfs.ext4".into(), rootfs_input);
     fs::write(
         stage.path().join("Containerfile"),
-        include_bytes!("../../../docker/Containerfile.microvm-host-local"),
+        pins::LOCAL_HOST_CONTAINERFILE,
     )?;
     fs::write(
         stage.path().join("manifest.json"),

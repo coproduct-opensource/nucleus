@@ -215,8 +215,9 @@ own bound port and target before a forwarded health response is accepted. An
 older relay still occupying a slot cannot stand in for the new one.
 
 Runs cancel their pods on ordinary success and failure, and report cancellation
-failures with the pod ID. Process crashes still require timeout or operator
-cleanup. This connection option preserves the existing host-side agent/MCP run
+failures with the pod ID. Ctrl-C during the host agent wait stops and reaps that
+child, then cancels the pod and releases the relay. This does not terminate
+arbitrary detached descendants. Process crashes still require operator cleanup. This connection option preserves the existing host-side agent/MCP run
 model; it does not add workspace transfer or run the agent itself inside the
 microVM. `--dir` selects the host agent's working directory. Apple runs use `/work`
 inside the guest by default; `--guest-work-dir /absolute/guest/path` selects another

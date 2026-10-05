@@ -2337,3 +2337,18 @@ scoped Clippy and all four prepush gates passed. The earlier workspace coverage
 run failed before measuring coverage: the compile-time read population grew
 from its ceiling of 12 to 13. That separate dependency regression is being
 resolved; its failure cancelled the workflow's mutation job.
+
+
+### Keep the local host recipe inside its build dependency (2026-10-05)
+
+The coverage workflow's compile-time read ratchet reproduced locally: the new
+xtask include of `docker/Containerfile.microvm-host-local` raised escaping reads
+to 13 against a ceiling of 12. The canonical recipe now belongs to
+`nucleus-spec/assets/Containerfile.microvm-host-local` and is exposed by the
+shared host-spec module. xtask already depends on that crate, so its recipe is
+inside the derived dependency closure. No duplicate recipe, runtime lookup or
+higher ceiling was introduced. The recipe bytes and staged Containerfile are
+unchanged; the existing local host image remains valid.
+
+The formerly failing population test now passes with the unchanged ceiling.
+All action-key and spec tests and the three context-staging tests passed.
