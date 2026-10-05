@@ -1509,3 +1509,30 @@ token's ledger epoch explicit, both paced-upload checks and the ledger tests
 passed again. All four repository gates passed; the lifecycle floor rose from
 13/20 to 14/21 bounded affine rights. These checks do not establish the two
 outstanding model-driven coding journeys or cover unmediated drivers.
+
+### Live paced broker upload on Apple Container (2026-10-04)
+
+The node built from `16bcb9204` ran in the existing Apple Container host with
+nested Firecracker. Pod `74b7773b-15f9-42cf-9812-07d55272d81a` used the managed
+HTTP adapter at UID 1000 to send an ordinary 25,000-byte request under an
+8,192-byte-per-second allowance and a 100,000-byte total ceiling. The request
+completed in 3.3567 seconds, returned HTTP 200, and the workload exited zero.
+The independently hashed upstream payload matched the declared fixture:
+`007640a3670f168e43174aa9a9e76aae86612bde6daf21eadb0c24b81b8fac78`.
+The host lifecycle record reported 25,000 uploaded body bytes and 11 downloaded
+response bytes. Cancellation closed the packet queue with 280 accepted IP bytes
+and zero rejected packets; those IP bytes share the pod ledger with the broker.
+
+The CLI collected stdout, host admission metadata, and a signed artifact bundle.
+`nucleus-audit verify-artifacts` verified the execution signature and the bytes
+of `workflow.json`. Expectations came from host admission, a separately read
+executor public-key pin, a finite time window, and the environment computed from
+the pod spec plus its declared local upstream address. They were not copied
+from the execution receipt. The local records are retained under
+`/tmp/nucleus-apple-acceptance/paced-{admission,bundle,expectations,verified-report}.json`.
+
+The completed pod was cancelled, the temporary node and upstream fixture were
+stopped, and only the host's original loopback/Ethernet links remained. The
+original node still returned healthy over mTLS. This is normal live upload and
+artifact verification, not a completed model-driven coding journey. PERFORM
+batch pacing, transport-overhead accounting, and unmediated drivers remain open.
