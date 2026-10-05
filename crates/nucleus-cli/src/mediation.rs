@@ -185,10 +185,15 @@ pub const SETTING_SOURCES: &str = "";
 /// `--strict-mcp-config` is meaningful even where no `--mcp-config` is passed:
 /// it then resolves to zero MCP servers rather than to the directory's own.
 pub fn confine_to_nucleus_settings(cmd: &mut Command) -> &mut Command {
-    cmd.arg("--setting-sources")
-        .arg(SETTING_SOURCES)
-        .arg("--strict-mcp-config")
+    cmd.args(CONFINEMENT_FLAGS)
 }
+
+/// The confinement flags themselves, in order. One list for both places an
+/// agent's argv is built — a host `Command` ([`confine_to_nucleus_settings`])
+/// and a pod's `WorkloadSpec` (`crate::agent::AgentCommand::in_pod`) — so the
+/// two cannot confine differently (ADR 0007 G-1).
+pub const CONFINEMENT_FLAGS: [&str; 3] =
+    ["--setting-sources", SETTING_SOURCES, "--strict-mcp-config"];
 
 /// The settings document that registers the mediation hook, as a type.
 ///
@@ -598,7 +603,11 @@ mod tests {
         let mut checked = 0;
         for (name, site) in all_launch_sites() {
             let compact: String = site.split_whitespace().collect();
-            if !compact.contains(".arg(\"--allowedTools\")") {
+            // A site grants tools by naming the flag itself or through
+            // `run::mcp_launch_protocol`, the builder it shares with the pod.
+            if !compact.contains(".arg(\"--allowedTools\")")
+                && !compact.contains("mcp_launch_protocol(")
+            {
                 continue;
             }
             checked += 1;
