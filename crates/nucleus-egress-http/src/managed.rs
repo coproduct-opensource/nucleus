@@ -5,7 +5,6 @@ use std::future::{Future, IntoFuture};
 use std::process::{ExitCode, ExitStatus};
 
 use axum::Router;
-use tokio::net::TcpListener;
 
 type Error = Box<dyn std::error::Error>;
 
@@ -30,23 +29,38 @@ fn exit_code(status: ExitStatus) -> ExitCode {
     ExitCode::from(code.and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
 }
 
+/// Serve every `(listener, app)` pair, and run `command` (if any) with `env`
+/// added to what it inherits, until the command exits, a server stops, or a
+/// stop signal arrives.
+///
+/// The listeners are bound before this is called, so the command's first
+/// request finds them listening.
 #[expect(
     clippy::disallowed_methods,
     clippy::disallowed_types,
     reason = "unprivileged adapter launches its declared workload inside existing pod containment"
 )]
-pub(super) async fn run(
-    listener: TcpListener,
-    app: Router,
+pub(super) async fn run<L>(
+    servers: Vec<(L, Router)>,
+    env: Vec<(String, String)>,
     command: Vec<OsString>,
     stop: impl Future<Output = u8>,
-) -> Result<ExitCode, Error> {
-    let url = format!("http://{}", listener.local_addr()?);
-    let server = axum::serve(listener, app).into_future();
-    tokio::pin!(server, stop);
+) -> Result<ExitCode, Error>
+where
+    L: axum::serve::Listener,
+    L::Addr: std::fmt::Debug,
+{
+    let mut serving = tokio::task::JoinSet::new();
+    for (listener, app) in servers {
+        serving.spawn(axum::serve(listener, app).into_future());
+    }
+    tokio::pin!(stop);
     let Some((program, arguments)) = command.split_first() else {
         return tokio::select! {
-            result = &mut server => { result?; Ok(ExitCode::SUCCESS) },
+            ended = serving.join_next() => {
+                ended.ok_or("no upstream to serve")???;
+                Ok(ExitCode::SUCCESS)
+            },
             code = &mut stop => Ok(ExitCode::from(code)),
         };
     };
@@ -54,14 +68,14 @@ pub(super) async fn run(
     // proxy. Inherit its already-filtered environment and captured stdio.
     let mut child = tokio::process::Command::new(program)
         .args(arguments)
-        .env("NUCLEUS_EGRESS_HTTP_URL", url)
+        .envs(env)
         .kill_on_drop(true)
         .spawn()?;
     tokio::select! {
         status = child.wait() => Ok(exit_code(status?)),
-        result = &mut server => {
+        ended = serving.join_next() => {
             child.kill().await?;
-            result?;
+            ended.ok_or("no upstream to serve")???;
             Err("HTTP adapter stopped while the workload was running".into())
         },
         code = &mut stop => {
@@ -74,9 +88,10 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::net::TcpListener;
 
     #[tokio::test]
-    async fn workload_gets_bound_url_and_its_exit_status_is_preserved() {
+    async fn workload_gets_its_env_and_its_exit_status_is_preserved() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let command = vec![
@@ -84,9 +99,18 @@ mod tests {
             "-c".into(),
             format!("test \"$NUCLEUS_EGRESS_HTTP_URL\" = http://{address} && exit 7").into(),
         ];
-        let code = run(listener, Router::new(), command, std::future::pending())
-            .await
-            .unwrap();
+        let env = vec![(
+            "NUCLEUS_EGRESS_HTTP_URL".to_string(),
+            format!("http://{address}"),
+        )];
+        let code = run(
+            vec![(listener, Router::new())],
+            env,
+            command,
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
         assert_eq!(code, ExitCode::from(7));
         // Listener lifetime is checked across actual adapter process exit by
         // the integration test. Parallel unit-test subprocesses can temporarily
@@ -115,7 +139,9 @@ mod tests {
             .unwrap();
             143
         };
-        let code = run(listener, Router::new(), command, stop).await.unwrap();
+        let code = run(vec![(listener, Router::new())], Vec::new(), command, stop)
+            .await
+            .unwrap();
         assert_eq!(code, ExitCode::from(143));
         let pid: i32 = std::fs::read_to_string(pid_file)
             .unwrap()

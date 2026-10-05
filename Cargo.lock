@@ -6905,6 +6905,8 @@ dependencies = [
  "axum",
  "clap",
  "nix",
+ "nucleus-spec",
+ "portcullis",
  "reqwest 0.13.5",
  "rustls",
  "tempfile",

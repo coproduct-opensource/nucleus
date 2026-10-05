@@ -4,20 +4,24 @@ HTTP JSON tool proxy that runs inside a pod (VM) and enforces nucleus policies.
 
 ## Ordinary HTTP clients
 
-`nucleus-egress-http` exposes one registered broker upstream on guest loopback.
-Build it with `cargo build -p nucleus-egress-http` and
-include the executable in the guest image. Both the guest layer and release
+`nucleus-egress-http` exposes the pod's declared broker upstreams on guest
+loopback, one listener each. Build it with `cargo build -p nucleus-egress-http`
+and include the executable in the guest image. Both the guest layer and release
 rootfs builder include it. Use it as the pod's workload command to manage the
-listener and harness together, under the same workload UID:
+listeners and harness together, under the same workload UID:
 
 ```text
-nucleus-egress-http --upstream model-api --listen 127.0.0.1:18081 -- /opt/harness/bin/agent task
+nucleus-egress-http --upstream model-api --export HARNESS_BASE_URL=model-api -- /opt/harness/bin/agent task
 ```
 
-The adapter binds before launching the command after `--`, passes its arguments
-verbatim, and sets `NUCLEUS_EGRESS_HTTP_URL` to the bound listener URL. The
-orchestrator configures the harness's API base using this URL or the fixed
-listen address. The command inherits the workload's filtered environment,
+The adapter refuses an `--upstream` the pod did not declare (the runtime sets
+`NUCLEUS_EGRESS_<NAME>_URL` only for admitted upstreams), binds before launching
+the command after `--`, and passes its arguments verbatim. It replaces each
+exposed upstream's `NUCLEUS_EGRESS_<NAME>_URL` with that listener's
+`http://127.0.0.1:<port>` origin, also sets `NUCLEUS_EGRESS_HTTP_URL` when there
+is one upstream, and writes `--export VAR=NAME` and `--placeholder VAR` (a
+fixed non-secret value) for the harness's own configuration. It admits only
+loopback peers running as its own uid. The command inherits the workload's filtered environment,
 working directory and captured standard streams. Its exit status becomes the
 adapter's exit status; the listener closes when the command exits. SIGINT or
 SIGTERM stops and reaps the direct child. The enclosing pod supervisor remains
@@ -34,8 +38,8 @@ workload:
   args:
     - --upstream
     - model-api
-    - --listen
-    - 127.0.0.1:18081
+    - --export
+    - HARNESS_BASE_URL=model-api
     - --
     - /opt/harness/bin/agent
     - task
@@ -44,9 +48,8 @@ workload:
 
 The full pod must declare `model-api` in `credentialed_egress`, matching the
 host's upstream registration. Configure the harness to use the listener as
-its API base; the adapter does not rewrite harness configuration. With
-`--listen 127.0.0.1:0`, a launcher can read `NUCLEUS_EGRESS_HTTP_URL` and translate
-it to the harness's own configuration before starting it. Arguments are not
+its API base, through `--export` or by reading `NUCLEUS_EGRESS_<NAME>_URL`; the
+adapter does not rewrite harness configuration files. Arguments are not
 shell-expanded. Collect logs and declared artifacts with `nucleus node workload`
 before cancelling the pod, then verify the exported evidence independently.
 

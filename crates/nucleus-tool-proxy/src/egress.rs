@@ -84,22 +84,21 @@ pub(crate) fn upstream_url(spec: &CredentialedEgressSpec, path: &str) -> Option<
 /// URL is `unix://<socket>/v1/egress/<name>`: a client connects to the socket
 /// named by `NUCLEUS_TOOL_PROXY_URL`, which is a prefix of this one, and sends
 /// the remainder as the HTTP path.
+///
+/// An ordinary HTTP client cannot dial a `unix://` URL. `nucleus-egress-http`,
+/// run as the workload command, reads these entries as the pod's DECLARED
+/// upstreams and gives the command it manages a loopback `http://` URL under
+/// the same key. The key and the URL are `nucleus_spec::workload_egress`'s, so
+/// the writer here and that reader cannot spell them differently.
 #[must_use]
 pub(crate) fn workload_egress_env(
     specs: &[CredentialedEgressSpec],
     door_url: &str,
 ) -> std::collections::BTreeMap<String, String> {
+    use nucleus_spec::workload_egress::{upstream_url, url_env};
     specs
         .iter()
-        .map(|s| {
-            (
-                format!(
-                    "NUCLEUS_EGRESS_{}_URL",
-                    s.name.to_uppercase().replace('-', "_")
-                ),
-                format!("{door_url}/v1/egress/{}", s.name),
-            )
-        })
+        .map(|s| (url_env(&s.name), upstream_url(door_url, &s.name)))
         .collect()
 }
 
