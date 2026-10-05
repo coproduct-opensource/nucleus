@@ -14,6 +14,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use nucleus::NucleusError;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use crate::auth::AuthError;
 use crate::validation;
@@ -308,8 +310,11 @@ impl ApiError {
             ApiError::KernelDenied { code, .. } => *code,
             _ => None,
         };
-        // Sanitize error message to prevent information disclosure
-        let sanitized_error = validation::sanitize_error_message(&self.to_string(), None);
+        // Sanitize error message to prevent information disclosure. The
+        // registered sandbox roots are what make the `[sandbox]` branch run
+        // on the live path (#2402); see `register_sandbox_root`.
+        let sanitized_error =
+            validation::sanitize_error_message(&self.to_string(), registered_sandbox_roots());
 
         (
             status,
@@ -323,6 +328,37 @@ impl ApiError {
             },
         )
     }
+}
+
+/// Every spelling of the pod's sandbox root an error message may carry.
+///
+/// A process-wide write-once cell rather than a field, because the one
+/// consumer is [`IntoResponse::into_response`], which axum calls with no
+/// access to application state. Before #2402 the consumer passed `None`
+/// instead, so the root-specific redaction ran only in unit tests and a
+/// five-character root (`/work`) slipped under the generic `[path]` heuristic.
+static SANDBOX_ROOTS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+/// Register the sandbox root for error redaction: once, at startup, as soon
+/// as the runtime that owns the root exists.
+///
+/// Records the root as configured and, when it differs, its canonical form —
+/// an I/O error may name either. A second registration is refused, so a later
+/// caller cannot quietly replace the root the redaction is keyed on.
+pub(crate) fn register_sandbox_root(root: &Path) -> Result<(), &'static str> {
+    let mut roots = vec![root.to_path_buf()];
+    if let Ok(canonical) = root.canonicalize()
+        && canonical != root
+    {
+        roots.push(canonical);
+    }
+    SANDBOX_ROOTS
+        .set(roots)
+        .map_err(|_| "sandbox root already registered for error redaction")
+}
+
+fn registered_sandbox_roots() -> &'static [PathBuf] {
+    SANDBOX_ROOTS.get().map_or(&[], Vec::as_slice)
 }
 
 impl IntoResponse for ApiError {
@@ -342,5 +378,39 @@ mod lockdown_status_tests {
     fn lockdown_is_a_403_refusal_named_lockdown() {
         let (status, kind, _, _) = ApiError::Lockdown("LOCKDOWN ACTIVE".into()).classify();
         assert_eq!((status, kind), (StatusCode::FORBIDDEN, "lockdown"));
+    }
+}
+
+#[cfg(test)]
+mod sandbox_root_redaction_tests {
+    use super::*;
+
+    /// #2402, on the production path: the body `into_response` serializes
+    /// redacts the registered root. The root is five characters, like the
+    /// pod's `/work`, so the generic `[path]` heuristic cannot be what
+    /// catches it — with `response_body` passing no roots, this fails.
+    ///
+    /// The only test in this binary that registers a root (the cell is
+    /// write-once); the root is chosen so no other test's message contains it.
+    #[test]
+    fn a_refusal_naming_the_sandbox_root_reaches_the_wire_redacted() {
+        let root = Path::new("/wk42");
+        register_sandbox_root(root).expect("first registration");
+        assert!(
+            register_sandbox_root(Path::new("/other")).is_err(),
+            "a second registration must not replace the root"
+        );
+
+        let err = ApiError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "failed to open /wk42: permission denied",
+        ));
+        let (_status, body) = err.response_body();
+        let wire = serde_json::to_string(&body).expect("serializable");
+        assert!(!wire.contains("/wk42"), "sandbox root leaked: {wire}");
+        assert!(
+            wire.contains("[sandbox]"),
+            "root branch did not run: {wire}"
+        );
     }
 }
