@@ -65,7 +65,9 @@ The full nextest run in the gate image has not been made.
 and says so: "scope exclusions are not part of this comparison". Until now no gate had an exclude,
 so nothing was missing. `test-libs` has 35. When the plan declares it, the comparison must cover
 excludes, or the plan the kernel admitted and the selection the lane hashes can differ in exactly
-the part that makes the shard derivable.
+the part that makes the shard derivable. **Done 2026-10-05:** `gate-defs` compares `scope.exclude` with the plan's `exclude`
+(absent in a plan elaborated by an older gatehouse, which reads as excluding nothing), with a test
+each way round.
 
 ## Not yet
 
