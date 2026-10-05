@@ -12,6 +12,7 @@ pub(crate) struct CapacityArgs {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
     node_memory_mib: Option<u64>,
     /// Total schedulable vCPUs; defaults to available parallelism.
+    /// Capped by visible cgroup v2 quotas, rounded down to whole CPUs.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     node_vcpus: Option<u32>,
     #[arg(long, default_value_t = 512)]
@@ -21,6 +22,10 @@ pub(crate) struct CapacityArgs {
 }
 impl CapacityArgs {
     pub(crate) fn build(&self) -> Result<Capacity, ApiError> {
+        self.build_with_limits(cgroup_limits()?)
+    }
+
+    fn build_with_limits(&self, limits: CgroupLimits) -> Result<Capacity, ApiError> {
         let memory = match self.node_memory_mib {
             Some(value) => value,
             None => {
@@ -39,12 +44,13 @@ impl CapacityArgs {
                     })?
             }
         };
-        let memory = cgroup_memory_limit()?.map_or(memory, |limit| memory.min(limit));
+        let memory = limits.memory_mib.map_or(memory, |limit| memory.min(limit));
         let cpus = match self.node_vcpus {
             Some(value) => value,
             None => u32::try_from(std::thread::available_parallelism()?.get())
                 .map_err(|_| ApiError::Driver("host CPU count is unrepresentable".into()))?,
         };
+        let cpus = limits.vcpus.map_or(cpus, |limit| cpus.min(limit));
         let memory = memory
             .checked_sub(self.host_reserve_memory_mib)
             .filter(|v| *v > 0)
@@ -57,17 +63,31 @@ impl CapacityArgs {
     }
 }
 
-/// The node may run in a delegated cgroup. Every visible ancestor limits the
-/// same memory, so use the smallest finite ceiling rather than host MemTotal.
-fn cgroup_memory_limit() -> Result<Option<u64>, ApiError> {
+/// Visible ancestor ceilings for a node in a delegated cgroup. CPU quotas are
+/// rounded down: pod admission promises whole vCPUs, not fractional shares.
+struct CgroupLimits {
+    memory_mib: Option<u64>,
+    vcpus: Option<u32>,
+}
+fn cgroup_limits() -> Result<CgroupLimits, ApiError> {
     if !cfg!(target_os = "linux") {
-        return Ok(None);
+        return Ok(CgroupLimits {
+            memory_mib: None,
+            vcpus: None,
+        });
     }
     let membership = std::fs::read_to_string("/proc/self/cgroup")?;
-    let Some(relative) = membership.lines().find_map(|line| line.strip_prefix("0::")) else {
-        return Ok(None);
+    read_cgroup_limits(std::path::Path::new("/sys/fs/cgroup"), &membership)
+}
+
+fn read_cgroup_limits(root: &std::path::Path, membership: &str) -> Result<CgroupLimits, ApiError> {
+    let mut limits = CgroupLimits {
+        memory_mib: None,
+        vcpus: None,
     };
-    let root = std::path::Path::new("/sys/fs/cgroup");
+    let Some(relative) = membership.lines().find_map(|line| line.strip_prefix("0::")) else {
+        return Ok(limits);
+    };
     let relative = std::path::Path::new(relative.trim_start_matches('/'));
     if relative
         .components()
@@ -78,24 +98,55 @@ fn cgroup_memory_limit() -> Result<Option<u64>, ApiError> {
         ));
     }
     let mut current = root.join(relative);
-    let mut limit: Option<u64> = None;
     while current.starts_with(root) {
-        match std::fs::read_to_string(current.join("memory.max")) {
-            Ok(value) if value.trim() == "max" => {}
-            Ok(value) => {
+        if let Some(value) = read_limit(&current.join("memory.max"))? {
+            if value.trim() != "max" {
                 let mib = value
                     .trim()
                     .parse::<u64>()
                     .map_err(|_| ApiError::Driver("invalid cgroup memory.max".into()))?
                     / (1024 * 1024);
-                limit = Some(limit.map_or(mib, |prior| prior.min(mib)));
+                limits.memory_mib = Some(limits.memory_mib.map_or(mib, |prior| prior.min(mib)));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
+        }
+        if let Some(value) = read_limit(&current.join("cpu.max"))? {
+            if let Some(cpus) = cpu_quota(&value)? {
+                limits.vcpus = Some(limits.vcpus.map_or(cpus, |prior| prior.min(cpus)));
+            }
         }
         current.pop();
     }
-    Ok(limit)
+    Ok(limits)
+}
+
+fn read_limit(path: &std::path::Path) -> Result<Option<String>, ApiError> {
+    match std::fs::read_to_string(path) {
+        Ok(value) => Ok(Some(value)),
+        // A controller need not be enabled at every ancestor.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn cpu_quota(value: &str) -> Result<Option<u32>, ApiError> {
+    let invalid = || ApiError::Driver("invalid cgroup cpu.max".into());
+    let fields: Vec<_> = value.split_whitespace().collect();
+    let [quota, period] = fields.as_slice() else {
+        return Err(invalid());
+    };
+    let period = period.parse::<u64>().map_err(|_| invalid())?;
+    if period == 0 {
+        return Err(invalid());
+    }
+    if *quota == "max" {
+        return Ok(None);
+    }
+    let quota = quota.parse::<u64>().map_err(|_| invalid())?;
+    if quota == 0 {
+        return Err(invalid());
+    }
+    // Larger quotas cannot constrain the u32 operator capacity.
+    Ok(Some(u32::try_from(quota / period).unwrap_or(u32::MAX)))
 }
 
 #[derive(Clone, Debug)]
@@ -160,6 +211,65 @@ mod tests {
         serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#).unwrap()
     }
     #[test]
+    fn cpu_quotas_preserve_whole_cpu_capacity() {
+        for (input, expected) in [
+            ("max 100000", None),
+            ("200000 100000", Some(2)),
+            ("150000 100000", Some(1)),
+            ("50000 100000", Some(0)),
+        ] {
+            assert_eq!(cpu_quota(input).unwrap(), expected);
+        }
+        for input in [
+            "max",
+            "1 0",
+            "0 100000",
+            "bad 100000",
+            "100000 bad",
+            "1 2 3",
+        ] {
+            assert!(cpu_quota(input).is_err(), "{input}");
+        }
+    }
+    #[test]
+    fn delegated_capacity_uses_tightest_visible_ancestor() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("parent/node");
+        std::fs::create_dir_all(&child).unwrap();
+        std::fs::write(dir.path().join("cpu.max"), "300000 100000").unwrap();
+        std::fs::write(dir.path().join("parent/cpu.max"), "150000 100000").unwrap();
+        std::fs::write(child.join("cpu.max"), "max 100000").unwrap();
+        std::fs::write(dir.path().join("memory.max"), "8589934592").unwrap();
+        std::fs::write(child.join("memory.max"), "4294967296").unwrap();
+        let limits = read_cgroup_limits(dir.path(), "0::/parent/node\n").unwrap();
+        assert_eq!(limits.vcpus, Some(1));
+        assert_eq!(limits.memory_mib, Some(4096));
+        let args = CapacityArgs {
+            node_memory_mib: Some(4096),
+            node_vcpus: Some(8),
+            host_reserve_memory_mib: 0,
+            host_reserve_vcpus: 0,
+        };
+        let capacity = args.build_with_limits(limits).unwrap();
+        let held = capacity.reserve(&spec()).unwrap();
+        assert!(capacity.reserve(&spec()).is_err());
+        drop(held);
+        assert!(capacity.reserve(&spec()).is_ok());
+        std::fs::write(child.join("cpu.max"), "50000 100000").unwrap();
+        assert_eq!(
+            read_cgroup_limits(dir.path(), "0::/parent/node")
+                .unwrap()
+                .vcpus,
+            Some(0)
+        );
+        assert!(
+            args.build_with_limits(read_cgroup_limits(dir.path(), "0::/parent/node").unwrap())
+                .is_err()
+        );
+        std::fs::write(child.join("cpu.max"), "unreadable quota").unwrap();
+        assert!(read_cgroup_limits(dir.path(), "0::/parent/node").is_err());
+    }
+    #[test]
     fn concurrent_reservations_conserve_capacity_and_return_it_on_drop() {
         let capacity = Capacity::new(1280, 2);
         let held = std::thread::scope(|scope| {
@@ -189,7 +299,12 @@ mod tests {
             host_reserve_memory_mib: 512,
             host_reserve_vcpus: 2,
         };
-        let capacity = args.build().unwrap();
+        let capacity = args
+            .build_with_limits(CgroupLimits {
+                memory_mib: None,
+                vcpus: None,
+            })
+            .unwrap();
         let held = capacity.reserve(&spec()).unwrap();
         assert!(capacity.reserve(&spec()).is_err());
         drop(held);

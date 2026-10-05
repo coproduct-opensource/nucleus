@@ -1634,3 +1634,24 @@ no model credential environment variable or endpoint configuration was available
 in the inspected local configuration. After configuration, each harness must do
 the actual edit, pass the retained tests, exercise scoped approval, and produce
 independently verified evidence before the authorized PR and Gatehouse merge.
+
+### Aggregate CPU admission respects delegated quotas (2026-10-04)
+
+Node capacity now reads cgroup v2 `cpu.max` alongside `memory.max` across
+visible ancestors. The tightest finite CPU quota caps both explicit and detected
+vCPU capacity before the host reserve is deducted. Fractional capacity rounds
+down because pod requests use whole vCPUs; less than one available CPU refuses
+startup. Malformed quota data and read errors refuse rather than become unlimited
+capacity (ADR 0007 A-2). Missing controller files remain distinct from read errors.
+
+Four focused capacity tests pass, including concurrent reservation conservation
+and a delegated hierarchy whose 1.5-CPU ancestor permits one default pod despite
+an operator setting of eight CPUs and sufficient memory for several pods. The
+reservation returns on drop. Linux ARM64 musl builds and scoped Clippy passes.
+A live Apple Container check placed the rebuilt node in a separate cgroup with
+`cpu.max=50000 100000`: startup refused with no pod CPU capacity despite
+`--node-vcpus 8`. The temporary cgroup was removed afterward.
+
+This observes visible cgroup v2 quotas at startup, not ongoing changes to host
+allocation or invisible ancestor limits. Cgroup v1 CPU quota detection is not
+added by this change. Coding journeys still await model configuration.
