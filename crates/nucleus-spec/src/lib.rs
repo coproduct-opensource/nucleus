@@ -1119,6 +1119,33 @@ pub struct CredentialedEgressSpec {
 }
 
 impl CredentialedEgressSpec {
+    /// What a pod spec selects an operator registry entry by: the entry's
+    /// projection into this type. `env_var` is the entry's `credential.env.var`
+    /// (the variable's NAME), or `None` for a federated entry, which projects
+    /// to `""`.
+    ///
+    /// One function for the two parties that compute it: the node, building
+    /// its admission ceiling from the registry, and `nucleus run --egress`,
+    /// building the request that ceiling must admit field for field. Two
+    /// copies would let a request the operator meant to grant drift into one
+    /// the node refuses (ADR 0007 G-1).
+    #[must_use]
+    pub fn registry_projection(
+        name: String,
+        base_url: String,
+        header: String,
+        value_prefix: String,
+        env_var: Option<String>,
+    ) -> Self {
+        Self {
+            name,
+            upstream: base_url,
+            credential_env: env_var.unwrap_or_default(),
+            header,
+            value_prefix,
+        }
+    }
+
     /// Resolve a caller-supplied path against this upstream's FIXED base.
     ///
     /// # This is the fixity property, and it lives here so there is one of it

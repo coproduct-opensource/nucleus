@@ -356,7 +356,7 @@ impl UpstreamRegistry {
             if up.header.trim().is_empty() {
                 return Err(format!("upstream {:?}: header must be set", up.name));
             }
-            let (credential, credential_env) = match up.credential {
+            let (credential, env_var) = match up.credential {
                 CredentialFile::Env { var } => {
                     if var.trim().is_empty() {
                         return Err(format!(
@@ -364,22 +364,22 @@ impl UpstreamRegistry {
                             up.name
                         ));
                     }
-                    (CredentialSource::Env { var: var.clone() }, var)
+                    (CredentialSource::Env { var: var.clone() }, Some(var))
                 }
                 CredentialFile::Federated(fed) => (
                     CredentialSource::Federated(Arc::new(federated(&up.name, *fed)?)),
-                    String::new(),
+                    None,
                 ),
             };
             entries.push(RegistryEntry {
                 call_charge: up.call_charge_micro_usd.map(CallCharge),
-                spec: CredentialedEgressSpec {
-                    name: up.name,
-                    upstream: up.base_url,
-                    credential_env,
-                    header: up.header,
-                    value_prefix: up.value_prefix,
-                },
+                spec: CredentialedEgressSpec::registry_projection(
+                    up.name,
+                    up.base_url,
+                    up.header,
+                    up.value_prefix,
+                    env_var,
+                ),
                 credential,
             });
         }

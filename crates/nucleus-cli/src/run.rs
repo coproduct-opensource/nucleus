@@ -26,6 +26,7 @@ use crate::profiles;
 mod agent_process;
 mod apple_host;
 mod pod_agent;
+mod pod_egress;
 mod pod_session;
 
 /// Resolved configuration from args, config file, and Keychain
@@ -341,6 +342,33 @@ pub struct RunArgs {
     /// Feed the output into `nucleus observe` to synthesize a minimal policy.
     #[arg(long, env = "NUCLEUS_KERNEL_TRACE")]
     pub kernel_trace: Option<PathBuf>,
+
+    /// A credentialed upstream (an `[[upstream]]` name in the node's registry)
+    /// the host performs calls to for the agent in the pod. Repeatable. None
+    /// by default: without this flag nothing reaches any upstream.
+    #[arg(long = "egress", value_name = "UPSTREAM", requires = "upstreams",
+          conflicts_with_all = ["local", "hook"])]
+    pub egress: Vec<String>,
+
+    /// The node's upstream registry (its `--upstreams` file), read for the
+    /// entries `--egress` names. Never sent; only their projections are.
+    #[arg(long, env = "NUCLEUS_UPSTREAMS", value_name = "PATH")]
+    pub upstreams: Option<PathBuf>,
+
+    /// Give the agent an upstream's loopback URL under its own variable:
+    /// `VAR=UPSTREAM`. Repeatable.
+    #[arg(
+        long = "egress-export",
+        value_name = "VAR=UPSTREAM",
+        requires = "egress"
+    )]
+    pub egress_exports: Vec<String>,
+
+    /// Set `VAR` to a fixed non-secret placeholder in the agent's environment,
+    /// for an agent that will not start without a credential variable. The
+    /// host injects the real credential. Repeatable.
+    #[arg(long = "egress-placeholder", value_name = "VAR", requires = "egress")]
+    pub egress_placeholders: Vec<String>,
 }
 
 /// Execute the run command
@@ -954,13 +982,24 @@ async fn run_in_pod(
         )
     })?;
     let workload = pod_agent::workload(agent, &guard, policy, args.model.as_deref(), prompt)?;
-    let pod_spec = build_pod_spec(
+    let egress = pod_egress::declare(&pod_egress::EgressFlags {
+        upstreams: &args.egress,
+        registry: args.upstreams.as_deref(),
+        exports: &args.egress_exports,
+        placeholders: &args.egress_placeholders,
+    })?;
+    let (workload, credentialed_egress) = match egress {
+        Some(egress) => egress.wrap(workload),
+        None => (workload, Vec::new()),
+    };
+    let mut pod_spec = build_pod_spec(
         args,
         policy,
         &resolved.kernel_path,
         &resolved.rootfs_path,
         Some(workload),
     )?;
+    pod_spec.spec.credentialed_egress = credentialed_egress;
 
     info!(
         agent = agent.program(),
@@ -1715,6 +1754,47 @@ mod tests {
             let msg = err.to_string();
             assert!(msg.contains("--unsandboxed"), "{mode}: {msg}");
             assert!(msg.contains("my-agent"), "{mode}: {msg}");
+        }
+    }
+
+    /// `--egress` is a pod declaration: it needs the registry, it means nothing
+    /// to a host agent, and its companions need it.
+    #[test]
+    fn egress_flags_parse_only_as_a_pod_declaration() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let ok = parse(&[
+            "run",
+            "--egress",
+            "model-api",
+            "--upstreams",
+            "/etc/nucleus/upstreams.toml",
+            "--egress-export",
+            "HARNESS_BASE_URL=model-api",
+            "--egress-placeholder",
+            "HARNESS_TOKEN",
+            "t",
+        ]);
+        assert_eq!(ok.egress, ["model-api"]);
+        for argv in [
+            vec!["run", "--egress", "model-api", "t"],
+            vec!["run", "--egress-export", "V=model-api", "t"],
+            vec!["run", "--egress-placeholder", "V", "t"],
+            vec![
+                "run",
+                "--local",
+                "--egress",
+                "model-api",
+                "--upstreams",
+                "/r.toml",
+                "t",
+            ],
+        ] {
+            assert!(Parse::try_parse_from(&argv).is_err(), "{argv:?}");
         }
     }
 

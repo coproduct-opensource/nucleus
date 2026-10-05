@@ -1,0 +1,339 @@
+//! The agent's declared upstreams: what a pod run asks the node to perform for
+//! it, and how the agent in the pod is told where to send those calls (#3031).
+//!
+//! # Off unless declared
+//!
+//! A model call is a credentialed egress the HOST performs for the pod (owner
+//! decision D3). Without `--egress` this module adds nothing: the pod spec
+//! names no upstream, the runtime gives the agent no egress URL, and nothing
+//! the agent sends can reach one.
+//!
+//! # What crosses, and what does not
+//!
+//! For each `--egress NAME`, the pod spec carries the operator registry
+//! entry's PROJECTION (`CredentialedEgressSpec::registry_projection`, the one
+//! function the node's admission ceiling is built with): name, base URL,
+//! header, prefix, and the NAME of the node variable that holds the
+//! credential. Never a value. The node admits the pod only when each entry
+//! equals one in its own registry, so a stale or hand-edited registry file
+//! here is refused at the node, not trusted.
+//!
+//! The agent is started under `nucleus-egress-http`, which runs as the
+//! workload uid, refuses an upstream the pod was not admitted, and tells the
+//! agent a loopback URL per upstream. The agent holds at most a placeholder
+//! credential. The host swaps in the real one at egress: the pattern sandboxed
+//! agent platforms converged on, with the swap done outside the sandbox.
+
+use std::path::Path;
+
+use anyhow::{Context, Result, anyhow, bail};
+use nucleus_spec::guest_layout::GuestBinary;
+use nucleus_spec::{CredentialedEgressSpec, WorkloadSpec};
+
+/// The operator's `--egress*` flags, before they are checked.
+pub(super) struct EgressFlags<'a> {
+    pub upstreams: &'a [String],
+    pub registry: Option<&'a Path>,
+    pub exports: &'a [String],
+    pub placeholders: &'a [String],
+}
+
+/// Declared upstreams, resolved against the registry. Built only by
+/// [`declare`], and consumed by [`PodEgress::wrap`].
+#[derive(Debug)]
+#[must_use = "declared upstreams that are never wrapped reach neither the spec nor the agent"]
+pub(super) struct PodEgress {
+    specs: Vec<CredentialedEgressSpec>,
+    exports: Vec<String>,
+    placeholders: Vec<String>,
+}
+
+/// Resolve `--egress` against the registry, or `None` when nothing is
+/// declared.
+///
+/// # Errors
+/// `--egress-export` / `--egress-placeholder` without `--egress`, a missing or
+/// unreadable registry, a name it does not define (named), or an entry the
+/// node would not load.
+pub(super) fn declare(flags: &EgressFlags<'_>) -> Result<Option<PodEgress>> {
+    if flags.upstreams.is_empty() {
+        if !flags.exports.is_empty() || !flags.placeholders.is_empty() {
+            bail!("--egress-export and --egress-placeholder need an --egress upstream");
+        }
+        return Ok(None);
+    }
+    let path = flags.registry.ok_or_else(|| {
+        anyhow!("--egress needs the node's upstream registry (--upstreams / NUCLEUS_UPSTREAMS)")
+    })?;
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the upstream registry {}", path.display()))?;
+    let registry: toml::Table = text
+        .parse()
+        .with_context(|| format!("parsing the upstream registry {}", path.display()))?;
+    let mut specs = Vec::new();
+    for name in flags.upstreams {
+        if specs
+            .iter()
+            .any(|s: &CredentialedEgressSpec| &s.name == name)
+        {
+            bail!("--egress {name} is named twice");
+        }
+        specs.push(projection(&registry, name)?);
+    }
+    Ok(Some(PodEgress {
+        specs,
+        exports: flags.exports.to_vec(),
+        placeholders: flags.placeholders.to_vec(),
+    }))
+}
+
+/// The registry entry `name`, projected as the node projects it.
+fn projection(registry: &toml::Table, name: &str) -> Result<CredentialedEgressSpec> {
+    let entries: Vec<&toml::Table> = registry
+        .get("upstream")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_table)
+        .collect();
+    let entry = entries
+        .iter()
+        .find(|e| e.get("name").and_then(toml::Value::as_str) == Some(name))
+        .ok_or_else(|| {
+            let defined: Vec<&str> = entries
+                .iter()
+                .filter_map(|e| e.get("name").and_then(toml::Value::as_str))
+                .collect();
+            anyhow!(
+                "--egress {name}: the registry defines no [[upstream]] named {name:?} (defined: {})",
+                if defined.is_empty() {
+                    "none".to_string()
+                } else {
+                    defined.join(", ")
+                }
+            )
+        })?;
+    let field = |key: &str| -> Result<String> {
+        entry
+            .get(key)
+            .and_then(toml::Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("--egress {name}: the registry entry has no `{key}`"))
+    };
+    let credential = entry
+        .get("credential")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| anyhow!("--egress {name}: the registry entry has no `credential`"))?;
+    let env_var = match (credential.get("env"), credential.get("federated")) {
+        (Some(env), None) => Some(
+            env.get("var")
+                .and_then(toml::Value::as_str)
+                .ok_or_else(|| anyhow!("--egress {name}: `credential.env` has no `var`"))?
+                .to_string(),
+        ),
+        (None, Some(_)) => None,
+        _ => bail!("--egress {name}: `credential` must be exactly one of `env` or `federated`"),
+    };
+    Ok(CredentialedEgressSpec::registry_projection(
+        field("name")?,
+        field("base_url")?,
+        field("header")?,
+        entry
+            .get("value_prefix")
+            .and_then(toml::Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        env_var,
+    ))
+}
+
+impl PodEgress {
+    /// Start `agent` under the guest's egress adapter, and return the spec's
+    /// `credentialed_egress` beside it. The adapter's argv is the flags, `--`,
+    /// then the agent's own argv unchanged; the workload's env stays empty.
+    pub(super) fn wrap(self, agent: WorkloadSpec) -> (WorkloadSpec, Vec<CredentialedEgressSpec>) {
+        let mut args = Vec::new();
+        for spec in &self.specs {
+            args.extend(["--upstream".to_string(), spec.name.clone()]);
+        }
+        for export in self.exports {
+            args.extend(["--export".to_string(), export]);
+        }
+        for var in self.placeholders {
+            args.extend(["--placeholder".to_string(), var]);
+        }
+        args.push("--".to_string());
+        args.push(agent.command);
+        args.extend(agent.args);
+        let workload = WorkloadSpec {
+            command: GuestBinary::EgressHttp.path().to_string(),
+            args,
+            ..agent
+        };
+        (workload, self.specs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// The node's own documented example (`nucleus-node/src/upstreams.rs`),
+    /// trimmed: one federated entry and one env entry.
+    const REGISTRY: &str = r#"
+[[upstream]]
+name         = "model-api"
+base_url     = "https://model-api.example/v1"
+header       = "authorization"
+value_prefix = "Bearer "
+call_charge_micro_usd = 1000
+
+[upstream.credential.federated]
+token_endpoint     = "https://auth.model-api.example/oauth/token"
+grant              = "token-exchange"
+encoding           = "form"
+audience           = "https://auth.model-api.example"
+
+[[upstream]]
+name         = "search-api"
+base_url     = "https://search.example"
+header       = "x-api-key"
+call_charge_micro_usd = 1000
+
+[upstream.credential.env]
+var = "SEARCH_API_TOKEN"
+"#;
+
+    fn registry_file() -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), REGISTRY).unwrap();
+        file
+    }
+
+    fn strings(s: &[&str]) -> Vec<String> {
+        s.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn agent() -> WorkloadSpec {
+        WorkloadSpec {
+            command: "/opt/agent".into(),
+            args: strings(&["--lead", "task"]),
+            env: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
+            uid: None,
+        }
+    }
+
+    /// **Off by default (D3).** No `--egress`, nothing declared.
+    #[test]
+    fn nothing_is_declared_without_egress() {
+        let none = declare(&EgressFlags {
+            upstreams: &[],
+            registry: None,
+            exports: &[],
+            placeholders: &[],
+        })
+        .unwrap();
+        assert!(none.is_none());
+        assert!(
+            declare(&EgressFlags {
+                upstreams: &[],
+                registry: None,
+                exports: &strings(&["V=model-api"]),
+                placeholders: &[],
+            })
+            .is_err()
+        );
+    }
+
+    /// The projection is the node's: field for field what its admission
+    /// ceiling holds, the federated entry with an empty variable.
+    #[test]
+    fn declared_upstreams_project_as_the_node_projects_them() {
+        let file = registry_file();
+        let ups = strings(&["model-api", "search-api"]);
+        let egress = declare(&EgressFlags {
+            upstreams: &ups,
+            registry: Some(file.path()),
+            exports: &[],
+            placeholders: &[],
+        })
+        .unwrap()
+        .unwrap();
+        let (_, specs) = egress.wrap(agent());
+        assert_eq!(
+            specs,
+            vec![
+                CredentialedEgressSpec::registry_projection(
+                    "model-api".into(),
+                    "https://model-api.example/v1".into(),
+                    "authorization".into(),
+                    "Bearer ".into(),
+                    None,
+                ),
+                CredentialedEgressSpec::registry_projection(
+                    "search-api".into(),
+                    "https://search.example".into(),
+                    "x-api-key".into(),
+                    String::new(),
+                    Some("SEARCH_API_TOKEN".into()),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn an_upstream_the_registry_lacks_is_refused_by_name() {
+        let file = registry_file();
+        let ups = strings(&["git-remote"]);
+        let err = declare(&EgressFlags {
+            upstreams: &ups,
+            registry: Some(file.path()),
+            exports: &[],
+            placeholders: &[],
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("no [[upstream]] named \"git-remote\""),
+            "{err}"
+        );
+        assert!(err.contains("defined: model-api, search-api"), "{err}");
+    }
+
+    /// The agent runs under the adapter with its own argv intact, and its
+    /// environment stays empty: no URL, placeholder or credential is put there
+    /// by the host. The guest runtime and the adapter supply the URLs.
+    #[test]
+    fn the_agent_is_wrapped_and_receives_no_host_environment() {
+        let file = registry_file();
+        let ups = strings(&["model-api"]);
+        let (workload, _) = declare(&EgressFlags {
+            upstreams: &ups,
+            registry: Some(file.path()),
+            exports: &strings(&["HARNESS_BASE_URL=model-api"]),
+            placeholders: &strings(&["HARNESS_TOKEN"]),
+        })
+        .unwrap()
+        .unwrap()
+        .wrap(agent());
+        assert_eq!(workload.command, "/usr/local/bin/nucleus-egress-http");
+        assert_eq!(
+            workload.args,
+            strings(&[
+                "--upstream",
+                "model-api",
+                "--export",
+                "HARNESS_BASE_URL=model-api",
+                "--placeholder",
+                "HARNESS_TOKEN",
+                "--",
+                "/opt/agent",
+                "--lead",
+                "task",
+            ])
+        );
+        assert!(workload.env.is_empty());
+    }
+}
