@@ -211,6 +211,7 @@ nucleus node workload <pod-uuid> logs stdout --output workload.stdout
 nucleus node workload <pod-uuid> logs stderr --output workload.stderr
 nucleus node workload <pod-uuid> collect --output execution-receipt.json
 nucleus node workload <pod-uuid> collect --artifacts outputs.json --output execution-bundle.json
+nucleus node workload <pod-uuid> collect --wait-secs 600 --output execution-receipt.json
 ```
 
 `outputs.json` is the selection object itself, for example
@@ -220,6 +221,17 @@ the pod's proxy is available, before cancelling the pod. Without `--artifacts`,
 the output is the signed receipt; with it, the output is the node's JSON bundle
 containing `receipt` and base64 `artifacts`. Collection exports evidence; it does
 not perform independent signature or execution-policy verification.
+
+`--wait-secs` polls the authenticated workload result once per second until it
+reports completion, up to the chosen limit (1–86400 seconds). That deadline
+includes observation requests; the subsequent receipt/artifact request uses its
+normal request timeout. No workload, an unavailable observation, or a failed
+request returns an error immediately. A timeout leaves the pod running so the
+operator can inspect it or collect later. Completed failed or signalled workloads
+can still have useful evidence: waiting does not turn their exit status into
+success. Without this flag, collection remains an immediate request. Neither
+mode cancels the pod, and neither can manufacture an execution receipt for a
+host-side agent run without a supervised guest workload.
 
 Logs are saved as exact bytes instead of being interpreted as terminal output.
 Output files are published only after writing succeeds and never replace an

@@ -10,6 +10,8 @@ use uuid::Uuid;
 
 use super::{HttpClient, REQUEST_TIMEOUT};
 
+mod collection;
+
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Save host admission metadata and public signer information for this workload
@@ -32,6 +34,9 @@ pub enum Command {
         /// JSON object mapping declared artifact names to workspace paths
         #[arg(long)]
         artifacts: Option<PathBuf>,
+        /// Wait up to this many seconds for supervised workload completion
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        wait_secs: Option<u64>,
         /// New JSON file; existing files are never overwritten
         #[arg(long)]
         output: PathBuf,
@@ -109,6 +114,7 @@ pub(super) async fn run(
         ),
         Command::Collect {
             artifacts,
+            wait_secs: _,
             output: _,
         } => (
             "execution-receipt",
@@ -116,6 +122,19 @@ pub(super) async fn run(
         ),
     };
     let url = endpoint(origin, pod, resource)?;
+    if let Command::Collect {
+        artifacts: _,
+        wait_secs: Some(seconds),
+        output: _,
+    } = command
+    {
+        collection::wait(
+            client,
+            &endpoint(origin, pod, "workload-result")?,
+            std::time::Duration::from_secs(*seconds),
+        )
+        .await?;
+    }
     let method = if body.is_some() {
         reqwest::Method::POST
     } else {
@@ -160,6 +179,7 @@ pub(super) async fn run(
         }
         Command::Collect {
             artifacts: _,
+            wait_secs: _,
             output,
         } => {
             // Export the node's wire document intact; collection is not an
@@ -179,6 +199,46 @@ pub(super) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_wait_is_explicit_and_bounded() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(subcommand)]
+            command: Command,
+        }
+        let parse = |seconds: &str| {
+            Parse::try_parse_from([
+                "workload",
+                "collect",
+                "--output",
+                "receipt.json",
+                "--wait-secs",
+                seconds,
+            ])
+        };
+        assert!(parse("0").is_err());
+        assert!(parse("86401").is_err());
+        assert!(matches!(
+            parse("60").unwrap().command,
+            Command::Collect {
+                artifacts: None,
+                wait_secs: Some(60),
+                output: _,
+            }
+        ));
+        let immediate =
+            Parse::try_parse_from(["workload", "collect", "--output", "receipt.json"]).unwrap();
+        assert!(matches!(
+            immediate.command,
+            Command::Collect {
+                artifacts: None,
+                wait_secs: None,
+                output: _,
+            }
+        ));
+    }
 
     #[test]
     fn collection_manifest_preserves_declared_artifact_selection() {

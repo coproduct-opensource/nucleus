@@ -2141,3 +2141,35 @@ and worker recovery, not an assumption that queued jobs wake these lanes today.
 The deployment SPIFFE wrapper currently requires interactive sudo; the existing
 user gcloud login was sufficient for read-only inventory and audit queries.
 No infrastructure or queue policy was changed in this review.
+
+### Bounded workload evidence collection (2026-10-05 05:38 UTC)
+
+`node workload collect --wait-secs N` now waits for a supervised workload to
+finish before requesting its signed receipt or selected artifact bundle. The
+explicit bound is 1–86400 seconds and includes observation requests and poll
+delays; the final collection request retains its existing request timeout.
+Unavailable, missing or failed observations remain errors. Waiting neither
+cancels the pod nor treats a failed/signalled workload as successful. The
+existing immediate collection behavior remains the default. The legacy
+host-side agent `run` creates no supervised guest workload, so this change does
+not add execution evidence for that host process.
+
+Live Apple-host pod `e24ccf18-3920-4914-875b-555194d5f746` ran a pinned ordinary
+shell workload with a 20-second delay and exit 23. A one-second wait timed out
+without creating an output file; the next observation still reported Running.
+A subsequent 60-second wait collected the receipt in 19.3 seconds. Independent
+verification using the previously enrolled node key, separately saved admission,
+and intended environment confirmed Firecracker/UID isolation and exit 23. The
+saved stdout hash matched the signed claim. The pod was then cancelled and unused
+state-volume blocks trimmed. Evidence is retained under
+`/tmp/nucleus-collection-wait-live/`, including `summary.json`, `admission.json`,
+`receipt.json`, `expectations.json`, `verified.json` and raw stdout.
+
+The first live creation ran out of host disk while copying the rootfs and did
+not launch a workload. Current native tools were preserved in
+`/tmp/nucleus-current-tools`, cargo clean reclaimed 2.7 GiB and volume trim
+recovered the failed copy's unused blocks before the successful retry.
+Validation: 328 CLI unit tests passed, two ignored, and the CLI integration
+suites passed; scoped Clippy and all four prepush gates passed. The dispatched
+CI run has passed its detector and proof ratchet; coverage and mutation jobs
+were still queued at this check. Actual model-driven journeys remain zero.
