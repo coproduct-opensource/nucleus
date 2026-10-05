@@ -14,12 +14,14 @@
 //! - [`transport`]: reach a pod's proxy from the Mac through a relay.
 //!
 //! `nucleus microvm-host up/status` exposes host readiness and inspection.
-//! Automatic use from `shell` and `run` remains separate.
+//! `run --apple-host-config` explicitly selects readiness and a session relay.
+//! Automatic use from `setup` and `shell` remains separate.
 
 pub(crate) mod command;
 pub mod container_cli;
 pub mod lifecycle;
 pub mod preflight;
+pub(crate) mod settings;
 pub mod supervisor;
 pub mod transport;
 

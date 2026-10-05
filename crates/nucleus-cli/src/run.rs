@@ -24,6 +24,7 @@ use crate::config::Config;
 use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles;
 
+mod apple_host;
 mod pod_session;
 
 /// Resolved configuration from args, config file, and Keychain
@@ -45,9 +46,13 @@ pub(crate) struct ResolvedConfig {
 
 /// Resolve configuration from multiple sources (args > keychain > config > defaults).
 ///
-/// Returns `None` when `--local` is set (no node config needed).
+/// Returns `None` for local mode or deferred Apple host readiness.
 pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConfig>> {
     if args.local {
+        return Ok(None);
+    }
+    if let Some(path) = &args.apple_host_config {
+        apple_host::configuration(path)?;
         return Ok(None);
     }
 
@@ -277,6 +282,10 @@ pub struct RunArgs {
     #[arg(long, env = "NUCLEUS_IDENTITY_DIR", conflicts_with = "local")]
     pub identity_dir: Option<PathBuf>,
 
+    /// Apple host JSON configuration; start/check host and relay the pod proxy
+    #[arg(long, conflicts_with_all = ["local", "hook", "node_url", "identity_dir", "node_auth_secret"])]
+    pub apple_host_config: Option<PathBuf>,
+
     /// Auth secret for nucleus-node API (HMAC).
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
     pub node_auth_secret: Option<String>,
@@ -403,6 +412,12 @@ pub async fn execute(args: RunArgs, global_config_path: &str) -> Result<()> {
             println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
             println!("  Rootfs read-only: {}", args.rootfs_read_only);
         }
+        if let Some(path) = &args.apple_host_config {
+            println!(
+                "  Apple host configuration: {} (not started)",
+                path.display()
+            );
+        }
         println!();
         print!(
             "{}",
@@ -430,11 +445,14 @@ pub(crate) async fn dispatch(
 
     if args.local {
         run_local(args, policy, work_dir, prompt).await
+    } else if let Some(path) = &args.apple_host_config {
+        let (resolved, host) = apple_host::ready(path, args).await?;
+        run_enforced(args, &resolved, policy, work_dir, prompt, Some(host)).await
     } else {
         let resolved = resolved.ok_or_else(|| {
             anyhow!("node config required for Firecracker mode. Use --local for CI.")
         })?;
-        run_enforced(args, &resolved, policy, work_dir, prompt).await
+        run_enforced(args, &resolved, policy, work_dir, prompt, None).await
     }
 }
 
@@ -806,6 +824,7 @@ async fn run_enforced(
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
+    host: Option<crate::microvm_host::lifecycle::MicroVmHost>,
 ) -> Result<()> {
     warn_unimplemented_caps(policy);
 
@@ -836,12 +855,31 @@ async fn run_enforced(
         &resolved.node_actor,
     )
     .await?;
+    let endpoint = match (host, pod.proxy_addr.clone()) {
+        (Some(host), Some(proxy)) => tokio::task::spawn_blocking(move || {
+            crate::microvm_host::transport::open(
+                &crate::microvm_host::container_cli::ContainerCli::system(),
+                &host,
+                &proxy,
+                Duration::from_secs(30),
+            )
+            .map(Some)
+            .map_err(|error| anyhow!("{error}"))
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result),
+        _ => Ok(None),
+    };
     let result = (|| -> Result<()> {
         let proxy_addr = pod
             .proxy_addr
             .as_deref()
             .ok_or_else(|| anyhow!("node did not return proxy address"))?;
-        let proxy_url = if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
+        let endpoint = endpoint.as_ref().map_err(|error| anyhow!("{error:#}"))?;
+        let proxy_url = if let Some(endpoint) = endpoint {
+            endpoint.proxy_url()
+        } else if proxy_addr.starts_with("http://") || proxy_addr.starts_with("https://") {
             proxy_addr.to_owned()
         } else {
             format!("http://{proxy_addr}")
@@ -892,6 +930,7 @@ async fn run_enforced(
         render_output(&output, duration, args.output.as_str())
     })();
     let cleanup = pod_session::cancel(resolved, pod.id).await;
+    drop(endpoint);
     pod_session::finish(result, cleanup, pod.id)
 }
 
@@ -1582,6 +1621,7 @@ mod tests {
             &PermissionLattice::restrictive(),
             work.path(),
             "ordinary task",
+            None,
         )
         .await
         .unwrap_err();

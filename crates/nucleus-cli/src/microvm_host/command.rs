@@ -1,15 +1,13 @@
 //! User-facing entry to the Apple Container host lifecycle.
 
-use std::path::PathBuf;
-use std::time::Duration;
-
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use clap::{Args, Subcommand};
 use nucleus_spec::microvm_host::HostNames;
 use serde_json::{Value, json};
 
 use super::container_cli::ContainerCli;
-use super::lifecycle::{self, Expected, HostConfig, HostState};
+use super::lifecycle::{self, Expected, HostState};
+use super::settings::HostSettings as UpArgs;
 
 #[derive(Args)]
 pub(crate) struct HostArgs {
@@ -45,58 +43,11 @@ impl Selection {
     }
 }
 
-#[derive(Args)]
-struct UpArgs {
-    #[command(flatten)]
-    selection: Selection,
-    /// Built L1 kernel Image, with its build config in the same directory
-    #[arg(long)]
-    kernel: PathBuf,
-    /// Host-side CA, client identity and lifecycle state directory
-    #[arg(long)]
-    state_dir: Option<PathBuf>,
-    /// Host VM CPUs (creation only)
-    #[arg(long, default_value_t = 4, value_parser = clap::value_parser!(u32).range(1..))]
-    cpus: u32,
-    /// Host VM memory in MiB (creation only)
-    #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(512..))]
-    memory_mib: u32,
-    /// Maximum seconds to wait for node readiness
-    #[arg(long, default_value_t = 120, value_parser = clap::value_parser!(u64).range(1..))]
-    ready_timeout_secs: u64,
-}
-
 fn nonempty(value: &str) -> std::result::Result<String, String> {
     if value.trim().is_empty() {
         Err("image reference must not be empty".into())
     } else {
         Ok(value.to_owned())
-    }
-}
-
-impl UpArgs {
-    fn config(self) -> Result<HostConfig> {
-        let state_dir = match self.state_dir {
-            Some(path) => std::path::absolute(path)?,
-            None => crate::config::nucleus_dir()?.join(if self.selection.development {
-                "microvm-host-dev"
-            } else {
-                "microvm-host"
-            }),
-        };
-        Ok(HostConfig {
-            names: self.selection.names(),
-            image: self.selection.image,
-            kernel: self
-                .kernel
-                .canonicalize()
-                .context("resolving the L1 kernel path")?,
-            state_dir,
-            cpus: self.cpus,
-            memory: format!("{}m", self.memory_mib),
-            trust_domain: "nucleus.local".into(),
-            ready_timeout: Duration::from_secs(self.ready_timeout_secs),
-        })
     }
 }
 

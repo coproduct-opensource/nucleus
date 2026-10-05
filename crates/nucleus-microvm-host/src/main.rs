@@ -99,6 +99,9 @@ enum Command {
         /// How often, in seconds, an idle relay checks its target.
         #[arg(long, default_value_t = 2)]
         liveness_secs: u64,
+        /// New readiness file, written only after this relay owns its listener
+        #[arg(long)]
+        ready_file: Option<PathBuf>,
     },
 }
 
@@ -177,11 +180,17 @@ fn main() -> ExitCode {
             listen,
             to,
             liveness_secs,
-        } => run_relay(listen, to, Duration::from_secs(liveness_secs)),
+            ready_file,
+        } => run_relay(listen, to, Duration::from_secs(liveness_secs), ready_file),
     }
 }
 
-fn run_relay(listen: SocketAddr, to: SocketAddr, liveness: Duration) -> ExitCode {
+fn run_relay(
+    listen: SocketAddr,
+    to: SocketAddr,
+    liveness: Duration,
+    ready_file: Option<PathBuf>,
+) -> ExitCode {
     if !to.ip().is_loopback() {
         return fail(&format!(
             "refusing to relay to {to}: not a loopback address"
@@ -191,6 +200,11 @@ fn run_relay(listen: SocketAddr, to: SocketAddr, liveness: Duration) -> ExitCode
         Ok(l) => l,
         Err(e) => return fail(&format!("binding {listen}: {e}")),
     };
+    if let Some(path) = ready_file {
+        if let Err(error) = relay::announce_bound(&listener, to, &path) {
+            return fail(&format!("announcing relay readiness: {error}"));
+        }
+    }
     match relay::serve(listener, to, liveness) {
         relay::RelayEnd::TargetGone => {
             eprintln!("nucleus-hostctl relay: {to} is gone; stopping");

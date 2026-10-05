@@ -2009,3 +2009,35 @@ closes the ordinary teardown gap needed before holding an Apple relay for the
 session. It does not yet wire that relay, export receipts before teardown, or
 provide crash/SIGKILL cleanup guarantees. Pod timeout remains relevant when the
 CLI cannot execute its cleanup path.
+
+### Explicit Apple host selection and run relay lifetime (2026-10-05)
+
+`nucleus run --apple-host-config host.json` now uses the same host settings as
+`microvm-host up`, starts/checks the selected host off the async worker, and takes
+its mTLS identity and node URL only from the readiness witness. Normal profile,
+goal and grant execution share this dispatch. Configuration cannot be mixed with
+another node URL/identity, legacy node credentials, hook mode or local mode.
+Dry-run validates the file but creates no state or host. The assembled image's
+standard kernel/rootfs paths are the defaults for Apple runs.
+
+After pod admission the run opens a published relay to the pod's loopback proxy.
+It retains the slot through normal execution and cancellation, including the
+cleanup error path. Inspection found a normal slot-reuse race: the prior relay
+may still occupy the port after its file lock is released. The current hostctl
+now accepts a new readiness file and writes the bound listener and target only
+after binding succeeds. Each relay attempt uses a unique filename; the CLI checks
+that exact acknowledgement before accepting forwarded health. Occupied ports or
+old hostctl binaries therefore cannot borrow another relay's health response.
+A failed setup still follows the new pod cancellation path.
+
+Validation: 321 CLI tests passed with two ignored, 45 host library tests passed,
+and scoped Clippy passed. The built CLI's dry-run with real local image/kernel
+settings created no host state. The built native hostctl refused an occupied
+port without a readiness file, announced its actual fresh listener/target, and
+exited after that target closed. Evidence is under
+`/tmp/nucleus-apple-run-{settings.json,dry-run.log}` and
+`/tmp/nucleus-apple-relay-start-evidence.json`. Full Apple relay use has not been
+revalidated with a rebuilt host image; published-port forwarding remains the
+previously documented local failure. This option connects the existing host-side
+agent/MCP run mode. It adds neither workspace transfer nor an in-guest model
+harness, and does not collect evidence before teardown. Those remain release work.

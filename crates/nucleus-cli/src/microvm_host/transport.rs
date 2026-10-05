@@ -138,7 +138,10 @@ pub fn open(
 ) -> Result<McpEndpoint, TransportError> {
     let target = proxy_target(proxy_addr)?;
     let (slot, (container_port, mac_port)) = claim_slot(host)?;
-    let argv = relay_argv(container_port, target);
+    let ready_file = format!("/srv/state/relay-{}.ready", uuid::Uuid::new_v4());
+    let expected = format!("0.0.0.0:{container_port}\n{target}\n");
+    let mut argv = relay_argv(container_port, target);
+    argv.extend(["--ready-file".into(), ready_file.clone()]);
     let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
     let out = cli.exec_detached(host.container(), &argv);
     if !out.succeeded() {
@@ -146,7 +149,25 @@ pub fn open(
     }
     let started = Instant::now();
     let mut last = String::new();
+    let mut bound = false;
     while started.elapsed() < ready {
+        if !bound {
+            let record = cli.exec(host.container(), &["/bin/cat", &ready_file]);
+            if record.stdout() == Some(expected.as_str()) {
+                let removed = cli.exec(host.container(), &["/bin/rm", "--", &ready_file]);
+                if !removed.succeeded() {
+                    return Err(TransportError::RelayStart(removed.describe()));
+                }
+                bound = true;
+            } else {
+                last = format!(
+                    "new relay has not acknowledged its listener: {}",
+                    record.describe()
+                );
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+        }
         match health_through(mac_port) {
             Ok(()) => {
                 return Ok(McpEndpoint {

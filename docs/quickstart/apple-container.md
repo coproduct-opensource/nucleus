@@ -114,9 +114,8 @@ missing or invalid files are an error, with no fallback to the default identity.
 The default remains `~/.config/nucleus/identity` when no directory is selected.
 The selector cannot be used with `--local`.
 
-This selects authentication for node calls only. Automatic Apple host startup
-and the per-pod relay are not yet wired into `run`; a successful node connection
-alone does not make its container-local proxy address reachable from the Mac.
+This selects authentication for node calls only. To have `run` start/check the
+Apple host and acquire a relay, use the explicit host configuration below.
 
 `status` only reads container state. `running` is not a health assertion;
 `health_checked` is false. Run `up` again to verify readiness. Add
@@ -124,8 +123,56 @@ alone does not make its container-local proxy address reachable from the Mac.
 
 Stop an idle host with `container stop nucleus-microvm-host` (or the development
 name). This retains its container and volume. `up` restarts it. This command does
-not yet select the backend automatically for `setup`, `shell` or `run`, nor does
-host readiness prove that a model-driven coding journey has completed.
+not select the backend automatically for `setup` or `shell`, nor does host
+readiness prove that a model-driven coding journey has completed.
+
+## Select the Apple host for a run
+
+Save an explicit host configuration, using the same inputs as `microvm-host up`:
+
+```json
+{
+  "image": "nucleus-microvm-host:local",
+  "kernel": "/absolute/path/to/linux_arm64/Image",
+  "state_dir": "/absolute/path/to/host-state",
+  "development": true,
+  "cpus": 4,
+  "memory_mib": 4096,
+  "ready_timeout_secs": 120
+}
+```
+
+Only `image` and `kernel` are required. Other fields use the same defaults as
+`up`; omit `state_dir` to use the normal or development state directory. Relative
+paths resolve from the current directory. JSON field names use underscores.
+
+```sh
+nucleus run "check the project" --apple-host-config host.json --dry-run
+nucleus run "check the project" --apple-host-config host.json
+```
+
+Dry-run validates configuration without creating host state or starting a host.
+A real run requires successful host preflight, KVM probing and published-endpoint
+mTLS health before creating a pod. The selected host supplies the node URL and
+identity; do not combine this option with `--node-url`, `--identity-dir`, legacy
+node credentials, `--local` or `--hook`. `--goal` and `--grant` use the same run
+connection path after their existing authorization step.
+
+The default guest artifact paths come from the local image recipe. Override them
+with `--kernel-path` and `--rootfs-path` only for a differently assembled image.
+The run holds a relay slot for the pod's container-local proxy through the agent
+session and pod cancellation. The host image must contain the current
+`nucleus-hostctl` with `relay --ready-file`: each new relay must acknowledge its
+own bound port and target before a forwarded health response is accepted. An
+older relay still occupying a slot cannot stand in for the new one.
+
+Runs cancel their pods on ordinary success and failure, and report cancellation
+failures with the pod ID. Process crashes still require timeout or operator
+cleanup. This connection option preserves the existing host-side agent/MCP run
+model; it does not add workspace transfer or run the agent itself inside the
+microVM. Workspaces and artifacts still need the existing node/guest provisioning
+path. It also does not yet collect execution evidence before teardown. The two
+complete guest-harness journeys remain a separate release requirement.
 
 ## Published-port troubleshooting
 

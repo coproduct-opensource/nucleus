@@ -28,6 +28,22 @@ use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Publish the exact bound listener and target for a fresh caller-owned attempt.
+/// Taking the listener ensures a failed bind cannot announce readiness.
+pub fn announce_bound(
+    listener: &TcpListener,
+    target: SocketAddr,
+    path: &std::path::Path,
+) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    write!(file, "{}\n{target}\n", listener.local_addr()?)?;
+    file.sync_all()
+}
+
 /// How long the relay waits for its target to accept a connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -114,6 +130,19 @@ fn pump(mut from: TcpStream, mut to: TcpStream) {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
+
+    #[test]
+    fn readiness_names_the_owned_listener_and_preserves_existing_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("attempt.ready");
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let target = "127.0.0.1:4321".parse().unwrap();
+        announce_bound(&listener, target, &path).unwrap();
+        let expected = format!("{}\n{target}\n", listener.local_addr().unwrap());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        assert!(announce_bound(&listener, target, &path).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+    }
 
     /// A server that echoes every byte back, one connection at a time.
     fn echo_server() -> SocketAddr {
