@@ -255,25 +255,33 @@ mod tests {
     #[test]
     fn configured_memory_root_must_be_private_and_separate_from_workspaces() {
         let state_dir = tempfile::tempdir().unwrap();
-        let state = crate::pod_api::handler_tests::state(&state_dir);
+        let roots = crate::host_paths::HostPathArgs {
+            scratch_root: None,
+            artifacts_root: state_dir.path().join("artifacts"),
+            data_root: None,
+            workspace_root: None,
+        }
+        .ensure(state_dir.path())
+        .unwrap();
         let memory = tempfile::tempdir().unwrap();
         std::fs::set_permissions(memory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         let args = MemoryArgs {
             memory_root: Some(memory.path().to_owned()),
         };
-        assert!(args.load(&state.host_roots).is_ok());
+        assert!(args.load(&roots).is_ok());
         std::fs::set_permissions(memory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(args.load(&state.host_roots).is_err());
-        let workspace = state.host_roots.workspace_root();
+        assert!(args.load(&roots).is_err());
+        let workspace = roots.workspace_root();
         std::fs::set_permissions(workspace, std::fs::Permissions::from_mode(0o700)).unwrap();
         assert!(
             MemoryArgs {
                 memory_root: Some(workspace.to_owned())
             }
-            .load(&state.host_roots)
+            .load(&roots)
             .is_err()
         );
     }
+    #[cfg(feature = "local-driver")]
     #[tokio::test]
     async fn container_environment_uses_only_the_provisioned_grant() {
         let state_dir = tempfile::tempdir().unwrap();

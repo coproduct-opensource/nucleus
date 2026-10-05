@@ -29,28 +29,44 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-fn attribute(typ: i32, payload: &[u8]) -> Vec<u8> {
-    let size = 4 + payload.len();
-    let mut bytes = Vec::with_capacity(size.next_multiple_of(4));
-    bytes.extend_from_slice(&(size as u16).to_ne_bytes());
-    bytes.extend_from_slice(&(typ as u16).to_ne_bytes());
-    bytes.extend_from_slice(payload);
-    bytes.resize(size.next_multiple_of(4), 0);
-    bytes
+fn byte(value: i32) -> io::Result<u8> {
+    u8::try_from(value).map_err(io::Error::other)
 }
 
-fn message(typ: i32, sequence: u32, ack: bool, attrs: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(HEADER + 4 + attrs.len());
-    bytes.extend_from_slice(&((HEADER + 4 + attrs.len()) as u32).to_ne_bytes());
-    bytes.extend_from_slice(&(((libc::NFNL_SUBSYS_QUEUE << 8) | typ) as u16).to_ne_bytes());
-    let flags = libc::NLM_F_REQUEST | if ack { libc::NLM_F_ACK } else { 0 };
-    bytes.extend_from_slice(&(flags as u16).to_ne_bytes());
+fn attribute(typ: i32, payload: &[u8]) -> io::Result<Vec<u8>> {
+    let size = payload
+        .len()
+        .checked_add(4)
+        .and_then(|n| u16::try_from(n).ok())
+        .ok_or_else(|| invalid("netlink attribute exceeds its length field"))?;
+    let typ = u16::try_from(typ).map_err(io::Error::other)?;
+    let aligned = usize::from(size).next_multiple_of(4);
+    let mut bytes = Vec::with_capacity(aligned);
+    bytes.extend_from_slice(&size.to_ne_bytes());
+    bytes.extend_from_slice(&typ.to_ne_bytes());
+    bytes.extend_from_slice(payload);
+    bytes.resize(aligned, 0);
+    Ok(bytes)
+}
+
+fn message(typ: i32, sequence: u32, ack: bool, attrs: &[u8]) -> io::Result<Vec<u8>> {
+    let size = (HEADER + 4)
+        .checked_add(attrs.len())
+        .ok_or_else(|| invalid("netlink message length overflows"))?;
+    let wire_size = u32::try_from(size).map_err(io::Error::other)?;
+    let typ = (u16::from(byte(libc::NFNL_SUBSYS_QUEUE)?) << 8) | u16::from(byte(typ)?);
+    let flags = u16::try_from(libc::NLM_F_REQUEST | if ack { libc::NLM_F_ACK } else { 0 })
+        .map_err(io::Error::other)?;
+    let mut bytes = Vec::with_capacity(size);
+    bytes.extend_from_slice(&wire_size.to_ne_bytes());
+    bytes.extend_from_slice(&typ.to_ne_bytes());
+    bytes.extend_from_slice(&flags.to_ne_bytes());
     bytes.extend_from_slice(&sequence.to_ne_bytes());
     bytes.extend_from_slice(&0u32.to_ne_bytes());
-    bytes.extend_from_slice(&[libc::AF_UNSPEC as u8, libc::NFNETLINK_V0 as u8]);
+    bytes.extend_from_slice(&[byte(libc::AF_UNSPEC)?, byte(libc::NFNETLINK_V0)?]);
     bytes.extend_from_slice(&QUEUE.to_be_bytes());
     bytes.extend_from_slice(attrs);
-    bytes
+    Ok(bytes)
 }
 
 fn attributes(mut bytes: &[u8]) -> io::Result<Vec<(u16, &[u8])>> {
@@ -59,7 +75,7 @@ fn attributes(mut bytes: &[u8]) -> io::Result<Vec<(u16, &[u8])>> {
         if bytes.len() < 4 {
             return Err(invalid("short netlink attribute"));
         }
-        let len = u16::from_ne_bytes([bytes[0], bytes[1]]) as usize;
+        let len = usize::from(u16::from_ne_bytes([bytes[0], bytes[1]]));
         let typ = u16::from_ne_bytes([bytes[2], bytes[3]]) & 0x3fff;
         if len < 4 || len > bytes.len() {
             return Err(invalid("invalid netlink attribute size"));
@@ -81,7 +97,7 @@ fn packet(bytes: &[u8]) -> io::Result<Packet> {
     if bytes.len() < 4
         || bytes[1] != 0
         || bytes[2..4] != QUEUE.to_be_bytes()
-        || ![libc::AF_INET as u8, libc::AF_INET6 as u8].contains(&bytes[0])
+        || ![libc::AF_INET, libc::AF_INET6].contains(&i32::from(bytes[0]))
     {
         return Err(invalid("unexpected queue packet header"));
     }
@@ -90,7 +106,9 @@ fn packet(bytes: &[u8]) -> io::Result<Packet> {
     for (typ, value) in attributes(&bytes[4..])? {
         match i32::from(typ) {
             libc::NFQA_PACKET_HDR => {
-                if value.len() != 7 || value[6] != libc::NF_INET_POST_ROUTING as u8 || id.is_some()
+                if value.len() != 7
+                    || i32::from(value[6]) != libc::NF_INET_POST_ROUTING
+                    || id.is_some()
                 {
                     return Err(invalid("unexpected packet hook or header"));
                 }
@@ -133,7 +151,9 @@ impl Queue {
                 let opened: io::Result<Socket> = (|| {
                     nix::sched::setns(&namespace, nix::sched::CloneFlags::CLONE_NEWNET)
                         .map_err(io::Error::from)?;
-                    let mut socket = Socket::new(libc::NETLINK_NETFILTER as isize)?;
+                    let mut socket = Socket::new(
+                        isize::try_from(libc::NETLINK_NETFILTER).map_err(io::Error::other)?,
+                    )?;
                     socket.bind_auto()?;
                     socket.connect(&SocketAddr::new(0, 0))?;
                     socket.set_non_blocking(true)?;
@@ -150,22 +170,26 @@ impl Queue {
         queue
             .configure(attribute(
                 libc::NFQA_CFG_CMD,
-                &[libc::NFQNL_CFG_CMD_BIND as u8, 0, 0, 0],
-            ))
+                &[byte(libc::NFQNL_CFG_CMD_BIND)?, 0, 0, 0],
+            )?)
             .await?;
         let mut params = 1u32.to_be_bytes().to_vec();
-        params.push(libc::NFQNL_COPY_PACKET as u8);
-        let mut attrs = attribute(libc::NFQA_CFG_PARAMS, &params);
+        params.push(byte(libc::NFQNL_COPY_PACKET)?);
+        let mut attrs = attribute(libc::NFQA_CFG_PARAMS, &params)?;
         attrs.extend(attribute(
             libc::NFQA_CFG_QUEUE_MAXLEN,
-            &(CAPACITY as u32).to_be_bytes(),
-        ));
+            &u32::try_from(CAPACITY)
+                .map_err(io::Error::other)?
+                .to_be_bytes(),
+        )?);
         // No fail-open, no GSO super-packets: the kernel segments before admission.
         attrs.extend(attribute(
             libc::NFQA_CFG_MASK,
-            &((libc::NFQA_CFG_F_FAIL_OPEN | libc::NFQA_CFG_F_GSO) as u32).to_be_bytes(),
-        ));
-        attrs.extend(attribute(libc::NFQA_CFG_FLAGS, &0u32.to_be_bytes()));
+            &u32::try_from(libc::NFQA_CFG_F_FAIL_OPEN | libc::NFQA_CFG_F_GSO)
+                .map_err(io::Error::other)?
+                .to_be_bytes(),
+        )?);
+        attrs.extend(attribute(libc::NFQA_CFG_FLAGS, &0u32.to_be_bytes())?);
         queue.configure(attrs).await?;
         Ok(queue)
     }
@@ -185,7 +209,7 @@ impl Queue {
     async fn receive(&self) -> io::Result<Vec<u8>> {
         loop {
             let mut ready = self.socket.readable().await?;
-            match ready.try_io(|socket| {
+            if let Ok(result) = ready.try_io(|socket| {
                 let mut bytes = Vec::with_capacity(8192);
                 let (len, from) = socket.get_ref().recv_from(&mut bytes, libc::MSG_TRUNC)?;
                 if len > bytes.len() || from.port_number() != 0 {
@@ -193,8 +217,7 @@ impl Queue {
                 }
                 Ok(bytes)
             }) {
-                Ok(result) => return result,
-                Err(_) => {}
+                return result;
             }
         }
     }
@@ -205,7 +228,10 @@ impl Queue {
             if bytes.len() < HEADER {
                 return Err(invalid("short netlink header"));
             }
-            let len = u32::from_ne_bytes(bytes[..4].try_into().map_err(io::Error::other)?) as usize;
+            let len = usize::try_from(u32::from_ne_bytes(
+                bytes[..4].try_into().map_err(io::Error::other)?,
+            ))
+            .map_err(io::Error::other)?;
             if len < HEADER || len > bytes.len() {
                 return Err(invalid("invalid netlink message size"));
             }
@@ -255,7 +281,7 @@ impl Queue {
         self.sequence = self.sequence.wrapping_add(1);
         let sequence = self.sequence;
         tokio::time::timeout(Duration::from_secs(5), async {
-            self.send(&message(libc::NFQNL_MSG_CONFIG, sequence, true, &attrs))
+            self.send(&message(libc::NFQNL_MSG_CONFIG, sequence, true, &attrs)?)
                 .await?;
             loop {
                 let bytes = self.receive().await?;
@@ -275,8 +301,8 @@ impl Queue {
             libc::NFQNL_MSG_VERDICT,
             0,
             false,
-            &attribute(libc::NFQA_VERDICT_HDR, &payload),
-        ))
+            &attribute(libc::NFQA_VERDICT_HDR, &payload)?,
+        )?)
         .await
     }
 }
@@ -297,13 +323,22 @@ impl PacketQueue for Queue {
         }
     }
     async fn accept(&mut self, packet: Packet, charge: EgressCharge<'_>) -> io::Result<()> {
-        let result = self.verdict(packet, libc::NF_ACCEPT as u32).await;
+        let result = self
+            .verdict(
+                packet,
+                u32::try_from(libc::NF_ACCEPT).map_err(io::Error::other)?,
+            )
+            .await;
         // An attempted verdict may have reached the kernel. Never refund it.
         charge.sent();
         result
     }
     async fn reject(&mut self, packet: Packet) -> io::Result<()> {
-        self.verdict(packet, libc::NF_DROP as u32).await
+        self.verdict(
+            packet,
+            u32::try_from(libc::NF_DROP).map_err(io::Error::other)?,
+        )
+        .await
     }
 }
 
@@ -312,13 +347,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn encoding_preserves_wire_fields_and_refuses_unrepresentable_inputs() {
+        let attrs = attribute(libc::NFQA_CFG_FLAGS, &[1, 2, 3]).unwrap();
+        assert_eq!(attributes(&attrs).unwrap()[0].1, &[1, 2, 3]);
+        let encoded = message(libc::NFQNL_MSG_CONFIG, 37, true, &attrs).unwrap();
+        assert_eq!(encoded.len(), HEADER + 4 + attrs.len());
+        assert_eq!(u32::from_ne_bytes(encoded[..4].try_into().unwrap()), 28);
+        assert_eq!(u32::from_ne_bytes(encoded[8..12].try_into().unwrap()), 37);
+        assert_eq!(&encoded[HEADER + 4..], attrs);
+        assert!(attribute(-1, &[]).is_err());
+        assert!(attribute(65536, &[]).is_err());
+        assert!(attribute(1, &vec![0; 65532]).is_err());
+        assert!(message(-1, 0, false, &[]).is_err());
+        assert!(message(256, 0, false, &[]).is_err());
+    }
+
+    #[test]
     fn kernel_packet_metadata_can_end_without_alignment_padding() {
-        let mut bytes = vec![libc::AF_INET as u8, 0, 0, 0];
+        let mut bytes = vec![byte(libc::AF_INET).unwrap(), 0, 0, 0];
         let mut header = 37u32.to_be_bytes().to_vec();
-        header.extend([8, 0, libc::NF_INET_POST_ROUTING as u8]);
-        bytes.extend(attribute(libc::NFQA_PACKET_HDR, &header));
-        bytes.extend(attribute(libc::NFQA_CAP_LEN, &43u32.to_be_bytes()));
-        let mut payload = attribute(libc::NFQA_PAYLOAD, &[0x45]);
+        header.extend([8, 0, byte(libc::NF_INET_POST_ROUTING).unwrap()]);
+        bytes.extend(attribute(libc::NFQA_PACKET_HDR, &header).unwrap());
+        bytes.extend(attribute(libc::NFQA_CAP_LEN, &43u32.to_be_bytes()).unwrap());
+        let mut payload = attribute(libc::NFQA_PAYLOAD, &[0x45]).unwrap();
         payload.truncate(5); // The kernel's final one-byte copy has no padding.
         bytes.extend(payload);
         let decoded = packet(&bytes).unwrap();

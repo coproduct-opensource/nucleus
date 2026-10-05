@@ -24,6 +24,9 @@ model endpoint configuration is available.
 
 ## Release checkpoint: implementation and remaining work
 
+[Implementation PR #3184](https://github.com/coproduct-opensource/nucleus/pull/3184)
+was opened at the authorized 8 AM Eastern cutoff. Merge checks remain in progress.
+
 This is an implementation milestone, not a completed release journey. The latest
 local checkpoint has 902 passing node unit tests, three node integrations,
 351 CLI unit tests and 16 integrations, and the earlier 580-test all-feature proxy
@@ -3132,3 +3135,35 @@ validation, not a completed model-driven journey or live Docker teardown test.
 Custom Dylint workflow `37303376201` passed on the earlier Apple lifecycle source
 `ebd6a0439`. The later Docker status correction has its scoped regression and
 Clippy evidence above; final PR checks must run on the published head.
+
+
+### Initial PR checks and feature/target corrections (2026-10-05)
+
+On PR head `ac7ec4d83`, the workspace job `111752058096` ran **9,349 tests: all
+passed, 47 skipped**. The default-feature Clippy ratchet separately found two
+memory tests using the `local-driver`-only node fixture without declaring that
+requirement. Path validation now constructs its host roots directly and remains
+covered with default features; the container-environment fixture test declares
+`local-driver`. The test-only reaper import has the same feature requirement.
+Default node all-target compilation, three default-feature memory tests and all
+five all-feature memory tests passed locally.
+
+Linux CI also found a single-pattern match in the netlink receive loop, excluded
+from the macOS lint build. It now uses the equivalent conditional binding.
+Measuring the Linux-only transport additionally found 16 ratcheted conversion
+warnings. Netlink attributes and messages now check length and type fields before
+encoding; byte comparisons widen their inputs instead of truncating constants.
+Valid wire encoding is unchanged. Oversized attributes and unrepresentable types
+return errors before transport. Standard Linux all-target/all-feature Clippy
+passed with the existing four stale-config dependency warnings; the changed
+netlink module has zero remaining warning/error sites in the cast measurement.
+The two Linux serializer/packet tests passed in a disposable Apple container.
+The macOS workspace ratchet measured 342 against the unchanged ceiling of 345;
+final Linux CI remains the authority for the workspace count.
+
+The first live x86 quickstart run booted its pod but failed the obsolete
+`NUCLEUS-MEDIATION-RECEIPT` assertion: it still requires the guest signing key
+retired by this implementation. Its replacement must check host-issued evidence;
+that migration is pending. Gatehouse's informational shadow jobs also could not
+complete their control-plane authentication. Deployment access still requires
+operator reauthentication. Neither failure is recorded as a passing check.

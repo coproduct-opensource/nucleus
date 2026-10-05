@@ -108,7 +108,7 @@ mod host_decide;
 mod host_paths;
 mod lifecycle;
 mod pod_reaper;
-#[cfg(test)]
+#[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
 mod memory_provisioning;
