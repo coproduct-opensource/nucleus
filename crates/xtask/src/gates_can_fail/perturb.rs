@@ -613,6 +613,31 @@ pub fn perturb_workspace_member_dropped(_: &Path, t: &str) -> Perturbed {
     ))
 }
 
+/// The defect `cargo xtask test-shards` caught on its first run: a crate that depends on a
+/// `test-node` crate left in `test-libs`, where that crate is an empty stub.
+pub fn perturb_test_shards_layout_drops_a_node_crate(_: &Path, t: &str) -> Perturbed {
+    let out = t.replacen("\"nucleus-microvm-host\", ", "", 1);
+    if out == t {
+        return moved(
+            t.to_string(),
+            "nucleus-microvm-host is no longer in test-node's packages;\n         this perturbation no longer applies and must be updated.",
+        );
+    }
+    ok(out)
+}
+
+/// A committed shard generation that is not what the layout generates: one exclude gone.
+pub fn perturb_test_shards_generation_stale(_: &Path, t: &str) -> Perturbed {
+    let out = perl_first(t, r#"(?m)^\s*"crates/xtask/\*/\*/\*\*",\n"#, "");
+    if out == t {
+        return moved(
+            t.to_string(),
+            "test-libs.json no longer excludes crates/xtask/*/*/**;\n         this perturbation no longer applies and must be updated.",
+        );
+    }
+    ok(out)
+}
+
 pub fn perturb_unported_shell_gate(_: &Path, t: &str) -> Perturbed {
     ok(append(
         t,

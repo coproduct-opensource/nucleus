@@ -72,6 +72,13 @@ jobs:
       # every other gate here.
       - name: The gate definitions carry what the plan declares
         run: ./scripts/check-gate-defs-match-plan.sh
+      # The test suite as two scope shards (.gatehouse/test-shards.toml). Not live yet: the plan
+      # cannot declare them until it imports a gatehouse prelude whose Gate carries `exclude`, so
+      # they are generated into .gatehouse/shards/ and this only keeps the generation honest.
+      # `--gate` (refuse a scope the writ kernel does not derive) joins when GATEHOUSE_REF reaches
+      # a gatehouse whose `scope witness` has `--check`.
+      - name: The test shards are what the layout generates
+        run: cargo run -q -p xtask -- test-shards --check
       - name: Is the gatehouse token available?
         id: tok
         env:

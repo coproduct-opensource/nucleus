@@ -243,6 +243,24 @@ pub fn probes() -> Vec<Probe> {
             perturb: pert!(perturb_action_inputs_undeclared_key),
         },
         Probe {
+            family: Family::XtaskFlagged {
+                sub: "test-shards",
+                flags: "--check",
+            },
+            target: ".gatehouse/test-shards.toml",
+            desc: "a test-libs crate that builds a test-node crate, which is a stub in its pod",
+            perturb: pert!(perturb_test_shards_layout_drops_a_node_crate),
+        },
+        Probe {
+            family: Family::XtaskFlagged {
+                sub: "test-shards",
+                flags: "--check",
+            },
+            target: ".gatehouse/shards/test-libs.json",
+            desc: "a committed shard generation the layout no longer generates",
+            perturb: pert!(perturb_test_shards_generation_stale),
+        },
+        Probe {
             family: xtask("workspace-members"),
             target: "Cargo.toml",
             desc: "a crate dropped from the workspace members list",

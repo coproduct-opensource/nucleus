@@ -1,0 +1,77 @@
+# The test suite as two scope shards: what generating them found (2026-10-05)
+
+`cargo xtask test-shards` generates `test-node` and `test-libs` from `.gatehouse/test-shards.toml`,
+`cargo metadata`, the tracked files and `.gatehouse/gates/test.json`; `tools/test-shard` writes the
+stubs a shard's pod needs and execs the run. The design and the measurement behind the two-shard
+layout are gatehouse's `docs/sublinear-testing.md` (§3–4, §4a); the prototype was nucleus#3138.
+Three things turned up writing the real one, each on nucleus `0462daae3`.
+
+## 1. The measured layout was already stale, and the generator refused it
+
+The layout was measured on `2fc73eda` (2026-10-02). `nucleus-microvm-host` was added after that
+tree (#3070) and depends on `nucleus-spec`, a `test-node` crate. In `test-libs`'s pod
+`nucleus-spec` is an empty stub, so `test-libs` would have failed to BUILD. The generator's
+closure check (a `test-libs` package whose tests build a `test-node` crate) refused the layout:
+
+```
+test-libs packages whose tests build a test-node crate ...: ["nucleus-microvm-host -> nucleus-spec"]
+```
+
+`nucleus-microvm-host` moved to `test-node`. A layout is a function of the dependency graph, and
+the graph moves weekly; that is why the generator, not a person, decides whether it still holds.
+
+## 2. The coarse scope's first spelling was not derivable; 53 patterns is
+
+The point of `test-libs`'s scope is that the writ kernel DERIVES its hash: an asserted hash never
+lets a receipt cross a tree (gatehouse F-182). Measured with gatehouse's
+`gate scope witness <def> --repo . --tree HEAD --check` (gatehouse#263):
+
+| spelling of `test-libs`'s scope | includes | excludes | patterns | at `0462daae3` |
+|---|---|---|---|---|
+| one exclude per top-level entry of each `test-node` crate; SDK inputs listed one by one | 28 | 46 | 74 | **refused** `error[Capacity]` |
+| `crates/<c>/*/*/**` per crate plus its loose files; `sdks/verifier-js/**` with its outputs excluded; `tools/test-shard/**` | 18 | 35 | **53** | **derived** `44616e52…` |
+
+74 is exactly the count gatehouse measured refused on 2026-10-02 (65–69 derived). Computed over
+the tracked files, the 74-pattern spelling selects 1,207 and the 53-pattern one 1,211: the same
+files plus four the wider SDK include now binds (`sdks/verifier-js/{.gitignore,README.md,demo.html,
+demo.js}`) — more than the shard reads, never less. `test-node` (`**`) derives
+(`31860339…`). `crates/<c>/*/**` would have been one pattern cheaper and wrong: `**` matches zero
+segments, so it also matches `crates/<c>/Cargo.toml`, and an exclude always wins over an include.
+
+**The headroom is about a dozen patterns.** Each new `test-node` crate costs at least one, each
+loose top-level file in one costs one, and each fixture outside `crates/` costs one.
+`cargo xtask test-shards --gate <gate>` refuses a scope that stops deriving; it is not wired in
+yet because the pinned gatehouse predates `--check`.
+
+## 3. A shard pod builds: measured
+
+The `test-libs` selection materialized from the generated scope (1,211 of 2,394 tracked files),
+then:
+
+* `cargo metadata` before the runner: **refused** (`failed to load manifest for workspace member
+  crates/nucleus-perf`) — the reason the runner exists.
+* the generated runner step, with its command replaced by `cargo metadata`: **43 stubs written,
+  93 members loaded**, exit 0.
+* `cargo check --tests --keep-going` over the shard's selection (`--workspace --exclude` the 14
+  `test-node` packages) with workspace feature unification: **one failure,
+  `nucleus-verifier-service`'s build script**, which reads `sdks/verifier-js/pkg/` — the output of
+  the shard's step 0, which this check did not run. Nothing else failed.
+
+The full nextest run in the gate image has not been made.
+
+## 4. `gate-defs` does not compare scope excludes
+
+`crates/xtask/src/gate_defs.rs` compares the plan and the gate definitions on "scope inclusion",
+and says so: "scope exclusions are not part of this comparison". Until now no gate had an exclude,
+so nothing was missing. `test-libs` has 35. When the plan declares it, the comparison must cover
+excludes, or the plan the kernel admitted and the selection the lane hashes can differ in exactly
+the part that makes the shard derivable.
+
+## Not yet
+
+* **The plan.** `test-node`/`test-libs` in `pipeline.writ`, `test` retired, the policy's required
+  list — after gatehouse#261 (writ `Gate.exclude`) merges and `GATEHOUSE_REF` and the prelude
+  import move together (`cargo xtask gatehouse-pin`).
+* **The fixtures are from 2026-10-02.** A test that started reading a new path outside its closure
+  since then fails closed in `test-libs` (the path is absent), unless it tolerates the absence.
+  Re-measure (gatehouse `scripts/bench/sublinear/measure.sh`) before the cutover.

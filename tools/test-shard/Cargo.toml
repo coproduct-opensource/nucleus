@@ -1,0 +1,18 @@
+# One scope shard of the test suite: stub what the selection left out, then exec the run.
+#
+# Outside the workspace on purpose, and with no dependencies: it has to run BEFORE cargo can load
+# the workspace. In a shard pod the members whose sources the scope excludes are manifests with no
+# targets, and cargo refuses to load such a workspace ("no targets specified in the manifest"), so
+# `cargo xtask` cannot be what writes their stubs. `cargo run --manifest-path` on this package loads
+# only this package. See `.gatehouse/test-shards.toml`.
+[package]
+name = "nucleus-test-shard"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Run one scope shard of nucleus's test suite: write the stubs the generator named, then exec."
+
+[dependencies]
+
+# Self-contained workspace, explicitly NOT part of the parent.
+[workspace]
