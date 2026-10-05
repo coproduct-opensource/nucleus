@@ -1734,5 +1734,28 @@ See [`memory-journal.md`](memory-journal.md) for format, limits and recovery
 behavior. This is runtime persistence for a provisioned proxy directory; node
 provisioning across pod lifetimes, host-mediated memory authority, compaction
 and durable declassification burn history remain open. Real process-restart
-validation is still pending. Neither this change nor the audit service completes
+validation is recorded below. Neither this change nor the audit service completes
 the two model-driven coding journeys.
+
+### Live memory HTTP persistence across proxy restart (2026-10-04)
+
+`tests/memory_persistence.rs` now launches the actual tool-proxy binary with a
+fixture orchestrator token, separately signed session scope and an explicit
+unsandboxed development opt-in. The test issues an ordinary signed HTTP write of
+a project note through `/v1/memory/write`, terminates and waits for the process,
+then starts a fresh proxy against the same private journal and namespace.
+`/v1/memory/recall` returns the same value and label with `declassified=false`;
+the stored record retains its derivation. This tests the handlers and restart
+wiring, beyond the in-process store tests.
+
+The process test passes on macOS and as an ARM64 musl test binary inside the
+existing Apple Container Linux host. The Linux run uses the freshly built proxy
+through the test's explicit `NUCLEUS_TEST_PROXY_BIN` override; normal Cargo runs
+use Cargo's binary path. Both child processes and temporary directories are owned
+by the fixture and cleaned up. The original node remains healthy over mTLS.
+Evidence: `/tmp/nucleus-memory-process-{test,linux,clippy}.log`.
+
+This establishes an ordinary proxy process restart with operator-provisioned
+storage. It does not establish durable storage across Firecracker pod replacement,
+shared multi-tenant memory, or host-authoritative memory admission. Those remain
+part of the broader memory outcome.
