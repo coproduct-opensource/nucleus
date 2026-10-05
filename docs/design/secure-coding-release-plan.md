@@ -3187,3 +3187,40 @@ cancelled. The two-architecture program-identity test and scoped all-target
 Clippy passed. This is an execution check, not broker authorization evidence or a
 model-driven journey. The obsolete quickstart receipt steps are still present;
 their migration remains pending rather than silently narrowing that gate.
+
+### Live host-evidence gate migration and response framing (2026-10-05)
+
+The x86 quickstart's two guest-key receipt steps are replaced by the Rust
+`host-evidence-live` gate. This explicitly changes the evidence producer to the
+host, matching the design that retired guest-held host signing keys. Existing
+guest-local allow/deny and delivery checks remain. The new check starts a separate
+enforcing node with a fresh CA and operator registry, pins the host public key
+before admission, boots a real Firecracker guest, and sends one ordinary echo
+request through its proxy and host broker. The shipped offline auditor verifies
+the host authorization/outcome journals; the check also compares the intended
+effect digest, destination, tariff and exact response bytes. It claims host
+authorization and observed transport completion, not remote action semantics or
+truth of guest-local reports. A fresh success witness is written only after pod
+cancellation and node shutdown, so Cargo selecting zero tests cannot pass.
+
+The live check exposed a product defect: buffering a chunked guest response left
+its Transfer-Encoding header on the rebuilt response. Axum added Content-Length
+and Hyper refused the conflicting framing, closing the client connection after
+the host had already completed the upstream call. The focused regression failed
+with `IncompleteMessage` before the fix. Removing consumed transfer/trailer
+headers passed all four signed-proxy tests and restored the real response path.
+
+Live ARM64 Linux validation used the Apple KVM host, the publication-08f74b39b
+guest image, and a separately staged node built with the framing fix. Pod
+`870e9608-5e4e-4362-8e9a-ceb5064e9476` passed. A temporary missing-journal input
+then made the real offline verification fail with NotFound after one authentic
+fixture call; the restored gate passed again on pod
+`03b190d5-61ab-47a4-852c-07e949aae961`. Both ordinary runs verified the exact
+effect and completed cleanup. Scoped node, CLI and xtask Clippy passed. Final
+x86 CI must still validate the workflow orchestration and its own source-built
+guest; the ARM64 run is not substituted for that required result.
+
+Separately, the portable Linux execution entry point from `c438db5b4` passed on
+pod `1202c6c2-f72b-42d9-a44d-334aec3f516d`: signed execution, exit zero, exact
+57-byte stdout, empty stderr and confirmed cancellation. No model-driven coding
+journey is claimed by either fixture.

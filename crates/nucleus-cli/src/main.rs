@@ -65,6 +65,8 @@ mod trust;
 // Completeness by 2-safety: the observation function, the canonicaliser and the
 // comparison. Reached from `nucleus two-safety` via `twosafety_boot`, which is
 // the implementation of its `Boot` trait that boots real pods.
+#[cfg(test)]
+mod host_evidence_live;
 mod twosafety;
 mod twosafety_boot;
 mod verify;

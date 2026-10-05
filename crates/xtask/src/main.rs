@@ -35,6 +35,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Verify host broker journals after a real guest transaction on Linux/KVM.
+    HostEvidenceLive {
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        /// Run the compiled integration as root through sudo.
+        #[arg(long)]
+        sudo: bool,
+    },
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -494,6 +502,7 @@ mod gate_defs;
 mod gatehouse_pin;
 mod gates_can_fail;
 mod guest_layer;
+mod host_evidence_live;
 mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
@@ -523,6 +532,9 @@ mod workspace_members;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::HostEvidenceLive { bin_dir, sudo } => {
+            host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
+        }
         Command::Scripts => scripts(),
         Command::MicrovmHostContext {
             bin_dir,
