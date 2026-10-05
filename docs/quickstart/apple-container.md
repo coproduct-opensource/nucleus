@@ -230,8 +230,11 @@ JSON field names use underscores.
 
 ```sh
 nucleus run "check the project" --apple-host-config host.json --dry-run
-nucleus run "check the project" --apple-host-config host.json
+nucleus run --agent <PROGRAM> "check the project" --apple-host-config host.json
 ```
+
+A real run launches the agent CLI you name with `--agent` (or `NUCLEUS_AGENT`);
+nucleus has no default. See [examples/agents/](../../examples/agents/README.md).
 
 Dry-run validates configuration without creating host state or starting a host.
 A real run requires successful host preflight, KVM probing and mTLS health through

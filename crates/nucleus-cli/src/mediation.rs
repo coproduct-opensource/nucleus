@@ -34,12 +34,13 @@
 //!
 //! Both launch sites run the agent CLI on the HOST, in the working directory
 //! being examined, and the CLI's own defaults load configuration FROM that
-//! directory: `.claude/settings.json`, the hooks registered there, `CLAUDE.md`,
-//! and `.mcp.json` servers. Installing nucleus's hook does not displace those —
-//! it is merged alongside them. A repository could therefore supply its own
-//! tools and its own instructions to the agent sent to examine it, unmediated,
-//! with approval already bypassed. [`confine_to_nucleus_settings`] closes that,
-//! and every launch site is pinned to call it.
+//! directory: its project settings file, the hooks registered there, its
+//! project instructions file, and `.mcp.json` servers. Installing nucleus's
+//! hook does not displace those — it is merged alongside them. A repository
+//! could therefore supply its own tools and its own instructions to the agent
+//! sent to examine it, unmediated, with approval already bypassed.
+//! [`confine_to_nucleus_settings`] closes that; `crate::agent::AgentCommand::launch`
+//! applies it, and every launch site is pinned to start there.
 //!
 //! # Interop note
 //!
@@ -156,8 +157,8 @@ pub fn tool_name_from_event(event: &str) -> Option<String> {
 /// The implicit setting scopes the wrapped agent CLI may load: NONE.
 ///
 /// Empty rather than `user`, because a boundary that reads ambient host state
-/// is not a boundary (ADR 0007, family H): a `PreToolUse` hook in
-/// `~/.claude/settings.json` is exactly as unmediated as one in the
+/// is not a boundary (ADR 0007, family H): a `PreToolUse` hook in the
+/// operator's user-scope settings is exactly as unmediated as one in the
 /// repository's. The only settings that configure a confined agent are the
 /// ones nucleus hands it on the command line, which `--setting-sources` does
 /// not gate.
@@ -167,17 +168,19 @@ pub const SETTING_SOURCES: &str = "";
 ///
 /// [`crate::run`] and [`crate::shell`] launch the agent CLI on the HOST, in the
 /// directory being worked on, with interactive approval bypassed. Left to its
-/// defaults the CLI ALSO loads that directory's `.claude/settings.json`, the
-/// `PreToolUse` hooks registered there, its `CLAUDE.md`, and its `.mcp.json`
-/// servers. So the repository under examination could install hooks and MCP
-/// servers of its own alongside the ones nucleus installed to mediate it: the
-/// measured thing editing its own measurement, and an unmediated tool reachable
-/// with approval already bypassed.
+/// defaults the CLI ALSO loads that directory's project settings file, the
+/// `PreToolUse` hooks registered there, its project instructions file, and its
+/// `.mcp.json` servers. So the repository under examination could install hooks
+/// and MCP servers of its own alongside the ones nucleus installed to mediate
+/// it: the measured thing editing its own measurement, and an unmediated tool
+/// reachable with approval already bypassed.
 ///
-/// Every launch site must call this. Verified against the wrapped CLI at
-/// 2.1.278, by running it in a directory holding a `.claude/settings.json`
-/// hook: without these flags that hook RUNS; with them it does not, while the
-/// `--settings` document nucleus passes still does.
+/// Part of the nucleus launch protocol, applied by
+/// [`crate::agent::AgentCommand::launch`] to every agent it builds. Verified
+/// against an agent CLI that speaks the protocol natively (2.1.278), by running
+/// it in a directory whose project settings register a hook: without these
+/// flags that hook RUNS; with them it does not, while the `--settings` document
+/// nucleus passes still does.
 ///
 /// `--strict-mcp-config` is meaningful even where no `--mcp-config` is passed:
 /// it then resolves to zero MCP servers rather than to the directory's own.
@@ -498,10 +501,13 @@ mod tests {
         assert_eq!(entry["hooks"][0]["type"], "command");
     }
 
-    const LAUNCH: &str = "Command::new(crate::constants::AGENT_CLI_BIN)";
+    /// How a launch site starts the agent's command. `AgentCommand::launch` is
+    /// the only constructor, and it applies [`confine_to_nucleus_settings`]
+    /// itself (pinned by `crate::agent`'s tests).
+    const LAUNCH: &str = "let mut cmd = agent.launch();";
 
     /// Every source region that builds one agent-CLI invocation: from the
-    /// `Command::new` that starts it to whatever consumes it.
+    /// `agent.launch()` that starts it to whatever consumes it.
     ///
     /// Scoped per SITE rather than per file on purpose. The previous version of
     /// this pin asked whether the file mentioned the hook anywhere, which
@@ -549,13 +555,37 @@ mod tests {
         for (name, site) in sites {
             let compact: String = site.split_whitespace().collect();
             assert!(
-                compact.contains("crate::mediation::confine_to_nucleus_settings(&mutcmd)"),
-                "{name}: a launch site does not confine the agent to nucleus's own \
-                 settings, so the working directory can configure it:\n{site}"
-            );
-            assert!(
                 compact.contains(".arg(\"--settings\")"),
                 "{name}: a launch site installs no settings document:\n{site}"
+            );
+        }
+    }
+
+    /// The confinement is applied in exactly one place, `AgentCommand::launch`,
+    /// and every agent invocation in `run`/`shell` starts there. Recognised by
+    /// what makes a command an agent launch — it is handed a `--settings`
+    /// document — so a site that builds the agent's command some other way
+    /// (a bare `Command::new(program)`) is caught the day it is written.
+    #[test]
+    fn every_agent_invocation_starts_from_the_confined_constructor() {
+        const SETTINGS: &str = ".arg(\"--settings\")";
+        for (name, src) in [
+            ("run.rs", include_str!("run.rs")),
+            ("shell.rs", include_str!("shell.rs")),
+        ] {
+            let sites = launch_sites(src);
+            let total = src.matches(SETTINGS).count();
+            let covered: usize = sites.iter().map(|s| s.matches(SETTINGS).count()).sum();
+            assert!(total > 0, "{name}: no agent invocation found (stale pin)");
+            assert_eq!(
+                covered, total,
+                "{name}: an agent invocation is built outside `agent.launch()`, \
+                 so nothing guarantees it is confined"
+            );
+            assert!(
+                !src.contains("confine_to_nucleus_settings"),
+                "{name}: confinement is applied by `AgentCommand::launch`, not by \
+                 a launch site that could also forget it"
             );
         }
     }

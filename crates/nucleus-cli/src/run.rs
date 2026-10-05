@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::fs::{self};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 use tracing::info;
 use uuid::Uuid;
@@ -229,6 +228,15 @@ pub struct RunArgs {
     #[arg(long, default_value = "3600")]
     pub timeout: u64,
 
+    /// The agent CLI to launch (required; no default). Its leading arguments
+    /// go after `--`. Falls back to `[agent] command` in the config file.
+    #[arg(long, env = "NUCLEUS_AGENT", value_name = "PROGRAM")]
+    pub agent: Option<String>,
+
+    /// Arguments for the agent program, placed before nucleus's own flags.
+    #[arg(last = true, value_name = "AGENT_ARGS")]
+    pub agent_args: Vec<String>,
+
     /// Model identifier to pass to the agent CLI.
     // Intrinsic interop: the flag name and any value are passed verbatim to the
     // external agent binary's `--model` flag. Nucleus supplies NO default: which
@@ -331,6 +339,13 @@ pub struct RunArgs {
 pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> {
     let global_config = Config::load(global_config_path)?;
     apple_host::apply_default(&mut args, &global_config);
+    crate::agent::fold_config_default(&mut args.agent, &mut args.agent_args, &global_config.agent);
+    // Refuse before anything is compiled, confirmed or booted: every mode
+    // launches the agent, and nucleus has no default one. A dry run launches
+    // nothing, so it shows the agent (or its absence) instead.
+    if !args.dry_run {
+        named_agent(&args)?;
+    }
     if args.goal.is_some() {
         return crate::goal::execute(args, global_config_path).await;
     }
@@ -405,6 +420,10 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
         );
         println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
         println!("  Timeout: {}s", args.timeout);
+        match named_agent(&args) {
+            Ok(agent) => println!("  Agent: {}", agent.display()),
+            Err(_) => println!("  Agent: (none named; --agent is required to run)"),
+        }
         println!(
             "   UninhabitableState constraint: {}",
             policy.is_uninhabitable_enforced()
@@ -433,6 +452,13 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
     dispatch(&args, resolved, &policy, &work_dir, &prompt).await
 }
 
+/// The agent this run launches: `--agent` / `NUCLEUS_AGENT`, or the config
+/// file's `[agent] command` once [`execute`] has folded it in. The one place a
+/// run decides which agent it has, so the early refusal and the launch agree.
+fn named_agent(args: &RunArgs) -> Result<crate::agent::AgentCommand> {
+    crate::agent::AgentCommand::named(args.agent.as_deref(), &args.agent_args)
+}
+
 /// Run `prompt` under `policy` in whichever mode the args select. Shared by
 /// the profile path and the `--goal` path, which differ only in where the
 /// policy came from.
@@ -443,20 +469,30 @@ pub(crate) async fn dispatch(
     work_dir: &Path,
     prompt: &str,
 ) -> Result<()> {
+    let agent = named_agent(args)?;
     if args.hook {
-        return run_hook(args, policy, work_dir, prompt).await;
+        return run_hook(args, &agent, policy, work_dir, prompt).await;
     }
 
     if args.local {
-        run_local(args, policy, work_dir, prompt).await
+        run_local(args, &agent, policy, work_dir, prompt).await
     } else if let Some(path) = &args.apple_host_config {
         let (resolved, host) = apple_host::ready(path, args).await?;
-        run_enforced(args, &resolved, policy, work_dir, prompt, Some(host)).await
+        run_enforced(
+            args,
+            &agent,
+            &resolved,
+            policy,
+            work_dir,
+            prompt,
+            Some(host),
+        )
+        .await
     } else {
         let resolved = resolved.ok_or_else(|| {
             anyhow!("node config required for Firecracker mode. Use --local for CI.")
         })?;
-        run_enforced(args, &resolved, policy, work_dir, prompt, None).await
+        run_enforced(args, &agent, &resolved, policy, work_dir, prompt, None).await
     }
 }
 
@@ -526,6 +562,7 @@ impl Drop for TmpDirGuard {
 /// through the portcullis kernel with IFC flow labels.
 async fn run_hook(
     args: &RunArgs,
+    agent: &crate::agent::AgentCommand,
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
@@ -564,8 +601,8 @@ async fn run_hook(
 
     let start = Instant::now();
 
-    let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    crate::mediation::confine_to_nucleus_settings(&mut cmd);
+    // Confined by construction: `launch` applies the confinement flags.
+    let mut cmd = agent.launch();
     cmd.arg("--print");
     if let Some(model) = &args.model {
         cmd.arg("--model").arg(model);
@@ -580,7 +617,7 @@ async fn run_hook(
 
     let output = cmd
         .output()
-        .with_context(|| format!("failed to spawn {}", crate::constants::AGENT_CLI_BIN))?;
+        .with_context(|| format!("failed to spawn agent `{}`", agent.program()))?;
     let duration = start.elapsed();
 
     render_output(&output, duration, args.output.as_str())
@@ -592,6 +629,7 @@ async fn run_hook(
 /// Firecracker VM. Suitable for CI environments like GitHub Actions.
 async fn run_local(
     args: &RunArgs,
+    agent: &crate::agent::AgentCommand,
     policy: &PermissionLattice,
     work_dir: &Path,
     prompt: &str,
@@ -729,7 +767,16 @@ async fn run_local(
     );
 
     let start = Instant::now();
-    let output = run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir).await;
+    let output = run_agent_mcp(
+        args,
+        agent,
+        policy,
+        &mcp_config_path,
+        &guard,
+        prompt,
+        work_dir,
+    )
+    .await;
     let duration = start.elapsed();
 
     // Kill tool-proxy
@@ -824,6 +871,7 @@ fn build_local_pod_spec(
 
 async fn run_enforced(
     args: &RunArgs,
+    agent: &crate::agent::AgentCommand,
     resolved: &ResolvedConfig,
     policy: &PermissionLattice,
     work_dir: &Path,
@@ -927,7 +975,17 @@ async fn run_enforced(
 
         let start = Instant::now();
         let output =
-            match run_agent_mcp(args, policy, &mcp_config_path, &guard, prompt, work_dir).await {
+            match run_agent_mcp(
+                args,
+                agent,
+                policy,
+                &mcp_config_path,
+                &guard,
+                prompt,
+                work_dir,
+            )
+            .await
+            {
                 Ok(output) => output,
                 Err(err) => return Err(err),
             };
@@ -1251,6 +1309,7 @@ impl MediationGuard {
 
 async fn run_agent_mcp(
     args: &RunArgs,
+    agent: &crate::agent::AgentCommand,
     policy: &PermissionLattice,
     mcp_config_path: &Path,
     guard: &MediationGuard,
@@ -1267,8 +1326,8 @@ async fn run_agent_mcp(
             .ok_or_else(|| anyhow!("mcp config path has no parent directory"))?,
     )?;
 
-    let mut cmd = Command::new(crate::constants::AGENT_CLI_BIN);
-    crate::mediation::confine_to_nucleus_settings(&mut cmd);
+    // Confined by construction: `launch` applies the confinement flags.
+    let mut cmd = agent.launch();
     cmd.arg("--print");
     if let Some(model) = &args.model {
         cmd.arg("--model").arg(model);
@@ -1426,6 +1485,45 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_agent_is_what_the_user_named_and_nothing_else() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let args = Parse::try_parse_from([
+            "run",
+            "--agent",
+            "my-agent",
+            "fix the bug",
+            "--",
+            "--agent-flag",
+            "value",
+        ])
+        .unwrap()
+        .args;
+        assert_eq!(args.prompt.as_deref(), Some("fix the bug"));
+        let agent = named_agent(&args).expect("named");
+        let cmd = agent.launch();
+        assert_eq!(cmd.get_program(), "my-agent");
+        let argv: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(&argv[..2], ["--agent-flag", "value"]);
+
+        // Nothing named: refused, with directions, before any mode is chosen.
+        if std::env::var_os("NUCLEUS_AGENT").is_none() {
+            let args = Parse::try_parse_from(["run", "--local", "fix the bug"])
+                .unwrap()
+                .args;
+            let err = named_agent(&args).expect_err("no default agent");
+            assert!(err.to_string().contains("--agent"), "{err}");
+        }
     }
 
     #[tokio::test]

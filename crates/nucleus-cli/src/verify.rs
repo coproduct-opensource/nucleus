@@ -32,11 +32,11 @@
 //!
 //! # Why not `nucleus run`
 //!
-//! `run_enforced` spawns `constants::AGENT_CLI_BIN`, a specific vendor's
-//! assistant CLI. Making the quickstart's proof depend on a vendor binary would
-//! violate the neutrality rule this project holds itself to, and would fail on
-//! any machine that has not installed it. The tool-proxy's `/v1/run` route is
-//! the same enforcement path with no vendor in it.
+//! `run_enforced` spawns the agent CLI the user names with `--agent`. Making
+//! the quickstart's proof depend on an agent binary would fail on any machine
+//! that has not installed one, and would prove the agent as much as the pod.
+//! The tool-proxy's `/v1/run` route is the same enforcement path with no agent
+//! in it.
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;

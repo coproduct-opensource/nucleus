@@ -130,12 +130,18 @@ curl -fsSL https://raw.githubusercontent.com/coproduct-opensource/nucleus/main/s
 
 ```bash
 nucleus audit [PATH]                # Tier 0: scan agent configs, no runtime (CI exit codes)
-nucleus run --local "your task"     # Tier 1: run with enforced permissions (process-level, no VM)
+nucleus run --agent <PROGRAM> --local "your task"
+                                    # Tier 1: run with enforced permissions (process-level, no VM)
 nucleus run --goal "fix the failing CI build" --dry-run
                                     # State the outcome; nucleus proposes the minimum
                                     # authority (Can / Cannot / Limits / Risk) and runs
                                     # after one confirmation. See docs/permissions.md.
 ```
+
+`run` and `shell` launch the agent CLI you name with `--agent` (or
+`NUCLEUS_AGENT`, or `[agent] command` in the config file); there is no default.
+See [examples/agents/](examples/agents/README.md) for the launch protocol and
+per-agent invocations.
 
 ### Tier 2 — real microVM isolation (macOS)
 

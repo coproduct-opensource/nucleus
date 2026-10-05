@@ -32,6 +32,12 @@ inputs:
       How much of the grant to put in the job summary: plain | technical |
       policy-trace. Only meaningful with `goal`.
     default: 'plain'
+  agent:
+    description: |
+      The agent CLI nucleus launches (`nucleus run --agent`, passed as
+      NUCLEUS_AGENT). Nucleus itself has no default; this Action defaults to
+      the CLI it installs below.
+    default: 'claude'
   model:
     description: 'LLM model to use'
     default: 'claude-sonnet-4-20250514'
@@ -117,5 +123,6 @@ runs:
         LLM_API_TOKEN: ${{ inputs.api-key }}
         NUCLEUS_TIMEOUT: ${{ inputs.timeout }}
         LLM_MODEL: ${{ inputs.model }}
+        NUCLEUS_AGENT: ${{ inputs.agent }}
         GH_TOKEN: ${{ inputs.github-token || github.token }}
       run: ${{ github.action_path }}/scripts/action-entrypoint.sh
