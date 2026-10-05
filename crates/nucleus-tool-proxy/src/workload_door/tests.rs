@@ -220,20 +220,42 @@ fn the_door_binds_the_main_listeners_handlers() {
         // are adjacent.
         &rest[..rest.find("}}").expect("the end of `handler`")]
     };
+    // The whole method router, however many verbs it chains
+    // (`get(h).post(h)`): everything up to the `)`, `,` or `}` that closes it
+    // at nesting depth zero.
+    let binding_expr = |s: &str| -> String {
+        let mut depth = 0usize;
+        let end = s
+            .char_indices()
+            .find(|&(_, c)| match c {
+                '(' => {
+                    depth += 1;
+                    false
+                }
+                ')' if depth > 0 => {
+                    depth -= 1;
+                    false
+                }
+                ')' | ',' | '}' => depth == 0,
+                _ => false,
+            })
+            .map_or(s.len(), |(i, _)| i);
+        s[..end].to_string()
+    };
     for route in DoorRoute::ALL {
         let key = format!(".route(\"{}\",", route.path());
         let at = main
             .find(&key)
             .unwrap_or_else(|| panic!("{route:?} not in main.rs"));
-        let binding = &main[at + key.len()..];
-        let main_binding = &binding[..=binding.find(')').expect("a verb call")];
+        let main_binding = binding_expr(&main[at + key.len()..]);
 
         let arm_key = format!("DoorRoute::{route:?}=>");
         let arm_at = handler_body
             .find(&arm_key)
             .unwrap_or_else(|| panic!("{route:?} has no arm in `handler`"));
         let arm = &handler_body[arm_at + arm_key.len()..];
-        let door_binding = arm[..arm.find(',').expect("an arm")].replace("crate::", "");
+        let door_binding =
+            binding_expr(arm.strip_prefix('{').unwrap_or(arm)).replace("crate::", "");
 
         assert_eq!(
             door_binding, main_binding,

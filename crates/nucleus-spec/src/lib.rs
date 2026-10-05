@@ -1212,6 +1212,11 @@ impl CredentialedEgressSpec {
             // fixes. Same host, so it is not a redirect; it is still the guest
             // choosing a path the operator did not grant.
             || path.to_ascii_lowercase().contains("%2e")
+            // A query or fragment smuggled into the PATH would bypass the
+            // query rule (`workload_egress::check_query`), which is the only
+            // way a query reaches the upstream.
+            || path.contains('?')
+            || path.contains('#')
         {
             return None;
         }

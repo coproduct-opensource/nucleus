@@ -18,6 +18,7 @@ fn metadata(body: &[u8]) -> EffectRequest {
         body_sha256: Sha256::digest(body).into(),
         body_bytes: body.len() as u64,
         call_charge_micro_usd: Some(0),
+        request_headers: Default::default(),
     }
 }
 fn pending(state: &mut PodPolicy, body: &[u8]) -> (ArgsDigest, EffectRequest, uuid::Uuid) {

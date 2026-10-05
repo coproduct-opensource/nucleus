@@ -158,6 +158,7 @@ mod tests {
             body_sha256: Sha256::digest(payload).into(),
             body_bytes: payload.len() as u64,
             call_charge_micro_usd: Some(0),
+            request_headers: Default::default(),
         };
         let digest = ArgsDigest::new(metadata.digest().unwrap());
         assert!(

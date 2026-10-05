@@ -85,6 +85,9 @@ pub enum FrameError {
     },
     /// Not valid JSON, or not an envelope.
     Malformed,
+    /// A stream open written at a version this node does not speak — an
+    /// older (or newer) guest, not garbage — so it is refused by name.
+    StreamVersion(nucleus_cred_protocol::egress::VersionMismatch),
     /// A field exceeded [`MAX_FIELD_BYTES`].
     FieldTooLong {
         /// Which field.

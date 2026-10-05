@@ -86,6 +86,20 @@
 //!
 //! [upstream.credential.env]
 //! var = "SEARCH_API_TOKEN"
+//!
+//! [[upstream]]
+//! name         = "git-remote"
+//! base_url     = "https://forge.example/"
+//! header       = "authorization"
+//! value_prefix = "Basic "
+//! call_charge_micro_usd = 0
+//! # Guest-proposed headers forwarded to this upstream (default: none beyond
+//! # content-type). Never authorization, cookie, proxy-* or this entry's own
+//! # `header`: the node refuses to start on one.
+//! request_headers = ["accept", "git-protocol", "content-encoding"]
+//!
+//! [upstream.credential.env]
+//! var = "GIT_REMOTE_BASIC"
 //! ```
 //!
 //! # Reserved: a client certificate as the subject
@@ -154,6 +168,10 @@ struct EntryFile {
     credential: CredentialFile,
     /// Missing prices never imply free calls. The broker refuses unpriced entries.
     call_charge_micro_usd: Option<u64>,
+    /// Request header names a guest may set on calls to this upstream (#3210,
+    /// #3213). Default empty: only `content-type` is forwarded.
+    #[serde(default)]
+    request_headers: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -235,6 +253,9 @@ pub(crate) struct RegistryEntry {
     spec: CredentialedEgressSpec,
     credential: CredentialSource,
     call_charge: Option<CallCharge>,
+    /// Lower-case header names the guest may propose for this upstream,
+    /// validated at load. See [`RegistryEntry::forwards_header`].
+    request_headers: BTreeSet<String>,
 }
 
 /// A fixed operator tariff for one authorized dispatch attempt, never guest usage.
@@ -280,6 +301,25 @@ impl RegistryEntry {
         matches!(self.credential, CredentialSource::Federated(_))
     }
 
+    /// Whether a guest-proposed request header `name` is forwarded to this
+    /// upstream: the operator listed it, the shared rule lets a guest propose
+    /// it at all, and it is not the header this entry injects the credential
+    /// in. All three, every call: the load-time check is not relied on alone,
+    /// so a rule tightened later applies to a registry loaded earlier.
+    pub fn forwards_header(&self, name: &str) -> bool {
+        self.request_headers.contains(name)
+            && nucleus_spec::workload_egress::guest_may_propose_header(name)
+            && !name.eq_ignore_ascii_case(&self.spec.header)
+    }
+
+    /// This entry with `names` as its request-header allowlist, unvalidated:
+    /// for tests that need to show the per-call check holds on its own.
+    #[cfg(test)]
+    pub(crate) fn with_request_headers(mut self, names: &[&str]) -> Self {
+        self.request_headers = names.iter().map(|n| (*n).to_string()).collect();
+        self
+    }
+
     /// An `env` entry whose projection is `spec`. The registry's own loader
     /// builds entries from TOML; this is for tests that start from a spec.
     #[cfg(test)]
@@ -291,6 +331,7 @@ impl RegistryEntry {
             spec,
             credential,
             call_charge: Some(CallCharge::free()),
+            request_headers: BTreeSet::new(),
         }
     }
 }
@@ -371,7 +412,9 @@ impl UpstreamRegistry {
                     None,
                 ),
             };
+            let request_headers = request_headers(&up.name, &up.header, up.request_headers)?;
             entries.push(RegistryEntry {
+                request_headers,
                 call_charge: up.call_charge_micro_usd.map(CallCharge),
                 spec: CredentialedEgressSpec::registry_projection(
                     up.name,
@@ -425,6 +468,41 @@ impl UpstreamRegistry {
             .cloned()
             .collect()
     }
+}
+
+/// Validate an entry's `request_headers`: each a name a guest may propose at
+/// all (`workload_egress::guest_may_propose_header`, so never `authorization`,
+/// `cookie`, `proxy-authorization` or anything credential-shaped), and never
+/// the entry's own credential `header`. The node refuses to START on a
+/// violation, naming it: an operator who listed `authorization` expected the
+/// guest to set it, and silently dropping it would hide that the expectation
+/// is refused.
+fn request_headers(
+    name: &str,
+    credential_header: &str,
+    listed: Vec<String>,
+) -> Result<BTreeSet<String>, String> {
+    let mut names = BTreeSet::new();
+    for header in listed {
+        let lower = header.to_ascii_lowercase();
+        if lower.eq_ignore_ascii_case(credential_header)
+            || !nucleus_spec::workload_egress::guest_may_propose_header(&lower)
+        {
+            return Err(format!(
+                "upstream {name:?}: request_headers may not list {header:?}: credential, \
+                 framing and forwarding headers are set by the host only"
+            ));
+        }
+        names.insert(lower);
+    }
+    if names.len() > nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS {
+        return Err(format!(
+            "upstream {name:?}: request_headers lists {} names, above the {} a call may carry",
+            names.len(),
+            nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS
+        ));
+    }
+    Ok(names)
 }
 
 /// Validate one `federated` table.
@@ -646,6 +724,63 @@ policy_id = "example-policy-0001"
         assert_eq!(fed.assertion_ttl, DEFAULT_TTL);
         assert_eq!(fed.params["policy_id"], "example-policy-0001");
         assert_eq!(fed.name, "model-api");
+    }
+
+    /// The operator's request-header allowlist (#3210, #3213): protocol
+    /// headers load and are forwarded; a credential header refuses the whole
+    /// registry by name, whichever spelling; and an unlisted name is not
+    /// forwarded. The per-call check also stands on its own: an entry whose
+    /// list was never validated still forwards neither `authorization` nor
+    /// its own credential header.
+    #[test]
+    fn request_headers_admit_protocol_headers_and_never_a_credential() {
+        let with = |list: &str| {
+            format!(
+                "[[upstream]]\nname = \"git-remote\"\nbase_url = \"https://forge.invalid/\"\n\
+                 header = \"x-forge-key\"\nrequest_headers = {list}\n\
+                 [upstream.credential.env]\nvar = \"GIT_REMOTE_KEY\"\n"
+            )
+        };
+        let reg = UpstreamRegistry::from_toml_str(&with(r#"["Accept", "git-protocol"]"#))
+            .expect("protocol headers load");
+        let entry = &reg.resolve(reg.entries())[0];
+        assert!(entry.forwards_header("accept") && entry.forwards_header("git-protocol"));
+        assert!(!entry.forwards_header("content-encoding"), "not listed");
+        assert_eq!(
+            UpstreamRegistry::from_toml_str(&with("[]"))
+                .unwrap()
+                .resolve(reg.entries())
+                .len(),
+            1,
+            "the allowlist is the operator's, not part of the projection a spec selects by"
+        );
+
+        for refused in [
+            "authorization",
+            "Authorization",
+            "cookie",
+            "proxy-authorization",
+            "x-forge-key",
+            "X-Forge-Key",
+            "private-token",
+            "host",
+        ] {
+            let err = UpstreamRegistry::from_toml_str(&with(&format!("[{refused:?}]")))
+                .expect_err(refused);
+            assert!(
+                err.contains("request_headers may not list") && err.contains(refused),
+                "{err}"
+            );
+        }
+
+        let unvalidated = RegistryEntry::env(reg.entries()[0].clone()).with_request_headers(&[
+            "authorization",
+            "x-forge-key",
+            "accept",
+        ]);
+        assert!(!unvalidated.forwards_header("authorization"));
+        assert!(!unvalidated.forwards_header("x-forge-key"));
+        assert!(unvalidated.forwards_header("accept"), "the control");
     }
 
     #[test]

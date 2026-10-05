@@ -128,6 +128,16 @@ pub fn classify(raw: &str) -> Result<GuestAsk, FrameError> {
         return Ok(GuestAsk::Perform(Box::new(req)));
     }
 
+    // A stream open from a guest of another release is refused BY NAME, before
+    // it can fall through to the query parse and be reported as malformed:
+    // only a stream open carries `nonce`, so this names nothing else.
+    if raw.len() <= crate::envelope_frame::MAX_FRAME_BYTES
+        && let Ok(probe) = serde_json::from_str::<nucleus_cred_protocol::egress::OpenProbe>(raw)
+        && let Some(mismatch) = probe.mismatch()
+    {
+        return Err(FrameError::StreamVersion(mismatch));
+    }
+
     // A stream's open frame carries no body, so it gets the query's 8 KiB
     // bound, not the perform's: the size it needs arrives as chunks.
     if raw.len() <= crate::envelope_frame::MAX_FRAME_BYTES
@@ -141,6 +151,7 @@ pub fn classify(raw: &str) -> Result<GuestAsk, FrameError> {
             ("path", &req.path),
             ("content_type", &req.content_type),
         ])?;
+        check_stream_extras(&req)?;
         return Ok(GuestAsk::Stream(Box::new(req)));
     }
 
@@ -163,6 +174,29 @@ fn check_perform_fields(req: &PerformRequest) -> Result<(), FrameError> {
         ("idempotency_key", &req.idempotency_key),
         ("path", &req.path),
     ])
+}
+
+/// The query and proposed headers of a stream open, within the frame bounds.
+///
+/// Only their SIZE is checked here, as for every other field: whether a query
+/// is admissible and which headers are forwarded are decisions the stream
+/// path makes against the upstream (`resolve`, `broker_stream`), and a frame
+/// that is merely too large is malformed rather than refused by policy.
+fn check_stream_extras(req: &nucleus_cred_protocol::StreamRequest) -> Result<(), FrameError> {
+    use nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS;
+    if let Some(query) = &req.query {
+        check_fields(&[("query", query)])?;
+    }
+    if req.headers.len() > MAX_PROPOSED_HEADERS {
+        return Err(FrameError::FieldTooLong {
+            field: "headers",
+            bytes: req.headers.len(),
+        });
+    }
+    for (name, value) in &req.headers {
+        check_fields(&[("headers", name), ("headers", value)])?;
+    }
+    Ok(())
 }
 
 /// Each named field within [`MAX_FIELD_BYTES`].
@@ -445,6 +479,8 @@ pub(crate) struct Asked<'a> {
     pub(crate) target: &'a str,
     pub(crate) justification: &'a str,
     pub(crate) path: &'a str,
+    /// A streamed call's query; a perform frame has none.
+    pub(crate) query: Option<&'a str>,
 }
 
 /// A request to act that the PDP approved, naming an upstream the operator
@@ -463,9 +499,18 @@ impl<'u> Resolved<'u> {
         self.entry
     }
 
-    /// The URL the call goes to.
+    /// The URL the call goes to, query included. This is what the effect
+    /// digest binds, so an approval names the exact request.
     pub(crate) fn url(&self) -> &str {
         &self.url
+    }
+
+    /// The URL without its query: the subject host policy decides on and its
+    /// evidence records. A query value may carry data the workload read, and
+    /// the evidence log is not where that should be copied; the digest above
+    /// still commits to it.
+    pub(crate) fn subject(&self) -> &str {
+        self.url.split_once('?').map_or(&self.url, |(url, _)| url)
     }
 }
 
@@ -493,8 +538,10 @@ pub(crate) fn resolve<'u>(
     let approved = crate::broker::pdp_decide(&envelope, identity, policy, now_unix).ok()?;
     // 2. A name the operator configured, or nothing.
     let entry = upstreams.iter().find(|e| e.spec().name == asked.target)?;
-    // 3. The path may pick a resource under the base. It may not pick the base.
-    let url = entry.spec().url_for(asked.path)?;
+    // 3. The path may pick a resource under the base. It may not pick the base,
+    //    and a query may not carry a credential (one rule, shared with the
+    //    guest: `url_for_request`).
+    let url = entry.spec().url_for_request(asked.path, asked.query)?;
     Some(Resolved {
         approved,
         entry,
@@ -652,6 +699,7 @@ where
             target: &req.target,
             justification: &req.justification,
             path: &req.path,
+            query: None,
         },
         ctx.identity,
         ctx.policy,
@@ -749,6 +797,7 @@ where
             target: &req.target,
             justification: &req.justification,
             path: &req.path,
+            query: None,
         },
         ctx.identity,
         ctx.policy,

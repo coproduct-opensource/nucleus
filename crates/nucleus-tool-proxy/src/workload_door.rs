@@ -50,7 +50,7 @@ use axum::extract::{ConnectInfo, Request, connect_info::Connected};
 use axum::http::StatusCode;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{MethodRouter, post};
+use axum::routing::{MethodRouter, get, post};
 use axum::serve::IncomingStream;
 use tokio::net::{UnixListener, UnixStream};
 use tracing::{error, info, warn};
@@ -137,7 +137,9 @@ fn handler(route: DoorRoute) -> MethodRouter<crate::AppState> {
         DoorRoute::WebSearch => post(crate::web_search),
         DoorRoute::MemoryWrite => post(crate::memory::memory_write),
         DoorRoute::MemoryRecall => post(crate::memory::memory_recall),
-        DoorRoute::Egress => post(crate::egress::credentialed_egress),
+        DoorRoute::Egress => {
+            get(crate::egress::credentialed_egress).post(crate::egress::credentialed_egress)
+        }
     }
 }
 

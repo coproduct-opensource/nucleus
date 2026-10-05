@@ -70,8 +70,12 @@ fn broker_capability() -> Option<crate::broker_client::Capability> {
 ///
 /// A second copy here would mean a traversal fix could land on one side and not
 /// the other, with both test suites green. This delegates so that cannot happen.
-pub(crate) fn upstream_url(spec: &CredentialedEgressSpec, path: &str) -> Option<String> {
-    spec.url_for(path)
+pub(crate) fn upstream_url(
+    spec: &CredentialedEgressSpec,
+    path: &str,
+    query: Option<&str>,
+) -> Option<String> {
+    spec.url_for_request(path, query)
 }
 
 /// The environment a workload is told about its upstreams.
@@ -203,7 +207,7 @@ pub(crate) fn reject_egress_without_a_broker(
     ))
 }
 
-/// `POST /v1/egress/{name}/{*path}` — call an upstream on the workload's behalf.
+/// `GET|POST /v1/egress/{name}/{*path}[?query]` — call an upstream on the workload's behalf.
 ///
 /// # Order of operations, and why it is this order
 ///
@@ -223,6 +227,8 @@ pub(crate) fn reject_egress_without_a_broker(
 pub(crate) async fn credentialed_egress(
     axum::extract::State(state): axum::extract::State<crate::AppState>,
     axum::extract::Path((name, path)): axum::extract::Path<(String, String)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    method: axum::http::Method,
     certified: Option<axum::Extension<crate::pod_cert::CertifiedPermissions>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Body,
@@ -241,19 +247,19 @@ pub(crate) async fn credentialed_egress(
         )));
     };
 
-    let Some(url) = upstream_url(&spec, &path) else {
+    let call = WorkloadCall::read(&method, query, &headers)?;
+    let Some(url) = upstream_url(&spec, &path, call.query.as_deref()) else {
         return Err(ApiError::Spec(
-            "the request path may not be absolute or contain `..`; the upstream is fixed by the \
-             pod spec"
+            "the request path may not be absolute, contain `..`, `?` or `#`; the upstream is \
+             fixed by the pod spec"
                 .to_string(),
         ));
     };
-
-    // Per-effect gate (ADR 0004): the host performs credentialed calls as
-    // `POST`, so that is the shape a granted effect must vouch for.
+    // Per-effect gate (ADR 0004): the method the host will perform is the
+    // shape a granted effect must vouch for.
     if let Ok(parsed) = url::Url::parse(&url) {
         state.effect_gate.admit_http_recorded(
-            "POST",
+            call.method.as_str(),
             &parsed,
             state.verdict_sink.as_ref(),
             crate::actor_from_auth(None),
@@ -320,16 +326,13 @@ pub(crate) async fn credentialed_egress(
     // reply, both fit. The host can pause its staged upload for approval. A
     // workload retry is a new call with a fresh nonce; the host refuses a nonce
     // it has seen, stopping a captured open frame from being sent twice.
-    let request = nucleus_cred_protocol::StreamRequest {
-        require_approval: submission.require_approval(),
-        approval_wait_seconds: request_approval_wait(&headers)?,
-        operation: "WebFetch".to_string(),
-        target: name.clone(),
-        justification: "credentialed egress".to_string(),
-        nonce: uuid::Uuid::new_v4().to_string(),
-        path: path.clone(),
-        content_type: request_content_type(&headers),
-    };
+    let request = call.open_frame(
+        &name,
+        &path,
+        "WebFetch",
+        submission.require_approval(),
+        request_approval_wait(&headers)?,
+    );
 
     let line =
         crate::broker_client::stream_open_line(authority, capability.secret.as_bytes(), &request)
@@ -351,6 +354,96 @@ pub(crate) async fn credentialed_egress(
         .await;
 
     Ok(relayed_response(relayed))
+}
+
+/// What the workload's HTTP request chose besides its path, read once.
+///
+/// The method, the query and the proposed headers all cross into the signed
+/// open frame, so each is held here to the rule the host applies too
+/// (`nucleus_spec::workload_egress`), and a refusal names the rule.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkloadCall {
+    pub(crate) method: nucleus_cred_protocol::EgressMethod,
+    pub(crate) query: Option<String>,
+    pub(crate) content_type: String,
+    pub(crate) headers: std::collections::BTreeMap<String, String>,
+}
+
+impl WorkloadCall {
+    /// Read the workload's request.
+    ///
+    /// # Errors
+    /// A method other than GET or POST; a query [`check_query`] refuses; more
+    /// proposable headers than one call may carry.
+    ///
+    /// [`check_query`]: nucleus_spec::workload_egress::check_query
+    pub(crate) fn read(
+        method: &axum::http::Method,
+        query: Option<String>,
+        headers: &axum::http::HeaderMap,
+    ) -> Result<Self, crate::ApiError> {
+        use nucleus_spec::workload_egress::{
+            MAX_PROPOSED_HEADERS, check_query, guest_may_propose_header, header_value_admissible,
+        };
+        let method =
+            nucleus_cred_protocol::EgressMethod::from_http(method.as_str()).ok_or_else(|| {
+                crate::ApiError::Spec(format!(
+                    "credentialed egress supports GET and POST, not {method}"
+                ))
+            })?;
+        if let Some(query) = &query {
+            check_query(query).map_err(|refusal| crate::ApiError::Spec(refusal.to_string()))?;
+        }
+        // Proposals only: the host forwards what the operator's registry lists
+        // for this upstream and drops the rest. Names the shared rule refuses
+        // (credentials, framing, `content-type`, `x-nucleus-*`) never leave.
+        let proposed: std::collections::BTreeMap<String, String> = headers
+            .iter()
+            .filter(|(name, _)| guest_may_propose_header(name.as_str()))
+            .filter_map(|(name, value)| {
+                let value = value.to_str().ok()?;
+                header_value_admissible(value).then(|| (name.as_str().to_string(), value.into()))
+            })
+            .collect();
+        if proposed.len() > MAX_PROPOSED_HEADERS {
+            return Err(crate::ApiError::Spec(format!(
+                "the request proposes {} headers, above the {MAX_PROPOSED_HEADERS} one call may \
+                 carry",
+                proposed.len()
+            )));
+        }
+        Ok(Self {
+            method,
+            query,
+            content_type: request_content_type(headers),
+            headers: proposed,
+        })
+    }
+
+    /// The signed open frame's payload for this call to upstream `name`.
+    pub(crate) fn open_frame(
+        &self,
+        name: &str,
+        path: &str,
+        operation: &str,
+        require_approval: bool,
+        approval_wait_seconds: u64,
+    ) -> nucleus_cred_protocol::StreamRequest {
+        nucleus_cred_protocol::StreamRequest {
+            require_approval,
+            approval_wait_seconds,
+            operation: operation.to_string(),
+            target: name.to_string(),
+            justification: "credentialed egress".to_string(),
+            nonce: uuid::Uuid::new_v4().to_string(),
+            version: nucleus_cred_protocol::egress::OPEN_VERSION,
+            method: self.method,
+            path: path.to_string(),
+            query: self.query.clone(),
+            content_type: self.content_type.clone(),
+            headers: self.headers.clone(),
+        }
+    }
 }
 
 /// A workload can request immediate refusal or a bounded operator-review pause.
@@ -519,7 +612,7 @@ mod tests {
             "messages/../../escape",
         ] {
             assert!(
-                upstream_url(&spec(), hostile).is_none(),
+                upstream_url(&spec(), hostile, None).is_none(),
                 "{hostile:?} must not resolve to an upstream URL"
             );
         }
@@ -530,11 +623,11 @@ mod tests {
     #[test]
     fn an_ordinary_path_resolves_under_the_configured_upstream() {
         assert_eq!(
-            upstream_url(&spec(), "/messages").as_deref(),
+            upstream_url(&spec(), "/messages", None).as_deref(),
             Some("https://upstream.invalid/v1/messages")
         );
         assert_eq!(
-            upstream_url(&spec(), "messages").as_deref(),
+            upstream_url(&spec(), "messages", None).as_deref(),
             Some("https://upstream.invalid/v1/messages")
         );
     }
@@ -779,41 +872,39 @@ mod tests {
         use axum::extract::Path as RoutePath;
         let door_path = dir.join("door").join("workload.sock");
         let door = crate::workload_door::UnservedDoor::bind(&door_path).expect("bind door");
+        let handler = move |RoutePath((name, path)): RoutePath<(String, String)>,
+                            axum::extract::RawQuery(query): axum::extract::RawQuery,
+                            method: axum::http::Method,
+                            headers: axum::http::HeaderMap,
+                            body: axum::body::Body| {
+            let host = host.clone();
+            async move {
+                // The production reading of the request and composition of the
+                // frame; only the kernel decision and discharge are elided.
+                let call = match WorkloadCall::read(&method, query, &headers) {
+                    Ok(call) => call,
+                    Err(e) => return axum::response::IntoResponse::into_response(e),
+                };
+                let request = call.open_frame(&name, &path, "WebFetch", false, 0);
+                let line = format!(
+                    "{}\n",
+                    nucleus_cred_protocol::frame::sign(
+                        KEY,
+                        &serde_json::to_string(&request).expect("json")
+                    )
+                );
+                let conn = tokio::net::UnixStream::connect(&host)
+                    .await
+                    .expect("the host");
+                match forward_stream(conn, &line, body).await {
+                    Ok(relayed) => relayed_response(relayed),
+                    Err(e) => axum::response::IntoResponse::into_response(e),
+                }
+            }
+        };
         let app = axum::Router::new().route(
             "/v1/egress/{name}/{*path}",
-            axum::routing::post(
-                move |RoutePath((name, path)): RoutePath<(String, String)>,
-                      headers: axum::http::HeaderMap,
-                      body: axum::body::Body| {
-                    let host = host.clone();
-                    async move {
-                        let request = nucleus_cred_protocol::StreamRequest {
-                            require_approval: false,
-                            approval_wait_seconds: 0,
-                            operation: "WebFetch".into(),
-                            target: name,
-                            justification: "credentialed egress".into(),
-                            nonce: uuid::Uuid::new_v4().to_string(),
-                            path,
-                            content_type: request_content_type(&headers),
-                        };
-                        let line = format!(
-                            "{}\n",
-                            nucleus_cred_protocol::frame::sign(
-                                KEY,
-                                &serde_json::to_string(&request).expect("json")
-                            )
-                        );
-                        let conn = tokio::net::UnixStream::connect(&host)
-                            .await
-                            .expect("the host");
-                        match forward_stream(conn, &line, body).await {
-                            Ok(relayed) => relayed_response(relayed),
-                            Err(e) => axum::response::IntoResponse::into_response(e),
-                        }
-                    }
-                },
-            ),
+            axum::routing::get(handler.clone()).post(handler),
         );
         door.serve(
             app,
@@ -855,6 +946,87 @@ mod tests {
         let mut reply = Vec::new();
         let _ = s.read_to_end(&mut reply).await;
         String::from_utf8_lossy(&reply).into_owned()
+    }
+
+    /// Be the workload: send one raw HTTP/1.1 request to the door and read
+    /// the whole response, bounded.
+    async fn workload_raw(door: &Path, request: &str) -> String {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let mut s = tokio::net::UnixStream::connect(door).await.expect("door");
+            s.write_all(request.as_bytes()).await.expect("request");
+            let mut reply = Vec::new();
+            let _ = s.read_to_end(&mut reply).await;
+            String::from_utf8_lossy(&reply).into_owned()
+        })
+        .await
+        .expect("the door answered within 30 s")
+    }
+
+    /// **A smart-HTTP ref advertisement crosses the door as a GET with its
+    /// query (#3210).** The frame the host receives names GET, carries the
+    /// query, proposes the protocol header, and carries neither the workload's `Authorization`
+    /// placeholder nor any body.
+    #[tokio::test]
+    async fn a_get_with_a_query_reaches_the_host_as_a_get() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (host, saw) = stand_in_host(dir.path(), HostBehaviour::Serve).await;
+        let door = serve_door(dir.path(), host);
+        let reply = workload_raw(
+            &door,
+            "GET /v1/egress/model-api/org/repo.git/info/refs?service=git-upload-pack \
+             HTTP/1.1\r\nHost: x\r\nGit-Protocol: version=2\r\nAuthorization: Basic \
+             placeholder\r\nCookie: a=b\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+        let saw = saw.lock().expect("saw").clone();
+        assert!(saw.authentic);
+        assert_eq!(saw.body_len, 0);
+        let (_, payload) =
+            nucleus_cred_protocol::frame::split(saw.open_frame.trim_end()).expect("a signed frame");
+        let frame: nucleus_cred_protocol::StreamRequest =
+            serde_json::from_str(payload).expect("a stream open");
+        assert_eq!(frame.method, nucleus_cred_protocol::EgressMethod::Get);
+        assert_eq!(frame.path, "org/repo.git/info/refs");
+        assert_eq!(frame.query.as_deref(), Some("service=git-upload-pack"));
+        assert_eq!(frame.operation, "WebFetch");
+        assert_eq!(frame.version, nucleus_cred_protocol::egress::OPEN_VERSION);
+        assert_eq!(
+            frame.headers.get("git-protocol").map(String::as_str),
+            Some("version=2")
+        );
+        for never in ["authorization", "cookie", "host", "connection"] {
+            assert!(!frame.headers.contains_key(never), "{never} was proposed");
+        }
+        assert!(!saw.open_frame.contains("placeholder"));
+    }
+
+    /// A method outside GET and POST, and a query carrying a credential, are
+    /// refused at the door; neither reaches the host.
+    #[tokio::test]
+    async fn the_door_refuses_other_methods_and_credential_queries() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (host, saw) = stand_in_host(dir.path(), HostBehaviour::Serve).await;
+        let door = serve_door(dir.path(), host);
+        let put = workload_raw(
+            &door,
+            "PUT /v1/egress/model-api/x HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+        )
+        .await;
+        assert!(put.starts_with("HTTP/1.1 405"), "{put}");
+        let token = workload_raw(
+            &door,
+            "GET /v1/egress/model-api/org/repo.git/info/refs?service=git-upload-pack&\
+             access_token=abc HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        )
+        .await;
+        assert!(token.starts_with("HTTP/1.1 400"), "{token}");
+        assert!(
+            token.contains("access_token"),
+            "the refusal names it: {token}"
+        );
+        assert!(saw.lock().expect("saw").open_frame.is_empty());
     }
 
     fn mebibyte() -> Vec<u8> {

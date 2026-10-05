@@ -181,6 +181,7 @@ async fn inspect(
         body_sha256: Sha256::digest(nonce.as_bytes()).into(),
         body_bytes: u64::try_from(nonce.len())?,
         call_charge_micro_usd: Some(CALL_CHARGE),
+        request_headers: Default::default(),
     };
     ensure!(
         authorization.authorization.effect_sha256 == hex::encode(intended.digest()?)

@@ -232,7 +232,10 @@ pub struct PerformReply {
     pub body: Vec<u8>,
 }
 
+pub mod egress;
 pub mod stream;
+
+pub use egress::EgressMethod;
 
 /// A request that the HOST perform a call whose body and reply are STREAMED.
 ///
@@ -280,11 +283,32 @@ pub struct StreamRequest {
     pub justification: String,
     /// Unique per stream. The host refuses one it has already seen.
     pub nonce: String,
+    /// [`egress::OPEN_VERSION`]. Required: a frame without it is version 1,
+    /// which a host refuses by name (`egress::OpenProbe`) rather than guess
+    /// what an older guest meant.
+    pub version: u32,
+    /// The HTTP method the host performs. Required and closed (ADR 0007 B-3):
+    /// see [`EgressMethod`].
+    pub method: EgressMethod,
     /// Path beneath the upstream's configured base.
     pub path: String,
-    /// The body's media type, forwarded as `content-type`. Guest-chosen, so
-    /// the host counts it as upload bytes like the path.
+    /// The query, without its `?`, held to the one rule guest and host share
+    /// (`nucleus_spec::workload_egress::check_query`). `None` sends none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// The body's media type, forwarded as `content-type` on a method that
+    /// carries a body. Guest-chosen, so the host counts it as upload bytes like
+    /// the path.
     pub content_type: String,
+    /// Request headers the guest PROPOSES, lower-case name to value.
+    ///
+    /// A proposal, not an instruction: the host forwards only names the
+    /// operator's registry allows for this upstream, and never one that could
+    /// carry what the host injects
+    /// (`nucleus_spec::workload_egress::guest_may_propose_header`). What it
+    /// drops it counts in the call's audit record.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
 }
 
 fn zero_approval_wait(seconds: &u64) -> bool {
@@ -429,20 +453,24 @@ mod tests {
     fn declarations() -> String {
         // Every source file in the crate: the stream framing is wire format
         // the guest links too, so it is held to the same scan.
-        [include_str!("lib.rs"), include_str!("stream.rs")]
-            .iter()
-            .flat_map(|src| {
-                src.split("#[cfg(test)]")
-                    .next()
-                    .expect("source before tests")
-                    .lines()
-                    .filter(|l| {
-                        let t = l.trim_start();
-                        !t.starts_with("///") && !t.starts_with("//!") && !t.starts_with("//")
-                    })
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+        [
+            include_str!("lib.rs"),
+            include_str!("stream.rs"),
+            include_str!("egress.rs"),
+        ]
+        .iter()
+        .flat_map(|src| {
+            src.split("#[cfg(test)]")
+                .next()
+                .expect("source before tests")
+                .lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    !t.starts_with("///") && !t.starts_with("//!") && !t.starts_with("//")
+                })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     #[test]
@@ -478,9 +506,39 @@ mod tests {
             target: "model-api".into(),
             justification: "credentialed egress".into(),
             nonce: "n-1".into(),
+            version: egress::OPEN_VERSION,
+            method: EgressMethod::Post,
             path: "/v1/complete".into(),
+            query: None,
             content_type: "application/json".into(),
+            headers: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The method is required: a frame without one is not read as the POST
+    /// every older frame meant (B-3). The query and headers are optional and
+    /// absent from the wire when empty.
+    #[test]
+    fn a_stream_open_must_name_its_method_and_version() {
+        let mut json: serde_json::Value = serde_json::to_value(stream_request()).unwrap();
+        assert!(json.get("query").is_none() && json.get("headers").is_none());
+        for field in ["method", "version"] {
+            let mut without = json.clone();
+            without.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<StreamRequest>(without).is_err(),
+                "a frame without {field} was accepted"
+            );
+        }
+        json["method"] = "PUT".into();
+        assert!(serde_json::from_value::<StreamRequest>(json.clone()).is_err());
+        json["method"] = "GET".into();
+        json["query"] = "service=x".into();
+        json["headers"] = serde_json::json!({"accept": "*/*"});
+        let read: StreamRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(read.method, EgressMethod::Get);
+        assert_eq!(read.query.as_deref(), Some("service=x"));
+        assert_eq!(read.headers["accept"], "*/*");
     }
 
     /// **The three asks cannot be read as one another**, whichever order a

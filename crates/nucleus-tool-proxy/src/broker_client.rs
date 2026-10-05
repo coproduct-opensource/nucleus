@@ -682,8 +682,12 @@ mod tests {
             target: "model-api".to_string(),
             justification: "routine".to_string(),
             nonce: "n-1".to_string(),
+            version: nucleus_cred_protocol::egress::OPEN_VERSION,
+            method: nucleus_cred_protocol::EgressMethod::Post,
             path: "/complete".to_string(),
+            query: None,
             content_type: "application/json".to_string(),
+            headers: std::collections::BTreeMap::new(),
         };
         let bundle = || {
             nucleus_ifc_kernel::discharge::test_helpers::bundle_for(
