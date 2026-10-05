@@ -210,6 +210,25 @@ pub enum GuestCapability {
     /// which the host refuses above 256 KiB and which cannot carry a streamed
     /// (server-sent-event) reply, so a model call from the pod fails or stalls.
     StreamingEgress,
+    /// The guest's egress adapter (`nucleus-egress-http`) takes `--upstream`
+    /// repeatedly, plus `--export VAR=NAME` and `--placeholder VAR`, and gives
+    /// each declared upstream its own loopback origin (#3211).
+    /// `nucleus run --agent … --egress` starts the agent under the adapter with
+    /// exactly those flags (#3212). An older adapter accepts one `--upstream`
+    /// and neither of the others, so the agent never starts.
+    /// [`Demand::When`]`(`[`GuestUse::AgentEgress`]`)`: only a run that
+    /// declares an upstream depends on it.
+    EgressAdapterUpstreams,
+}
+
+/// A use of the guest that depends on capabilities the node does not need for
+/// every pod. A capability whose demand is [`Demand::When`] is checked only
+/// for a caller that names the use (see [`guest_skew_for`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestUse {
+    /// `nucleus run --agent … --egress`: the agent in the pod is started under
+    /// the guest's egress adapter with the upstreams the run declares.
+    AgentEgress,
 }
 
 /// Whether the node refuses a guest that lacks a [`GuestCapability`].
@@ -223,6 +242,10 @@ pub enum Demand {
     Required,
     /// The node uses it when present and runs without it. Never refuses a guest.
     Optional,
+    /// Required for this use only. Every other caller treats it as
+    /// [`Demand::Optional`], so a guest without it still serves every pod that
+    /// does not make this use.
+    When(GuestUse),
 }
 
 /// Which published release first carried a [`GuestCapability`].
@@ -238,7 +261,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 9] = [
+    pub const ALL: [GuestCapability; 10] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -248,6 +271,7 @@ impl GuestCapability {
         GuestCapability::McpBridge,
         GuestCapability::HostDecideShadow,
         GuestCapability::StreamingEgress,
+        GuestCapability::EgressAdapterUpstreams,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -264,6 +288,8 @@ impl GuestCapability {
             | GuestCapability::StreamingEgress => Demand::Required,
             // Shadow mode: nothing the node does depends on the guest asking.
             GuestCapability::HostDecideShadow => Demand::Optional,
+            // Only the run that starts its agent under the adapter needs it.
+            GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
         }
     }
 
@@ -287,6 +313,8 @@ impl GuestCapability {
             // the tool-proxy's shadow client (its "host-decide shadow" log
             // string is in the image).
             GuestCapability::HostDecideShadow => FirstShipped::Release("2.3.0"),
+            // #3211 is not in v2.3.0 (the 2.3.0 adapter takes one `--upstream`).
+            GuestCapability::EgressAdapterUpstreams => FirstShipped::NotYet,
         }
     }
 
@@ -337,6 +365,12 @@ impl GuestCapability {
                  host in bounded, metered chunks; an older proxy sends the whole call in one \
                  perform frame, which the host refuses above 256 KiB and which cannot carry a \
                  streamed reply"
+            }
+            GuestCapability::EgressAdapterUpstreams => {
+                "#3211 lets the guest's egress adapter (nucleus-egress-http) serve several \
+                 upstreams and take --export and --placeholder, which `nucleus run --egress` \
+                 starts the agent with; an older adapter refuses those flags, so the agent \
+                 never starts"
             }
         }
     }
@@ -400,15 +434,25 @@ impl std::fmt::Display for GuestSkew {
 
 /// Whether the guest artifacts of `version` meet every [`GuestCapability`] the
 /// node [requires](Demand::Required). An [optional](Demand::Optional) one is
-/// never a reason to refuse a guest.
+/// never a reason to refuse a guest, and neither is one demanded only
+/// [`When`](Demand::When) a use this caller does not make.
 pub fn guest_skew(version: &str) -> Result<(), GuestSkew> {
-    skew_against(version, GuestCapability::first_shipped)
+    guest_skew_for(version, &[])
 }
 
-/// [`guest_skew`] with the table as a parameter, so the ordering rules can be
-/// tested on releases the real table does not (yet) contain.
+/// [`guest_skew`] for a caller that makes `uses` of the guest: a capability
+/// demanded [`When`](Demand::When) one of them is required as well. The same
+/// decider, so a refusal for a use names its cause the way every other skew
+/// refusal does.
+pub fn guest_skew_for(version: &str, uses: &[GuestUse]) -> Result<(), GuestSkew> {
+    skew_against(version, uses, GuestCapability::first_shipped)
+}
+
+/// [`guest_skew_for`] with the table as a parameter, so the ordering rules can
+/// be tested on releases the real table does not (yet) contain.
 fn skew_against(
     version: &str,
+    uses: &[GuestUse],
     first_shipped: impl Fn(GuestCapability) -> FirstShipped,
 ) -> Result<(), GuestSkew> {
     let Some(found) = parse_release(version) else {
@@ -420,7 +464,8 @@ fn skew_against(
     for cap in GuestCapability::ALL {
         match cap.demand() {
             Demand::Required => {}
-            Demand::Optional => continue,
+            Demand::When(used) if uses.contains(&used) => {}
+            Demand::Optional | Demand::When(_) => continue,
         }
         let has = match first_shipped(cap) {
             // An unparseable table entry is a table nobody can check against:
@@ -679,7 +724,8 @@ mod tests {
                 GuestCapability::WorkloadDoor => GuestCapability::McpBridge,
                 GuestCapability::McpBridge => GuestCapability::StreamingEgress,
                 GuestCapability::StreamingEgress => GuestCapability::HostDecideShadow,
-                GuestCapability::HostDecideShadow => GuestCapability::CaBundle,
+                GuestCapability::HostDecideShadow => GuestCapability::EgressAdapterUpstreams,
+                GuestCapability::EgressAdapterUpstreams => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
@@ -719,16 +765,16 @@ mod tests {
     fn an_optional_capability_never_refuses_a_guest() {
         let all_but_shadow = |c: GuestCapability| match c.demand() {
             Demand::Required => FirstShipped::Release("2.2.0"),
-            Demand::Optional => FirstShipped::NotYet,
+            Demand::Optional | Demand::When(_) => FirstShipped::NotYet,
         };
         assert_eq!(GuestCapability::HostDecideShadow.demand(), Demand::Optional);
-        assert_eq!(skew_against("2.2.0", all_but_shadow), Ok(()));
+        assert_eq!(skew_against("2.2.0", &[], all_but_shadow), Ok(()));
         let all_but_door = |c: GuestCapability| match c {
             GuestCapability::WorkloadDoor => FirstShipped::NotYet,
             _ => FirstShipped::Release("2.2.0"),
         };
         assert_eq!(
-            skew_against("2.2.0", all_but_door),
+            skew_against("2.2.0", &[], all_but_door),
             Err(GuestSkew::Lacks {
                 release: "2.2.0".to_string(),
                 missing: vec![GuestCapability::WorkloadDoor],
@@ -738,6 +784,43 @@ mod tests {
         if let Err(GuestSkew::Lacks { missing, .. }) = guest_skew(GUEST_RELEASE) {
             assert!(!missing.contains(&GuestCapability::HostDecideShadow));
         }
+    }
+
+    /// A capability demanded `When` a use is required by the caller that makes
+    /// the use and by no other. The pinned release serves every pod, and is
+    /// refused by name only for a run that starts its agent under the egress
+    /// adapter (#3212), which the pin does not yet ship (#3211).
+    #[test]
+    fn a_capability_for_one_use_refuses_only_that_use() {
+        assert_eq!(
+            GuestCapability::EgressAdapterUpstreams.demand(),
+            Demand::When(GuestUse::AgentEgress)
+        );
+        assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
+        let skew = guest_skew_for(GUEST_RELEASE, &[GuestUse::AgentEgress])
+            .expect_err("the pinned adapter takes one --upstream and no --export");
+        assert_eq!(
+            skew,
+            GuestSkew::Lacks {
+                release: GUEST_RELEASE.to_string(),
+                missing: vec![GuestCapability::EgressAdapterUpstreams],
+            }
+        );
+        let msg = skew.to_string();
+        for needle in ["#3211", "in no published release yet", "build-rootfs.sh"] {
+            assert!(msg.contains(needle), "missing {needle:?} in: {msg}");
+        }
+        // Once a release carries it, the use is served by that release.
+        let shipped = |c: GuestCapability| match c {
+            GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
+            _ => FirstShipped::Release("2.2.0"),
+        };
+        assert!(skew_against("2.3.0", &[GuestUse::AgentEgress], shipped).is_err());
+        assert_eq!(
+            skew_against("2.4.0", &[GuestUse::AgentEgress], shipped),
+            Ok(())
+        );
+        assert_eq!(skew_against("2.3.0", &[], shipped), Ok(()));
     }
 
     /// A table in which everything shipped by 2.2.0, to test the ordering rules
@@ -753,7 +836,7 @@ mod tests {
     fn a_prerelease_of_an_acceptable_version_is_accepted() {
         for rc in ["2.2.0-rc.1", "v2.2.0-rc.1", "2.2.0-rc1", "2.2.0+build.7"] {
             assert_eq!(parse_release(rc), Some((2, 2, 0)), "{rc} core");
-            assert_eq!(skew_against(rc, all_by_2_2_0), Ok(()), "{rc}");
+            assert_eq!(skew_against(rc, &[], all_by_2_2_0), Ok(()), "{rc}");
         }
     }
 
@@ -762,7 +845,7 @@ mod tests {
     #[test]
     fn a_prerelease_of_a_refused_version_is_still_refused() {
         for rc in ["2.1.0-rc.1", "2.0.2-rc.1", "1.1.0-rc.1", "v2.0.0-beta"] {
-            assert!(skew_against(rc, all_by_2_2_0).is_err(), "{rc}");
+            assert!(skew_against(rc, &[], all_by_2_2_0).is_err(), "{rc}");
             assert!(guest_skew(rc).is_err(), "{rc}");
         }
         // 2.3.0 raised the floor past 2.2.0: a prerelease of 2.2.0 is refused by
@@ -778,7 +861,7 @@ mod tests {
     fn an_unparseable_release_is_refused_rather_than_ordered_as_zero() {
         for bad in ["", "2.1", "2.1.0.1", "latest", "v2.x.0"] {
             assert_eq!(
-                skew_against(bad, all_by_2_2_0),
+                skew_against(bad, &[], all_by_2_2_0),
                 Err(GuestSkew::Unorderable {
                     release: bad.to_string()
                 }),
@@ -791,7 +874,7 @@ mod tests {
     #[test]
     fn an_unparseable_table_entry_is_missing_not_present() {
         let unparseable = |_: GuestCapability| FirstShipped::Release("2.x");
-        assert!(skew_against("9.9.9", unparseable).is_err());
+        assert!(skew_against("9.9.9", &[], unparseable).is_err());
     }
 
     /// A `v` prefix is what a git tag looks like, and it must order the same as
@@ -799,7 +882,7 @@ mod tests {
     #[test]
     fn a_tag_style_version_parses() {
         assert_eq!(parse_release("v2.2.0"), parse_release("2.2.0"));
-        assert_eq!(skew_against("v2.2.0", all_by_2_2_0), Ok(()));
+        assert_eq!(skew_against("v2.2.0", &[], all_by_2_2_0), Ok(()));
     }
 
     #[test]

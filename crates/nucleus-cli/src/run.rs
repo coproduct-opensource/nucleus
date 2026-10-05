@@ -26,6 +26,7 @@ use crate::profiles;
 mod agent_process;
 mod apple_host;
 mod pod_agent;
+mod pod_egress;
 mod pod_session;
 
 /// Resolved configuration from args, config file, and Keychain
@@ -341,6 +342,40 @@ pub struct RunArgs {
     /// Feed the output into `nucleus observe` to synthesize a minimal policy.
     #[arg(long, env = "NUCLEUS_KERNEL_TRACE")]
     pub kernel_trace: Option<PathBuf>,
+
+    /// A credentialed upstream (an `[[upstream]]` name in the node's registry)
+    /// the host performs calls to for the agent in the pod. Repeatable. None
+    /// by default: without this flag nothing reaches any upstream.
+    #[arg(long = "egress", value_name = "UPSTREAM", requires = "upstreams",
+          conflicts_with_all = ["local", "hook"])]
+    pub egress: Vec<String>,
+
+    /// The node's upstream registry (its `--upstreams` file), read for the
+    /// entries `--egress` names. Never sent; only their projections are.
+    #[arg(long, env = "NUCLEUS_UPSTREAMS", value_name = "PATH")]
+    pub upstreams: Option<PathBuf>,
+
+    /// Give the agent an upstream's loopback URL under its own variable:
+    /// `VAR=UPSTREAM`. Repeatable.
+    #[arg(
+        long = "egress-export",
+        value_name = "VAR=UPSTREAM",
+        requires = "egress"
+    )]
+    pub egress_exports: Vec<String>,
+
+    /// Set `VAR` to a fixed non-secret placeholder in the agent's environment,
+    /// for an agent that will not start without a credential variable. The
+    /// host injects the real credential. Repeatable.
+    #[arg(long = "egress-placeholder", value_name = "VAR", requires = "egress")]
+    pub egress_placeholders: Vec<String>,
+
+    /// The guest the node boots, checked for what `--egress` needs before
+    /// anything starts: a release version, or `local` for a guest built from
+    /// this checkout (`setup --artifacts local`). Default: the pinned release
+    /// `setup` installs.
+    #[arg(long, value_name = "VERSION|local", requires = "egress")]
+    pub guest_release: Option<String>,
 }
 
 /// Execute the run command
@@ -496,6 +531,13 @@ pub(crate) async fn dispatch(
     }
 
     refuse_host_only_flags(args)?;
+    // Before a host or a pod is started: a declared upstream this policy can
+    // never call is a contradiction the operator should hear now, not from the
+    // agent's first model call inside the pod (#3218).
+    pod_egress::refuse_unreachable(&args.egress, policy, &policy_source(args))?;
+    // And a guest that cannot start the agent the way --egress does (#3075's
+    // table, demanded only for this use).
+    pod_egress::refuse_guest_skew(&args.egress, args.guest_release.as_deref())?;
     if let Some(path) = &args.apple_host_config {
         let (resolved, host) = apple_host::ready(path, args).await?;
         run_in_pod(
@@ -513,6 +555,19 @@ pub(crate) async fn dispatch(
             anyhow!("node config required for Firecracker mode. Use --local for CI.")
         })?;
         run_in_pod(args, &agent, &resolved, policy, work_dir, prompt, None).await
+    }
+}
+
+/// Where the run's policy came from, as a refusal names it.
+fn policy_source(args: &RunArgs) -> String {
+    if let Some(grant) = &args.grant {
+        format!("the sealed grant {}", grant.display())
+    } else if args.goal.is_some() {
+        format!("the --goal grant (under --ceiling {})", args.ceiling)
+    } else if let Some(config) = &args.config {
+        format!("the policy in {config}")
+    } else {
+        format!("profile '{}'", args.profile)
     }
 }
 
@@ -954,13 +1009,24 @@ async fn run_in_pod(
         )
     })?;
     let workload = pod_agent::workload(agent, &guard, policy, args.model.as_deref(), prompt)?;
-    let pod_spec = build_pod_spec(
+    let egress = pod_egress::declare(&pod_egress::EgressFlags {
+        upstreams: &args.egress,
+        registry: args.upstreams.as_deref(),
+        exports: &args.egress_exports,
+        placeholders: &args.egress_placeholders,
+    })?;
+    let (workload, credentialed_egress) = match egress {
+        Some(egress) => egress.wrap(workload),
+        None => (workload, Vec::new()),
+    };
+    let mut pod_spec = build_pod_spec(
         args,
         policy,
         &resolved.kernel_path,
         &resolved.rootfs_path,
         Some(workload),
     )?;
+    pod_spec.spec.credentialed_egress = credentialed_egress;
 
     info!(
         agent = agent.program(),
@@ -1716,6 +1782,105 @@ mod tests {
             assert!(msg.contains("--unsandboxed"), "{mode}: {msg}");
             assert!(msg.contains("my-agent"), "{mode}: {msg}");
         }
+    }
+
+    /// `--egress` is a pod declaration: it needs the registry, it means nothing
+    /// to a host agent, and its companions need it.
+    #[test]
+    fn egress_flags_parse_only_as_a_pod_declaration() {
+        use clap::Parser as _;
+        #[derive(clap::Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let ok = parse(&[
+            "run",
+            "--egress",
+            "model-api",
+            "--upstreams",
+            "/etc/nucleus/upstreams.toml",
+            "--egress-export",
+            "HARNESS_BASE_URL=model-api",
+            "--egress-placeholder",
+            "HARNESS_TOKEN",
+            "t",
+        ]);
+        assert_eq!(ok.egress, ["model-api"]);
+        for argv in [
+            vec!["run", "--egress", "model-api", "t"],
+            vec!["run", "--egress-export", "V=model-api", "t"],
+            vec!["run", "--egress-placeholder", "V", "t"],
+            vec!["run", "--guest-release", "local", "t"],
+            vec![
+                "run",
+                "--local",
+                "--egress",
+                "model-api",
+                "--upstreams",
+                "/r.toml",
+                "t",
+            ],
+        ] {
+            assert!(Parse::try_parse_from(&argv).is_err(), "{argv:?}");
+        }
+    }
+
+    /// #3218: `--egress` under a profile that can never make the call is
+    /// refused by `dispatch` before a host or a pod is started. Without the
+    /// check this run gets as far as the node configuration instead (no node
+    /// is configured here), which is the point the pod would be created from.
+    ///
+    /// The same for a guest that cannot start the agent under the egress
+    /// adapter the way `--egress` does (the `GuestCapability` table): the
+    /// pinned release is refused by name for `--egress`, and only for it.
+    #[tokio::test]
+    async fn egress_under_a_profile_that_cannot_call_is_refused_before_any_pod() {
+        let dir = std::env::temp_dir();
+        let run = |profile: &'static str, extra: &'static [&'static str]| {
+            let dir = dir.clone();
+            async move {
+                let mut argv = vec!["run", "--agent", "a", "--profile", profile];
+                argv.extend_from_slice(extra);
+                argv.push("t");
+                let args = parse(&argv);
+                let policy = profiles::resolve(profile).expect("canonical profile");
+                dispatch(&args, None, &policy, &dir, "t")
+                    .await
+                    .expect_err("no node is configured")
+                    .to_string()
+            }
+        };
+        const EGRESS: &[&str] = &["--egress", "model-api", "--upstreams", "/r.toml"];
+        const EGRESS_LOCAL_GUEST: &[&str] = &[
+            "--egress",
+            "model-api",
+            "--upstreams",
+            "/r.toml",
+            "--guest-release",
+            "local",
+        ];
+
+        let refused = run("codegen", EGRESS_LOCAL_GUEST).await;
+        assert!(refused.contains("profile 'codegen'"), "{refused}");
+        assert!(refused.contains("safe-pr-fixer"), "{refused}");
+
+        // The profile that grants the call, on the pinned guest: refused by
+        // name for the adapter the pin does not ship.
+        let skewed = run("safe-pr-fixer", EGRESS).await;
+        assert!(
+            skewed.contains("the pinned guest release does not ship EgressAdapterUpstreams"),
+            "{skewed}"
+        );
+        assert!(skewed.contains("#3211"), "{skewed}");
+
+        // Both checks pass: the run stops only at the missing node, so the
+        // refusals above are the checks', not this.
+        let admitted = run("safe-pr-fixer", EGRESS_LOCAL_GUEST).await;
+        assert!(admitted.contains("node config required"), "{admitted}");
+        // A run with no --egress is untouched by either check on the pin.
+        let plain = run("codegen", &[]).await;
+        assert!(plain.contains("node config required"), "{plain}");
     }
 
     /// The flags that only mean something for a host agent are refused for a

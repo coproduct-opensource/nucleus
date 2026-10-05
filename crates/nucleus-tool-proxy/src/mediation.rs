@@ -411,7 +411,11 @@ pub(crate) fn decide_for_broker(
     graph: &FlowGraph,
     subject: &str,
 ) -> Result<BrokerSubmission, ApiError> {
-    let operation = Operation::WebFetch;
+    // The term is the one `nucleus run --egress` checks the run's policy
+    // against before a pod exists (#3218), so an early refusal there and a
+    // denial here cannot disagree about which grant a call needs (G-1).
+    let term = nucleus_spec::CredentialedEgressSpec::call_term(subject);
+    let operation = term.operation();
     let MediationEnv {
         sink,
         actor,
@@ -419,8 +423,7 @@ pub(crate) fn decide_for_broker(
         grants: _,
         shadow,
     } = env;
-    let (decision, _token) =
-        kernel.decide_term_with_flow(ActionTerm::from_operation(operation, subject), Some(graph));
+    let (decision, _token) = kernel.decide_term_with_flow(term, Some(graph));
     shadow.submit(kernel, graph, operation, subject, &decision.verdict);
     crate::verdict_sink::record_kernel_decision(
         sink,
