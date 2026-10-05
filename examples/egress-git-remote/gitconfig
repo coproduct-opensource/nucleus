@@ -1,0 +1,13 @@
+# Guest-side git configuration for a remote reached through nucleus-egress-http.
+#
+# Replace ORIGIN with the value of NUCLEUS_EGRESS_GIT_REMOTE_URL that the
+# adapter gives its managed command (http://127.0.0.1:<port>). Nothing here is a
+# credential, and nothing here should become one: the host injects the token.
+
+[url "ORIGIN/"]
+	insteadOf = https://forge.example/
+
+[credential]
+	# The remote never sees a request without the host's credential; a prompt
+	# would mean a misconfiguration, so fail instead of asking.
+	interactive = false
