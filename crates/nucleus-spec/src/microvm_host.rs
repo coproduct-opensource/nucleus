@@ -299,7 +299,9 @@ pub const RELEASE_SOURCE_ARCHIVE: &str = "nucleus-source.tar";
 
 /// The node setting that makes it put `nucleus.host_spec=required` on the guest
 /// command line, so the guest runs the spec the host admitted and refuses one
-/// baked into its rootfs (#3205). Every host recipe sets it to `true`.
+/// baked into its rootfs (#3205). The node enforces by default on Firecracker;
+/// every host recipe, and the `node.env` that `nucleus setup` writes, still sets
+/// it to `true` explicitly.
 pub const HOST_ENFORCEMENT_ENV: &str = "NUCLEUS_NODE_BROKER_ENFORCING";
 
 // ── the input manifest ───────────────────────────────────────────────

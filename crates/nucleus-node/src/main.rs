@@ -337,9 +337,19 @@ struct Args {
     /// Off by default; listen mode preserves legacy credential delivery.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_LISTEN", default_value_t = false)]
     broker_listen: bool,
-    /// Withhold spec credentials; requires Firecracker and compatible guest-init.
-    #[arg(long, env = "NUCLEUS_NODE_BROKER_ENFORCING", default_value_t = false)]
-    broker_enforcing: bool,
+    /// Require guests to run the admitted spec (`nucleus.host_spec=required`)
+    /// and withhold spec credentials. Unset: on for Firecracker, off for other
+    /// drivers. `false` on Firecracker is a logged opt-out; `true` on any other
+    /// driver is refused (#3205, `broker_rollout::resolve_host_spec_enforcement`).
+    #[arg(
+        long,
+        env = "NUCLEUS_NODE_BROKER_ENFORCING",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        action = clap::ArgAction::Set
+    )]
+    broker_enforcing: Option<bool>,
     /// Vsock port the guest uses to reach the credential broker.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
     broker_vsock_port: u32,
@@ -483,9 +493,10 @@ struct NodeState {
     /// Whether pods should be served a credential broker socket.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_listen: bool,
-    /// Whether the broker should also withhold credentials from the guest spec.
+    /// Whether guests must run the admitted spec, with credentials withheld from
+    /// it. Resolved once at startup from the driver and the operator's request.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    broker_enforcing: bool,
+    broker_enforcing: broker_rollout::HostSpecEnforcement,
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
@@ -657,7 +668,20 @@ async fn main() -> Result<(), ApiError> {
     let _tracing_guard = boot_trace::init_tracing().map_err(ApiError::Driver)?;
 
     let args = Args::parse();
-    broker_rollout::require_supported_driver(args.broker_enforcing, &args.driver)?;
+    let host_spec_enforcement =
+        broker_rollout::resolve_host_spec_enforcement(&args.driver, args.broker_enforcing)?;
+    match host_spec_enforcement.weakened_posture_warning() {
+        Some(warning) => tracing::warn!(
+            driver = ?args.driver,
+            host_spec_enforcement = ?host_spec_enforcement,
+            "{warning}"
+        ),
+        None => tracing::info!(
+            driver = ?args.driver,
+            host_spec_enforcement = ?host_spec_enforcement,
+            "host-spec enforcement resolved"
+        ),
+    }
     tokio::fs::create_dir_all(&args.state_dir).await?;
     let _state_lock = state_lock::acquire(&args.state_dir)?;
     #[cfg(feature = "local-driver")]
@@ -856,7 +880,7 @@ async fn main() -> Result<(), ApiError> {
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,
         broker_listen: args.broker_listen,
-        broker_enforcing: args.broker_enforcing,
+        broker_enforcing: host_spec_enforcement,
         broker_vsock_port: args.broker_vsock_port,
         egress_stream_limits,
         staging_budget: broker_stream::staging_budget::Budget::new(args.egress_staging_max_bytes)
@@ -2050,7 +2074,7 @@ async fn spawn_firecracker_pod(
                     audit.map(audit_sink::credentials::AuditGrant::target),
                     jail_layout.as_ref(),
                 )
-                .requiring_host_spec(state.broker_enforcing);
+                .requiring_host_spec(state.broker_enforcing.is_required());
                 let config_json = serde_json::to_vec_pretty(&config)
                     .map_err(|err| ApiError::Driver(format!("config serialize failed: {err}")))?;
                 // The host copy at `config_path` stays for operators to inspect; the

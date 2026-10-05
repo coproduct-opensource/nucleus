@@ -113,7 +113,7 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
 async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let mut st = state(&dir);
-    st.broker_enforcing = true;
+    st.broker_enforcing = crate::broker_rollout::HostSpecEnforcement::Required;
     let manager =
         crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
             .unwrap();
@@ -227,7 +227,13 @@ async fn enforced_host_spec_withholds_values_but_preserves_the_workload() {
     for enforcing in [false, true] {
         let dir = tempfile::tempdir_in("/tmp").unwrap();
         let mut st = state(&dir);
-        st.broker_enforcing = enforcing;
+        st.broker_enforcing = if enforcing {
+            crate::broker_rollout::HostSpecEnforcement::Required
+        } else {
+            crate::broker_rollout::HostSpecEnforcement::Disabled(
+                crate::broker_rollout::EnforcementDisabled::OperatorOptOut,
+            )
+        };
         st.identity_manager = Some(
             crate::identity::IdentityManager::new(
                 "test.local",

@@ -857,6 +857,18 @@ with independently verified host journals, followed by the two full harness
 journeys. Secrets deliberately baked into an image or placed in arbitrary
 workload arguments/files are not scrubbed by `credentials.env` preparation.
 
+**2026-10-05 (#3205, owner decision):** enforcement is now the Firecracker
+driver's default. The node resolves `--broker-enforcing` once, from the driver
+and the operator's value (unset, `true` or `false`), into
+`broker_rollout::HostSpecEnforcement`:
+
+- **Firecracker:** unset or `true` enforces. An explicit `false` is a weakened
+  posture, logged at warn on startup.
+- **Other drivers:** unset or `false` does not enforce. `true` is still refused
+  at startup.
+
+`nucleus setup` writes the setting explicitly into `node.env`.
+
 ### Real workload broker access (2026-10-04)
 
 A UID-1000 workload in the enforcing Firecracker guest could not connect to its

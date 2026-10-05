@@ -425,6 +425,19 @@ jobs:
           # release artifacts here would test a build nobody is proposing.
           nucleus setup --skip-verify --artifacts local
 
+      - name: Opt this node out of host-spec enforcement, so the baked probe pod runs
+        if: steps.scope.outputs.relevant == 'true'
+        run: |
+          # The probes below are the BAKED pod.yaml's workload (POD_SPEC above).
+          # `verify --tier2` admits its own spec, which has no workload. Host-spec
+          # enforcement is the Firecracker default and `nucleus setup` writes it
+          # (#3205, owner decision 2026-10-05). Under it the guest runs the
+          # admitted spec, so the probes would never run. This lane opts out on
+          # purpose: the last assignment in node.env wins, and the node logs the
+          # weakened posture at warn. The enforcing path is covered on a real guest
+          # by `xtask host-evidence-live` below.
+          sudo tee -a /etc/nucleus/node.env >/dev/null <<< "NUCLEUS_NODE_BROKER_ENFORCING=false"
+
       - name: Plant a canary in the NODE's environment
         if: steps.scope.outputs.relevant == 'true'
         shell: bash

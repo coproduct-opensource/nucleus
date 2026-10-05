@@ -423,7 +423,7 @@ pub(crate) async fn start_broker_for_pod(
         crate::broker_rollout::BrokerTransport::None
     };
     let rollout = crate::broker_rollout::decide_rollout(
-        state.broker_enforcing,
+        state.broker_enforcing.is_required(),
         state.broker_listen,
         transport,
     );

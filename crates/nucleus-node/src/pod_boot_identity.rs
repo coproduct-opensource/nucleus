@@ -277,7 +277,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         }
 
         let (guest_spec, withheld) =
-            crate::cred_split::guest_spec_yaml(spec, state.broker_enforcing)
+            crate::cred_split::guest_spec_yaml(spec, state.broker_enforcing.is_required())
                 .map_err(|e| ApiError::Driver(format!("guest spec serialization failed: {e}")))?;
         let bridge = workload_api_vsock::WorkloadApiVsockBridge::start(
             vsock_path,
