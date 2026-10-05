@@ -10,14 +10,19 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 [dependencies]
 axum = { workspace = true }
 clap = { workspace = true }
-tokio = { workspace = true, features = ["process", "signal", "rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["process", "signal", "rt-multi-thread", "macros", "net", "time"] }
 reqwest = { workspace = true, features = ["rustls-no-provider", "stream"] }
 rustls = { workspace = true }
+# `workload_egress`: the env key and route the runtime writes, read here.
+nucleus-spec = { path = "../nucleus-spec" }
 
 [dev-dependencies]
+# The pod's real egress ledger, metering the composed test's stand-in host.
+portcullis = { path = "../portcullis", default-features = false }
 nix = { version = "0.31", default-features = false, features = ["process"] }
 tempfile = { workspace = true }
 tokio-stream = "0.1"
+tokio = { workspace = true, features = ["io-util"] }
 tower = { version = "0.5", features = ["util"] }
 
 [lints]

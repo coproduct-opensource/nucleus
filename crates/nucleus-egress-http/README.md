@@ -6,22 +6,42 @@ It is a separate executable and package from the privileged tool proxy.
 
 ```sh
 cargo build -p nucleus-egress-http
-nucleus-egress-http --door unix:///run/nucleus/workload.sock \
-  --upstream model-api --listen 127.0.0.1:18081 -- /opt/harness/bin/agent task
+nucleus-egress-http --upstream model-api \
+  --export HARNESS_BASE_URL=model-api --placeholder HARNESS_TOKEN \
+  -- /opt/harness/bin/agent task
 ```
 
-The listener binds only IPv4 loopback. Its outgoing client is fixed to the
-runtime-provided Unix workload door, with redirects and environment proxies
-disabled. Requests select paths under one operator-registered broker upstream;
-they cannot select a TCP destination or another door route. The adapter holds no
-provider credentials. The door and host broker retain policy and approval
-responsibility. The workload receives the actual local endpoint through
-`NUCLEUS_EGRESS_HTTP_URL`.
+Each `--upstream` must be one the pod declared: the runtime gives the workload
+`NUCLEUS_EGRESS_<NAME>_URL` (a `unix://` URL into the workload door) for every
+credentialed upstream the operator's registry admitted, and the adapter refuses
+any other name by name before the command starts. Each upstream gets its own
+IPv4 loopback listener (an ephemeral port, or `--listen` for a single upstream),
+and the command is told its `http://127.0.0.1:<port>` origin under the same
+`NUCLEUS_EGRESS_<NAME>_URL` key. With exactly one upstream it is also in
+`NUCLEUS_EGRESS_HTTP_URL`. `--export VAR=NAME` writes it under the harness's own
+variable, so nucleus never needs to know that variable's name. `--placeholder
+VAR` sets a fixed non-secret value for a harness that will not start without a
+credential variable. The adapter never forwards it, and the host injects the
+real credential.
 
-The optional child is the declared harness launched inside the existing workload
-containment. The adapter preserves its exit status and stops/reaps the direct
-child on termination; the pod supervisor owns descendant containment and cleanup.
-See the [proxy integration guide](../nucleus-tool-proxy/README.md) for PodSpec
-wiring and approval waiting. The guest layer and release builder include this
-executable explicitly alongside the proxy. When supplying custom rootfs build
-inputs, set `EGRESS_HTTP_BIN` to this binary separately from `PROXY_BIN`.
+Only a process running as the adapter's own uid may connect. The kernel reports
+each loopback socket's owner in `/proc/net/tcp`, and a peer owned by any other
+uid, including root, is dropped. Without that check, the adapter would lend the
+workload's door identity to anything on guest loopback. The door then checks the
+adapter's uid with `SO_PEERCRED`. The adapter refuses to bind where it cannot
+read `/proc/net/tcp`, which means it runs only on Linux.
+
+The outgoing client is fixed to the runtime-provided Unix workload door, with
+redirects and environment proxies disabled. Requests select paths under the
+listener's own upstream. They cannot select a TCP destination, another upstream
+or another door route. The adapter holds no provider credentials. The door and
+host broker keep policy, metering and approval responsibility.
+
+The optional child is the declared harness, launched inside the existing
+workload containment. The adapter preserves its exit status and stops and reaps
+the direct child on termination. The pod supervisor owns descendant containment
+and cleanup. See the [proxy integration guide](../nucleus-tool-proxy/README.md)
+for PodSpec wiring and approval waiting. The guest layer and release builder
+include this executable explicitly alongside the proxy. When supplying custom
+rootfs build inputs, set `EGRESS_HTTP_BIN` to this binary separately from
+`PROXY_BIN`.

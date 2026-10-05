@@ -1,5 +1,6 @@
-//! Unprivileged HTTP compatibility adapter for a single broker upstream.
-//! Only the Unix workload door is reachable; this process never holds credentials.
+//! Unprivileged HTTP compatibility adapter for the pod's declared broker
+//! upstreams. Only the Unix workload door is reachable; this process never
+//! holds credentials, and admits only callers running as its own uid.
 #![cfg_attr(
     not(test),
     deny(
@@ -13,6 +14,7 @@
     )
 )]
 
+use std::collections::BTreeMap;
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -25,19 +27,32 @@ use axum::response::{IntoResponse, Response};
 use clap::Parser;
 
 mod managed;
+mod peer;
+mod plan;
 
 #[derive(Parser)]
-#[command(about = "Expose one credentialed broker upstream to local HTTP clients")]
+#[command(about = "Expose the pod's declared credentialed upstreams to local HTTP clients")]
 struct Args {
     /// Unix workload door supplied by the runtime. TCP destinations are refused.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_URL")]
     door: String,
-    /// Registered upstream name; cannot be overridden by a request.
+    /// An upstream the pod declared (the runtime set `NUCLEUS_EGRESS_<NAME>_URL`
+    /// for it); repeat for several. Each gets its own loopback listener, and a
+    /// request cannot name another.
+    #[arg(long = "upstream", required = true)]
+    upstreams: Vec<String>,
+    /// Local listener for a single upstream, never a wildcard or external
+    /// interface. Default: an ephemeral loopback port per upstream.
     #[arg(long)]
-    upstream: String,
-    /// Local listener, never a wildcard or external interface.
-    #[arg(long, default_value = "127.0.0.1:18081")]
-    listen: Loopback,
+    listen: Option<Loopback>,
+    /// Also give the command an upstream's URL under its own variable:
+    /// `VAR=UPSTREAM`. Repeatable.
+    #[arg(long = "export", value_name = "VAR=UPSTREAM")]
+    exports: Vec<String>,
+    /// Set `VAR` to a fixed non-secret placeholder, for a command that will not
+    /// start without a credential variable. Never forwarded. Repeatable.
+    #[arg(long = "placeholder", value_name = "VAR")]
+    placeholders: Vec<String>,
     /// Total request deadline, including operator approval and streamed response.
     #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..=3600))]
     timeout_seconds: u64,
@@ -59,11 +74,6 @@ impl std::str::FromStr for Loopback {
             return Err("listen address must be IPv4 loopback".into());
         }
         Ok(Self(address))
-    }
-}
-impl Loopback {
-    async fn bind(self) -> std::io::Result<tokio::net::TcpListener> {
-        tokio::net::TcpListener::bind(self.0).await
     }
 }
 
@@ -186,17 +196,38 @@ fn router(adapter: Adapter) -> Router {
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let adapter = Adapter::new(
-        &args.door,
-        args.upstream,
-        Duration::from_secs(args.timeout_seconds),
+    // Only what is UTF-8 can declare an upstream; anything else is inherited
+    // by the command untouched and read by nobody here.
+    let env: BTreeMap<String, String> = std::env::vars_os()
+        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect();
+    let plan = plan::Plan::new(
+        &plan::Flags {
+            door: &args.door,
+            upstreams: &args.upstreams,
+            listen: args.listen.map(|l| l.0),
+            exports: &args.exports,
+            placeholders: &args.placeholders,
+        },
+        &env,
     )?;
-    let listener = args.listen.bind().await?;
-    let address = listener.local_addr()?;
-    println!("NUCLEUS_EGRESS_HTTP_READY http://{}", address);
+    let mut servers = Vec::new();
+    let mut bound = BTreeMap::new();
+    for upstream in plan.upstreams() {
+        let adapter = Adapter::new(
+            &args.door,
+            upstream.clone(),
+            Duration::from_secs(args.timeout_seconds),
+        )?;
+        let listener = peer::AdmittingListener::bind(plan.listen()).await?;
+        let origin = format!("http://{}", listener.local());
+        println!("NUCLEUS_EGRESS_HTTP_READY {upstream} {origin}");
+        bound.insert(upstream.clone(), origin);
+        servers.push((listener, router(adapter)));
+    }
     managed::run(
-        listener,
-        router(adapter),
+        servers,
+        plan.child_env(&bound),
         args.command,
         managed::shutdown()?,
     )

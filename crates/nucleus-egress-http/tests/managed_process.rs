@@ -1,5 +1,9 @@
 //! Exercise the shipped process boundary without sharing a listener with other
 //! unit tests' concurrent fork/exec operations.
+//!
+//! Linux only: the adapter identifies loopback peers through `/proc/net/tcp`
+//! and refuses to bind where there is none (`src/peer.rs`).
+#![cfg(target_os = "linux")]
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
@@ -11,13 +15,17 @@ use std::time::Duration;
 )]
 async fn adapter_preserves_workload_exit_and_releases_its_listener() {
     let directory = tempfile::tempdir().unwrap();
+    let door = format!("unix://{}", directory.path().join("door.sock").display());
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_nucleus-egress-http"));
     command
+        .env_clear()
+        // What the runtime gives a pod that declared `model`.
+        .env(
+            nucleus_spec::workload_egress::url_env("model"),
+            nucleus_spec::workload_egress::upstream_url(&door, "model"),
+        )
         .arg("--door")
-        .arg(format!(
-            "unix://{}",
-            directory.path().join("door.sock").display()
-        ))
+        .arg(&door)
         .args([
             "--upstream",
             "model",
@@ -39,7 +47,7 @@ async fn adapter_preserves_workload_exit_and_releases_its_listener() {
     let ready = lines
         .next()
         .unwrap()
-        .strip_prefix("NUCLEUS_EGRESS_HTTP_READY ")
+        .strip_prefix("NUCLEUS_EGRESS_HTTP_READY model ")
         .unwrap();
     let workload_url = lines.next().unwrap();
     assert_eq!(workload_url, ready);
