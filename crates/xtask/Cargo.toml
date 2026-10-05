@@ -48,7 +48,7 @@ webpki-root-certs = "=1.0.9"
 base64 = { workspace = true }
 # `gates-can-fail` restores a perturbed file on SIGINT/SIGTERM before it exits: a
 # half-perturbed tree left behind by an interrupted run is worse than no check.
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 [dev-dependencies]
 tar = { version = "0.4", default-features = false }
