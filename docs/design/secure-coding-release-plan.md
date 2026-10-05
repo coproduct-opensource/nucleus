@@ -2490,3 +2490,27 @@ merge-group scope parity, the single SVID validator, independent conformance,
 attached boot spans, named netns programs, declared bridge filtering, distinct
 workflow concurrency, and absence of piped installers/tracked build artifacts.
 Coverage's mutation job remains active; final-head CI is still required.
+
+Merge-authentication check at 07:15 UTC: the user gcloud login now fails refresh
+with `Reauthentication failed. cannot prompt during non-interactive execution`.
+The dedicated SPIFFE deployment wrapper still requires an interactive sudo
+password (`sudo -n` refused); this is not evidence that its workload identity
+failed. A request to refresh user authentication is pending. No GCP machines or
+schedulers were changed. GitHub access and local implementation work continue.
+
+Full `cargo deny` checks passed (advisories, bans, licenses and sources). The
+exemplar scoreboard's 16 metrics passed; its lint-adoption baseline was raised
+from 65/97 to the measured 66/98 after separating the HTTP adapter package.
+The integer adoption floor remains 67%. A fresh main fetch has no missing
+upstream commits.
+
+The manually dispatched mutation job `111643425662` ended cancelled at 07:17 UTC
+after reaching its existing 45-minute budget. It began 607 mutations and the log
+records 23 `MISSED` results before cancellation; the machine-report gate also
+failed. This is not a passing mutation result. Manual dispatch runs all six
+configured modules. None of `capability.rs`, `guard.rs`, `lattice.rs`,
+`certificate.rs`, `delegation.rs` or `trust.rs` differs from main on this branch;
+the existing PR/merge-group path scopes that gate to changed lines. No timeout,
+scope, threshold or test exclusion was changed. Coverage in the same run passed
+as recorded above. The full log is retained at
+`/tmp/nucleus-mutation-111643425662.log`.
