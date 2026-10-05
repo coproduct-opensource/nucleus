@@ -37,4 +37,6 @@
 #
 # Exact in both directions, like the repository's other population pins: a site that gets
 # guarded must lower this number in the same change, or the ratchet stops ratcheting.
-UNGUARDED=44
+# 2026-10-05: 44 -> 43. The quickstart guest receipt marker step was replaced
+# by `cargo xtask host-evidence-live`; its unguarded shell pipelines are gone.
+UNGUARDED=43
