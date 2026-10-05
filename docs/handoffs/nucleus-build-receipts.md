@@ -244,14 +244,43 @@ The export contains no workload environment values or private signing material.
 Its trust comes from the authenticated node connection, not the JSON file itself;
 compare the public key with an existing controller pin when one is configured.
 
-Retain this record separately from collected evidence. To form `expected.json`,
-remove `created_at_unix`, add `environment_inputs_sha256` from the independently
-resolved launch environment, and set `issued_not_before_micros` and
-`issued_not_after_micros` to the controller's allowed window. If collecting a
-subset of artifacts, retain only that selection in `artifacts`. Receipt-only
-verification uses an empty artifact map. Admission metadata is not an observation
-of execution or a complete expectation file; it does not supply environment
-identity or choose the controller's freshness policy.
+Retain this record separately from collected evidence. Prepare expectations offline
+using a node public key enrolled through a trusted channel, separate from the
+receipt supplier:
+
+```sh
+nucleus-audit prepare-execution \
+  --admission admission.json \
+  --signer-key-hex ENROLLED_64_HEX_CHARACTER_PUBLIC_KEY \
+  --environment-inputs intended-environment.json \
+  --valid-until-micros CONTROLLER_DEADLINE_UNIX_MICROSECONDS > expected.json
+```
+
+The environment file is a JSON object mapping names to intended values. Include
+all effective inputs: explicitly pin `HOME`, `PATH`, `LANG` and `TZ` in the
+workload spec to avoid inherited defaults, and include any configured egress
+forwarder bindings. Omit `NUCLEUS_TOOL_PROXY_URL` and
+`NUCLEUS_TOOL_PROXY_AUTH_SECRET`, which are per-attempt mediator bindings rather
+than inputs. For a workload with no other inputs, a pinned example is:
+
+```json
+{"HOME":"/work/.home","PATH":"/usr/bin:/bin","LANG":"C","TZ":"UTC"}
+```
+
+Use the same values in `spec.workload.env`. Preparation commits these inputs to a
+hash; it never reads the receipt or emits the environment values. Keep any secret
+input file private. The command checks the admission signer against the supplied
+pin and derives the window's lower bound from the admission timestamp. Choose a
+future deadline that covers both receipt issuance and verification consumption;
+preparation refuses an expired deadline. Admission metadata does not establish
+execution success or choose the controller's freshness policy.
+
+By default, preparation selects no artifacts for receipt-only verification. For a
+bundle, pass `--artifacts selected-artifacts.json`, using the same name/path map
+as collection; every selected entry must match the admission record. The original
+admission file remains unchanged. Controllers can also supply `RecordedExecution`
+JSON directly when they need a different lower bound or already retain all these
+inputs in their attempt store.
 
 ```sh
 nucleus-audit verify-execution --receipt execution-receipt.json --expectations expected.json

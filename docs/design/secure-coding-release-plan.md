@@ -1947,3 +1947,24 @@ and classifies their actual leaves, plus host up/status. All ten commands declar
 the reach band because they make node calls or execute the container client.
 The previously failing gate now reports 66 declared leaves; all four focused
 command grammar tests and scoped xtask Clippy pass.
+
+### Offline execution expectation preparation (2026-10-05)
+
+`nucleus-audit prepare-execution` now replaces manual expectation JSON assembly.
+It reads a separately retained admission record and intended environment map,
+requires an independently enrolled public signer pin, checks that pin against
+admission, and requires an explicit future Unix-microsecond validity deadline.
+The lower bound comes from admission. It never accepts a receipt as input and
+prints only expectations, including the environment hash rather than its values.
+Default artifact selection is empty; an optional name/path selection must match
+admission. Controllers may continue supplying their own RecordedExecution record.
+
+The build-receipt handoff now documents explicit HOME/PATH/LANG/TZ inputs, the
+runtime bindings excluded from input identity, artifact selection and the fact
+that the deadline also applies when consuming a verified claim. Verifier error
+messages retain nested parse causes. The prepared expectations successfully
+verified saved Firecracker execution `c794589e-a11d-419d-ba96-7649b84adf63` using
+the separately retained node pin, with no receipt-derived expectations. Evidence:
+`/tmp/nucleus-package-evidence-pinned-prepared-{expectations,verified}.json`.
+This improves the supported verification workflow; it does not complete either
+model-driven journey or establish fresh-install publication readiness.

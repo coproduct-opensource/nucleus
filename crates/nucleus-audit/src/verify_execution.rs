@@ -9,8 +9,12 @@ use nucleus_ci_verdict::execution::{RecordedExecution, verify_artifacts, verify_
 use nucleus_receipt::Receipt;
 use serde::Deserialize;
 
+mod prepare;
+
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum Command {
+    /// Prepare expectations offline from trusted admission and intended inputs
+    PrepareExecution(prepare::Args),
     /// Verify a collected execution receipt against independently supplied expectations
     VerifyExecution {
         #[arg(long)]
@@ -54,11 +58,15 @@ fn now() -> Result<u64> {
 impl Command {
     pub(crate) fn run(self) -> Result<(), crate::AuditError> {
         self.verify()
-            .map_err(|e| crate::AuditError::Backend(e.to_string()))
+            .map_err(|e| crate::AuditError::Backend(format!("{e:#}")))
     }
 
     fn verify(self) -> Result<()> {
         let (claim, artifact_count) = match self {
+            Self::PrepareExecution(args) => {
+                println!("{}", serde_json::to_string_pretty(&args.prepare(now()?)?)?);
+                return Ok(());
+            }
             Self::VerifyExecution {
                 receipt,
                 expectations,
