@@ -3106,3 +3106,29 @@ Existing tests retain the capacity-on-removal-failure and observed-exit checks.
 Evidence is under `/tmp/nucleus-container-terminal-*.log`. This change follows
 the recorded Apple image checkpoint and affects Docker status reporting; that
 image is not evidence for this later source revision.
+
+
+### Publication image checkpoint (2026-10-05)
+
+The Linux ARM64 node and CLI built from `08f74b39b` are packaged as
+`nucleus-local-host:publication-08f74b39b`, retaining the previously verified
+guest inputs. Its local index is
+`sha256:7ac7e59d2cfdf8df626ebe5691013c71cc4cef599b3a7acbc7e6cfef46a6b5a2`.
+The running image's node and CLI hashes matched the updated manifest:
+
+- node: `94b7011f39c29b46ea5cc845f1429025c8d9050b2296c0c4f87c2467f7f6a545`
+- CLI: `454f7630edb7c790041c4711957dc1e0dede741d1a0c2d153167e68f8b2d6d09`
+
+Setup verified UID-isolated Firecracker execution, exit zero and exact logs for
+`96394637-c48b-4a4c-9361-90f2d934f362`, then cancelled the pod. The host's exported
+executor public key matched the independently enrolled pre-upgrade pin. Saved
+`doctor` confirmed KVM and mTLS health; `stop` retained the installation, and a
+subsequent `doctor` refused the stopped host. The task-owned host was trimmed and
+is stopped. Results, image identity and build provenance are retained under
+`/tmp/nucleus-publication-08f74b39b/`. The native operator CLI includes the saved
+lifecycle integration. This is still a local image and ordinary installation
+validation, not a completed model-driven journey or live Docker teardown test.
+
+Custom Dylint workflow `37303376201` passed on the earlier Apple lifecycle source
+`ebd6a0439`. The later Docker status correction has its scoped regression and
+Clippy evidence above; final PR checks must run on the published head.
