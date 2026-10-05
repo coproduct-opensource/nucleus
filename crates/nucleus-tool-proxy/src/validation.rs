@@ -339,7 +339,11 @@ fn parse_max_repetition(range: &str) -> Option<usize> {
 /// assert_eq!(sanitized, "failed to open [sandbox]: permission denied");
 /// ```
 pub fn sanitize_error_message(message: &str, sandbox_roots: &[PathBuf]) -> String {
-    sanitize_error_message_with(message, sandbox_roots, std::env::var("HOME").ok().as_deref())
+    sanitize_error_message_with(
+        message,
+        sandbox_roots,
+        std::env::var("HOME").ok().as_deref(),
+    )
 }
 
 /// Characters that continue a path component. A root followed by one of these
@@ -362,7 +366,10 @@ fn replace_root(message: &str, root: &str) -> String {
     while let Some(i) = rest.find(root) {
         let end = i + root.len();
         out.push_str(&rest[..i]);
-        let at_boundary = rest[end..].chars().next().is_none_or(|c| !continues_component(c));
+        let at_boundary = rest[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !continues_component(c));
         out.push_str(if at_boundary { "[sandbox]" } else { root });
         rest = &rest[end..];
     }

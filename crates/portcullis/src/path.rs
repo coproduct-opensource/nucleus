@@ -727,7 +727,7 @@ fn glob_to_regex(pattern: &str) -> String {
                     chars.next(); // consume second *
                     if chars.peek() == Some(&'/') {
                         chars.next(); // consume /
-                                      // **/ matches any prefix including empty
+                        // **/ matches any prefix including empty
                         regex.push_str("(.*?/)?");
                     } else {
                         // ** at end or before non-/ matches anything

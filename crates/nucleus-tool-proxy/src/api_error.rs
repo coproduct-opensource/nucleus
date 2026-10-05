@@ -408,6 +408,9 @@ mod sandbox_root_redaction_tests {
         let (_status, body) = err.response_body();
         let wire = serde_json::to_string(&body).expect("serializable");
         assert!(!wire.contains("/wk42"), "sandbox root leaked: {wire}");
-        assert!(wire.contains("[sandbox]"), "root branch did not run: {wire}");
+        assert!(
+            wire.contains("[sandbox]"),
+            "root branch did not run: {wire}"
+        );
     }
 }
