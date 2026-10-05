@@ -2606,3 +2606,20 @@ workload UID, exact 57-byte stdout, empty stderr and exit 0. Cancellation was
 confirmed. The result is retained in
 `/tmp/nucleus-fresh-apple-setup/standalone-verification.json`. All 344 CLI unit
 tests passed (two ignored), along with integration suites and scoped Clippy.
+
+### Wait for operator review (2026-10-05)
+
+`node effect-approvals POD list --wait-secs N` now waits for unexpired pending
+effects, allowing the operator to start observing before a workload reaches its
+gated request. It polls the existing mTLS endpoint once per second and bounds
+both requests and delays by the requested deadline. It returns only pending
+entries; ordinary list remains an immediate snapshot. Timeout and observation
+errors exit unsuccessfully without making a decision or cancelling the pod.
+The wait does not extend a workload's approval timeout or replace exact-effect
+review and grant. Pending/expiry selection shares the grant command's predicate.
+
+Local mTLS integration proved that a newly published pending effect is returned
+after an initial empty observation, completed/expired entries are omitted, and
+an empty wait expires without posting a decision. All 347 CLI unit tests passed
+(two ignored), integration suites, Clippy and all four prepush gates passed.
+This is operator workflow validation, not an additional model-driven journey.

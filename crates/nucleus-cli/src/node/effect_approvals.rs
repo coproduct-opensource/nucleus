@@ -12,7 +12,11 @@ use super::{HttpClient, REQUEST_TIMEOUT};
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Print host review metadata as JSON (payload contents are not included)
-    List,
+    List {
+        /// Wait for an unexpired pending effect; print only pending entries
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86400))]
+        wait_secs: Option<u64>,
+    },
     /// Inspect and verify the exact host-retained request and payload
     Review { approval_id: Uuid },
     /// Grant one pending effect matching the reviewed SHA-256 digest
@@ -58,24 +62,26 @@ pub(super) async fn run(
         );
     }
     let endpoint = base.join(&format!("/v1/pods/{pod}/effect-approvals"))?;
-    let (status, body) = client
-        .send(
-            reqwest::Method::GET,
-            endpoint.as_str(),
-            &[],
-            &[],
-            REQUEST_TIMEOUT,
-        )
-        .await?;
-    if status != 200 {
-        bail!(
-            "listing host approvals failed (HTTP {status}); the configured node operator identity is required"
-        );
+    if let Command::List {
+        wait_secs: Some(seconds),
+    } = command
+    {
+        let approvals = tokio::time::timeout(std::time::Duration::from_secs(*seconds), async {
+            loop {
+                let mut approvals = list(client, &endpoint).await?;
+                let now = unix_now()?;
+                approvals.retain(|approval| is_pending(approval, now));
+                if !approvals.is_empty() {
+                    return Ok::<_, anyhow::Error>(approvals);
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }).await.context("timed out waiting for a pending host approval; no decision was made and pod was not cancelled")??;
+        return Ok(serde_json::to_string_pretty(&approvals)?);
     }
-    let approvals: Vec<ApprovalView> =
-        serde_json::from_slice(&body).context("invalid host approval response")?;
+    let approvals = list(client, &endpoint).await?;
     let (id, decision) = match command {
-        Command::List => return Ok(serde_json::to_string_pretty(&approvals)?),
+        Command::List { wait_secs: _ } => return Ok(serde_json::to_string_pretty(&approvals)?),
         Command::Review { approval_id } => {
             let expected = approvals
                 .iter()
@@ -138,6 +144,34 @@ pub(super) async fn run(
     ))
 }
 
+async fn list(client: &HttpClient, endpoint: &reqwest::Url) -> Result<Vec<ApprovalView>> {
+    let (status, body) = client
+        .send(
+            reqwest::Method::GET,
+            endpoint.as_str(),
+            &[],
+            &[],
+            REQUEST_TIMEOUT,
+        )
+        .await?;
+    if status != 200 {
+        bail!(
+            "listing host approvals failed (HTTP {status}); the configured node operator identity is required"
+        );
+    }
+    serde_json::from_slice(&body).context("invalid host approval response")
+}
+
+fn unix_now() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs())
+}
+
+fn is_pending(approval: &ApprovalView, now: u64) -> bool {
+    approval.status == ApprovalStatus::Pending && now < approval.expires_unix
+}
+
 fn pending(approvals: &[ApprovalView], id: Uuid) -> Result<&ApprovalView> {
     let mut matches = approvals.iter().filter(|a| a.id == id);
     let approval = matches
@@ -146,10 +180,7 @@ fn pending(approvals: &[ApprovalView], id: Uuid) -> Result<&ApprovalView> {
     if matches.next().is_some() {
         bail!("ambiguous host approval response");
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-    if approval.status != ApprovalStatus::Pending || now >= approval.expires_unix {
+    if !is_pending(approval, unix_now()?) {
         bail!("approval is no longer pending or has expired; refresh the list");
     }
     Ok(approval)

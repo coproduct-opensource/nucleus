@@ -8,6 +8,7 @@ struct Fixture {
     client: HttpClient,
     url: String,
     requests: Arc<Mutex<Vec<String>>>,
+    approvals: Arc<Mutex<Vec<ApprovalView>>>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -70,6 +71,8 @@ async fn fixture_with_review(
         .unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let seen = requests.clone();
+    let approvals = Arc::new(Mutex::new(approvals));
+    let listed = approvals.clone();
     let server = tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
@@ -104,6 +107,7 @@ async fn fixture_with_review(
                     .nth(1)
                     .is_some_and(|p| p.ends_with(&r.approval.id.to_string()))
             });
+            let snapshot = listed.lock().unwrap().clone();
             seen.lock().unwrap().push(request);
             let (status, body) = if get && redirected {
                 (302, String::new())
@@ -112,7 +116,7 @@ async fn fixture_with_review(
                     200,
                     match requested_review {
                         Some(r) => serde_json::to_string(r).unwrap(),
-                        None => serde_json::to_string(&approvals).unwrap(),
+                        None => serde_json::to_string(&snapshot).unwrap(),
                     },
                 )
             } else {
@@ -130,6 +134,7 @@ async fn fixture_with_review(
         client,
         url,
         requests,
+        approvals,
         server,
     }
 }
@@ -156,7 +161,9 @@ async fn mtls_review_grant_and_refuse_use_exact_pod_and_approval_routes() {
         let approval = approval();
         let f = fixture(vec![approval.clone()], false, 204).await;
         let pod = Uuid::new_v4();
-        let listed = run(&f.client, &f.url, pod, &Command::List).await.unwrap();
+        let listed = run(&f.client, &f.url, pod, &Command::List { wait_secs: None })
+            .await
+            .unwrap();
         assert!(listed.contains("1234") && listed.contains(&approval.effect_sha256));
         let command = if grant {
             Command::Grant {
@@ -281,7 +288,7 @@ async fn hmac_client_cannot_settle_host_approvals() {
             &client,
             "https://127.0.0.1:1",
             Uuid::new_v4(),
-            &Command::List
+            &Command::List { wait_secs: None }
         )
         .await
         .unwrap_err()
@@ -356,5 +363,91 @@ fn review_rejects_payload_destination_tariff_and_approval_substitution() {
             _ => unreachable!(),
         }
         assert!(render_review(changed, &expected).is_err());
+    }
+}
+
+#[tokio::test]
+async fn wait_observes_new_pending_effect_without_deciding_it() {
+    let mut completed = approval();
+    completed.status = ApprovalStatus::Spent;
+    let mut expired = approval();
+    expired.expires_unix = 1;
+    let f = fixture(vec![completed, expired], false, 204).await;
+    let fresh = approval();
+    let expected = fresh.id;
+    let listed = f.approvals.clone();
+    let requests = f.requests.clone();
+    let publish = tokio::spawn(async move {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while requests.lock().unwrap().is_empty() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+        listed.lock().unwrap().push(fresh);
+    });
+    let result = run(
+        &f.client,
+        &f.url,
+        Uuid::new_v4(),
+        &Command::List { wait_secs: Some(3) },
+    )
+    .await
+    .unwrap();
+    publish.await.unwrap();
+    let pending: Vec<ApprovalView> = serde_json::from_str(&result).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, expected);
+    assert!(
+        f.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.starts_with("GET "))
+    );
+    assert!(f.requests.lock().unwrap().len() >= 2);
+    f.server.abort();
+    let _ = f.server.await;
+}
+
+#[tokio::test]
+async fn wait_without_pending_effect_exits_at_deadline() {
+    let f = fixture(Vec::new(), false, 204).await;
+    let error = run(
+        &f.client,
+        &f.url,
+        Uuid::new_v4(),
+        &Command::List { wait_secs: Some(1) },
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("timed out"));
+    assert!(error.to_string().contains("no decision was made"));
+    assert!(
+        f.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|r| r.starts_with("GET "))
+    );
+    f.server.abort();
+    let _ = f.server.await;
+}
+
+#[test]
+fn wait_option_is_bounded_and_optional() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Parse {
+        #[command(subcommand)]
+        command: Command,
+    }
+    assert!(Parse::try_parse_from(["approval", "list"]).is_ok());
+    for (value, accepted) in [("0", false), ("120", true), ("86401", false)] {
+        assert_eq!(
+            Parse::try_parse_from(["approval", "list", "--wait-secs", value]).is_ok(),
+            accepted
+        );
     }
 }

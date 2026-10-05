@@ -12,6 +12,20 @@ List the host's review metadata:
 nucleus node --url https://127.0.0.1:8080 effect-approvals <pod-uuid> list
 ```
 
+To start watching before a workload requests approval:
+
+```sh
+nucleus node effect-approvals <pod-uuid> list --wait-secs 120
+```
+
+This polls once per second and returns JSON containing the unexpired pending
+entries as soon as any are available. Without `--wait-secs`, list remains an
+immediate snapshot of all returned statuses. The wait is bounded (1–86400
+seconds), including time spent in HTTP requests; a timeout exits unsuccessfully.
+Server and authentication errors stop the wait. Waiting never grants or refuses
+an effect and never cancels the pod. It does not extend the workload's own
+approval-wait timeout. Review the returned effect before granting it.
+
 The JSON includes each approval's ID, operation, resolved destination, effect
 SHA-256, fixed operator charge in micro-USD, expiry, and status. Strings are
 JSON-escaped for safe terminal display. The hash binds the resolved request,
