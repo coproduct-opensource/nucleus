@@ -15,9 +15,12 @@
 //!
 //! - [`relay`]: forward a published container port to a pod's loopback proxy.
 //! - [`node_entrypoint`]: prepare the container PID-1 cgroup, then exec the node.
+//! - [`input_manifest`]: measure a host image's installed inputs into the
+//!   manifest `setup` and `verify` read.
 //!
 //! The `nucleus-hostctl` binary exposes them as `probe`, `seed`, `harvest` and
-//! `relay`, and `run-node`, for the process that hosts the node.
+//! `relay`, `run-node`, for the process that hosts the node, and
+//! `input-manifest`, for the image build.
 
 #![cfg_attr(
     not(test),
@@ -33,6 +36,7 @@
 )]
 
 pub mod ext4;
+pub mod input_manifest;
 pub mod jail_user;
 pub mod node_entrypoint;
 pub mod probe;

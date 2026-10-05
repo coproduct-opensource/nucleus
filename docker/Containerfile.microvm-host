@@ -6,11 +6,18 @@
 # node itself. It needs the L1 kernel from docker/Containerfile.l1-kernel
 # (the runtime's default kernel has no KVM):
 #
-#   container build -c 8 -m 12g -f docker/Containerfile.microvm-host \
-#     -t nucleus-spike-microvm-host:dev .
+#   cargo xtask microvm-host-release-context --out /tmp/nucleus-release-context
+#   container build -c 8 -m 12g -f /tmp/nucleus-release-context/Containerfile \
+#     -t nucleus-spike-microvm-host:dev /tmp/nucleus-release-context
 #   container run --virtualization --kernel <out>/linux_arm64/Image \
 #     --cap-add CAP_NET_ADMIN --cap-add CAP_SYS_ADMIN --cap-add CAP_SYS_PTRACE \
 #     -v nucleus-spike-srv:/srv nucleus-spike-microvm-host:dev
+#
+# The build context is staged, never the repository root: Apple Container 1.4.1
+# drops nested files from a directory `COPY` (#3206, and
+# docs/quickstart/apple-container.md). The staging writes this file, the
+# tracked workspace sources as one `nucleus-source.tar` that `ADD` unpacks, and
+# `kvm-probe.c`, all flat. `docker build` takes the same staged directory.
 #
 # Every download is pinned by digest, from the same constants `nucleus setup`
 # installs from:
@@ -38,9 +45,7 @@ ARG NODE_SOURCE=release
 # ── nucleus-node + nucleus-mcp from this tree ─────────────────────────
 FROM rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS node-source
 WORKDIR /build
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .cargo/ .cargo/
-COPY crates/ crates/
+ADD nucleus-source.tar /build/
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     cargo build --locked --release -p nucleus-node -p nucleus-mcp \
@@ -65,9 +70,7 @@ FROM node-${NODE_SOURCE} AS node
 # release ships it yet, so it is built from source whatever NODE_SOURCE is.
 FROM rust:1.96.1-bookworm@sha256:a339861ae23e9abb272cea45dfafde21760d2ce6577a70f8a926153677902663 AS hostctl
 WORKDIR /build
-COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
-COPY .cargo/ .cargo/
-COPY crates/ crates/
+ADD nucleus-source.tar /build/
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/build/target,sharing=locked \
     cargo build --locked --release -p nucleus-microvm-host --bin nucleus-hostctl \
@@ -79,7 +82,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS probe
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY docker/kvm-probe.c /src/kvm-probe.c
+COPY kvm-probe.c /src/kvm-probe.c
 RUN gcc -O2 -Wall -Werror -o /kvm-probe /src/kvm-probe.c
 
 # ── Firecracker, jailer and the guest artifacts ───────────────────────
@@ -120,16 +123,30 @@ COPY --from=node /out/ /usr/local/bin/
 COPY --from=hostctl /out/nucleus-hostctl /usr/local/bin/nucleus-hostctl
 COPY --from=probe /kvm-probe /usr/local/bin/kvm-probe
 
+# Measure every installed input into the manifest `nucleus setup` and
+# `verify --tier2 --apple-host-config` read (#3207). This runs nucleus-hostctl
+# in the final stage, so an image without it, or without any of
+# microvm_host::RELEASE_HOST_BINARIES or the guest kernel and rootfs, fails
+# the build here instead of at `microvm-host up` (#3206). It also refuses a
+# guest kernel off the pin.
+RUN ["/usr/local/bin/nucleus-hostctl", "input-manifest", "--out", "/usr/share/nucleus/host-inputs.json"]
+
 # Mirrors nucleus-cli provision::node_env_body. /srv is meant to be a
 # container volume: it holds the jail AND the scratch images (the jailer
 # hard-links writable drives, so they must share a filesystem) and the node's
 # state (CA, pod records), so it survives a container restart.
+#
+# NUCLEUS_NODE_BROKER_ENFORCING puts `nucleus.host_spec=required` on the guest
+# command line: the guest runs the spec the host admitted and refuses the
+# pod.yaml baked into the rootfs (#3205). Every host recipe sets it; the
+# microvm_host tests red on one that does not.
 #
 # SPIKE ONLY: the HMAC secrets below are fixed dev values baked into the image.
 # A real host tier generates them per install (provision.rs does).
 ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080 \
     NUCLEUS_NODE_STATE_DIR=/srv/state \
     NUCLEUS_NODE_DRIVER=firecracker \
+    NUCLEUS_NODE_BROKER_ENFORCING=true \
     NUCLEUS_NODE_AUTH_SECRET=00000000000000000000000000000000000000000000000000000000000000a1 \
     NUCLEUS_NODE_PROXY_AUTH_SECRET=00000000000000000000000000000000000000000000000000000000000000a2 \
     NUCLEUS_NODE_PROXY_APPROVAL_SECRET=00000000000000000000000000000000000000000000000000000000000000a3 \

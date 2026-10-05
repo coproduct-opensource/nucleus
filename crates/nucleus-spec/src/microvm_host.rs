@@ -286,6 +286,99 @@ pub const LOCAL_HOST_BINARIES: &[&str] = &[
     "jailer",
 ];
 
+/// Executables the release host image installs from
+/// [`IMAGE_SOURCE`]: the pinned release's node and MCP bridge, the pinned
+/// VMM, and `nucleus-hostctl` built from this tree. Each is measured into the
+/// image's [`HOST_INPUT_MANIFEST_PATH`] at build time, so a missing one fails
+/// the build rather than shipping an image without it.
+pub const RELEASE_HOST_BINARIES: &[&str] = &[NODE, HOSTCTL, "nucleus-mcp", "firecracker", "jailer"];
+
+/// The tarball of tracked workspace sources the release recipe `ADD`s, staged
+/// flat beside it by `cargo xtask microvm-host-release-context`.
+pub const RELEASE_SOURCE_ARCHIVE: &str = "nucleus-source.tar";
+
+/// The node setting that makes it put `nucleus.host_spec=required` on the guest
+/// command line, so the guest runs the spec the host admitted and refuses one
+/// baked into its rootfs (#3205). Every host recipe sets it to `true`.
+pub const HOST_ENFORCEMENT_ENV: &str = "NUCLEUS_NODE_BROKER_ENFORCING";
+
+// ── the input manifest ───────────────────────────────────────────────
+
+/// Where a host image installs its [`HostInputManifest`]. `nucleus setup` and
+/// `verify --tier2 --apple-host-config` read it to pin the guest kernel and
+/// rootfs they ask the node to boot.
+pub const HOST_INPUT_MANIFEST_PATH: &str = "/usr/share/nucleus/host-inputs.json";
+
+/// The one schema identifier a [`HostInputManifest`] carries.
+pub const HOST_INPUT_SCHEMA: &str = "nucleus.microvm-host-inputs.v1";
+
+/// The installed inputs of a host: each file's SHA-256 and length, by name.
+///
+/// One type for every writer (the local staging, the release image build, a
+/// Lima host's installed artifacts) and every reader (ADR 0007 F-1, G-1).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HostInputManifest {
+    /// Always [`HOST_INPUT_SCHEMA`] when written by this crate.
+    pub schema: String,
+    /// The guest architecture, as `std::env::consts::ARCH` spells it.
+    pub architecture: String,
+    /// Inputs by file name.
+    pub files: std::collections::BTreeMap<String, HostInput>,
+}
+
+/// One measured input file.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HostInput {
+    /// Lowercase hex SHA-256 of the file's bytes.
+    pub sha256: String,
+    /// The file's length in bytes.
+    pub bytes: u64,
+}
+
+impl HostInputManifest {
+    /// A manifest of the current schema.
+    pub fn new(
+        architecture: impl Into<String>,
+        files: std::collections::BTreeMap<String, HostInput>,
+    ) -> Self {
+        Self {
+            schema: HOST_INPUT_SCHEMA.to_string(),
+            architecture: architecture.into(),
+            files,
+        }
+    }
+
+    /// Whether the inputs are for an ARM64 guest.
+    pub fn is_aarch64(&self) -> bool {
+        self.architecture == "aarch64"
+    }
+}
+
+impl HostInput {
+    /// Hash a file's bytes, streaming.
+    pub fn measure(path: &std::path::Path) -> std::io::Result<Self> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        let mut file = std::fs::File::open(path)?;
+        let mut hash = Sha256::new();
+        let mut buffer = vec![0u8; 1 << 16];
+        let mut bytes: u64 = 0;
+        loop {
+            let count = file.read(&mut buffer)?;
+            let chunk = buffer.get(..count).unwrap_or_default();
+            if chunk.is_empty() {
+                break;
+            }
+            hash.update(chunk);
+            bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+        }
+        Ok(Self {
+            sha256: hex::encode(hash.finalize()),
+            bytes,
+        })
+    }
+}
+
 /// The environment variable a developer sets to run a different image.
 pub const IMAGE_OVERRIDE_ENV: &str = "NUCLEUS_MICROVM_HOST_IMAGE";
 
@@ -430,6 +523,7 @@ mod tests {
             LOCAL_HOST_BINARIES.join(" ")
         )));
         assert!(r.contains(&format!("COPY vmlinux rootfs.ext4 {HOST_ARTIFACTS_DIR}/")));
+        assert!(r.contains(&format!("COPY manifest.json {HOST_INPUT_MANIFEST_PATH}\n")));
         assert!(r.contains(&format!(
             "[\"{}\", \"run-node\"]",
             in_container_bin(HOSTCTL)
@@ -467,9 +561,14 @@ mod tests {
 
     /// `ENV` values in a Containerfile, `KEY=value` pairs on continuation lines.
     fn env_value(containerfile: &str, key: &str) -> String {
+        env_value_opt(containerfile, key).unwrap_or_else(|| panic!("the recipe sets no {key}"))
+    }
+
+    fn env_value_opt(containerfile: &str, key: &str) -> Option<String> {
         let prefix = format!("{key}=");
         containerfile
             .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
             .map(|l| {
                 l.trim()
                     .trim_start_matches("ENV ")
@@ -477,7 +576,209 @@ mod tests {
                     .trim()
             })
             .find_map(|l| l.strip_prefix(&prefix).map(str::to_string))
-            .unwrap_or_else(|| panic!("the recipe sets no {key}"))
+    }
+
+    // ── every host recipe requires the admitted spec (#3205) ──
+
+    /// Where image recipes live. A recipe added anywhere else is invisible to
+    /// the checks below, so a new location is a new entry here.
+    const RECIPE_DIRS: &[&str] = &["docker", "crates/nucleus-spec/assets"];
+
+    /// Every recipe in [`RECIPE_DIRS`] that hosts Firecracker microVMs: it is
+    /// named for the tier, or it runs the node with the Firecracker driver.
+    /// `(path relative to the repo root, contents)`, sorted.
+    fn host_recipes() -> Vec<(String, String)> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut found = Vec::new();
+        for dir in RECIPE_DIRS {
+            let entries =
+                std::fs::read_dir(root.join(dir)).unwrap_or_else(|e| panic!("listing {dir}: {e}"));
+            for entry in entries {
+                let name = entry.expect("dir entry").file_name();
+                let name = name.to_string_lossy();
+                if !(name.starts_with("Containerfile") || name.starts_with("Dockerfile")) {
+                    continue;
+                }
+                let rel = format!("{dir}/{name}");
+                let text = repo_file(&rel);
+                let firecracker =
+                    env_value_opt(&text, "NUCLEUS_NODE_DRIVER").as_deref() == Some("firecracker");
+                if name.contains("microvm-host") || firecracker {
+                    found.push((rel, text));
+                }
+            }
+        }
+        found.sort();
+        found
+    }
+
+    /// The host recipes among `recipes` that do not require the host spec.
+    fn without_host_enforcement(recipes: &[(String, String)]) -> Vec<String> {
+        recipes
+            .iter()
+            .filter(|(_, text)| {
+                env_value_opt(text, HOST_ENFORCEMENT_ENV).as_deref() != Some("true")
+            })
+            .map(|(path, _)| path.clone())
+            .collect()
+    }
+
+    #[test]
+    fn every_host_recipe_requires_the_admitted_spec() {
+        let recipes = host_recipes();
+        let paths: Vec<&str> = recipes.iter().map(|(p, _)| p.as_str()).collect();
+        // A filter that matches nothing proves nothing: both recipes this
+        // module knows about must be among the ones found.
+        let ArtifactSource::LocalBuild { containerfile } = IMAGE_SOURCE else {
+            panic!("the image has no recipe");
+        };
+        for known in [
+            containerfile,
+            "crates/nucleus-spec/assets/Containerfile.microvm-host-local",
+        ] {
+            assert!(paths.contains(&known), "{known} not found among {paths:?}");
+        }
+        assert_eq!(
+            without_host_enforcement(&recipes),
+            Vec::<String>::new(),
+            "host recipes that let a rootfs's baked pod.yaml beat the admitted spec \
+             (set {HOST_ENFORCEMENT_ENV}=true)"
+        );
+    }
+
+    /// The check has teeth: the release recipe with the setting dropped, or
+    /// set false, is named.
+    #[test]
+    fn a_host_recipe_without_enforcement_is_named() {
+        let line = format!("    {HOST_ENFORCEMENT_ENV}=true \\\n");
+        for replacement in [
+            String::new(),
+            format!("    {HOST_ENFORCEMENT_ENV}=false \\\n"),
+        ] {
+            let recipes: Vec<(String, String)> = host_recipes()
+                .into_iter()
+                .map(|(p, t)| {
+                    let edited = t.replace(&line, &replacement);
+                    assert_ne!(edited, t, "{p}: the substitution matched nothing");
+                    (p, edited)
+                })
+                .collect();
+            assert_eq!(
+                without_host_enforcement(&recipes),
+                recipes.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    // ── every host recipe builds on Apple Container (#3206) ──
+
+    /// `COPY` sources read from the build context (not `--from=` a stage) that
+    /// are directories or nested paths. Apple Container 1.4.1 drops nested
+    /// files from a directory `COPY`, so a host recipe takes only flat files
+    /// (and `ADD`s a tarball for a tree).
+    fn nested_context_copies(recipe: &str) -> Vec<String> {
+        recipe
+            .lines()
+            .map(str::trim)
+            .filter_map(|l| l.strip_prefix("COPY "))
+            .filter(|args| !args.trim_start().starts_with("--from="))
+            .flat_map(|args| {
+                let words: Vec<&str> = args.split_whitespace().collect();
+                let sources = words.len().saturating_sub(1);
+                words
+                    .into_iter()
+                    .take(sources)
+                    .filter(|w| w.contains('/'))
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn every_host_recipe_copies_only_flat_context_files() {
+        for (path, text) in host_recipes() {
+            assert_eq!(nested_context_copies(&text), Vec::<String>::new(), "{path}");
+        }
+        assert_eq!(
+            nested_context_copies(
+                "COPY Cargo.toml ./\nCOPY crates/ crates/\nCOPY --from=x /out/ /y/\n"
+            ),
+            ["crates/"]
+        );
+    }
+
+    // ── the release image carries its input manifest (#3207) ──
+
+    /// The release recipe measures its inputs with `nucleus-hostctl` in the
+    /// final stage, after everything is installed: that both writes the
+    /// manifest and fails the build when hostctl is absent.
+    #[test]
+    fn the_release_image_measures_its_inputs_with_hostctl_last() {
+        let r = recipe(IMAGE_SOURCE);
+        let run = format!(
+            "RUN [\"{}\", \"input-manifest\", \"--out\", \"{HOST_INPUT_MANIFEST_PATH}\"]",
+            in_container_bin(HOSTCTL)
+        );
+        let lines: Vec<&str> = r.lines().collect();
+        let at = lines
+            .iter()
+            .position(|l| *l == run)
+            .unwrap_or_else(|| panic!("the release recipe has no `{run}`"));
+        let final_stage = lines
+            .iter()
+            .rposition(|l| l.starts_with("FROM "))
+            .expect("a final stage");
+        assert!(
+            at > final_stage,
+            "the manifest is not written in the final stage"
+        );
+        assert!(
+            lines[at..]
+                .iter()
+                .all(|l| !l.starts_with("COPY ") && !l.starts_with("ADD ")),
+            "something is installed after the manifest is measured"
+        );
+        assert!(r.contains(&format!(
+            "COPY --from=hostctl /out/{HOSTCTL} {}",
+            in_container_bin(HOSTCTL)
+        )));
+        for name in RELEASE_HOST_BINARIES {
+            assert!(
+                LOCAL_HOST_BINARIES.contains(name),
+                "{name} is in the release image but not the local one"
+            );
+        }
+    }
+
+    #[test]
+    fn the_release_recipe_builds_from_the_staged_source_archive() {
+        let r = recipe(IMAGE_SOURCE);
+        let add = format!("ADD {RELEASE_SOURCE_ARCHIVE} /build/");
+        // node-source and hostctl both build from it.
+        assert_eq!(r.lines().filter(|l| *l == add).count(), 2, "{add}");
+    }
+
+    #[test]
+    fn the_manifest_schema_reads_what_the_staging_writes() {
+        let staged = r#"{"schema":"nucleus.microvm-host-inputs.v1","architecture":"aarch64",
+            "files":{"vmlinux":{"sha256":"ab","bytes":3}}}"#;
+        let m: HostInputManifest = serde_json::from_str(staged).unwrap();
+        assert_eq!(m.schema, HOST_INPUT_SCHEMA);
+        assert!(m.is_aarch64());
+        assert_eq!(
+            m,
+            HostInputManifest::new(
+                "aarch64",
+                std::collections::BTreeMap::from([(
+                    "vmlinux".to_string(),
+                    HostInput {
+                        sha256: "ab".into(),
+                        bytes: 3
+                    }
+                )])
+            )
+        );
     }
 
     // ── the fragment cannot drift from the list ──

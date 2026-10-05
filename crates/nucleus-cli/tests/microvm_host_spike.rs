@@ -621,7 +621,22 @@ fn build_microvm_host_image() {
     if !enabled() {
         return;
     }
-    let root = repo_root();
+    // A staged flat context, never the repository root: Apple Container drops
+    // nested files from a directory `COPY` (#3206).
+    let context = std::env::temp_dir().join(format!(
+        "nucleus-spike-release-context-{}",
+        std::process::id()
+    ));
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let staged = Command::new(cargo)
+        .current_dir(repo_root())
+        .args(["run", "--quiet", "-p", "xtask", "--"])
+        .arg("microvm-host-release-context")
+        .arg("--out")
+        .arg(&context)
+        .status()
+        .expect("running xtask");
+    assert!(staged.success(), "staging the release context: {staged}");
     let mut args = vec![
         "build".to_string(),
         "-c".into(),
@@ -631,9 +646,7 @@ fn build_microvm_host_image() {
         "--progress".into(),
         "plain".into(),
         "-f".into(),
-        root.join("docker/Containerfile.microvm-host")
-            .display()
-            .to_string(),
+        context.join("Containerfile").display().to_string(),
         "-t".into(),
         IMAGE.into(),
     ];
@@ -641,7 +654,7 @@ fn build_microvm_host_image() {
         args.push("--build-arg".into());
         args.push(format!("NODE_SOURCE={src}"));
     }
-    args.push(root.display().to_string());
+    args.push(context.display().to_string());
     let refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let out = container(&refs);
     println!(

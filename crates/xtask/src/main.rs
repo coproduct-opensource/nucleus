@@ -90,6 +90,13 @@ enum Command {
         #[arg(long)]
         out: std::path::PathBuf,
     },
+    /// Stage the release microVM host recipe's build context: the recipe, the
+    /// tracked workspace sources as one tarball, and the KVM probe, all flat.
+    MicrovmHostReleaseContext {
+        /// New output directory, never an existing build context.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
     /// defect patched into a scratch worktree at HEAD, every mode run against it.
     /// Exit 0 as the manifest says, 1 a mismatch, 2 could not look or zoo rot.
@@ -544,6 +551,9 @@ fn main() -> Result<()> {
             guest_rootfs,
             out,
         } => microvm_host_context::run(&bin_dir, &guest_kernel, &guest_rootfs, &out),
+        Command::MicrovmHostReleaseContext { out } => {
+            microvm_host_context::run_release(&repo_root()?, &out)
+        }
         Command::GuestLayer {
             arch,
             out,

@@ -11,49 +11,29 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-#[derive(Deserialize)]
-pub(crate) struct Manifest {
-    schema: String,
-    architecture: String,
-    files: BTreeMap<String, Input>,
-}
+/// The host input manifest, one schema for every writer and reader.
+pub(crate) use nucleus_spec::microvm_host::HostInputManifest as Manifest;
+use nucleus_spec::microvm_host::{HOST_INPUT_SCHEMA, HostInput};
 
-#[derive(Deserialize)]
-struct Input {
-    sha256: String,
-    bytes: u64,
-}
-
-impl Manifest {
-    pub(crate) fn is_aarch64(&self) -> bool {
-        self.architecture == "aarch64"
+/// Enroll installed input bytes before requesting a workload. These hashes
+/// come from the operator's files, never from the resulting receipt.
+pub(crate) fn installed_manifest() -> Result<Manifest> {
+    let mut files = BTreeMap::new();
+    for name in [
+        nucleus_spec::tier2_artifacts::GUEST_KERNEL_FILE,
+        nucleus_spec::tier2_artifacts::GUEST_ROOTFS_FILE,
+    ] {
+        let path = std::path::Path::new(crate::provision::HOST_ARTIFACTS_DIR).join(name);
+        let input =
+            HostInput::measure(&path).with_context(|| format!("hash {}", path.display()))?;
+        files.insert(name.into(), input);
     }
-
-    /// Enroll installed input bytes before requesting a workload. These hashes
-    /// come from the operator's files, never from the resulting receipt.
-    pub(crate) fn installed() -> Result<Self> {
-        let mut files = BTreeMap::new();
-        for name in ["vmlinux", "rootfs.ext4"] {
-            let path = std::path::Path::new(crate::provision::HOST_ARTIFACTS_DIR).join(name);
-            let bytes = path
-                .metadata()
-                .with_context(|| format!("stat {}", path.display()))?
-                .len();
-            let sha256 = crate::provision::sha256_file(&path)
-                .with_context(|| format!("hash {}", path.display()))?;
-            files.insert(name.into(), Input { sha256, bytes });
-        }
-        Ok(Self {
-            schema: "nucleus.microvm-host-inputs.v1".into(),
-            architecture: std::env::consts::ARCH.into(),
-            files,
-        })
-    }
+    Ok(Manifest::new(std::env::consts::ARCH, files))
 }
 
 fn spec(manifest: &Manifest, nonce: Uuid) -> Result<nucleus_spec::PodSpec> {
     ensure!(
-        manifest.schema == "nucleus.microvm-host-inputs.v1",
+        manifest.schema == HOST_INPUT_SCHEMA,
         "unsupported host input manifest"
     );
     ensure!(
@@ -317,26 +297,25 @@ mod tests {
     }
 
     fn check_program(architecture: &str) {
-        let manifest = Manifest {
-            schema: "nucleus.microvm-host-inputs.v1".into(),
-            architecture: architecture.into(),
-            files: BTreeMap::from([
+        let manifest = Manifest::new(
+            architecture,
+            BTreeMap::from([
                 (
                     "vmlinux".into(),
-                    Input {
+                    HostInput {
                         sha256: "1".repeat(64),
                         bytes: 1024,
                     },
                 ),
                 (
                     "rootfs.ext4".into(),
-                    Input {
+                    HostInput {
                         sha256: "2".repeat(64),
                         bytes: 2048,
                     },
                 ),
             ]),
-        };
+        );
         let nonce = Uuid::new_v4();
         let mut requested = spec(&manifest, nonce).unwrap();
         let before = nucleus_spec::identity::program_digest(&requested).unwrap();

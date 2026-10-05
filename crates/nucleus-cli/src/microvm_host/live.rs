@@ -97,16 +97,43 @@ fn image(cli: &ContainerCli, names: &HostNames) -> String {
         return r;
     }
     let started = Instant::now();
+    // The recipe builds from a staged flat context, never the repository root:
+    // Apple Container drops nested files from a directory `COPY` (#3206).
+    let context = staged_release_context(&recipe(pins::IMAGE_SOURCE));
     // A node built from this tree: the mTLS listener `ensure_ready` checks.
     let built = cli.build_image(
-        &recipe(pins::IMAGE_SOURCE),
+        &context.join("Containerfile"),
         names.image_tag,
         &[("NODE_SOURCE", "source")],
-        &repo_root(),
+        &context,
     );
     assert!(built.succeeded(), "image build {}", built.describe());
     println!("image built in {:.0?}", started.elapsed());
     names.image_tag.to_string()
+}
+
+/// `cargo xtask microvm-host-release-context` into a fresh directory under
+/// [`work`]. `recipe` is only checked to exist, so a moved recipe fails here.
+fn staged_release_context(recipe: &Path) -> PathBuf {
+    assert!(recipe.is_file(), "{} is missing", recipe.display());
+    let out = work().join(format!(
+        "release-context-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .current_dir(repo_root())
+        .args(["run", "--quiet", "-p", "xtask", "--"])
+        .arg("microvm-host-release-context")
+        .arg("--out")
+        .arg(&out)
+        .status()
+        .expect("running xtask");
+    assert!(status.success(), "staging the release context: {status}");
+    out
 }
 
 fn cleanup(cli: &ContainerCli, cfg: &HostConfig) {
