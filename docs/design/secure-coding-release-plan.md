@@ -1759,3 +1759,32 @@ This establishes an ordinary proxy process restart with operator-provisioned
 storage. It does not establish durable storage across Firecracker pod replacement,
 shared multi-tenant memory, or host-authoritative memory admission. Those remain
 part of the broader memory outcome.
+
+### Owner-bound memory across local pod and node replacement (2026-10-04)
+
+The node's `--memory-root` now provisions explicit
+`nucleus.io/memory-namespace` requests for the local and mediated container
+drivers. Requests name a namespace, not a path. Only after authority admission
+does the node derive the storage directory and journal namespace from the issued
+root-owner identity. The operator root is private and disjoint from the configured
+workspace root. Local launches clear ambient memory settings; container launches
+receive an admitted bind and environment. Unsupported drivers and missing node
+configuration refuse before launch. Container environment assembly moved out of
+`main.rs`, and reads the node's mediation setting directly (ADR 0007 G-1).
+
+Live Apple Container evidence: pod `ab94a366-eb90-4329-ba55-4a8627957ad2`
+accepted a normal project note under `project-a`. After cancelling that pod and
+stopping/restarting the node, replacement pod
+`e6aa060e-2a7a-48f7-af8d-1ff61f9a6bd2` recalled the same content hash
+`af250b233a8dc30f6c45293897fbeff34752814c82bc355d0291e97d71472bdf`, value and
+label, with `declassified=false`. This used real mTLS pod admission and the
+node's signed proxy with the development local driver, not a microVM memory
+transport. The replacement pod and temporary node were stopped; the primary
+node remained healthy. Evidence lives under `/tmp/nucleus-memory-provision-live/`.
+
+The full node suite passed 887 unit tests (one ignored) and three integration
+tests. Focused provisioning checks cover namespace validation, owner separation,
+backend support, ambient-setting removal, root permissions/separation, and the
+container environment. Live container storage, Firecracker transport and
+host-authoritative memory effects remain open. The broader release goal and
+model-driven coding journeys are not complete.

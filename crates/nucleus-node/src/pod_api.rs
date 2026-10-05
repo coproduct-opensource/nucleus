@@ -1251,6 +1251,11 @@ pub(crate) mod handler_tests {
             proxy_actor: None,
             trusted_postures: crate::posture::PostureRegistry::from_operator_str(""),
             audit_sinks: Arc::new(a.audit_sinks.load().expect("audit sinks")),
+            memory: Arc::new(
+                a.memory
+                    .load(&a.host_paths.ensure(&a.state_dir).unwrap())
+                    .unwrap(),
+            ),
             audit_minter: None,
             drand_config: None,
             identity_manager: None,

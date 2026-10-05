@@ -1046,9 +1046,9 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         &state,
         &spec,
         Uuid::new_v4(),
-        crate::container_mediation::ContainerMediation::ToolProxy,
         "test-token-123",
         "",
+        None,
         None,
     )
     .await;
@@ -1066,13 +1066,15 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
 
     // Direct mode runs no tool-proxy, so there is nothing to arm and the
     // credentials stay out of the workload's environment.
+    let mut direct_state = state.clone();
+    direct_state.container_mediation = crate::container_mediation::ContainerMediation::Unmediated;
     let direct = container_env(
-        &state,
+        &direct_state,
         &spec,
         Uuid::new_v4(),
-        crate::container_mediation::ContainerMediation::Unmediated,
         "test-token-123",
         "",
+        None,
         None,
     )
     .await;
@@ -1162,10 +1164,10 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
         &state,
         &spec,
         Uuid::new_v4(),
-        crate::container_mediation::ContainerMediation::ToolProxy,
         "test-token-123",
         "",
         Some(&grant),
+        None,
     )
     .await;
     let leaked: Vec<&str> = env

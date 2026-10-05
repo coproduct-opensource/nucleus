@@ -85,8 +85,10 @@ mod broker_rollout;
 mod broker_stream;
 mod broker_transport;
 mod cgroup;
+mod container_env;
 mod container_mediation;
 mod container_transport;
+use container_env::container_env;
 mod cred_split;
 mod driver;
 #[cfg(test)]
@@ -100,6 +102,7 @@ mod guest_socket;
 mod host_decide;
 mod host_paths;
 mod lifecycle;
+mod memory_provisioning;
 mod net;
 mod posture;
 mod session_mint;
@@ -139,6 +142,8 @@ struct Args {
     host_paths: host_paths::HostPathArgs,
     #[command(flatten)]
     audit_sinks: audit_sink::AuditSinkArgs,
+    #[command(flatten)]
+    memory: memory_provisioning::MemoryArgs,
     #[command(flatten)]
     pod_ceilings: pod_resources::PodCeilingArgs,
     #[command(flatten)]
@@ -453,6 +458,7 @@ struct NodeState {
     /// The operator's audit sinks (`--audit-sinks`): the only destinations a pod's audit log is
     /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
     audit_sinks: Arc<audit_sink::AuditSinks>,
+    memory: Arc<memory_provisioning::Stores>,
     /// Mints each pod's uploader a credential limited to its resolved sink (#3160). `None`: every
     /// audit sink is refused at create, by name; the node's own key is never the fallback.
     audit_minter: Option<Arc<dyn audit_sink::credentials::ScopedCredentialMinter>>,
@@ -780,10 +786,13 @@ async fn main() -> Result<(), ApiError> {
     )
     .map_err(ApiError::Driver)?;
 
+    let host_roots = args.host_paths.ensure(&args.state_dir)?;
+    let memory = Arc::new(args.memory.load(&host_roots)?);
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
-        host_roots: args.host_paths.ensure(&args.state_dir)?,
+        host_roots,
+        memory,
         pod_ceilings: args.pod_ceilings.ceilings(),
         node_capacity: args.node_capacity.build()?,
         driver: args.driver.clone(),
@@ -1086,6 +1095,9 @@ async fn create_pod_internal(
         spec_posture::admit(&spec, &state.audit_sinks, &state.pod_ceilings)?,
         state.audit_minter.as_ref(),
     )?;
+    let requested_memory = state
+        .memory
+        .request(&spec, &state.driver, state.container_mediation)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let created_at = now_unix();
@@ -1120,6 +1132,13 @@ async fn create_pod_internal(
     // The pod's owner is the issued root identity (ADR 0001: its tenant).
     let owner = issued.root_identity.clone();
     let reservation = issued.apply_to(&mut spec);
+    let memory = match state.memory.provision(requested_memory, &owner) {
+        Ok(memory) => memory,
+        Err(error) => {
+            reservation.release().await;
+            return Err(error);
+        }
+    };
 
     // The uploader's credential, minted only now that the caller's authority is admitted: one
     // limited to this pod's resolved bucket and prefix, for the pod's lifetime (#3160).
@@ -1140,13 +1159,24 @@ async fn create_pod_internal(
 
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
-        DriverKind::Local => spawn_local_pod(state, &pod_dir, &spec, id, audit.as_ref()).await,
+        DriverKind::Local => {
+            spawn_local_pod(state, &pod_dir, &spec, id, audit.as_ref(), memory.as_ref()).await
+        }
         DriverKind::Firecracker => {
             spawn_firecracker_pod(state, &pod_dir, &spec, id, audit.as_ref()).await
         }
         DriverKind::Container => {
             let raw = raw_yaml.as_deref();
-            spawn_container_pod(state, &pod_dir, &spec, id, raw, audit.as_ref()).await
+            spawn_container_pod(
+                state,
+                &pod_dir,
+                &spec,
+                id,
+                raw,
+                audit.as_ref(),
+                memory.as_ref(),
+            )
+            .await
         }
         DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await,
     };
@@ -1296,6 +1326,7 @@ async fn spawn_local_pod(
     spec: &PodSpec,
     id: Uuid,
     audit: Option<&audit_sink::credentials::AuditGrant>,
+    memory: Option<&memory_provisioning::Grant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
@@ -1363,6 +1394,7 @@ async fn spawn_local_pod(
     art12_collector::provision_pod_env(&mut command, pod_dir, &state.listen_addr, &id.to_string());
 
     provision_local_audit_env(&mut command, audit);
+    memory_provisioning::local_command(&mut command, memory);
 
     // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
     let sandbox_token = nucleus_client::generate_sandbox_token(
@@ -1505,82 +1537,6 @@ async fn spawn_local_pod(
     Ok((DriverState::Local(Box::new(handle)), proxy_addr, log_path))
 }
 
-/// The environment a container pod is started with.
-///
-/// Split out of [`spawn_container_pod`] so what reaches the container's
-/// tool-proxy can be read by a test without a Docker daemon: every other half
-/// of that function needs one.
-async fn container_env(
-    state: &NodeState,
-    spec: &PodSpec,
-    id: Uuid,
-    mediation: container_mediation::ContainerMediation,
-    sandbox_token: &str,
-    spec_yaml: &str,
-    audit: Option<&audit_sink::credentials::AuditGrant>,
-) -> Vec<String> {
-    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
-    let proxy_mode = mediation.runs_tool_proxy();
-
-    if proxy_mode {
-        env.extend(container_transport::proxy_env(state));
-        env.push(format!(
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
-            state.proxy_approval_secret
-        ));
-        env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
-        art12_collector::provision_container_env(&mut env);
-
-        // The audit sink admission resolved against the operator's `--audit-sinks` (#3131), and
-        // the credential minted for exactly that destination (#3160). A container inherits
-        // nothing from the node, so this is the only credential its uploader holds.
-        if let Some(grant) = audit {
-            for (key, value) in grant.proxy_env() {
-                env.push(format!("{key}={value}"));
-            }
-        }
-
-        // Live-path session capability token (see spawn_local_pod). Injected in
-        // proxy mode — the only container mode that runs the tool-proxy sidecar.
-        if let Some(minted) = pod_authority::mint_task_token_for_spec(state, spec, id).await {
-            env.push(format!("NUCLEUS_TASK_TOKEN={}", minted.token_json));
-            env.push(format!("NUCLEUS_TASK_TOKEN_NONCE={}", minted.nonce_hex));
-            env.push(format!("NUCLEUS_TASK_TOKEN_ISSUER={}", minted.issuer_hex));
-        }
-        for (key, value) in state.authority.boot_env(id).await {
-            env.push(format!("{key}={value}"));
-        }
-        // DLC-D verified admission from the PodSpec labels, through the same
-        // declaration the local driver and the Firecracker workload API use.
-        // This driver used to have no copy of the mapping at all, so a
-        // container pod's dlc_* labels were accepted, listed by `nucleus node
-        // pods`, and never reached the tool-proxy that enforces them (#2903).
-        if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
-            env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
-        }
-    }
-
-    // Pass credentials from PodSpec (if any)
-    if let Some(ref creds) = spec.spec.credentials {
-        for (key, val) in &creds.env {
-            env.push(format!("{key}={val}"));
-        }
-    }
-
-    // In direct mode, extract the task from the raw YAML (task is not in the typed
-    // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
-    if !proxy_mode
-        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(spec_yaml)
-        && let Some(task) = raw
-            .get("spec")
-            .and_then(|s| s.get("task"))
-            .and_then(|t| t.as_str())
-    {
-        env.push(format!("NUCLEUS_TASK={task}"));
-    }
-    env
-}
-
 async fn spawn_container_pod(
     state: &NodeState,
     pod_dir: &Path,
@@ -1588,6 +1544,7 @@ async fn spawn_container_pod(
     id: Uuid,
     raw_yaml: Option<&str>,
     audit: Option<&audit_sink::credentials::AuditGrant>,
+    memory: Option<&memory_provisioning::Grant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Fail-closed: reject a network egress policy the container driver cannot
     // enforce (parity with spawn_local_pod / firecracker reject_unsupported_policy)
@@ -1636,16 +1593,7 @@ async fn spawn_container_pod(
     // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
     let mediation = state.container_mediation;
     let proxy_mode = mediation.runs_tool_proxy();
-    let env = container_env(
-        state,
-        spec,
-        id,
-        mediation,
-        &sandbox_token,
-        &spec_yaml,
-        audit,
-    )
-    .await;
+    let env = container_env(state, spec, id, &sandbox_token, &spec_yaml, audit, memory).await;
     let launch = container_mediation::launch(mediation, &state.container_image, &env);
     let image = launch.image.clone();
 
@@ -1655,10 +1603,13 @@ async fn spawn_container_pod(
 
     // Bind mounts: pod_dir → /data/pod, work_dir → /workspace. `host_paths::admit`
     // resolved work_dir to a directory strictly inside --workspace-root.
-    let binds = vec![
+    let mut binds = vec![
         format!("{}:/data/pod:rw", pod_dir_abs.display()),
         format!("{}:/workspace:rw", spec.spec.work_dir.display()),
     ];
+    if let Some(grant) = memory {
+        binds.push(grant.container_bind());
+    }
 
     // Network mode: the node's, or `none` if the pod asks for it; any other label is refused.
     let network_mode = spec_posture::container_network(

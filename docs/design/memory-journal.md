@@ -30,8 +30,33 @@ permission to act. Source assertions retain the existing provenance model;
 storage adds no external attestation of their truth.
 
 The operator owns the file and namespace assignment. This is single-proxy durable
-storage, not a shared multi-tenant memory service. Node provisioning of storage
+storage, not a shared multi-tenant memory service. Firecracker provisioning of storage
 across pod lifetimes, host-mediated memory authority, migration/compaction,
 automated recovery of incomplete writes, and durable declassification burn
 history still need implementation. A disposable guest root filesystem does not
 become persistent merely by setting these options.
+
+## Node-managed namespaces
+
+A node may opt in with `--memory-root /private/runtime/memory` (or
+`NUCLEUS_NODE_MEMORY_ROOT`). The directory must already exist, be private, and
+be separate from the node's configured workspace root. A pod requests a store
+with metadata label `nucleus.io/memory-namespace: project-a`; namespace names
+contain 1–64 ASCII letters, digits, underscores or hyphens.
+
+After authority admission, the node uses the issued root-owner identity to
+select `<memory-root>/<sha256(owner)>/<namespace>/memory.jsonl`. The proxy's
+journal header is bound to that owner hash and namespace. A spec cannot supply a
+host path or override the owner. New directories are private and their parent
+entries are synced. Cancellation stops the pod and retains its memory directory;
+replacement pods with the same owner and namespace reopen the journal. Different
+owners get different directories even when they choose the same namespace.
+
+The local development driver passes explicit proxy arguments and clears ambient
+memory environment settings. A mediated container receives a dedicated bind at
+`/run/nucleus/memory` and matching proxy environment. The proxy's file lock permits
+one active writer per journal. An absent selector provisions no persistent memory.
+Unmediated containers and VM drivers refuse the selector because no memory
+transport has been provisioned for them. The local driver retains its documented
+unsandboxed-host limitations; directory selection does not make it an isolation
+boundary.
