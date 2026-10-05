@@ -19,6 +19,8 @@ pub(crate) enum ApiError {
     InvalidSpec(String),
     #[error("pod not found")]
     NotFound,
+    #[error("pod exit report is unavailable")]
+    ExitReportUnavailable,
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serde error: {0}")]
@@ -44,6 +46,7 @@ impl IntoResponse for ApiError {
         let status = match self {
             ApiError::InvalidSpec(_) => StatusCode::BAD_REQUEST,
             ApiError::NotFound => StatusCode::NOT_FOUND,
+            ApiError::ExitReportUnavailable => StatusCode::NOT_FOUND,
             ApiError::Io(_) => StatusCode::INTERNAL_SERVER_ERROR,
             ApiError::Serde(_) => StatusCode::BAD_REQUEST,
             ApiError::Driver(_) => StatusCode::BAD_REQUEST,

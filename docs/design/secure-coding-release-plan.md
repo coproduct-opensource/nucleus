@@ -22,6 +22,28 @@ work, not an instruction to repeat those exercises. Continue with shared outboun
 accounting and normal integration checks; complete the two coding journeys once
 model endpoint configuration is available.
 
+## Release checkpoint: implementation and remaining work
+
+This is an implementation milestone, not a completed release journey. The latest
+local checkpoint has 902 passing node unit tests, three node integrations,
+348 CLI unit tests plus integrations, and the earlier 580-test all-feature proxy
+suite plus integrations. Tests cover different source checkpoints as recorded
+below; the final PR and merge-group checks must still run.
+
+| Outcome | Implemented and exercised | Still required |
+|---|---|---|
+| Host-owned effects | Shared authority, effect-bound one-shot approval, bounded staging, revocation and fixed tariffs; operator review/grant/refuse | Durable runtime history, variable charging, broader certificate revocation |
+| Coding workflow | Matched local Apple image, fresh setup, saved host selection, workspace transfer, managed adapter, independent receipt/log/artifact verification and public-key enrollment | **Two model-driven coding journeys: zero completed**; endpoint/model/credential configuration and a published release image |
+| Outbound accounting and audit credentials | Shared Firecracker direct-packet and broker upload allowance; paced replay; scoped Unix audit minter protocol | Physical broker wire overhead, other drivers, provider integration and credential refresh |
+| Resource admission and lifecycle | Aggregate CPU/memory/swap admission, cgroup ancestry, bounded queue/probe waits, owned launch tasks and confirmed cleanup before release | Durable recovery across node termination; network-allocation recovery across restart |
+| Persistent memory | Owner-scoped labeled JSONL storage and verified replay for local/mediated-container drivers | VM transport, durable declassification and compaction |
+| Evaluation | Existing regression evidence retained | AgentDojo/red-team work remains paused at the user's direction |
+
+The source-built Apple image is a local validation artifact. Its harness startup
+and fixture preflight are not model sessions. The merge milestone requires the
+normal Gatehouse and repository checks; no skipped or cancelled manual mutation
+run is counted as a passing result.
+
 Paced broker replay now reserves the complete upload volume once and admits
 body slices at HTTP consumption through the same fixed window as direct packet
 reservations. Staging and effect hashes remain unchanged. Initial path and
@@ -2951,3 +2973,53 @@ as did scoped Clippy, the Linux ARM64 build and four prepush gates. A temporary
 copy of the new binary on the fresh host returned the same independently
 enrolled public key and was removed after verification. This addition follows
 the matched image above and is not yet included in that image's recorded digest.
+
+The follow-up image `nucleus-local-host:matched-b7a5b306f` packages the new
+hostctl with the same verified node/guest inputs. Its index is
+`sha256:f0118061d8df5c79df6f5cb68923c64c54538cb51d0347eb2f3cd0856b1e96e3`;
+hostctl SHA-256 is
+`c0808ab68b54ba154136a13139056964a1d583da33e55f110385942c024623a6`.
+After upgrading the idle test host, setup verified
+`4e2e50d1-652d-4c75-9504-4651d7894a85`, exited zero and cancelled it. The
+packaged public-key command matched the prior independently enrolled key,
+demonstrating identity preservation across this image replacement. The test
+host was trimmed and stopped. Its configuration and evidence are under
+`/tmp/nucleus-matched-b7a5b306f/`.
+
+### Latest checkpoint checks and local verifier prerequisite (2026-10-05)
+
+On `b7a5b306f`, coverage job `111722443690` passed in workflow `37297554229`:
+**83.54% workspace lines** and **90.41% portcullis lines**. Custom Dylint
+workflow `37297557548` and dependency hygiene workflow `37297560723` also
+passed. The full manual mutation job was cancelled after coverage completed:
+its six target modules are unchanged from main. That cancellation is not a
+passing result or a substitute for the final PR's scoped checks.
+
+The exact full-workspace local Clippy command stopped at the verifier service's
+embedded WASM check. The local generated SDK artifact, dated September 14,
+did not match the tracked canonical digest. An isolated source snapshot built
+with Linux ARM64 Rust 1.96.1 and wasm-pack 0.13.1 also produced a different
+digest. Neither the pin nor the existing local SDK artifacts was changed.
+Main's canonical Linux CI Clippy check is green; the branch must still pass it.
+Clippy with all workspace targets/features **except `nucleus-verifier-service`**
+passed locally. This is a scoped result, not a full-workspace pass. The temporary
+SDK container was removed after the build; evidence is retained under
+`/tmp/nucleus-sdk-prerequisite/`.
+
+CLI help now describes setup as Apple Container or Lima configuration and the
+node surface as pod, approval and evidence operations. This is a help-text
+correction only; runtime behavior is unchanged.
+
+### Distinguish unavailable reports from missing pods (2026-10-05)
+
+The legacy HTTP receipt route now returns `pod exit report is unavailable`
+when an authorized, existing pod has no available exit report. It retains the
+existing 404 status, but no longer reports `pod not found` for a cancelled pod
+that remains registered. Lookup and ownership checks run first and keep their
+existing missing-pod behavior. This does not create a report after cancellation
+or change the independent signed workload-execution collection API.
+
+The existing cancellation regression now checks the JSON response and status,
+not only the internal error. All 22 handler tests passed, including caller
+ownership checks and the running-pod case. This corrects the misleading behavior
+recorded in the earlier environment notes; the pod-retention semantics remain.

@@ -108,7 +108,7 @@ enum Commands {
     /// Launch an interactive agent session with nucleus security context
     Shell(shell::ShellArgs),
 
-    /// Set up nucleus environment (Lima VM, artifacts, secrets)
+    /// Configure an Apple Container or Lima host and verify a real workload
     Setup(setup::SetupArgs),
 
     /// Run a Firecracker host using Apple Container on macOS
@@ -156,7 +156,7 @@ enum Commands {
     /// Publish, inspect and rotate a node's federation issuer key (ADR 0010)
     Federation(federation::FederationArgs),
 
-    /// Interact with a running nucleus-node (test utilities)
+    /// Manage pods, review effect approvals, and collect execution evidence
     Node(node::NodeArgs),
 
     /// Walk the data-lineage DAG for a SPIFFE call ID

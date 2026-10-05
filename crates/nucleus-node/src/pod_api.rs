@@ -590,7 +590,7 @@ async fn snapshot_running_pod(
     }
 }
 
-/// Serve a pod's execution receipt.
+/// Serve the node-signed guest exit report and host metadata.
 ///
 /// The route the SDKs have been calling all along. `Operation::GetReceipt` has existed in the
 /// authorization enum since receipts did, and the gRPC surface has served them — but over HTTP
@@ -608,11 +608,10 @@ pub(crate) async fn get_receipt(
     let pod = get_pod_for_caller(&state, id, &caller).await?;
     match crate::pod_receipt::build(&pod, &state.authority).await {
         Ok(built) => Ok(Json(built.receipt)),
-        // A pod that has not finished has no receipt YET, which is not the same as not having one
-        // — and neither is the same as not existing. `NoExitReport` maps to NotFound because the
-        // artifact genuinely is not there; the others say what they are.
+        // A present pod may have no available exit report. Keep that distinct
+        // from lookup's NotFound; neither is the same as a still-running pod.
         Err(e @ ReceiptError::NotExited) => Err(ApiError::Driver(e.to_string())),
-        Err(ReceiptError::NoExitReport(_)) => Err(ApiError::NotFound),
+        Err(ReceiptError::NoExitReport(_)) => Err(ApiError::ExitReportUnavailable),
         Err(e @ ReceiptError::Malformed(_)) => Err(ApiError::Driver(e.to_string())),
     }
 }
@@ -1704,20 +1703,10 @@ pub(crate) mod handler_tests {
         );
     }
 
-    /// **A pod that exists gets `404 pod not found` from the receipt route.**
-    ///
-    /// `get_receipt` maps `NoExitReport` onto `ApiError::NotFound`, whose
-    /// message is "pod not found" — so a cancelled pod, still listed by
-    /// `GET /v1/pods` and still fetchable by id, is reported missing when the
-    /// only missing thing is the exit report the proxy writes at shutdown.
-    ///
-    /// The mapping is deliberate (the comment at the call site argues the
-    /// artifact genuinely is not there) and the MESSAGE is what misleads. This
-    /// test pins the behaviour as it is rather than asserting the wording I
-    /// would prefer; changing `ApiError::NotFound`'s text is a decision for a
-    /// change that is about denials, not for this one.
+    /// Cancellation retains the pod, but may leave no exit report. Preserve
+    /// the receipt route's 404 while telling the operator which fact is absent.
     #[tokio::test]
-    async fn a_pod_with_no_exit_report_is_reported_as_a_missing_pod() {
+    async fn a_pod_with_no_exit_report_is_not_reported_as_a_missing_pod() {
         let dir = tempfile::tempdir().expect("tempdir");
         let st = state(&dir);
         let id = register(&st, None).await;
@@ -1729,9 +1718,8 @@ pub(crate) mod handler_tests {
         .await
         .expect("cancels");
 
-        // The pod is demonstrably still there ...
+        // The pod still exists; only its report is unavailable.
         assert!(get_pod(&st, id).await.is_ok());
-        // ... and the receipt route says it is not.
         let Err(err) = get_receipt(
             axum::extract::State(st.clone()),
             axum::Extension(CallerScope::NodeWide),
@@ -1741,13 +1729,14 @@ pub(crate) mod handler_tests {
         else {
             panic!("no exit report, so no receipt");
         };
-        assert!(matches!(err, ApiError::NotFound), "{err:?}");
-        assert_eq!(
-            err.to_string(),
-            "pod not found",
-            "recorded because it names the wrong thing: the POD is found, the \
-             exit report is not"
-        );
+        assert!(matches!(err, ApiError::ExitReportUnavailable), "{err:?}");
+        use axum::response::IntoResponse as _;
+        use http_body_util::BodyExt as _;
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"], "pod exit report is unavailable");
     }
 
     /// A receipt is refused for a pod that has not exited — the handler carries
