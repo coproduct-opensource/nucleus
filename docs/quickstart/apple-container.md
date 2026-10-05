@@ -148,7 +148,7 @@ Use the same host-settings JSON directly with node commands:
 nucleus node --apple-host-config host.json health
 nucleus node --apple-host-config host.json create workload.yaml
 nucleus node --apple-host-config host.json workload POD_ID collect \
-  --wait-secs 120 --output receipt.json
+  --wait-secs 120 --output receipt.json --logs-dir raw-logs
 nucleus node --apple-host-config host.json cancel POD_ID
 ```
 
@@ -159,6 +159,14 @@ with an explicit node URL, identity flags or legacy secrets. It changes only the
 current command's connection; it does not write global CLI configuration. These
 commands may start an owned stopped host. Use `microvm-host status` for read-only
 container inspection.
+
+`--logs-dir` saves exact `stdout.bin` and `stderr.bin` bytes in a new private
+directory before publishing the receipt file. Both streams must be available;
+an empty stream is saved as an empty file. Existing directories and receipt
+files are never overwritten. A filesystem failure may leave partial logs and
+reports their location; it does not cancel the pod. Collecting these files does
+not verify them. Use `nucleus-audit verify-logs` with independently prepared
+expectations before relying on their contents.
 
 Alternatively, use the returned URL and identity directory explicitly:
 

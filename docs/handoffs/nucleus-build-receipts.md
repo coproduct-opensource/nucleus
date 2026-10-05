@@ -212,6 +212,8 @@ nucleus node workload <pod-uuid> logs stderr --output workload.stderr
 nucleus node workload <pod-uuid> collect --output execution-receipt.json
 nucleus node workload <pod-uuid> collect --artifacts outputs.json --output execution-bundle.json
 nucleus node workload <pod-uuid> collect --wait-secs 600 --output execution-receipt.json
+nucleus node workload <pod-uuid> collect --wait-secs 600 \
+  --output execution-receipt.json --logs-dir raw-logs
 ```
 
 `outputs.json` is the selection object itself, for example
@@ -221,6 +223,16 @@ the pod's proxy is available, before cancelling the pod. Without `--artifacts`,
 the output is the signed receipt; with it, the output is the node's JSON bundle
 containing `receipt` and base64 `artifacts`. Collection exports evidence; it does
 not perform independent signature or execution-policy verification.
+
+`--logs-dir` additionally fetches both raw streams before publishing the receipt
+file. It creates a new private directory containing `stdout.bin` and `stderr.bin`,
+including empty files for empty streams. It works with or without `--artifacts`.
+An unavailable log or a filesystem failure returns an error and leaves the pod
+available for inspection. Existing files/directories are never overwritten; a
+partial filesystem write reports the directory to inspect. Independently verify
+the saved bytes with `nucleus-audit verify-logs`; when collecting artifacts,
+extract the bundle's `receipt` field for that command and separately verify the
+artifact bundle with `verify-artifacts`.
 
 `--wait-secs` polls the authenticated workload result once per second until it
 reports completion, up to the chosen limit (1–86400 seconds). That deadline

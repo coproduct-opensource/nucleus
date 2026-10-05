@@ -2463,3 +2463,30 @@ push authentication, workflow deadlines/pipelines, shell portability and action
 inputs. Existing release checks find all nine required guest packages built and
 uploaded. Linux dependency-hygiene run `37274887141` passed on `d7053913a`;
 custom-lint run `37274884233` remains active on that same commit.
+
+
+### Collect raw logs with execution evidence (2026-10-05)
+
+`node workload collect --logs-dir DIR` now fetches both exact raw streams before
+publishing the requested receipt file. The directory is new and private (0700 on
+Unix), its files are private (0600), and empty streams remain empty files. Failed
+log requests do not publish a receipt; filesystem failures report retained or
+partial output. Existing destinations are never overwritten, and collection
+does not cancel the pod. The option also works with artifact collection, while
+independent signature, log and artifact verification remain separate operations.
+
+Live Firecracker pod `2b3cfed7-4195-4b62-804a-e894445cdd52` completed the public
+Apple-selected path using one collection command. Independent verification
+accepted its 19-byte stdout (including binary bytes) and 20-byte stderr while
+preserving exit 23. The pod was cancelled after verification. Evidence is under
+`/tmp/nucleus-collect-logs-live/`. All 335 CLI unit tests passed, two ignored;
+integration suites, scoped Clippy and convergence passed. Sandbox-only loopback
+denials in the first full test run were resolved by running the fixtures with
+loopback access.
+
+Linux custom-lint run `37274884233` completed successfully on `d7053913a`.
+The additional manifest checks pass for upstream action-input declarations,
+merge-group scope parity, the single SVID validator, independent conformance,
+attached boot spans, named netns programs, declared bridge filtering, distinct
+workflow concurrency, and absence of piped installers/tracked build artifacts.
+Coverage's mutation job remains active; final-head CI is still required.

@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::{HttpClient, REQUEST_TIMEOUT};
 
 mod collection;
+mod logs;
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
@@ -37,6 +38,9 @@ pub enum Command {
         /// Wait up to this many seconds for supervised workload completion
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86400))]
         wait_secs: Option<u64>,
+        /// Also save stdout.bin and stderr.bin in a new private directory
+        #[arg(long)]
+        logs_dir: Option<PathBuf>,
         /// New JSON file; existing files are never overwritten
         #[arg(long)]
         output: PathBuf,
@@ -115,6 +119,7 @@ pub(super) async fn run(
         Command::Collect {
             artifacts,
             wait_secs: _,
+            logs_dir: _,
             output: _,
         } => (
             "execution-receipt",
@@ -125,6 +130,7 @@ pub(super) async fn run(
     if let Command::Collect {
         artifacts: _,
         wait_secs: Some(seconds),
+        logs_dir: _,
         output: _,
     } = command
     {
@@ -180,13 +186,37 @@ pub(super) async fn run(
         Command::Collect {
             artifacts: _,
             wait_secs: _,
+            logs_dir,
             output,
         } => {
             // Export the node's wire document intact; collection is not an
             // independent signature or execution-policy verification.
             let _: serde_json::Value =
                 serde_json::from_slice(&bytes).context("invalid receipt JSON")?;
-            save(output, &bytes)?;
+            if let Some(directory) = logs_dir {
+                logs::collect(client, origin, pod, directory)
+                    .await
+                    .context(
+                        "collecting raw logs; receipt was not saved and pod was not cancelled",
+                    )?;
+            }
+            save(output, &bytes).with_context(|| {
+                logs_dir.as_ref().map_or_else(
+                    || "saving execution receipt".to_string(),
+                    |directory| {
+                        format!(
+                            "saving execution receipt; collected logs remain in {}",
+                            directory.display()
+                        )
+                    },
+                )
+            })?;
+            if let Some(directory) = logs_dir {
+                println!(
+                    "Saved raw stdout.bin and stderr.bin in {}",
+                    directory.display()
+                );
+            }
             println!(
                 "Saved execution evidence to {}; independent verification is still required",
                 output.display()
@@ -225,6 +255,7 @@ mod tests {
             Command::Collect {
                 artifacts: None,
                 wait_secs: Some(60),
+                logs_dir: None,
                 output: _,
             }
         ));
@@ -235,9 +266,22 @@ mod tests {
             Command::Collect {
                 artifacts: None,
                 wait_secs: None,
+                logs_dir: None,
                 output: _,
             }
         ));
+        let with_logs = Parse::try_parse_from([
+            "workload",
+            "collect",
+            "--output",
+            "receipt.json",
+            "--logs-dir",
+            "raw-logs",
+        ])
+        .unwrap();
+        assert!(
+            matches!(with_logs.command, Command::Collect { logs_dir: Some(path), .. } if path == Path::new("raw-logs"))
+        );
     }
 
     #[test]
