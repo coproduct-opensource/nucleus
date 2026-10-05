@@ -342,6 +342,34 @@ fn a_live_machine_and_an_idle_registered_runner_each_cover_one_queued_job() {
 }
 
 #[test]
+fn a_busy_runner_cannot_cover_waiting_work_and_an_idle_runner_counts_once() {
+    for (status, busy, queued, launches) in [
+        ("online", true, 1, 1),
+        ("online", false, 2, 1),
+        ("offline", false, 1, 0),
+    ] {
+        let mut current = pooled("build", 0, "started", 0);
+        current.config["metadata"]["github_runner_id"] = json!("77");
+        let actions = plan(
+            &[pool("build", 2, 2)],
+            &snapshot(
+                vec![current, pooled("build", 1, "stopped", 60)],
+                vec![runner(77, "build-0-123", status, busy)],
+                &[("build", queued)],
+            ),
+        );
+        assert_eq!(
+            actions
+                .iter()
+                .filter(|a| matches!(a, Action::Launch { .. }))
+                .count(),
+            launches,
+            "status={status} busy={busy} queued={queued}: {actions:?}"
+        );
+    }
+}
+
+#[test]
 fn standby_is_warmed_without_demand_and_surplus_idle_machines_retire() {
     let actions = plan(
         &[pool("gate", 4, 1)],

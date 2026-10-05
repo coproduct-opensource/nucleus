@@ -56,8 +56,9 @@ pub const DEFAULT_WARMING_LIMIT: usize = 4;
 /// which is seconds — and the reap runs in the same pass that issued it.
 pub const ORPHAN_GRACE_SECS: u64 = 300;
 
-/// Machine states in which a machine is running, or about to run, its job: it covers a queued job
-/// and it is not a candidate to be started or retired.
+/// Machine states in which a machine is running, or about to run, its job.
+/// It cannot be started or retired; its runner may already be busy, so being
+/// live alone does not establish available capacity for another queued job.
 ///
 /// `created` is deliberately NOT here. A machine created with `skip_launch` has never booted: it
 /// covers nothing, and a planner that reads it as live never touches it again — six machines sat
@@ -406,17 +407,30 @@ pub fn plan(pools: &[PoolSpec], snapshot: &Snapshot) -> Vec<Action> {
             .iter()
             .filter(|r| r.belongs_to(&pool.label) && r.is_idle_online())
             .count();
-        let live = mine.iter().filter(|m| m.is_live()).count();
+        let preparing = mine
+            .iter()
+            .filter(|m| m.is_live())
+            .filter(|m| {
+                let registration = m
+                    .runner_id()
+                    .and_then(|id| snapshot.runners.iter().find(|runner| runner.id == id));
+                // Busy runners already own a job. An idle online registration was
+                // counted above; counting its machine again would double capacity.
+                // Before registration is visible, retain the boot reservation so
+                // successive polls do not launch extra machines for the same job.
+                registration.is_none_or(|runner| !runner.busy && !runner.is_idle_online())
+            })
+            .count();
         let warm: Vec<&&Machine> = mine.iter().filter(|m| m.is_warm()).collect();
         let cold: Vec<&&Machine> = mine.iter().filter(|m| m.is_cold()).collect();
 
-        // A queued job is already covered by a machine that is up, or by a registered runner
-        // sitting idle: both will take it within seconds without anything started here.
+        // Only idle registrations and pending boots cover queued demand.
+        // A machine executing a long job is not capacity for the next one.
         let mut needed = snapshot
             .demand
             .get(&pool.label)
             .saturating_sub(idle_online)
-            .saturating_sub(live);
+            .saturating_sub(preparing);
 
         // Warm machines first — a start is about a second; a cold one pulls the image first.
         for machine in warm.iter().chain(cold.iter()) {
