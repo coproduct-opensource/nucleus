@@ -286,6 +286,10 @@ pub struct RunArgs {
     #[arg(long, conflicts_with_all = ["local", "hook", "node_url", "identity_dir", "node_auth_secret"])]
     pub apple_host_config: Option<PathBuf>,
 
+    /// Existing workspace directory inside the guest (does not upload host files)
+    #[arg(long, conflicts_with_all = ["local", "hook"], value_parser = absolute_guest_dir)]
+    pub guest_work_dir: Option<PathBuf>,
+
     /// Auth secret for nucleus-node API (HMAC).
     #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
     pub node_auth_secret: Option<String>,
@@ -934,6 +938,23 @@ async fn run_enforced(
     pod_session::finish(result, cleanup, pod.id)
 }
 
+fn absolute_guest_dir(value: &str) -> std::result::Result<PathBuf, String> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(path)
+    } else {
+        Err("guest workspace must be an absolute path inside the guest".into())
+    }
+}
+
+fn guest_work_dir(args: &RunArgs, host_work_dir: &Path) -> PathBuf {
+    match &args.guest_work_dir {
+        Some(path) => path.clone(),
+        None if args.apple_host_config.is_some() => nucleus_spec::guest_layout::WORK_DIR.into(),
+        None => host_work_dir.to_path_buf(),
+    }
+}
+
 fn build_pod_spec(
     args: &RunArgs,
     policy: &PermissionLattice,
@@ -942,7 +963,7 @@ fn build_pod_spec(
     rootfs_path: &str,
 ) -> Result<SpecPodSpec> {
     let mut spec = SpecPodSpec::new(PodSpecInner {
-        work_dir: work_dir.to_path_buf(),
+        work_dir: guest_work_dir(args, work_dir),
         timeout_seconds: args.timeout,
         policy: PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
@@ -1364,6 +1385,47 @@ fn render_output(output: &std::process::Output, duration: Duration, mode: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_workspace_is_distinct_from_the_host_agent_directory() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        let mut args =
+            Parse::try_parse_from(["run", "ordinary task", "--apple-host-config", "host.json"])
+                .unwrap()
+                .args;
+        let host = Path::new("/private/tmp/project");
+        let policy = PermissionLattice::restrictive();
+        let spec = build_pod_spec(&args, &policy, host, "/kernel", "/rootfs").unwrap();
+        assert_eq!(
+            spec.spec.work_dir,
+            Path::new(nucleus_spec::guest_layout::WORK_DIR)
+        );
+        args.guest_work_dir = Some("/tmp/project".into());
+        let spec = build_pod_spec(&args, &policy, host, "/kernel", "/rootfs").unwrap();
+        assert_eq!(spec.spec.work_dir, Path::new("/tmp/project"));
+        args.apple_host_config = None;
+        args.guest_work_dir = None;
+        assert_eq!(guest_work_dir(&args, host), host);
+        assert!(
+            Parse::try_parse_from(["run", "ordinary task", "--guest-work-dir", "relative",])
+                .is_err()
+        );
+        assert!(
+            Parse::try_parse_from([
+                "run",
+                "ordinary task",
+                "--guest-work-dir",
+                "/work",
+                "--local",
+            ])
+            .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn explicit_host_identity_resolves_and_missing_files_do_not_fall_back() {

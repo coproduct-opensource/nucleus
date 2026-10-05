@@ -2071,3 +2071,47 @@ covers the observed default-network address and a missing assignment without
 breaking published-loopback selection. A current Linux hostctl/image and complete
 Apple relay run still need live validation. Neither host readiness nor route
 selection completes a model-driven coding journey.
+
+### Live Apple run/MCP relay and guest workspace correction (2026-10-05)
+
+The current Linux hostctl was cross-built successfully (SHA-256
+`1795327a368d32c79003bbfaea95ce8345026ffe64be04a1c4b8a66cbb795cec`). The successful
+flat host image is `nucleus-local-host:relay-flat-12db36eba`, manifest-list digest
+`e16caceab3475af40db89e383e2b9b0a3d6a1a83bed7af6ab7590d5c428e1b1c`. Its installed
+helper matches its updated input manifest. An intermediate derived image imported
+but failed an independent boot check without a state volume and was removed;
+the proven explicit flat recipe was used for the retained image.
+
+Live run validation exposed a real workspace error: the host canonicalized `/tmp`
+to `/private/tmp` and sent that host path into the guest. The proxy failed opening
+its workspace before health. A root-directory diagnostic run instead produced
+an explicit audit-log/workspace overlap refusal. Apple runs now default their
+guest workspace to the shared `/work` constant while retaining the host directory
+for the agent process. `--guest-work-dir` selects another absolute guest path;
+it conflicts with local/hook mode. This does not transfer any host files.
+
+Two ordinary protocol-fixture runs then succeeded through the public `run` path:
+KVM/mTLS readiness, actual Firecracker pod admission, fresh relay acknowledgement,
+relay health, the real native MCP binary and a guest glob call. The second used
+the default vsock setting and reused the relay slot. Both returned success and
+exit 0; the first pod was `62dc8474-243c-4aed-a046-b3ef28f5ac23`. After execution,
+the node reported exited pods and no relay process remained. This fixture made
+no model calls and is not a completed coding journey. Evidence:
+`/tmp/nucleus-relay-functional-{fixed,defaults}.json`,
+`/tmp/nucleus-relay-functional-{first-evidence,evidence}.json`,
+`/tmp/nucleus-relay-after-runs-pods.json`, and
+`/tmp/nucleus-relay-installed-helper.json`.
+
+Storage recovery was necessary. Native tool binaries were retained under
+`/tmp/nucleus-current-tools` before cleaning the 3.4 GiB native cache, and the
+Linux cache was cleaned after saving the helper. Superseded/failed local images
+were removed. The duplicate packaged guest rootfs was retired only after its
+hash matched the retained image input manifest; recovery location is recorded in
+`/tmp/nucleus-retired-packaged-rootfs.json`. Failed pod copies had left the ext4
+state volume physically large after deletion: fstrim reduced it from 3.9 GiB to
+38 MiB without deleting state. Disk exhaustion also left the builder and later
+the idle development root in emergency read-only mode; they were restarted only
+after space recovery. The quickstart now documents unused-block reclamation.
+Validation: 323 CLI tests passed, two ignored; scoped Clippy passed. The complete
+model-driven journeys, workspace transfer and evidence export before run teardown
+remain open.

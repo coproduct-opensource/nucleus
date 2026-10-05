@@ -183,8 +183,12 @@ Runs cancel their pods on ordinary success and failure, and report cancellation
 failures with the pod ID. Process crashes still require timeout or operator
 cleanup. This connection option preserves the existing host-side agent/MCP run
 model; it does not add workspace transfer or run the agent itself inside the
-microVM. Workspaces and artifacts still need the existing node/guest provisioning
-path. It also does not yet collect execution evidence before teardown. The two
+microVM. `--dir` selects the host agent's working directory. Apple runs use `/work`
+inside the guest by default; `--guest-work-dir /absolute/guest/path` selects another
+existing guest directory. The host's canonical path is not a guest path (for
+example, macOS resolves `/tmp` to `/private/tmp`). Workspaces and artifacts still
+need the existing node/guest provisioning path. Selecting `/work` does not copy
+the host project into it. It also does not yet collect execution evidence before teardown. The two
 complete guest-harness journeys remain a separate release requirement.
 
 ## Published-port troubleshooting
@@ -201,3 +205,21 @@ the same cause. With the default connection, `up` continues to refuse readiness 
 its published endpoint answers over mTLS. The explicit `container-ip` connection
 was validated on this host and provides another checked route; it does not repair
 the published-port forwarding service.
+
+## Reclaim unused state-volume blocks
+
+Cancelled and failed pods can leave the Apple state volume physically large even
+when their image files were deleted. On a discard-capable volume, reclaim unused
+filesystem blocks from the running host with:
+
+```sh
+container exec nucleus-dev-microvm-host fstrim -v /srv
+```
+
+Use the installation's actual container name. This preserves allocated files and
+state. The reported trim range is not the number of physical host bytes recovered;
+check host disk usage separately. In local validation, the development volume
+shrank from 3.9 GiB to 38 MiB after trimming. If a prior disk-full event left the
+container root with `emergency_ro` in its mount options, stop the idle host and run
+`microvm-host up` again after recovering space. A read-only builder likewise needs
+an idle builder restart; neither restart substitutes for recovering space first.
