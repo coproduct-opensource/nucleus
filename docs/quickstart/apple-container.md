@@ -76,6 +76,17 @@ probes KVM, and checks `/v1/health` over mTLS. Successful stdout is JSON with
 `state: ready`, `node_url`, `identity_dir`, `state_dir` and relay port mappings.
 Logs and errors go to stderr. An error exits nonzero and does not report readiness.
 
+The default connection is `--connection published-loopback`. If local published
+ports do not work but the Mac can reach the container network, explicitly choose
+`--connection container-ip`. The CLI reads the owned container's current IPv4
+assignment on its default network and checks the same mTLS node endpoint there.
+It refuses a missing or ambiguous assignment. KVM probing, certificate checks and
+node health are required for both routes; there is no automatic fallback.
+The returned `node_url` identifies the verified route. Container addresses can
+change after restart, so use a fresh readiness result instead of saving an IP.
+The `relay_ports` field still reports the published port mappings; run's relay
+connection uses the selected route and the corresponding container or host port.
+
 The defaults are four CPUs, 4096 MiB of memory and a 120-second readiness timeout.
 `--cpus`, `--memory-mib` and `--ready-timeout-secs` override them. CPU and memory
 settings apply when creating a container; they do not resize an existing host.
@@ -136,6 +147,7 @@ Save an explicit host configuration, using the same inputs as `microvm-host up`:
   "kernel": "/absolute/path/to/linux_arm64/Image",
   "state_dir": "/absolute/path/to/host-state",
   "development": true,
+  "connection": "published-loopback",
   "cpus": 4,
   "memory_mib": 4096,
   "ready_timeout_secs": 120
@@ -152,8 +164,9 @@ nucleus run "check the project" --apple-host-config host.json
 ```
 
 Dry-run validates configuration without creating host state or starting a host.
-A real run requires successful host preflight, KVM probing and published-endpoint
-mTLS health before creating a pod. The selected host supplies the node URL and
+A real run requires successful host preflight, KVM probing and mTLS health through
+the selected connection before creating a pod. Set `"connection": "container-ip"`
+to use the current container address for both the node and the relay. The selected host supplies the node URL and
 identity; do not combine this option with `--node-url`, `--identity-dir`, legacy
 node credentials, `--local` or `--hook`. `--goal` and `--grant` use the same run
 connection path after their existing authorization step.
@@ -184,5 +197,7 @@ macOS Local Network permission issue; check **System Settings → Privacy &
 Security → Local Network** for that helper. Apple Container's
 [upstream report](https://github.com/apple/container/issues/2029) describes this
 pattern. It is a diagnostic lead, not proof that every forwarding failure has
-the same cause. `up` continues to refuse readiness until its published endpoint
-answers over mTLS.
+the same cause. With the default connection, `up` continues to refuse readiness until
+its published endpoint answers over mTLS. The explicit `container-ip` connection
+was validated on this host and provides another checked route; it does not repair
+the published-port forwarding service.

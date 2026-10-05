@@ -23,6 +23,7 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -108,6 +109,28 @@ struct PublishedPort {
 #[derive(Debug, Deserialize)]
 struct Status {
     state: String,
+    #[serde(default)]
+    networks: Vec<Network>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Network {
+    network: String,
+    #[serde(rename = "ipv4Address")]
+    ipv4_address: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Connection {
+    PublishedLoopback,
+    ContainerIp,
+}
+
+impl Connection {
+    pub fn published() -> Self {
+        Self::PublishedLoopback
+    }
 }
 
 /// The Mac-side ports a host container publishes, read back from the
@@ -118,6 +141,47 @@ pub struct HostPorts {
     pub node: u16,
     /// `(container port, Mac port)` for each relay slot, in slot order.
     pub relays: Vec<(u16, u16)>,
+    container_ipv4: Result<Ipv4Addr, String>,
+}
+
+impl HostPorts {
+    pub fn node_address(&self, connection: Connection) -> Result<SocketAddr, String> {
+        match connection {
+            Connection::PublishedLoopback => Ok((Ipv4Addr::LOCALHOST, self.node).into()),
+            Connection::ContainerIp => self.container_ipv4.clone().map(|ip| (ip, NODE_PORT).into()),
+        }
+    }
+}
+
+fn container_ipv4(status: &Status) -> Result<Ipv4Addr, String> {
+    let networks: Vec<_> = status
+        .networks
+        .iter()
+        .filter(|n| n.network == "default")
+        .collect();
+    let [network] = networks.as_slice() else {
+        return Err("container IP requires exactly one default network assignment".into());
+    };
+    let address = network
+        .ipv4_address
+        .as_deref()
+        .ok_or("container has no IPv4 address on the default network")?;
+    let (ip, prefix) = address
+        .split_once('/')
+        .ok_or("container IPv4 address lacks prefix")?;
+    let ip: Ipv4Addr = ip.parse().map_err(|_| "invalid container IPv4 address")?;
+    let prefix: u8 = prefix
+        .parse()
+        .map_err(|_| "invalid container IPv4 prefix")?;
+    if prefix > 32
+        || ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+    {
+        return Err("container IPv4 address is not a usable assigned endpoint".into());
+    }
+    Ok(ip)
 }
 
 /// Why an existing container cannot be used as it is.
@@ -175,7 +239,7 @@ pub fn host_state(list_json: &str, want: &Expected) -> Result<HostState, String>
         });
     }
     match e.status.state.as_str() {
-        "running" => match ports(&e.configuration) {
+        "running" => match ports(&e.configuration, &e.status) {
             Ok(p) => Ok(HostState::Running(owned, p)),
             Err(what) => Ok(HostState::Stale {
                 reason: StaleReason::Drifted { owned, what },
@@ -229,7 +293,7 @@ fn drift(c: &Configuration, want: &Expected) -> Option<String> {
     None
 }
 
-fn ports(c: &Configuration) -> Result<HostPorts, String> {
+fn ports(c: &Configuration, status: &Status) -> Result<HostPorts, String> {
     let on_loopback = |container: u16| {
         c.published_ports
             .iter()
@@ -249,7 +313,11 @@ fn ports(c: &Configuration) -> Result<HostPorts, String> {
             None => return Err(format!("relay port {cp} is not published")),
         }
     }
-    Ok(HostPorts { node, relays })
+    Ok(HostPorts {
+        node,
+        relays,
+        container_ipv4: container_ipv4(status),
+    })
 }
 
 /// Volume names from `container volume list --format json`.
@@ -283,6 +351,8 @@ pub struct MicroVmHost {
     ports: HostPorts,
     identity_dir: PathBuf,
     state_dir: PathBuf,
+    connection: Connection,
+    node_address: SocketAddr,
 }
 
 impl MicroVmHost {
@@ -293,12 +363,22 @@ impl MicroVmHost {
 
     /// The node's API on the Mac.
     pub fn node_url(&self) -> String {
-        format!("https://127.0.0.1:{}", self.ports.node)
+        format!("https://{}", self.node_address)
     }
 
     /// The published relay slots.
     pub fn relay_ports(&self) -> &[(u16, u16)] {
         &self.ports.relays
+    }
+
+    pub fn relay_address(&self, container_port: u16, published_port: u16) -> SocketAddr {
+        SocketAddr::new(
+            self.node_address.ip(),
+            match self.connection {
+                Connection::PublishedLoopback => published_port,
+                Connection::ContainerIp => container_port,
+            },
+        )
     }
 
     /// The CLI identity the node trusts.
@@ -373,6 +453,7 @@ pub struct HostConfig {
     pub trust_domain: String,
     /// How long the node may take to answer health after a start.
     pub ready_timeout: Duration,
+    pub connection: Connection,
 }
 
 impl HostConfig {
@@ -419,10 +500,11 @@ pub fn ensure_ready(cli: &ContainerCli, cfg: &HostConfig) -> Result<MicroVmHost,
             }]));
         }
     }
+    let node_address = ports.node_address(cfg.connection).map_err(Refusal::State)?;
     wait_healthy(
         cli,
         &owned,
-        ports.node,
+        node_address,
         &cfg.identity_dir(),
         cfg.ready_timeout,
     )?;
@@ -431,6 +513,8 @@ pub fn ensure_ready(cli: &ContainerCli, cfg: &HostConfig) -> Result<MicroVmHost,
         ports,
         identity_dir: cfg.identity_dir(),
         state_dir: cfg.state_dir.clone(),
+        connection: cfg.connection,
+        node_address,
     })
 }
 
@@ -692,16 +776,27 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), Refusal> {
 }
 
 /// Poll the node's `/v1/health` over mTLS until it answers 200.
+pub fn wait_host_healthy(
+    cli: &ContainerCli,
+    owned: &Owned,
+    ports: &HostPorts,
+    cfg: &HostConfig,
+    timeout: Duration,
+) -> Result<Duration, Refusal> {
+    let address = ports.node_address(cfg.connection).map_err(Refusal::State)?;
+    wait_healthy(cli, owned, address, &cfg.identity_dir(), timeout)
+}
+
 pub fn wait_healthy(
     cli: &ContainerCli,
     owned: &Owned,
-    node_port: u16,
+    node_address: SocketAddr,
     identity_dir: &Path,
     timeout: Duration,
 ) -> Result<Duration, Refusal> {
     let client = crate::provision::mtls_blocking_client_in(identity_dir)
         .map_err(|e| Refusal::State(format!("{e:#}")))?;
-    let url = format!("https://127.0.0.1:{node_port}/v1/health");
+    let url = format!("https://{node_address}/v1/health");
     let started = Instant::now();
     let mut last = String::from("no attempt");
     while started.elapsed() < timeout {
@@ -746,6 +841,43 @@ mod tests {
             names: &HostNames::DEV,
             image: "nucleus-dev-microvm-host:local",
         }
+    }
+
+    #[test]
+    fn explicit_connection_selects_the_observed_network_or_published_port() {
+        let HostState::Running(owned, ports) = host_state(RUNNING, &want()).unwrap() else {
+            panic!("running fixture");
+        };
+        assert_eq!(
+            ports
+                .node_address(Connection::ContainerIp)
+                .unwrap()
+                .to_string(),
+            "192.168.64.102:8080"
+        );
+        let published = ports.node_address(Connection::PublishedLoopback).unwrap();
+        assert!(published.ip().is_loopback());
+        assert_eq!(published.port(), ports.node);
+        let direct = MicroVmHost {
+            node_address: ports.node_address(Connection::ContainerIp).unwrap(),
+            connection: Connection::ContainerIp,
+            owned,
+            ports,
+            identity_dir: PathBuf::new(),
+            state_dir: PathBuf::new(),
+        };
+        assert_eq!(direct.node_url(), "https://192.168.64.102:8080");
+        assert_eq!(
+            direct.relay_address(7101, 54321).to_string(),
+            "192.168.64.102:7101"
+        );
+        let mut raw: serde_json::Value = serde_json::from_str(RUNNING).unwrap();
+        raw[0]["status"]["networks"] = serde_json::json!([]);
+        let HostState::Running(_, ports) = host_state(&raw.to_string(), &want()).unwrap() else {
+            panic!("running fixture without network assignment");
+        };
+        assert!(ports.node_address(Connection::ContainerIp).is_err());
+        assert!(ports.node_address(Connection::PublishedLoopback).is_ok());
     }
 
     fn with_state(state: &str) -> String {
@@ -932,6 +1064,7 @@ mod tests {
             memory: "2g".into(),
             trust_domain: "nucleus.local".into(),
             ready_timeout: Duration::from_secs(1),
+            connection: crate::microvm_host::lifecycle::Connection::PublishedLoopback,
         }
     }
 

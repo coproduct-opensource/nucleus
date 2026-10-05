@@ -6,7 +6,7 @@ use anyhow::{Context, Result, ensure};
 use nucleus_spec::microvm_host::HostNames;
 use serde::Deserialize;
 
-use super::lifecycle::HostConfig;
+use super::lifecycle::{Connection, HostConfig};
 
 fn cpus() -> u32 {
     4
@@ -21,6 +21,10 @@ fn timeout() -> u64 {
 #[derive(clap::Args, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HostSettings {
+    /// Node and relay route; both require the same readiness checks
+    #[arg(long, value_enum, default_value = "published-loopback")]
+    #[serde(default = "Connection::published")]
+    connection: Connection,
     /// Locally built host image containing matched node and guest artifacts
     #[arg(long)]
     image: String,
@@ -82,6 +86,7 @@ impl HostSettings {
             memory: format!("{}m", self.memory_mib),
             trust_domain: "nucleus.local".into(),
             ready_timeout: Duration::from_secs(self.ready_timeout_secs),
+            connection: self.connection,
         })
     }
 }
@@ -128,6 +133,7 @@ mod tests {
         assert_eq!(a.memory, b.memory);
         assert_eq!(a.trust_domain, b.trust_domain);
         assert_eq!(a.ready_timeout, b.ready_timeout);
+        assert_eq!(a.connection, b.connection);
         assert!(!state.exists());
     }
 

@@ -2041,3 +2041,33 @@ revalidated with a rebuilt host image; published-port forwarding remains the
 previously documented local failure. This option connects the existing host-side
 agent/MCP run mode. It adds neither workspace transfer nor an in-guest model
 harness, and does not collect evidence before teardown. Those remain release work.
+
+### Verified direct container-IP connection (2026-10-05)
+
+Apple host settings now expose an explicit connection choice:
+`published-loopback` remains the default; `container-ip` reads the owned host's
+current IPv4 assignment on the default container network. The latter requires
+exactly one usable assignment and does not substitute a remembered IP. Both
+routes still require host preflight, KVM probing and SPIFFE/mTLS node health.
+The readiness witness carries the checked node address, and relay endpoints use
+the same selected network with the appropriate container or published port.
+The host supervisor also checks and restarts through the configured route.
+There is no automatic fallback and the published-port failure remains unfixed.
+
+Live `microvm-host up --connection container-ip` succeeded on the isolated
+`nucleus-dev-microvm-host` with the previously packaged enforcing image, returning
+`state: ready` and `https://192.168.64.129:8080`. This is the first successful
+readiness result from the public host command on this machine; earlier direct-IP
+checks bypassed the command while its published-port probe failed. Evidence:
+`/tmp/nucleus-direct-host-up.json` and `/tmp/nucleus-direct-host-up.log`.
+The development host was stopped/deleted after validation, retaining its named
+volume and identity. The obsolete, already stopped session validation container
+`nucleus-branch-acceptance` was also deleted to recover 1.8 GiB; its image and
+bind-mounted evidence remain. The active acceptance host was not changed.
+
+Validation: 322 CLI tests passed with two ignored, scoped Clippy passed, and the
+additional node/relay endpoint mapping assertion passed. The running fixture
+covers the observed default-network address and a missing assignment without
+breaking published-loopback selection. A current Linux hostctl/image and complete
+Apple relay run still need live validation. Neither host readiness nor route
+selection completes a model-driven coding journey.
