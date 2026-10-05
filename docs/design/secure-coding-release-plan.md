@@ -2224,3 +2224,42 @@ All three context-staging tests and four prepush gates passed. Public CLI
 workspace transfer and actual model-driven harness execution remain open. The
 existing mutation CI job is now running; the workspace coverage job is still
 queued.
+
+### Public Apple workspace seeding (2026-10-05)
+
+`microvm-host seed --host-config host.json TREE` now connects the selected
+directory to the existing Linux filesystem builder through checked KVM/mTLS
+host readiness. It requires explicit workload and node-jailer UID/GID, creates
+a uniquely named scratch disk under `/srv/state/scratch`, and reports its path
+and parsed digest for PodSpec admission. Complete directory transfer includes
+hidden files. Source mutation during copying is not a supported snapshot
+protocol; callers must keep their selected tree stable. Success removes the
+private staging copy. Failure names staging and disk paths for inspection;
+transfer and image construction each have a ten-minute process deadline.
+
+Live validation found an Apple copy mount-path limitation: copies into the
+mounted `/srv` state volume reported success but were invisible to the running
+container. Both a single-file and directory copy into the root filesystem were
+visible. The command therefore stages under a private UUID directory in `/tmp`
+and lets hostctl write the final disk into the state volume. It invokes each
+command as arguments, without a shell. No archive implementation was needed.
+
+The public command copied `/tmp/nucleus workspace cli source`, including its
+nested file and `.fixture`, and produced scratch digest
+`d41c0b7074ef206acfc4ffb598cffced770e2ef20743d485afe0219aed6359da`.
+Pod `0b38c00a-f92c-4cea-8102-1e42022acb53` admitted that exact disk, read both
+inputs, wrote a 40-byte edited output, deleted the original guest file, synced
+and exited zero. Independent verification accepted the execution and declared
+artifact, whose hash matched the intended bytes. After cancellation, readback
+confirmed persisted edits and deletion; the original Mac source remained
+unchanged and successful staging was absent. Evidence:
+`/tmp/nucleus-cli-workspace-seed.json` and
+`/tmp/nucleus-cli-workspace-evidence/{spec,admission,bundle,expectations,verified}.json`.
+
+Validation: 330 CLI unit tests passed, two ignored; integration suites, scoped
+Clippy and all four prepush gates passed. The older relay-flat host image was
+removed after its replacement's successful validation, reclaiming 4.03 GB;
+the rootfs recovery record now points to `nucleus-local-host:workspace-a125a6c43`.
+This command exposes source transfer for explicit PodSpecs. It does not yet
+connect `run --dir` to an in-guest harness or automate output collection, and
+no actual model-driven coding journey has completed.

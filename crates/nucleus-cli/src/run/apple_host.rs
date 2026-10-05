@@ -3,19 +3,14 @@ use std::path::Path;
 
 use super::{ResolvedConfig, RunArgs};
 use crate::microvm_host::{container_cli::ContainerCli, lifecycle, settings::HostSettings};
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Result, anyhow, ensure};
 
 pub(super) fn configuration(path: &Path) -> Result<lifecycle::HostConfig> {
     ensure!(
         cfg!(target_os = "macos"),
         "Apple host selection requires macOS"
     );
-    let settings: HostSettings = serde_json::from_slice(
-        &std::fs::read(path)
-            .with_context(|| format!("reading Apple host configuration {}", path.display()))?,
-    )
-    .context("invalid Apple host configuration")?;
-    settings.config()
+    HostSettings::from_file(path)?.config()
 }
 
 pub(super) async fn ready(

@@ -53,6 +53,14 @@ pub(crate) struct HostSettings {
 }
 
 impl HostSettings {
+    pub(crate) fn from_file(path: &std::path::Path) -> Result<Self> {
+        serde_json::from_slice(
+            &std::fs::read(path)
+                .with_context(|| format!("reading Apple host configuration {}", path.display()))?,
+        )
+        .context("invalid Apple host configuration")
+    }
+
     pub(crate) fn config(self) -> Result<HostConfig> {
         ensure!(
             !self.image.trim().is_empty(),

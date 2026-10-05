@@ -21,6 +21,8 @@ enum Command {
     Up(UpArgs),
     /// Inspect the host container without starting it (not a health check)
     Status(Selection),
+    /// Copy a directory into the host and build a pinned guest workspace disk
+    Seed(super::workspace::SeedArgs),
 }
 
 #[derive(Args)]
@@ -76,6 +78,7 @@ pub(crate) async fn execute(args: HostArgs) -> Result<()> {
 fn execute_blocking(args: HostArgs) -> Result<Value> {
     let cli = ContainerCli::system();
     match args.command {
+        Command::Seed(args) => super::workspace::seed(&cli, args),
         Command::Up(args) => {
             let config = args.config()?;
             let host =

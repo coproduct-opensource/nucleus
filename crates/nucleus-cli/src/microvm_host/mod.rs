@@ -24,6 +24,7 @@ pub mod preflight;
 pub(crate) mod settings;
 pub mod supervisor;
 pub mod transport;
+mod workspace;
 
 #[cfg(test)]
 mod live;

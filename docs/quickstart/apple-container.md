@@ -111,6 +111,35 @@ For an isolated development installation, add `--development`. It uses
 are refused. A changed image or incompatible owned container is replaced while
 retaining its state volume; active pods should be finished before changing images.
 
+## Seed a guest workspace
+
+`microvm-host seed` copies a selected directory into the ready host and uses
+`nucleus-hostctl` to build its scratch disk. Pass the same host-settings JSON as
+`run --apple-host-config` and explicitly match the workload and node jailer
+owners:
+
+```sh
+nucleus microvm-host seed --host-config host.json /absolute/path/to/project \
+  --workload-uid 1000 --workload-gid 1000 \
+  --jailer-uid 123 --jailer-gid 100 --free-mib 1024 > workspace.json
+```
+
+The command copies the entire directory, including hidden files; select a tree
+containing only the inputs intended for the guest. Keep the source stable during
+transfer. It leaves the source unchanged and creates a new disk under the
+standard host's `/srv/state/scratch` directory. It reports `image.scratch_path`
+and `image.scratch_digest`; copy those fields into the PodSpec image and match
+the configured workload UID/GID. The node still checks the path, digest and
+jailer permissions at admission. Each command creates a separate disk so two
+pods do not accidentally share one writable workspace.
+
+Successful seeding removes its temporary input copy. A failed operation reports
+its staging and disk paths for inspection. Each transfer/build has a ten-minute
+limit; a timeout is an error, not evidence of a completed image. The completed
+disk remains until explicitly removed after the pod has stopped. Collect signed
+execution/artifact evidence before cancelling the pod. Seeding is a snapshot,
+not live directory synchronization, and does not automatically upload `run --dir`.
+
 ## Connect and inspect
 
 Use the returned URL and identity directory with the existing node commands:

@@ -47,6 +47,8 @@ pub enum Deadline {
     Exec,
     /// `container build` of the image or the kernel.
     Build,
+    /// Copy a selected workspace or build its filesystem image.
+    Workspace,
 }
 
 impl Deadline {
@@ -58,6 +60,7 @@ impl Deadline {
             Self::Lifecycle => Duration::from_secs(90),
             Self::Exec => Duration::from_secs(30),
             Self::Build => Duration::from_secs(60 * 60),
+            Self::Workspace => Duration::from_secs(10 * 60),
         }
     }
 }
@@ -327,6 +330,21 @@ impl ContainerCli {
         let mut a = vec!["exec", c.name()];
         a.extend_from_slice(argv);
         self.call(&a, Deadline::Exec)
+    }
+
+    /// Copy an absolute local path into a checked host. No shell interprets paths.
+    pub fn copy_into(&self, c: &Owned, source: &str, destination: &str) -> Outcome {
+        self.call(
+            &["copy", source, &format!("{}:{destination}", c.name())],
+            Deadline::Workspace,
+        )
+    }
+
+    /// Filesystem construction can exceed the short observation deadline.
+    pub fn exec_workspace(&self, c: &Owned, argv: &[&str]) -> Outcome {
+        let mut a = vec!["exec", c.name()];
+        a.extend_from_slice(argv);
+        self.call(&a, Deadline::Workspace)
     }
 
     /// `container exec --detach <name> <argv…>`: start a process and return.
