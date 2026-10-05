@@ -2808,3 +2808,67 @@ updated branch is still required.
 The README and macOS entry point now lead with the supported source-built Apple
 Container workflow, including saved host selection and its local-artifact
 requirements. Lima's release-artifact installation remains documented separately.
+
+### Live Apple queue expiry and updated CI evidence (2026-10-05)
+
+A local image of node `b3e1d1000` configured one Firecracker slot, with two
+host vCPUs and 2048 MiB. Its index is
+`sha256:d4de4d728643982941869bbe1c50d5de67089578779067464917fa04f41fc08d`;
+node SHA-256 is
+`cfedb93fcfa5d91715aaa153f91808b3cfa7587e8d477b209f4cb60fac095e8c`.
+Guest artifacts remain the recorded base inputs. Setup independently verified
+and cancelled pod `be4a5ba4-a571-4f0b-bd82-cf2143ebef89`.
+
+Holder pod `6fc2955a-1aa4-417c-a874-a56db66724f9` kept running while a second
+launch with a two-second lifetime waited for its slot. The queued launch
+returned the deadline refusal after 2.26 seconds. After cancelling the holder,
+`29ea47ac-1659-4879-8ac9-45747f2a7890` was admitted with 1024 MiB and two vCPUs
+and exited zero. That larger request would not fit if the expired launch still
+held its one-vCPU/512-MiB-plus-overhead reservation. Both admitted pods were
+cancelled; the normal host was trimmed and stopped. Evidence and settings are
+in `/tmp/nucleus-queue-deadline-live/`. Its one-slot entrypoint is a validation
+configuration, not a new product default.
+
+The first setup attempt exhausted host disk while copying the guest image and
+left the container root marked `emergency_ro`. Native binaries were preserved,
+`cargo clean` reclaimed 2.7 GiB, and the idle owned host was restarted after
+space recovery. Setup and the lifecycle test then passed. No existing development
+or primary acceptance host was replaced.
+
+Coverage job `111701062376` in workflow `37290879260` passed on checkpoint
+`47784445c`: workspace line coverage **83.53%**, portcullis line coverage
+**90.42%**. The preceding `bf8aa11e5` coverage failure remains recorded; its
+superseded manual run was cancelled with mutation testing unfinished. Custom
+Dylint workflow `37289043619` passed on `bf8aa11e5`. These are checkpoint results,
+not final-PR-head checks. The remaining full manual mutation run was cancelled
+after coverage completed; all six mutation-targeted modules are unchanged from
+main. That cancellation is not a passing mutation result, and PR/merge-queue
+checks remain required.
+
+### Keep all driver launches owned across cancelled handlers (2026-10-05)
+
+HTTP and gRPC create handlers now use one node-owned launch task for every
+driver. Previously only Docker did so: dropping a Firecracker or local create
+future during boot could drop its resource reservations without finishing
+driver cleanup. The task now retains the launch until completion. If the
+waiting handler disappears, its unaccepted delivery cancels the registered pod
+and retries cleanup until it can release authority. This moves the existing
+Docker handoff into `pod_launch`; Docker-specific rollback remains separate.
+
+A real local child-process test drops the caller while the proxy is starting.
+The node finishes registration, kills/reaps the abandoned child and returns
+aggregate capacity and delegated budget allocation. The existing delegation
+model now observes the admitted certificate before teardown, checks the same
+certificate/spec/lineage properties as a delivered launch, and expects the
+cancelled pod to remain listed with retired authority. A booted workload may
+have acted, so the existing conservative policy charges its allocation; this
+is distinct from an unspawned failure's refund. No refund is inferred merely
+from client disconnection.
+
+All 901 node unit tests (one ignored), three integrations, scoped Clippy,
+the Linux ARM64 build, convergence and four prepush gates passed after adapting
+the model. Existing
+Clippy configuration warnings remain. This proves handling of cancelled
+handler futures; it is not a client receipt acknowledgment protocol or durable
+recovery across node-process termination. A lost response after handler
+completion can still require operator inspection and execution-timeout cleanup.

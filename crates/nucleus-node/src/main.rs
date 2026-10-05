@@ -58,6 +58,7 @@ mod pod_authority;
 mod pod_boot_identity;
 mod pod_caller_identity;
 mod pod_identity_files;
+mod pod_launch;
 mod pod_receipt;
 mod pod_resources;
 mod pod_view;
@@ -1052,7 +1053,7 @@ async fn create_pod(
 
     let raw = String::from_utf8_lossy(&body).to_string();
     let (id, proxy_addr) =
-        container_launch::create(&state, spec, parent_pod_id, Some(raw), admission).await?;
+        pod_launch::create(&state, spec, parent_pod_id, Some(raw), admission).await?;
 
     Ok(Json(CreatePodResponse { id, proxy_addr }))
 }
@@ -2868,7 +2869,7 @@ impl NodeService for GrpcService {
 
         let spec: PodSpec = serde_yaml::from_str(&yaml)
             .map_err(|e| Status::invalid_argument(format!("invalid yaml: {e}")))?;
-        let (id, proxy_addr) = container_launch::create(
+        let (id, proxy_addr) = pod_launch::create(
             &self.state,
             spec,
             parent_pod_id,

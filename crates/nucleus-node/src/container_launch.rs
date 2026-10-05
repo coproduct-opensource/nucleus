@@ -1,9 +1,4 @@
-//! Docker requests can outlive a disconnected API caller. Keep the launch and
-//! its reservations in a node-owned task until handoff or confirmed cleanup.
-use crate::{ApiError, DriverKind, NodeState, PodSpec, pod_authority};
-use uuid::Uuid;
-
-type Result = std::result::Result<(Uuid, Option<String>), ApiError>;
+//! Docker launch inputs and durable rollback of external create requests.
 
 /// Admitted services and the original lifetime carried into container launch.
 /// Waiting for a driver slot must not start a fresh execution timeout.
@@ -12,68 +7,6 @@ pub(crate) struct Inputs<'a> {
     pub audit: Option<&'a crate::audit_sink::credentials::AuditGrant>,
     pub memory: Option<&'a crate::memory_provisioning::Grant>,
     pub deadline: tokio::time::Instant,
-}
-
-pub(crate) async fn create(
-    state: &NodeState,
-    spec: PodSpec,
-    parent: Option<Uuid>,
-    raw: Option<String>,
-    admission: pod_authority::Admission,
-) -> Result {
-    if !matches!(state.driver, DriverKind::Container) {
-        return crate::create_pod_internal(state, spec, parent, raw, admission).await;
-    }
-    let state = state.clone();
-    let (send, receive) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        let result = crate::create_pod_internal(&state, spec, parent, raw, admission).await;
-        // If the receiver disappeared before or after send, dropping Delivery
-        // schedules cleanup. Accepting it is the only successful handoff.
-        let _ = send.send(Delivery {
-            result: Some(result),
-            state,
-        });
-    });
-    receive
-        .await
-        .map_err(|e| ApiError::Driver(format!("container launch task failed: {e}")))?
-        .accept()
-}
-
-struct Delivery {
-    result: Option<Result>,
-    state: NodeState,
-}
-impl Delivery {
-    fn accept(mut self) -> Result {
-        self.result.take().expect("one delivery handoff")
-    }
-}
-impl Drop for Delivery {
-    fn drop(&mut self) {
-        let Some(Ok((id, _))) = self.result.take() else {
-            return;
-        };
-        let state = self.state.clone();
-        tokio::spawn(async move {
-            let pod = state.pods.lock().await.get(&id).cloned();
-            if let Some(pod) = pod {
-                loop {
-                    match pod.cancel().await {
-                        Ok(()) => {
-                            state.authority.release_child(id).await;
-                            break;
-                        }
-                        Err(error) => {
-                            tracing::warn!(pod = %id, %error, "abandoned container launch cleanup will retry")
-                        }
-                    }
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-            }
-        });
-    }
 }
 
 /// What the node knows about the completed create request.
@@ -116,7 +49,9 @@ pub(crate) async fn rollback(
 #[cfg(all(test, feature = "local-driver"))]
 mod tests {
     use super::*;
+    use crate::{DriverKind, NodeState, PodSpec, pod_authority, pod_launch::create};
     use std::{sync::Arc, time::Duration};
+    use uuid::Uuid;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
         matchers::{method, path_regex},

@@ -1252,12 +1252,43 @@ impl Walk {
             }
             (Boot::ClientGone, Created::Dropped) => {
                 self.stats.client_gone += 1;
-                self.model.allocate(source, micro);
+                // The node now owns the launch across caller disconnection.
+                // Retain the admitted certificate before cleanup retires it,
+                // then validate the completed launch exactly like a delivered one.
+                let held = self.node.st.authority.held().await;
+                let mut unknown = held
+                    .pods
+                    .iter()
+                    .filter(|(id, _)| self.index_of(**id).is_none());
+                let (&id, entry) = unknown.next().ok_or(
+                    "abandoned launch lost its admitted certificate before boot completed",
+                )?;
+                if unknown.next().is_some() {
+                    return Err("more than one unmodelled launch is in flight".into());
+                }
+                self.settle(held_before).await?;
+                self.register_record(
+                    id,
+                    Issued {
+                        who,
+                        source,
+                        depth,
+                        micro,
+                        header,
+                        asked: &asked,
+                        ups,
+                    },
+                    entry,
+                )
+                .await?;
                 self.model
-                    .retire(source, micro, self.model.rules.unrun_refunds);
-                // The release runs on a task of its own: give it the chance a
-                // live node would, then hold the node to the model.
-                self.settle(held_before).await;
+                    .pods
+                    .last_mut()
+                    .expect("registered abandoned pod")
+                    .phase = Phase::Reaped;
+                // A booted workload may have acted. The existing conservative
+                // release charges its allocation, unlike a failed spawn.
+                self.model.retire(source, micro, false);
                 Ok(())
             }
             (_, got) => Err(format!(
@@ -1267,13 +1298,14 @@ impl Walk {
     }
 
     /// Wait (bounded, on the paused clock) for the authority to hold `n` pods.
-    async fn settle(&self, n: usize) {
-        for _ in 0..500 {
-            if self.node.st.authority.held().await.pods.len() <= n {
-                return;
+    async fn settle(&self, n: usize) -> Result<(), String> {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while self.node.st.authority.held().await.pods.len() > n {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-        }
+        })
+        .await
+        .map_err(|_| "abandoned launch did not finish teardown".to_string())
     }
 
     fn count_refusal(&mut self, who: Who, micro: u64) {
@@ -1394,6 +1426,20 @@ impl Walk {
     /// A pod the node created: hold its certificate to the model's chain, then
     /// add it to the model.
     async fn register(&mut self, id: Uuid, issued: Issued<'_>) -> Result<(), String> {
+        let held = self.node.st.authority.held().await;
+        let h = held
+            .pods
+            .get(&id)
+            .ok_or("the node created a pod its authority holds nothing for")?;
+        self.register_record(id, issued, h).await
+    }
+
+    async fn register_record(
+        &mut self,
+        id: Uuid,
+        issued: Issued<'_>,
+        h: &crate::pod_authority::HeldPod,
+    ) -> Result<(), String> {
         let Issued {
             who,
             source,
@@ -1403,11 +1449,6 @@ impl Walk {
             asked,
             ups,
         } = issued;
-        let held = self.node.st.authority.held().await;
-        let h = held
-            .pods
-            .get(&id)
-            .ok_or("the node created a pod its authority holds nothing for")?;
         let cert = h.cert.clone();
         let effective = cert.effective_permissions().clone();
         let me = self.node.st.authority.pod_spiffe_id(id);
