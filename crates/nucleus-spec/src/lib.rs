@@ -1119,6 +1119,21 @@ pub struct CredentialedEgressSpec {
 }
 
 impl CredentialedEgressSpec {
+    /// The action term a call to an upstream at `url` is decided as: the
+    /// operation and the level the guest kernel checks it at, and so what the
+    /// pod's capability ceiling must grant.
+    ///
+    /// One constructor for the parties that need it: the guest's broker
+    /// admission (`nucleus-tool-proxy`'s `decide_for_broker`), which decides
+    /// every call, and `nucleus run --egress`, which refuses before a pod
+    /// exists when the run's policy could never admit one (#3218). A model
+    /// call is ambient web egress today; when it becomes its own declared
+    /// dimension (#2703) it changes here, for both (ADR 0007 G-1).
+    #[must_use]
+    pub fn call_term(url: &str) -> portcullis::ActionTerm {
+        portcullis::ActionTerm::from_operation(portcullis::Operation::WebFetch, url)
+    }
+
     /// What a pod spec selects an operator registry entry by: the entry's
     /// projection into this type. `env_var` is the entry's `credential.env.var`
     /// (the variable's NAME), or `None` for a federated entry, which projects

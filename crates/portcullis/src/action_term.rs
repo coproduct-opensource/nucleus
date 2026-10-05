@@ -8,7 +8,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{CapabilityLevel, Operation, PermissionLattice};
+use crate::{CapabilityLattice, CapabilityLevel, Operation, PermissionLattice};
 
 /// A task witness for coarse scope checking.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +217,21 @@ impl CapabilityRequest {
             operation,
             requested_level,
         }
+    }
+
+    /// The `WithinDelegationCeiling` comparison: `Some(available)` when this
+    /// request's level exceeds what `ceiling` grants for its operation, `None`
+    /// when it is within it.
+    ///
+    /// One function, because two parties ask it: the preflight below, at the
+    /// moment of the call, and a caller that must know BEFORE starting work
+    /// whether a call it is about to declare could ever be admitted (`nucleus
+    /// run --egress`, #3218). Two copies would let the early answer drift from
+    /// the one that decides (ADR 0007 G-1).
+    #[must_use]
+    pub fn exceeds_ceiling(&self, ceiling: &CapabilityLattice) -> Option<CapabilityLevel> {
+        let available = ceiling.level_for(self.operation);
+        (self.requested_level > available).then_some(available)
     }
 }
 
@@ -660,12 +675,11 @@ pub fn preflight_action(term: &ActionTerm, ctx: &PreflightContext<'_>) -> Prefli
             }
             ProofObligation::WithinDelegationCeiling => {
                 let acting = term.operation();
-                let available = ctx.permissions.capabilities.level_for(acting);
                 if term.authority.operation != acting {
                     // Not a ceiling failure at all. The term's action and the
                     // authority it carries name different operations, so there
                     // is no single operation whose ceiling could be compared --
-                    // and `available` above was looked up for the wrong one.
+                    // a lookup by either name would read the wrong one.
                     // Reporting this as "exceeds available" sent readers to
                     // raise a grant the check had never consulted (#2790).
                     push_failure(
@@ -679,7 +693,10 @@ pub fn preflight_action(term: &ActionTerm, ctx: &PreflightContext<'_>) -> Prefli
                         ),
                         PreflightVerdict::Deny,
                     );
-                } else if term.authority.requested_level > available {
+                } else if let Some(available) = term
+                    .authority
+                    .exceeds_ceiling(&ctx.permissions.capabilities)
+                {
                     push_failure(
                         &mut result,
                         obligation.clone(),

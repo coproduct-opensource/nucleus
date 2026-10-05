@@ -524,6 +524,10 @@ pub(crate) async fn dispatch(
     }
 
     refuse_host_only_flags(args)?;
+    // Before a host or a pod is started: a declared upstream this policy can
+    // never call is a contradiction the operator should hear now, not from the
+    // agent's first model call inside the pod (#3218).
+    pod_egress::refuse_unreachable(&args.egress, policy, &policy_source(args))?;
     if let Some(path) = &args.apple_host_config {
         let (resolved, host) = apple_host::ready(path, args).await?;
         run_in_pod(
@@ -541,6 +545,19 @@ pub(crate) async fn dispatch(
             anyhow!("node config required for Firecracker mode. Use --local for CI.")
         })?;
         run_in_pod(args, &agent, &resolved, policy, work_dir, prompt, None).await
+    }
+}
+
+/// Where the run's policy came from, as a refusal names it.
+fn policy_source(args: &RunArgs) -> String {
+    if let Some(grant) = &args.grant {
+        format!("the sealed grant {}", grant.display())
+    } else if args.goal.is_some() {
+        format!("the --goal grant (under --ceiling {})", args.ceiling)
+    } else if let Some(config) = &args.config {
+        format!("the policy in {config}")
+    } else {
+        format!("profile '{}'", args.profile)
     }
 }
 
@@ -1796,6 +1813,47 @@ mod tests {
         ] {
             assert!(Parse::try_parse_from(&argv).is_err(), "{argv:?}");
         }
+    }
+
+    /// #3218: `--egress` under a profile that can never make the call is
+    /// refused by `dispatch` before a host or a pod is started. Without the
+    /// check this run gets as far as the node configuration instead (no node
+    /// is configured here), which is the point the pod would be created from.
+    #[tokio::test]
+    async fn egress_under_a_profile_that_cannot_call_is_refused_before_any_pod() {
+        let argv = |profile| {
+            parse(&[
+                "run",
+                "--agent",
+                "a",
+                "--profile",
+                profile,
+                "--egress",
+                "model-api",
+                "--upstreams",
+                "/r.toml",
+                "t",
+            ])
+        };
+        let dir = std::env::temp_dir();
+        let run = |profile: &'static str| {
+            let dir = dir.clone();
+            async move {
+                let args = argv(profile);
+                let policy = profiles::resolve(profile).expect("canonical profile");
+                dispatch(&args, None, &policy, &dir, "t")
+                    .await
+                    .expect_err("no node is configured")
+                    .to_string()
+            }
+        };
+        let refused = run("codegen").await;
+        assert!(refused.contains("profile 'codegen'"), "{refused}");
+        assert!(refused.contains("safe-pr-fixer"), "{refused}");
+        // The profile that grants the call passes the check and stops only at
+        // the missing node: the refusal above is the egress check's, not this.
+        let admitted = run("safe-pr-fixer").await;
+        assert!(admitted.contains("node config required"), "{admitted}");
     }
 
     /// The flags that only mean something for a host agent are refused for a

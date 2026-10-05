@@ -29,6 +29,8 @@ use std::path::Path;
 use anyhow::{Context, Result, anyhow, bail};
 use nucleus_spec::guest_layout::GuestBinary;
 use nucleus_spec::{CredentialedEgressSpec, WorkloadSpec};
+use portcullis::profile::ProfileRegistry;
+use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 
 /// The operator's `--egress*` flags, before they are checked.
 pub(super) struct EgressFlags<'a> {
@@ -172,6 +174,82 @@ impl PodEgress {
         };
         (workload, self.specs)
     }
+}
+
+/// Refuse, before anything is started, a run whose policy could never admit a
+/// call to an upstream it declares (#3218).
+///
+/// Without this the contradiction surfaced only at the agent's first model
+/// call, inside the running pod, as `WithinDelegationCeiling: requested
+/// WebFetch@LowRisk exceeds available Never`. The check is the guest's own:
+/// [`CredentialedEgressSpec::call_term`] is the term the guest's broker
+/// admission decides, and `exceeds_ceiling` is the comparison its preflight
+/// makes (ADR 0007 G-1). Nothing here names the operation or the level.
+///
+/// This is a necessary condition, not a promise: the node may still narrow a
+/// pod below `policy`, and a call that passes the ceiling is still subject to
+/// every other gate at the time it is made.
+///
+/// `source` says where `policy` came from, for the refusal (`profile
+/// 'codegen'`). The refusal names the built-in profiles that grant the call
+/// and are no wider than `policy` in any other capability, and only those: a
+/// suggestion that also widened, say, `git_push` would trade one surprise for
+/// a worse one.
+///
+/// # Errors
+/// When `upstreams` is non-empty and `policy` cannot reach them.
+pub(super) fn refuse_unreachable(
+    upstreams: &[String],
+    policy: &PermissionLattice,
+    source: &str,
+) -> Result<()> {
+    let Some(first) = upstreams.first() else {
+        return Ok(());
+    };
+    let term = CredentialedEgressSpec::call_term(first);
+    let request = &term.authority;
+    let Some(available) = request.exceeds_ceiling(&policy.capabilities) else {
+        return Ok(());
+    };
+    let operation = request.operation;
+    let needed = request.requested_level;
+    let registry = ProfileRegistry::default();
+    let mut grants: Vec<(CapabilityLevel, &str)> = registry
+        .names()
+        .into_iter()
+        .filter_map(|name| {
+            let candidate = registry.resolve(name).ok()?;
+            let caps = &candidate.capabilities;
+            let reaches = request.exceeds_ceiling(caps).is_none();
+            let no_wider_elsewhere = Operation::ALL
+                .into_iter()
+                .filter(|op| *op != operation)
+                .all(|op| caps.level_for(op) <= policy.capabilities.level_for(op));
+            (reaches && no_wider_elsewhere).then_some((caps.level_for(operation), name))
+        })
+        .collect();
+    grants.sort_unstable();
+    let suggestion = if grants.is_empty() {
+        format!(
+            "No built-in profile adds only {operation} to this policy; use one that sets \
+             {operation}: {needed} or higher."
+        )
+    } else {
+        let named: Vec<String> = grants
+            .iter()
+            .map(|(level, name)| format!("{name} ({operation}: {level})"))
+            .collect();
+        format!(
+            "A profile that grants it and is no wider in any other capability: {}.",
+            named.join(", ")
+        )
+    };
+    bail!(
+        "--egress {names}: {source} sets {operation}: {available}, and a call to a declared \
+         upstream is admitted only at {operation}: {needed} or above, so the agent's first call \
+         would be denied inside the pod. {suggestion}",
+        names = upstreams.join(", "),
+    )
 }
 
 #[cfg(test)]
@@ -335,5 +413,79 @@ var = "SEARCH_API_TOKEN"
             ])
         );
         assert!(workload.env.is_empty());
+    }
+
+    fn profile(name: &str) -> PermissionLattice {
+        ProfileRegistry::default()
+            .resolve(name)
+            .unwrap_or_else(|e| panic!("profile {name}: {e}"))
+    }
+
+    /// #3218: a profile whose ceiling can never admit a call to a declared
+    /// upstream is refused before anything starts, by name, with the profile
+    /// that grants only what is missing.
+    #[test]
+    fn a_profile_that_can_never_call_the_upstream_is_refused_up_front() {
+        let ups = strings(&["model-api"]);
+        let err = refuse_unreachable(&ups, &profile("codegen"), "profile 'codegen'")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("profile 'codegen'"), "{err}");
+        assert!(err.contains("web_fetch: never"), "{err}");
+        assert!(err.contains("safe-pr-fixer (web_fetch: low_risk)"), "{err}");
+        // Nothing that also widens another capability is offered.
+        assert!(!err.contains("research-web"), "{err}");
+        assert!(!err.contains("release"), "{err}");
+
+        let err = refuse_unreachable(
+            &ups,
+            &PermissionLattice::restrictive().normalize(),
+            "profile 'restrictive'",
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("profile 'restrictive'"), "{err}");
+        assert!(err.contains("web_fetch: never"), "{err}");
+    }
+
+    #[test]
+    fn a_profile_that_grants_the_call_is_accepted() {
+        let ups = strings(&["model-api"]);
+        refuse_unreachable(&ups, &profile("safe-pr-fixer"), "profile 'safe-pr-fixer'").unwrap();
+        // Nothing declared, nothing to refuse.
+        refuse_unreachable(&[], &profile("codegen"), "profile 'codegen'").unwrap();
+    }
+
+    /// The early refusal is the guest preflight's own decision, made sooner:
+    /// for every built-in profile, it refuses exactly when the preflight of a
+    /// call's term fails `WithinDelegationCeiling`. Both outcomes must occur,
+    /// or the agreement says nothing.
+    #[test]
+    fn the_early_refusal_agrees_with_the_guest_preflight_for_every_profile() {
+        use portcullis::{PreflightContext, ProofObligation, preflight_action};
+        let ups = strings(&["model-api"]);
+        let registry = ProfileRegistry::default();
+        let names = registry.names();
+        assert!(names.len() >= 10, "registry read nothing: {names:?}");
+        let (mut refused, mut admitted) = (0, 0);
+        for name in names {
+            let policy = registry.resolve(name).unwrap();
+            let early = refuse_unreachable(&ups, &policy, name).is_err();
+            let term = CredentialedEgressSpec::call_term("https://model-api.example/v1");
+            let late = preflight_action(&term, &PreflightContext::new(&policy))
+                .failures
+                .iter()
+                .any(|f| f.obligation == ProofObligation::WithinDelegationCeiling);
+            assert_eq!(early, late, "{name}");
+            if early {
+                refused += 1;
+            } else {
+                admitted += 1;
+            }
+        }
+        assert!(
+            refused > 0 && admitted > 0,
+            "{refused} refused, {admitted} admitted"
+        );
     }
 }
