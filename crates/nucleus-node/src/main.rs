@@ -1675,7 +1675,7 @@ async fn spawn_container_pod(
     let size = pod_resources::PodSize::of(spec);
     let container_memory = i64::try_from(size.memory_bytes()).unwrap_or(i64::MAX);
     let host_config = bollard::models::HostConfig {
-        network_mode: Some(network_mode),
+        network_mode: Some(network_mode.clone()),
         binds: Some(binds),
         // Always the admitted size (#3130); an absent spec field is the node's default, never
         // unlimited. Swap equal to memory means none beyond it.
@@ -1739,7 +1739,7 @@ async fn spawn_container_pod(
     let container_id = container.id.clone();
     let result = async {
         intent.observed(&container_id).await?;
-        container_resources::verify(docker, &container_id, size).await?;
+        container_resources::verify(docker, &container_id, size, &network_mode).await?;
         docker
             .start_container(
                 &container_id,

@@ -116,6 +116,7 @@ mod tests {
     async fn fixture(
         start_status: u16,
         memory_swap: i64,
+        network_mode: Option<&str>,
     ) -> (
         tempfile::TempDir,
         MockServer,
@@ -172,7 +173,7 @@ mod tests {
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_json(serde_json::json!({"State":{"Running":false,"ExitCode":0},
-                        "HostConfig":{"Memory":536870912,"MemorySwap":memory_swap,"NanoCpus":1000000000,"PidsLimit":4096}})),
+                        "HostConfig":{"Memory":536870912,"MemorySwap":memory_swap,"NanoCpus":1000000000,"PidsLimit":4096,"NetworkMode":network_mode}})),
             )
             .mount(&server)
             .await;
@@ -218,7 +219,7 @@ mod tests {
 
     #[tokio::test]
     async fn caller_cancellation_keeps_launch_owned_until_removal() {
-        let (_dir, server, state, spec, admission) = fixture(204, 536870912).await;
+        let (_dir, server, state, spec, admission) = fixture(204, 536870912, Some("none")).await;
         let caller_state = state.clone();
         let request = spec.clone();
         let caller =
@@ -247,7 +248,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_start_rolls_back_before_returning_capacity() {
-        let (_dir, server, state, spec, admission) = fixture(500, 536870912).await;
+        let (_dir, server, state, spec, admission) = fixture(500, 536870912, Some("none")).await;
         let caller_state = state.clone();
         let request = spec.clone();
         let caller =
@@ -266,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn successful_handoff_retains_the_running_pod() {
-        let (_dir, _server, state, spec, admission) = fixture(204, 536870912).await;
+        let (_dir, _server, state, spec, admission) = fixture(204, 536870912, Some("none")).await;
         let (id, _) = create(&state, spec.clone(), None, None, admission)
             .await
             .unwrap();
@@ -278,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn daemon_rewritten_swap_limit_rolls_back_without_starting_workload() {
-        let (_dir, server, state, spec, admission) = fixture(204, -1).await;
+        let (_dir, server, state, spec, admission) = fixture(204, -1, Some("none")).await;
         let error = create(&state, spec.clone(), None, None, admission)
             .await
             .unwrap_err();
@@ -296,6 +297,39 @@ mod tests {
             state.container_pool.as_ref().unwrap().available_permits(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn network_configuration_mismatch_cleans_up_without_starting() {
+        for mode in [None, Some("bridge"), Some("host")] {
+            let (_dir, server, state, spec, admission) = fixture(204, 536870912, mode).await;
+            let error = create(&state, spec.clone(), None, None, admission)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("required network mode"));
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|request| request.url.path().ends_with("/start"))
+            );
+            assert!(
+                requests
+                    .iter()
+                    .any(|request| request.method.as_str() == "DELETE")
+            );
+            drop(state.node_capacity.reserve(&spec).unwrap());
+            assert_eq!(
+                state.container_pool.as_ref().unwrap().available_permits(),
+                1
+            );
+            assert_eq!(
+                std::fs::read_dir(state.state_dir.join("container-launches"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+        }
     }
 
     #[tokio::test]

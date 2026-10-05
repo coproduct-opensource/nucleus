@@ -7,6 +7,12 @@ produces evidence an external verifier can inspect. Two distinct harnesses must
 complete this journey. Gatehouse control-plane implementation stays outside this
 repository.
 
+Publication direction (2026-10-04): after both complete coding journeys and
+their independent evidence verification succeed, open a PR for this work and
+get it merged through Gatehouse. This is authorized by the user. Do not treat
+installed harness startup or an ordinary HTTP fixture as either completed
+journey; keep the broader release requirements below intact.
+
 Current execution scope: implement the design and validate ordinary supported
 workflows. Red-teaming, adversarial probes and attack evaluations are paused at
 the user's direction. Historical evidence below remains a record of completed
@@ -1574,3 +1580,26 @@ authorization. All 16 federated-credential broker checks passed, followed by a
 full run of 876 node unit tests (one ignored) and three integration tests. The
 Linux ARM64 build, Clippy and all four repository gates passed. No guest image
 or cloud service was changed for this host-side implementation.
+
+### Verify the container's selected network mode before start (2026-10-04)
+
+The container driver defaults to `none` and refuses structured network policy.
+Its Docker pre-start inspection now checks that the stored network mode matches
+the mode selected by node configuration (or the pod's permitted narrowing to
+`none`), alongside the admitted resource limits. Missing or changed configuration
+uses the existing launch rollback: remove the container, clear its journal, and
+return reserved capacity without sending a start request. This verifies the
+requested topology; it does not meter traffic on operator-enabled networks.
+
+All 28 container-focused checks passed (one ignored), including ordinary launch
+handoff and cleanup on configuration mismatch. The Linux ARM64 build and Clippy
+passed. Live Docker validation ran inside the existing Apple Container host:
+pod `212a456a-e290-4346-85cc-3b70eafc936a` started with `NetworkMode=none`, exposed
+only `lo` inside the container, and wrote its ordinary workspace output after
+startup. Cancellation removed it successfully. The temporary node and daemon
+were stopped; the original node remained healthy over mTLS.
+
+Network-enabled container and local-driver accounting still need implementation.
+Their launch topology differs from Firecracker's pre-created private namespace;
+attaching a meter only after starting a workload would leave an unaccounted
+interval and is not the intended design.

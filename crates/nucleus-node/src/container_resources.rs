@@ -1,5 +1,5 @@
-//! Docker can accept a create while rewriting unsupported resource limits.
-//! Check its stored configuration before starting the workload.
+//! Verify Docker's stored resource limits and selected network mode before
+//! starting the workload. A successful create alone does not attest to either.
 use crate::{
     ApiError,
     pod_resources::{CONTAINER_PIDS_MAX, PodSize},
@@ -9,6 +9,7 @@ pub(crate) async fn verify(
     docker: &bollard::Docker,
     id: &str,
     size: PodSize,
+    network_mode: &str,
 ) -> Result<(), ApiError> {
     let info = docker
         .inspect_container(
@@ -20,7 +21,18 @@ pub(crate) async fn verify(
     let config = info
         .host_config
         .ok_or_else(|| ApiError::Driver("Docker omitted accepted resource configuration".into()))?;
-    check(&config, size)
+    check(&config, size)?;
+    check_network(&config, network_mode)
+}
+
+fn check_network(config: &bollard::models::HostConfig, expected: &str) -> Result<(), ApiError> {
+    if config.network_mode.as_deref() != Some(expected) {
+        return Err(ApiError::Driver(format!(
+            "Docker did not retain required network mode: requested {expected:?}, accepted {:?}; workload was not started",
+            config.network_mode,
+        )));
+    }
+    Ok(())
 }
 
 fn check(config: &bollard::models::HostConfig, size: PodSize) -> Result<(), ApiError> {
@@ -48,6 +60,25 @@ fn check(config: &bollard::models::HostConfig, size: PodSize) -> Result<(), ApiE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn selected_network_mode_must_be_retained() {
+        for selected in ["none", "bridge", "project-network"] {
+            let config = bollard::models::HostConfig {
+                network_mode: Some(selected.into()),
+                ..Default::default()
+            };
+            check_network(&config, selected).unwrap();
+        }
+        for accepted in [None, Some(""), Some("bridge"), Some("host")] {
+            let config = bollard::models::HostConfig {
+                network_mode: accepted.map(str::to_owned),
+                ..Default::default()
+            };
+            let error = check_network(&config, "none").unwrap_err().to_string();
+            assert!(error.contains("network mode") && error.contains("not started"));
+        }
+    }
 
     #[test]
     fn accepted_limits_match_the_admitted_size() {
