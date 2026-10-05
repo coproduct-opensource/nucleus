@@ -1180,9 +1180,12 @@ policy_id = "example-policy-0001"
         let pod = Pod::new(POD_A, &source(), registry(&tokens, &up), NOW + 600);
 
         assert!(pod.call("k1", NOW).await.granted);
-        assert!(pod.call("k2", NOW + 539).await.granted);
+        // PERFORM refreshes credential authorization after pacing and rounds
+        // elapsed subsecond time up, just as it does for final host approval.
+        // These supplied timestamps therefore reach the cache at +539/+540.
+        assert!(pod.call("k2", NOW + 538).await.granted);
         assert_eq!(tokens.minted(), 1);
-        assert!(pod.call("k3", NOW + 540).await.granted);
+        assert!(pod.call("k3", NOW + 539).await.granted);
         assert_eq!(
             tokens.minted(),
             2,

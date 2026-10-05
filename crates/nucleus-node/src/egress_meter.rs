@@ -31,6 +31,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub mod body;
 mod upload;
 pub use upload::UploadCharge;
 
@@ -207,6 +208,7 @@ impl EgressCharge<'_> {
     }
 
     /// Provably nothing left the host: refund the bytes.
+    #[cfg(test)]
     pub fn not_sent(mut self) {
         if let Some(hold) = self.hold.take() {
             self.meter.settle(hold, EgressSettlement::NotSent);

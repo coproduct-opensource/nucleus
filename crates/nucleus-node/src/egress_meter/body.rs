@@ -27,7 +27,30 @@ pub struct UploadBody {
     ended: bool,
 }
 
+impl std::fmt::Debug for UploadBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UploadBody").finish_non_exhaustive()
+    }
+}
+
 impl UploadBody {
+    /// A bounded PERFORM body, already owned and hashed by the host.
+    pub fn from_bytes(bytes: Vec<u8>, charge: UploadCharge, now: u64) -> Self {
+        let (sender, receiver) = mpsc::channel(1);
+        drop(sender);
+        let mut body = Self::new(receiver, charge, now);
+        body.pending = bytes;
+        body
+    }
+
+    #[cfg(test)]
+    pub async fn collect_bytes(mut self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        while let Some(chunk) = self.recv().await {
+            bytes.extend(chunk.expect("test caller consumes an admitted body"));
+        }
+        bytes
+    }
     pub fn new(
         receiver: mpsc::Receiver<Result<Vec<u8>, io::Error>>,
         charge: UploadCharge,

@@ -34,7 +34,7 @@ pub(crate) use effect::{CONTENT_TYPE, METHOD};
 use nucleus_decision_protocol::ArgsDigest;
 use std::collections::HashMap;
 use std::future::Future;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use nucleus_cred_broker::{PodIdentity, TaskRequestEnvelope};
 use nucleus_cred_protocol::{PerformReply, PerformRequest};
@@ -194,8 +194,8 @@ pub struct UpstreamCall {
     pub header_name: String,
     /// The credential, with the spec's prefix applied. Never logged.
     pub header_value: String,
-    /// Request body, verbatim from the guest.
-    pub body: Vec<u8>,
+    /// Exact host-bound request bytes, yielded under the shared egress pace.
+    pub body: crate::egress_meter::body::UploadBody,
 }
 
 /// What came back.
@@ -232,7 +232,7 @@ pub struct PerformContext<'a> {
     pub ledger: &'a IdempotencyLedger,
     /// This pod's egress balance — the SAME meter every egress path of this
     /// pod draws from (#2905).
-    pub egress: &'a crate::egress_meter::EgressMeter,
+    pub egress: &'a Arc<crate::egress_meter::EgressMeter>,
 }
 
 /// The bytes a perform request sends toward the network that the GUEST chose.
@@ -613,7 +613,34 @@ where
     F: FnOnce(UpstreamCall) -> Fut,
     Fut: Future<Output = Result<UpstreamResponse, String>>,
 {
+    perform_until(
+        req,
+        ctx,
+        now_unix,
+        tokio::time::Instant::now() + nucleus_cred_protocol::stream::UPSTREAM_IDLE,
+        call,
+    )
+    .await
+}
+
+async fn perform_until<F, Fut>(
+    req: &PerformRequest,
+    ctx: &PerformContext<'_>,
+    now_unix: u64,
+    deadline: tokio::time::Instant,
+    call: F,
+) -> PerformReply
+where
+    F: FnOnce(UpstreamCall) -> Fut,
+    Fut: Future<Output = Result<UpstreamResponse, String>>,
+{
     let started = std::time::Instant::now();
+    let current_time = || {
+        let elapsed = started.elapsed();
+        now_unix
+            .saturating_add(elapsed.as_secs())
+            .saturating_add(u64::from(elapsed.subsec_nanos() != 0))
+    };
     // 1–3. Decide, resolve the name, fix the path: `resolve`, shared with the
     //      streamed path so the two cannot decide differently.
     if crate::host_decide::PodPolicy::available(ctx.host_policy).is_err() {
@@ -665,7 +692,7 @@ where
     //     exchange. A refusal is NAMED to the guest: the counts are its own
     //     traffic, and "not permitted" would hide the one remedy (a larger
     //     declared ceiling) from the person who has to apply it.
-    let charge = match ctx.egress.admit(upload_bytes(req), now_unix).await {
+    let mut charge = match ctx.egress.reserve_upload(upload_bytes(req)).await {
         Ok(charge) => charge,
         Err(refusal) => {
             ctx.ledger.release(&req.idempotency_key);
@@ -698,8 +725,49 @@ where
         }
     };
 
+    if !matches!(
+        tokio::time::timeout_at(
+            deadline,
+            crate::egress_meter::body::pace_open(
+                &mut charge,
+                req.path.len() as u64,
+                current_time()
+            ),
+        )
+        .await,
+        Ok(Ok(()))
+    ) {
+        ctx.ledger.release(&req.idempotency_key);
+        charge.not_sent();
+        return refused("upstream call failed");
+    }
+    // Waiting for a window can outlive the credential grant. Recheck the same
+    // immutable request inputs before retrieving or minting a credential.
+    let Some(resolved) = resolve(
+        &Asked {
+            operation: &req.operation,
+            target: &req.target,
+            justification: &req.justification,
+            path: &req.path,
+        },
+        ctx.identity,
+        ctx.policy,
+        ctx.upstreams,
+        current_time(),
+    ) else {
+        ctx.ledger.release(&req.idempotency_key);
+        charge.not_sent();
+        return refused("not permitted");
+    };
+
     // 5–6. Mint (for a federated upstream), then fetch: `credential_header`.
-    let header = match credential_header(&resolved, ctx.credentials, now_unix).await {
+    let header = match tokio::time::timeout_at(
+        deadline,
+        credential_header(&resolved, ctx.credentials, current_time()),
+    )
+    .await
+    .unwrap_or(Err(CredentialMiss::MintFailed))
+    {
         Ok(header) => Some(header),
         // No upstream call was made, so the key is released, not settled.
         Err(CredentialMiss::MintFailed) => {
@@ -719,10 +787,7 @@ where
             // and approval expiry now; only this check spends the approval.
             // Round up because the supplied Unix timestamp has second precision.
             // Rounding down could keep an approval live beyond its deadline.
-            let elapsed = started.elapsed();
-            let current_time = now_unix
-                .saturating_add(elapsed.as_secs())
-                .saturating_add(u64::from(elapsed.subsec_nanos() != 0));
+            let current_time = current_time();
             let permit = match ctx.host_policy.lock() {
                 Ok(mut policy) => match crate::broker::parse_operation(&req.operation) {
                     Some(op) => {
@@ -762,15 +827,22 @@ where
             // Charged as sent whatever the outcome: a transport failure is
             // ambiguous about whether the upstream saw the body.
             let (permit, mut observation) = permit.observe(ctx.host_policy.clone(), current_time);
-            charge.sent();
-            let outcome = call(UpstreamCall {
-                _permit: permit,
-                url,
-                header_name: spec.header.clone(),
-                header_value,
-                body: req.body.clone(),
-            })
-            .await;
+            let outcome = tokio::time::timeout_at(
+                deadline,
+                call(UpstreamCall {
+                    _permit: permit,
+                    url,
+                    header_name: spec.header.clone(),
+                    header_value,
+                    body: crate::egress_meter::body::UploadBody::from_bytes(
+                        req.body.clone(),
+                        charge,
+                        current_time,
+                    ),
+                }),
+            )
+            .await
+            .unwrap_or_else(|_| Err("upstream deadline elapsed".into()));
             use nucleus_spec::host_effect::outcome::Termination;
             let termination = match &outcome {
                 Ok(resp) => {
@@ -820,14 +892,15 @@ where
         }
     };
 
-    let reply = observe_reply(reply, ctx.host_policy, now_unix);
+    let reply = observe_reply(reply, ctx.host_policy, current_time());
     ctx.ledger
-        .settle(&req.idempotency_key, effect, now_unix, reply.clone());
+        .settle(&req.idempotency_key, effect, current_time(), reply.clone());
     reply
 }
 
 #[cfg(test)]
 mod tests {
+    mod paced;
     use super::*;
     use nucleus_cred_broker::Credential;
     use portcullis::CapabilityLevel;
@@ -914,7 +987,7 @@ mod tests {
 
     /// A meter no test outside the egress ones comes near: the default
     /// ceiling. Leaked because `PerformContext` borrows it for the test's life.
-    fn generous_egress() -> &'static crate::egress_meter::EgressMeter {
+    fn generous_egress() -> &'static Arc<crate::egress_meter::EgressMeter> {
         let meter = crate::egress_meter::EgressMeter::new(
             portcullis::EgressCeiling::undeclared(),
             std::env::temp_dir(),
@@ -977,7 +1050,8 @@ mod tests {
                 .granted
         );
         assert_eq!(net.count(), 1);
-        assert_eq!(net.calls.lock().unwrap()[0].body, req.body);
+        let call = net.calls.lock().unwrap().remove(0);
+        assert_eq!(call.body.collect_bytes().await, req.body);
     }
 
     #[tokio::test]
@@ -1416,11 +1490,11 @@ var = "LLM_API_TOKEN"
         assert_eq!(reply.body, b"{\"ok\":true}");
         assert_eq!(net.count(), 1);
 
-        let calls = net.calls.lock().unwrap();
-        assert_eq!(calls[0].url, "https://upstream.invalid/v1/messages");
-        assert_eq!(calls[0].header_name, "authorization");
-        assert_eq!(calls[0].header_value, format!("Bearer {SECRET}"));
-        assert_eq!(calls[0].body, b"{\"prompt\":\"hi\"}");
+        let call = net.calls.lock().unwrap().remove(0);
+        assert_eq!(call.url, "https://upstream.invalid/v1/messages");
+        assert_eq!(call.header_name, "authorization");
+        assert_eq!(call.header_value, format!("Bearer {SECRET}"));
+        assert_eq!(call.body.collect_bytes().await, b"{\"prompt\":\"hi\"}");
     }
 
     /// **The credential does not come back.** The guest gets the result of the

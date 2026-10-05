@@ -461,7 +461,7 @@ pub fn http_caller(client: reqwest::Client) -> UpstreamCaller {
                 .request(crate::broker_perform::METHOD, &call.url)
                 .header(&call.header_name, &call.header_value)
                 .header("content-type", crate::broker_perform::CONTENT_TYPE)
-                .body(call.body)
+                .body(reqwest::Body::wrap_stream(call.body))
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;

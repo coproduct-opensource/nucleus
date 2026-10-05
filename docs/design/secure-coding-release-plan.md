@@ -19,9 +19,11 @@ body slices at HTTP consumption through the same fixed window as direct packet
 reservations. Staging and effect hashes remain unchanged. Initial path and
 content-type accounting waits before credential resolution; the body owns the
 reservation through transport cancellation. One finite deadline covers the pace
-wait, upload and response headers. PERFORM still uses batch admission, and
-broker accounting covers body plus guest path/content-type lengths, not physical
-HTTP/TLS wire bytes. See the paced replay validation entry below.
+wait, upload and response headers for STREAM. PERFORM uses the same body
+consumer with a deadline covering credential retrieval, upload and response.
+Broker accounting covers body plus guest path lengths (and guest content-type
+length for STREAM), not physical HTTP/TLS wire bytes. See the paced replay
+validation entries below.
 
 ## 1. Host-authoritative enforcement (P0)
 
@@ -1536,3 +1538,39 @@ stopped, and only the host's original loopback/Ethernet links remained. The
 original node still returned healthy over mTLS. This is normal live upload and
 artifact verification, not a completed model-driven coding journey. PERFORM
 batch pacing, transport-overhead accounting, and unmediated drivers remain open.
+
+
+### Shared pacing for buffered PERFORM requests (2026-10-04)
+
+PERFORM now reserves its whole body-plus-path allowance once, then hands its
+bounded buffered payload to the same paced HTTP body consumer as STREAM.
+The shared implementation lives in `egress_meter/body.rs`; staging continues to
+feed STREAM through its bounded channel, while PERFORM supplies its already
+buffered bytes. Both consume the same pod ledger and neither producer can
+pre-admit buffered body slices ahead of HTTP consumption.
+
+After initial path accounting waits, PERFORM resolves credential authorization
+again over its unchanged request inputs. Final host authorization still binds
+the resolved destination and complete payload before transport handoff. One
+300-second deadline bounds the pace wait, credential retrieval and upstream
+request/response. An upstream timeout records an ambiguous failure under the
+idempotency key; a repeated request returns that result without dispatching or
+charging again. Response observation and settled-key timestamps use completion
+time rather than the pre-wait timestamp. Cancellation retains the whole upload
+charge and its unresolved retry key.
+
+Ordinary HTTP validation sent 250 unchanged bytes through 100-byte windows and
+completed after at least two seconds. A completed retry made no upstream call
+and spent no additional egress budget. Separate functional checks verified
+cancellation after the first slice and bounded upstream timeout settlement.
+All 36 PERFORM regressions passed after adding the deadline check. This extends
+host-side PERFORM transport; the managed guest HTTP adapter continues using
+STREAM. Wire-overhead accounting and unmediated drivers remain open.
+
+The first full-suite run exposed a credential-cache test whose supplied time
+assumed no elapsed-time refresh before credential retrieval. Its boundary now
+accounts for the conservative one-second rounding already used for final host
+authorization. All 16 federated-credential broker checks passed, followed by a
+full run of 876 node unit tests (one ignored) and three integration tests. The
+Linux ARM64 build, Clippy and all four repository gates passed. No guest image
+or cloud service was changed for this host-side implementation.

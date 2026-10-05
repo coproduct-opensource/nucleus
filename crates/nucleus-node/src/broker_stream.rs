@@ -52,7 +52,7 @@ use crate::broker_perform::{Asked, CredentialMiss, InjectedHeader};
 use crate::federated_credential::PodCredentials;
 use crate::upstreams::RegistryEntry;
 
-mod upload;
+use crate::egress_meter::body as upload;
 
 /// The per-call request-body ceiling when the operator sets none: 32 MiB.
 ///
