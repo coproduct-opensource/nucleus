@@ -1,6 +1,4 @@
-//! Start command - start nucleus-node in Lima VM
-//!
-//! Ensures the Lima VM is running and starts nucleus-node service.
+//! Start the selected installation; retain Lima behavior when Lima is selected.
 
 use anyhow::{Context, Result, bail};
 use clap::Args;
@@ -9,38 +7,62 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
-/// Start nucleus-node in the Lima VM
+/// Start the selected Apple or Lima installation
 #[derive(Args, Debug)]
 pub struct StartArgs {
-    /// Lima VM name
-    #[arg(long, default_value = "nucleus")]
-    pub vm_name: String,
+    /// Explicitly select a Lima VM (otherwise use saved host; Lima default: nucleus)
+    #[arg(long)]
+    pub vm_name: Option<String>,
+
+    /// Select an Apple host from JSON instead of the saved installation
+    #[arg(long, conflicts_with = "vm_name")]
+    pub apple_host_config: Option<std::path::PathBuf>,
 
     /// Skip health check after starting
     #[arg(long)]
     pub no_wait: bool,
 
-    /// Health check timeout in seconds
-    #[arg(long, default_value = "60")]
-    pub timeout: u32,
+    /// Lima health check timeout in seconds (default: 60)
+    #[arg(long)]
+    pub timeout: Option<u32>,
 
     /// Start the Lima VM if it's not running
     #[arg(long, default_value = "true")]
     pub auto_start_vm: bool,
 }
 
+impl StartArgs {
+    fn vm_name(&self) -> &str {
+        self.vm_name
+            .as_deref()
+            .unwrap_or(crate::microvm_host::operator::DEFAULT_LIMA_NAME)
+    }
+}
+
 /// Execute the start command
-pub async fn execute(args: StartArgs) -> Result<()> {
+pub async fn execute(args: StartArgs, config_path: &str) -> Result<()> {
+    let config = crate::config::Config::load(config_path)?;
+    if let Some(path) = crate::microvm_host::operator::selection(
+        args.apple_host_config.as_deref(),
+        args.vm_name.is_some(),
+        config.node.apple_host_config.as_deref(),
+    ) {
+        anyhow::ensure!(
+            !args.no_wait && args.timeout.is_none() && args.auto_start_vm,
+            "Apple host start uses its host JSON readiness settings; Lima start flags do not apply"
+        );
+        return crate::microvm_host::operator::start(path).await;
+    }
     println!("Starting Nucleus...\n");
 
     // Step 1: Ensure Lima VM is running
     ensure_lima_vm_running(&args)?;
 
     // Step 2: Check if nucleus-node binary exists in VM
-    ensure_nucleus_node_available(&args.vm_name)?;
+    ensure_nucleus_node_available(args.vm_name())?;
 
     // Step 3: Start nucleus-node service
-    start_nucleus_node_service(&args.vm_name)?;
+    start_nucleus_node_service(args.vm_name())?;
 
     // Step 4: Wait for health check
     if !args.no_wait {
@@ -54,47 +76,47 @@ pub async fn execute(args: StartArgs) -> Result<()> {
 }
 
 fn ensure_lima_vm_running(args: &StartArgs) -> Result<()> {
-    let status = get_lima_vm_status(&args.vm_name)?;
+    let status = get_lima_vm_status(args.vm_name())?;
 
     match status.as_str() {
-        "Running" => match crate::lima_boot::diagnose(&args.vm_name) {
+        "Running" => match crate::lima_boot::diagnose(args.vm_name()) {
             crate::lima_boot::BootDiagnosis::Reachable => {
-                println!("Lima VM '{}' is running", args.vm_name);
+                println!("Lima VM '{}' is running", args.vm_name());
                 Ok(())
             }
             // Lima's "Running" includes a guest stopped at a boot prompt; every
             // step after this one would fail on `limactl shell` without saying why.
             unreachable => bail!(
                 "Lima VM '{}' is running but unreachable: {}\n{}",
-                args.vm_name,
+                args.vm_name(),
                 unreachable.summary(),
-                unreachable.remedy(&args.vm_name)
+                unreachable.remedy(args.vm_name())
             ),
         },
         "Stopped" => {
             if args.auto_start_vm {
-                println!("Starting Lima VM '{}'...", args.vm_name);
-                start_lima_vm(&args.vm_name)?;
-                println!("Lima VM '{}' started", args.vm_name);
+                println!("Starting Lima VM '{}'...", args.vm_name());
+                start_lima_vm(args.vm_name())?;
+                println!("Lima VM '{}' started", args.vm_name());
                 Ok(())
             } else {
                 bail!(
                     "Lima VM '{}' is stopped. Start it with: limactl start {}",
-                    args.vm_name,
-                    args.vm_name
+                    args.vm_name(),
+                    args.vm_name()
                 );
             }
         }
         "" => {
             bail!(
                 "Lima VM '{}' does not exist. Run: nucleus setup",
-                args.vm_name
+                args.vm_name()
             );
         }
         other => {
             bail!(
                 "Lima VM '{}' is in unexpected state: {}. Check: limactl list",
-                args.vm_name,
+                args.vm_name(),
                 other
             );
         }
@@ -315,7 +337,8 @@ fn wait_for_health_check(args: &StartArgs) -> Result<()> {
         }
     };
 
-    let timeout = Duration::from_secs(u64::from(args.timeout));
+    let timeout_seconds = args.timeout.unwrap_or(60);
+    let timeout = Duration::from_secs(u64::from(timeout_seconds));
     let start = std::time::Instant::now();
     let poll_interval = Duration::from_millis(500);
 
@@ -325,8 +348,8 @@ fn wait_for_health_check(args: &StartArgs) -> Result<()> {
                 "nucleus-node did not become ready within {} seconds.\n  \
                  Check the node: limactl shell {} -- journalctl -u nucleus-node\n  \
                  Check it directly: nucleus node health",
-                args.timeout,
-                args.vm_name
+                timeout_seconds,
+                args.vm_name()
             );
         }
 
@@ -386,15 +409,27 @@ mod tests {
 
     #[test]
     fn test_default_args() {
-        let args = StartArgs {
-            vm_name: "nucleus".to_string(),
-            no_wait: false,
-            timeout: 60,
-            auto_start_vm: true,
-        };
-        assert_eq!(args.vm_name, "nucleus");
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: StartArgs,
+        }
+        let args = Parse::try_parse_from(["start"]).unwrap().args;
+        assert_eq!(args.vm_name(), "nucleus");
+        assert!(args.vm_name.is_none() && args.apple_host_config.is_none());
         assert!(!args.no_wait);
         assert!(args.auto_start_vm);
+        assert!(
+            Parse::try_parse_from([
+                "start",
+                "--apple-host-config",
+                "host.json",
+                "--vm-name",
+                "other"
+            ])
+            .is_err()
+        );
     }
 
     /// The probe must speak the protocol the node speaks. It sent plaintext

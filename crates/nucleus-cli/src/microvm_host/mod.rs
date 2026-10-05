@@ -21,6 +21,7 @@
 pub(crate) mod command;
 pub mod container_cli;
 pub mod lifecycle;
+pub(crate) mod operator;
 pub mod preflight;
 pub(crate) mod settings;
 pub mod supervisor;

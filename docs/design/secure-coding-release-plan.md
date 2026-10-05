@@ -3040,3 +3040,31 @@ connection model. Python 3.14's optional `X509_STRICT` additionally demanded an
 Authority Key Identifier extension and was not used by that check. Inspection
 used the supported pod-list route; `GET /v1/pods/{id}` is not an authorized HTTP
 operation here. No certificate, route or authorization policy was changed.
+
+
+### Saved Apple installation lifecycle (2026-10-05)
+
+`start`, `stop` and `doctor` now follow the saved Apple installation instead of
+always invoking Lima. Start retains the existing checked readiness path; stop
+uses the ownership witness and confirms the host stopped without deleting its
+container, volume or identity. Doctor observes existing state and checks KVM and
+mTLS without starting, replacing or provisioning anything. Explicit Apple and
+Lima selections are mutually exclusive, with no backend fallback on failure.
+Stop works when an old boot kernel has been removed, but refuses foreign or
+mismatched containers. Persisted installation state survives; live workloads and
+in-memory pod history do not survive a host stop.
+
+The CLI suite passed **351 unit tests** (two ignored) and **16 integration tests**
+(with the existing environment-dependent cases ignored). Scoped all-target
+Clippy, the native build and four prepush gates passed. The task-owned normal
+host on `nucleus-local-host:final-ea6057adb` demonstrated stopped-doctor refusal,
+start readiness, read-only healthy diagnosis, mTLS node health, stop and repeated
+stop. It is stopped again. Results are retained under
+`/tmp/nucleus-final-ea6057adb/lifecycle/`. These are native operator CLI changes;
+the image digest and its runtime inputs remain those recorded above.
+
+The current node, tool proxy (MCP/SPIRE/remote-audit/OTel features), guest-init and
+HTTP adapter also built successfully for `x86_64-unknown-linux-musl`. This is a
+cross-build result, not live x86 KVM evidence. The log is
+`/tmp/nucleus-final-ea6057adb/x86-runtime-build.log`. Model-driven journeys remain
+zero, pending the previously requested operator model configuration.

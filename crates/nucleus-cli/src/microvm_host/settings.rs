@@ -93,6 +93,21 @@ impl HostSettings {
     }
 
     pub(crate) fn config(self) -> Result<HostConfig> {
+        let mut config = self.config_for_stop()?;
+        config.kernel = config
+            .kernel
+            .canonicalize()
+            .context("resolving the L1 kernel path")?;
+        Ok(config)
+    }
+
+    /// Stopping an existing host does not need its boot kernel to still exist.
+    pub(crate) fn config_for_stop(self) -> Result<HostConfig> {
+        let kernel = std::path::absolute(&self.kernel)?;
+        self.with_kernel(kernel)
+    }
+
+    fn with_kernel(self, kernel: PathBuf) -> Result<HostConfig> {
         ensure!(
             !self.image.trim().is_empty(),
             "image reference must not be empty"
@@ -116,10 +131,7 @@ impl HostSettings {
                 HostNames::INSTALL
             },
             image: self.image,
-            kernel: self
-                .kernel
-                .canonicalize()
-                .context("resolving the L1 kernel path")?,
+            kernel,
             state_dir,
             cpus: self.cpus,
             memory: format!("{}m", self.memory_mib),

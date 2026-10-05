@@ -200,10 +200,10 @@ Apple host and acquire a relay, use the explicit host configuration below.
 `health_checked` is false. Run `up` again to verify readiness. Add
 `--development` when inspecting the development installation.
 
-Stop an idle host with `container stop nucleus-microvm-host` (or the development
-name). This retains its container and volume. `up` restarts it. This command does
-not select the backend automatically for `shell`, nor does host
-readiness prove that a model-driven coding journey has completed.
+Stop an idle host with `nucleus stop --apple-host-config host.json`. This retains
+its container and volume. `nucleus start --apple-host-config host.json` restarts
+it and checks readiness. Host readiness does not prove that a model-driven
+coding journey has completed; `shell` does not yet select this backend automatically.
 
 ## Select the Apple host for a run
 
@@ -305,9 +305,38 @@ host and cancels its temporary pod when done. This checks supervised execution;
 it is not the legacy Linux/Lima conformance suite. Explicit `--here` or
 `--vm-name` selects that legacy path even when an Apple default is saved.
 
+## Start, diagnose and stop the saved installation
+
+After setup saves the Apple selection, ordinary lifecycle commands use it:
+
+```sh
+nucleus start
+nucleus doctor
+nucleus stop
+```
+
+`start` applies the same ownership, configuration, KVM and mTLS readiness checks
+as `microvm-host up`. Its JSON reports the current node address. `doctor` only
+observes the existing host and checks KVM and mTLS health; it never starts or
+replaces a container or provisions credentials. It reports a stopped host as an
+error and does not claim workload verification. Use `verify --tier2` for that.
+
+`stop` stops only a matching owned host, retaining its container, state volume,
+CA and identity. Repeating it is safe. Finish pods and collect their evidence
+first: stopping the host terminates live workloads, and in-memory pod history
+is not recovered by restart. A missing old kernel file does not prevent stopping
+an otherwise matching host. A foreign or mismatched container is refused.
+
+`start` and `stop` accept `--apple-host-config host.json` for an explicit selection.
+An explicit `--vm-name nucleus` selects Lima instead of a saved Apple host; the
+two selectors conflict. Apple start uses the readiness timeout in host JSON and
+rejects Lima's `--no-wait` and `--timeout` options. Apple stop rejects `--force`
+and `--stop-vm`. A selected Apple host failure never falls back to Lima.
+Use global `--config` to select another installation for all three commands.
+
 ## Save the host selection manually
 
-To make this host the default for `run` and `node`, add its configuration path
+To make this host the default for `run`, `node` and lifecycle commands, add its configuration path
 to `~/.config/nucleus/config.toml` (or the file selected by global `--config`):
 
 ```toml

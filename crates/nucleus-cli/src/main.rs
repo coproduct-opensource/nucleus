@@ -120,10 +120,10 @@ enum Commands {
     /// Boot a pod twice differing only in a secret, and compare (2-safety)
     TwoSafety(twosafety_boot::TwoSafetyArgs),
 
-    /// Start nucleus-node in the Lima VM
+    /// Start the selected Apple or Lima host and check node readiness
     Start(start::StartArgs),
 
-    /// Stop nucleus-node and optionally the Lima VM
+    /// Stop the selected host (Apple state is retained)
     Stop(stop::StopArgs),
 
     /// Emergency lockdown — drop all agents to read-only
@@ -226,10 +226,10 @@ async fn main() -> Result<()> {
         Commands::MicrovmHost(args) => microvm_host::command::execute(args).await,
         Commands::Verify(args) => verify::execute(args, &config_path).await,
         Commands::TwoSafety(args) => twosafety_boot::execute(args).await,
-        Commands::Start(args) => start::execute(args).await,
-        Commands::Stop(args) => stop::execute(args).await,
+        Commands::Start(args) => start::execute(args, &config_path).await,
+        Commands::Stop(args) => stop::execute(args, &config_path).await,
         Commands::Lockdown(args) => lockdown::execute(args).await,
-        Commands::Doctor => doctor::diagnose().await,
+        Commands::Doctor => doctor::diagnose(&config_path).await,
         Commands::Profiles => profiles::list(),
         Commands::Config => config::show(&config_path),
         Commands::Observe(args) => observe::execute(args),

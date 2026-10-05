@@ -27,7 +27,11 @@ impl Status {
 }
 
 /// Run all diagnostic checks
-pub async fn diagnose() -> Result<()> {
+pub async fn diagnose(config_path: &str) -> Result<()> {
+    let config = crate::config::Config::load(config_path)?;
+    if let Some(path) = config.node.apple_host_config.as_deref() {
+        return crate::microvm_host::operator::doctor(path).await;
+    }
     println!("Nucleus Environment Check");
     println!("=========================\n");
 
