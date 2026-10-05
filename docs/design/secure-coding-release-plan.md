@@ -3224,3 +3224,20 @@ Separately, the portable Linux execution entry point from `c438db5b4` passed on
 pod `1202c6c2-f72b-42d9-a44d-334aec3f516d`: signed execution, exit zero, exact
 57-byte stdout, empty stderr and confirmed cancellation. No model-driven coding
 journey is claimed by either fixture.
+
+### CI checkpoint and installer source ownership (2026-10-05)
+
+On `3e924d377`, the workspace job passed **9,352 tests, 48 skipped**. The
+coverage job passed **83.38% workspace lines / 90.41% portcullis lines**. The
+source-built x86 guest passed the existing boot checks, then the new receipt
+gate correctly refused to start because its node binary was missing. Local
+setup had deleted that input after copying it into `/usr/local/bin`.
+
+Installer inputs now distinguish borrowed local artifacts from temporary Lima
+transport copies. Only the latter carry cleanup authority. The regression
+reproduced deletion before the fix, then passed two consecutive installs with
+the original bytes intact. All 29 provisioning tests, including the real mTLS
+handshake, and scoped all-target CLI Clippy passed. The same CI run also required
+the unguarded-pipeline pin to decrease from 44 to 43 after the shell receipt
+steps moved to Rust; the measured pin check passes at 43. Final x86 receipt
+verification and merge checks remain required.

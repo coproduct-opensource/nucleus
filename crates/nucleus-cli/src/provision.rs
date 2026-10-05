@@ -152,13 +152,18 @@ impl Tier2Host {
                 if !status.success() {
                     bail!("limactl copy of {} into {vm} failed", local.display());
                 }
-                self.sh(&put_script(remote, &staged, &tmp, mode))?;
+                self.sh(&put_script(
+                    remote,
+                    &staged,
+                    InstallSource::Temporary(&tmp),
+                    mode,
+                ))?;
             }
             Self::Local => {
                 self.sh(&put_script(
                     remote,
                     &staged,
-                    &local.display().to_string(),
+                    InstallSource::Borrowed(&local.display().to_string()),
                     mode,
                 ))?;
             }
@@ -174,6 +179,13 @@ impl Tier2Host {
     }
 }
 
+/// Cleanup authority belongs only to a temporary copy created for transport.
+/// Local build outputs and cached downloads are borrowed installer inputs.
+enum InstallSource<'a> {
+    Borrowed(&'a str),
+    Temporary(&'a str),
+}
+
 /// The root shell that lands a staged file at its destination.
 ///
 /// Pure, so the one case that bit can be tested without a VM: when `remote` is
@@ -187,12 +199,17 @@ impl Tier2Host {
 /// file whose final mode is `0600` (a private key) is never briefly readable at
 /// the root umask's `0644` between `cp` and `chmod`. The umask is scoped to the
 /// `cp` so directories `mkdir -p` creates keep their ordinary mode.
-fn put_script(remote: &str, staged: &str, source: &str, mode: &str) -> String {
-    // Only clean up a source that is not the destination.
-    let cleanup = if source == remote {
-        String::new()
-    } else {
-        format!("\n                     rm -f {source}")
+fn put_script(remote: &str, staged: &str, source: InstallSource<'_>, mode: &str) -> String {
+    let (source, cleanup) = match source {
+        InstallSource::Borrowed(path) => (path, String::new()),
+        InstallSource::Temporary(path) => (
+            path,
+            if path == remote {
+                String::new()
+            } else {
+                format!("\n                     rm -f {path}")
+            },
+        ),
     };
     format!(
         "set -e
@@ -1524,7 +1541,7 @@ mod tests {
         let same = put_script(
             "/tmp/a.tar.gz",
             "/tmp/a.tar.gz.new",
-            "/tmp/a.tar.gz",
+            InstallSource::Temporary("/tmp/a.tar.gz"),
             "0644",
         );
         // The staged path is cleared before the copy; the source never is.
@@ -1542,10 +1559,39 @@ mod tests {
         let differ = put_script(
             "/usr/local/bin/nucleus",
             "/usr/local/bin/nucleus.new",
-            "/tmp/n",
+            InstallSource::Temporary("/tmp/n"),
             "0755",
         );
         assert!(differ.contains("rm -f /tmp/n"), "must clean up:\n{differ}");
+    }
+
+    #[test]
+    fn local_installation_preserves_source_for_reuse() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("built-node");
+        let destination = directory.path().join("installed-node");
+        let next = directory.path().join("installed-node.new");
+        std::fs::write(&source, b"built artifact").unwrap();
+        for _ in 0..2 {
+            let script = put_script(
+                destination.to_str().unwrap(),
+                next.to_str().unwrap(),
+                InstallSource::Borrowed(source.to_str().unwrap()),
+                "0755",
+            );
+            let output = Command::new("sh").args(["-c", &script]).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                source.is_file(),
+                "installing a borrowed build artifact deleted its source"
+            );
+            assert_eq!(std::fs::read(&source).unwrap(), b"built artifact");
+            assert_eq!(std::fs::read(&destination).unwrap(), b"built artifact");
+        }
     }
 
     /// The rename must be the last thing that touches the destination.
@@ -1554,7 +1600,7 @@ mod tests {
         let s = put_script(
             "/usr/local/bin/nucleus",
             "/usr/local/bin/nucleus.new",
-            "/tmp/n",
+            InstallSource::Temporary("/tmp/n"),
             "0755",
         );
         assert!(
@@ -1827,7 +1873,7 @@ mod tests {
             let script = put_script(
                 &file.remote,
                 &format!("{}.nucleus-new", file.remote),
-                &file.local.display().to_string(),
+                InstallSource::Borrowed(&file.local.display().to_string()),
                 file.mode,
             );
             let out = std::process::Command::new("sh")
@@ -2069,7 +2115,7 @@ mod tests {
             let script = put_script(
                 &file.remote,
                 &format!("{}.nucleus-new", file.remote),
-                "/tmp/staged",
+                InstallSource::Temporary("/tmp/staged"),
                 file.mode,
             );
             assert!(!script.contains("-----"), "PEM in the script:\n{script}");
@@ -2094,7 +2140,7 @@ mod tests {
         let s = put_script(
             "/root/k.pem",
             "/root/k.pem.nucleus-new",
-            "/tmp/k.pem",
+            InstallSource::Temporary("/tmp/k.pem"),
             "0600",
         );
         let cp = s
