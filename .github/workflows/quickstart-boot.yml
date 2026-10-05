@@ -436,7 +436,7 @@ jobs:
           # purpose: the last assignment in node.env wins, and the node logs the
           # weakened posture at warn. The enforcing path is covered on a real guest
           # by `xtask host-evidence-live` below.
-          echo "NUCLEUS_NODE_BROKER_ENFORCING=false" | sudo tee -a /etc/nucleus/node.env >/dev/null
+          sudo tee -a /etc/nucleus/node.env >/dev/null <<< "NUCLEUS_NODE_BROKER_ENFORCING=false"
 
       - name: Plant a canary in the NODE's environment
         if: steps.scope.outputs.relevant == 'true'
