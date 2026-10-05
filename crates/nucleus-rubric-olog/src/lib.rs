@@ -13,6 +13,14 @@
 //! would let an unverifiable signal inherit a recompute-verified column's rank
 //! authority. That is the failure this gate rejects.
 //!
+//! It must not move *reward* either. The ranking total is `Σ weight × grade`,
+//! so a translation that re-weights a criterion or widens its ceiling lets the
+//! same artifact score higher under the translated rubric than under the source
+//! one — grade under whichever vocabulary pays more. The gate therefore requires
+//! every mapped criterion to keep its *stakes* `weight × max_grade`, and every
+//! target criterion outside the image to carry none, so `Σ weight × max_grade`
+//! (and with it the maximum attainable ranking total) is preserved exactly.
+//!
 //! [`check_translation`] takes two [`Rubric`]s and a caller-supplied
 //! [`RubricMapping`] (a criterion-id → criterion-id object map) and decidably
 //! answers: *is this a well-defined functor that preserves the honesty axis?*
@@ -247,8 +255,9 @@ pub enum Misalignment {
     /// The image criterion's `max_grade` is **smaller** than the source's, so a
     /// legal `A`-grade could exceed `B`'s ceiling — a grade migrated under this
     /// map could be out of range, breaking `validate_all` on the `B` side. The
-    /// documented compatibility rule is: `b.max_grade >= a.max_grade` (the image
-    /// axis must be at least as wide; widening is fine, narrowing is not).
+    /// compatibility rule is `b.max_grade >= a.max_grade`; widening is allowed
+    /// only together with a weight that keeps the stakes equal (see
+    /// [`Misalignment::StakesMismatch`]).
     MaxGradeNarrowed {
         /// The `A`-criterion id.
         a_id: String,
@@ -272,6 +281,38 @@ pub enum Misalignment {
         second_a_id: String,
         /// The shared `B`-criterion id.
         b_id: String,
+    },
+    /// The image criterion's *stakes* `weight × max_grade` differ from the
+    /// source's. The criterion's share of the reward moved across the
+    /// translation: re-weighting (`5 → 6` at a fixed ceiling) or widening the
+    /// ceiling at a fixed weight (`max 10 → 20`) lets the same artifact score
+    /// higher under `B` than under `A`. A widened ceiling is accepted only when
+    /// the weight shrinks by the same factor (`5 × 10 = 1 × 50`).
+    StakesMismatch {
+        /// The `A`-criterion id.
+        a_id: String,
+        /// `A`'s `weight`.
+        a_weight: u32,
+        /// `A`'s `max_grade`.
+        a_max_grade: u32,
+        /// The mapped `B`-criterion id.
+        b_id: String,
+        /// `B`'s `weight`.
+        b_weight: u32,
+        /// `B`'s `max_grade`.
+        b_max_grade: u32,
+    },
+    /// A `B`-criterion that no `A`-criterion maps to carries non-zero stakes.
+    /// Every mapped stake can be preserved and `B` still pay more than `A` at the
+    /// ceiling through a column `A` never had. A target outside the image is
+    /// accepted only when `weight × max_grade == 0`.
+    UnmappedTargetStakes {
+        /// The `B`-criterion id outside the image of the map.
+        b_id: String,
+        /// Its `weight`.
+        weight: u32,
+        /// Its `max_grade`.
+        max_grade: u32,
     },
 }
 
@@ -318,6 +359,25 @@ impl std::fmt::Display for Misalignment {
                 f,
                 "non-injective: both {first_a_id} and {second_a_id} of A map to {b_id} of B"
             ),
+            Misalignment::StakesMismatch {
+                a_id,
+                a_weight,
+                a_max_grade,
+                b_id,
+                b_weight,
+                b_max_grade,
+            } => write!(
+                f,
+                "stakes moved: {a_id} (weight {a_weight} x max {a_max_grade}) maps to {b_id} (weight {b_weight} x max {b_max_grade}); weight x max_grade must be preserved"
+            ),
+            Misalignment::UnmappedTargetStakes {
+                b_id,
+                weight,
+                max_grade,
+            } => write!(
+                f,
+                "{b_id} of B is outside the image of the map but carries stakes (weight {weight} x max {max_grade}); it must carry none"
+            ),
         }
     }
 }
@@ -344,6 +404,15 @@ impl std::error::Error for Misalignment {}
 ///    ([`Misalignment::ProvenanceKindMismatch`]).
 /// 6. **Grade-axis compatibility** — `b.max_grade >= a.max_grade`
 ///    ([`Misalignment::MaxGradeNarrowed`]).
+/// 7. **Stakes preserved** — `b.weight × b.max_grade == a.weight × a.max_grade`
+///    ([`Misalignment::StakesMismatch`]).
+/// 8. **No stakes outside the image** — every `B`-criterion no `A`-criterion
+///    maps to has `weight × max_grade == 0`
+///    ([`Misalignment::UnmappedTargetStakes`]).
+///
+/// Checks 7 and 8 together make `Σ weight × max_grade` — and, since provenance
+/// is preserved by check 5, the maximum attainable ranking total — equal on
+/// both sides, so a translation cannot inflate the reward (#2515).
 ///
 /// Each check is a finite lookup over the two (finite) rubrics, so the whole
 /// gate is decidable — the finitely-presented, equation-free fragment the
@@ -467,9 +536,39 @@ pub fn check_translation(
                 b_max_grade: b_crit.max_grade,
             });
         }
+
+        // (7) stakes preserved: the criterion's share of the reward may not move.
+        if stakes(b_crit) != stakes(a_crit) {
+            return Err(Misalignment::StakesMismatch {
+                a_id: a_id.to_string(),
+                a_weight: a_crit.weight,
+                a_max_grade: a_crit.max_grade,
+                b_id: b_id.to_string(),
+                b_weight: b_crit.weight,
+                b_max_grade: b_crit.max_grade,
+            });
+        }
+    }
+
+    // (8) no stakes outside the image: a B column A never had may not pay.
+    for b_crit in &b.criteria {
+        if !seen_targets.contains_key(b_crit.id.as_str()) && stakes(b_crit) != 0 {
+            return Err(Misalignment::UnmappedTargetStakes {
+                b_id: b_crit.id.clone(),
+                weight: b_crit.weight,
+                max_grade: b_crit.max_grade,
+            });
+        }
     }
 
     Ok(())
+}
+
+/// A criterion's *stakes*: `weight × max_grade`, its contribution to the
+/// rubric's maximum attainable weighted total. Exact — the product of two
+/// `u32`s cannot overflow a `u64`.
+fn stakes(c: &nucleus_rubric::Criterion) -> u64 {
+    u64::from(c.weight) * u64::from(c.max_grade)
 }
 
 // ─── Round-trip: migrate B-scored grades into A's vocabulary ─────────────────
@@ -508,8 +607,9 @@ impl std::error::Error for MigrationError {}
 /// place it at `c`'s position in the produced `A`-scorecard.
 ///
 /// This is the **round-trip** the prompt asks for: it lets a score recorded in
-/// one vocabulary be read in the other, and — because the gate guarantees
-/// `b.max_grade >= a.max_grade` is the only allowed direction — a grade migrated
+/// one vocabulary be read in the other, and — because the gate allows
+/// `b.max_grade >= a.max_grade` (with the weight scaled down to keep the stakes)
+/// — a grade migrated
 /// from `B` into `A` may *exceed* `A`'s ceiling (a wide `B`-axis value placed in
 /// a narrow `A`-axis). The function therefore returns the migrated scorecard
 /// **and** the caller is expected to run `a.validate_all(&[migrated])` to
@@ -580,12 +680,13 @@ mod tests {
         .unwrap()
     }
 
-    /// B: a renamed-but-aligned vocabulary, ceilings >= A's.
+    /// B: a renamed-but-aligned vocabulary with the same stakes
+    /// (`weight × max_grade`) per criterion as A.
     fn rubric_b() -> Rubric {
         Rubric::new(vec![
-            crit("accuracy", Provenance::RecomputeVerified, 4, 10),
-            crit("tests", Provenance::RecomputeVerified, 6, 10),
-            crit("spend", Provenance::Attested, 2, 10),
+            crit("accuracy", Provenance::RecomputeVerified, 5, 10),
+            crit("tests", Provenance::RecomputeVerified, 3, 10),
+            crit("spend", Provenance::Attested, 7, 10),
         ])
         .unwrap()
     }
@@ -625,12 +726,25 @@ mod tests {
     }
 
     #[test]
-    fn widening_max_grade_is_allowed() {
-        // B ceilings strictly wider than A — allowed (widening, not narrowing).
+    fn stakes_preserving_widening_is_allowed() {
+        // B ceilings strictly wider than A, weights shrunk by the same factor:
+        // 5×10 = 1×50, 3×10 = 1×30, 7×10 = 1×70.
         let b = Rubric::new(vec![
-            crit("accuracy", Provenance::RecomputeVerified, 4, 100),
-            crit("tests", Provenance::RecomputeVerified, 6, 100),
-            crit("spend", Provenance::Attested, 2, 100),
+            crit("accuracy", Provenance::RecomputeVerified, 1, 50),
+            crit("tests", Provenance::RecomputeVerified, 1, 30),
+            crit("spend", Provenance::Attested, 1, 70),
+        ])
+        .unwrap();
+        assert_eq!(check_translation(&rubric_a(), &b, &good_map()), Ok(()));
+    }
+
+    #[test]
+    fn zero_stakes_target_outside_the_image_is_allowed() {
+        let b = Rubric::new(vec![
+            crit("accuracy", Provenance::RecomputeVerified, 5, 10),
+            crit("tests", Provenance::RecomputeVerified, 3, 10),
+            crit("spend", Provenance::Attested, 7, 10),
+            crit("note", Provenance::AttestationOnly, 0, 10),
         ])
         .unwrap();
         assert_eq!(check_translation(&rubric_a(), &b, &good_map()), Ok(()));
@@ -708,9 +822,9 @@ mod tests {
     fn rejects_max_grade_narrowed() {
         // B's `accuracy` ceiling 5 < A's `correctness` ceiling 10.
         let b = Rubric::new(vec![
-            crit("accuracy", Provenance::RecomputeVerified, 4, 5),
-            crit("tests", Provenance::RecomputeVerified, 6, 10),
-            crit("spend", Provenance::Attested, 2, 10),
+            crit("accuracy", Provenance::RecomputeVerified, 10, 5),
+            crit("tests", Provenance::RecomputeVerified, 3, 10),
+            crit("spend", Provenance::Attested, 7, 10),
         ])
         .unwrap();
         assert_eq!(
@@ -720,6 +834,67 @@ mod tests {
                 a_max_grade: 10,
                 b_id: "accuracy".into(),
                 b_max_grade: 5,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_attested_reweighting_7_to_2() {
+        let b = Rubric::new(vec![
+            crit("accuracy", Provenance::RecomputeVerified, 5, 10),
+            crit("tests", Provenance::RecomputeVerified, 3, 10),
+            crit("spend", Provenance::Attested, 2, 10),
+        ])
+        .unwrap();
+        assert_eq!(
+            check_translation(&rubric_a(), &b, &good_map()),
+            Err(Misalignment::StakesMismatch {
+                a_id: "cost".into(),
+                a_weight: 7,
+                a_max_grade: 10,
+                b_id: "spend".into(),
+                b_weight: 2,
+                b_max_grade: 10,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_max_grade_doubling_at_fixed_weight() {
+        let b = Rubric::new(vec![
+            crit("accuracy", Provenance::RecomputeVerified, 5, 20),
+            crit("tests", Provenance::RecomputeVerified, 3, 10),
+            crit("spend", Provenance::Attested, 7, 10),
+        ])
+        .unwrap();
+        assert_eq!(
+            check_translation(&rubric_a(), &b, &good_map()),
+            Err(Misalignment::StakesMismatch {
+                a_id: "correctness".into(),
+                a_weight: 5,
+                a_max_grade: 10,
+                b_id: "accuracy".into(),
+                b_weight: 5,
+                b_max_grade: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_unmapped_target_with_stakes() {
+        let b = Rubric::new(vec![
+            crit("accuracy", Provenance::RecomputeVerified, 5, 10),
+            crit("tests", Provenance::RecomputeVerified, 3, 10),
+            crit("spend", Provenance::Attested, 7, 10),
+            crit("bonus", Provenance::RecomputeVerified, 4, 10),
+        ])
+        .unwrap();
+        assert_eq!(
+            check_translation(&rubric_a(), &b, &good_map()),
+            Err(Misalignment::UnmappedTargetStakes {
+                b_id: "bonus".into(),
+                weight: 4,
+                max_grade: 10,
             })
         );
     }
