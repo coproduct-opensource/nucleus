@@ -907,28 +907,20 @@ async fn admit_posture_one_byte_of_drift_reds_the_gate() {
 
 // ── Authority gate wiring (pod_authority) ──────────────────────────────────
 
-/// The authority gate cannot be dropped from pod creation without this
-/// failing — the `include_str!` idiom `pod_mgmt.rs` uses for the same reason:
-/// an unwired security check is the failure shape this repo keeps finding.
-/// Both entry points (HTTP and gRPC) funnel into `create_pod_internal`, so
-/// this one site is the whole surface.
+/// The budget reservation's two arms are wired, and both entry points build an `Admission`.
+///
+/// This used to assert, by text, that `create_pod_internal` called `admit(` and `apply_to(`
+/// before spawning. That half is now a type: every driver spawn takes the `AdmittedPodPlan`
+/// that only `PodAuthority::admit_pod` constructs (#2600). What remains here is not an ordering
+/// a type expresses yet.
 #[test]
-fn create_pod_internal_still_consults_the_authority_gate() {
+fn create_pod_internal_wires_the_reservation_and_both_admissions() {
     let src = include_str!("main.rs");
     let body = src
         .split("async fn create_pod_internal(")
         .nth(1)
         .expect("create_pod_internal exists");
     let body = &body[..body.find("\nasync fn ").unwrap_or(body.len())];
-    assert!(
-        body.contains("state.authority.admit("),
-        "create_pod_internal must consult pod_authority::admit before any driver spawns"
-    );
-    assert!(
-        body.contains("let reservation = issued.apply_to(&mut spec);"),
-        "the issued effective lattice and admitted upstreams must replace the requested \
-         policy and credentialed_egress before spawn (`IssuedAuthority::apply_to`)"
-    );
     assert!(
         body.contains("reservation.release().await;") && body.contains("reservation.commit();"),
         "a failed spawn hands the budget reservation back, and only a registered pod keeps it \

@@ -294,6 +294,58 @@ pub(crate) struct IssuedAuthority {
     reservation: Reservation,
 }
 
+/// A spec its caller's authority has admitted, with what was issued applied to it: the only
+/// value a driver spawns (#2600).
+///
+/// Admit-before-spawn used to be a test that `include_str!`'d `main.rs` and looked for the text
+/// `state.authority.admit(` in `create_pod_internal`; it could not see an `admit` placed after a
+/// spawn. Now a driver's spawn function takes this by value, and its constructor is private to
+/// this module, reached only through [`PodAuthority::admit_pod`]. Spawning without admission does
+/// not compile (ADR 0007 C-1, D).
+///
+/// One admission backs one launch (C-4): not `Clone`, consumed by the spawn, and `#[must_use]`
+/// because an admitted plan that is never spawned is a decision silently dropped. The pod id is
+/// inside, so the spawn cannot launch the admitted spec under another pod's certificate.
+#[must_use = "an AdmittedPodPlan that is never spawned is an admitted pod that was not launched"]
+pub(crate) struct AdmittedPodPlan {
+    id: Uuid,
+    spec: PodSpec,
+    chain_depth: usize,
+    owner: String,
+}
+
+impl std::fmt::Debug for AdmittedPodPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdmittedPodPlan")
+            .field("id", &self.id)
+            .field("chain_depth", &self.chain_depth)
+            .field("owner", &self.owner)
+            .finish_non_exhaustive()
+    }
+}
+
+impl AdmittedPodPlan {
+    /// The pod the certificate was issued for.
+    pub(crate) fn id(&self) -> Uuid {
+        self.id
+    }
+
+    /// The spec as admitted: the issued lattice and upstreams in place of what was requested.
+    pub(crate) fn spec(&self) -> &PodSpec {
+        &self.spec
+    }
+
+    /// Chain depth of the issued certificate.
+    pub(crate) fn chain_depth(&self) -> usize {
+        self.chain_depth
+    }
+
+    /// The certificate's root identity: whose authority the pod runs under (ADR 0001).
+    pub(crate) fn owner(&self) -> &str {
+        &self.owner
+    }
+}
+
 /// A pod's budget reservation, from admission until the pod runs.
 ///
 /// Dropped without [`Reservation::commit`], it hands the reservation back:
@@ -461,7 +513,10 @@ impl IssuedAuthority {
     ///
     /// Returns the pod's [`Reservation`]: the caller holds it across the spawn
     /// and commits it only once the pod runs.
-    pub fn apply_to(self, spec: &mut PodSpec) -> Reservation {
+    ///
+    /// Private: the launch path reaches it only through [`PodAuthority::admit_pod`], which wraps
+    /// the applied spec in the [`AdmittedPodPlan`] a driver needs (#2600).
+    fn apply_to(self, spec: &mut PodSpec) -> Reservation {
         spec.spec.policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(self.effective),
         };
@@ -1353,6 +1408,30 @@ impl PodAuthority {
                 Ok(policy)
             }
         }
+    }
+
+    /// Admit a pod and apply what was issued to its spec: the one way to an [`AdmittedPodPlan`].
+    ///
+    /// The spec is taken by value so the plan carries exactly the spec that was admitted, with
+    /// the issued policy and upstreams in place. The [`Reservation`] is returned beside it: the
+    /// caller releases it if the spawn fails and commits it once the pod is registered.
+    pub(crate) async fn admit_pod(
+        &self,
+        admission: &Admission,
+        mut spec: PodSpec,
+        id: Uuid,
+    ) -> Result<(AdmittedPodPlan, Reservation), ApiError> {
+        let issued = self.admit(admission, &spec, id).await?;
+        let chain_depth = issued.chain_depth;
+        let owner = issued.root_identity.clone();
+        let reservation = issued.apply_to(&mut spec);
+        let plan = AdmittedPodPlan {
+            id,
+            spec,
+            chain_depth,
+            owner,
+        };
+        Ok((plan, reservation))
     }
 
     /// `admit`, with the reservation committed: for tests about what admission

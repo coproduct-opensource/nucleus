@@ -13,7 +13,6 @@ use nucleus_spec::{PodSpec, PolicySpec};
 use portcullis::enforcement::{BackendCapability, require_isolation};
 use std::path::{Path, PathBuf};
 use tracing::{error, warn};
-use uuid::Uuid;
 
 /// The isolation substrate the node launches pods under.
 #[derive(Clone, Debug, ValueEnum)]
@@ -45,10 +44,9 @@ pub(crate) enum DriverKind {
 pub(crate) async fn spawn_vz_pod(
     state: &NodeState,
     pod_dir: &Path,
-    spec: &PodSpec,
-    id: Uuid,
+    plan: crate::pod_authority::AdmittedPodPlan,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
-    let _ = (state, pod_dir, spec, id);
+    let _ = (state, pod_dir, plan);
     Err(ApiError::Driver(
         "Apple VZ driver not yet implemented (macOS-native, Virtualization.framework) \
          — see docs/plugin-surface.md"
@@ -260,7 +258,7 @@ mod tests {
             .find("driver::clamp_isolation_to_backend(&state.driver, &mut spec)?")
             .expect("the clamp is called from main.rs, with the node's own driver, and its refusal propagated");
         let admit = main
-            .find("state.authority.admit(&admission, &spec, id)")
+            .find("state.authority.admit_pod(&admission, spec, id)")
             .expect("admission is called from main.rs");
         assert!(clamp < admit, "the clamp must run before admission");
         let indent = main[..clamp].rsplit('\n').next().unwrap_or("");
