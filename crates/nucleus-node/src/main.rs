@@ -833,10 +833,7 @@ async fn main() -> Result<(), ApiError> {
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
         audit_sinks: Arc::new(args.audit_sinks.load().map_err(ApiError::Driver)?),
-        // No minter ships in this crate: a scoped credential is a provider's protocol, and an
-        // embedding that runs audit sinks supplies one. Until then a spec that names a sink is
-        // refused at create rather than given the node's own key.
-        audit_minter: None,
+        audit_minter: args.audit_sinks.minter().map_err(ApiError::Driver)?,
         drand_config,
         identity_manager,
         identity_vsock_port: args.identity_workload_api_vsock_port,

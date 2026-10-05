@@ -1655,3 +1655,28 @@ A live Apple Container check placed the rebuilt node in a separate cgroup with
 This observes visible cgroup v2 quotas at startup, not ongoing changes to host
 allocation or invisible ancestor limits. Cgroup v1 CPU quota detection is not
 added by this change. Coding journeys still await model configuration.
+
+### Configurable host audit credential service (2026-10-04)
+
+The node now accepts `--audit-minter-socket` (or
+`NUCLEUS_NODE_AUDIT_MINTER_SOCKET`) for an operator-provided host Unix service.
+The adapter sends admission's resolved scope and requested lifetime, and passes
+the returned temporary credential through the existing expiry/key checks before
+constructing an uploader grant. Provider authentication and restricted policy
+issuance stay outside Nucleus. No configured minter still refuses audit sinks;
+service failures never fall back to ambient credentials.
+
+The versioned request protocol is documented in
+[`audit-credential-service.md`](audit-credential-service.md). Each call uses a
+fresh connection, a ten-second end-to-end deadline and a 16 KiB reply limit.
+Errors omit response bytes and parser diagnostics. Scope serialization derives
+from the admitted type (ADR 0007 F); the existing admission consumes the mint
+witness before handing the grant to a driver (C-4).
+
+Twenty-one focused audit tests pass, including real local Unix-socket exchanges
+that check scope/TTL delivery, uploader configuration, refusal, expiry, malformed
+or incomplete replies, service absence, and timeout connection cleanup. Linux
+ARM64 musl builds and scoped Clippy passes. These are adapter tests, not evidence
+that a real provider has issued a restricted credential. Production provider
+integration and once-per-pod credential refresh remain open, alongside the two
+model-driven coding journeys.

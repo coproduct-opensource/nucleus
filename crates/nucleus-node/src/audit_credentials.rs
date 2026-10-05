@@ -36,8 +36,8 @@
 //!
 //! # Not done here
 //!
-//! - No concrete minter ships in this crate, so an audit sink is refused on every node until an
-//!   embedding supplies one. That is the fail-closed half of the fix, not an omission of it.
+//! - The socket adapter delegates provider minting to an operator service. Without a configured
+//!   adapter or embedding-supplied minter, sinks are refused.
 //! - A credential is minted once, for the pod's lifetime capped at [`MAX_CREDENTIAL_TTL`]. A pod
 //!   that outlives its credential stops shipping audit entries (the tool-proxy logs each failed
 //!   write); refreshing over the workload API is a follow-up.
@@ -52,6 +52,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use super::AuditTarget;
+
+#[path = "audit_credential_socket.rs"]
+pub(crate) mod socket;
 
 /// The longest credential the node asks a minter for: twelve hours. A pod's own `timeout_seconds`
 /// is used when it is shorter.
@@ -89,7 +92,7 @@ pub(crate) const UPLOADER_CREDENTIAL_ENV: [&str; 14] = [
 /// Where a minted credential may write: new objects under one key prefix of one bucket, at one
 /// endpoint. Put only: no read, no list, no delete. Only [`AuditTarget::write_scope`] constructs
 /// one, so a scope is always a destination admission resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct WriteScope {
     endpoint: Option<String>,
     region: Option<String>,
@@ -97,7 +100,7 @@ pub(crate) struct WriteScope {
     prefix: Option<String>,
 }
 
-// What a minter reads. No minter ships in this crate, so outside tests nothing calls these.
+// Accessors for embedding minters; the socket adapter serializes the scope directly.
 #[cfg_attr(
     not(test),
     expect(
