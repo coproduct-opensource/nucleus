@@ -1,0 +1,43 @@
+[package]
+name = "nucleus-node-evidence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Node attestation evidence (TPM 2.0 quote + TCG boot event log + IMA log, bound to the node's executor key) and a pure-Rust RATS verifier that appraises it to Attested / Contested / Expired / Unattested"
+repository = "https://github.com/coproduct-opensource/nucleus"
+keywords = ["attestation", "tpm", "rats", "measured-boot", "ima"]
+categories = ["cryptography"]
+
+[lints]
+workspace = true
+
+# The verifier is pure Rust on purpose: no libtss2, no ring, no C. It is meant to
+# compile to wasm32 for the browser verifier in a later change (it is NOT embedded
+# by sdks/verifier-js yet, so this crate does not move that crate's wasm pin).
+#
+# Two digest generations are in the lockfile: the workspace's sha2 0.11 hashes
+# everything here, and the RustCrypto signature crates below (p256/p384 0.13,
+# rsa 0.9) are verified through their *prehash* entry points with that digest, so
+# no digest-0.10 trait object ever crosses this crate's API.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
+# Signature VERIFICATION only. RUSTSEC-2023-0071 (Marvin) is a timing side channel
+# on private-key decryption; this crate holds no RSA private key. See deny.toml.
+rsa = { version = "0.9", default-features = false, features = ["std"] }
+# Parsing only: the workspace entry enables `verify` (ring). Signatures over the
+# AK certificate chain are checked here with the RustCrypto crates above.
+x509-parser = { version = "0.18", default-features = false }
+
+[dev-dependencies]
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
+rcgen = { version = "0.14", features = ["x509-parser"] }
+proptest = { workspace = true }

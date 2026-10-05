@@ -1,0 +1,171 @@
+{
+  "profile": "nucleus-node-reference/v1",
+  "tag-id": "fixture-cloud-vtpm-ubuntu-24.04-7.0.0-1011",
+  "reference-values": {
+    "pcrs": {},
+    "secure_boot": {
+      "required": true
+    },
+    "efi_applications": {
+      "not_checked": "not supplied to the reference generator"
+    },
+    "boot_files": {
+      "required": {
+        "allowed": [
+          "1b766f38a94927fe9b7bc1e809f0363e778e14c601e800faea271a2e75d3fc43",
+          "32fc7f5de8c0a5dc0b1e7eb609ca31a77eb3475539e1d97a4543dca1b9b26c57",
+          "46f888c52f36baf9b62d60bc8d06426a314aad5a0ff86a4362a91c2512a1df9c",
+          "7cef518f319061feaedbef862ea0926ac4d8929cde6793b9a3fff98a43882c33",
+          "aef695413d1a1b9eaff753a15512d0ba79e23e5524033eec20c7a1c7c20eb1c4",
+          "b49a7fd5edc02f168f0de51309313278dc2347c0f83a5cbedcb8974790a5e7e8",
+          "d85c2e600556fc37fa2091d12b2d51164aa7109e137abdcea0ef627bc4d9a19a",
+          "d99d5fe55b545db18594e22b72f9c1430ef61af0bd3ff479830b489107678b09",
+          "f64122858064885ef0733e42c6a3d2d3fd642671f714db0d974b880c0f087430"
+        ],
+        "required": [
+          "d99d5fe55b545db18594e22b72f9c1430ef61af0bd3ff479830b489107678b09"
+        ]
+      }
+    },
+    "kernel_cmdline": {
+      "required": {
+        "required_params": [
+          "console=ttyS0,115200",
+          "panic=-1",
+          "ro",
+          "root=PARTUUID=25738ee1-aeb2-42e1-895b-9a587dbb9157"
+        ]
+      }
+    },
+    "ima": {
+      "required": {
+        "allowlist": {
+          "/opt/nucleus/bin/firecracker": [
+            "886e5fa8be716b03eeda48856e0f04493f2969fc148fb7812594ffac647fa050"
+          ],
+          "/opt/nucleus/bin/nucleus-node": [
+            "8a63c98320173f79e263115e10cefc170155e47d1fd4b5a70e4429d2699cae28"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/crypto/aesni-intel.ko.zst": [
+            "29fe6eac3e7566d991228dd07aace35fe1c05b1ef1006bf9cf6295f14e3bc45d"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/crypto/ghash-clmulni-intel.ko.zst": [
+            "cfe9e2484572f3a346872be8ada6172dc063279163e0f9acb52a25e07b924d5f"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/events/intel/intel-cstate.ko.zst": [
+            "9f18c417a1bb9c9f9de5a1d6f301a197a98b287ba41dd4c4bfd577c50c306ff5"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/events/rapl.ko.zst": [
+            "77ea3fe119999bdf7be84f1968be53df344fd9e61acd85d2ccaca3a4775423b9"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/acpi/nfit/nfit.ko.zst": [
+            "281d4f7c65d2250c8858d2c9695bdb497f03cecc795f51bc27b74addac46ccfc"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/char/hw_random/virtio-rng.ko.zst": [
+            "a702ecae7f77209cb2cdc60122ad7d5d4683a3c46687a0d6b2dfb0fbcc698e6d"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/edac/skx_edac.ko.zst": [
+            "734d601e1974e41a0a469e90c3e1c821ed81d805e7096f4069549aedb0d83267"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/edac/skx_edac_common.ko.zst": [
+            "fae5f7c1c4a41c412c8b76f2710953c028b581ba14a862b49fd9db27bf2d93de"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/firmware/dmi-sysfs.ko.zst": [
+            "aba6fd9b068e43c069e12e151b2c4345f045113393df90e4f66a39b86144f6b2"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/firmware/efi/efi-pstore.ko.zst": [
+            "ef44c6a68fd8f0b765300f8252953940c6930a773a822464092342afc82d03aa"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/i2c/busses/i2c-piix4.ko.zst": [
+            "f057f090b71d61b162852329209671cb74d93094d3a20de4cb55c646e2eabdff"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/i2c/i2c-smbus.ko.zst": [
+            "15638f7c94746c8cc022096a0ec54c18d99e85c3405fcd7ecb82b57b9e9a1035"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/input/input-leds.ko.zst": [
+            "46c945cdea59381c11ee0644d6b9fbcb9598c4ac54d95c598bafcf00dba0eb20"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/input/mouse/psmouse.ko.zst": [
+            "4044891b74d4aa6b891624cb86e80d00206549f40b5fab763e3e65eeb11843ac"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/input/serio/serio_raw.ko.zst": [
+            "0c45e7077543d4771586260dfe7f12ee41bef8a699e237007a9485ca01ed0b37"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/macintosh/mac_hid.ko.zst": [
+            "ab558fc353d8afd8fea964114b8d117dac5cb2246c9282ca6e38667018dfeb8a"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/md/dm-multipath.ko.zst": [
+            "131f0543d9a096de863ace600c1e30c0396e66cfb8727eda94b07cb9cc4eab6a"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/misc/pvpanic/pvpanic-mmio.ko.zst": [
+            "5dd6af15b37c28873f986c670d91de472b0c01477883dd13411405895148d0a8"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/misc/pvpanic/pvpanic.ko.zst": [
+            "ab953915818fea5596f6e184a55b85316eb6b58a153733eed665a47d3e2c5416"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/nvme/host/nvme-fabrics.ko.zst": [
+            "ea5eebb2636aa979eb7dd5742d01530004921e7343159bb9b02248702f8053a6"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/platform/x86/intel/speed_select_if/isst_if_common.ko.zst": [
+            "d0818d382d576ff3be9e819deda5e1d436566ef078cae046226bf38a7ba16ba6"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/platform/x86/intel/uncore-frequency/intel-uncore-frequency-common.ko.zst": [
+            "7ff997e4f316ae928d331dd0447b5b2219804e4d3246f0b109e72fd1a64343ad"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/platform/x86/intel/uncore-frequency/intel-uncore-frequency.ko.zst": [
+            "3efe7d32defc3bdd58c4f6ad46ae100a267c6b90cb8ba7125994714d8ced971d"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/powercap/intel_rapl_common.ko.zst": [
+            "6143b2ac562fc92ba5e9399a262565cf85759c42f502de4c1e0e971e8e122695"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/powercap/intel_rapl_msr.ko.zst": [
+            "ff9173d9962137d9afdc150d08d4f94252287ea6cad80f6accff3bf9adbbc676"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/autofs/autofs4.ko.zst": [
+            "cdfc602da37a6c3594d62b64336899685b9a51cd572ba5d7a1b2b57a11643bc5"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/binfmt_misc.ko.zst": [
+            "8fbcc26ef887aa7178eeded13028fb657d4331a2ed7ed768af496e49f49161e6"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/nls/nls_iso8859-1.ko.zst": [
+            "17eff92689f94bdcfae1a36f89bcf51d0fb89385fc0981acc3e622a25ce74953"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/802/garp.ko.zst": [
+            "63bc8ffd225b3a3a51330a88745a2d047384f3541ad190c431f2aca8528683a8"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/802/mrp.ko.zst": [
+            "b06e21074a4f1174ef90e7f84e78cc3e2c330e08cd83e51909eb2d0e1bc03768"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/802/stp.ko.zst": [
+            "7ba5befe20553f15c9a678e26b2263c43b8d8b4a907628fbe31908a8ab899fcb"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/8021q/8021q.ko.zst": [
+            "0c3b9031952f4d73125ac07a819edb1e74e14eda4588797c819743d3f79ee694"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/ipv4/netfilter/ip_tables.ko.zst": [
+            "9ec87ed23bb1d3a2ca1fff1870e118d8a4afe34636917ab978f7af4b42b20df6"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/llc/llc.ko.zst": [
+            "91bc2a087cfbd8ac7ae8e027310aad0d224b2684e4cdddfc0dad3b33a5f89792"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/x_tables.ko.zst": [
+            "406de8f7b5bb2f89a70d21a310176c511b5f5cbd4484c4f5012ff2d602800c54"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/sched/sch_fq_codel.ko.zst": [
+            "6c8503be3d868d18962659238092dcb11b73fce88acdd5e1bb724ef4a991e74d"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/tls/tls.ko.zst": [
+            "4e78543aed4875cb8a346285b03fc65eb9284fcc0ef3b5e0e6182de1ca059c24"
+          ],
+          "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/wireless/cfg80211.ko.zst": [
+            "641ecd3d87f4fc760370e623ed084b8986728cc33a451e02f1d8e9cf006720af"
+          ]
+        },
+        "required": [
+          "/opt/nucleus/bin/firecracker",
+          "/opt/nucleus/bin/nucleus-node"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "eat_profile": "nucleus-node-evidence/v1",
+  "binding": {
+    "executor_key": {
+      "ed25519": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"
+    },
+    "federation": "not_federated"
+  },
+  "freshness": {
+    "challenge": {
+      "eat_nonce": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
+    }
+  },
+  "tpm": {
+    "ak_public": "ARgAAQALAAUAcgAAABAAFAALCAAAAAAAAQD74N8rYzH5AIwoA7Bv0T9fNYWmQYq6HRy/fWlDApj9SOKGrLU5LivnMM9ma3XPuHA4iCgQJqzX7NlV7+HLOltyT+oVrm0zbtIQiwH/uUPe9PTh1QVvaPRQuI1606LBduNwrIkShw+7XKMihnkjzKuWJGaztj7LzBJM9P4P2D9xmnWdU6VhRrJfnUgioDnbr4vtDc573NwvPaLDQ42NnSas9zaiRMi1UcHDerKQeeYCv0idmGCu13VeIvIodLGm0YR9iToQxpzUN+ugY3pHSSzX6HuALQw66NbQ7lE7YgTGEt1Gxyc77ZhXcvYGi1jZhzM2JlF9S/vhQ1whhYDB9sFz",
+    "attest": "/1RDR4AYACIAC2+sQCjcWTgzg9nYNrhjOSu9djc8ZqFwEII8t6dARZw7ACB//XKerEDZi4aMJyOxBSO+/4y2GILnmH2JG9guNIAKUQAAAAAAAAU0AAAAAQAAAAABIBkQIwAWNjYAAAABAAsDAQABACBKk5FlTmGvrX/gzb2cl70gC4toivGtZbI/YyD1r/mBzg==",
+    "signature": "ABQACwEAhwXk2PAV/5KBeiim33CIbJ6NYX7ctHVq9RgWrVvYVK/Y+bFNQjnirRUFtF8kLmZ0qihqiunTZBnkIhQzXMfN1BbUNBfbKJuHTZm8KWJ4U7ffSpgLZSlgcVDzhGkolTcFBTPN7Kt4H4dFnrqYWHgbQAqZJY32CcBX2mV5pONUzO5zwRvno5W8qoQGMSLmgHjlVrXhyQw/8P0zjNXRASIkYcY01uYbWU/+EB9xKxjtbPW8VCRAKWXZQnodE+NobBWvrqDzVr0HnOCkd+0Ee4bCKNtil0bLM0TRUxdEpDVr47HBdIWl1/mK8T7jxCQ1p/GcW9DpUdEV4WWoQd6H9xgenA==",
+    "pcrs": {
+      "0": "0000000000000000000000000000000000000000000000000000000000000000",
+      "16": "80b505e18adda4119ca6a9abf09405eca9bc1bc8fc7a84ffccb55a6a8f8ab301"
+    }
+  },
+  "boot_event_log": {
+    "absent": "no firmware event log on this TPM"
+  },
+  "ima_log": {
+    "absent": "IMA not enabled"
+  },
+  "ak_anchor": {
+    "operator_fetched": {
+      "source": "swtpm-fixture"
+    }
+  }
+}
