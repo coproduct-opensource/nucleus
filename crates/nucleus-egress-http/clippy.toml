@@ -1,0 +1,59 @@
+# Keep the adapter's existing raw-I/O lint restrictions after separating it
+# from nucleus-tool-proxy. Its narrowly documented #[expect] sites are the
+# Unix-only door client and declared workload child, not privileged tool effects.
+# Clippy replaces rather than merges configurations: all workspace-root method
+# restrictions are repeated below and checked by `cargo xtask clippy-config`.
+# Blocking reqwest is not enabled by this package; its restrictions remain in
+# force if that optional API becomes reachable later.
+disallowed-types = [
+    { path = "std::fs::File", reason = "use portcullis_effects::FileEffect" },
+    { path = "std::fs::OpenOptions", reason = "use portcullis_effects::FileEffect" },
+    { path = "std::process::Command", reason = "use portcullis_effects::ShellEffect" },
+    { path = "tokio::process::Command", reason = "use portcullis_effects::ShellEffect" },
+    { path = "reqwest::Client", reason = "use portcullis_effects::WebEffect" },
+]
+
+# Restated from the workspace root. Kept equal by `cargo xtask clippy-config`.
+disallowed-methods = [
+    # C-1 -- a type that names evidence has a private constructor.
+    { path = "std::mem::transmute", reason = "ADR 0007 C-1: fabricates a sealed witness; use the minting constructor" },
+    # C-5 -- capability and authority types are !Clone, !Copy, #[must_use].
+    { path = "std::vec::Vec::leak", reason = "ADR 0007 C-5: defeats the consuming discipline; pass the value" },
+    # #1216 -- the constructors the `disallowed-types` list above cannot see.
+    # Every current call site carries an `#[expect]` naming why it is there;
+    # a new one fails the build, which is what #1216 asked for and what the
+    # type-position form never delivered.
+    { path = "std::process::Command::new", reason = "#1216: spawn through portcullis_effects::ShellEffect" },
+    { path = "tokio::process::Command::new", reason = "#1216: spawn through portcullis_effects::ShellEffect" },
+    { path = "std::fs::File::open", reason = "#1216: read through portcullis_effects::FileEffect" },
+    { path = "std::fs::File::create", reason = "#1216: write through portcullis_effects::FileEffect" },
+    { path = "std::fs::OpenOptions::new", reason = "#1216: open through portcullis_effects::FileEffect" },
+    { path = "reqwest::Client::new", reason = "#1216: fetch through portcullis_effects::WebEffect" },
+
+    # H-1 -- no ambient process-global mutation.
+    { path = "std::env::set_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
+    { path = "std::env::remove_var", reason = "ADR 0007 H-1: ambient authority; pass the value to the process that needs it" },
+
+    # G-1 -- one decider per fact: a record log is appended to in ONE place.
+    # Four evidence logs (mediation receipts, Article 12 records, pod lifecycle, the
+    # tool-proxy's hash-chained audit log) wrote each record as two writes, and all
+    # four tore under concurrency (2026-09-16, PRs #2933 and the one adding
+    # `nucleus-jsonl`). `nucleus_jsonl::append_line` is the one atomic append. A byte
+    # stream that is not a record log (a child's stdout, a VMM console) carries an
+    # `#[expect]` saying so.
+    { path = "std::fs::OpenOptions::append", reason = "ADR 0007 G-1: append a record with nucleus_jsonl::append_line (one atomic write)" },
+    { path = "tokio::fs::OpenOptions::append", reason = "ADR 0007 G-1: append a record with nucleus_jsonl::append_line (one atomic write)" },
+
+    # B-6 -- a TLS client identifies its peer. The node's certificate names it by
+    # SPIFFE ID rather than hostname, so a client that switches the hostname check
+    # off must check the ID instead; `nucleus_identity::node_tls` does both, and is
+    # how every node-facing client builds its TLS. Measured when wired: 0 occurrences.
+    { path = "reqwest::ClientBuilder::danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::ClientBuilder::tls_danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::ClientBuilder::danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::ClientBuilder::tls_danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::danger_accept_invalid_hostnames", allow-invalid = true, reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_hostnames", allow-invalid = true, reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::danger_accept_invalid_certs", allow-invalid = true, reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+    { path = "reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_certs", allow-invalid = true, reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+]

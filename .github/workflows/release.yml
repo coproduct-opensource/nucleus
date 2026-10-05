@@ -118,6 +118,7 @@ jobs:
         run: |
           cross build -p nucleus-guest-init --release --target ${{ matrix.target }}
           cross build -p nucleus-tool-proxy --release --features remote-audit --target ${{ matrix.target }}
+          cross build -p nucleus-egress-http --release --target ${{ matrix.target }}
           cross build -p nucleus-net-probe --release --target ${{ matrix.target }}
           # The rootfs needs SEVEN guest binaries; this step built three, so
           # `build-rootfs.sh` failed on the first one it could not find:

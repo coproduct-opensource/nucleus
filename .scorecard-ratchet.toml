@@ -240,9 +240,12 @@ population_floor = 278
 # a probability may be trusted is exactly what this family counts.
 # 2026-10-04: integer market, calibration and decision-protocol are all present.
 # Combined 34 of 91 = 37.36%; retain all three lint-adoption gains.
-floor_bp = 3736
+# 2026-10-05: the standalone unprivileged HTTP adapter declares all seven
+# totality lints. Typed response construction replaces its expect and signal
+# exit conversion uses checked arithmetic. 35 of 92 = 38.04%; floor rises.
+floor_bp = 3804
 floor_set = "measurement"
-population_floor = 91
+population_floor = 92
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

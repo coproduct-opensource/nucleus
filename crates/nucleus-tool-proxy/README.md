@@ -5,7 +5,7 @@ HTTP JSON tool proxy that runs inside a pod (VM) and enforces nucleus policies.
 ## Ordinary HTTP clients
 
 `nucleus-egress-http` exposes one registered broker upstream on guest loopback.
-Build it with `cargo build -p nucleus-tool-proxy --bin nucleus-egress-http` and
+Build it with `cargo build -p nucleus-egress-http` and
 include the executable in the guest image. Both the guest layer and release
 rootfs builder include it. Use it as the pod's workload command to manage the
 listener and harness together, under the same workload UID:

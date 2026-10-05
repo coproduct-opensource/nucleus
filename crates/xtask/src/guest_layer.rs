@@ -117,8 +117,9 @@ impl Builder {
 /// `release.yml` by [`release_coverage`].
 pub fn features(binary: GuestBinary) -> &'static [&'static str] {
     match binary {
-        GuestBinary::ToolProxy | GuestBinary::EgressHttp => &["remote-audit"],
+        GuestBinary::ToolProxy => &["remote-audit"],
         GuestBinary::Init
+        | GuestBinary::EgressHttp
         | GuestBinary::EgressProbe
         | GuestBinary::NetProbe
         | GuestBinary::WorkloadProbe
@@ -563,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn release_must_build_and_upload_the_companion_not_only_its_package() {
+    fn release_must_build_and_upload_the_http_adapter() {
         let rootfs = repo_file("scripts/firecracker/build-rootfs.sh");
         let release = repo_file(".github/workflows/release.yml");
         let missing: String = release
@@ -579,13 +580,13 @@ mod tests {
             ]
         );
         let narrowed = release.replace(
-            "cross build -p nucleus-tool-proxy ",
-            "cross build -p nucleus-tool-proxy --bin nucleus-tool-proxy ",
+            "cross build -p nucleus-egress-http ",
+            "cross build -p nucleus-egress-http --bin another-binary ",
         );
         assert_ne!(narrowed, release);
         assert_eq!(
             release_coverage(&GuestBinary::ALL, &rootfs, &narrowed),
-            ["release.yml builds nucleus-tool-proxy but excludes binary nucleus-egress-http"]
+            ["release.yml builds nucleus-egress-http but excludes binary nucleus-egress-http"]
         );
     }
 

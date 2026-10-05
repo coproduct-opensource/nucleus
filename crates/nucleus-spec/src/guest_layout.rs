@@ -215,9 +215,9 @@ impl GuestBinary {
     #[must_use]
     pub const fn package(self) -> &'static str {
         match self {
-            Self::EgressHttp => Self::ToolProxy.binary(),
             Self::Init
             | Self::ToolProxy
+            | Self::EgressHttp
             | Self::EgressProbe
             | Self::NetProbe
             | Self::WorkloadProbe

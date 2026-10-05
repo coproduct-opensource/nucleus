@@ -1,5 +1,18 @@
 //! Unprivileged HTTP compatibility adapter for a single broker upstream.
 //! Only the Unix workload door is reachable; this process never holds credentials.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::net::SocketAddrV4;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -155,15 +168,15 @@ async fn forward(State(adapter): State<Adapter>, request: Request) -> Response {
             return (StatusCode::BAD_GATEWAY, "workload broker transport failed").into_response();
         }
     };
-    let mut builder = Response::builder().status(response.status());
+    let mut outgoing_response = Response::new(Body::empty());
+    *outgoing_response.status_mut() = response.status();
     for name in [header::CONTENT_TYPE, header::RETRY_AFTER] {
         if let Some(value) = response.headers().get(&name) {
-            builder = builder.header(name, value);
+            outgoing_response.headers_mut().insert(name, value.clone());
         }
     }
-    builder
-        .body(Body::from_stream(response.bytes_stream()))
-        .expect("upstream status and selected headers are valid HTTP")
+    *outgoing_response.body_mut() = Body::from_stream(response.bytes_stream());
+    outgoing_response
 }
 
 fn router(adapter: Adapter) -> Router {

@@ -6896,6 +6896,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-egress-http"
+version = "1.0.0"
+dependencies = [
+ "axum",
+ "clap",
+ "nix",
+ "reqwest 0.13.5",
+ "rustls",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tower",
+]
+
+[[package]]
 name = "nucleus-egress-probe"
 version = "1.0.0"
 

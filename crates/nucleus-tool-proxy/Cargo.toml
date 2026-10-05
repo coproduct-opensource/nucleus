@@ -16,10 +16,6 @@ categories = ["network-programming", "development-tools"]
 name = "nucleus-tool-proxy"
 path = "src/main.rs"
 
-[[bin]]
-name = "nucleus-egress-http"
-path = "src/bin/nucleus-egress-http/main.rs"
-
 [features]
 default = []
 # Enable SPIRE Workload API for real SVID fetch (Tier 2 sandbox proof)

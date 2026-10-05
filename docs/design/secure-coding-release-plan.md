@@ -2396,3 +2396,42 @@ under `/tmp/nucleus-node-apple-live/`. All 334 CLI unit tests passed, two ignore
 integration suites, scoped Clippy and all four prepush gates passed. This does
 not yet select Apple automatically for legacy setup or shell, and no actual
 model-driven journey has completed.
+
+
+### Separate the unprivileged HTTP adapter package (2026-10-05)
+
+The broader merge preflight found that the raw-effect gate counted the HTTP
+adapter's managed child and Unix client as privileged proxy effects because it
+was packaged under `nucleus-tool-proxy/src`. The adapter now has its own
+`nucleus-egress-http` crate: it remains a workload-UID client with a loopback
+listener, fixed Unix-door transport, no provider credentials, and the same host
+broker approval path. Its eight existing protocol/lifecycle tests moved with it.
+The proxy's raw-effect gate and its allowlists were not widened. The adapter
+retains the same scoped I/O lint restrictions in its own checked configuration.
+
+The new crate explicitly enables its Tokio process, signal and runtime features
+rather than obtaining them through the proxy's dependency graph. All seven
+production totality lints are denied: response construction now uses typed
+status/header mutation and signal exit conversion uses checked addition. The
+measured totality floor rises from 34/91 (37.36%) to 35/92 (38.04%); the suppression
+population and floor remain unchanged. Release and guest-layer builders now
+build the independent package. `build-rootfs.sh` accepts its explicit
+`EGRESS_HTTP_BIN` input; the existing cross-build inventory derives all nine
+required guest packages.
+
+The door's existing tests were extracted into an explicitly test-only module,
+removing a raw-effect scanner false positive caused by braces in test strings.
+Extraction also exposed a stale source assertion: its router search had found
+its own test string. It now names the actual `pub(crate) fn router` declaration.
+All 18 door tests and 13 guest-layer/release checks pass, along with the eight
+adapter tests and scoped Clippy. Both the original mediation script and its Rust
+counterpart pass. A Linux ARM64 build ran at UID 1000 inside the Apple host,
+provided its bound endpoint to its declared child and preserved exit 7. This was
+a host-container utility check, not another model journey or a new guest image.
+Evidence: `/tmp/nucleus-adapter-standalone-linux.json`.
+
+Workspace CI run `37272836266` completed coverage on commit `72b58a9fa` at
+83.59% lines (227404 measured, 37311 missed), and portcullis at 90.42% lines.
+The repository's current pinned workspace floor is 82.5%, despite older guidance
+and workflow summary text saying 83%; neither threshold was changed here.
+Mutation testing is still running. Later changes require their own final-head CI.

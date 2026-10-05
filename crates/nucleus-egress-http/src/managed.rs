@@ -24,7 +24,9 @@ pub(super) fn shutdown() -> std::io::Result<impl Future<Output = u8>> {
 
 fn exit_code(status: ExitStatus) -> ExitCode {
     use std::os::unix::process::ExitStatusExt;
-    let code = status.code().or_else(|| status.signal().map(|s| 128 + s));
+    let code = status
+        .code()
+        .or_else(|| status.signal().and_then(|s| s.checked_add(128)));
     ExitCode::from(code.and_then(|c| u8::try_from(c).ok()).unwrap_or(1))
 }
 
