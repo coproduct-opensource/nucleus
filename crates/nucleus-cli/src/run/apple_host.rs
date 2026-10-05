@@ -2,27 +2,18 @@
 use std::path::Path;
 
 use super::{ResolvedConfig, RunArgs};
-use crate::microvm_host::{container_cli::ContainerCli, lifecycle, settings::HostSettings};
-use anyhow::{Result, anyhow, ensure};
+use crate::microvm_host::{lifecycle, settings};
+use anyhow::Result;
 
 pub(super) fn configuration(path: &Path) -> Result<lifecycle::HostConfig> {
-    ensure!(
-        cfg!(target_os = "macos"),
-        "Apple host selection requires macOS"
-    );
-    HostSettings::from_file(path)?.config()
+    settings::configuration(path)
 }
 
 pub(super) async fn ready(
     path: &Path,
     args: &RunArgs,
 ) -> Result<(ResolvedConfig, lifecycle::MicroVmHost)> {
-    let config = configuration(path)?;
-    let host = tokio::task::spawn_blocking(move || {
-        lifecycle::ensure_ready(&ContainerCli::system(), &config)
-            .map_err(|error| anyhow!("{error}"))
-    })
-    .await??;
+    let host = settings::ready(path).await?;
     let client = crate::provision::mtls_client_from_identity_dir(host.identity_dir())?;
     let resolved = ResolvedConfig {
         node_url: host.node_url(),

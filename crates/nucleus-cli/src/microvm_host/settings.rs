@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use nucleus_spec::microvm_host::HostNames;
 use serde::Deserialize;
 
@@ -50,6 +50,24 @@ pub(crate) struct HostSettings {
     #[arg(long, default_value_t = timeout(), value_parser = clap::value_parser!(u64).range(1..))]
     #[serde(default = "timeout")]
     ready_timeout_secs: u64,
+}
+
+/// Resolve an explicit selection before starting anything, shared by run and node.
+pub(crate) fn configuration(path: &std::path::Path) -> Result<HostConfig> {
+    ensure!(
+        cfg!(target_os = "macos"),
+        "Apple host selection requires macOS"
+    );
+    HostSettings::from_file(path)?.config()
+}
+
+pub(crate) async fn ready(path: &std::path::Path) -> Result<super::lifecycle::MicroVmHost> {
+    let config = configuration(path)?;
+    tokio::task::spawn_blocking(move || {
+        super::lifecycle::ensure_ready(&super::container_cli::ContainerCli::system(), &config)
+            .map_err(|error| anyhow!("{error}"))
+    })
+    .await?
 }
 
 impl HostSettings {

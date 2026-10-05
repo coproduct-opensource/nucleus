@@ -142,7 +142,25 @@ not live directory synchronization, and does not automatically upload `run --dir
 
 ## Connect and inspect
 
-Use the returned URL and identity directory with the existing node commands:
+Use the same host-settings JSON directly with node commands:
+
+```sh
+nucleus node --apple-host-config host.json health
+nucleus node --apple-host-config host.json create workload.yaml
+nucleus node --apple-host-config host.json workload POD_ID collect \
+  --wait-secs 120 --output receipt.json
+nucleus node --apple-host-config host.json cancel POD_ID
+```
+
+Every invocation starts/checks the selected host, requires KVM and mTLS health,
+and resolves its current address and complete client identity. This also works
+for workload admission, logs and operator effect approvals. Do not combine it
+with an explicit node URL, identity flags or legacy secrets. It changes only the
+current command's connection; it does not write global CLI configuration. These
+commands may start an owned stopped host. Use `microvm-host status` for read-only
+container inspection.
+
+Alternatively, use the returned URL and identity directory explicitly:
 
 ```sh
 nucleus node --url https://127.0.0.1:RETURNED_PORT \

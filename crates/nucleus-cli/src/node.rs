@@ -2,6 +2,7 @@
 //!
 //! Test utilities for nucleus-node HTTP and gRPC APIs.
 
+mod apple_host;
 mod effect_approvals;
 mod workload;
 
@@ -17,6 +18,10 @@ use std::time::Duration;
 #[derive(Args, Debug)]
 #[command(mut_args = |a| a.hide_env_values(true))]
 pub struct NodeArgs {
+    /// Start/check the selected Apple host and use its current URL and mTLS identity
+    #[arg(long, conflicts_with_all = ["url", "secrets_file", "auth_secret", "tls_cert", "tls_key", "trust_bundle"])]
+    pub apple_host_config: Option<PathBuf>,
+
     /// nucleus-node HTTP URL. `https://` since Move B: the node's HTTP
     /// listener requires mTLS unconditionally now — there is no plaintext
     /// mode left to default to.
@@ -172,6 +177,7 @@ fn provisioned_identity_paths_in(dir: &std::path::Path) -> Option<(PathBuf, Path
 
 /// Execute the node command
 pub async fn execute(mut args: NodeArgs) -> Result<()> {
+    apple_host::apply(&mut args).await?;
     apply_provisioned_identity_defaults(&mut args);
     let agent = create_client(&args)?;
     let auth_secret = match &args.command {
@@ -896,6 +902,7 @@ mod tests {
 
     fn base_args() -> NodeArgs {
         NodeArgs {
+            apple_host_config: None,
             url: "https://127.0.0.1:0".to_string(),
             secrets_file: None,
             auth_secret: None,

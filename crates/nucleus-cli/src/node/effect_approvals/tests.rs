@@ -54,6 +54,7 @@ async fn fixture_with_review(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("https://{}", listener.local_addr().unwrap());
     let client = create_client(&NodeArgs {
+        apple_host_config: None,
         url: url.clone(),
         secrets_file: None,
         auth_secret: None,

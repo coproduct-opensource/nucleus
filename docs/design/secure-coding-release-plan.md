@@ -2375,3 +2375,24 @@ preserved exit 23; the pod was then cancelled. Evidence is retained under
 `/tmp/nucleus-verify-logs-live/`. This is ordinary execution validation, not a
 model-driven journey. All 137 audit tests, scoped Clippy and four prepush gates
 passed. Current workspace coverage/mutation run `37272836266` remains active.
+
+
+### Apple host selection for operator commands (2026-10-05)
+
+`nucleus node --apple-host-config host.json ...` now resolves the ready Apple
+host's current node address and complete mTLS identity for create/cancel,
+workload evidence, and approval commands. It shares the same configuration and
+readiness path with `run`, including KVM and authenticated health checks. Explicit
+URL, identity or legacy-secret flags conflict with the selection. No global CLI
+configuration is changed and missing selected identity files cannot fall back to
+another installation. An owned stopped host may be started; `microvm-host status`
+remains the read-only container observation command.
+
+The public path created pod `ca5e8a3a-f38d-4a75-96f8-1fedcde6b366`, saved its
+admission, waited for completion, collected its receipt and raw binary logs, and
+cancelled it using only the host configuration selector. Independent verification
+accepted the exact 19/20 stdout/stderr bytes and preserved exit 23. Evidence is
+under `/tmp/nucleus-node-apple-live/`. All 334 CLI unit tests passed, two ignored;
+integration suites, scoped Clippy and all four prepush gates passed. This does
+not yet select Apple automatically for legacy setup or shell, and no actual
+model-driven journey has completed.
