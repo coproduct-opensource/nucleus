@@ -113,9 +113,9 @@ impl AgentCommand {
             .join(" ")
     }
 
-    /// The agent's command, confined: the program, the user's arguments, then
-    /// the flags that deny the working directory any say in the agent's
-    /// settings. The launch sites append the rest of the launch protocol.
+    /// The agent's command ON THIS HOST, confined: the program, the user's
+    /// arguments, then the flags that deny the working directory any say in the
+    /// agent's settings. The launch sites append the rest of the launch protocol.
     #[must_use]
     pub fn launch(&self) -> Command {
         let mut cmd = Command::new(&self.program);
@@ -123,7 +123,40 @@ impl AgentCommand {
         crate::mediation::confine_to_nucleus_settings(&mut cmd);
         cmd
     }
+
+    /// The agent's argv INSIDE a pod: the program as the guest will resolve it,
+    /// then the user's arguments, then the same confinement flags
+    /// ([`crate::mediation::CONFINEMENT_FLAGS`]) a host launch gets.
+    ///
+    /// # Errors
+    ///
+    /// [`HOST_PATH_IN_POD`] when the program names a file relative to this host
+    /// (`./agent`, `bin/agent`, `~/agent`): the agent runs in the guest, which
+    /// resolves it against the guest image, and nucleus copies no host binary
+    /// into a guest.
+    pub fn in_pod(&self) -> Result<(String, Vec<String>)> {
+        let program = self.program.as_str();
+        let host_relative =
+            program.starts_with('~') || (program.contains('/') && !program.starts_with('/'));
+        if host_relative {
+            return Err(anyhow!("agent program `{program}` {HOST_PATH_IN_POD}"));
+        }
+        let mut args = self.args.clone();
+        args.extend(
+            crate::mediation::CONFINEMENT_FLAGS
+                .iter()
+                .map(|f| (*f).to_string()),
+        );
+        Ok((program.to_string(), args))
+    }
 }
+
+/// Why a host-relative agent path is refused for a pod run.
+pub const HOST_PATH_IN_POD: &str = "\
+names a file relative to this host, but the agent runs inside the pod and the guest resolves \
+the program against its own image. Name it by its absolute path in the guest image or by a \
+name on the guest's PATH; nucleus does not copy host binaries into the guest. To run the agent \
+on this host instead, use --local.";
 
 /// A command line someone will paste: program and arguments, each
 /// single-quoted when it is empty or carries a character a shell would read.
@@ -242,5 +275,49 @@ mod tests {
         let config: crate::config::Config =
             toml::from_str("[agent]\ncommand = [\"my-agent\", \"--flag\"]\n").expect("parses");
         assert_eq!(config.agent.command, ["my-agent", "--flag"]);
+    }
+
+    /// A-19: the pod argv is confined exactly as a host launch is. Drop the
+    /// `CONFINEMENT_FLAGS` extension from `in_pod` and this reds; so does a
+    /// host launch whose flags drift from the pod's.
+    #[test]
+    fn the_pod_argv_carries_the_same_confinement_as_a_host_launch() {
+        let agent = AgentCommand::named(
+            Some("/opt/agent/bin/agent"),
+            &["--profile-dir".to_string(), "/x y".to_string()],
+        )
+        .expect("named");
+        let (program, args) = agent.in_pod().expect("absolute guest path");
+        assert_eq!(program, "/opt/agent/bin/agent");
+        assert_eq!(
+            args,
+            argv(&agent.launch()),
+            "the guest invocation and the host invocation confine identically"
+        );
+        assert_eq!(
+            &args[2..],
+            ["--setting-sources", "", "--strict-mcp-config"],
+            "the user's arguments lead; nucleus's confinement is the last word"
+        );
+
+        let on_path = AgentCommand::named(Some("my-agent"), &[]).expect("named");
+        assert_eq!(on_path.in_pod().expect("a bare name").0, "my-agent");
+    }
+
+    #[test]
+    fn a_host_relative_program_is_refused_for_a_pod_by_name() {
+        for host_path in ["./agent", "bin/agent", "~/bin/agent", "~agent"] {
+            let agent = AgentCommand::named(Some(host_path), &[]).expect("named");
+            let err = agent
+                .in_pod()
+                .expect_err("a host path cannot name a guest file");
+            let msg = err.to_string();
+            assert!(msg.contains(host_path), "names the program: {msg}");
+            assert!(
+                msg.contains("does not copy host binaries into the guest"),
+                "{msg}"
+            );
+            assert!(msg.contains("--local"), "names the way out: {msg}");
+        }
     }
 }

@@ -109,6 +109,21 @@ const SIGNATURES: &[Signature] = &[
              architecture or libc.",
         ),
     },
+    // The tool-proxy starts the pod's workload between binding its listener and
+    // serving it, and a spawn failure ends the proxy -- so the pod never turns
+    // healthy and this line is the reason. Since #2696 P5 `nucleus run` makes the
+    // AGENT the workload, and the usual cause is an agent the guest image lacks.
+    Signature {
+        marker: "failed to start workload",
+        meaning: Meaning::Other(
+            "the pod's workload could not be started in the guest. For `nucleus run` the \
+             workload is the agent, which runs inside the pod: if the line says `No such file \
+             or directory`, the agent program was not found in the guest image (or the pod's \
+             work dir does not exist there). Put the agent in the rootfs the pod boots \
+             (--rootfs-path) and name it by its guest path or a name on the guest's PATH; \
+             nucleus does not copy host binaries into the guest.",
+        ),
+    },
     Signature {
         marker: "panicked at",
         meaning: Meaning::Other(
@@ -404,6 +419,25 @@ mod tests {
         let d = diagnose(f.path()).unwrap();
         assert!(d.contains("PREDATES this node"));
         assert!(!d.contains("The lines immediately above"));
+    }
+
+    /// An agent the guest image lacks: the tool-proxy's spawn error as `main`
+    /// prints it (the `ApiError::Spec` Debug form), then the init death it
+    /// causes. The cause is named, not the panic.
+    #[test]
+    fn an_agent_missing_from_the_guest_image_is_named() {
+        let f = console(
+            "Error: Spec(\"failed to start workload \\\"/opt/agent\\\": No such file or \
+             directory (os error 2)\")\n\
+             Kernel panic - not syncing: Attempted to kill init!\n",
+        );
+        let d = diagnose(f.path()).unwrap();
+        assert!(d.contains("/opt/agent"), "the evidence line is quoted: {d}");
+        assert!(
+            d.contains("the agent program was not found in the guest image"),
+            "{d}"
+        );
+        assert!(!d.contains("The lines immediately above"), "{d}");
     }
 
     /// The generic signature still fires when nothing more specific is present —
