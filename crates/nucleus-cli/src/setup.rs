@@ -16,7 +16,7 @@ mod apple_host;
 #[derive(Args, Debug)]
 pub struct SetupArgs {
     /// Configure an Apple Container host from JSON instead of provisioning Lima
-    #[arg(long, conflicts_with_all = ["force", "skip_vm", "vm_name", "vm_cpus", "vm_memory_gib", "vm_disk_gib", "rotate_secrets", "skip_artifacts", "install_deps", "artifacts"])]
+    #[arg(long, conflicts_with_all = ["force", "skip_vm", "vm_name", "vm_cpus", "vm_memory_gib", "vm_disk_gib", "rotate_secrets", "skip_artifacts", "install_deps", "artifacts", "replace_binaries"])]
     pub apple_host_config: Option<PathBuf>,
     /// Force re-setup even if already configured
     #[arg(long)]
@@ -72,6 +72,25 @@ pub struct SetupArgs {
     /// ignores it.
     #[arg(long, value_enum, default_value = "auto")]
     pub artifacts: ArtifactSourceArg,
+
+    /// Replace an installed `nucleus` or `nucleus-node` that differs from the
+    /// one setup would install.
+    ///
+    /// Without it, setup installs a binary only where there is none, skips one
+    /// that is byte-identical, and refuses — naming both — where they differ,
+    /// so a locally built binary is never silently swapped for another (#2396).
+    #[arg(long)]
+    pub replace_binaries: bool,
+}
+
+impl SetupArgs {
+    fn replace_binaries(&self) -> provision::ReplaceBinaries {
+        if self.replace_binaries {
+            provision::ReplaceBinaries::Replace
+        } else {
+            provision::ReplaceBinaries::Refuse
+        }
+    }
 }
 
 /// CLI spelling of [`provision::ArtifactSource`].
@@ -194,6 +213,20 @@ pub async fn execute(args: SetupArgs, config_path: &str) -> Result<()> {
     let platform = detect_platform()?;
     print_platform_info(&platform);
 
+    // Before the VM, the secrets or any download: decide where the guest
+    // artifacts come from. A pinned release that is not published — which a
+    // CLI built from `main` meets between the pin's bump and its tag — or that
+    // cannot be looked up is refused here, by name, rather than surfacing as a
+    // download failure after the VM, Firecracker and the kernel.
+    let plan = match (args.skip_artifacts, tier2_host_for(&args, &platform)) {
+        (false, Some(_)) => Some(provision::plan_tier2_artifacts(
+            tier2_arch(&platform)?,
+            args.artifacts.into(),
+            provision::lookup_release,
+        )?),
+        (true, _) | (false, None) => None,
+    };
+
     match &platform {
         Platform::MacOS { chip, version } => {
             // Check nested virtualization support
@@ -231,7 +264,7 @@ pub async fn execute(args: SetupArgs, config_path: &str) -> Result<()> {
     // Firecracker and a kernel and no way to run nucleus.
     if !args.skip_artifacts {
         println!("\nInstalling Tier 2 components...");
-        provision_tier2_host(&args, &platform).await?;
+        provision_tier2_host(&args, &platform, plan).await?;
     } else {
         println!("\nSkipping component install (--skip-artifacts) — Tier 2 will not work.");
     }
@@ -691,8 +724,12 @@ fn tier2_arch(platform: &Platform) -> Result<&'static str> {
 /// `nucleus_spec::vmm_version`. Nothing is named by a literal in this file, and
 /// nothing is named by the Lima template — which is how the three provisioners
 /// came to disagree, one of them on a URL that 404s.
-async fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<()> {
-    let Some(host) = tier2_host_for(args, platform) else {
+async fn provision_tier2_host(
+    args: &SetupArgs,
+    platform: &Platform,
+    plan: Option<provision::Tier2Plan>,
+) -> Result<()> {
+    let (Some(host), Some(plan)) = (tier2_host_for(args, platform), plan) else {
         println!("  No Tier 2 host on this platform — nothing to install.");
         return Ok(());
     };
@@ -703,7 +740,7 @@ async fn provision_tier2_host(args: &SetupArgs, platform: &Platform) -> Result<(
 
     provision::install_firecracker(&host, arch)?;
     provision::install_kernel(&host, arch, &cache_dir)?;
-    provision::install_tier2_artifacts(&host, arch, &cache_dir, args.artifacts.into())?;
+    provision::install_tier2_artifacts(&host, arch, &cache_dir, plan, args.replace_binaries())?;
 
     // The secrets already exist — `setup_secrets` created them a step ago, and
     // on an existing install they predate this run. They were simply never

@@ -14,6 +14,7 @@ pub(super) async fn execute(args: &SetupArgs, path: &Path, config_path: &str) ->
             && !args.rotate_secrets
             && !args.skip_artifacts
             && !args.install_deps
+            && !args.replace_binaries
             && args.vm_name == "nucleus"
             && args.vm_cpus == 4
             && args.vm_memory_gib == 8
@@ -125,6 +126,7 @@ mod tests {
             vec!["--rotate-secrets"],
             vec!["--skip-artifacts"],
             vec!["--install-deps"],
+            vec!["--replace-binaries"],
             vec!["--vm-name", "other"],
             vec!["--artifacts", "local"],
         ] {

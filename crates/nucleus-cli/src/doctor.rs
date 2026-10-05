@@ -9,7 +9,7 @@ use crate::provision;
 use crate::setup::{AppleChip, MacOSVersion};
 
 /// Check status indicator
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Status {
     Ok,
     Warning,
@@ -39,6 +39,10 @@ pub async fn diagnose(config_path: &str) -> Result<()> {
 
     // Platform checks
     all_ok &= check_platform();
+    println!();
+
+    // Up front, because it decides whether `setup` can install anything at all.
+    all_ok &= check_guest_release();
     println!();
 
     // Lima checks (macOS only)
@@ -99,6 +103,54 @@ pub async fn diagnose(config_path: &str) -> Result<()> {
 fn print_check(name: &str, status: Status, message: &str) -> bool {
     println!("{} {}: {}", status.icon(), name, message);
     !matches!(status, Status::Error)
+}
+
+/// Whether `setup` (with its default `--artifacts auto`) has a guest to
+/// install: this working tree's build, or the pinned release, published.
+///
+/// The same decider `setup` uses ([`provision::release::plan_release`]), so
+/// the two cannot disagree about the pin. An unpublished or unservable pin is
+/// an error; an API that could not be reached is a warning that says so, never
+/// an "ok" (ADR 0007 A-1).
+fn check_guest_release() -> bool {
+    use nucleus_spec::tier2_artifacts::GUEST_RELEASE;
+
+    println!("Guest release");
+    println!("-------------");
+    let arch = std::env::consts::ARCH;
+    if provision::local_build_is_complete(arch) {
+        return print_check(
+            "Guest artifacts",
+            Status::Ok,
+            &format!(
+                "this working tree has a complete {arch} build, which setup installs \
+                 (release v{GUEST_RELEASE} not consulted)"
+            ),
+        );
+    }
+    match provision::release::plan_release(GUEST_RELEASE, provision::lookup_release) {
+        Ok(_) => print_check(
+            "Pinned release",
+            Status::Ok,
+            &format!("v{GUEST_RELEASE} is published"),
+        ),
+        Err(e) => print_check(
+            "Pinned release",
+            unservable_release_status(&e),
+            &e.to_string(),
+        ),
+    }
+}
+
+/// How `doctor` grades a pinned release `setup` would refuse.
+fn unservable_release_status(e: &provision::release::UnservableRelease) -> Status {
+    use provision::release::UnservableRelease;
+    match e {
+        // Looked: setup cannot install it, whatever the network does next.
+        UnservableRelease::NotPublished { .. } | UnservableRelease::Skew(_) => Status::Error,
+        // Did not look: not "ok", and not "missing" either.
+        UnservableRelease::CouldNotLook { .. } => Status::Warning,
+    }
 }
 
 fn check_platform() -> bool {
@@ -783,6 +835,28 @@ mod tests {
         assert_eq!(Status::Ok.icon(), "[OK]");
         assert_eq!(Status::Warning.icon(), "[WARN]");
         assert_eq!(Status::Error.icon(), "[ERR]");
+    }
+
+    /// An unpublished or unservable pin is a red doctor; a lookup that could
+    /// not run is a warning, never an ok and never "missing".
+    #[test]
+    fn an_unpublished_pin_is_an_error_and_an_unreachable_api_a_warning() {
+        use provision::release::{LatestRelease, UnservableRelease};
+        let unpublished = UnservableRelease::NotPublished {
+            pinned: "2.3.0".into(),
+            latest: LatestRelease::Version("2.2.0".into()),
+        };
+        assert_eq!(unservable_release_status(&unpublished), Status::Error);
+        let skewed = provision::release::plan_release("2.2.0", |_| {
+            panic!("a skewed release is refused before the lookup")
+        })
+        .expect_err("2.2.0 is skewed");
+        assert_eq!(unservable_release_status(&skewed), Status::Error);
+        let unreachable = UnservableRelease::CouldNotLook {
+            pinned: "2.3.0".into(),
+            reason: "timed out".into(),
+        };
+        assert_eq!(unservable_release_status(&unreachable), Status::Warning);
     }
 
     // The platform helpers `check_chip` and `check_macos_version` each spawn a
