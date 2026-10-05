@@ -15,6 +15,8 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
     let key = SigningKey::from_bytes(&[7; 32]);
     let digest = "a".repeat(64);
     let artifact = b"test output\0\xff";
+    let stdout = b"ordinary output\0\xff\r\n";
+    let stderr = b"";
     let paths = BTreeMap::from([("tests".into(), "test-results.bin".into())]);
     let claim = ExecutionClaim {
         schema: ExecutionSchema::V1,
@@ -27,8 +29,8 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
         backend: Backend::Firecracker,
         uid_isolated: true,
         exit_code: Some(7),
-        stdout_sha256: digest.clone(),
-        stderr_sha256: digest.clone(),
+        stdout_sha256: hex::encode(Sha256::digest(stdout)),
+        stderr_sha256: hex::encode(Sha256::digest(stderr)),
         launch_hash: digest.clone(),
         environment_inputs_sha256: digest.clone(),
         environment_complete_sha256: digest.clone(),
@@ -75,6 +77,52 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
     );
     let expectations = dir.path().join("expected.json");
     std::fs::write(&expectations, serde_json::to_vec(&expected).unwrap()).unwrap();
+    let receipt_path = dir.path().join("receipt.json");
+    std::fs::write(&receipt_path, serde_json::to_vec(&receipt).unwrap()).unwrap();
+    let stdout_path = dir.path().join("stdout.bin");
+    let stderr_path = dir.path().join("stderr.bin");
+    std::fs::write(&stdout_path, stdout).unwrap();
+    std::fs::write(&stderr_path, stderr).unwrap();
+    let verify_logs = || {
+        Command::new(env!("CARGO_BIN_EXE_nucleus-audit"))
+            .args(["verify-logs", "--receipt"])
+            .arg(&receipt_path)
+            .arg("--expectations")
+            .arg(&expectations)
+            .arg("--stdout")
+            .arg(&stdout_path)
+            .arg("--stderr")
+            .arg(&stderr_path)
+            .output()
+            .unwrap()
+    };
+    let output = verify_logs();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["log_bytes_verified"]["stdout"], stdout.len());
+    assert_eq!(report["log_bytes_verified"]["stderr"], 0);
+    assert_eq!(report["claim"]["exit_code"], 7);
+    std::fs::write(&stdout_path, b"log from a different run").unwrap();
+    let mismatch = verify_logs();
+    assert!(!mismatch.status.success());
+    assert!(String::from_utf8_lossy(&mismatch.stderr).contains("stdout"));
+    std::fs::write(&stdout_path, stdout).unwrap();
+    std::fs::remove_file(&stderr_path).unwrap();
+    let missing = verify_logs();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("opening log"));
+    // A sparse oversized file must refuse rather than allocate its full length.
+    std::fs::File::create(&stderr_path)
+        .unwrap()
+        .set_len(nucleus_spec::workload_result::MAX_LOG_BYTES as u64 + 1)
+        .unwrap();
+    let oversized = verify_logs();
+    assert!(!oversized.status.success());
+    assert!(String::from_utf8_lossy(&oversized.stderr).contains("retention limit"));
     for (command, flag, document, count) in [
         (
             "verify-execution",

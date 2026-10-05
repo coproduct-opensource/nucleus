@@ -10,12 +10,15 @@ use nucleus_receipt::Receipt;
 use serde::Deserialize;
 
 mod export;
+mod logs;
 mod prepare;
 
 #[derive(clap::Subcommand, Debug)]
 pub(crate) enum Command {
     /// Prepare expectations offline from trusted admission and intended inputs
     PrepareExecution(prepare::Args),
+    /// Verify exact stdout/stderr files against an independently verified execution receipt
+    VerifyLogs(logs::Args),
     /// Verify a collected execution receipt against independently supplied expectations
     VerifyExecution {
         #[arg(long)]
@@ -67,6 +70,10 @@ impl Command {
 
     fn verify(self) -> Result<()> {
         let (claim, artifact_count, output_dir) = match self {
+            Self::VerifyLogs(args) => {
+                println!("{}", serde_json::to_string_pretty(&args.verify()?)?);
+                return Ok(());
+            }
             Self::PrepareExecution(args) => {
                 println!("{}", serde_json::to_string_pretty(&args.prepare(now()?)?)?);
                 return Ok(());

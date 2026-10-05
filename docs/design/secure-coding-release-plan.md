@@ -2352,3 +2352,26 @@ unchanged; the existing local host image remains valid.
 
 The formerly failing population test now passes with the unchanged ceiling.
 All action-key and spec tests and the three context-staging tests passed.
+
+
+### Verify retained workload logs (2026-10-05)
+
+`nucleus-audit verify-logs --receipt receipt.json --expectations expected.json
+--stdout stdout.bin --stderr stderr.bin` now exposes the existing shared log
+verifier. It authenticates execution against independent expectations, checks
+both exact byte streams, and consumes the log and execution witnesses with a
+fresh deadline check. No manual hash comparison or text decoding is required.
+Both files are required, including an empty file for an empty stream, and reads
+are bounded by the node's 16 MiB per-stream retention limit. The report contains
+byte counts and the original signed claim; a workload's nonzero exit remains
+a nonzero exit in that claim.
+
+Live Firecracker pod `c4689517-8bba-46c0-858b-f0abd701f82e` wrote 19 bytes of
+stdout including NUL, invalid UTF-8 and CRLF, plus 20 diagnostic stderr bytes,
+then exited 23. The public collection commands saved both streams and a receipt.
+Expectations used separately retained admission, the previously enrolled executor
+key and intended environment inputs. Verification accepted the exact bytes and
+preserved exit 23; the pod was then cancelled. Evidence is retained under
+`/tmp/nucleus-verify-logs-live/`. This is ordinary execution validation, not a
+model-driven journey. All 137 audit tests, scoped Clippy and four prepush gates
+passed. Current workspace coverage/mutation run `37272836266` remains active.

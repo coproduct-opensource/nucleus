@@ -44,6 +44,49 @@ nucleus-audit verify-chain --log portcullis.jsonl          # hash chain only
 nucleus-audit verify-receipts --log receipts.jsonl         # Ed25519 receipt chain
 ```
 
+## Verify workload evidence
+
+Prepare expectations from separately retained admission metadata, an independently
+pinned executor public key and the intended environment inputs. `prepare-execution`
+prints the expected-record JSON; the receipt being checked supplies none of those
+expectations. The validity deadline applies when consuming verification results
+as well as to receipt issuance.
+
+```sh
+nucleus-audit prepare-execution --admission admission.json \
+  --signer-key-hex "$PINNED_EXECUTOR_PUBLIC_KEY" \
+  --environment-inputs intended-env.json \
+  --valid-until-micros "$DEADLINE_MICROS" > expectations.json
+
+nucleus-audit verify-execution --receipt receipt.json \
+  --expectations expectations.json
+
+nucleus-audit verify-logs --receipt receipt.json \
+  --expectations expectations.json --stdout stdout.bin --stderr stderr.bin
+```
+
+Save the exact logs with `nucleus node workload POD_ID logs stdout --output
+stdout.bin` and the corresponding stderr command before cancelling the pod.
+`verify-logs` checks both raw streams against the authenticated receipt through
+the shared verifier. Empty streams need empty files; text conversion can change
+the bytes. Each file is limited to the node's 16 MiB retention bound. The JSON
+report includes verified byte counts and the original execution claim. A verified
+nonzero workload exit remains nonzero in that claim: the verifier's successful
+exit means the evidence matched, not that the workload's tests passed.
+
+For declared artifacts, pass the selected name/path JSON with `--artifacts` when
+preparing expectations, then verify the collected bundle:
+
+```sh
+nucleus-audit verify-artifacts --bundle bundle.json \
+  --expectations expectations.json --output-dir verified-files
+```
+
+The optional output directory must be new. Verified bytes are saved using artifact
+names as filenames with private, non-executable permissions. Retain the original
+bundle and expectations alongside the files; extracted bytes are not a signed
+receipt by themselves.
+
 ## Provenance Commands
 
 ```bash
