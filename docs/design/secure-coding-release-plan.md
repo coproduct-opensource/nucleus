@@ -2286,3 +2286,31 @@ preserving an existing destination, and preserving a failed workload exit as
 data. Scoped Clippy and all four prepush gates passed. Workspace coverage on
 the previously dispatched implementation commit is still queued; its mutation
 job remains active. Actual model-driven journeys remain incomplete.
+
+### Remove the observed CI capacity stall (2026-10-05 06:15 UTC)
+
+The coverage job remained queued while the runner manager repeatedly reported
+one waiting build job and started nothing. Authoritative inventory showed 63
+stopped Fly workers and one started build worker whose GitHub runner was busy
+with mutation testing. The planner subtracted every live machine from queued
+demand, treating that occupied worker as capacity for another job. It could also
+count an idle online registration and its matching machine twice.
+
+Commit `41e8e6226` correlates a machine with its current runner ID: busy runners
+do not cover queued demand, known idle registrations count once, and booting
+registrations retain their reservation across polls. The regression reproduced
+the observed stall before the fix, then passed with all 37 runner tests. Scoped
+Clippy and all four prepush gates passed. No pool limit or worker size changed.
+
+A tracked-only export of that commit was deployed to the existing Fly manager
+with its configured secrets retained. Manager version 36 became healthy at
+06:15:21 UTC, running image digest
+`6667c925b6722f279ef5db75f7e9c6292ff6f7b360711481ea6a34fe70a9159e`.
+The same coverage job `111628402898` started at 06:15:32, while mutation testing
+continued. Its result is still pending; this is scheduling recovery, not a
+coverage pass. Workflow: https://github.com/coproduct-opensource/nucleus/actions/runs/37267840622 .
+Deployment evidence is `/tmp/nucleus-runner-capacity-{deploy.log,deployed.json}`;
+the prior image reference is retained in
+`/tmp/nucleus-runner-capacity-rollback.json`. GCP Gatehouse controller/lanes and
+its paused scheduler were unchanged. A fresh fetch still finds upstream main at
+`7f240fe66` with no commits missing from this branch.

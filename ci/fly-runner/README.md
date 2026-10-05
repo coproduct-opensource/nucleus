@@ -22,7 +22,11 @@ registration the same pass just created (a registration is `offline` until its g
 
 1. **Demand**: queued jobs per label across the most recent `LOOKBACK_RUNS` runs of every
    workflow and event, with conditional requests (an unchanged answer is a 304 that costs no
-   rate limit).
+   rate limit). A busy runner already owns a job and cannot cover another queued
+   job. A live machine is correlated with its current runner ID: an idle online
+   registration counts once, while a boot whose registration is not yet visible
+   retains its reservation across polls. Counting every live machine as free
+   capacity left coverage waiting behind mutation testing despite idle workers.
 2. **Warm starts**: each pool is a fixed set of Machines that cycle created → stopped →
    started → stopped. A Machine is created in one pass and first booted in a later one — a
    start issued in the pass that created it races Fly's placement and is answered 412 — and
