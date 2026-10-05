@@ -45,11 +45,21 @@ authority.
 | `ArrowEndpointMismatch` | grade-arrow endpoints don't commute with the object map |
 | `ProvenanceKindMismatch` | **honesty axis**: RV must map to RV (and vice versa) |
 | `MaxGradeNarrowed` | `b.max_grade < a.max_grade` (a legal grade could go out of range) |
+| `StakesMismatch` | `b.weight × b.max_grade != a.weight × a.max_grade` (the reward moved) |
+| `UnmappedTargetStakes` | a `B`-criterion outside the image has non-zero `weight × max_grade` |
 
-## Compatibility rule for `max_grade`
+## Compatibility rule for `weight` and `max_grade`
 
-`b.max_grade >= a.max_grade`. Widening the image axis is fine; narrowing is not,
-because a legal `A`-grade could then exceed `B`'s ceiling.
+`b.max_grade >= a.max_grade`: narrowing is refused, because a legal `A`-grade
+could then exceed `B`'s ceiling.
+
+`b.weight × b.max_grade == a.weight × a.max_grade` for every mapped criterion,
+and `weight × max_grade == 0` for every `B`-criterion outside the image. The
+ranking total is `Σ weight × grade`, so without this a translation could
+re-weight a criterion or widen its ceiling and the same artifact would score
+higher under `B` than under `A` (#2515). Widening is therefore allowed only with
+the weight shrunk by the same factor (`5 × 10 = 1 × 50`), and `Σ weight ×
+max_grade` — the maximum attainable ranking total — is preserved exactly.
 
 ## Honest scope
 

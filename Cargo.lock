@@ -7626,6 +7626,7 @@ name = "nucleus-rubric-olog"
 version = "1.0.0"
 dependencies = [
  "nucleus-rubric",
+ "proptest",
  "serde",
  "serde_json",
 ]
