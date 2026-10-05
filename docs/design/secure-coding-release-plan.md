@@ -2656,3 +2656,27 @@ unit tests plus their integrations. Afterward all 893 node unit tests (one
 ignored) and three integrations passed, along with scoped Clippy, convergence
 and four prepush gates. Clippy retained the existing four configuration warnings
 about unreachable reqwest blocking-method paths in this feature selection.
+
+### Retain the Firecracker slot until confirmed cleanup (2026-10-05)
+
+Firecracker teardown previously returned its concurrency permit before killing
+the VMM. Teardown now requires an observed process exit, including when its
+caller supplies the `AlreadyExited` hint. Only the resulting private, consumed
+`StoppedVm` witness reaches resource cleanup (ADR 0007 C-1, C-4, D). The slot
+returns after packet-monitor and cgroup cleanup complete. A live process or
+failed cgroup removal retains the slot; later cleanup can retry. The aggregate
+capacity reservation still returns only after the enclosing teardown succeeds.
+DNS child ownership likewise remains available when stopping that child fails.
+
+Network cleanup still has its existing best-effort semantics, and jail-file
+removal is not a proven disk-reclamation guarantee. The changed ordering ensures
+that a stopped VM cannot keep using a returned network allocation; it does not
+claim those older cleanup operations now report every failure. Tests use real
+local child processes to validate lifecycle ownership, not a live Firecracker
+image: a premature exit hint retains the slot, and a blocked cgroup removal
+keeps it until a successful retry.
+
+All 895 node unit tests (one ignored) and three integrations passed after this
+change, along with scoped Clippy, convergence and four prepush gates. The existing
+four Clippy configuration warnings remain. A newly unused macOS import exposed
+by extraction was corrected; no warning suppression was added.

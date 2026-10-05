@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::Ordering;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes, to_bytes};
@@ -40,6 +42,7 @@ mod container_recovery;
 mod container_resources;
 mod firecracker_api;
 mod firecracker_config;
+mod firecracker_lifecycle;
 mod grpc_tls;
 mod guest_diagnosis;
 mod http_serve;
@@ -1246,63 +1249,6 @@ impl LocalPod {
         }
         if stop == Stop::Kill {
             self.child.lock().await.kill().await.map_err(ApiError::Io)?;
-        }
-        Ok(())
-    }
-}
-
-impl FirecrackerPod {
-    async fn status(&self) -> PodState {
-        let mut child = self.child.lock().await;
-        match child.try_wait() {
-            Ok(Some(status)) => PodState::Exited {
-                code: status.code(),
-            },
-            Ok(None) => PodState::Running,
-            Err(err) => PodState::Error {
-                message: err.to_string(),
-            },
-        }
-    }
-
-    async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
-        // Identity first: the workload API bridge drains before the identity is
-        // released, so nothing is served for an identity that is gone.
-        self.cleanup_identity().await;
-        if let Some(proxy) = self.signed_proxy.lock().await.take() {
-            proxy.shutdown().await;
-        }
-        if let Some(mut dns_proxy) = self.dns_proxy.lock().await.take() {
-            let _ = dns_proxy.child.kill().await;
-        }
-        self.drift_stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.drift_monitor.lock().await.take() {
-            handle.abort();
-        }
-        egress_link::shutdown(&self.egress_link).await?;
-        self.permit.lock().await.take();
-        if let Some(bridge) = self.bridge.lock().await.take() {
-            bridge.shutdown().await;
-        }
-        if let Some(plan) = self.net_plan.lock().await.take() {
-            self.network_allocator.release(plan.index);
-            let _ = net::cleanup_network(&plan).await;
-        } else if let Some(name) = self.netns.lock().await.take() {
-            let _ = net::cleanup_netns(&name).await;
-        }
-        if stop == Stop::Kill {
-            self.child.lock().await.kill().await.map_err(ApiError::Io)?;
-        }
-        let mut placement = self.direct_cgroup.lock().await;
-        if let Some(group) = placement.as_mut() {
-            group.cleanup().await?;
-        }
-        placement.take();
-        // After the kill, never before: pulling files out from under a live VMM is
-        // its own failure mode.
-        if let Some(layout) = self.jail.lock().await.take() {
-            pod_receipt::preserve_exit_report(&layout, &self.pod_dir);
-            firecracker_config::cleanup_jail(&layout);
         }
         Ok(())
     }
