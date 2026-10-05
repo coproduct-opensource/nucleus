@@ -36,7 +36,7 @@ below; the final PR and merge-group checks must still run.
 | Outcome | Implemented and exercised | Still required |
 |---|---|---|
 | Host-owned effects | Shared authority, effect-bound one-shot approval, bounded staging, revocation and fixed tariffs; operator review/grant/refuse | Durable runtime history, variable charging, broader certificate revocation |
-| Coding workflow | Matched local Apple image, fresh setup, saved host selection, workspace transfer, managed adapter, independent receipt/log/artifact verification and public-key enrollment | **Two model-driven coding journeys: zero completed**; endpoint/model/credential configuration and a published release image |
+| Coding workflow | Matched local Apple image, fresh setup, saved host selection, workspace transfer, managed adapter, independent receipt/log/artifact verification and public-key enrollment. **Two model-driven repairs completed (2026-10-05):** two distinct harnesses each repaired the fixture inside a Firecracker pod with the tests unchanged, with keyless federated model access and independently verified evidence (see "Model-driven repairs" below) | Action-bound approval and opening a PR through mediated egress, which needs `git push` over host-performed egress (#3210); the same journeys on a published release image rather than an integration build |
 | Outbound accounting and audit credentials | Shared Firecracker direct-packet and broker upload allowance; paced replay; scoped Unix audit minter protocol | Physical broker wire overhead, other drivers, provider integration and credential refresh |
 | Resource admission and lifecycle | Aggregate CPU/memory/swap admission, cgroup ancestry, bounded queue/probe waits, owned launch tasks and confirmed cleanup before release | Durable recovery across node termination; network-allocation recovery across restart |
 | Persistent memory | Owner-scoped labeled JSONL storage and verified replay for local/mediated-container drivers | VM transport, durable declassification and compaction |
@@ -46,6 +46,45 @@ The source-built Apple image is a local validation artifact. Its harness startup
 and fixture preflight are not model sessions. The merge milestone requires the
 normal Gatehouse and repository checks; no skipped or cancelled manual mutation
 run is counted as a passing result.
+
+### Model-driven repairs (2026-10-05)
+
+Two distinct open-source harnesses repaired `examples/coding-journey` inside a
+Firecracker pod on the Apple Container microVM host. In each run, the model wrote
+the repair and the fixture's tests stayed byte-identical.
+
+**What ran:**
+- Host image built from an integration branch (main plus #3200, #3209, #3211,
+  #3212, #3214 and #3217) at `6a6b72d8`.
+- Guest rootfs built through the OCI importer, the guest layer and the
+  deterministic ext4 builder.
+- Profile `safe-pr-fixer`.
+
+**How the model was reached:** with no static credential anywhere (ADR 0010).
+- The guest saw only a placeholder key and the egress adapter's loopback URL.
+- The node signed an ES256 assertion naming the pod and its chain, exchanged it
+  by RFC 8693 for a short-lived token, and performed each call itself.
+
+| Harness run | Baseline suite | After the harness | Model calls | Evidence |
+|---|---|---|---|---|
+| A | failed (10 failures, 1 error) | 9 tests OK; kept copy of the tests OK | 4, all granted | execution, logs and artifacts verified; tamper controls refused |
+| B | failed (10 failures, 1 error) | 9 tests OK; kept copy of the tests OK | 17, all granted | execution, logs and artifacts verified; tamper controls refused |
+
+**Credential check:** no bearer token or provider access token appears in any
+collected log, artifact, receipt or node record.
+
+**A third harness did not complete.** Its CLI drops streamed chunks from the
+endpoint, and it does the same with no Nucleus in the path. It is recorded as a
+harness failure, not counted.
+
+**What these runs do not show:**
+- the action-bound approval step;
+- opening a PR through mediated egress (#3210);
+- a published release image.
+
+Those remain the release journey's open requirements.
+
+**Bugs these runs found:** #3217, #3218, #3219, #3220 and #3221.
 
 Paced broker replay now reserves the complete upload volume once and admits
 body slices at HTTP consumption through the same fixed window as direct packet
