@@ -1680,3 +1680,28 @@ ARM64 musl builds and scoped Clippy passes. These are adapter tests, not evidenc
 that a real provider has issued a restricted credential. Production provider
 integration and once-per-pod credential refresh remain open, alongside the two
 model-driven coding journeys.
+
+### Live audit minter configuration and refusal path (2026-10-04)
+
+The Linux ARM64 node built from `58f9c6715` ran inside the existing Apple
+Container host with an operator sink file and `--audit-minter-socket`. A disposable
+Rust socket fixture received two real mTLS pod-create requests. The captured
+requests carried `operator-audit/nucleus/journey-a` and
+`operator-audit/nucleus/journey-b`, respectively, each with the expected
+900-second minimum lifetime. The fixture explicitly refused both scopes; the
+node returned the named mint refusal before launching a pod. After the fixture
+exited, another request returned a service-connection failure. Pod inventory
+remained empty. The initial request had correctly stopped earlier at image-path
+admission until the temporary node was configured with its artifact root.
+
+Evidence: `/tmp/nucleus-audit-minter-live/api-results.txt`, plus captured
+`/srv/audit-minter-requests.jsonl` in the validation container. The temporary node
+and socket were cleaned up, and the original node remained healthy. This is live
+configuration/admission evidence; the fixture issued no credentials and proves
+no provider-side policy enforcement. The implementation's full node run also
+passed 884 unit tests (one ignored) and three integration tests.
+
+A follow-up search of the inspected Nucleus/Gatehouse repository configuration
+found no model endpoint for the coding journeys; the Gatehouse API-base matches
+were GitHub routing. Model endpoint/model/credential-reference input remains
+necessary to perform either real model-driven journey.
