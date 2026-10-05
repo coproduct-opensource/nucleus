@@ -813,32 +813,50 @@ fn apply_to_replaces_the_requested_upstreams_with_the_admitted_ones() {
     assert_eq!(owner, MINTER, "the owner recorded is the root issued");
 }
 
-/// ...and `create_pod_internal` calls it, unconditionally, right after
-/// admission. A source check, the same shape as
-/// `the_clamp_is_wired_before_admission_unconditionally`: the node's launch
-/// path spawns VMs, so no unit test can drive it end to end.
-#[test]
-fn create_pod_internal_applies_the_issued_authority() {
-    let main = include_str!("../../main.rs");
-    let admit = main
-        .find("state.authority.admit(&admission, &spec, id)")
-        .expect("admission is called from main.rs");
-    let apply = main
-        .find("let reservation = issued.apply_to(&mut spec);")
-        .expect("the issued authority is applied to the spec in main.rs, and its reservation kept");
-    assert!(admit < apply, "applied after it is issued");
-    let spawn = main[admit..]
-        .find("let spawned = match state.driver")
-        .expect("the spawn follows admission");
-    assert!(
-        apply < admit + spawn,
-        "applied before the pod is spawned from the spec"
-    );
-    let indent = main[..apply].rsplit('\n').next().unwrap_or("");
+/// ...and the plan a driver spawns carries it. `admit_pod` is the only constructor of an
+/// `AdmittedPodPlan`, and every driver spawn takes one by value, so admit-before-spawn is a type
+/// (#2600). This replaces `create_pod_internal_applies_the_issued_authority`, which grepped
+/// `main.rs` for the call order and could not see an `admit` placed after a spawn.
+#[tokio::test]
+async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let auth = authority(dir.path(), args());
+    let parent = Uuid::new_v4();
+    let mut parent_policy = lattice(5);
+    parent_policy.capabilities.git_push = CapabilityLevel::Never;
+    auth.admit_kept(&by(MINTER), &spec_with(parent_policy.clone()), parent)
+        .await
+        .unwrap();
+    let mut greedy = lattice(3);
+    greedy.capabilities.git_push = CapabilityLevel::Always;
+    let child = Uuid::new_v4();
+    let (plan, reservation) = auth
+        .admit_pod(&from_pod(parent), spec_with(greedy), child)
+        .await
+        .unwrap();
+    reservation.commit();
+    assert_eq!(plan.id(), child, "the plan is bound to the admitted pod");
+    assert_eq!(plan.chain_depth(), 2);
     assert_eq!(
-        indent, "    ",
-        "at function-body level, not under a condition"
+        plan.owner(),
+        MINTER,
+        "the owner recorded is the root issued"
     );
+    let PolicySpec::Inline { lattice: carried } = &plan.spec().spec.policy else {
+        panic!("the plan carries the issued lattice inline");
+    };
+    assert_eq!(
+        carried.capabilities.git_push,
+        CapabilityLevel::Never,
+        "the request was clamped, and the clamp is what the plan carries"
+    );
+    assert!(carried.leq(&parent_policy));
+
+    // A refused admission yields no plan, and reserves nothing.
+    let refused = auth
+        .admit_pod(&from_pod(parent), spec_with(lattice(500)), Uuid::new_v4())
+        .await;
+    assert!(matches!(refused, Err(ApiError::Authority(_))));
 }
 
 // ── Federated upstreams: the issuer, and who an assertion names ──────

@@ -1134,13 +1134,14 @@ async fn create_pod_internal(
     // The caller's certificate decides what this pod may do; the spec's policy
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
     lockdown::admits(state, admission.caller_pod).await?;
-    let issued = state.authority.admit(&admission, &spec, id).await?;
-    tracing::Span::current().record("chain_depth", issued.chain_depth);
-    // The issued lattice AND the admitted credentialed upstreams replace what
-    // the spec requested, in one call so neither can be applied without the other.
-    // The pod's owner is the issued root identity (ADR 0001: its tenant).
-    let owner = issued.root_identity.clone();
-    let reservation = issued.apply_to(&mut spec);
+    // The issued lattice AND the admitted credentialed upstreams replace what the spec requested,
+    // inside `admit_pod`, and the plan it returns is the only thing a driver spawns (#2600). The
+    // pod's owner is the issued root identity (ADR 0001: its tenant).
+    let (plan, reservation) = state.authority.admit_pod(&admission, spec, id).await?;
+    tracing::Span::current().record("chain_depth", plan.chain_depth());
+    let owner = plan.owner().to_string();
+    // The registry's record of the spec; the plan, not this copy, is what launches.
+    let spec = plan.spec().clone();
     let memory = match state.memory.provision(requested_memory, &owner) {
         Ok(memory) => memory,
         Err(error) => {
@@ -1169,25 +1170,16 @@ async fn create_pod_internal(
     let spawned = match state.driver {
         #[cfg(feature = "local-driver")]
         DriverKind::Local => {
-            spawn_local_pod(state, &pod_dir, &spec, id, audit.as_ref(), memory.as_ref()).await
+            spawn_local_pod(state, &pod_dir, plan, audit.as_ref(), memory.as_ref()).await
         }
         DriverKind::Firecracker => {
-            spawn_firecracker_pod(
-                state,
-                &pod_dir,
-                &spec,
-                id,
-                audit.as_ref(),
-                execution_deadline,
-            )
-            .await
+            spawn_firecracker_pod(state, &pod_dir, plan, audit.as_ref(), execution_deadline).await
         }
         DriverKind::Container => {
             spawn_container_pod(
                 state,
                 &pod_dir,
-                &spec,
-                id,
+                plan,
                 container_launch::Inputs {
                     raw_yaml: raw_yaml.as_deref(),
                     audit: audit.as_ref(),
@@ -1197,7 +1189,7 @@ async fn create_pod_internal(
             )
             .await
         }
-        DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, &spec, id).await,
+        DriverKind::AppleVz => driver::spawn_vz_pod(state, &pod_dir, plan).await,
     };
     let (driver_state, proxy_addr, log_path) = match spawned {
         Ok(s) => s,
@@ -1286,11 +1278,12 @@ fn provision_local_audit_env(
 async fn spawn_local_pod(
     state: &NodeState,
     pod_dir: &Path,
-    spec: &PodSpec,
-    id: Uuid,
+    plan: pod_authority::AdmittedPodPlan,
     audit: Option<&audit_sink::credentials::AuditGrant>,
     memory: Option<&memory_provisioning::Grant>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
+    // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
+    let (spec, id) = (plan.spec(), plan.id());
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
     let announce_path = pod_dir.join("proxy.addr");
@@ -1468,10 +1461,11 @@ async fn spawn_local_pod(
 async fn spawn_container_pod(
     state: &NodeState,
     pod_dir: &Path,
-    spec: &PodSpec,
-    id: Uuid,
+    plan: pod_authority::AdmittedPodPlan,
     inputs: container_launch::Inputs<'_>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
+    // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
+    let (spec, id) = (plan.spec(), plan.id());
     let container_launch::Inputs {
         raw_yaml,
         audit,
@@ -1825,11 +1819,12 @@ async fn vmm_preflight(
 async fn spawn_firecracker_pod(
     state: &NodeState,
     pod_dir: &Path,
-    spec: &PodSpec,
-    id: Uuid,
+    plan: pod_authority::AdmittedPodPlan,
     audit: Option<&audit_sink::credentials::AuditGrant>,
     deadline: tokio::time::Instant,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
+    // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
+    let (spec, id) = (plan.spec(), plan.id());
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (state, pod_dir, spec, id, audit, deadline);
