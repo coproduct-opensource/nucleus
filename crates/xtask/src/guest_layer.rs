@@ -177,7 +177,7 @@ impl GuestBinaries {
 
 /// `bytes` is a little-endian ELF64 for `arch` with no program interpreter —
 /// a dynamically linked `/init` would not start on an image without its libc.
-fn check_static_elf(bytes: &[u8], arch: Arch) -> Result<()> {
+pub(crate) fn check_static_elf(bytes: &[u8], arch: Arch) -> Result<()> {
     let u16_at = |o: usize| -> Option<u16> {
         Some(u16::from_le_bytes(bytes.get(o..o + 2)?.try_into().ok()?))
     };

@@ -1875,3 +1875,47 @@ shapes, unchanged node secrets/root and owner-only replacement key permissions.
 These checks use actual generated certificates and the real client identity
 validator. This change does not resolve the separately recorded Apple Container
 published-port forwarding problem or the missing model configuration.
+
+### Explicit local host image assembly and packaged workload (2026-10-05)
+
+`cargo xtask microvm-host-context` stages exactly six ARM64 Linux executables
+(node, hostctl, CLI, MCP, Firecracker and jailer), the pinned guest kernel and an
+operator-selected guest rootfs. It checks static ELF architecture, the kernel
+digest and the rootfs superblock, records byte lengths/SHA-256 in a manifest, and
+publishes a new context only after validation. Sparse zero extents are retained
+so large mostly empty guest images do not require their full logical size on disk.
+The new local Containerfile consumes these inputs, installs the manifest, supplies
+no baked authentication secrets and enables host enforcement. It downloads no
+replacement runtime artifacts. The manifest records input bytes, not provenance
+or a claim that arbitrary guest/runtime versions are compatible.
+
+Live assembly exposed two necessary corrections. Apple Container 1.4.1 on this
+host omitted nested files for a directory-only COPY; a small nested/flat fixture
+reproduced that behavior. The final recipe uses a flat context and explicit file
+names. All eight staged artifacts were read back from the first corrected image
+with matching digests. The initial recipe also started the node in legacy mode,
+allowing a baked guest command to outrank the requested workload. Enabling host
+enforcement makes the guest select the admitted host spec instead. The kernel
+feature table now includes the three NFQUEUE options already in the committed
+fragment, so build requirements and host preflight agree.
+
+Final image `nucleus-local-host:enforcing-7e4987e34` was built from the staged
+inputs and started on the isolated Apple Container development host. Pinned
+Firecracker pod `c8f13b0f-ad3a-4e43-a654-92a4160aae5c` ran the requested ordinary
+shell workload, exited 0 and returned `packaged host workload completed` on stdout.
+The result reported a bound executable digest and UID isolation. A signed execution
+bundle was collected, but has not yet been independently verified. The pod was
+cancelled and the development host stopped and removed to reclaim its writable
+filesystem; the image, state volume and identity remain. The original acceptance
+node stayed healthy. Published-port readiness still fails
+with the previously recorded forwarding issue; this run used the container's IP
+with mTLS, not a successful `microvm-host up` readiness claim.
+
+Evidence: `/tmp/nucleus-host-context-enforcing-{pod-result,workload-result,bundle}.json`,
+`/tmp/nucleus-host-context-enforcing-stdout.txt`, the staged input manifest and
+`/tmp/nucleus-host-context-image-enforcing.log`. Validation: three context tests,
+13 guest-layer tests, 17 microVM-host spec tests and scoped Clippy passed. Disk
+exhaustion interrupted intermediate builds; confirmed failed attempts were retried
+after removing superseded validation copies/images and cleaning the cross-target
+Cargo cache (11.7 GiB reclaimed). Final image import completed successfully.
+The original model-driven journeys and published fresh-install release remain open.

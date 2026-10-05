@@ -195,6 +195,9 @@ pub const L1_KERNEL: L1Kernel = L1Kernel {
         KconfigSetting::host("CONFIG_VHOST_MENU"),
         KconfigSetting::host("CONFIG_VHOST"),
         KconfigSetting::host("CONFIG_VHOST_VSOCK"),
+        KconfigSetting::host("CONFIG_NETFILTER_NETLINK_QUEUE"),
+        KconfigSetting::host("CONFIG_NETFILTER_XT_TARGET_NFQUEUE"),
+        KconfigSetting::host("CONFIG_NFT_QUEUE"),
         KconfigSetting {
             symbol: "CONFIG_DEBUG_INFO_NONE",
             value: Kconfig::BuiltIn,
@@ -260,6 +263,16 @@ pub enum ArtifactSource {
 pub const IMAGE_SOURCE: ArtifactSource = ArtifactSource::LocalBuild {
     containerfile: "docker/Containerfile.microvm-host",
 };
+
+/// Explicit executables in a locally staged Apple Container host image.
+pub const LOCAL_HOST_BINARIES: &[&str] = &[
+    NODE,
+    HOSTCTL,
+    "nucleus",
+    "nucleus-mcp",
+    "firecracker",
+    "jailer",
+];
 
 /// The environment variable a developer sets to run a different image.
 pub const IMAGE_OVERRIDE_ENV: &str = "NUCLEUS_MICROVM_HOST_IMAGE";
@@ -397,6 +410,35 @@ mod tests {
     use crate::tier2_artifacts::{GUEST_RELEASE, KERNEL_AARCH64};
     use std::path::PathBuf;
 
+    #[test]
+    fn local_host_recipe_uses_staged_inputs_and_install_generated_secrets() {
+        let r = repo_file("docker/Containerfile.microvm-host-local");
+        assert!(r.contains(&format!(
+            "COPY {} {BIN_DIR}/",
+            LOCAL_HOST_BINARIES.join(" ")
+        )));
+        assert!(r.contains(&format!("COPY vmlinux rootfs.ext4 {HOST_ARTIFACTS_DIR}/")));
+        assert!(r.contains(&format!(
+            "[\"{}\", \"run-node\"]",
+            in_container_bin(HOSTCTL)
+        )));
+        for (key, value) in [
+            ("NUCLEUS_NODE_BROKER_ENFORCING", "true".to_string()),
+            ("NUCLEUS_NODE_STATE_DIR", NODE_STATE_DIR.to_string()),
+            ("NUCLEUS_NODE_LISTEN", format!("0.0.0.0:{NODE_PORT}")),
+            ("NUCLEUS_JAILER_CHROOT_BASE", JAILER_CHROOT_BASE.to_string()),
+            (
+                "NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET",
+                WORKLOAD_API_SOCKET.to_string(),
+            ),
+        ] {
+            assert_eq!(env_value(&r, key), value);
+        }
+        assert!(!r.contains("releases/download"));
+        assert!(!r.contains("PROXY_AUTH_SECRET="));
+        assert!(!r.contains("PROXY_APPROVAL_SECRET="));
+    }
+
     fn repo_file(rel: &str) -> String {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
@@ -503,7 +545,7 @@ mod tests {
     #[test]
     fn build_economy_settings_are_not_required() {
         assert!(required_kernel_config().all(|s| s.purpose == FragmentPurpose::HostsMicroVms));
-        assert_eq!(required_kernel_config().count(), 5);
+        assert_eq!(required_kernel_config().count(), 8);
     }
 
     // ── the image recipe cannot drift from the paths ──

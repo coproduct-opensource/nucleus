@@ -13,6 +13,54 @@ matched node and guest artifacts, Firecracker/jailer, and `nucleus-hostctl` as
 the `run-node` entrypoint. The older release pairing in
 `docker/Containerfile.microvm-host` is not a current source-built guest.
 
+## Assemble a local host image
+
+Build the ARM64 Linux host tools from this checkout:
+
+```sh
+CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 cargo zigbuild \
+  -p nucleus-node -p nucleus-cli -p nucleus-mcp -p nucleus-microvm-host \
+  --target aarch64-unknown-linux-musl
+```
+
+Prepare a directory containing `nucleus-node`, `nucleus`, `nucleus-mcp`,
+`nucleus-hostctl`, and the pinned ARM64 `firecracker` and `jailer` executables.
+The Rust tools are in `target/aarch64-unknown-linux-musl/debug`. Firecracker's
+version is declared in `nucleus_spec::vmm_version`; the node checks it at launch.
+Use the pinned guest kernel and a workload-capable guest rootfs assembled with
+the matching guest runtime. The existing [rootfs builder](../../scripts/firecracker/build-rootfs.sh)
+accepts explicit guest binary paths; booting an old image is not evidence that
+it can receive and execute a current node's workload specification.
+
+```sh
+cargo run -p xtask -- microvm-host-context \
+  --bin-dir /absolute/path/to/host-binaries \
+  --guest-kernel /absolute/path/to/vmlinux \
+  --guest-rootfs /absolute/path/to/rootfs.ext4 \
+  --out /tmp/nucleus-host-context
+
+container build --cpus 2 --memory 2g \
+  --file /tmp/nucleus-host-context/Containerfile \
+  --tag nucleus-microvm-host:local /tmp/nucleus-host-context
+```
+
+The output directory must not already exist. Staging copies only the declared
+inputs, checks static ARM64 ELF executables and the pinned guest kernel digest,
+checks the rootfs superblock, and records every input's SHA-256 and length in
+`manifest.json`. It preserves sparse zero extents when copying large rootfs
+images. The manifest is also installed at `/usr/share/nucleus/host-inputs.json`.
+It records supplied bytes; it does not attest their build origin or establish
+guest/runtime compatibility. Validate the intended workload after assembly.
+
+The context uses flat, explicitly named files. On the validated Apple Container
+installation, a directory-only `COPY` omitted nested files; the explicit-file
+recipe was verified by comparing hashes inside the built image. The recipe
+installs OS packages but downloads no replacement node, VMM or guest artifacts,
+and contains no default authentication secrets. `microvm-host up` provisions
+those secrets for the installation. The local recipe enables host enforcement,
+including the requirement that guests execute the admitted host workload rather
+than a spec baked into their rootfs.
+
 ## Bring up the host
 
 ```sh

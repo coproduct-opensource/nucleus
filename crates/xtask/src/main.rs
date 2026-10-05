@@ -69,6 +69,19 @@ enum Command {
         #[arg(long)]
         prebuilt: Option<std::path::PathBuf>,
     },
+    /// Stage explicit ARM64 Linux host binaries and guest artifacts for Apple Container.
+    MicrovmHostContext {
+        /// Directory containing node, hostctl, CLI, MCP, Firecracker and jailer executables.
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        #[arg(long)]
+        guest_kernel: std::path::PathBuf,
+        #[arg(long)]
+        guest_rootfs: std::path::PathBuf,
+        /// New output directory, never an existing build context.
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// Score `nucleus-perf stress` against the bug zoo (crates/nucleus-perf/zoo): each
     /// defect patched into a scratch worktree at HEAD, every mode run against it.
     /// Exit 0 as the manifest says, 1 a mismatch, 2 could not look or zoo rot.
@@ -489,6 +502,7 @@ mod life;
 mod line_ratchet;
 mod local_coverage;
 mod mediate;
+mod microvm_host_context;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -510,6 +524,12 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Scripts => scripts(),
+        Command::MicrovmHostContext {
+            bin_dir,
+            guest_kernel,
+            guest_rootfs,
+            out,
+        } => microvm_host_context::run(&bin_dir, &guest_kernel, &guest_rootfs, &out),
         Command::GuestLayer {
             arch,
             out,

@@ -1,0 +1,20 @@
+# Input context: `cargo xtask microvm-host-context`. All runtime artifacts are
+# local inputs; there is no implicit download of a different node or guest.
+FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl dnsmasq e2fsprogs iproute2 iptables openssl procps \
+    && rm -rf /var/lib/apt/lists/*
+COPY nucleus-node nucleus-hostctl nucleus nucleus-mcp firecracker jailer /usr/local/bin/
+COPY vmlinux rootfs.ext4 /var/lib/nucleus/artifacts/
+COPY manifest.json /usr/share/nucleus/host-inputs.json
+ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080 \
+    NUCLEUS_NODE_STATE_DIR=/srv/state \
+    NUCLEUS_NODE_DRIVER=firecracker \
+    NUCLEUS_NODE_BROKER_ENFORCING=true \
+    NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=/srv/state/wapi.sock \
+    NUCLEUS_FIRECRACKER_PATH=/usr/local/bin/firecracker \
+    NUCLEUS_JAILER_PATH=/usr/local/bin/jailer \
+    NUCLEUS_JAILER_CHROOT_BASE=/srv/jailer \
+    RUST_LOG=info
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/nucleus-hostctl", "run-node"]
