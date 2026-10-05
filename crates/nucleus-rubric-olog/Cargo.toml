@@ -21,3 +21,4 @@ nucleus-rubric = { path = "../nucleus-rubric" }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+proptest = { workspace = true }
