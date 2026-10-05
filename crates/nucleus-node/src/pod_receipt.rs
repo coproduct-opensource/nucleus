@@ -680,6 +680,7 @@ mod tests {
 
             let handle = Arc::new(crate::PodHandle {
                 id: uuid::Uuid::new_v4(),
+                execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
                 spec,
                 created_at: 1_757_000_000,
                 log_path: work_dir.join("pod.log"),

@@ -133,6 +133,8 @@ pub struct PodSpecInner {
     pub work_dir: PathBuf,
     /// Timeout in seconds for pod execution. It also bounds the pod's
     /// certificate and task token, and the node refuses more than 30 days.
+    /// The node starts a monotonic deadline before launch and cancels still-running
+    /// pods on its next reaper pass after expiry; cleanup is not an exact-time kill.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
     /// Permission policy.

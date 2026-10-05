@@ -62,6 +62,16 @@ fn now_unix() -> u64 {
 
 use crate::{ApiError, DriverState, PodHandle, PodInfo, PodState, Stop};
 
+/// Admission and launch count toward execution lifetime. A monotonic deadline
+/// prevents wall-clock corrections from extending a running pod's allocation.
+pub(crate) fn execution_deadline(
+    spec: &nucleus_spec::PodSpec,
+) -> Result<tokio::time::Instant, ApiError> {
+    tokio::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(spec.spec.timeout_seconds))
+        .ok_or_else(|| ApiError::InvalidSpec("pod execution deadline exceeds clock range".into()))
+}
+
 impl PodHandle {
     pub(crate) async fn info(&self) -> PodInfo {
         let state = self.status().await;

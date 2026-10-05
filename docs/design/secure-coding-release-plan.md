@@ -2623,3 +2623,36 @@ after an initial empty observation, completed/expired entries are omitted, and
 an empty wait expires without posting a decision. All 347 CLI unit tests passed
 (two ignored), integration suites, Clippy and all four prepush gates passed.
 This is operator workflow validation, not an additional model-driven journey.
+
+### Stop expired executions and return capacity (2026-10-05)
+
+The node now constructs a monotonic execution deadline before admission/launch
+and cancels a still-running pod when the reaper observes expiry. Previously
+`timeout_seconds` bounded certificates and task tokens but did not itself stop
+the execution. The existing teardown, capacity release and descendant cascade
+are reused; cancellation failure retains the allocation and retries later.
+Successful timeout cleanup records an unsigned `pod_timed_out` lifecycle event,
+then the existing once-only exit handling retires authority. The reaper was
+extracted from `main.rs` without duplicating its cleanup rules.
+
+The reaper's ten-second polling interval and slow or failed driver operations
+mean this is periodic cleanup, not an exact-time kill guarantee. A node restart
+does not restore this in-memory monotonic deadline. `collect --wait-secs` remains
+an observation limit and does not extend pod lifetime. Existing Apple images
+must be rebuilt to include this node behavior.
+
+A regression using real local child processes checked that unexpired pods remain
+running, expiry stops the parent and cascades to its child, capacity becomes
+available after teardown, and timeout/exit events are not repeated. A separate
+local node accepted a five-second pod over mTLS; pod
+`ddfce18f-7437-4365-81dc-53b27f910628` exited on the next reaper pass with a timeout
+event. Evidence is under `/tmp/nucleus-execution-deadline-live/`; the temporary
+node was stopped. The test needed explicit macOS capacity and Python's normal
+CA validation without its optional strict AKI requirement, and used the actual
+pod-list route. No node TLS policy changed.
+
+Before this change, the combined all-feature suites passed 892 node and 580 proxy
+unit tests plus their integrations. Afterward all 893 node unit tests (one
+ignored) and three integrations passed, along with scoped Clippy, convergence
+and four prepush gates. Clippy retained the existing four configuration warnings
+about unreachable reqwest blocking-method paths in this feature selection.

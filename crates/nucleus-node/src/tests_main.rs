@@ -964,6 +964,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
             .expect("minimal spec"),
         created_at: 1_757_000_000,
+        execution_deadline: tokio::time::Instant::now() + Duration::from_secs(3600),
         log_path: std::env::temp_dir().join("container-cancel-test.log"),
         proxy_addr: Mutex::new(None),
         driver_state: DriverState::Container(Box::new(pod)),

@@ -1419,6 +1419,7 @@ pub(crate) mod handler_tests {
             .expect("a child spawns");
         let handle = Arc::new(crate::PodHandle {
             id,
+            execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
             spec,
             created_at: 1_757_000_000,
             log_path: st.state_dir.join("pod.log"),
@@ -1468,6 +1469,7 @@ pub(crate) mod handler_tests {
         spec.spec.work_dir = dir.path().to_path_buf();
         let handle = crate::PodHandle {
             id: uuid::Uuid::new_v4(),
+            execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
             spec,
             created_at: 1_757_000_000,
             log_path: st.state_dir.join("pod.log"),

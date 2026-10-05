@@ -343,6 +343,17 @@ the published-port forwarding service.
 
 ## Reclaim unused state-volume blocks
 
+A pod's `spec.timeout_seconds` now also bounds execution on updated nodes.
+The deadline starts before launch and uses a monotonic clock. The reaper checks
+every ten seconds and cancels expired running pods, then applies its existing
+descendant cleanup. Slow driver operations or failed cleanup can delay teardown;
+capacity remains reserved until teardown succeeds. This is periodic cleanup,
+not a hard real-time deadline. Timeout events appear in the node's unsigned
+`lifecycle.log`; they are not signed evidence of successful execution.
+Choose enough time for boot, work, operator approval and evidence collection.
+`collect --wait-secs` only bounds observation and does not extend pod lifetime.
+Existing local images need a rebuilt node to acquire this behavior.
+
 Cancelled and failed pods can leave the Apple state volume physically large even
 when their image files were deleted. On a discard-capable volume, reclaim unused
 filesystem blocks from the running host with:
