@@ -168,6 +168,21 @@ jobs:
           VERSION="${TAG#nucleus-node-v}"
           VERSION="${VERSION#v}"
           cargo xtask release-reference-manifest emit --dist dist --version "$VERSION" --arch ${{ matrix.arch }} --firecracker-tgz firecracker.tgz --out "dist/nucleus-${VERSION}-${{ matrix.arch }}.node-reference.json"
+      # The guest kernel mirror (#2696 P3): the pinned Firecracker CI build sits
+      # under a dated bucket prefix that nothing promises to keep, so every
+      # release republishes those exact bytes, signed and attested with the rest.
+      # `stage` refuses any bytes whose sha256 is not the pin's
+      # (nucleus_spec::tier2_artifacts::KERNEL_*); these steps only run it.
+      - name: Fetch config for the pinned guest kernel
+        run: cargo xtask guest-kernel-mirror fetch-config --arch ${{ matrix.arch }} --output vmlinux.download --out vmlinux.curl
+      - name: Fetch the pinned guest kernel
+        run: curl --fail --silent --show-error --location --config vmlinux.curl
+      - name: Stage the guest kernel mirror
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#nucleus-node-v}"
+          VERSION="${VERSION#v}"
+          cargo xtask guest-kernel-mirror stage --arch ${{ matrix.arch }} --file vmlinux.download --version "$VERSION" --dist dist
       - name: Upload packaged artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -176,6 +191,7 @@ jobs:
           path: |
             dist/*.tar.gz
             dist/*.node-reference.json
+            dist/*.vmlinux
       - name: Upload guest binaries for rootfs build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -340,7 +356,7 @@ jobs:
       - name: Collect assets
         run: |
           mkdir -p release
-          find dist -type f \( -name "*.tar.gz" -o -name "*.ext4.gz" -o -name "*.yaml" -o -name "*.node-reference.json" \) -exec mv {} release/ \;
+          find dist -type f \( -name "*.tar.gz" -o -name "*.ext4.gz" -o -name "*.yaml" -o -name "*.node-reference.json" -o -name "*.vmlinux" \) -exec mv {} release/ \;
           ls -lah release
       - name: Attest build provenance
         id: attest
@@ -362,7 +378,7 @@ jobs:
           # The node reference manifests are signed like every other asset, so each
           # one's digest is in the public Sigstore log and its inclusion proof ships
           # in `<asset>.sigstore.json` (docs/stranger-verification.md).
-          for f in release/*.tar.gz release/*.ext4.gz release/*.yaml release/*.node-reference.json; do
+          for f in release/*.tar.gz release/*.ext4.gz release/*.yaml release/*.node-reference.json release/*.vmlinux; do
             cosign sign-blob --yes --bundle "$f.sigstore.json" "$f"
           done
           ls -lah release
