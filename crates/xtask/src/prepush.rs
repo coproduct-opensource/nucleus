@@ -264,7 +264,61 @@ const GATES: &[Gate] = &[
         xtask_gate(root, &["line-ratchet", "--strict"])
     }),
     ("fmt (gatehouse gate)", fmt_gate),
+    ("tests of affected crates", affected_tests),
 ];
+
+/// The tests of every crate this branch can affect, from `scripts/affected-crates.sh` (the crates
+/// whose sources changed, closed under reverse dependencies; `ALL` for a workspace-wide file).
+///
+/// Added 2026-10-06 because tests were the most common red that reached CI: across the slow pull
+/// requests of 2026-10-02..05, 19 of 27 non-final commits pushed a real failure, led by `Tests`
+/// (15) and the gates that fail with it, and each red cost a ~25-minute CI round -- plus, when
+/// nobody was watching, a median 14-hour wait before the next push. This tier used to exist only
+/// in `scripts/prepush.sh --full`, which the instruction agents follow (`AGENTS.md`: `cargo xtask
+/// prepush` before every push) never ran.
+///
+/// `--tests` rather than `--lib --bins --tests`: a binary-only crate has no library target, and
+/// `--lib` is then an error, not a test.
+fn affected_tests(root: &Path) -> Verdict {
+    let base = std::env::var("PREPUSH_BASE").unwrap_or_else(|_| "origin/main".into());
+    let mut sel = Command::new("bash");
+    sel.args(["scripts/affected-crates.sh", &base]);
+    let out = match run_child(sel, root) {
+        Ok(o) => o,
+        Err(e) => {
+            return Verdict::CouldNotRun(format!("cannot run scripts/affected-crates.sh: {e}"));
+        }
+    };
+    let names = String::from_utf8_lossy(&out.stdout).into_owned();
+    let mut cmd = Command::new("cargo");
+    cmd.args(["test", "--all-features", "--tests"]);
+    match out.status.code() {
+        Some(0) if names.trim().is_empty() => return Verdict::Pass,
+        Some(0) => {
+            for n in names.split_whitespace() {
+                cmd.args(["-p", n]);
+            }
+        }
+        Some(3) => {
+            cmd.arg("--workspace");
+        }
+        _ => {
+            return Verdict::CouldNotRun(format!(
+                "scripts/affected-crates.sh {base} could not decide\n{}",
+                combined(&out)
+            ));
+        }
+    }
+    match run_child(cmd, root) {
+        Ok(o) if o.status.success() => Verdict::Pass,
+        Ok(o) => Verdict::Fail(format!(
+            "affected: {}\n{}",
+            names.split_whitespace().collect::<Vec<_>>().join(" "),
+            combined(&o)
+        )),
+        Err(e) => Verdict::CouldNotRun(format!("cannot run cargo test: {e}")),
+    }
+}
 
 fn reason(v: &Verdict) -> Option<&str> {
     match v {
