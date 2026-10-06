@@ -241,6 +241,19 @@ pub struct RotateArgs {
     upstreams: Option<PathBuf>,
 }
 
+impl FederationArgs {
+    /// Whether this run is an executable credential source: its reader takes
+    /// stdout as the response and merges stderr into it, so the process must
+    /// write nothing but the response (no log line, ever).
+    pub fn is_credential_helper(&self) -> bool {
+        matches!(
+            &self.command,
+            FederationCommand::OperatorAssertion(a)
+                if a.format == AssertionFormat::ExecutableCredential
+        )
+    }
+}
+
 pub fn execute(args: FederationArgs) -> Result<()> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
