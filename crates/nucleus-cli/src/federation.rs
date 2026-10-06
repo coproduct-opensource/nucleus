@@ -1132,7 +1132,7 @@ var = "SEARCH_API_TOKEN"
     #[cfg(unix)]
     #[test]
     fn operator_assertion_with_a_hanging_keychain_fails_fast_and_says_why() {
-        let root = tempfile::tempdir().unwrap();
+        let root = crate::operator_key::tests::exec_tempdir();
         let program = crate::operator_key::tests::fake_security(root.path(), "exec sleep 30");
         let program = program.to_str().unwrap();
         let mut argv = vec![

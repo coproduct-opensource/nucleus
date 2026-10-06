@@ -583,6 +583,14 @@ pub(crate) mod tests {
     /// A stand-in for `/usr/bin/security`: the item store is a directory, and
     /// the fixture speaks exactly the three commands `SecurityCli` sends
     /// (exit 44 on a missing item, like the real one). Test-only.
+    /// A temporary directory a fixture can be executed from. CI may mount
+    /// `/tmp` noexec, so it lives beside the test binary instead.
+    #[cfg(unix)]
+    pub(crate) fn exec_tempdir() -> tempfile::TempDir {
+        let exe = std::env::current_exe().unwrap();
+        tempfile::tempdir_in(exe.parent().unwrap()).unwrap()
+    }
+
     #[cfg(unix)]
     pub(crate) fn fake_security(dir: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt as _;
@@ -614,7 +622,7 @@ esac"#;
     #[cfg(unix)]
     #[test]
     fn security_cli_store_rotates_through_the_tool() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = exec_tempdir();
         let program = fake_security(dir.path(), WORKING_SECURITY);
         let store = SecurityCli::new(
             &program,
@@ -637,7 +645,7 @@ esac"#;
     #[cfg(unix)]
     #[test]
     fn security_cli_store_verifies_a_write_by_reading_it_back() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = exec_tempdir();
         let body = WORKING_SECURITY.replace(r#"printf %s "$secret" > "$STORE/$acct""#, "true");
         let program = fake_security(dir.path(), &body);
         let store = SecurityCli::new(
@@ -658,7 +666,7 @@ esac"#;
     #[cfg(unix)]
     #[test]
     fn a_hanging_security_is_a_named_timeout_never_a_wait() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = exec_tempdir();
         let program = fake_security(dir.path(), "exec sleep 30");
         let store = SecurityCli::new(&program, KEYCHAIN_SERVICE, Duration::from_millis(300));
         let started = Instant::now();
