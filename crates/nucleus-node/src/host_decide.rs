@@ -449,6 +449,26 @@ impl PodPolicy {
         portcullis::kernel::Decision,
         Option<portcullis::kernel::DecisionToken>,
     ) {
+        // A taint hold matters only to an effect an approval can release
+        // (`effects`); a shadowed decision compares the verdict alone.
+        let portcullis::kernel::EffectDecision {
+            decision,
+            token,
+            hold: _,
+        } = self.decide_effect(op, subject);
+        (decision, token)
+    }
+
+    /// Every host decision, shadowed or enforced, comes out of
+    /// `decide_effect_with_flow` — the entry the guest's broker submission
+    /// calls too (#3255). It decides every operation but a push or a pull
+    /// request exactly as `decide_term_with_flow`, which the guest's tool
+    /// calls use, so the shadow channel compares like with like.
+    pub(crate) fn decide_effect(
+        &mut self,
+        op: Operation,
+        subject: &str,
+    ) -> portcullis::kernel::EffectDecision {
         // The kernel's budget is a derived projection, never an independent
         // spending counter. Missing budget state projects to exhausted.
         let max = self.kernel.effective().budget.max_cost_usd;
@@ -460,7 +480,7 @@ impl PodPolicy {
         self.kernel.refund(self.kernel.consumed_usd());
         let _ = self.kernel.charge(max - available);
         self.kernel
-            .decide_term_with_flow(ActionTerm::from_operation(op, subject), Some(&self.taint))
+            .decide_effect_with_flow(ActionTerm::from_operation(op, subject), Some(&self.taint))
     }
 }
 
@@ -596,8 +616,10 @@ impl Channel {
         if digest != args_digest(op, &subject) {
             return Err(ChannelError::DigestMismatch);
         }
-        // The guest's two decision points both call exactly this:
-        // `decide_term_with_flow(ActionTerm::from_operation(op, subject), graph)`.
+        // The guest's tool calls decide with `decide_term_with_flow` and its
+        // broker submissions with `decide_effect_with_flow`; the two differ
+        // only for a push or a pull request, which only a broker submission
+        // decides, so the host's `decide_effect_with_flow` matches both.
         let (decision, token) = {
             let mut policy = self
                 .policy

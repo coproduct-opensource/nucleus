@@ -26,6 +26,8 @@ portcullis = { path = "../portcullis", features = ["serde", "spec"] }
 # projection a pod spec carries and the classifier both sides run cannot
 # drift. Serde-only without its `io` feature.
 nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
+# The label vocabulary a host-effect declassification records (#3255).
+portcullis-core = { path = "../portcullis-core", features = ["serde"] }
 
 [lints]
 workspace = true

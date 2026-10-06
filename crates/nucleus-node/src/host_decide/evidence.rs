@@ -82,6 +82,7 @@ impl Evidence {
         subject: &str,
         now: u64,
         charge: crate::upstreams::CallCharge,
+        declassification: Option<nucleus_spec::host_effect::Declassification>,
     ) -> Result<Recorded, String> {
         self.available()?;
         let claim = Authorization {
@@ -93,6 +94,7 @@ impl Evidence {
             subject: subject.into(),
             authorized_unix: now,
             call_charge_micro_usd: charge.micro_usd(),
+            declassification,
             previous_record_sha256: self.previous.clone(),
         };
         let bytes = signing_bytes(&claim).map_err(|_| "cannot encode host authorization")?;
@@ -278,7 +280,8 @@ mod tests {
                     Operation::WebFetch,
                     "https://upstream.invalid",
                     1,
-                    crate::upstreams::CallCharge::free()
+                    crate::upstreams::CallCharge::free(),
+                    None,
                 )
                 .is_err()
         );

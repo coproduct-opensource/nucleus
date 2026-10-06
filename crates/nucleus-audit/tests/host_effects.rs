@@ -16,6 +16,7 @@ fn host_effect_command_verifies_a_pinned_authorization_and_rejects_a_guest_key()
         subject: "https://upstream.invalid".into(),
         authorized_unix: 100,
         call_charge_micro_usd: 0,
+        declassification: None,
         previous_record_sha256: String::new(),
     };
     let signature = hex::encode(

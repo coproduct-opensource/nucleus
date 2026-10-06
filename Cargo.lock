@@ -7684,6 +7684,7 @@ dependencies = [
  "hex",
  "nucleus-cred-protocol",
  "portcullis",
+ "portcullis-core",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",

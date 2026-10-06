@@ -84,6 +84,12 @@ enum Property {
     OverBudgetPerformRefused,
     /// P5: the host refuses a reused approval (decision) to act twice.
     ReusedApprovalRefused,
+    /// P2b (#3255): a push from a tainted session is held for an operator's
+    /// approval of that push, and without one it is refused, never performed.
+    TaintedPushRequiresApproval,
+    /// P5b (#3255): the approval that declassified one tainted push is spent
+    /// by it; the next push from the same session is held again.
+    ReusedDeclassificationRefused,
 }
 
 /// Every property, in table order. Each is measured exactly once.
@@ -94,6 +100,8 @@ const ALL: &[Property] = &[
     Property::UnapprovedPerformRefused,
     Property::OverBudgetPerformRefused,
     Property::ReusedApprovalRefused,
+    Property::TaintedPushRequiresApproval,
+    Property::ReusedDeclassificationRefused,
 ];
 
 impl Property {
@@ -105,6 +113,8 @@ impl Property {
             Property::UnapprovedPerformRefused => "P3",
             Property::OverBudgetPerformRefused => "P4",
             Property::ReusedApprovalRefused => "P5",
+            Property::TaintedPushRequiresApproval => "P2b",
+            Property::ReusedDeclassificationRefused => "P5b",
         }
     }
 }
@@ -118,6 +128,8 @@ fn expected(p: Property) -> Expected {
         Property::UnapprovedPerformRefused => Expected::Holds,
         Property::OverBudgetPerformRefused => Expected::Holds,
         Property::ReusedApprovalRefused => Expected::Holds,
+        Property::TaintedPushRequiresApproval => Expected::Holds,
+        Property::ReusedDeclassificationRefused => Expected::Holds,
     }
 }
 
@@ -269,6 +281,30 @@ fn scenario_reuse() -> BrokerScenario {
     }
 }
 
+fn scenario_tainted_push() -> BrokerScenario {
+    BrokerScenario {
+        policy: PermissionLattice::permissive(),
+        approvals: Vec::new(),
+        // The host's own fetch taints the session, as in P2.
+        prelude: vec![perform_request(Operation::WebFetch, "push-taint-fetch")],
+        probe: perform_request(Operation::GitPush, "tainted-push"),
+    }
+}
+
+fn scenario_reused_declassification() -> BrokerScenario {
+    BrokerScenario {
+        policy: PermissionLattice::permissive(),
+        // ONE operator approval: it declassifies the first push and is spent.
+        approvals: vec![(Operation::GitPush, 1)],
+        prelude: vec![
+            perform_request(Operation::WebFetch, "declassify-taint-fetch"),
+            perform_request(Operation::GitPush, "declassified-push"),
+        ],
+        // The same effect again, under a fresh guest-chosen key.
+        probe: perform_request(Operation::GitPush, "redeclassified-push"),
+    }
+}
+
 fn scenario_control() -> BrokerScenario {
     BrokerScenario {
         policy: PermissionLattice::permissive(),
@@ -318,6 +354,25 @@ fn witness_taint(s: &BrokerScenario) -> Result<String, String> {
         .map_err(|e| format!("could not record the fetched content: {e:?}"))?;
     let (decision, _token) = kernel.decide_with_parents(Operation::GitCommit, "commit", &[fetched]);
     refuses(decision.verdict, "GitCommit of fetched web content")
+}
+
+/// The honest guest's broker submission of a push from a tainted session: the
+/// effect decider holds it, and no count of guest grants discharges the hold,
+/// so every push it submits — the first or a later one — waits for the host.
+fn witness_tainted_push(s: &BrokerScenario, what: &str) -> Result<String, String> {
+    let mut kernel = Kernel::new(s.policy.clone());
+    for &(op, count) in &s.approvals {
+        kernel.grant_approval(op, count);
+    }
+    let mut fetched = portcullis::flow_graph::FlowGraph::new();
+    fetched
+        .insert_observation(NodeKind::WebContent, &[], 1)
+        .map_err(|e| format!("could not record the fetched content: {e:?}"))?;
+    let decided = kernel.decide_effect_with_flow(
+        ActionTerm::from_operation(Operation::GitPush, "https://upstream.invalid/v1/act"),
+        Some(&fetched),
+    );
+    refuses(decided.decision.verdict, what)
 }
 
 fn witness_unapproved(s: &BrokerScenario) -> Result<String, String> {
@@ -535,6 +590,16 @@ async fn measure<H: Host>(host: &H, control: &Result<String, String>, p: Propert
         Property::ReusedApprovalRefused => {
             let s = scenario_reuse();
             (witness_reuse(&s), probe_broker(host, control, s).await)
+        }
+        Property::TaintedPushRequiresApproval => {
+            let s = scenario_tainted_push();
+            let w = witness_tainted_push(&s, "a GitPush after fetched web content");
+            (w, probe_broker(host, control, s).await)
+        }
+        Property::ReusedDeclassificationRefused => {
+            let s = scenario_reused_declassification();
+            let w = witness_tainted_push(&s, "a second tainted GitPush on one approval");
+            (w, probe_broker(host, control, s).await)
         }
     };
     match witness {
@@ -1140,7 +1205,10 @@ impl GuestFacing for EnforcingPod {
         if self.tainted && outbound {
             return Probe::Refused("taint".into());
         }
-        if self.policy.requires_approval(op) {
+        // A push or pull request from a tainted session is held: only an
+        // operator approval of it releases it, once (#3255).
+        let held = self.tainted && matches!(op, Operation::GitPush | Operation::CreatePr);
+        if held || self.policy.requires_approval(op) {
             match self.approvals.get_mut(&op) {
                 Some(left) if *left > 0 => *left -= 1,
                 Some(_) | None => return Probe::Refused("no approval".into()),
