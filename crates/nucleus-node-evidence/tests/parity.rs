@@ -66,6 +66,13 @@ fn every_parity_case_gives_its_status_and_its_golden_report() {
                     golden.display()
                 )
             });
+            // Compared as JSON values, not text: key order depends on whether
+            // the build unifies serde_json's `preserve_order` (a workspace-wide
+            // build does; `-p nucleus-node-evidence` does not), and key order
+            // is not part of the report. The JS and Python tests compare the
+            // same way.
+            let got: serde_json::Value = serde_json::from_str(&got).unwrap();
+            let want: serde_json::Value = serde_json::from_str(&want).unwrap();
             assert_eq!(got, want, "{name}: the report moved from its golden");
         }
     }
