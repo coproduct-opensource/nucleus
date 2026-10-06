@@ -75,6 +75,9 @@ asserts that the first one's bytes hash to the digest the live receipt named.
    the operator, alongside the receipt, as in this run. Serving it to anonymous
    relying parties needs a server-auth-only listener (as `federation_ingress` has).
    Not changed here.
+   *Since:* `nucleus-node --public-evidence-addr` serves
+   `GET /v1/evidence/{sha256}` on such a listener (no client certificate, no
+   challenge route). Not yet exercised on a live attested node.
 4. **Host spec enforcement must be on.** Without `NUCLEUS_NODE_BROKER_ENFORCING=true`,
    the guest ran the rootfs's baked spec, and the receipt was correctly refused for
    lacking a program identity (#3205).
@@ -110,8 +113,8 @@ asserts that the first one's bytes hash to the digest the live receipt named.
 - The wasm verifier for `sdks/verifier-js` (and Python). The crate is pure Rust and
   not yet embedded.
 - Reference manifests published with releases, including Authenticode digests for PCR 4.
-- An anonymous, server-auth-only route for evidence (finding 3), and binding the
-  digest into the admission record.
+- ~~An anonymous, server-auth-only route for evidence (finding 3)~~ (since:
+  `--public-evidence-addr`), and binding the digest into the admission record.
 
 ## Cost and teardown
 

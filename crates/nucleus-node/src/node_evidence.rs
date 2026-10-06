@@ -62,6 +62,9 @@ pub(crate) struct NodeEvidenceArgs {
     /// Seconds between epoch re-quotes.
     #[arg(long, env = "NUCLEUS_NODE_EVIDENCE_EPOCH_SECS", default_value_t = 300)]
     node_evidence_epoch_secs: u64,
+    /// The anonymous, read-only evidence listener (`public_evidence`).
+    #[command(flatten)]
+    pub(crate) public: crate::public_evidence::PublicEvidenceArgs,
 }
 
 fn parse_template(s: &str) -> Result<AkTemplate, String> {
@@ -127,7 +130,7 @@ fn unix_now() -> Result<i64, String> {
     i64::try_from(d.as_secs()).map_err(|e| format!("clock: {e}"))
 }
 
-fn is_digest(s: &str) -> bool {
+pub(crate) fn is_digest(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -283,6 +286,15 @@ impl NodePlatformSource {
         });
     }
 
+    /// Where stored evidence documents are, for the public listener: the
+    /// store directory, or the reason this node has none.
+    pub(crate) fn evidence_store(&self) -> Result<PathBuf, String> {
+        match self {
+            Self::Unattested(reason) => Err(reason.clone()),
+            Self::Tpm(node) => Ok(node.store.clone()),
+        }
+    }
+
     /// What a receipt signed now records.
     pub(crate) fn platform(&self) -> NodePlatform {
         match self {
@@ -371,8 +383,11 @@ async fn challenge(State(state): State<NodeState>, Json(req): Json<ChallengeRequ
     }
 }
 
-/// The evidence routes. Public: evidence is not secret, and a relying party
-/// that checks a receipt need hold no node credential to fetch it.
+/// The evidence routes on the node's API listener. They skip the API's
+/// authorization middleware — evidence is not secret — but that listener
+/// still asks for a client certificate at the handshake. A relying party with
+/// no node credential fetches documents from `public_evidence`, which does not
+/// serve the challenge route (a quote costs TPM work).
 pub(crate) fn routes() -> axum::Router<NodeState> {
     use axum::routing::{get, post};
     axum::Router::new()
@@ -414,6 +429,7 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            public: Default::default(),
         };
         let dir = tempfile::tempdir().unwrap();
         let source = NodePlatformSource::start(&args, dir.path(), [1; 32], false).unwrap();
@@ -431,6 +447,7 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            public: Default::default(),
         };
         assert!(NodePlatformSource::start(&args, dir.path(), [1; 32], false).is_err());
     }

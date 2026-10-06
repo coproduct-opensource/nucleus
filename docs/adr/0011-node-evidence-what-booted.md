@@ -177,6 +177,17 @@ the verifier's parsers, the verifier is tested against quotes from an independen
   force), `GET /v1/node/evidence/{sha256}` (by the digest a receipt names), and
   `POST /v1/node/evidence/challenge {"nonce": hex}` (one at a time; a concurrent request
   gets 429).
+  *Since:* these sit behind the API listener's mTLS handshake, so a stranger
+  could not reach them (live run, finding 3). `--public-evidence-addr`
+  (`NUCLEUS_NODE_PUBLIC_EVIDENCE_ADDR`, opt-in) opens a separate listener —
+  server-authenticated TLS, no client certificate — that serves only
+  `GET /v1/evidence/{sha256}` (re-hashed before it is sent, at most 4 MiB) and
+  `GET /v1/node/keys` (the executor public key). No challenge route (a quote is
+  TPM work; it stays on mTLS), no "latest", no listing, nothing about pods.
+  Global token bucket (`--public-evidence-requests-per-sec`, default 20) and 32
+  requests in flight. `--public-evidence-tls-cert/-key` give it a certificate
+  for a DNS name; otherwise it presents the node's SVID. See
+  `crates/nucleus-node/src/public_evidence.rs`.
 - `ExecutionClaim.node_platform` is `Unattested { reason } | Evidence { evidence_sha256,
   epoch }` and is signed inside the receipt. A receipt from before this field reads as
   `Unattested`.

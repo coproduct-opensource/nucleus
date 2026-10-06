@@ -111,7 +111,6 @@
 //! that says which check failed is an oracle for passing it).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -145,13 +144,6 @@ const MAX_SVID_TTL: Duration = Duration::from_secs(3600);
 /// expiry is refused rather than answered with a certificate that is dead on
 /// arrival.
 const MIN_SVID_TTL_SECS: u64 = 5;
-/// A TLS handshake that has not finished in this long is dropped. Handshakes
-/// run off the accept loop, so a slow or silent client holds a task, never the
-/// listener.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Handshakes in flight at once. Past it, new connections wait in the kernel's
-/// backlog rather than as tasks here.
-const MAX_HANDSHAKES: usize = 256;
 
 /// Operator knobs, flattened into `pod_authority::AuthorityArgs` (and so into
 /// the node's `Args`) rather than into `main.rs`.
@@ -746,106 +738,6 @@ pub(crate) fn router(st: IngressState) -> Router {
         .with_state(st)
 }
 
-// ── The listener ────────────────────────────────────────────────────────────
-
-/// A server-authenticated TLS listener whose handshakes run off the accept
-/// loop. See [`HANDSHAKE_TIMEOUT`].
-struct TlsListener {
-    rx: tokio::sync::mpsc::Receiver<(
-        tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-        SocketAddr,
-    )>,
-    addr: SocketAddr,
-}
-
-impl axum::serve::Listener for TlsListener {
-    type Io = tokio_rustls::server::TlsStream<tokio::net::TcpStream>;
-    type Addr = SocketAddr;
-
-    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
-        match self.rx.recv().await {
-            Some(conn) => conn,
-            // The acceptor task ended (its listener failed); serve nothing
-            // further rather than spin.
-            None => std::future::pending().await,
-        }
-    }
-
-    fn local_addr(&self) -> std::io::Result<Self::Addr> {
-        Ok(self.addr)
-    }
-}
-
-fn spawn_acceptor(
-    tcp: tokio::net::TcpListener,
-    acceptor: tokio_rustls::TlsAcceptor,
-) -> tokio::sync::mpsc::Receiver<(
-    tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
-    SocketAddr,
-)> {
-    let (tx, rx) = tokio::sync::mpsc::channel(64);
-    let slots = Arc::new(Semaphore::new(MAX_HANDSHAKES));
-    tokio::spawn(async move {
-        loop {
-            let Ok(permit) = slots.clone().acquire_owned().await else {
-                return;
-            };
-            let (stream, addr) = match tcp.accept().await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(error = %e, "federation listener accept failed");
-                    continue;
-                }
-            };
-            let (acceptor, tx) = (acceptor.clone(), tx.clone());
-            tokio::spawn(async move {
-                let _permit = permit;
-                if let Ok(Ok(tls)) =
-                    tokio::time::timeout(HANDSHAKE_TIMEOUT, acceptor.accept(stream)).await
-                {
-                    let _ = tx.send((tls, addr)).await;
-                }
-            });
-        }
-    });
-    rx
-}
-
-/// A server-auth-only TLS config from an operator's PEM files.
-fn operator_tls(
-    cert: &std::path::Path,
-    key: &std::path::Path,
-) -> Result<rustls::ServerConfig, String> {
-    use rustls::pki_types::pem::PemObject as _;
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-    let chain = CertificateDer::pem_file_iter(cert)
-        .and_then(Iterator::collect::<Result<Vec<_>, _>>)
-        .map_err(|e| format!("--federation-tls-cert {}: {e}", cert.display()))?;
-    let key = PrivateKeyDer::from_pem_file(key)
-        .map_err(|e| format!("--federation-tls-key {}: {e}", key.display()))?;
-    rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(chain, key)
-        .map_err(|e| format!("federation listener certificate: {e}"))
-}
-
-/// Serve `app` over server-authenticated TLS on `tcp`. No client certificate
-/// is asked for: the bearer token is this route's authentication.
-fn serve_tls(tcp: tokio::net::TcpListener, config: rustls::ServerConfig, app: Router) {
-    let addr = tcp
-        .local_addr()
-        .unwrap_or_else(|_| SocketAddr::from(([0, 0, 0, 0], 0)));
-    let listener = TlsListener {
-        rx: spawn_acceptor(tcp, tokio_rustls::TlsAcceptor::from(Arc::new(config))),
-        addr,
-    };
-    tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
-            tracing::error!(error = %e, "federation listener stopped");
-        }
-    });
-}
-
 /// Serve the exchange, if `--federation-listen` is set. Returns once the
 /// listener is bound; serving continues on a task.
 ///
@@ -871,26 +763,14 @@ pub(crate) async fn spawn(
         .identity_manager
         .clone()
         .ok_or_else(|| err("the federation listener needs the node identity".into()))?;
-    let config = match (&args.federation_tls_cert, &args.federation_tls_key) {
-        (Some(cert), Some(key)) => operator_tls(cert, key).map_err(err)?,
-        (None, None) => {
-            // The node's own certificate, rotated like the API listener's.
-            let node_cert = identity.node_certificate().await.map_err(err)?;
-            let resolver = Arc::new(
-                nucleus_identity::tls::RotatingServerCert::new(&node_cert)
-                    .map_err(|e| err(format!("federation listener certificate: {e}")))?,
-            );
-            crate::http_serve::spawn_certificate_rotation(state, resolver.clone());
-            rustls::ServerConfig::builder()
-                .with_no_client_auth()
-                .with_cert_resolver(resolver)
-        }
-        _ => {
-            return Err(err(
-                "--federation-tls-cert and --federation-tls-key go together".into(),
-            ));
-        }
-    };
+    let config = crate::tls_ingress::server_config(
+        state,
+        args.federation_tls_cert.as_deref(),
+        args.federation_tls_key.as_deref(),
+        "--federation-tls",
+    )
+    .await
+    .map_err(err)?;
     let tcp = tokio::net::TcpListener::bind(listen).await?;
     let addr = tcp.local_addr()?;
     let app = router(IngressState {
@@ -898,7 +778,7 @@ pub(crate) async fn spawn(
         identity,
         gate: Arc::new(Semaphore::new(args.federation_max_concurrent.max(1))),
     });
-    serve_tls(tcp, config, app);
+    crate::tls_ingress::serve_tls(tcp, config, app, "federation");
     tracing::info!(%addr, "federation exchange listening (server-authenticated TLS, no client certificate)");
     Ok(())
 }
@@ -1613,15 +1493,19 @@ ceiling = {{ profile = "read_only" }}
 
         let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = tcp.local_addr().unwrap().port();
-        serve_tls(
+        crate::tls_ingress::serve_tls(
             tcp,
-            operator_tls(&cert_path, &key_path).unwrap(),
+            crate::tls_ingress::operator_tls(&cert_path, &key_path, "--federation-tls").unwrap(),
             router(f.st.clone()),
+            "federation",
         );
 
         let client = reqwest::Client::builder()
             .add_root_certificate(reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap())
-            .resolve("localhost", SocketAddr::from(([127, 0, 0, 1], port)))
+            .resolve(
+                "localhost",
+                std::net::SocketAddr::from(([127, 0, 0, 1], port)),
+            )
             .build()
             .unwrap();
         let resp = client
