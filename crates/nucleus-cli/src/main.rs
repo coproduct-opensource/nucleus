@@ -70,6 +70,8 @@ mod trust;
 // the implementation of its `Boot` trait that boots real pods.
 #[cfg(test)]
 mod host_evidence_live;
+#[cfg(test)]
+mod live_boot_evidence;
 mod twosafety;
 mod twosafety_boot;
 mod verify;

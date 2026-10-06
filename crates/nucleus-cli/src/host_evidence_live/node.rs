@@ -20,7 +20,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-pub(super) async fn command(path: PathBuf, args: &[OsString]) -> Result<Vec<u8>> {
+pub(crate) async fn command(path: PathBuf, args: &[OsString]) -> Result<Vec<u8>> {
     let output = tokio::time::timeout(
         Duration::from_secs(30),
         Command::new(&path).args(args).kill_on_drop(true).output(),
@@ -52,7 +52,7 @@ async fn echo(State(f): State<Fixture>, headers: HeaderMap, body: String) -> (St
     (StatusCode::OK, body)
 }
 
-pub(super) struct Node {
+pub(crate) struct Node {
     pub state: PathBuf,
     pub upstream: String,
     pub url: String,
@@ -95,6 +95,22 @@ impl Node {
         text
     }
     pub async fn start(bins: &Path, nonce: &str) -> Result<Self> {
+        Self::start_with(&bins.join("nucleus-node"), nonce, &[]).await
+    }
+
+    /// The running node's process id, for measuring what actually executes.
+    pub fn pid(&self) -> Option<u32> {
+        self.child.id()
+    }
+
+    /// The fixture node log, as written so far.
+    pub fn log(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(self._directory.path().join("node.log"))
+    }
+
+    /// Start `node_bin` (e.g. the installed `/usr/local/bin/nucleus-node`),
+    /// with `extra` arguments appended after the fixture's own.
+    pub async fn start_with(node_bin: &Path, nonce: &str, extra: &[String]) -> Result<Self> {
         let directory = tempfile::Builder::new()
             .prefix("he")
             .tempdir_in("/var/tmp")?;
@@ -127,7 +143,7 @@ impl Node {
         drop(reserved); // A collision fails node startup rather than selecting another service.
         let log_path = directory.path().join("node.log");
         let log = std::fs::File::create(&log_path)?;
-        let child = Command::new(bins.join("nucleus-node"))
+        let child = Command::new(node_bin)
             .env_clear()
             .env(
                 "PATH",
@@ -158,6 +174,7 @@ impl Node {
             .arg(registry)
             .arg("--jailer-chroot-base")
             .arg(directory.path().join("j"))
+            .args(extra)
             .stdout(log.try_clone()?)
             .stderr(log)
             .kill_on_drop(true)

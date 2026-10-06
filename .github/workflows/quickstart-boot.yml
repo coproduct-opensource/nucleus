@@ -674,6 +674,41 @@ jobs:
           done
           ./target/release/nucleus-delivery-conformance "$tmp"/log*
 
+      # The live boot as a verified evidence bundle. Every check above reads a
+      # guest log on this runner; this one hands the run to the verifiers a
+      # stranger would use. A fresh host-spec-enforcing node boots the posture
+      # workload and one credentialed request; nucleus-audit, the JS SDK (wasm)
+      # and the Python SDK must each accept the receipt, refuse a tampered copy,
+      # and agree with one another; and the reference manifest a release of
+      # this build would publish must predict the node binaries that ran. Every
+      # check is pass/fail/could_not_run in summary.json, and could_not_run is
+      # red unless named below. All logic is in `cargo xtask live-boot-evidence`.
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        if: steps.scope.outputs.relevant == 'true'
+        with:
+          tool: wasm-pack@0.13.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.scope.outputs.relevant == 'true'
+        with:
+          node-version: "22"
+      - name: Live boot evidence, verified by the public verifiers
+        if: steps.scope.outputs.relevant == 'true'
+        # posture.landlock is allowed to be could_not_run only until the guest
+        # prints its NUCLEUS_WORKLOAD_LANDLOCK verdict (#3273); the summary
+        # warns when the allowance has become unnecessary.
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --out live-boot-evidence --allow-could-not-run posture.landlock
+
+      - name: Upload the live boot evidence bundle
+        if: ${{ !cancelled() && steps.scope.outputs.relevant == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: live-boot-evidence-x86_64
+          path: live-boot-evidence/
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Compile cache hit rate
         if: always() && steps.sccache.outcome == 'success'
         run: sccache --show-stats

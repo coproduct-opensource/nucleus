@@ -1,0 +1,491 @@
+//! The collector half of `cargo xtask live-boot-evidence`: boot a real pod on a
+//! fresh, host-spec-enforcing node and write down what a stranger would be
+//! handed. It VERIFIES NOTHING. The appraiser reads the directory with the
+//! public verifiers only, so a check that lived here would be a check the
+//! stranger cannot repeat.
+//!
+//! Requires Linux, KVM, root, and installed guest artifacts (`nucleus setup`).
+//! Never a mock driver. Invoked by the xtask, which passes its inputs as
+//! `NUCLEUS_LIVE_BOOT_*` variables on the command line it runs under `sudo`.
+use anyhow::{Context, Result, bail, ensure};
+use nucleus_spec::live_boot::{self, Collection, Files, Measured, MeasuredHow, NodeEvidence};
+use nucleus_spec::workload_result::WorkloadResult;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::{
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+use uuid::Uuid;
+
+use crate::host_evidence_live::{self as live, node::Node};
+
+/// Where `nucleus setup` installs the VMM; the fixture node is started with
+/// these paths, so they are what the measurements are keyed by.
+const FIRECRACKER: &str = "/usr/local/bin/firecracker";
+const JAILER: &str = "/usr/local/bin/jailer";
+
+/// The posture workload. Every probe runs whatever the one before it said, so
+/// each prints its own verdict; the exit is zero only if all of them passed.
+/// The last line writes the declared artifact.
+fn workload_script(nonce: &str) -> String {
+    let note = live_boot::artifact_bytes(nonce);
+    let note = note.trim_end();
+    format!(
+        "/usr/local/bin/nucleus-workload-probe; w=$?; \
+         /usr/local/bin/nucleus-workload-probe --syscall-filter; s=$?; \
+         /usr/local/bin/nucleus-workload-probe --run-child; r=$?; \
+         /usr/local/bin/nucleus-egress-probe; e=$?; \
+         /usr/local/bin/nucleus-adversary-probe; a=$?; \
+         printf '%s\\n' '{note}' > /work/{path}; \
+         [ $w -eq 0 ] && [ $s -eq 0 ] && [ $r -eq 0 ] && [ $e -eq 0 ] && [ $a -eq 0 ]",
+        path = live_boot::ARTIFACT_PATH,
+    )
+}
+
+/// The environment the request sets. Named in full, because the receipt
+/// commits to every resolved input and the expectations must name them all.
+fn environment() -> std::collections::BTreeMap<String, String> {
+    [
+        ("HOME", "/work/.home"),
+        ("PATH", "/usr/bin:/bin"),
+        ("LANG", "C"),
+        ("TZ", "UTC"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.into(), v.into()))
+    .collect()
+}
+
+fn execution_spec(
+    manifest: &crate::workload_verification::Manifest,
+    nonce: &str,
+) -> Result<serde_json::Value> {
+    let digest = |name: &str| -> Result<String> {
+        let input = manifest
+            .files
+            .get(name)
+            .with_context(|| format!("host manifest has no {name}"))?;
+        Ok(format!("sha-256:{}", input.sha256.to_ascii_lowercase()))
+    };
+    Ok(json!({
+        "apiVersion":"nucleus/v1", "kind":"Pod",
+        "metadata":{"name":"live-boot-evidence"},
+        "spec":{
+            "work_dir":"/work", "timeout_seconds":900,
+            "policy":{"type":"profile", "name":"demo"},
+            "network":{"allow":[], "deny":[]},
+            "workload":{
+                "command":"/bin/sh", "args":["-c", workload_script(nonce)],
+                "uid":65534,
+                "env":environment(),
+                "artifacts":{(live_boot::ARTIFACT_NAME):live_boot::ARTIFACT_PATH},
+            },
+            "image":{
+                "kernel_path":nucleus_spec::microvm_host::guest_kernel_path(),
+                "rootfs_path":nucleus_spec::microvm_host::guest_rootfs_path(),
+                "kernel_digest":digest(nucleus_spec::tier2_artifacts::GUEST_KERNEL_FILE)?,
+                "rootfs_digest":digest(nucleus_spec::tier2_artifacts::GUEST_ROOTFS_FILE)?,
+                "read_only":true,
+            },
+            "vsock":{"guest_cid":3,"port":5005},
+            "seccomp":{"mode":"default"},
+        }
+    }))
+}
+
+fn millis(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn sha256_file(path: &Path) -> Result<String> {
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+/// The executable a running process was started from, as bytes that ran.
+fn process_exe(pid: u32, path: &str) -> Result<Measured> {
+    let link = PathBuf::from(format!("/proc/{pid}/exe"));
+    let exe = std::fs::read_link(&link)
+        .with_context(|| format!("reading {}", link.display()))?
+        .display()
+        .to_string();
+    Ok(Measured {
+        path: path.into(),
+        sha256: sha256_file(&link)?,
+        how: MeasuredHow::ProcessExe { pid, exe },
+    })
+}
+
+/// The Firecracker process serving `pod`: the jailer passes the pod id as
+/// `--id`, and the executable is the jail's copy of the configured binary.
+fn firecracker_for(pod: Uuid) -> Result<Measured> {
+    let id = pod.to_string();
+    let mut found = Vec::new();
+    for entry in std::fs::read_dir("/proc")?.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(cmdline) = std::fs::read(entry.path().join("cmdline")) else {
+            continue;
+        };
+        let args: Vec<&[u8]> = cmdline.split(|b| *b == 0).collect();
+        let is_firecracker = args.first().is_some_and(|a| {
+            Path::new(std::str::from_utf8(a).unwrap_or_default())
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("firecracker"))
+        });
+        if is_firecracker && args.iter().any(|a| *a == id.as_bytes()) {
+            found.push(pid);
+        }
+    }
+    match found.as_slice() {
+        [pid] => process_exe(*pid, FIRECRACKER),
+        [] => bail!("no running firecracker process names pod {pod}"),
+        many => bail!("several firecracker processes name pod {pod}: {many:?}"),
+    }
+}
+
+async fn get(node: &Node, url: &str) -> Result<(u16, Vec<u8>)> {
+    let response = node.client.get(url).send().await?;
+    let status = response.status().as_u16();
+    Ok((status, response.bytes().await?.to_vec()))
+}
+
+async fn ok(node: &Node, url: &str) -> Result<Vec<u8>> {
+    let (status, bytes) = get(node, url).await?;
+    ensure!(
+        status == 200,
+        "GET {url}: HTTP {status}: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    Ok(bytes)
+}
+
+async fn create(node: &Node, spec: &serde_json::Value) -> Result<(live::Created, u64)> {
+    let start = Instant::now();
+    let created: live::Created = serde_json::from_slice(
+        &live::body(
+            node.client
+                .post(format!("{}/v1/pods", node.url))
+                .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
+                .json(spec)
+                .send()
+                .await?,
+        )
+        .await?,
+    )?;
+    Ok((created, millis(start)))
+}
+
+async fn cancel(node: &Node, pod: Uuid) -> Result<()> {
+    live::body(
+        node.client
+            .post(format!("{}/v1/pods/{pod}/cancel", node.url))
+            .send()
+            .await?,
+    )
+    .await
+    .map(drop)
+}
+
+/// Run `work` against `pod`, then cancel it whatever happened; a failed
+/// cancellation is never hidden behind a failed `work`.
+async fn then_cancel<T>(
+    node: &Node,
+    pod: Uuid,
+    work: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let result = work.await;
+    match (result, cancel(node, pod).await) {
+        (Ok(v), Ok(())) => Ok(v),
+        (Err(e), Ok(())) => Err(e.context(format!("pod {pod} cancelled"))),
+        (result, Err(e)) => bail!(
+            "pod {pod} cancellation failed: {e}; collection: {:?}",
+            result.err()
+        ),
+    }
+}
+
+struct Execution {
+    pod: Uuid,
+    create_ms: u64,
+    ready_ms: u64,
+    exit_ms: u64,
+    firecracker: Measured,
+    node_evidence: NodeEvidence,
+}
+
+async fn execution(node: &Node, out: &Path, files: &Files, nonce: &str) -> Result<Execution> {
+    let manifest =
+        tokio::task::spawn_blocking(crate::workload_verification::installed_manifest).await??;
+    let spec = execution_spec(&manifest, nonce)?;
+    std::fs::write(out.join(&files.spec), serde_json::to_vec_pretty(&spec)?)?;
+    std::fs::write(
+        out.join(&files.environment_inputs),
+        serde_json::to_vec_pretty(&environment())?,
+    )?;
+    let selection = json!({(live_boot::ARTIFACT_NAME): live_boot::ARTIFACT_PATH});
+    std::fs::write(
+        out.join(&files.artifact_selection),
+        serde_json::to_vec_pretty(&selection)?,
+    )?;
+    let started = Instant::now();
+    let (created, create_ms) = create(node, &spec).await?;
+    let pod = created.id;
+    then_cancel(node, pod, async {
+        let firecracker = firecracker_for(pod)?;
+        let base = format!("{}/v1/pods/{pod}", node.url);
+        let admission = ok(node, &format!("{base}/workload-admission")).await?;
+        std::fs::write(out.join(&files.admission), admission)?;
+        let mut ready_ms = None;
+        let exit_ms = tokio::time::timeout(Duration::from_secs(600), async {
+            loop {
+                let (status, bytes) = get(node, &format!("{base}/workload-result")).await?;
+                if status == 200 {
+                    ready_ms.get_or_insert_with(|| millis(started));
+                    match serde_json::from_slice::<WorkloadResult>(&bytes)? {
+                        WorkloadResult::Exited { .. } => {
+                            return Ok::<_, anyhow::Error>(millis(started));
+                        }
+                        WorkloadResult::Running => {}
+                        WorkloadResult::NotConfigured => bail!("the workload was not configured"),
+                        WorkloadResult::Unavailable { reason } => {
+                            bail!("the workload is unavailable: {reason}")
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for the posture workload to exit")??;
+        let ready_ms = ready_ms.context("the supervisor never answered")?;
+        let bundle = live::body(
+            node.client
+                .post(format!("{base}/execution-receipt"))
+                .json(&json!({"artifacts": selection.clone()}))
+                .send()
+                .await?,
+        )
+        .await?;
+        std::fs::write(out.join(&files.artifacts_bundle), &bundle)?;
+        let bundle: serde_json::Value = serde_json::from_slice(&bundle)?;
+        let receipt = bundle
+            .get("receipt")
+            .context("artifact bundle has no receipt")?;
+        std::fs::write(
+            out.join(&files.receipt),
+            serde_json::to_vec_pretty(receipt)?,
+        )?;
+        for (stream, file) in [("stdout", &files.stdout), ("stderr", &files.stderr)] {
+            let bytes = ok(node, &format!("{base}/workload-logs/{stream}")).await?;
+            std::fs::write(out.join(file), bytes)?;
+        }
+        // What the receipt says about the platform: read only to fetch the
+        // document it names. Appraising it is the appraiser's job.
+        let receipt: nucleus_receipt::Receipt = serde_json::from_value(receipt.clone())?;
+        let claim = receipt
+            .projections
+            .iter()
+            .find_map(|p| match p {
+                nucleus_receipt::Projection::Ci(body) => Some(body.clone()),
+                _ => None,
+            })
+            .context("receipt carries no execution claim")?;
+        let claim: nucleus_ci_verdict::execution::ExecutionClaim = serde_json::from_value(claim)?;
+        let node_evidence = match claim.node_platform {
+            nucleus_ci_verdict::execution::NodePlatform::Unattested { reason } => {
+                NodeEvidence::Unattested { reason }
+            }
+            nucleus_ci_verdict::execution::NodePlatform::Evidence {
+                evidence_sha256,
+                epoch,
+            } => {
+                let file = "node-evidence.json".to_string();
+                let bytes = ok(
+                    node,
+                    &format!("{}/v1/node/evidence/{evidence_sha256}", node.url),
+                )
+                .await?;
+                std::fs::write(out.join(&file), bytes)?;
+                NodeEvidence::Evidence {
+                    file,
+                    sha256: evidence_sha256,
+                    epoch,
+                }
+            }
+        };
+        Ok(Execution {
+            pod,
+            create_ms,
+            ready_ms,
+            exit_ms,
+            firecracker,
+            node_evidence,
+        })
+    })
+    .await
+}
+
+async fn effect(node: &Node, out: &Path, files: &Files, nonce: &str) -> Result<(Uuid, u64)> {
+    let (created, create_ms) = create(node, &live::effect_pod_spec(&node.upstream)).await?;
+    let pod = created.id;
+    then_cancel(node, pod, async {
+        live::relay(&created.proxy_addr, nonce).await?;
+        let dir = node.state.join("pods").join(pod.to_string());
+        let outcomes = dir.join(nucleus_spec::host_effect::outcome::LOG_FILE);
+        // The response can reach the guest just before the durable outcome append.
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match std::fs::read_to_string(&outcomes) {
+                    Ok(s) if !s.trim().is_empty() => return Ok::<_, anyhow::Error>(()),
+                    Ok(_) => {}
+                    Err(e) => return Err(e.into()),
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .context("the host recorded no outcome")??;
+        std::fs::copy(
+            dir.join(nucleus_spec::host_effect::LOG_FILE),
+            out.join(&files.host_effects),
+        )?;
+        std::fs::copy(&outcomes, out.join(&files.host_effect_outcomes))?;
+        Ok((pod, create_ms))
+    })
+    .await
+}
+
+async fn collect(
+    node: &Node,
+    bins: &Path,
+    out: &Path,
+    nonce: &str,
+    started: Instant,
+    node_ready_ms: u64,
+) -> Result<()> {
+    let files = Files::standard();
+    let key = live::host_key(node, bins).await?;
+    std::fs::write(out.join(&files.host_key), format!("{key}\n"))?;
+    let pid = node.pid().context("the fixture node has no pid")?;
+    let node_bin = process_exe(pid, "/usr/local/bin/nucleus-node")?;
+    let run = execution(node, out, &files, nonce).await;
+    // The console is diagnostic as much as it is evidence: save it on failure too.
+    if let Ok(run) = &run {
+        let console = node
+            .state
+            .join("pods")
+            .join(run.pod.to_string())
+            .join("firecracker.log");
+        std::fs::copy(&console, out.join(&files.guest_console))
+            .with_context(|| format!("copying {}", console.display()))?;
+    }
+    let run = run?;
+    let (effect_pod, effect_pod_create_ms) = effect(node, out, &files, nonce).await?;
+    let jailer = Measured {
+        path: JAILER.into(),
+        sha256: sha256_file(Path::new(JAILER))?,
+        how: MeasuredHow::ConfiguredFile,
+    };
+    let collection = Collection {
+        schema: live_boot::SCHEMA.into(),
+        nonce: nonce.into(),
+        execution_pod: run.pod.to_string(),
+        effect_pod: effect_pod.to_string(),
+        files,
+        measured: vec![node_bin, run.firecracker, jailer],
+        node_evidence: run.node_evidence,
+        timings: live_boot::Timings {
+            node_ready_ms,
+            pod_create_ms: run.create_ms,
+            guest_proxy_ready_ms: run.ready_ms,
+            workload_exit_ms: run.exit_ms,
+            effect_pod_create_ms,
+            total_ms: millis(started),
+        },
+    };
+    std::fs::write(
+        out.join(live_boot::COLLECTION_FILE),
+        serde_json::to_vec_pretty(&collection)?,
+    )?;
+    Ok(())
+}
+
+fn var(name: &str) -> Result<String> {
+    let value = std::env::var(name).with_context(|| format!("missing {name}"))?;
+    ensure!(!value.is_empty(), "empty {name}");
+    Ok(value)
+}
+
+#[tokio::test]
+#[ignore = "requires a Linux KVM host; run cargo xtask live-boot-evidence"]
+async fn collect_live_boot_evidence() -> Result<()> {
+    ensure!(
+        cfg!(target_os = "linux"),
+        "live boot evidence requires Linux"
+    );
+    let bins = PathBuf::from(var("NUCLEUS_LIVE_BOOT_BIN_DIR")?);
+    let node_bin = PathBuf::from(var("NUCLEUS_LIVE_BOOT_NODE_BIN")?);
+    let out = PathBuf::from(var("NUCLEUS_LIVE_BOOT_OUT")?);
+    let witness = PathBuf::from(var("NUCLEUS_LIVE_BOOT_WITNESS")?);
+    let nonce = var("NUCLEUS_LIVE_BOOT_NONCE")?;
+    // Extra node arguments, one per line (the node-evidence flags when the
+    // host has a TPM). Absent means none.
+    let extra: Vec<String> = std::env::var("NUCLEUS_LIVE_BOOT_NODE_ARGS")
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect();
+    ensure!(out.is_dir(), "{} is not a directory", out.display());
+    let started = Instant::now();
+    let mut node = Node::start_with(&node_bin, &nonce, &extra).await?;
+    let node_ready_ms = millis(started);
+    let result = collect(&node, &bins, &out, &nonce, started, node_ready_ms).await;
+    let log = node
+        .log()
+        .unwrap_or_else(|e| format!("could not read the node log: {e}"));
+    let diagnostics = result.as_ref().err().map(|_| node.diagnostics());
+    node.stop().await?;
+    std::fs::write(out.join(Files::standard().node_log), log)?;
+    if let Some(diagnostics) = diagnostics {
+        result.context(diagnostics)?;
+    }
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(witness)?;
+    file.write_all(nonce.as_bytes())?;
+    file.sync_all()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_workload_runs_every_probe_and_fails_if_any_failed() {
+        let script = workload_script("abc");
+        for probe in [
+            "nucleus-workload-probe;",
+            "nucleus-workload-probe --syscall-filter;",
+            "nucleus-workload-probe --run-child;",
+            "nucleus-egress-probe;",
+            "nucleus-adversary-probe;",
+        ] {
+            assert!(script.contains(probe), "{probe} missing from {script}");
+        }
+        for status in ["$w", "$s", "$r", "$e", "$a"] {
+            assert!(script.contains(&format!("[ {status} -eq 0 ]")), "{status}");
+        }
+        assert!(script.contains("'live-boot-evidence abc' > /work/live-boot-note.txt"));
+    }
+}
