@@ -119,21 +119,30 @@ impl Adapter {
         Ok(Self { client, upstream })
     }
 
-    fn destination(&self, uri: &axum::http::Uri) -> Result<String, &'static str> {
-        // The broker protocol currently carries a relative path, not a query
-        // or arbitrary method. Refuse unsupported syntax rather than change it.
-        if uri.scheme().is_some() || uri.authority().is_some() || uri.query().is_some() {
-            return Err("only origin-form paths without queries are supported");
+    fn destination(&self, uri: &axum::http::Uri) -> Result<String, String> {
+        if uri.scheme().is_some() || uri.authority().is_some() {
+            return Err("only origin-form paths are supported".into());
         }
         let path = uri
             .path()
             .strip_prefix('/')
             .ok_or("absolute path required")?;
         if !path.split('/').all(safe_segment) {
-            return Err("path must contain plain nonempty segments without traversal or escapes");
+            return Err(
+                "path must contain plain nonempty segments without traversal or escapes".into(),
+            );
         }
+        // The query rule the tool-proxy and the host also apply, so a refusal
+        // here is the refusal the host would give, made before anything leaves.
+        let query = match uri.query() {
+            None => String::new(),
+            Some(query) => {
+                nucleus_spec::workload_egress::check_query(query).map_err(|r| r.to_string())?;
+                format!("?{query}")
+            }
+        };
         Ok(format!(
-            "http://workload-door/v1/egress/{}/{path}",
+            "http://workload-door/v1/egress/{}/{path}{query}",
             self.upstream
         ))
     }
@@ -149,30 +158,38 @@ fn safe_segment(segment: &str) -> bool {
 }
 
 async fn forward(State(adapter): State<Adapter>, request: Request) -> Response {
-    if request.method() != Method::POST {
-        return (StatusCode::METHOD_NOT_ALLOWED, "broker supports POST only").into_response();
+    // GET and POST: the closed set the host performs (smart-HTTP version
+    // control needs the GET for its ref advertisement).
+    let method = request.method().clone();
+    if method != Method::POST && method != Method::GET {
+        return (
+            StatusCode::METHOD_NOT_ALLOWED,
+            "broker supports GET and POST only",
+        )
+            .into_response();
     }
     let destination = match adapter.destination(request.uri()) {
         Ok(url) => url,
         Err(reason) => return (StatusCode::BAD_REQUEST, reason).into_response(),
     };
     let (parts, body) = request.into_parts();
-    let mut outgoing = adapter.client.post(destination);
-    // No Authorization, Cookie, Host, identity or proxy-approval headers cross
-    // this boundary. Credentials and authentication belong to the host/door.
-    for name in [
-        header::CONTENT_TYPE.as_str(),
-        "x-nucleus-approval-wait-seconds",
-    ] {
-        if let Some(value) = parts.headers.get(name) {
+    let mut outgoing = adapter.client.request(method.clone(), destination);
+    // No Authorization, Cookie, Host, identity or forwarding headers cross this
+    // boundary: `guest_may_propose_header` is the rule the door and the host
+    // apply too, and the host then forwards only what the operator's registry
+    // lists for this upstream. The approval wait is the door's own header.
+    for (name, value) in &parts.headers {
+        let name = name.as_str();
+        let protocol = name == header::CONTENT_TYPE.as_str()
+            || nucleus_spec::workload_egress::guest_may_propose_header(name);
+        if protocol || name == "x-nucleus-approval-wait-seconds" {
             outgoing = outgoing.header(name, value);
         }
     }
-    let response = match outgoing
-        .body(reqwest::Body::wrap_stream(body.into_data_stream()))
-        .send()
-        .await
-    {
+    if method == Method::POST {
+        outgoing = outgoing.body(reqwest::Body::wrap_stream(body.into_data_stream()));
+    }
+    let response = match outgoing.send().await {
         Ok(response) => response,
         Err(_) => {
             return (StatusCode::BAD_GATEWAY, "workload broker transport failed").into_response();

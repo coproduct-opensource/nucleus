@@ -1,0 +1,19 @@
+# Node-side operator registry entry for a git remote (`nucleus-node --upstreams`).
+#
+# The pod spec selects this entry by `name` under `credentialed_egress`; the
+# token never enters the pod.
+
+[[upstream]]
+name         = "git-remote"
+base_url     = "https://forge.example/"
+header       = "authorization"
+value_prefix = "Bearer "
+# Operator tariff per authorized dispatch attempt (micro-USD). Explicit zero
+# declares a free attempt; omitting it leaves the entry unpriced and refused.
+call_charge_micro_usd = 0
+# Protocol headers the workload's git client may set. `content-encoding` is
+# needed because git compresses large fetch negotiation bodies.
+request_headers = ["accept", "git-protocol", "content-encoding"]
+
+[upstream.credential.env]
+var = "GIT_REMOTE_TOKEN"

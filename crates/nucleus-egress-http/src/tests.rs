@@ -90,7 +90,7 @@ fn configuration_and_paths_cannot_select_another_transport_or_door_route() {
         "/v1/../read",
         "/v1/%2e%2e/read",
         "/v1%2fread",
-        "/v1/run?q=x",
+        "/v1/run?access_token=x",
         "http://outside.invalid/run",
     ] {
         assert!(
@@ -103,6 +103,89 @@ fn configuration_and_paths_cannot_select_another_transport_or_door_route() {
             .destination(&"/v1/chat/completions".parse().unwrap())
             .unwrap(),
         "http://workload-door/v1/egress/api/v1/chat/completions"
+    );
+    assert_eq!(
+        adapter
+            .destination(
+                &"/org/repo.git/info/refs?service=git-upload-pack"
+                    .parse()
+                    .unwrap()
+            )
+            .unwrap(),
+        "http://workload-door/v1/egress/api/org/repo.git/info/refs?service=git-upload-pack"
+    );
+}
+
+/// A GET with its query and protocol headers crosses to the door as a GET
+/// (#3210), without a body; a credential header does not cross, nor does a
+/// credential-looking query, which is refused by name before the door sees it.
+#[tokio::test]
+async fn a_get_with_a_query_crosses_as_a_get_and_a_credential_query_does_not() {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let capture = seen.clone();
+    let fixture = serve(Router::new().fallback(move |request: Request| {
+        let capture = capture.clone();
+        async move {
+            let (parts, body) = request.into_parts();
+            let body = to_bytes(body, 1024).await.unwrap();
+            capture.lock().unwrap().push((
+                parts.method,
+                parts.uri.to_string(),
+                parts.headers,
+                body,
+            ));
+            (
+                [(
+                    header::CONTENT_TYPE,
+                    "application/x-git-upload-pack-advertisement",
+                )],
+                "refs",
+            )
+        }
+    }))
+    .await;
+    let response = client()
+        .get(format!(
+            "{}/org/repo.git/info/refs?service=git-upload-pack",
+            fixture.url
+        ))
+        .header("git-protocol", "version=2")
+        .header(header::AUTHORIZATION, "Basic must-not-forward")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/x-git-upload-pack-advertisement"
+    );
+    assert_eq!(response.text().await.unwrap(), "refs");
+    {
+        let seen = seen.lock().unwrap();
+        let (method, uri, headers, body) = &seen[0];
+        assert_eq!(*method, Method::GET);
+        assert_eq!(
+            uri,
+            "/v1/egress/model-api/org/repo.git/info/refs?service=git-upload-pack"
+        );
+        assert_eq!(headers["git-protocol"], "version=2");
+        assert!(!headers.contains_key(header::AUTHORIZATION));
+        assert!(body.is_empty());
+    }
+    let refused = client()
+        .get(format!(
+            "{}/org/repo.git/info/refs?service=git-upload-pack&access_token=abc",
+            fixture.url
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert!(refused.text().await.unwrap().contains("\"access_token\""));
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        1,
+        "the refused call reached the door"
     );
 }
 
@@ -202,12 +285,12 @@ async fn refusals_and_redirects_are_returned_without_following_or_contacting_ano
         assert!(!response.headers().contains_key(header::LOCATION));
         assert_eq!(response.text().await.unwrap(), "refused");
         assert_eq!(*calls.lock().unwrap(), 1);
-        let get = client()
-            .get(format!("{}/invoke", fixture.url))
+        let put = client()
+            .put(format!("{}/invoke", fixture.url))
             .send()
             .await
             .unwrap();
-        assert_eq!(get.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(put.status(), StatusCode::METHOD_NOT_ALLOWED);
         assert_eq!(*calls.lock().unwrap(), 1);
     }
 }

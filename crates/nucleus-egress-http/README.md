@@ -34,7 +34,14 @@ read `/proc/net/tcp`, which means it runs only on Linux.
 The outgoing client is fixed to the runtime-provided Unix workload door, with
 redirects and environment proxies disabled. Requests select paths under the
 listener's own upstream. They cannot select a TCP destination, another upstream
-or another door route. The adapter holds no provider credentials. The door and
+or another door route. GET and POST are forwarded, with a query held to the rule
+the host applies (`nucleus_spec::workload_egress::check_query`: bounded, and no
+credential-looking parameter names). Request headers are forwarded only when
+`guest_may_propose_header` admits them, which never includes `Authorization`,
+`Cookie` or `Proxy-Authorization`; the host then forwards only the names the
+operator's registry lists for that upstream. That is enough for a git client to
+fetch and push over smart HTTP: see
+[`examples/egress-git-remote`](../../examples/egress-git-remote/README.md). The adapter holds no provider credentials. The door and
 host broker keep policy, metering and approval responsibility.
 
 The optional child is the declared harness, launched inside the existing
