@@ -67,23 +67,55 @@ pub struct Kernel {
     pub sha256: &'static str,
 }
 
-/// The guest kernel for aarch64 hosts.
+/// The guest kernel for aarch64 hosts: Firecracker CI `6.1.186`, built with
+/// Landlock (`CONFIG_SECURITY_LANDLOCK=y`, `landlock` first in `CONFIG_LSM`).
 ///
-/// The `firecracker-ci/v1.13` prefix, not a later one: `v1.14` has no aarch64
-/// `vmlinux-6.1` object (probed — 404), which is exactly the pin the published
-/// Lima template carried. Bucket layout is not a version ladder, so "use the
-/// newest path" is not a rule that holds here; list it with
-/// `?list-type=2&prefix=firecracker-ci/` before changing this.
+/// # Why this build (#2696 P3, S4)
+///
+/// The previous pin, `firecracker-ci/v1.13/<arch>/vmlinux-6.1.141`, had
+/// Landlock compiled out: booted, `landlock_create_ruleset` answered `ENOSYS`
+/// (`docs/findings/p3-workload-confinement-spike.md`). So did every versioned
+/// prefix after it (`v1.14`, `v1.15`). Upstream turned Landlock on in its 6.1
+/// guest config on 2026-09-01, and those configs ship only under the bucket's
+/// DATED prefixes, `firecracker-ci/YYYYMMDD-<sha>-0/`. This is the newest one
+/// on the 6.1 line, the same line as the old pin with a near-superset config:
+/// the x_tables options `fence.rs` speaks, vsock, virtio, ext4 and seccomp
+/// are all still `y`. Booted, it reports Landlock ABI 2.
+///
+/// Bucket layout is not a version ladder, so "use the newest path" is not a
+/// rule that holds here; list it with `?list-type=2&prefix=firecracker-ci/`
+/// and read the `.config` beside the image before changing this.
+///
+/// # Why the upstream URL and not a nucleus mirror
+///
+/// A dated prefix is CI output, and nothing promises it stays. So every
+/// release from this one on also publishes these exact bytes as a signed
+/// asset (`cargo xtask guest-kernel-mirror`, [`Kernel::mirror_asset_name`]).
+/// The pin cannot NAME that asset yet: it exists only once a tag has built
+/// it, and this pin has to work before then. The digest, not the URL, is the
+/// binding, so moving `url` to the mirror after the next release changes
+/// where the bytes come from and not which bytes are accepted.
 pub const KERNEL_AARCH64: Kernel = Kernel {
-    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141",
-    sha256: "69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31adde44",
+    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/aarch64/vmlinux-6.1.186",
+    sha256: "5699d939bd168c1fcc4aa8c217344f00b8cf2b7dffbf973af3d9440ce766a6bd",
 };
 
-/// The guest kernel for x86_64 hosts. Same bucket prefix as [`KERNEL_AARCH64`].
+/// The guest kernel for x86_64 hosts. Same dated prefix and kernel version as
+/// [`KERNEL_AARCH64`], with the same Landlock configuration.
 pub const KERNEL_X86_64: Kernel = Kernel {
-    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/x86_64/vmlinux-6.1.141",
-    sha256: "b36a4a1b10f33b9cfdcde3d1a787d9c090556a3edb211cd06d1f3f9a6c7e8724",
+    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/x86_64/vmlinux-6.1.186",
+    sha256: "21c1b167482f3c10428b8fd5e08bbeea14258ce74479730712dc11a4f34d2029",
 };
+
+impl Kernel {
+    /// The name of the release asset that mirrors this kernel's bytes for
+    /// release `version` on `arch` (`uname -m` spelling). One function, used by
+    /// the release workflow that publishes it and by whatever later fetches
+    /// it (ADR 0007 G-1).
+    pub fn mirror_asset_name(version: &str, arch: &str) -> String {
+        format!("nucleus-guest-kernel-{version}-{arch}.vmlinux")
+    }
+}
 
 /// The kernel for a Linux architecture name as `uname -m` reports it.
 pub fn kernel_for(arch: &str) -> Option<Kernel> {
@@ -729,6 +761,26 @@ mod tests {
     fn the_two_kernels_are_different_objects() {
         assert_ne!(KERNEL_AARCH64.url, KERNEL_X86_64.url);
         assert_ne!(KERNEL_AARCH64.sha256, KERNEL_X86_64.sha256);
+    }
+
+    /// Each pin fetches its own architecture's image, and both are the same
+    /// kernel build: a re-pin that moves one architecture and forgets the other
+    /// would boot two different kernels (one without Landlock) under one tree.
+    #[test]
+    fn both_kernels_are_the_same_build_for_their_own_architecture() {
+        for (arch, k) in [("aarch64", KERNEL_AARCH64), ("x86_64", KERNEL_X86_64)] {
+            assert!(k.url.contains(&format!("/{arch}/")), "{arch}: {}", k.url);
+        }
+        let build = |k: Kernel| {
+            let (prefix, file) = k.url.rsplit_once('/').expect("a path");
+            let (prefix, _arch) = prefix.rsplit_once('/').expect("an arch segment");
+            (prefix.to_string(), file.to_string())
+        };
+        assert_eq!(build(KERNEL_AARCH64), build(KERNEL_X86_64));
+        assert_ne!(
+            Kernel::mirror_asset_name("2.6.0", "aarch64"),
+            Kernel::mirror_asset_name("2.6.0", "x86_64")
+        );
     }
 
     /// A pinned guest layer must be a digest the spec parser accepts, or the

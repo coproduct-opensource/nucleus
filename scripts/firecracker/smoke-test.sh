@@ -27,13 +27,16 @@
 set -eu
 
 CACHE=/var/cache/nucleus-smoke
-# The v1.13 artifacts. Note the older v1.12 paths and the `ubuntu-24.04.ext4`
-# name both 404 now — this was found the hard way; list the bucket with
-# ?list-type=2&prefix=firecracker-ci/ if these ever move again.
-BASE=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13
+# The dated 20260930 artifacts: the kernel nucleus_spec::tier2_artifacts pins
+# (6.1.186, Landlock on) and the stock rootfs beside it. The versioned v1.13
+# prefix this used before has Landlock compiled out of its kernel. Note the
+# older v1.12 paths and the `ubuntu-24.04.ext4` name both 404 now -- this was
+# found the hard way; list the bucket with ?list-type=2&prefix=firecracker-ci/
+# if these ever move again.
+BASE=https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0
 case "$(uname -m)" in
-  aarch64) ARCH=aarch64; KERNEL=vmlinux-6.1.141 ;;
-  x86_64)  ARCH=x86_64;  KERNEL=vmlinux-6.1.141 ;;
+  aarch64) ARCH=aarch64; KERNEL=vmlinux-6.1.186 ;;
+  x86_64)  ARCH=x86_64;  KERNEL=vmlinux-6.1.186 ;;
   *) echo "smoke-test: unsupported arch $(uname -m)" >&2; exit 2 ;;
 esac
 

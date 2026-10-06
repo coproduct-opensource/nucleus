@@ -62,7 +62,7 @@ pub enum Arch {
 
 impl Arch {
     /// The name in the upstream Firecracker archive and in release asset names.
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Aarch64 => "aarch64",
             Self::X86_64 => "x86_64",
