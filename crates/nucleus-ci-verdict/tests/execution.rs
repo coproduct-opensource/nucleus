@@ -1,6 +1,7 @@
 use ed25519_dalek::SigningKey;
 use nucleus_ci_verdict::execution::{
-    Backend, ExecutionClaim, ExecutionError, ExecutionSchema, ExpectedExecution, verify_execution,
+    Backend, ExecutionClaim, ExecutionError, ExecutionSchema, ExpectedExecution, NodePlatform,
+    verify_execution,
 };
 use nucleus_receipt::{Projection, Receipt, Session};
 
@@ -125,7 +126,55 @@ fn claim() -> ExecutionClaim {
         environment_inputs_sha256: DIGEST.into(),
         environment_complete_sha256: DIGEST.into(),
         artifacts: Default::default(),
+        node_platform: NodePlatform::Evidence {
+            evidence_sha256: DIGEST.into(),
+            epoch: 4,
+        },
     }
+}
+
+#[test]
+fn the_node_platform_is_signed_and_reported_not_required() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let verified = verify_execution(&sign(&claim(), &key), &expected(&public)).unwrap();
+    assert_eq!(
+        verified.claim().node_platform,
+        NodePlatform::Evidence {
+            evidence_sha256: DIGEST.into(),
+            epoch: 4
+        }
+    );
+    let mut unattested = claim();
+    unattested.node_platform = NodePlatform::Unattested {
+        reason: "no TPM".into(),
+    };
+    assert!(verify_execution(&sign(&unattested, &key), &expected(&public)).is_ok());
+}
+
+#[test]
+fn a_malformed_evidence_digest_is_refused() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut c = claim();
+    c.node_platform = NodePlatform::Evidence {
+        evidence_sha256: "not-a-digest".into(),
+        epoch: 1,
+    };
+    assert_eq!(
+        verify_execution(&sign(&c, &key), &expected(&public)).unwrap_err(),
+        ExecutionError::InvalidDigest("node_platform.evidence_sha256")
+    );
+}
+
+#[test]
+fn a_receipt_from_before_node_evidence_reads_as_unattested() {
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let public = key.verifying_key().to_bytes();
+    let mut body = serde_json::to_value(claim()).unwrap();
+    body.as_object_mut().unwrap().remove("node_platform");
+    let verified = verify_execution(&sign_body(body, &key, 150), &expected(&public)).unwrap();
+    assert_eq!(verified.claim().node_platform, NodePlatform::not_recorded());
 }
 
 fn sign_body(body: serde_json::Value, key: &SigningKey, issued: u64) -> Receipt {

@@ -53,6 +53,7 @@ mod keys;
 mod lockdown;
 mod mediation_receipt_collector;
 mod node_capacity;
+mod node_evidence;
 mod pod_api;
 mod pod_authority;
 mod pod_boot_identity;
@@ -158,6 +159,8 @@ struct Args {
     pod_ceilings: pod_resources::PodCeilingArgs,
     #[command(flatten)]
     node_capacity: node_capacity::CapacityArgs,
+    #[command(flatten)]
+    node_evidence: node_evidence::NodeEvidenceArgs,
     /// Driver backend.
     #[arg(
         long,
@@ -523,6 +526,9 @@ struct NodeState {
     /// Nothing here scopes a sandbox — the reputation lookup that once did was
     /// deleted in #2512.
     trust_gate: trust_gate::TrustGateConfig,
+    /// The node's platform evidence (TPM quote bound to the executor key, or
+    /// an explicit `Unattested`), recorded on every execution receipt (#2706).
+    node_platform: Arc<node_evidence::NodePlatformSource>,
     /// Per-pod certificate authority: proof of caller authority at
     /// pod-create, budget conserved across spawn (pod_authority.rs).
     authority: Arc<pod_authority::PodAuthority>,
@@ -821,6 +827,16 @@ async fn main() -> Result<(), ApiError> {
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
     let memory = Arc::new(args.memory.load(&host_roots)?);
+    let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir);
+    let node_platform = Arc::new(
+        node_evidence::NodePlatformSource::start(
+            &args.node_evidence,
+            &args.state_dir,
+            trust_gate.executor_signing_key.verifying_key().to_bytes(),
+            args.authority.federation_issuer.is_some(),
+        )
+        .map_err(ApiError::Driver)?,
+    );
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         state_dir: args.state_dir.clone(),
@@ -894,7 +910,8 @@ async fn main() -> Result<(), ApiError> {
         container_proxy_unix: args.container_proxy_unix,
         container_pool,
         docker,
-        trust_gate: trust_gate::TrustGateConfig::from_env(&args.state_dir),
+        trust_gate,
+        node_platform,
         authority: Arc::new(authority),
         #[cfg(target_os = "linux")]
         decision_epochs: Arc::new(host_decide::EpochSource::seeded()),
@@ -952,6 +969,7 @@ async fn main() -> Result<(), ApiError> {
     // trust-service can only verify those signatures if it learned the key from
     // this enrollment first. A no-op when the trust gate is disabled.
     trust_gate::register_executor_pubkey(&state.trust_gate, &state.http_client).await;
+    state.node_platform.spawn_epochs();
     // Routes authenticated by the node mTLS middleware
     let authenticated_routes = Router::new()
         .route("/v1/pods", post(create_pod).get(pod_api::list_pods))
@@ -975,6 +993,7 @@ async fn main() -> Result<(), ApiError> {
             post(art12_collector::art12_append),
         )
         .route("/v1/health", get(health))
+        .merge(node_evidence::routes())
         .with_state(state.clone());
 
     let app = public_routes.merge(authenticated_routes);

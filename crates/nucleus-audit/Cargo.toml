@@ -10,6 +10,9 @@ anyhow = { workspace = true }
 base64 = { workspace = true }
 nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
 nucleus-receipt = { path = "../nucleus-receipt" }
+# The node-platform half of the composite verdict (#2706): the verifier only,
+# no attester.
+nucleus-node-evidence = { path = "../nucleus-node-evidence" }
 clap = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }

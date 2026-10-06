@@ -1,7 +1,7 @@
 # ADR 0011 — A receipt carries third-party-verifiable evidence of what booted the node that signed it
 
-- Status: **accepted** (2026-10-05). PR-1 (the evidence format and the verifier) lands with
-  this ADR; PR-2 (the node attester and receipt binding) and PR-3 (a live run) follow.
+- Status: **accepted** (2026-10-05). PR-1 lands the evidence format and the verifier with
+  this ADR. PR-2 adds the node attester and the receipt binding. PR-3, a live run, follows.
 - Tracks: #2706 (L-5, attestation; North Star confidentiality row C9, "verify from the
   outside").
 - Rests on: the measured facts in `docs/findings/attested-node-gcp-spike.md` (draft PR #3224).
@@ -149,6 +149,30 @@ no C dependency): `NV_Read` of the provider's AK template, `CreatePrimary` under
 endorsement hierarchy, `PCR_Read`, `Quote`, password sessions only. The marshalling shares
 the verifier's parsers, the verifier is tested against quotes from an independent stack
 (`tpm2-tools`), and the attester is tested by feeding its output to that verifier.
+
+### As built (PR-2)
+
+- `nucleus-node --node-evidence-tpm /dev/tpmrm0 [--node-evidence-ak-template
+  nv:<index>|default-ecc] [--node-evidence-anchor operator:<source>|none]
+  [--node-evidence-epoch-secs N]`. Unset, every receipt records
+  `Unattested { reason }`. Set, an unusable TPM or a failed first quote stops startup.
+- Epoch documents are stored under `<state_dir>/node-evidence/<sha256>.json`, and the
+  counter persists across restarts. A failed re-quote keeps the previous epoch in force,
+  so receipts signed in the meantime age into `Expired` and never anything stronger.
+- Public routes, since the evidence is not secret: `GET /v1/node/evidence` (the epoch in
+  force), `GET /v1/node/evidence/{sha256}` (by the digest a receipt names), and
+  `POST /v1/node/evidence/challenge {"nonce": hex}` (one at a time; a concurrent request
+  gets 429).
+- `ExecutionClaim.node_platform` is `Unattested { reason } | Evidence { evidence_sha256,
+  epoch }` and is signed inside the receipt. A receipt from before this field reads as
+  `Unattested`.
+- `nucleus-audit verify-node-evidence` exits 0 only for `Attested`. `verify-execution`
+  reports `node_platform.verdict` as a second axis next to authorization, and with
+  `--require-attested` it fails unless the platform is `Attested`. Evidence supplied
+  beside a receipt that says `Unattested` never upgrades it.
+- The admission record does not yet carry the digest; the execution receipt does.
+- The federation binding is the SHA-256 of `serde_json::to_vec(jwks)` from the node's
+  keyring, taken at each quote when `--federation-issuer` is set.
 
 ## Evidence for this decision (PR-1)
 

@@ -4,7 +4,7 @@ use std::process::Command;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use nucleus_ci_verdict::execution::{
-    ArtifactIdentity, Backend, ExecutionClaim, ExecutionSchema, RecordedExecution,
+    ArtifactIdentity, Backend, ExecutionClaim, ExecutionSchema, NodePlatform, RecordedExecution,
 };
 use nucleus_receipt::{Receipt, Session};
 use sha2::{Digest, Sha256};
@@ -42,6 +42,9 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
                 size: artifact.len() as u64,
             },
         )]),
+        node_platform: NodePlatform::Unattested {
+            reason: "test node has no TPM".into(),
+        },
     };
     let now = u64::try_from(
         std::time::SystemTime::now()

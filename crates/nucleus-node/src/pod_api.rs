@@ -1283,6 +1283,9 @@ pub(crate) mod handler_tests {
             container_pool: None,
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
+            node_platform: std::sync::Arc::new(
+                crate::node_evidence::NodePlatformSource::Unattested("test node".into()),
+            ),
             authority,
             #[cfg(target_os = "linux")]
             decision_epochs: Arc::new(crate::host_decide::EpochSource::seeded()),
