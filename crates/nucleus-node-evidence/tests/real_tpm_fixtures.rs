@@ -303,7 +303,7 @@ fn the_cloud_vtpm_quote_for_another_executor_key_is_refused() {
         },
     )
     .unwrap_err();
-    assert_eq!(err, Refusal::BindingMismatch);
+    assert_eq!(err, Refusal::ExecutorKeyMismatch);
 }
 
 #[test]

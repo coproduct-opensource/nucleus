@@ -19,7 +19,7 @@ use crate::eventlog::build::LogBuilder;
 use crate::evidence::{BootLog, EVIDENCE_PROFILE, ImaLog, NodeEvidence, TpmQuote};
 use crate::ima::{ImaLogFormat, build as ima_build};
 use crate::reference::{
-    CmdlineRule, DigestSet, Expect, ImaReference, REFERENCE_PROFILE, ReferenceManifest,
+    CmdlineRule, DigestSet, Expect, ImaReference, ImaScope, REFERENCE_PROFILE, ReferenceManifest,
     ReferenceValues,
 };
 use crate::tpm::{AkPublic, build};
@@ -155,6 +155,7 @@ fn reference() -> ReferenceManifest {
             boot_files: Expect::Required(set(hex::encode(sha256(h.kernel)))),
             kernel_cmdline: Expect::Required(CmdlineRule::Exact(CMDLINE.into())),
             ima: Expect::Required(ImaReference {
+                scope: ImaScope::AllMeasured,
                 allowlist: [(
                     NODE_BIN.to_string(),
                     [hex::encode([0xAAu8; 32])].into_iter().collect(),
@@ -383,7 +384,7 @@ fn evidence_for_another_executor_key_is_refused() {
         },
     )
     .unwrap_err();
-    assert_eq!(err, Refusal::BindingMismatch);
+    assert_eq!(err, Refusal::ExecutorKeyMismatch);
 }
 
 #[test]
@@ -429,6 +430,51 @@ fn the_federation_set_is_part_of_the_binding() {
     )
     .unwrap_err();
     assert_eq!(err, Refusal::QualifyingData);
+}
+
+#[test]
+fn a_federation_mismatch_names_both_sets() {
+    // Quoted for a federating node; the relying party expected none.
+    let fed = KeyBinding {
+        executor_key: binding().executor_key,
+        federation: Federation::JwksSha256([3; 32]),
+    };
+    let e = node(
+        &honest_boot(),
+        &ak(),
+        &fed,
+        Freshness::Challenge {
+            eat_nonce: nonce(1),
+        },
+        AkAnchorClaim::OperatorFetched {
+            source: SOURCE.into(),
+        },
+    );
+    let err = run(&e, challenge(1), &pinned()).unwrap_err();
+    assert_eq!(
+        err,
+        Refusal::FederationMismatch {
+            expected: Federation::NotFederated,
+            bound: Federation::JwksSha256([3; 32]),
+        }
+    );
+    let msg = err.to_string();
+    assert!(msg.contains(&hex::encode([3u8; 32])), "{msg}");
+    assert!(msg.contains("not federated"), "{msg}");
+    // Expecting that set, the same evidence is appraised.
+    let r = reference();
+    let a = appraise(
+        &e,
+        &AppraisalPolicy {
+            expected_binding: &fed,
+            freshness: challenge(1),
+            reference: &r,
+            anchors: &pinned(),
+            now: NOW,
+        },
+    )
+    .unwrap();
+    assert_eq!(a.tier(), &Tier::Attested);
 }
 
 // --------------------------------------------------------- quote integrity
@@ -638,6 +684,125 @@ fn files_measured_after_the_quote_are_not_evidence() {
     let a = run(&e, challenge(1), &pinned()).unwrap();
     assert_eq!(a.tier(), &Tier::Attested);
     assert_eq!(a.ima().unwrap().unquoted_tail, 1);
+}
+
+// ------------------------------------------------------------- IMA scope
+
+const MODULE: &str = "/usr/lib/modules/7.0.0/kernel/net/bridge/bridge.ko";
+
+fn scoped(prefixes: &[&str]) -> ReferenceManifest {
+    let mut r = reference();
+    let Expect::Required(ima) = &mut r.reference_values.ima else {
+        unreachable!("the baseline checks IMA")
+    };
+    ima.scope = ImaScope::PathPrefixes(prefixes.iter().map(|p| p.to_string()).collect());
+    r
+}
+
+fn appraise_against(e: &NodeEvidence, r: &ReferenceManifest) -> crate::Appraisal {
+    appraise(
+        e,
+        &AppraisalPolicy {
+            expected_binding: &binding(),
+            freshness: challenge(1),
+            reference: r,
+            anchors: &pinned(),
+            now: NOW,
+        },
+    )
+    .unwrap()
+}
+
+fn running(binaries: Vec<(&'static str, [u8; 32])>) -> NodeEvidence {
+    let mut boot = honest_boot();
+    boot.binaries = binaries;
+    node(
+        &boot,
+        &ak(),
+        &binding(),
+        Freshness::Challenge {
+            eat_nonce: nonce(1),
+        },
+        AkAnchorClaim::OperatorFetched {
+            source: SOURCE.into(),
+        },
+    )
+}
+
+#[test]
+fn a_platform_module_outside_the_scope_is_listed_not_contested() {
+    let e = running(vec![(MODULE, [0x11; 32]), (NODE_BIN, [0xAA; 32])]);
+    // Baseline first: unscoped, the module the reference never mentions contests.
+    let all = appraise_against(&e, &reference());
+    assert_eq!(all.tier(), &Tier::Contested);
+    assert!(all.ima_not_in_scope().is_empty());
+    // Scoped to the node's install directory, it is named, not judged.
+    let a = appraise_against(&e, &scoped(&["/opt/nucleus/bin"]));
+    assert_eq!(a.tier(), &Tier::Attested, "{:#?}", a.divergences());
+    let listed: Vec<&str> = a.ima_not_in_scope().iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(listed, [MODULE]);
+    let ear = a.to_ear("test", NOW);
+    assert_eq!(
+        ear["submods"]["node"]["nucleus.appraisal"]["ima_not_in_scope"][0]["path"],
+        MODULE
+    );
+}
+
+#[test]
+fn an_unknown_binary_inside_the_scope_is_still_contested() {
+    // A-19: the scope narrows what the reference governs, never what it
+    // forgives inside it.
+    let e = running(vec![
+        (NODE_BIN, [0xAA; 32]),
+        ("/opt/nucleus/bin/implant", [0xCC; 32]),
+        (MODULE, [0x11; 32]),
+    ]);
+    let a = appraise_against(&e, &scoped(&["/opt/nucleus/bin"]));
+    assert_eq!(a.tier(), &Tier::Contested);
+    assert_eq!(
+        a.divergences(),
+        &[Divergence::ImaFileNotAllowed {
+            path: "/opt/nucleus/bin/implant".into(),
+            digest: hex::encode([0xCCu8; 32]),
+        }]
+    );
+    // A replaced node binary in scope contests too.
+    let replaced = running(vec![(NODE_BIN, [0xAB; 32])]);
+    let a = appraise_against(&replaced, &scoped(&["/opt/nucleus/bin"]));
+    assert_eq!(a.tier(), &Tier::Contested);
+}
+
+#[test]
+fn a_required_binary_measured_only_outside_the_scope_is_missing() {
+    // The node binary run from another mount is not the install the
+    // reference names: listed out of scope, and the requirement unmet.
+    let e = running(vec![("/mnt/elsewhere/nucleus-node", [0xAA; 32])]);
+    let a = appraise_against(&e, &scoped(&["/opt/nucleus/bin"]));
+    assert_eq!(a.tier(), &Tier::Contested);
+    assert_eq!(
+        a.divergences(),
+        &[Divergence::ImaRequiredMissing {
+            path: NODE_BIN.into()
+        }]
+    );
+    assert_eq!(a.ima_not_in_scope().len(), 1);
+}
+
+#[test]
+fn an_incoherent_scope_is_not_evaluable_never_attested() {
+    let e = running(vec![(NODE_BIN, [0xAA; 32])]);
+    for r in [scoped(&["/usr/local/bin"]), scoped(&[]), scoped(&["/opt/nucleus/bin/"])] {
+        let a = appraise_against(&e, &r);
+        assert_eq!(a.tier(), &Tier::Contested);
+        assert!(
+            matches!(
+                a.divergences(),
+                [Divergence::NotEvaluable { check: "ima", .. }]
+            ),
+            "{:#?}",
+            a.divergences()
+        );
+    }
 }
 
 #[test]

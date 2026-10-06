@@ -27,11 +27,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::Malformed;
 use crate::anchor::{self, AkAnchor, AnchorPolicy, UnanchoredReason};
-use crate::binding::{Freshness, KeyBinding, Nonce, qualifying_data};
+use crate::binding::{Federation, Freshness, KeyBinding, Nonce, qualifying_data};
 use crate::crypto::HashAlg;
 use crate::eventlog::{BootFacts, SecureBoot, parse_event_log};
 use crate::evidence::{BootLog, EVIDENCE_PROFILE, ImaLog, NodeEvidence};
-use crate::ima::{ImaFacts, verify_ima_log};
+use crate::ima::{ImaEntry, ImaFacts, verify_ima_log};
 use crate::reference::{CmdlineRule, DigestSet, Expect, REFERENCE_PROFILE, ReferenceManifest};
 use crate::tpm::{AkPublic, SignatureError, parse_quote, verify_quote_signature};
 
@@ -109,9 +109,20 @@ pub enum Refusal {
     /// The supplied PCR values do not hash to the quote's `pcrDigest`.
     #[error("the supplied PCR values do not hash to the quoted pcrDigest")]
     PcrDigest,
-    /// The evidence speaks for different keys than the receipt names.
-    #[error("the evidence is bound to a different executor key or federation set")]
-    BindingMismatch,
+    /// The evidence speaks for a different executor key than the receipt names.
+    #[error("the evidence is bound to a different executor key than the relying party expects")]
+    ExecutorKeyMismatch,
+    /// The evidence speaks for the expected executor key but a different
+    /// federation set. Both sides are named, so the relying party can see
+    /// which digest the evidence binds and check it against the operator's
+    /// published JWKS rather than guess.
+    #[error("{}", federation_mismatch(expected, bound))]
+    FederationMismatch {
+        /// What the relying party expected.
+        expected: Federation,
+        /// What the evidence binds (and the TPM's quote commits to).
+        bound: Federation,
+    },
     /// The quote's qualifying data is not the binding + freshness the evidence claims.
     #[error("the quote's qualifying data does not commit to the claimed binding and freshness")]
     QualifyingData,
@@ -127,6 +138,23 @@ pub enum Refusal {
     /// No prefix of the IMA log replays to the quoted PCR 10.
     #[error("no prefix of the IMA log replays to the quoted PCR 10")]
     ImaLogDoesNotReplay,
+}
+
+fn describe(f: &Federation) -> String {
+    match f {
+        Federation::NotFederated => "no federation JWKS (not federated)".into(),
+        Federation::JwksSha256(d) => format!("federation JWKS sha256 {}", hex::encode(d)),
+    }
+}
+
+fn federation_mismatch(expected: &Federation, bound: &Federation) -> String {
+    format!(
+        "the evidence binds {} but the relying party expected {}; the expected federation \
+         set is the SHA-256 of the operator's published JWKS document, checked against it \
+         and never read from the evidence",
+        describe(bound),
+        describe(expected)
+    )
 }
 
 impl From<Malformed> for Refusal {
@@ -312,6 +340,7 @@ pub struct Appraisal {
     freshness: FreshnessVerdict,
     divergences: Vec<Divergence>,
     not_checked: BTreeMap<&'static str, String>,
+    ima_not_in_scope: Vec<ImaEntry>,
     binding: KeyBinding,
     evidence_freshness: Freshness,
     quote: QuoteSummary,
@@ -339,6 +368,13 @@ impl Appraisal {
     /// The reference items the manifest says are not checked, and why.
     pub fn not_checked(&self) -> &BTreeMap<&'static str, String> {
         &self.not_checked
+    }
+    /// The quoted IMA measurements outside the reference's declared scope:
+    /// neither allowed nor divergent, and listed so an `Attested` result says
+    /// what else the host's policy measured that the reference does not vouch
+    /// for. Empty when the scope is [`crate::ImaScope::AllMeasured`].
+    pub fn ima_not_in_scope(&self) -> &[ImaEntry] {
+        &self.ima_not_in_scope
     }
     /// The quote summary.
     pub fn quote(&self) -> &QuoteSummary {
@@ -456,7 +492,15 @@ fn check_digests(
     }
 }
 
-/// Collect the reference checks into divergences and not-checked items.
+/// What comparing with the reference found.
+struct Compared {
+    divergences: Vec<Divergence>,
+    not_checked: BTreeMap<&'static str, String>,
+    ima_not_in_scope: Vec<ImaEntry>,
+}
+
+/// Collect the reference checks into divergences, not-checked items, and the
+/// IMA measurements outside the reference's scope.
 fn compare(
     manifest: &ReferenceManifest,
     quoted: &BTreeMap<u8, [u8; 32]>,
@@ -464,10 +508,11 @@ fn compare(
     boot_absent: &str,
     ima: Option<&ImaFacts>,
     ima_absent: &str,
-) -> (Vec<Divergence>, BTreeMap<&'static str, String>) {
+) -> Compared {
     let rv = &manifest.reference_values;
     let mut out = Vec::new();
     let mut skipped = BTreeMap::new();
+    let mut not_in_scope = Vec::new();
 
     for (index, expected) in &rv.pcrs {
         let observed = quoted.get(index).map(hex::encode);
@@ -605,19 +650,29 @@ fn compare(
         Expect::NotChecked(why) => {
             skipped.insert("ima", why.clone());
         }
-        Expect::Required(reference) => match ima {
-            None => out.push(Divergence::NotEvaluable {
+        Expect::Required(reference) => match (ima, reference.incoherence()) {
+            (_, Some(why)) => out.push(Divergence::NotEvaluable {
+                check: "ima",
+                reason: format!("the reference cannot be applied: {why}"),
+            }),
+            (None, None) => out.push(Divergence::NotEvaluable {
                 check: "ima",
                 reason: ima_absent.to_string(),
             }),
-            Some(facts) => {
+            (Some(facts), None) => {
                 let mut satisfied = BTreeSet::new();
                 for e in &facts.entries {
+                    // A violation entry names no file this verifier reads, so
+                    // it cannot be placed outside the scope: it always counts.
                     if e.path == "<violation>" {
                         out.push(Divergence::ImaViolation);
                         continue;
                     }
                     if e.path == "boot_aggregate" {
+                        continue;
+                    }
+                    if !reference.scope.contains(&e.path) {
+                        not_in_scope.push(e.clone());
                         continue;
                     }
                     if e.algorithm != "sha256" {
@@ -648,7 +703,11 @@ fn compare(
             }
         },
     }
-    (out, skipped)
+    Compared {
+        divergences: out,
+        not_checked: skipped,
+        ima_not_in_scope: not_in_scope,
+    }
 }
 
 /// Appraise `evidence` under `policy`.
@@ -708,8 +767,20 @@ pub fn appraise(
     }
 
     // 3. The quote speaks for the receipt's keys, at the claimed freshness.
-    if &evidence.binding != policy.expected_binding {
-        return Err(Refusal::BindingMismatch);
+    // Exhaustive, so a field added to the binding cannot go uncompared
+    // (ADR 0007 E-1).
+    let KeyBinding {
+        executor_key,
+        federation,
+    } = &evidence.binding;
+    if executor_key != &policy.expected_binding.executor_key {
+        return Err(Refusal::ExecutorKeyMismatch);
+    }
+    if federation != &policy.expected_binding.federation {
+        return Err(Refusal::FederationMismatch {
+            expected: policy.expected_binding.federation.clone(),
+            bound: federation.clone(),
+        });
     }
     if quote.extra_data != qualifying_data(&evidence.binding, &evidence.freshness) {
         return Err(Refusal::QualifyingData);
@@ -742,7 +813,11 @@ pub fn appraise(
 
     // 6. Freshness and the reference.
     let freshness = freshness_verdict(&evidence.freshness, &policy.freshness);
-    let (divergences, not_checked) = compare(
+    let Compared {
+        divergences,
+        not_checked,
+        ima_not_in_scope,
+    } = compare(
         policy.reference,
         &quoted,
         boot.as_ref(),
@@ -773,6 +848,7 @@ pub fn appraise(
         freshness,
         divergences,
         not_checked,
+        ima_not_in_scope,
         binding: evidence.binding.clone(),
         evidence_freshness: evidence.freshness.clone(),
         quote: QuoteSummary {

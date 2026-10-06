@@ -14,8 +14,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use nucleus_ci_verdict::execution::{ExecutionClaim, NodePlatform};
 use nucleus_node_evidence::{
     AnchorPolicy, Appraisal, AppraisalPolicy, ExecutorKey, Federation, Freshness,
-    FreshnessExpectation, KeyBinding, NodeEvidence, Nonce, OperatorPin, ReferenceManifest, Tier,
-    appraise, evidence_digest,
+    FreshnessExpectation, KeyBinding, NodeEvidence, Nonce, OperatorPin, ReferenceManifest, Refusal,
+    Tier, appraise, evidence_digest,
 };
 
 /// The relying party's anchors.
@@ -109,7 +109,10 @@ pub(crate) struct Args {
     #[arg(long)]
     executor_ed25519: String,
     /// The federation key set the evidence must be bound to:
-    /// `not-federated`, or the JWKS document's SHA-256 (hex).
+    /// `not-federated`, or the SHA-256 (hex) of the operator's published JWKS
+    /// document. A node with a federation issuer (ADR 0010) binds its JWKS, so
+    /// its evidence is refused under the default, and the refusal names the
+    /// digest the evidence binds.
     #[arg(long, default_value = "not-federated")]
     federation: String,
     /// The nonce (hex) this verifier sent, for challenge-response evidence.
@@ -165,7 +168,7 @@ impl Args {
                 now,
             },
         )
-        .map_err(|r| anyhow!("node evidence refused: {r}"))?;
+        .map_err(standalone_refusal)?;
         println!(
             "{}",
             serde_json::to_string_pretty(&appraisal.to_ear(env!("CARGO_PKG_VERSION"), now))?
@@ -175,6 +178,29 @@ impl Args {
             other => bail!("node platform is not attested: {}", other.ear_status()),
         }
     }
+}
+
+/// A refusal from `verify-node-evidence`, with what to do about it when the
+/// fix is a flag: standalone, the federation set is the caller's to state,
+/// because no signed receipt names the document (#3277).
+fn standalone_refusal(r: Refusal) -> anyhow::Error {
+    let hint = match &r {
+        Refusal::FederationMismatch {
+            bound: Federation::JwksSha256(d),
+            ..
+        } => format!(
+            ". Pass --federation {} after checking that it is the SHA-256 of the operator's \
+             published JWKS document, or verify through `verify-execution --node-evidence`, \
+             which takes the federation set from the evidence document the signed receipt names",
+            hex::encode(d)
+        ),
+        Refusal::FederationMismatch {
+            bound: Federation::NotFederated,
+            ..
+        } => ". Pass --federation not-federated (the default)".into(),
+        _ => String::new(),
+    };
+    anyhow!("node evidence refused: {r}{hint}")
 }
 
 /// The platform half of `verify-execution`.
@@ -230,8 +256,14 @@ pub(crate) fn platform(
                     _ => bail!("the evidence document is not epoch {epoch}, as the receipt says"),
                 }
                 let reference: ReferenceManifest = read_json(reference_path)?;
-                // The receipt names the executor key; the federation set is not
-                // a receipt fact, so the evidence's own claim is taken as given.
+                // Both halves of the binding are derived from the receipt, never
+                // restated by the caller (ADR 0007 G): the executor key is the
+                // receipt's verifying key, and the federation set is the one the
+                // evidence document commits to, which is the receipt's fact too
+                // because the signed receipt names that document's SHA-256
+                // (checked above). The TPM's quote then commits to the same
+                // binding (`QualifyingData`), so no `--federation` flag exists on
+                // this path (#3277).
                 let binding = KeyBinding {
                     executor_key: ExecutorKey::Ed25519(*verifying_key),
                     federation: evidence.binding.federation.clone(),

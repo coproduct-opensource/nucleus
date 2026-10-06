@@ -71,6 +71,18 @@ chose. So the release manifest checks only the node's own files:
   but not required: IMA measures a binary when it runs, and a node quoted before its
   first pod has not run either. A replaced binary that did run appears with a digest that
   is not allowed, and the evidence is `Contested`.
+- **IMA scope.** The allowlist governs the install directory only:
+  `"scope": {"path_prefixes": ["/usr/local/bin"]}`. A host's own IMA policy measures more
+  than the node's files. A Secure Boot host's policy measures every kernel module it
+  loads, for example, and the release vouches for none of them. A measured file outside
+  the scope is neither allowed nor divergent. The appraisal lists it under
+  `ima_not_in_scope`, with its path and digest, beside the verdict. Inside the scope
+  nothing is forgiven: an unlisted or replaced binary under `/usr/local/bin` is
+  `Contested`. The scope is part of the signed manifest, so evidence can neither set
+  nor widen it. A prefix matches whole path components, so `/usr/local/bin` does not
+  cover `/usr/local/binx/…`. A required path outside the scope, or a malformed prefix,
+  makes the IMA check `not_evaluable`, never a pass. A manifest without a `scope`
+  (every release up to and including v2.5.0) governs every measured file.
 - **Everything else** (Secure Boot state, EFI applications, boot files, kernel command
   line, PCR pins) is `not_checked`, with the reason written into the manifest. The
   appraisal prints every `not_checked` item beside its verdict. An `Attested` result
@@ -80,7 +92,30 @@ chose. So the release manifest checks only the node's own files:
   records the path after symlinks resolve. A node that keeps its binaries on a dedicated
   filesystem (the narrow-IMA layout in `docs/findings/attested-node-live-run.md`)
   regenerates the manifest with `--install-dir` from the same signed tarballs. The
-  digests do not change; only the paths do.
+  digests do not change; only the paths and the scope do.
+
+**What a release-only appraisal yields.** This was measured on the attested journey re-run
+(2026-10-06): release v2.5.0 on an x86 Shielded VM with Secure Boot, with the node's
+binaries on a read-only filesystem mounted at `/usr/local/bin`. The quoted IMA log held
+`boot_aggregate`, the three node binaries and 64 kernel modules measured by the platform's
+Secure Boot policy.
+
+- Against the published v2.5.0 manifest, which has no scope, the verdict is `Contested`,
+  with 64 `ima_file_not_allowed` divergences, one per kernel module.
+- Against the same manifest with the install-directory scope that releases after v2.5.0
+  publish, the verdict is `Attested`, with anchor `operator_fetched`.
+  - All three binaries matched.
+  - The four boot items are listed as `not_checked`, with the release's reason.
+  - The 64 modules are listed under `ima_not_in_scope`.
+- The same scoped manifest with any in-scope binary removed from its allowlist is
+  `Contested`.
+
+So a release-only `Attested` means three things: the node's own binaries are the
+release's, the AK is the one the operator pinned, and the quote is fresh. It says nothing
+about the host's boot or its kernel modules. The result names what it did not check
+(`not_checked`) and what it did not judge (`ima_not_in_scope`). With a v2.5.0 manifest,
+use the operator's reference values below, or regenerate the manifest from the same signed
+tarballs with this repository's `cargo xtask release-reference-manifest emit`.
 
 To check the boot as well, you need the operator's boot reference values. The operator
 builds them from files, never from logs, and folds the release's allowlist in verbatim:
@@ -97,7 +132,9 @@ cargo xtask node-reference-manifest --tag-id my-node \
 
 `jq '."reference-values".ima.required.allowlist'` on both files shows whether the
 release's entries are present unchanged. The boot pins in that file are the operator's
-statement, in the same way the AK pin is.
+statement, in the same way the AK pin is. The folded manifest does not inherit the
+release's scope. Without `--ima-scope-prefix`, it governs every measured file, which is
+why it must list the platform's modules.
 
 ## 2. Fetch the node evidence the receipt names
 
@@ -150,16 +187,36 @@ nucleus-audit verify-node-evidence \
   --evidence evidence.json --reference node-reference.json \
   --executor-ed25519 <executor public key hex> \
   --nonce <the nonce you sent> \
-  --operator-pin 'SOURCE=<spki-sha256>'
+  --operator-pin 'SOURCE=<spki-sha256>' \
+  --federation <jwks-sha256>   # only for a node that federates; see below
 ```
+
+**Federating nodes.** A node with a federation issuer (ADR 0010) binds the SHA-256 of
+its federation JWKS into every quote, next to its executor key.
+
+- `verify-execution` needs no flag for this. The signed receipt names the evidence
+  document by digest, so the federation set that document binds is the receipt's fact,
+  and the verifier takes it from there.
+- `verify-node-evidence` has no receipt to take it from, so you state it with
+  `--federation`. The default is `not-federated`. Evidence from a federating node is then
+  refused, and the refusal names the digest the evidence binds:
+
+  ```
+  node evidence refused: the evidence binds federation JWKS sha256 <digest> but the
+  relying party expected no federation JWKS (not federated); … Pass --federation <digest>
+  after checking that it is the SHA-256 of the operator's published JWKS document, …
+  ```
+
+  Check that digest against the operator's published JWKS before you pass it. Otherwise
+  you are only restating the evidence's own claim.
 
 | Verdict | Meaning |
 |---|---|
-| `Attested` (exit 0) | The anchor is not `None`, the evidence is fresh at the receipt's time, and nothing diverges from the reference. The `not_checked` list says what was not looked at. |
+| `Attested` (exit 0) | The anchor is not `None`, the evidence is fresh at the receipt's time, and nothing in the reference's scope diverges from it. The `not_checked` list says what was not looked at, and `ima_not_in_scope` lists what was measured outside the reference's scope. |
 | `Contested` | A measurement diverges, and each divergence is named. |
 | `Expired` | The evidence is not fresh: a replayed challenge (`nonce_mismatch`), or epoch evidence that is too old or from the future. |
 | `Unattested` | Nothing ties the quote to a TPM (no matching pin), or the receipt says the node had no evidence. |
-| Refusal | Not evidence at all: a bad signature, a log that does not replay, or a binding to another executor key. |
+| Refusal | Not evidence at all: a bad signature, a log that does not replay, a binding to another executor key (`executor_key_mismatch`), or to another federation set (`federation_mismatch`, which names both sets). |
 
 A browser and JavaScript verifier for node evidence, built from the same Rust verifier
 compiled to wasm in `sdks/verifier-js`, is being added in a separate change.
@@ -169,6 +226,9 @@ compiled to wasm in `sdks/verifier-js`, is being added in a separate change.
 - **The host boot, without the operator.** The release ships no host image, so boot
   reference values are the operator's. A published, measured host image would move them
   into the release manifest.
+- **The host's kernel modules, and any other file outside the release's scope.** They
+  are listed (`ima_not_in_scope`), not judged. Only the operator's reference values, or a
+  published host image, can say whether they are the expected ones.
 - **The AK, without the operator.** `OperatorFetched` is the operator's word.
 - **EFI applications (PCR 4).** The reference generator does not compute Authenticode
   digests yet.

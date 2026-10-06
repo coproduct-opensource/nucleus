@@ -77,9 +77,9 @@ pub use appraise::{
 pub use binding::{ExecutorKey, Federation, Freshness, KeyBinding, Nonce, qualifying_data};
 pub use crypto::HashAlg;
 pub use evidence::{BootLog, EVIDENCE_PROFILE, ImaLog, NodeEvidence, TpmQuote, evidence_digest};
-pub use ima::ImaLogFormat;
+pub use ima::{ImaEntry, ImaLogFormat};
 pub use reference::{
-    CmdlineRule, DigestSet, Expect, ImaReference, REFERENCE_PROFILE, ReferenceManifest,
+    CmdlineRule, DigestSet, Expect, ImaReference, ImaScope, REFERENCE_PROFILE, ReferenceManifest,
     ReferenceValues,
 };
 pub use relying_party::{InputError, RelyingParty, Report, report};
