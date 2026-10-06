@@ -778,7 +778,7 @@ mod imp {
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
-    fn harden_child(seccomp: &mut Seccomp, landlock: &Landlock) -> io::Result<()> {
+    fn harden_child(seccomp: &mut Seccomp, landlock: &mut Landlock) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
         // scalars or a pointer to a fully-initialized local `rlimit`; none
         // allocates or takes a lock, satisfying the `pre_exec` contract.
@@ -884,7 +884,7 @@ mod imp {
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
     ) {
-        let landlock = match filesystem {
+        let mut landlock = match filesystem {
             FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { .. } => {
                 Landlock::NotRequested
             }
@@ -913,7 +913,7 @@ mod imp {
                 }
             },
         };
-        super::hook::pre_exec(cmd, move || harden_child(&mut seccomp, &landlock));
+        super::hook::pre_exec(cmd, move || harden_child(&mut seccomp, &mut landlock));
     }
 }
 
@@ -1329,16 +1329,9 @@ mod tests {
     }
 
     /// The kernels a MicroVM child must refuse without a waiver: Landlock
-    /// compiled out (the 6.1.141 guest, #3148), disabled at boot, and ABI 1.
-    const BELOW_MINIMUM: [LandlockSupport; 3] = [
-        LandlockSupport::Unavailable {
-            errno: libc::ENOSYS,
-        },
-        LandlockSupport::Unavailable {
-            errno: libc::EOPNOTSUPP,
-        },
-        LandlockSupport::Abi(1),
-    ];
+    /// compiled out or disabled at boot (the 6.1.141 guest, #3148), and ABI 1.
+    const BELOW_MINIMUM: [LandlockSupport; 2] =
+        [LandlockSupport::Unavailable, LandlockSupport::Abi(1)];
 
     /// #2696 P3c, fail closed (A-19): on a kernel that cannot enforce the
     /// ruleset, a MicroVM child, the workload and the `/v1/run` child alike,

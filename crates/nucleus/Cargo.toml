@@ -76,6 +76,12 @@ shell-words = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# The workload Landlock ruleset (#2696 P3c): the upstream binding, maintained
+# by Landlock's author, so the three syscalls need no `unsafe` here. Linux only.
+# 0.4.7 is the latest release; its rust-version is 1.71.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+
 [dev-dependencies]
 proptest = { workspace = true }
 # test-helpers: `discharge::test_helpers` can obtain a DischargedBundle without

@@ -13,7 +13,7 @@
     "verify_calls_GUARD": 50,
     "unsafe_blocks": 8,
     "crates_total": 98,
-    "crates_lints_workspace": 66,
+    "crates_lints_workspace": 67,
     "lints_adoption_pct": 67
   },
   "sandboxing": {

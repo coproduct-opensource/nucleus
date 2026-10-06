@@ -29,7 +29,9 @@
 //!
 //! # ABI
 //!
-//! The minimum is ABI 2 (6.1's): every filesystem right of ABI 1 plus `REFER`,
+//! The kernel side is the upstream `landlock` crate, which carries the
+//! syscalls, so this module has no `unsafe`. The minimum is ABI 2 (6.1's):
+//! every filesystem right of ABI 1 plus `REFER`,
 //! so a file cannot be renamed or linked across a rule boundary into a place
 //! with wider rights. `TRUNCATE` (ABI 3) and `IOCTL_DEV` (ABI 5) are handled
 //! when the kernel has them. Below ABI 2 there is no ruleset to compile; what
@@ -45,19 +47,18 @@ use nucleus_spec::guest_layout::{
 /// "fail closed below ABI 2").
 pub const MIN_LANDLOCK_ABI: u32 = 2;
 
-/// What the running kernel offers, as `landlock_create_ruleset(NULL, 0,
-/// LANDLOCK_CREATE_RULESET_VERSION)` answered.
+/// What the running kernel enforces, asked through the `landlock` crate with
+/// `CompatLevel::HardRequirement`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LandlockSupport {
-    /// Landlock is up, at this ABI.
+    /// Landlock enforces every filesystem right of this ABI level: the
+    /// highest of 1, 2, 3 and 5 (the levels that added filesystem rights) the
+    /// kernel accepts. A newer kernel reports 5: the ruleset asks for no more.
     Abi(u32),
-    /// The call failed with this errno: `ENOSYS` when Landlock is compiled
-    /// out (the Firecracker CI 6.1.141 guest kernel), `EOPNOTSUPP` when it is
-    /// built but not enabled at boot. Also what a non-Linux build reports.
-    Unavailable {
-        /// The errno.
-        errno: i32,
-    },
+    /// No filesystem right is enforceable: Landlock compiled out (the
+    /// Firecracker CI 6.1.141 guest kernel answers `ENOSYS`), built but not
+    /// enabled at boot (`EOPNOTSUPP`), or not Linux.
+    Unavailable,
 }
 
 impl LandlockSupport {
@@ -72,7 +73,7 @@ impl LandlockSupport {
     pub fn enforceable(self) -> Option<u32> {
         match self {
             Self::Abi(abi) if abi >= MIN_LANDLOCK_ABI => Some(abi),
-            Self::Abi(_) | Self::Unavailable { .. } => None,
+            Self::Abi(_) | Self::Unavailable => None,
         }
     }
 }
@@ -81,10 +82,9 @@ impl std::fmt::Display for LandlockSupport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Abi(abi) => write!(f, "Landlock ABI {abi}"),
-            Self::Unavailable { errno } => write!(
+            Self::Unavailable => write!(
                 f,
-                "no Landlock (landlock_create_ruleset: {})",
-                std::io::Error::from_raw_os_error(*errno)
+                "no Landlock (not built into the kernel, or not enabled at boot)"
             ),
         }
     }
@@ -175,115 +175,80 @@ fn push_unless_link(rules: &mut Vec<Rule>, path: PathBuf, kind: Kind, grant: Gra
     }
 }
 
-/// `LANDLOCK_ACCESS_FS_*` from uapi `linux/landlock.h`. Local because the
-/// `libc` crate binds the syscall numbers and not these.
-pub(crate) mod access {
-    pub(crate) const EXECUTE: u64 = 1 << 0;
-    pub(crate) const WRITE_FILE: u64 = 1 << 1;
-    pub(crate) const READ_FILE: u64 = 1 << 2;
-    pub(crate) const READ_DIR: u64 = 1 << 3;
-    /// `REMOVE_DIR` through `MAKE_SYM`: bits 4..=12, ABI 1.
-    pub(crate) const ABI1_ALL: u64 = (1 << 13) - 1;
-    pub(crate) const REFER: u64 = 1 << 13;
-    pub(crate) const TRUNCATE: u64 = 1 << 14;
-    pub(crate) const IOCTL_DEV: u64 = 1 << 15;
-    /// The rights the kernel accepts on a rule for a non-directory.
-    pub(crate) const FILE: u64 = EXECUTE | WRITE_FILE | READ_FILE | TRUNCATE | IOCTL_DEV;
-}
-
-/// Every filesystem right `abi` can govern: the ruleset handles all of them,
-/// so anything not granted by a rule is denied.
-pub(crate) fn handled(abi: u32) -> u64 {
-    let mut rights = access::ABI1_ALL;
-    if abi >= 2 {
-        rights |= access::REFER;
-    }
-    if abi >= 3 {
-        rights |= access::TRUNCATE;
-    }
-    if abi >= 5 {
-        rights |= access::IOCTL_DEV;
-    }
-    rights
-}
-
-/// The rights one rule carries, masked to what the kernel accepts for the kind
-/// of file it is on (a directory right on a file rule is `EINVAL`).
-pub(crate) fn rights(grant: Grant, abi: u32, is_dir: bool) -> u64 {
-    let wanted = match grant {
-        Grant::Read => access::EXECUTE | access::READ_FILE | access::READ_DIR,
-        Grant::ReadWrite => u64::MAX,
-    } & handled(abi);
-    if is_dir {
-        wanted
-    } else {
-        wanted & access::FILE
-    }
-}
+/// The filesystem ABI levels this ruleset is designed for, newest first: the
+/// levels at which Landlock gained a filesystem right (`REFER` at 2,
+/// `TRUNCATE` at 3, `IOCTL_DEV` at 5). The ruleset never asks for more than
+/// ABI 5's rights. ABI 9's `RESOLVE_UNIX` would govern connecting to a named
+/// Unix socket, and the workload door under hidden `/run` must stay
+/// connectable, so handling it is a deliberate future decision, not a side
+/// effect of a newer kernel.
+const FS_ABI_LEVELS: [u32; 4] = [5, 3, 2, 1];
 
 pub(crate) use imp::Ruleset;
 
 #[cfg(target_os = "linux")]
-#[expect(
-    unsafe_code,
-    reason = "audited exception: the three Landlock syscalls take pointers to the uapi structs below"
-)]
 mod imp {
+    //! The kernel half, through the `landlock` crate (the upstream binding,
+    //! maintained by Landlock's author): no `unsafe` here. Every compatibility
+    //! question is asked with `CompatLevel::HardRequirement`, so a right the
+    //! kernel cannot enforce is an error, never a silent best-effort drop.
+
     use std::io;
-    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-    use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
 
-    use super::{Kind, LandlockSupport, Rule, handled, plan, rights};
+    use landlock::{
+        ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, RulesetAttr,
+        RulesetCreated, RulesetCreatedAttr, RulesetStatus,
+    };
 
-    /// `LANDLOCK_CREATE_RULESET_VERSION`.
-    const CREATE_RULESET_VERSION: libc::c_uint = 1 << 0;
-    /// `LANDLOCK_RULE_PATH_BENEATH`.
-    const RULE_PATH_BENEATH: libc::c_int = 1;
+    use super::{FS_ABI_LEVELS, Grant, Kind, LandlockSupport, Rule, plan};
 
-    /// `struct landlock_ruleset_attr`, ABI 1–3 layout (filesystem only). The
-    /// kernel takes the size, so a shorter struct is the older ABI's, not a
-    /// truncated newer one: no network or scope rights are handled here.
-    #[repr(C)]
-    struct RulesetAttr {
-        handled_access_fs: u64,
+    fn abi(level: u32) -> ABI {
+        ABI::from(i32::try_from(level).unwrap_or(0))
     }
 
-    /// `struct landlock_path_beneath_attr`, which uapi declares packed.
-    #[repr(C, packed)]
-    struct PathBeneathAttr {
-        allowed_access: u64,
-        parent_fd: i32,
+    /// Every filesystem right `level` can govern: the ruleset handles all of
+    /// them, so anything a rule does not grant is denied.
+    pub(super) fn handled(level: u32) -> BitFlags<AccessFs> {
+        AccessFs::from_all(abi(level))
     }
 
-    pub(super) fn probe() -> LandlockSupport {
-        // SAFETY: a NULL attribute with size 0 and the VERSION flag is the
-        // documented ABI query; it reads no memory.
-        let rc = unsafe {
-            libc::syscall(
-                libc::SYS_landlock_create_ruleset,
-                std::ptr::null::<RulesetAttr>(),
-                0usize,
-                CREATE_RULESET_VERSION,
-            )
+    /// The rights one rule carries, masked to what the kernel accepts for the
+    /// kind of file it is on (a directory right on a file rule is refused).
+    pub(super) fn rights(grant: Grant, level: u32, is_dir: bool) -> BitFlags<AccessFs> {
+        let wanted = match grant {
+            Grant::Read => AccessFs::from_read(abi(level)),
+            Grant::ReadWrite => handled(level),
         };
-        if rc < 0 {
-            LandlockSupport::Unavailable {
-                errno: io::Error::last_os_error()
-                    .raw_os_error()
-                    .unwrap_or(libc::ENOSYS),
-            }
+        if is_dir {
+            wanted
         } else {
-            LandlockSupport::Abi(u32::try_from(rc).unwrap_or(0))
+            wanted & AccessFs::from_file(abi(level))
         }
     }
 
-    /// A ruleset compiled in the PARENT: created, every rule added, held as
-    /// an fd. The child only calls `landlock_restrict_self` on it, which
-    /// allocates nothing (the `pre_exec` contract).
+    fn hard() -> landlock::Ruleset {
+        landlock::Ruleset::default().set_compatibility(CompatLevel::HardRequirement)
+    }
+
+    /// The highest filesystem level the kernel enforces in full: the first of
+    /// [`FS_ABI_LEVELS`] whose rights it accepts as a hard requirement.
+    pub(super) fn probe() -> LandlockSupport {
+        FS_ABI_LEVELS
+            .into_iter()
+            .find(|level| hard().handle_access(handled(*level)).is_ok())
+            .map_or(LandlockSupport::Unavailable, LandlockSupport::Abi)
+    }
+
+    fn other(what: &Path, e: impl std::fmt::Display) -> io::Error {
+        io::Error::other(format!("{}: {e}", what.display()))
+    }
+
+    /// A ruleset compiled in the PARENT: created and every rule added. The
+    /// child only restricts itself with it (the `pre_exec` contract).
     #[derive(Debug)]
     pub(crate) struct Ruleset {
-        fd: OwnedFd,
+        created: Option<RulesetCreated>,
     }
 
     fn list(dir: &Path) -> io::Result<Vec<(String, Kind)>> {
@@ -305,87 +270,48 @@ mod imp {
     }
 
     impl Ruleset {
-        /// Compile the guest layout at `abi`.
+        /// Compile the guest layout at filesystem level `level`.
         ///
         /// # Errors
         /// Any failure to create the ruleset, list a directory, open a path or
-        /// add a rule. The caller refuses the spawn on any of them.
-        pub(crate) fn compile(abi: u32) -> io::Result<Self> {
-            Self::compile_rules(abi, &plan(&mut list)?)
+        /// add a rule, including a right the kernel cannot enforce. The caller
+        /// refuses the spawn on any of them.
+        pub(crate) fn compile(level: u32) -> io::Result<Self> {
+            Self::compile_rules(level, &plan(&mut list)?)
         }
 
-        pub(crate) fn compile_rules(abi: u32, rules: &[Rule]) -> io::Result<Self> {
-            let attr = RulesetAttr {
-                handled_access_fs: handled(abi),
-            };
-            // SAFETY: `attr` is a live, initialised `RulesetAttr` and its size is
-            // passed beside it. The returned fd is owned below.
-            let rc = unsafe {
-                libc::syscall(
-                    libc::SYS_landlock_create_ruleset,
-                    &raw const attr,
-                    std::mem::size_of::<RulesetAttr>(),
-                    0 as libc::c_uint,
-                )
-            };
-            if rc < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let raw = libc::c_int::try_from(rc)
-                .map_err(|_| io::Error::other("landlock_create_ruleset returned no fd"))?;
-            // SAFETY: the kernel just returned this fd to us; nothing else owns it.
-            let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+        pub(crate) fn compile_rules(level: u32, rules: &[Rule]) -> io::Result<Self> {
+            let root = Path::new("/");
+            let mut created = hard()
+                .handle_access(handled(level))
+                .and_then(landlock::Ruleset::create)
+                .map_err(|e| other(root, e))?;
             for rule in rules {
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-                    .open(&rule.path)
-                    .map_err(|e| {
-                        io::Error::new(e.kind(), format!("{}: {e}", rule.path.display()))
-                    })?;
-                // A rule on anything but a directory may carry file rights only.
-                let is_dir = file.metadata()?.is_dir();
-                let attr = PathBeneathAttr {
-                    allowed_access: rights(rule.grant, abi, is_dir),
-                    parent_fd: file.as_raw_fd(),
-                };
-                // SAFETY: `attr` is a live, initialised packed struct the kernel
-                // reads by value; `fd` and `file` outlive the call.
-                let rc = unsafe {
-                    libc::syscall(
-                        libc::SYS_landlock_add_rule,
-                        fd.as_raw_fd(),
-                        RULE_PATH_BENEATH,
-                        &raw const attr,
-                        0 as libc::c_uint,
-                    )
-                };
-                if rc != 0 {
-                    let e = io::Error::last_os_error();
-                    return Err(io::Error::new(
-                        e.kind(),
-                        format!("landlock_add_rule {}: {e}", rule.path.display()),
-                    ));
-                }
+                let is_dir = std::fs::symlink_metadata(&rule.path)?.is_dir();
+                let fd = PathFd::new(&rule.path).map_err(|e| other(&rule.path, e))?;
+                created = created
+                    .add_rule(PathBeneath::new(fd, rights(rule.grant, level, is_dir)))
+                    .map_err(|e| other(&rule.path, e))?;
             }
-            Ok(Self { fd })
+            Ok(Self {
+                created: Some(created),
+            })
         }
 
         /// Restrict the calling process to the ruleset. Runs in the forked
-        /// child after `no_new_privs`: one syscall, no allocation.
-        pub(crate) fn restrict_self(&self) -> io::Result<()> {
-            // SAFETY: a scalar fd and flags; async-signal-safe.
-            let rc = unsafe {
-                libc::syscall(
-                    libc::SYS_landlock_restrict_self,
-                    self.fd.as_raw_fd(),
-                    0 as libc::c_uint,
-                )
-            };
-            if rc != 0 {
-                return Err(io::Error::last_os_error());
+        /// child after `no_new_privs`: the crate's one `landlock_restrict_self`
+        /// (and an idempotent `no_new_privs`). Anything short of fully
+        /// enforced is an error, and so is a second call.
+        pub(crate) fn restrict_self(&mut self) -> io::Result<()> {
+            let created = self
+                .created
+                .take()
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?;
+            match created.restrict_self() {
+                Ok(status) if status.ruleset == RulesetStatus::FullyEnforced => Ok(()),
+                Ok(_) => Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
+                Err(_) => Err(io::Error::last_os_error()),
             }
-            Ok(())
         }
     }
 }
@@ -395,9 +321,7 @@ mod imp {
     use super::LandlockSupport;
 
     pub(super) fn probe() -> LandlockSupport {
-        LandlockSupport::Unavailable {
-            errno: libc::ENOSYS,
-        }
+        LandlockSupport::Unavailable
     }
 
     /// No Landlock off Linux, so nothing is ever compiled: the decision
@@ -556,32 +480,42 @@ mod tests {
         assert_eq!(err.raw_os_error(), Some(libc::EACCES));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn rights_follow_the_abi_and_the_file_kind() {
-        assert_eq!(handled(1) & access::REFER, 0);
-        assert_ne!(handled(2) & access::REFER, 0);
-        assert_eq!(handled(2) & access::TRUNCATE, 0);
-        assert_ne!(handled(3) & access::TRUNCATE, 0);
-        assert_ne!(handled(5) & access::IOCTL_DEV, 0);
+        use super::imp::{handled, rights};
+        use landlock::AccessFs;
+        assert!(!handled(1).contains(AccessFs::Refer));
+        assert!(handled(2).contains(AccessFs::Refer));
+        assert!(!handled(2).contains(AccessFs::Truncate));
+        assert!(handled(3).contains(AccessFs::Truncate));
+        assert!(handled(5).contains(AccessFs::IoctlDev));
         // Read never writes; a file rule never carries a directory right.
-        let read = rights(Grant::Read, 7, true);
-        assert_eq!(read & access::WRITE_FILE, 0);
-        assert_ne!(read & access::READ_DIR, 0);
-        assert_eq!(rights(Grant::ReadWrite, 7, false) & !access::FILE, 0);
+        let read = rights(Grant::Read, 5, true);
+        assert!(!read.contains(AccessFs::WriteFile));
+        assert!(read.contains(AccessFs::ReadDir));
+        assert!(!rights(Grant::ReadWrite, 5, false).contains(AccessFs::ReadDir));
         assert_eq!(rights(Grant::ReadWrite, 2, true), handled(2));
+    }
+
+    /// The ruleset never handles more than ABI 5's filesystem rights: a newer
+    /// right (ABI 9's `RESOLVE_UNIX`) would govern connecting to the workload
+    /// door, and taking it on is a decision, not a kernel upgrade's side effect.
+    #[test]
+    fn the_ruleset_is_capped_at_the_levels_it_was_designed_for() {
+        assert_eq!(FS_ABI_LEVELS, [5, 3, 2, 1]);
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            super::imp::handled(5),
+            <landlock::AccessFs as landlock::Access>::from_all(landlock::ABI::V5)
+        );
     }
 
     #[test]
     fn the_minimum_abi_is_two() {
         assert_eq!(LandlockSupport::Abi(1).enforceable(), None);
         assert_eq!(LandlockSupport::Abi(2).enforceable(), Some(2));
-        assert_eq!(LandlockSupport::Abi(7).enforceable(), Some(7));
-        assert_eq!(
-            LandlockSupport::Unavailable {
-                errno: libc::ENOSYS
-            }
-            .enforceable(),
-            None
-        );
+        assert_eq!(LandlockSupport::Abi(5).enforceable(), Some(5));
+        assert_eq!(LandlockSupport::Unavailable.enforceable(), None);
     }
 }
