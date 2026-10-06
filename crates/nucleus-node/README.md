@@ -184,7 +184,7 @@ node resolves the setting once at startup, from the driver:
 | `container`, `local`, `apple-vz` | not enforced | startup refused | not enforced |
 
 - **Guest rootfs.** Enforcement needs guest-init that prints the `READY`
-  handshake: the pinned 2.3.0 rootfs, or one built from this tree. To boot an
+  handshake: the pinned 2.4.0 rootfs, or one built from this tree. To boot an
   older rootfs on Firecracker, set `NUCLEUS_NODE_BROKER_ENFORCING=false`.
 - **`nucleus setup`.** The `node.env` it writes sets
   `NUCLEUS_NODE_DRIVER=firecracker` and `NUCLEUS_NODE_BROKER_ENFORCING=true`

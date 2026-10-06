@@ -155,9 +155,10 @@ takes the guest kernel with it. `tier2_artifacts::GuestCapability` refuses
 them rather than installing a pod that cannot start. v2.2.0 is refused too: its
 guest predates the egress attestation (#2365), the SVID on tmpfs (#2379), the
 workload door (#3031), the in-guest MCP bridge (#3135), and streaming
-egress (#3178).
+egress (#3178). So is v2.3.0: its tool-proxy's egress stream opens name no
+method (#3210).
 
-The pinned release is **`2.3.0`**, the first build whose guest meets every
+The pinned release is **`2.4.0`**, the first build whose guest meets every
 `GuestCapability`. Each
 downloaded asset is checked against the release API digest and, when `gh` is on
 PATH, against its Sigstore build provenance — the output says which of the two
