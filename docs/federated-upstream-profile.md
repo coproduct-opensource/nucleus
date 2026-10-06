@@ -437,3 +437,48 @@ it, is already most of the way there.
 - [ ] `exp` and `iat` present; `exp − iat` ≤ the binding's maximum
 - [ ] Stable `sub`, or a stable claim the binding maps
 - [ ] `jti` optional
+
+## 7. The operator assertion (v1)
+
+The same signer also speaks for the **operator**, so automation acting for the operator
+(reaching its own build machines, say) holds no stored credential and no human login that
+expires. The relying party is an OIDC workload-identity provider the operator configures; it
+runs `nucleus federation operator-assertion` as an executable credential source each time it
+needs a token.
+
+**Subject.** `spiffe://<trust domain>/ns/system/sa/operator-automation`: the operator's
+`system` namespace (`docs/spiffe-taxonomy.md`), as a sibling of the interactive
+`ns/system/sa/cli` rather than a child of it. The node grants `ns/system/sa/cli` by exact
+match, so the automation identity holds nothing on a node; its reach is only what the
+relying party binds to it.
+
+**Claims.** Exactly `iss`, `sub`, `aud`, `iat`, `nbf`, `exp`, `jti` (no `nucleus_*` claims:
+there is no pod). `alg` is `ES256` and `kid` is the RFC 7638 thumbprint, as in §1.
+`nbf = iat`, `exp − iat` is the requested `--lifetime` (default 300 s, at most 900), and `jti`
+is fresh per call.
+
+**Key.** Created by `nucleus federation operator-key init`; its JWKS (`operator-key jwks`) is
+registered **inline** with the relying party, so `iss` need not resolve (a `.invalid` name is
+fine). `operator-key rotate --stage` publishes a second key, `--promote` makes it sign. On
+macOS the key is a Keychain item read and written only through `/usr/bin/security`, never by
+the `nucleus` process: Keychain access lists are per binary, so a rebuilt `nucleus` reading
+the item itself would raise a dialog and an unattended credential helper would wait on it
+forever. Every `security` call is killed after `--keychain-timeout-ms` (default 5000) with a
+named error. Elsewhere the key is an owner-only file under `~/.config/nucleus/operator-key`.
+
+**Output.** `--format jwt` (default) prints the compact JWT. `--format executable-credential`
+prints the "executable-credential v1" interop response that OIDC token-exchange clients read
+from an executable credential source:
+
+```json
+{"version":1,"success":true,"token_type":"urn:ietf:params:oauth:token-type:jwt",
+ "id_token":"<jwt>","expiration_time":<exp>}
+```
+
+On failure it prints `{"version":1,"success":false,"code":"…","message":"…"}` and exits
+non-zero; `code` is `keychain_timeout`, `operator_key_unavailable` or `invalid_request`.
+
+**Relying-party registration**, stated generically: issuer = the `--issuer` string; keys =
+the inline JWKS; allowed audience = the `--audience` the helper is configured with; a
+condition requiring `sub` to equal the operator subject exactly; and the principal it maps to
+holds only the permissions the automation needs.

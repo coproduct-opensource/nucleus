@@ -33,6 +33,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use crate::operator_key;
 use anyhow::{Context, Result, bail};
 use clap::{ArgGroup, Args, Subcommand};
 use nucleus_federation::keyring::{
@@ -52,6 +53,129 @@ pub enum FederationCommand {
     Issuer(IssuerArgs),
     /// Rotate the assertion-signing key: stage, promote, retire.
     Rotate(RotateArgs),
+    /// Mint a short-lived assertion as the operator's own SPIFFE identity, for
+    /// a relying party that federates it (run on demand as its credential
+    /// helper).
+    OperatorAssertion(OperatorAssertionArgs),
+    /// Create, publish and rotate the operator identity's signing key.
+    OperatorKey(OperatorKeyArgs),
+}
+
+/// Where the operator key is kept.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum KeyStoreKind {
+    /// Keychain items, read and written only through `/usr/bin/security`.
+    Keychain,
+    /// Owner-only files under `--key-dir`.
+    File,
+}
+
+#[derive(Args, Clone)]
+pub struct OperatorStoreArgs {
+    /// Where the operator key is kept. Default: the keychain on macOS, a file
+    /// elsewhere.
+    #[arg(long, value_enum, default_value_t = default_store())]
+    key_store: KeyStoreKind,
+    /// The file store's directory. Default: `~/.config/nucleus/operator-key`.
+    #[arg(long, env = "NUCLEUS_OPERATOR_KEY_DIR", hide_env_values = true)]
+    key_dir: Option<PathBuf>,
+    /// How long one keychain access may take before it is abandoned with an
+    /// error (a locked keychain, or a dialog nobody can answer).
+    #[arg(long, default_value_t = operator_key::DEFAULT_KEYCHAIN_TIMEOUT_MS)]
+    keychain_timeout_ms: u64,
+    /// The keychain tool. Tests substitute a stand-in.
+    #[arg(long, hide = true, default_value = operator_key::SECURITY_PROGRAM)]
+    security_program: PathBuf,
+}
+
+fn default_store() -> KeyStoreKind {
+    if cfg!(target_os = "macos") {
+        KeyStoreKind::Keychain
+    } else {
+        KeyStoreKind::File
+    }
+}
+
+impl OperatorStoreArgs {
+    fn open(&self) -> Result<Box<dyn operator_key::KeyStore>> {
+        Ok(match self.key_store {
+            KeyStoreKind::Keychain => Box::new(operator_key::SecurityCli::new(
+                &self.security_program,
+                operator_key::KEYCHAIN_SERVICE,
+                Duration::from_millis(self.keychain_timeout_ms),
+            )),
+            KeyStoreKind::File => {
+                let dir = match &self.key_dir {
+                    Some(d) => d.clone(),
+                    None => crate::config::nucleus_dir()?.join("operator-key"),
+                };
+                Box::new(operator_key::FileStore::new(dir))
+            }
+        })
+    }
+}
+
+/// The two output forms of `operator-assertion`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum AssertionFormat {
+    /// The compact JWT alone.
+    Jwt,
+    /// "executable-credential v1": the JSON response an OIDC token-exchange
+    /// client expects from an executable credential source (see
+    /// `docs/federated-upstream-profile.md` §7).
+    ExecutableCredential,
+}
+
+#[derive(Args)]
+pub struct OperatorAssertionArgs {
+    #[command(flatten)]
+    store: OperatorStoreArgs,
+    /// The relying party's audience for this provider, exactly as it expects
+    /// `aud`.
+    #[arg(long)]
+    audience: String,
+    /// The issuer registered with the relying party (an `https` URL; it need
+    /// not resolve when the JWKS is registered inline).
+    #[arg(long, env = "NUCLEUS_OPERATOR_ISSUER", hide_env_values = true)]
+    issuer: String,
+    /// The operator's trust domain; the subject is
+    /// `spiffe://<trust domain>/ns/system/sa/operator-automation`.
+    #[arg(long, env = "NUCLEUS_OPERATOR_TRUST_DOMAIN", hide_env_values = true)]
+    trust_domain: String,
+    /// Assertion lifetime in seconds (at most 900).
+    #[arg(long, default_value_t = 300)]
+    lifetime: u64,
+    #[arg(long, value_enum, default_value_t = AssertionFormat::Jwt)]
+    format: AssertionFormat,
+}
+
+#[derive(Args)]
+pub struct OperatorKeyArgs {
+    #[command(flatten)]
+    store: OperatorStoreArgs,
+    #[command(subcommand)]
+    step: OperatorKeyStep,
+}
+
+#[derive(Subcommand)]
+pub enum OperatorKeyStep {
+    /// Create the key (refused if one exists) and print its JWKS.
+    Init,
+    /// Print the JWKS to register with the relying party.
+    Jwks,
+    /// `--stage` a next key beside the current one, then `--promote` it.
+    Rotate(OperatorRotateArgs),
+}
+
+#[derive(Args)]
+#[command(group(ArgGroup::new("step").required(true).args(["stage", "promote"])))]
+pub struct OperatorRotateArgs {
+    /// Generate the next key and publish it beside the current one.
+    #[arg(long)]
+    stage: bool,
+    /// Make the staged key current. Register the two-key JWKS first.
+    #[arg(long)]
+    promote: bool,
 }
 
 #[derive(Args)]
@@ -136,7 +260,116 @@ fn run(args: FederationArgs, now: u64, out: &mut dyn Write, err: &mut dyn Write)
     match args.command {
         FederationCommand::Issuer(a) => issuer(a, now, out, err),
         FederationCommand::Rotate(a) => rotate(a, now, out, err),
+        FederationCommand::OperatorAssertion(a) => operator_assertion(&a, now, out),
+        FederationCommand::OperatorKey(a) => operator_key_step(a, out, err),
     }
+}
+
+/// The operator subject for `trust_domain`, in the taxonomy's one spelling.
+fn operator_subject(trust_domain: &str) -> Result<nucleus_federation::OperatorSubject> {
+    let id =
+        nucleus_identity::Identity::try_new(trust_domain, "system", operator_key::OPERATOR_ACCOUNT)
+            .with_context(|| {
+                format!("--trust-domain {trust_domain:?} is not a valid trust domain")
+            })?;
+    Ok(nucleus_federation::OperatorSubject::new(
+        &id.to_spiffe_uri(),
+    )?)
+}
+
+fn mint_operator(a: &OperatorAssertionArgs, now: u64) -> Result<(String, u64)> {
+    let subject = operator_subject(&a.trust_domain)?;
+    let claims = nucleus_federation::OperatorClaims::new(
+        &subject,
+        &a.issuer,
+        &a.audience,
+        now,
+        Duration::from_secs(a.lifetime),
+    )?;
+    let store = a.store.open()?;
+    let signer = operator_key::signer(store.as_ref())?;
+    let jwt = nucleus_federation::mint(&claims, &signer)?;
+    Ok((jwt.expose().to_string(), claims.expires_at()))
+}
+
+fn operator_assertion(a: &OperatorAssertionArgs, now: u64, out: &mut dyn Write) -> Result<()> {
+    let minted = mint_operator(a, now);
+    match (a.format, minted) {
+        (AssertionFormat::Jwt, Ok((jwt, _))) => writeln!(out, "{jwt}")?,
+        (AssertionFormat::Jwt, Err(e)) => return Err(e),
+        (AssertionFormat::ExecutableCredential, Ok((jwt, exp))) => writeln!(
+            out,
+            "{}",
+            serde_json::json!({
+                "version": 1,
+                "success": true,
+                "token_type": "urn:ietf:params:oauth:token-type:jwt",
+                "id_token": jwt,
+                "expiration_time": exp,
+            })
+        )?,
+        // The caller reads the failure from stdout; the exit status is
+        // non-zero as well.
+        (AssertionFormat::ExecutableCredential, Err(e)) => {
+            let code = match e.downcast_ref::<operator_key::OperatorKeyError>() {
+                Some(operator_key::OperatorKeyError::KeychainTimeout { .. }) => "keychain_timeout",
+                Some(_) => "operator_key_unavailable",
+                None => "invalid_request",
+            };
+            writeln!(
+                out,
+                "{}",
+                serde_json::json!({
+                    "version": 1,
+                    "success": false,
+                    "code": code,
+                    "message": format!("{e:#}"),
+                })
+            )?;
+            return Err(e);
+        }
+    }
+    Ok(())
+}
+
+fn operator_key_step(a: OperatorKeyArgs, out: &mut dyn Write, err: &mut dyn Write) -> Result<()> {
+    let store = a.store.open()?;
+    let store = store.as_ref();
+    match a.step {
+        OperatorKeyStep::Init => {
+            let jwk = operator_key::init(store)?;
+            writeln!(
+                err,
+                "created operator key {} in {}",
+                jwk.kid,
+                store.location()
+            )?;
+        }
+        OperatorKeyStep::Jwks => {}
+        OperatorKeyStep::Rotate(r) if r.stage => {
+            let jwk = operator_key::stage(store)?;
+            writeln!(
+                err,
+                "staged {}. Register the JWKS below (both keys) with the relying party, then                  run `operator-key rotate --promote`.",
+                jwk.kid
+            )?;
+        }
+        OperatorKeyStep::Rotate(_) => {
+            let jwk = operator_key::promote(store)?;
+            writeln!(
+                err,
+                "{} now signs; the old key is gone. Register the JWKS below (one key) to                  stop the relying party accepting the old one.",
+                jwk.kid
+            )?;
+        }
+    }
+    let keys = operator_key::published(store)?;
+    writeln!(
+        out,
+        "{}",
+        serde_json::to_string_pretty(&nucleus_federation::jwks(&keys))?
+    )?;
+    Ok(())
 }
 
 fn need_issuer(issuer: Option<&str>) -> Result<&str> {
@@ -746,6 +979,236 @@ var = "SEARCH_API_TOKEN"
             ],
             T0,
         );
+    }
+
+    const OP_TD: &str = "operator.example.invalid";
+    const OP_ISS: &str = "https://operator.operator.example.invalid.federation.invalid";
+    const OP_AUD: &str = "//relying-party.example.invalid/pools/p/providers/operator";
+
+    fn op_args<'a>(dir: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+        let mut v = vec![
+            "operator-assertion",
+            "--key-store",
+            "file",
+            "--key-dir",
+            dir,
+            "--issuer",
+            OP_ISS,
+            "--trust-domain",
+            OP_TD,
+            "--audience",
+            OP_AUD,
+        ];
+        v.extend_from_slice(extra);
+        v
+    }
+
+    fn b64(s: &str) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(s)
+            .unwrap()
+    }
+
+    /// Verify `jwt` under the one key in `jwks` with ring; its claims.
+    fn verified_claims(jwt: &str, jwks: &serde_json::Value) -> serde_json::Value {
+        let k = &jwks["keys"][0];
+        let mut point = vec![0x04];
+        point.extend(b64(k["x"].as_str().unwrap()));
+        point.extend(b64(k["y"].as_str().unwrap()));
+        let (input, sig) = jwt.rsplit_once('.').unwrap();
+        ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, &point)
+            .verify(input.as_bytes(), &b64(sig))
+            .expect("assertion verifies under the published JWKS");
+        let header: serde_json::Value =
+            serde_json::from_slice(&b64(input.split('.').next().unwrap())).unwrap();
+        assert_eq!(header["kid"], k["kid"]);
+        serde_json::from_slice(&b64(input.split('.').nth(1).unwrap())).unwrap()
+    }
+
+    /// init → jwks → an executable-credential response whose assertion
+    /// verifies under that JWKS and carries the profile's claims.
+    #[test]
+    fn operator_assertion_is_verifiable_under_the_registered_jwks() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("operator-key");
+        let dir = dir.to_str().unwrap();
+        let (jwks, err) = ok(
+            &[
+                "operator-key",
+                "--key-store",
+                "file",
+                "--key-dir",
+                dir,
+                "init",
+            ],
+            T0,
+        );
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains("created operator key")
+        );
+        let jwks = json(&jwks);
+        let (again, _) = ok(
+            &[
+                "operator-key",
+                "--key-store",
+                "file",
+                "--key-dir",
+                dir,
+                "jwks",
+            ],
+            T0,
+        );
+        assert_eq!(json(&again), jwks);
+
+        let (out, _) = ok(&op_args(dir, &["--format", "executable-credential"]), T0);
+        let resp = json(&out);
+        assert_eq!(resp["version"], 1);
+        assert_eq!(resp["success"], true);
+        assert_eq!(resp["token_type"], "urn:ietf:params:oauth:token-type:jwt");
+        assert_eq!(resp["expiration_time"], T0 + 300);
+        let claims = verified_claims(resp["id_token"].as_str().unwrap(), &jwks);
+        assert_eq!(
+            claims["sub"],
+            format!("spiffe://{OP_TD}/ns/system/sa/operator-automation")
+        );
+        assert_eq!(claims["iss"], OP_ISS);
+        assert_eq!(claims["aud"], OP_AUD);
+        assert_eq!(claims["iat"], T0);
+        assert_eq!(claims["nbf"], T0);
+        assert_eq!(claims["exp"], T0 + 300);
+
+        // Plain form: the JWT alone, a fresh jti each time.
+        let (a, _) = ok(&op_args(dir, &["--lifetime", "900"]), T0);
+        let (b, _) = ok(&op_args(dir, &[]), T0);
+        let (a, b) = (String::from_utf8(a).unwrap(), String::from_utf8(b).unwrap());
+        let (ca, cb) = (
+            verified_claims(a.trim(), &jwks),
+            verified_claims(b.trim(), &jwks),
+        );
+        assert_eq!(ca["exp"], T0 + 900);
+        assert_ne!(ca["jti"], cb["jti"]);
+    }
+
+    /// Above the 900 s cap is refused, and in executable-credential form the
+    /// refusal is a `success: false` response as well as an error exit. A-19:
+    /// 900 itself is accepted (previous test).
+    #[test]
+    fn operator_assertion_lifetime_above_the_cap_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("k");
+        let dir = dir.to_str().unwrap();
+        ok(
+            &[
+                "operator-key",
+                "--key-store",
+                "file",
+                "--key-dir",
+                dir,
+                "init",
+            ],
+            T0,
+        );
+        let (r, out, _) = cli(
+            &op_args(
+                dir,
+                &["--lifetime", "901", "--format", "executable-credential"],
+            ),
+            T0,
+        );
+        assert!(r.is_err());
+        let resp = json(&out);
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["code"], "invalid_request");
+        assert!(resp.get("id_token").is_none());
+        let (r, out, _) = cli(&op_args(dir, &["--lifetime", "0"]), T0);
+        assert!(r.is_err() && out.is_empty());
+    }
+
+    /// The keychain path through the CLI: a `security` that hangs yields the
+    /// named timeout, as a `keychain_timeout` response, within the deadline.
+    #[cfg(unix)]
+    #[test]
+    fn operator_assertion_with_a_hanging_keychain_fails_fast_and_says_why() {
+        let root = crate::operator_key::tests::exec_tempdir();
+        let program = crate::operator_key::tests::fake_security(root.path(), "exec sleep 30");
+        let program = program.to_str().unwrap();
+        let mut argv = vec![
+            "operator-assertion",
+            "--key-store",
+            "keychain",
+            "--security-program",
+            program,
+            "--keychain-timeout-ms",
+            "300",
+            "--issuer",
+            OP_ISS,
+            "--trust-domain",
+            OP_TD,
+            "--audience",
+            OP_AUD,
+            "--format",
+            "executable-credential",
+        ];
+        let started = std::time::Instant::now();
+        let (r, out, _) = cli(&argv, T0);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let e = r.unwrap_err();
+        assert!(matches!(
+            e.downcast_ref::<crate::operator_key::OperatorKeyError>(),
+            Some(crate::operator_key::OperatorKeyError::KeychainTimeout { .. })
+        ));
+        let resp = json(&out);
+        assert_eq!(resp["success"], false);
+        assert_eq!(resp["code"], "keychain_timeout");
+        // Plain form: the same named error.
+        argv.truncate(argv.len() - 2);
+        let (r, _, _) = cli(&argv, T0);
+        assert!(format!("{:#}", r.unwrap_err()).contains("did not finish"));
+    }
+
+    /// No operator command writes the operator key's private material.
+    #[test]
+    fn no_operator_output_carries_private_key_material() {
+        let root = tempfile::tempdir().unwrap();
+        let dir_path = root.path().join("k");
+        let dir = dir_path.to_str().unwrap();
+        let store = ["operator-key", "--key-store", "file", "--key-dir", dir];
+        let mut written = Vec::new();
+        let mut secrets = Vec::new();
+        for step in [
+            vec!["init"],
+            vec!["jwks"],
+            vec!["rotate", "--stage"],
+            vec!["jwks"],
+            vec!["rotate", "--promote"],
+        ] {
+            let mut argv = store.to_vec();
+            argv.extend(step);
+            let (out, err) = ok(&argv, T0);
+            written.extend(out);
+            written.extend(err);
+            for f in ["current.p8", "next.p8"] {
+                if let Ok(der) = std::fs::read(dir_path.join(f)) {
+                    secrets.extend(encodings(&private_scalar(&der)));
+                    secrets.extend(encodings(&der));
+                }
+            }
+            for fmt in ["jwt", "executable-credential"] {
+                let (out, err) = ok(&op_args(dir, &["--format", fmt]), T0);
+                written.extend(out);
+                written.extend(err);
+            }
+        }
+        assert!(secrets.len() >= 2 * 14);
+        for s in &secrets {
+            assert!(
+                !written.windows(s.len()).any(|w| w == s.as_slice()),
+                "private key material appeared in an operator command's output"
+            );
+        }
     }
 
     /// The P-256 private scalar inside a ring PKCS#8 document: the 32 bytes
