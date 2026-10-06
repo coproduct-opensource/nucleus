@@ -64,6 +64,7 @@ async fn saturated(revoke_directly: bool) {
                     credential_env: "LLM_TOKEN".into(),
                     header: "authorization".into(),
                     value_prefix: "Bearer ".into(),
+                    effects: nucleus_spec::EffectTable::unclassified(),
                 },
             )]),
             caller,

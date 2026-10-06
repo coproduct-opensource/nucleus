@@ -728,6 +728,7 @@ fn upstream(bit: u8) -> nucleus_spec::CredentialedEgressSpec {
             credential_env: var.into(),
             header: header.into(),
             value_prefix: prefix.into(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         }
     };
     match bit {

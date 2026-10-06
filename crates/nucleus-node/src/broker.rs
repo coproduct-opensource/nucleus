@@ -96,6 +96,9 @@ pub fn parse_operation(name: &str) -> Option<Operation> {
         // label `nucleus_cred_protocol::egress::operation_for` gives a call
         // naming the receive service, decided against `git_push`.
         "GitPush" => Some(Operation::GitPush),
+        // A forge API write the operator's registry declares as opening a
+        // pull request (#3229), decided against `create_pr`.
+        "CreatePr" => Some(Operation::CreatePr),
         _ => None,
     }
 }

@@ -1018,6 +1018,11 @@ async fn run_in_pod(
         exports: &args.egress_exports,
         placeholders: &args.egress_placeholders,
     })?;
+    // An upstream with an effect table needs a guest that reads one (#3229);
+    // only the registry says whether a declared upstream has one.
+    if let Some(egress) = &egress {
+        egress.refuse_guest_skew(args.guest_release.as_deref())?;
+    }
     let (workload, credentialed_egress) = match egress {
         Some(egress) => egress.wrap(workload),
         None => (workload, Vec::new()),

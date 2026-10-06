@@ -512,6 +512,7 @@ fn loot() -> Vec<CredentialedEgressSpec> {
         credential_env: "NUCLEUS_NODE_PROXY_AUTH_SECRET".into(),
         header: "authorization".into(),
         value_prefix: String::new(),
+        effects: nucleus_spec::EffectTable::unclassified(),
     };
     vec![retargeted, invented]
 }

@@ -582,6 +582,16 @@ mod broker_tests {
         let sink = Sink::default();
         assert!(decide(PermissionLattice::permissive(), Operation::GitPush, &sink).is_ok());
         assert_eq!(sink.0.lock().unwrap().len(), 2, "WebFetch, then GitPush");
+
+        // A forge write the operator declared as opening a pull request
+        // (#3229) is decided the same way, against `create_pr`.
+        let mut no_pr = PermissionLattice::permissive();
+        no_pr.capabilities.create_pr = CapabilityLevel::Never;
+        assert!(decide(no_pr.clone(), Operation::CreatePr, &Sink::default()).is_err());
+        assert!(decide(no_pr, Operation::WebFetch, &Sink::default()).is_ok());
+        let sink = Sink::default();
+        assert!(decide(PermissionLattice::permissive(), Operation::CreatePr, &sink).is_ok());
+        assert_eq!(sink.0.lock().unwrap().len(), 2, "WebFetch, then CreatePr");
     }
 
     #[test]

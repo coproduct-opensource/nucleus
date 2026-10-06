@@ -20,6 +20,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod effects;
+pub use effects::{
+    DeclaredEffect, EffectTable, EffectTableError, MAX_EFFECTS, MAX_PATTERN_SEGMENTS, UpstreamKind,
+};
+
 /// The HTTP method of a host-performed call.
 ///
 /// # Closed, and with no default (ADR 0007 B-3)
@@ -85,30 +90,72 @@ impl EgressMethod {
 /// `GitPush`. A false positive costs a stricter check; a false negative would
 /// send a write under the read capability.
 ///
+/// # Then the operator's table (#3229)
+///
+/// A call that is not a push is what the upstream's [`EffectTable`] declares
+/// for its method and path: opening a pull request on a forge, say. A push is
+/// a push whatever the table says, so no declaration can weaken it.
+///
+/// # And a write nothing classifies
+///
 /// Everything else, a fetch (`git-upload-pack`) included, is `WebFetch`: it
-/// reads from the network, which is what that capability gates.
-#[must_use]
-pub fn operation_for(method: EgressMethod, path: &str, query: Option<&str>) -> EgressOperation {
-    // The method does not change the answer today; it is an input so a
-    // variant added later has to be considered here (E-1 by signature).
-    let (EgressMethod::Get | EgressMethod::Post) = method;
+/// reads from the network, which is what that capability gates. Except a
+/// write (a method that carries a body) to an upstream of kind
+/// [`UpstreamKind::Forge`]: on a forge an unclassified write is an effect the
+/// policy cannot name, so it is refused ([`Unclassified`]) rather than
+/// decided as a fetch (ADR 0007 B).
+///
+/// # Errors
+/// [`Unclassified`] for a write to a forge that no declared effect matches.
+pub fn operation_for(
+    table: &EffectTable,
+    method: EgressMethod,
+    path: &str,
+    query: Option<&str>,
+) -> Result<EgressOperation, Unclassified> {
     let names_push = |text: &str| decoded_lowercase(text).contains(RECEIVE_SERVICE);
     if names_push(path) || query.is_some_and(names_push) {
-        EgressOperation::GitPush
-    } else {
-        EgressOperation::WebFetch
+        return Ok(EgressOperation::GitPush);
+    }
+    if let Some(declared) = table.declared(method, path) {
+        return Ok(declared);
+    }
+    match (table.kind(), method.carries_body()) {
+        (UpstreamKind::Forge, true) => Err(Unclassified),
+        (UpstreamKind::Forge, false) | (UpstreamKind::Api, _) => Ok(EgressOperation::WebFetch),
     }
 }
 
+/// A write to a forge upstream that no declared effect classifies: refused
+/// on both sides, never decided as a fetch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Unclassified;
+
+impl std::fmt::Display for Unclassified {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a write to a forge upstream that no declared effect classifies is refused; \
+             the operator's registry must declare it",
+        )
+    }
+}
+
+impl std::error::Error for Unclassified {}
+
 /// The policy operations a host-performed call can be. A closed set, so a
 /// caller maps it onto its own operation type with an exhaustive `match`
-/// rather than by parsing a string back.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+/// rather than by parsing a string back. An operator's declared effect names
+/// one in `snake_case`, as a profile names the capability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EgressOperation {
     /// A network read: `web_fetch`.
     WebFetch,
     /// A push to a version-control remote: `git_push`, as well as `web_fetch`.
     GitPush,
+    /// Opening a pull request on a forge: `create_pr`, as well as
+    /// `web_fetch` (#3229).
+    CreatePr,
 }
 
 impl EgressOperation {
@@ -118,6 +165,7 @@ impl EgressOperation {
         match self {
             Self::WebFetch => "WebFetch",
             Self::GitPush => "GitPush",
+            Self::CreatePr => "CreatePr",
         }
     }
 }
@@ -194,6 +242,132 @@ mod tests {
         assert!(EgressMethod::Post.carries_body());
     }
 
+    fn classify(
+        method: EgressMethod,
+        path: &str,
+        query: Option<&str>,
+    ) -> Result<EgressOperation, Unclassified> {
+        operation_for(&EffectTable::unclassified(), method, path, query)
+    }
+
+    fn forge() -> EffectTable {
+        let effect = |method, path: &str, operation| DeclaredEffect {
+            method,
+            path: path.into(),
+            operation,
+        };
+        EffectTable::from_parts(
+            Some(UpstreamKind::Forge),
+            vec![
+                effect(
+                    EgressMethod::Post,
+                    "/repos/*/*/pulls",
+                    EgressOperation::CreatePr,
+                ),
+                effect(EgressMethod::Post, "/graphql", EgressOperation::WebFetch),
+                effect(
+                    EgressMethod::Post,
+                    "*/*/git-upload-pack",
+                    EgressOperation::WebFetch,
+                ),
+            ],
+        )
+        .expect("a valid table")
+    }
+
+    /// **A forge's declared effects classify its writes, and an unclassified
+    /// write is refused.** The pull-request route is `CreatePr` however it is
+    /// spelled; a declared read stays a read; a GET is a read; a push is a
+    /// push even where a declaration would call it a fetch; and a write no
+    /// effect names is `Unclassified`. The same calls to an `api` upstream
+    /// with no table are all `WebFetch` (or `GitPush`), as before #3229.
+    #[test]
+    fn a_forge_write_is_what_the_operator_declared_or_refused() {
+        use EgressMethod::{Get, Post};
+        use EgressOperation::{CreatePr, GitPush, WebFetch};
+        let table = forge();
+        for (method, path, expected) in [
+            (Post, "repos/org/repo/pulls", Ok(CreatePr)),
+            (Post, "/repos/org/repo/pulls/", Ok(CreatePr)),
+            (Post, "repos//org/repo/pulls", Ok(CreatePr)),
+            (Post, "REPOS/org/repo/PULLS", Ok(CreatePr)),
+            (Post, "repos/org/repo/pull%73", Ok(CreatePr)),
+            (Post, "repos/org/repo/pull%2573", Ok(CreatePr)),
+            (Post, "graphql", Ok(WebFetch)),
+            (Post, "org/repo.git/git-upload-pack", Ok(WebFetch)),
+            (Post, "org/repo.git/git-receive-pack", Ok(GitPush)),
+            (Get, "repos/org/repo/pulls", Ok(WebFetch)),
+            (Get, "repos/org/repo", Ok(WebFetch)),
+            (Post, "repos/org/repo/issues", Err(Unclassified)),
+            (Post, "repos/org/repo/pulls/1/merge", Err(Unclassified)),
+            (Post, "repos/org/pulls", Err(Unclassified)),
+            (Post, "repos/org/repo%2Fx/pulls", Err(Unclassified)),
+        ] {
+            assert_eq!(
+                operation_for(&table, method, path, None),
+                expected,
+                "{method:?} {path}"
+            );
+        }
+        assert_eq!(
+            classify(Post, "repos/org/repo/pulls", None),
+            Ok(WebFetch),
+            "an api upstream with no table is decided as before"
+        );
+        assert_eq!(classify(Post, "repos/org/repo/issues", None), Ok(WebFetch));
+    }
+
+    /// A table is validated wherever it is built, deserialisation included:
+    /// a pattern that is not one, or two effects that could disagree about a
+    /// request, are refused; the operator's wire form round-trips; and an
+    /// absent kind is an `api`.
+    #[test]
+    fn an_effect_table_is_valid_or_refused() {
+        let one = |path: &str| DeclaredEffect {
+            method: EgressMethod::Post,
+            path: path.into(),
+            operation: EgressOperation::CreatePr,
+        };
+        for bad in ["", "/", "repos/*x/pulls", "a/%2e/b", "a/../b", "a?b", "a#b"] {
+            assert_eq!(
+                EffectTable::from_parts(None, vec![one(bad)]),
+                Err(EffectTableError::BadPattern(bad.into())),
+                "{bad:?}"
+            );
+        }
+        let mut read = one("repos/org/*/pulls");
+        read.operation = EgressOperation::WebFetch;
+        assert!(matches!(
+            EffectTable::from_parts(None, vec![one("repos/*/*/pulls"), read.clone()]),
+            Err(EffectTableError::Ambiguous(..))
+        ));
+        read.method = EgressMethod::Get;
+        let table = EffectTable::from_parts(None, vec![one("repos/*/*/pulls"), read]).unwrap();
+        assert_eq!(table.kind(), UpstreamKind::Api);
+        assert!(!table.is_unclassified());
+        assert!(
+            EffectTable::from_parts(None, Vec::new())
+                .unwrap()
+                .is_unclassified()
+        );
+        assert!(matches!(
+            EffectTable::from_parts(None, vec![one("a"); MAX_EFFECTS + 1]),
+            Err(EffectTableError::TooMany(_))
+        ));
+
+        let wire = serde_json::to_string(&forge()).unwrap();
+        assert!(wire.contains("\"kind\":\"forge\""), "{wire}");
+        assert!(wire.contains("\"operation\":\"create_pr\""), "{wire}");
+        assert_eq!(serde_json::from_str::<EffectTable>(&wire).unwrap(), forge());
+        let ambiguous = r#"{"kind":"forge","effects":[
+            {"method":"POST","path":"a/*","operation":"create_pr"},
+            {"method":"POST","path":"*/b","operation":"web_fetch"}]}"#;
+        assert!(serde_json::from_str::<EffectTable>(ambiguous).is_err());
+        let unknown_operation = r#"{"kind":"forge","effects":[
+            {"method":"POST","path":"a","operation":"delete_repo"}]}"#;
+        assert!(serde_json::from_str::<EffectTable>(unknown_operation).is_err());
+    }
+
     /// Both halves of a push are a push; a fetch is a read. The evasions are
     /// the cases a substring check on the raw text would miss.
     #[test]
@@ -221,11 +395,13 @@ mod tests {
             ),
         ];
         for (method, path, query) in push {
-            assert_eq!(
-                operation_for(method, path, query),
-                EgressOperation::GitPush,
-                "{method:?} {path} {query:?}"
-            );
+            for table in [EffectTable::unclassified(), forge()] {
+                assert_eq!(
+                    operation_for(&table, method, path, query),
+                    Ok(EgressOperation::GitPush),
+                    "{method:?} {path} {query:?}"
+                );
+            }
         }
         let read = [
             (
@@ -240,8 +416,8 @@ mod tests {
         ];
         for (method, path, query) in read {
             assert_eq!(
-                operation_for(method, path, query),
-                EgressOperation::WebFetch,
+                classify(method, path, query),
+                Ok(EgressOperation::WebFetch),
                 "{method:?} {path} {query:?}"
             );
         }
