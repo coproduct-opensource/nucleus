@@ -184,6 +184,36 @@ fn push_unless_link(rules: &mut Vec<Rule>, path: PathBuf, kind: Kind, grant: Gra
 /// effect of a newer kernel.
 const FS_ABI_LEVELS: [u32; 4] = [5, 3, 2, 1];
 
+/// What a failed `O_PATH` open of a GRANTED path means for the ruleset.
+#[cfg(any(target_os = "linux", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenFailure {
+    /// The path grants nothing: no rule, and the compile goes on. Every rule
+    /// is a grant (hidden paths never become rules), so skipping one can only
+    /// take access away.
+    GrantsNothing,
+    /// Anything else: the compile fails, by name (fail closed).
+    Refuse,
+}
+
+/// The one decider for a granted path whose `O_PATH` open failed (ADR 0007
+/// G-1, A-1):
+///
+/// * `ENOENT`, any path: absent, so it grants nothing.
+/// * `ENXIO` / `ENODEV` on a device node: the node exists and has no backing
+///   driver or device. Measured on the x86_64 guest (6.1.186, musl): even an
+///   `O_PATH` open of `/dev/tty` (5:0) answered `ENXIO`. A device the kernel
+///   cannot back cannot be used either, so a rule on it would grant nothing.
+/// * every other errno, and `ENXIO`/`ENODEV` on a non-device: refuse.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn open_failure(err: &std::io::Error, device: bool) -> OpenFailure {
+    match err.raw_os_error() {
+        Some(libc::ENOENT) => OpenFailure::GrantsNothing,
+        Some(libc::ENXIO | libc::ENODEV) if device => OpenFailure::GrantsNothing,
+        Some(_) | None => OpenFailure::Refuse,
+    }
+}
+
 /// Why the ruleset could not be compiled: the path it stopped at and what
 /// the kernel or filesystem said. Carried to the spawn's refusal by name
 /// (`NucleusError::LandlockRuleset`), never collapsed to an errno.
@@ -340,22 +370,31 @@ mod imp {
                 };
                 let fd = match path_fd(&rule.path) {
                     Ok(fd) => fd,
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        tracing::debug!(path = %rule.path.display(), "vanished before it was opened, so it grants nothing; no Landlock rule");
-                        continue;
-                    }
-                    // Name what the path IS beside the error: an O_PATH open
-                    // that fails for a present path is the case to diagnose.
                     Err(e) => {
-                        use std::os::unix::fs::MetadataExt;
-                        return Err(failed(
-                            &rule.path,
-                            format!(
-                                "O_PATH open failed: {e} (file type {:?}, rdev {:#x})",
-                                meta.file_type(),
-                                meta.rdev()
-                            ),
-                        ));
+                        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+                        let ft = meta.file_type();
+                        let device = ft.is_char_device() || ft.is_block_device();
+                        match super::open_failure(&e, device) {
+                            super::OpenFailure::GrantsNothing => {
+                                tracing::debug!(
+                                    path = %rule.path.display(),
+                                    errno = ?e.raw_os_error(),
+                                    rdev = format_args!("{:#x}", meta.rdev()),
+                                    "absent or unbacked, so it grants nothing; no Landlock rule"
+                                );
+                                continue;
+                            }
+                            // Name what the path IS beside the error.
+                            super::OpenFailure::Refuse => {
+                                return Err(failed(
+                                    &rule.path,
+                                    format!(
+                                        "O_PATH open failed: {e} (file type {ft:?}, rdev {:#x})",
+                                        meta.rdev()
+                                    ),
+                                ));
+                            }
+                        }
                     }
                 };
                 created = created
@@ -658,6 +697,66 @@ mod tests {
         ) {
             panic!("a device that cannot be opened must still get a rule: {e:?}");
         }
+    }
+
+    /// The third x86_64 live-boot failure (#3273): an `O_PATH` open of the
+    /// device `/dev/tty` (5:0) answered `ENXIO`. On a device node, `ENXIO`
+    /// and `ENODEV` (no backing driver) grant nothing and are skipped, like
+    /// `ENOENT` on any path. Red if either device errno refuses the compile.
+    #[test]
+    fn an_unbacked_device_grants_nothing() {
+        for errno in [libc::ENXIO, libc::ENODEV] {
+            let e = std::io::Error::from_raw_os_error(errno);
+            assert_eq!(open_failure(&e, true), OpenFailure::GrantsNothing, "{e}");
+        }
+        for device in [true, false] {
+            let e = std::io::Error::from_raw_os_error(libc::ENOENT);
+            assert_eq!(open_failure(&e, device), OpenFailure::GrantsNothing);
+        }
+    }
+
+    /// Fail closed everywhere else: any other errno on any path, and
+    /// `ENXIO`/`ENODEV` on a path that is not a device node, refuse the
+    /// compile. Red if the skip widens past the measured case.
+    #[test]
+    fn every_other_open_failure_refuses_the_compile() {
+        for errno in [
+            libc::EACCES,
+            libc::EPERM,
+            libc::EIO,
+            libc::ELOOP,
+            libc::EINVAL,
+        ] {
+            for device in [true, false] {
+                let e = std::io::Error::from_raw_os_error(errno);
+                assert_eq!(
+                    open_failure(&e, device),
+                    OpenFailure::Refuse,
+                    "{e} device={device}"
+                );
+            }
+        }
+        for errno in [libc::ENXIO, libc::ENODEV] {
+            let e = std::io::Error::from_raw_os_error(errno);
+            assert_eq!(
+                open_failure(&e, false),
+                OpenFailure::Refuse,
+                "{e} on a non-device"
+            );
+        }
+        assert_eq!(
+            open_failure(&std::io::Error::other("no errno"), true),
+            OpenFailure::Refuse
+        );
+    }
+
+    /// `/dev/tty` is not granted: the workload has no controlling terminal.
+    #[test]
+    fn the_device_list_is_minimal() {
+        assert_eq!(
+            WORKLOAD_DEVICES,
+            &["null", "zero", "full", "random", "urandom"]
+        );
     }
 
     /// The skip is for ABSENT paths only: a path that exists and cannot be
