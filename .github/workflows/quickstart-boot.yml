@@ -317,6 +317,11 @@ jobs:
   boot-a-real-pod:
     name: a real nucleus pod boots and is enforced (x86_64)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # Only for the compile cache's keyless GCP login below. The token is
+      # exchanged for a service account that can touch exactly one bucket.
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -358,6 +363,73 @@ jobs:
           # "can't find crate for `std`". Added explicitly below instead, against
           # whichever toolchain the pin resolves to.
           toolchain: stable
+
+      # THE COMPILE CACHE — speed only, never a verdict.
+      #
+      # A cold build of the guest and host binaries is ~550 s of this job's
+      # ~585 s. sccache keeps rustc outputs in gs://gatehouse-510101-nucleus-sccache
+      # (prefix gha/quickstart-boot/x86_64), reached keylessly: GitHub's OIDC
+      # token is exchanged through Workload Identity Federation (pool
+      # `github-actions`, provider `nucleus`, restricted to this repository and
+      # this workflow file) for `nucleus-ci-sccache@`, whose only grant is
+      # objectAdmin on that one bucket.
+      #
+      # Every cache step may fail without failing the job, and none of them can
+      # change what the job asserts: with no cache, rustc runs directly and the
+      # build is merely slow. A fork's pull request gets no OIDC token, so it
+      # skips the login and builds cold. Pull requests READ the cache; only
+      # main, the merge queue, the weekly run and manual dispatches WRITE it, so
+      # an in-progress branch never fills the bucket.
+      - name: Log in to the compile cache (keyless; skipped for forks)
+        id: gcp
+        if: steps.scope.outputs.relevant == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        continue-on-error: true
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: projects/672742645362/locations/global/workloadIdentityPools/github-actions/providers/nucleus
+          service_account: nucleus-ci-sccache@gatehouse-510101.iam.gserviceaccount.com
+          create_credentials_file: true
+          # The credential reaches the sccache server through the next step's
+          # env alone, not every later step's: the steps after the build boot
+          # pods and plant canaries, and have no use for a cloud credential.
+          export_environment_variables: false
+
+      - name: Install sccache 0.17.0 (pinned by checksum)
+        id: sccache-install
+        if: steps.gcp.outcome == 'success'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/sccache.tar.gz" \
+            https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz
+          echo "67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006  $RUNNER_TEMP/sccache.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/sccache.tar.gz" -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/sccache-v0.17.0-x86_64-unknown-linux-musl/sccache" /usr/local/bin/sccache
+
+      - name: Start the compile cache and route rustc through it
+        id: sccache
+        if: steps.sccache-install.outcome == 'success'
+        continue-on-error: true
+        env:
+          SCCACHE_GCS_BUCKET: gatehouse-510101-nucleus-sccache
+          SCCACHE_GCS_KEY_PREFIX: gha/quickstart-boot/x86_64
+          SCCACHE_GCS_KEY_PATH: ${{ steps.gcp.outputs.credentials_file_path }}
+          SCCACHE_GCS_RW_MODE: ${{ github.event_name == 'pull_request' && 'READ_ONLY' || 'READ_WRITE' }}
+          # The server outlives this step and serves every later cargo call.
+          SCCACHE_IDLE_TIMEOUT: "0"
+        run: |
+          set -euo pipefail
+          # Starting the server checks the bucket; an unreachable or forbidden
+          # bucket fails here, before RUSTC_WRAPPER is set, so the build runs
+          # uncached instead of failing.
+          sccache --start-server
+          sccache --show-stats
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            # sccache cannot cache incremental compilations.
+            echo "CARGO_INCREMENTAL=0"
+            # If the server is lost mid-build, compile locally rather than fail.
+            echo "SCCACHE_IGNORE_SERVER_IO_ERROR=1"
+          } >> "$GITHUB_ENV"
 
       - name: This runner must actually have KVM
         if: steps.scope.outputs.relevant == 'true'
@@ -601,6 +673,10 @@ jobs:
             sudo cp "$f" "$tmp/log$i"; sudo chown "$(id -u)" "$tmp/log$i"; i=$((i+1))
           done
           ./target/release/nucleus-delivery-conformance "$tmp"/log*
+
+      - name: Compile cache hit rate
+        if: always() && steps.sccache.outcome == 'success'
+        run: sccache --show-stats
 
       - name: Show the guest log on failure
         if: failure()
