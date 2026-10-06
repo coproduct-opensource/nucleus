@@ -20,6 +20,8 @@ cargo xtask --help        # list commands
 |---|---|
 | `scripts` | Inventory every `*.sh` in the repo and flag which are port candidates vs. which must stay shell. Effectively the migration backlog. |
 
+| `agent-builder up\|status\|down` | Operator tooling: the disposable build VM (see below). |
+
 ## What gets ported (and what doesn't)
 
 Orchestration scripts — build/CI/dev glue — get ported here. Scripts that are
@@ -54,3 +56,34 @@ Run `cargo xtask scripts` to see the current PORT-vs-KEEP split.
 - `publish = false` — this is a dev-only crate, never published to crates.io.
 - The workspace root is located relative to `CARGO_MANIFEST_DIR`, so commands
   work regardless of the current directory.
+
+## Operator tooling: agent build VM
+
+`cargo xtask agent-builder` is **operator tooling**, not part of the runtime and not a
+gate: nothing in nucleus depends on it. It drives the `gcloud` CLI to keep one disposable
+build VM — the machine agents compile and test on instead of a laptop — and it names no
+project, region or machine shape. Those come from flags or environment variables:
+
+```bash
+export AGENT_BUILDER_PROJECT=<project>
+export AGENT_BUILDER_ZONES=<zone>,<fallback-zone>     # tried in order on capacity/quota errors
+export AGENT_BUILDER_MACHINE_TYPE=<arm64 machine type>
+export AGENT_BUILDER_DISK_TYPE=<disk type>
+export AGENT_BUILDER_SERVICE_ACCOUNT=<sa email>      # least privilege: the cache bucket only
+
+cargo xtask agent-builder up       # create from the image family (or adopt a running one), wait until ready
+cargo xtask agent-builder status   # every instance labelled role=agent-builder
+cargo xtask agent-builder down     # delete it -- refused unless it carries role=agent-builder
+```
+
+What is fixed rather than configurable, because an idle build VM costs money silently:
+the VM is spot, `--max-run-duration 12h`, `--instance-termination-action DELETE`, and
+labelled `role=agent-builder`. `create` refuses to run if any of those is missing from its
+own command line, and `down` deletes only an instance whose label it has just read back.
+
+`up` boots from the newest image in `--image-family` (default `nucleus-agent-builder`),
+an image the operator bakes with the pinned toolchain, build tools, a pre-fetched cargo
+registry and a compiler cache configured as `RUSTC_WRAPPER`. The boot-time script only
+refreshes the baked `~/nucleus` clone and writes `/var/tmp/provisioned`; `up` waits for
+that marker over an IAP tunnel and prints how long creation and provisioning took. The
+image bake itself is operator-side and lives outside this repository.
