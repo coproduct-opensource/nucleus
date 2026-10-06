@@ -10,7 +10,7 @@
 //! it labels the call with the shared classifier and opens a stream to the
 //! host with a bounded approval wait, so a held request answers the client
 //! with a refusal once the wait runs out. The host is the real serving path,
-//! with this pod's clock moved forward so the operator can take seven minutes
+//! with this pod's clock moved forward so the operator can take eight minutes
 //! without the test taking them.
 //!
 //! Before #3266 this push could not finish. The ref advertisement was a push
@@ -190,18 +190,18 @@ fn at(pod: &Pod, seconds: u64) {
 /// **The acceptance (#3266).** In one pod, after a model call, the real git
 /// client pushes. The ref advertisement is a read and is not held; the pack
 /// is, as a declassification, and the push fails when the held request's
-/// wait runs out. The workload retries at three minutes: the same pending
-/// approval, the same id. The operator grants it at seven minutes; the next
+/// wait runs out. The workload retries at two minutes: the same pending
+/// approval, the same id. The operator grants it at eight minutes; the next
 /// `git push`, a plain retry, completes; the very same push again is held
 /// afresh under a new id, so the approval released exactly one pack. The
 /// pack's signed record names the approval; the advertisements' records are
 /// reads that declassify nothing.
 ///
-/// A-19, each driven red on this test: the pre-#3266 timing (pending approvals
-/// living 300 s from the hold) leaves the operator nothing to grant at seven
-/// minutes; classifying the advertisement as a push again holds the GET, so
-/// the push never reaches its pack and the one pending approval is the
-/// advertisement's.
+/// A-19, each driven red on this test: the pre-#3266 pending TTL (300 s)
+/// leaves the operator nothing to grant at eight minutes, six after the last
+/// retry; classifying the advertisement as a push again holds the GET, so the
+/// push never reaches its pack and the one pending approval is the
+/// advertisement's; leaving a spent approval `Granted` releases the replay.
 #[tokio::test]
 async fn a_plain_git_push_completes_after_one_approval_granted_minutes_later() {
     let (base, hits) = pushable_remote().await;
@@ -257,15 +257,15 @@ async fn a_plain_git_push_completes_after_one_approval_granted_minutes_later() {
     let id = held[0].id;
 
     // The workload retries before anyone looks: one pending entry, one id.
-    at(&pod, 3 * 60);
+    at(&pod, 2 * 60);
     let (ok, _) = push().await;
     assert!(!ok);
     let held = pending(&pod);
     assert_eq!(held.len(), 1, "{held:?}");
     assert_eq!(held[0].id, id, "a retry churned the approval id");
 
-    // The operator, seven minutes after the hold, reviews and grants it.
-    at(&pod, 7 * 60);
+    // The operator, eight minutes after the hold, reviews and grants it.
+    at(&pod, 8 * 60);
     let held = pending(&pod);
     assert_eq!(
         held.iter().map(|a| a.id).collect::<Vec<_>>(),
@@ -283,7 +283,7 @@ async fn a_plain_git_push_completes_after_one_approval_granted_minutes_later() {
     }
 
     // A plain retry of the push, after the grant: it completes.
-    at(&pod, 7 * 60 + 30);
+    at(&pod, 8 * 60 + 30);
     let (ok, said) = push().await;
     assert!(ok, "the approved push did not complete: {said}");
     assert_eq!(methods(), ["GET", "GET", "GET", "POST"]);

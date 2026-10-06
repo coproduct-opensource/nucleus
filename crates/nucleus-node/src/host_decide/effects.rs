@@ -90,6 +90,7 @@ pub(crate) struct ApprovalTimingArgs {
 
 impl ApprovalTimingArgs {
     /// The flags as they parse with none given.
+    #[cfg(test)]
     pub(crate) const HUMAN: Self = Self {
         pending_ttl_secs: ApprovalTiming::HUMAN.pending_ttl,
         grant_validity_secs: ApprovalTiming::HUMAN.grant_validity,

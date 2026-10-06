@@ -54,39 +54,39 @@ fn pending_at(policy: &mut PodPolicy, now: u64) -> Vec<ApprovalView> {
 }
 
 /// **The acceptance, at the host.** The push is held; the workload's request
-/// times out and it sends the same push again at 2 and 4 minutes; the operator
-/// lists the pod at 7 minutes and finds ONE pending approval, the id it was
-/// first held under; grants it; and the next identical push, sent after the
-/// grant by a workload that never saw it, is released, once. A replay is held
-/// afresh under a new id.
+/// times out and it sends the same push again at 1 and 2 minutes; the operator
+/// lists the pod at 8 minutes, six after the last retry, and finds ONE pending
+/// approval, the id it was first held under; grants it; and the next identical
+/// push, sent after the grant by a workload that never saw it, is released,
+/// once. A replay is held afresh under a new id.
 ///
-/// A-19: the pre-#3266 timing (a pending approval living five minutes from
-/// the hold, `ApprovalTiming::new(300, 300)` here) reds the listing — at seven
-/// minutes the operator finds nothing to grant.
+/// A-19: the pre-#3266 pending TTL (300 s for `ApprovalTiming::HUMAN`) reds
+/// the listing, even with the refresh — at eight minutes the operator finds
+/// nothing to grant; leaving a spent approval `Granted` reds the replay.
 #[test]
-fn a_grant_seven_minutes_after_the_hold_releases_the_next_identical_push_once() {
+fn a_grant_eight_minutes_after_the_hold_releases_the_next_identical_push_once() {
     let shared = gated();
     let mut policy = shared.lock().unwrap();
     let digest = ArgsDigest::new([42; 32]);
     let first = held_id(send(&mut policy, digest, HOLD));
-    for resend in [2, 4] {
+    for resend in [1, 2] {
         assert_eq!(
             held_id(send(&mut policy, digest, HOLD + resend * MINUTE)),
             first,
             "a re-sent request churned its approval id"
         );
     }
-    let pending = pending_at(&mut policy, HOLD + 7 * MINUTE);
+    let pending = pending_at(&mut policy, HOLD + 8 * MINUTE);
     assert_eq!(pending.len(), 1, "{pending:?}");
     assert_eq!(pending[0].id, first);
     policy
-        .settle_effect_approval(operator(), first, true, HOLD + 7 * MINUTE)
+        .settle_effect_approval(operator(), first, true, HOLD + 8 * MINUTE)
         .unwrap();
-    let _released = send(&mut policy, digest, HOLD + 8 * MINUTE)
+    let _released = send(&mut policy, digest, HOLD + 9 * MINUTE)
         .expect("the granted digest released the next identical push");
-    let replay = held_id(send(&mut policy, digest, HOLD + 8 * MINUTE));
+    let replay = held_id(send(&mut policy, digest, HOLD + 9 * MINUTE));
     assert_ne!(replay, first, "a spent grant released a replay");
-    let listed = policy.list_effect_approvals(operator(), HOLD + 8 * MINUTE);
+    let listed = policy.list_effect_approvals(operator(), HOLD + 9 * MINUTE);
     let spent = listed.iter().find(|a| a.id == first).unwrap();
     assert_eq!(spent.status, ApprovalStatus::Spent);
 }
