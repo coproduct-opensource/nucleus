@@ -68,6 +68,122 @@ pub struct Reserved {
     pub kind: ReservedKind,
     /// Why an image may not supply it — shown to whoever is refused.
     pub why: &'static str,
+    /// What a confined workload may do there (#2696 P3c). Stated on every
+    /// entry, beside the reason it is reserved, so the Landlock ruleset and the
+    /// list of trusted paths are one table (ADR 0007 G-1).
+    pub workload: WorkloadFs,
+}
+
+/// What a confined workload may do beneath a guest path: the input the
+/// workload's Landlock ruleset is compiled from (`nucleus::ChildConfinement`,
+/// #2696 P3c).
+///
+/// A path [`RESERVED`] does not name is [`WorkloadFs::Read`]: the image's own
+/// files are the workload's to read and run, and nothing more.
+///
+/// No `Default` (ADR 0007 B-1): each reserved entry states its answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkloadFs {
+    /// No access at all, not even listing: runtime-owned state (the pod spec,
+    /// the SVID, legacy secrets). Connecting to a socket beneath it is not an
+    /// access Landlock governs, which is why the workload door under `/run`
+    /// still answers.
+    Hidden,
+    /// Read files, list directories and execute. Never write, create or remove.
+    Read,
+    /// Everything the kernel's Landlock ABI can govern: the workload's own
+    /// scratch and temporary space.
+    ReadWrite,
+    /// The directory itself is not granted; only the [`WORKLOAD_DEVICES`]
+    /// beneath it, each read-write.
+    Devices,
+}
+
+/// The device nodes under `/dev` a confined workload may open, read-write.
+/// Nothing else under `/dev` is granted (the block devices, `vsock`, `kmsg`).
+/// Symlinks such as `/dev/stdout` resolve into `/proc`, which is
+/// [`WorkloadFs::Read`].
+pub const WORKLOAD_DEVICES: &[&str] = &[
+    "null", "zero", "full", "random", "urandom", "tty", "ptmx", "pts",
+];
+
+/// The kernel command-line token by which the NODE waives Landlock for the
+/// workloads of a pod whose kernel cannot enforce it (#2696 P3c). Without it, a
+/// guest whose kernel lacks Landlock at the minimum ABI refuses to start a
+/// confined child. Not a secret: the command line is world-readable, and the
+/// token grants the workload nothing it could use.
+pub const WORKLOAD_LANDLOCK_WAIVED_ARG: &str = "nucleus.workload_landlock=waived";
+
+/// The prefix of the console line the tool-proxy prints once at startup,
+/// stating whether its children's filesystem is confined by Landlock. The node
+/// reads it into the pod's reported posture (#2696 P3c).
+pub const WORKLOAD_LANDLOCK_VERDICT: &str = "NUCLEUS_WORKLOAD_LANDLOCK:";
+
+/// What the tool-proxy reports about its children's filesystem confinement,
+/// as one [`WORKLOAD_LANDLOCK_VERDICT`] line on the console. The guest renders
+/// it and the node parses it with the same type, so the two cannot spell it
+/// differently (ADR 0007 G-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkloadLandlockVerdict {
+    /// Every confined child is held to the guest layout's ruleset at this ABI.
+    Enforced {
+        /// The kernel's Landlock ABI.
+        abi: u32,
+    },
+    /// The kernel cannot enforce Landlock and the node waived it: children
+    /// run filesystem-unconfined.
+    Waived {
+        /// What the kernel offered instead.
+        kernel: String,
+    },
+    /// The kernel cannot enforce Landlock and nothing waived it: every
+    /// confined child is refused, so the workload never starts.
+    Refused {
+        /// What the kernel offered instead.
+        kernel: String,
+    },
+    /// This containment does not hold the filesystem with Landlock.
+    NotApplied,
+}
+
+impl WorkloadLandlockVerdict {
+    /// The console line.
+    #[must_use]
+    pub fn line(&self) -> String {
+        let body = match self {
+            Self::Enforced { abi } => format!("enforced abi={abi}"),
+            Self::Waived { kernel } => format!("waived {kernel}"),
+            Self::Refused { kernel } => format!("refused {kernel}"),
+            Self::NotApplied => "not_applied".to_string(),
+        };
+        format!("{WORKLOAD_LANDLOCK_VERDICT} {body}")
+    }
+
+    /// The verdict on a captured console, if the guest printed one. A line
+    /// that carries the prefix but no verdict this type can read is `None`,
+    /// the same as no line: an unreadable claim is no claim.
+    #[must_use]
+    pub fn parse(console: &str) -> Option<Self> {
+        let rest = console.lines().find_map(|l| {
+            l.find(WORKLOAD_LANDLOCK_VERDICT)
+                .map(|at| l[at + WORKLOAD_LANDLOCK_VERDICT.len()..].trim())
+        })?;
+        let (word, detail) = rest.split_once(' ').unwrap_or((rest, ""));
+        match word {
+            "enforced" => detail
+                .strip_prefix("abi=")
+                .and_then(|n| n.trim().parse().ok())
+                .map(|abi| Self::Enforced { abi }),
+            "waived" => Some(Self::Waived {
+                kernel: detail.to_string(),
+            }),
+            "refused" => Some(Self::Refused {
+                kernel: detail.to_string(),
+            }),
+            "not_applied" if detail.is_empty() => Some(Self::NotApplied),
+            _ => None,
+        }
+    }
 }
 
 /// The guest's PID 1.
@@ -262,61 +378,73 @@ pub const RESERVED: &[Reserved] = &[
         path: INIT,
         kind: ReservedKind::Exact,
         why: "the guest's PID 1; an image-supplied /init would replace the runtime",
+        workload: WorkloadFs::Read,
     },
     Reserved {
         path: ETC_NUCLEUS,
         kind: ReservedKind::Prefix,
         why: "the baked pod spec, egress policy and CA bundle the runtime trusts",
+        workload: WorkloadFs::Hidden,
     },
     Reserved {
         path: NUCLEUS_BIN_PREFIX,
         kind: ReservedKind::Prefix,
         why: "the mediating runtime and its probes",
+        workload: WorkloadFs::Read,
     },
     Reserved {
         path: FALLBACK_POD_SPEC,
         kind: ReservedKind::Exact,
         why: "outranks the host-fetched pod spec, so it would choose the pod's command",
+        workload: WorkloadFs::Hidden,
     },
     Reserved {
         path: "/run/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "tmpfs mounted at boot; holds the fetched spec and identity",
+        workload: WorkloadFs::Hidden,
     },
     Reserved {
         path: "/tmp/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "tmpfs mounted at boot",
+        workload: WorkloadFs::ReadWrite,
     },
     Reserved {
         path: "/work/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "the pod scratch is mounted here; without a scratch drive the image's contents would show through",
+        workload: WorkloadFs::ReadWrite,
     },
     Reserved {
         path: "/cache/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "the pinned compiler cache is mounted here; stale image contents would poison it",
+        workload: WorkloadFs::ReadWrite,
     },
     Reserved {
         path: "/cache-seed/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "the pinned cache seed is mounted here",
+        workload: WorkloadFs::Read,
     },
     Reserved {
         path: "/proc/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "procfs is mounted at boot",
+        workload: WorkloadFs::Read,
     },
     Reserved {
         path: "/sys/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "sysfs is mounted at boot",
+        workload: WorkloadFs::Read,
     },
     Reserved {
         path: "/dev/",
         kind: ReservedKind::MustBeEmptyDir,
         why: "devtmpfs is mounted at boot; an image-supplied device node is a privilege primitive",
+        workload: WorkloadFs::Devices,
     },
 ];
 
@@ -339,6 +467,42 @@ pub fn reserved_by(path: &str) -> Option<&'static Reserved> {
             }
             ReservedKind::MustBeEmptyDir => rel.starts_with(claimed),
         }
+    })
+}
+
+/// The [`RESERVED`] entry rooted exactly at `path` (an absolute guest path with
+/// no trailing slash), as the workload's Landlock ruleset sees it: a
+/// directory entry (`/tmp/`) or an exact one (`/init`) is rooted at its own
+/// path, and a name prefix (`/usr/local/bin/nucleus-`) roots every path that
+/// starts with it. `None`: no entry is rooted here, so `path` is the image's.
+///
+/// Unlike [`reserved_by`], a [`ReservedKind::MustBeEmptyDir`] directory IS
+/// matched by its own path: what the workload may do in `/work` is a fact
+/// about `/work`.
+#[must_use]
+pub fn reserved_at(path: &str) -> Option<&'static Reserved> {
+    RESERVED.iter().find(|r| match r.path.strip_suffix('/') {
+        Some(dir) => path == dir,
+        None => match r.kind {
+            ReservedKind::Prefix => path.starts_with(r.path),
+            ReservedKind::Exact | ReservedKind::MustBeEmptyDir => path == r.path,
+        },
+    })
+}
+
+/// Whether a reserved entry that the workload may NOT simply read lies strictly
+/// beneath `path`. A Landlock rule grants a whole subtree and cannot carve a
+/// hole in it, so such a directory is not granted whole: its children are
+/// granted one by one instead, and the hole is the child left out.
+#[must_use]
+pub fn workload_must_descend(path: &str) -> bool {
+    let beneath = if path == "/" {
+        "/".to_string()
+    } else {
+        format!("{path}/")
+    };
+    RESERVED.iter().any(|r| {
+        r.workload != WorkloadFs::Read && r.path.starts_with(&beneath) && r.path != beneath
     })
 }
 
@@ -529,6 +693,109 @@ mod tests {
         assert_eq!(CaBundle::resolve(|_| false), CaBundle::Absent);
         assert_eq!(CaBundle::Absent.path(), None);
         assert_eq!(CaBundle::GuestLayer.path(), Some(CA_BUNDLE));
+    }
+
+    /// #2696 P3c: every file that holds a runtime secret or the pod's spec is
+    /// hidden from the workload by the table, and the workload's scratch is
+    /// writable. Asked of the paths, not of the entries, so moving a secret
+    /// under a readable prefix reds here.
+    #[test]
+    fn runtime_secrets_are_hidden_from_the_workload_and_its_scratch_is_writable() {
+        let hidden = |p: &str| {
+            // The entry that roots the path, or the nearest ancestor that does.
+            let mut at = p.to_string();
+            loop {
+                if let Some(r) = reserved_at(&at) {
+                    return r.workload == WorkloadFs::Hidden;
+                }
+                match at.rsplit_once('/') {
+                    Some(("", _)) | None => return false,
+                    Some((parent, _)) => at = parent.to_string(),
+                }
+            }
+        };
+        for p in [
+            POD_SPEC_PATH,
+            FALLBACK_POD_SPEC,
+            NET_ALLOW,
+            NET_DENY,
+            AUTH_SECRET,
+            APPROVAL_SECRET,
+            SANDBOX_TOKEN,
+            AUDIT_PATH_FILE,
+            "/run/nucleus/identity/svid.pem",
+        ] {
+            assert!(hidden(p), "{p} must be hidden from the workload");
+        }
+        for p in [WORK_DIR, "/tmp", "/cache"] {
+            assert_eq!(
+                reserved_at(p).map(|r| r.workload),
+                Some(WorkloadFs::ReadWrite),
+                "{p}"
+            );
+        }
+        // The binaries the workload itself runs (the MCP bridge, the egress
+        // adapter) stay readable and executable.
+        assert_eq!(
+            reserved_at(MCP_BIN).map(|r| r.workload),
+            Some(WorkloadFs::Read)
+        );
+    }
+
+    /// Descent is needed exactly where a hole must be cut: `/` (for `/run`,
+    /// `/etc/nucleus`, `/pod.yaml`) and `/etc`, but not `/usr`, whose only
+    /// reserved entry (the guest binaries) is readable anyway.
+    #[test]
+    fn the_ruleset_descends_only_where_a_hole_is_cut() {
+        assert!(workload_must_descend("/"));
+        assert!(workload_must_descend("/etc"));
+        assert!(!workload_must_descend("/etc/nucleus"));
+        assert!(!workload_must_descend("/usr"));
+        assert!(!workload_must_descend("/usr/local/bin"));
+        assert!(!workload_must_descend("/home"));
+    }
+
+    /// The guest renders and the node parses with one type: every verdict
+    /// survives the round trip, behind a kernel log prefix too.
+    #[test]
+    fn the_landlock_verdict_round_trips_through_the_console() {
+        for v in [
+            WorkloadLandlockVerdict::Enforced { abi: 2 },
+            WorkloadLandlockVerdict::Waived {
+                kernel:
+                    "no Landlock (landlock_create_ruleset: Function not implemented (os error 38))"
+                        .to_string(),
+            },
+            WorkloadLandlockVerdict::Refused {
+                kernel: "Landlock ABI 1".to_string(),
+            },
+            WorkloadLandlockVerdict::NotApplied,
+        ] {
+            let console = format!("[    1.2] Run /init\n[proxy] {}\nother\n", v.line());
+            assert_eq!(WorkloadLandlockVerdict::parse(&console), Some(v));
+        }
+        assert_eq!(WorkloadLandlockVerdict::parse("no verdict here"), None);
+        assert_eq!(
+            WorkloadLandlockVerdict::parse("NUCLEUS_WORKLOAD_LANDLOCK: enforced abi=two"),
+            None
+        );
+    }
+
+    #[test]
+    fn reserved_at_roots_directories_at_their_own_path() {
+        assert_eq!(reserved_at("/work").map(|r| r.path), Some("/work/"));
+        assert_eq!(
+            reserved_at("/etc/nucleus").map(|r| r.path),
+            Some(ETC_NUCLEUS)
+        );
+        assert_eq!(reserved_at("/init").map(|r| r.path), Some(INIT));
+        assert_eq!(
+            reserved_at("/usr/local/bin/nucleus-mcp").map(|r| r.path),
+            Some(NUCLEUS_BIN_PREFIX)
+        );
+        assert_eq!(reserved_at("/work/x"), None);
+        assert_eq!(reserved_at("/etc"), None);
+        assert_eq!(reserved_at("/initrd.img"), None);
     }
 
     #[test]

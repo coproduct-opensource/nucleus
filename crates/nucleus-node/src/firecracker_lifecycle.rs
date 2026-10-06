@@ -113,6 +113,7 @@ mod tests {
             .unwrap();
         let pod = FirecrackerPod {
             direct_cgroup: Mutex::new(None),
+            workload_filesystem: crate::net::confinement::WorkloadFilesystem::Unreported,
             pod_dir: path.to_owned(),
             child: Arc::new(Mutex::new(child)),
             bridge: Mutex::new(None),

@@ -358,6 +358,15 @@ struct Args {
     /// Vsock port the guest uses to reach the credential broker.
     #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
     broker_vsock_port: u32,
+    /// Waive Landlock for pods whose guest kernel cannot enforce it (#2696
+    /// P3c). Without it, a guest whose kernel lacks Landlock ABI 2 refuses to
+    /// start its workload and every `/v1/run` command (fail closed). With it,
+    /// they run filesystem-unconfined and each launch receipt records the
+    /// waiver. It changes nothing on a kernel that has Landlock, such as the
+    /// pinned guest kernel. A flag only, never an env var: ambient
+    /// configuration is not a waiver.
+    #[arg(long = "allow-workload-without-landlock", action = clap::ArgAction::SetTrue)]
+    allow_workload_without_landlock: bool,
     /// Largest request body one streamed credentialed-egress call may upload
     /// (#2696 P4). Every byte is also charged to the pod's egress ceiling.
     #[arg(
@@ -505,6 +514,10 @@ struct NodeState {
     /// Vsock port the guest uses to reach the credential broker.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_vsock_port: u32,
+    /// The operator's Landlock waiver for guests whose kernel lacks it,
+    /// carried to each guest as `guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    workload_landlock: nucleus::LandlockWaiver,
     /// Per-call bounds on a streamed credentialed-egress call.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     egress_stream_limits: broker_stream::StreamLimits,
@@ -602,6 +615,9 @@ struct LocalPod {
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct FirecrackerPod {
     direct_cgroup: Mutex<Option<cgroup::Placement>>,
+    /// What the guest reported about its children's filesystem (#2696 P3c),
+    /// read once at boot and shown in the pod's posture.
+    workload_filesystem: net::confinement::WorkloadFilesystem,
     /// The host-owned pod dir: where teardown preserves the exit report and where
     /// the node's record of the pod's mediation key lives (`pod_receipt`).
     pod_dir: PathBuf,
@@ -900,6 +916,11 @@ async fn main() -> Result<(), ApiError> {
         broker_listen: args.broker_listen,
         broker_enforcing: host_spec_enforcement,
         broker_vsock_port: args.broker_vsock_port,
+        workload_landlock: if args.allow_workload_without_landlock {
+            nucleus::LandlockWaiver::Explicit
+        } else {
+            nucleus::LandlockWaiver::Absent
+        },
         egress_stream_limits,
         staging_budget: broker_stream::staging_budget::Budget::new(args.egress_staging_max_bytes)
             .map_err(ApiError::Driver)?,
@@ -1992,6 +2013,7 @@ async fn spawn_firecracker_pod(
             netns_pid: Option<u32>,
             netns_baseline: Option<String>,
             config: firecracker_config::FirecrackerConfig,
+            workload_filesystem: net::confinement::WorkloadFilesystem,
         }
 
         // From here every resource the launch acquires is moved into one handle the moment it
@@ -2096,7 +2118,8 @@ async fn spawn_firecracker_pod(
                     audit.map(audit_sink::credentials::AuditGrant::target),
                     jail_layout.as_ref(),
                 )
-                .requiring_host_spec(state.broker_enforcing.is_required());
+                .requiring_host_spec(state.broker_enforcing.is_required())
+                .waiving_workload_landlock(state.workload_landlock);
                 let config_json = serde_json::to_vec_pretty(&config)
                     .map_err(|err| ApiError::Driver(format!("config serialize failed: {err}")))?;
                 // The host copy at `config_path` stays for operators to inspect; the
@@ -2433,7 +2456,7 @@ async fn spawn_firecracker_pod(
                 let health_addr = proxy.listen_addr();
                 res.hold_proxy(proxy);
 
-                prepared_pod
+                let workload_filesystem = prepared_pod
                     .gate(health_addr, pod_dir, spec, id, res.vmm_mut()?)
                     .await?;
                 Ok::<_, ApiError>(Booted {
@@ -2442,6 +2465,7 @@ async fn spawn_firecracker_pod(
                     netns_pid,
                     netns_baseline,
                     config,
+                    workload_filesystem,
                 })
             })
             .await?;
@@ -2451,6 +2475,7 @@ async fn spawn_firecracker_pod(
             netns_pid,
             netns_baseline,
             config,
+            workload_filesystem,
         } = booted;
         let launch_resources::Committed {
             permit,
@@ -2532,6 +2557,7 @@ async fn spawn_firecracker_pod(
 
         let handle = FirecrackerPod {
             direct_cgroup: Mutex::new(direct_cgroup),
+            workload_filesystem,
             pod_dir: pod_dir.to_path_buf(),
             jail: Mutex::new(jail),
             child,

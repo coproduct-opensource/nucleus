@@ -280,6 +280,18 @@ pub fn requires_host_spec(cmdline: &str) -> Result<bool, BootError> {
     Ok(required)
 }
 
+/// The tool-proxy flag that carries the node's Landlock waiver (#2696 P3c):
+/// `Some` only when the command line holds exactly
+/// `guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG`. Any other spelling of the key
+/// is no waiver, so a typo fails closed (the workload is refused on a kernel
+/// without Landlock) rather than open.
+pub fn landlock_waiver_flag(cmdline: &str) -> Option<&'static str> {
+    cmdline
+        .split_whitespace()
+        .any(|arg| arg == nucleus_spec::guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG)
+        .then_some("--workload-without-landlock")
+}
+
 /// Enforcing guests take only the host's spec. Legacy guests keep their baked
 /// spec precedence, including the host fallback for generic snapshot bases.
 pub fn resolve_launch_spec(
@@ -443,6 +455,22 @@ mod tests {
 #[cfg(test)]
 mod host_spec_tests {
     use super::*;
+
+    #[test]
+    fn only_the_exact_waiver_token_waives_landlock() {
+        assert_eq!(
+            landlock_waiver_flag("console=ttyS0 nucleus.workload_landlock=waived panic=1"),
+            Some("--workload-without-landlock")
+        );
+        for line in [
+            "console=ttyS0",
+            "nucleus.workload_landlock=yes",
+            "nucleus.workload_landlock=waived2",
+            "xnucleus.workload_landlock=waived",
+        ] {
+            assert_eq!(landlock_waiver_flag(line), None, "{line}");
+        }
+    }
 
     #[test]
     fn required_host_spec_overrides_baked_specs_and_never_falls_back() {

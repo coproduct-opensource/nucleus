@@ -50,6 +50,8 @@ inductive CmdKey where
   -- SHARED_CONFIG_KEYS (snapshot.rs:137)
   | approvalPubkeys | auditS3Bucket | auditS3Endpoint | auditS3Prefix | auditS3Region
   | awsDefaultRegion | workloadApiPort | net
+  -- the operator's Landlock waiver (#2696 P3c): node configuration, no secret
+  | workloadLandlock
   -- any other (unclassified) base key
   | otherPublic
   deriving DecidableEq, Repr
@@ -64,7 +66,7 @@ def CmdKey.isPerPodSecret : CmdKey → Bool
 /-- Per-node / per-fleet shared config — safe to bake (every clone shares it). -/
 def CmdKey.isSharedConfig : CmdKey → Bool
   | .approvalPubkeys | .auditS3Bucket | .auditS3Endpoint | .auditS3Prefix | .auditS3Region
-  | .awsDefaultRegion | .workloadApiPort | .net => true
+  | .awsDefaultRegion | .workloadApiPort | .net | .workloadLandlock => true
   | _ => false
 
 /-- Model of `SnapshotSafety` (snapshot.rs:155). -/

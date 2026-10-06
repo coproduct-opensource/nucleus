@@ -157,6 +157,7 @@ fn a_command_that_writes_a_git_hook_is_reverted_and_refused() {
     let confinement = ChildConfinement::for_containment(
         ContainmentMode::Unsandboxed,
         crate::UnsandboxedOptIn::Explicit,
+        crate::LandlockWaiver::Absent,
     )
     .unwrap();
     for dir in [".git", ".git/hooks"] {
@@ -852,6 +853,7 @@ fn a_microvm_pods_sandbox_hands_what_it_creates_to_the_child_uid() {
         ChildConfinement::for_containment(
             ContainmentMode::MicroVM,
             crate::UnsandboxedOptIn::Absent,
+            crate::LandlockWaiver::Absent,
         )
         .unwrap(),
     );

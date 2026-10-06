@@ -1949,3 +1949,54 @@ fn the_unsandboxed_opt_in_comes_only_from_the_flag() {
         "the opt-in must not be env-backed"
     );
 }
+
+/// #2696 P3c: the Landlock waiver is a typed value only the explicit
+/// `--workload-without-landlock` flag produces, never an env var.
+#[test]
+fn the_landlock_waiver_comes_only_from_the_flag() {
+    let parse = |extra: &[&str]| {
+        let mut argv = vec!["nucleus-tool-proxy", "--spec", "/nonexistent/pod.yaml"];
+        argv.extend_from_slice(extra);
+        <Args as clap::Parser>::try_parse_from(argv)
+            .expect("parses")
+            .workload_without_landlock
+    };
+    assert_eq!(parse(&[]), nucleus::LandlockWaiver::Absent);
+    assert_eq!(
+        parse(&["--workload-without-landlock"]),
+        nucleus::LandlockWaiver::Explicit
+    );
+    let not_env_backed = <Args as clap::CommandFactory>::command()
+        .get_arguments()
+        .find(|a| a.get_id() == "workload_without_landlock")
+        .map(|a| a.get_env().is_none());
+    assert_eq!(
+        not_env_backed,
+        Some(true),
+        "the waiver must not be env-backed"
+    );
+}
+
+/// The bare tier and `HostHardened` print `not_applied`; the verdict comes
+/// from the decider every spawn asks, so it is never `enforced` there.
+#[test]
+fn the_landlock_verdict_is_the_spawn_decision() {
+    use nucleus_spec::guest_layout::WorkloadLandlockVerdict;
+    assert_eq!(
+        workload_landlock_verdict(
+            nucleus::ContainmentMode::Unsandboxed,
+            nucleus::UnsandboxedOptIn::Explicit,
+            nucleus::LandlockWaiver::Absent,
+        ),
+        Some(WorkloadLandlockVerdict::NotApplied)
+    );
+    // Unconfigured is refused for a reason that is not Landlock's: no line.
+    assert_eq!(
+        workload_landlock_verdict(
+            nucleus::ContainmentMode::Unconfigured,
+            nucleus::UnsandboxedOptIn::Absent,
+            nucleus::LandlockWaiver::Absent,
+        ),
+        None
+    );
+}

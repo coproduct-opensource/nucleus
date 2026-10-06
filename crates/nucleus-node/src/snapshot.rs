@@ -146,6 +146,9 @@ pub const SHARED_CONFIG_KEYS: &[&str] = &[
     "nucleus.aws_default_region",
     "nucleus.workload_api_port",
     "nucleus.host_spec",
+    // The operator's Landlock waiver (#2696 P3c): node configuration, the
+    // same for every pod, and no secret.
+    "nucleus.workload_landlock",
     // Networking is re-established after restore, not inherited: Firecracker
     // documents that "guest network connectivity is not guaranteed to be
     // preserved after resume".
@@ -485,6 +488,7 @@ mod tests {
             "nucleus.workload_api_port",
             "nucleus.host_spec",
             "nucleus.net",
+            "nucleus.workload_landlock",
         ];
         assert_eq!(
             MODEL_PER_POD.iter().collect::<BTreeSet<_>>(),

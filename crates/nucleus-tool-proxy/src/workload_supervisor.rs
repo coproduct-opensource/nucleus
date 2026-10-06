@@ -83,12 +83,17 @@ impl Drop for Supervisor {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each is a distinct decision input: the containment and the two operator waivers stay separate types (ADR 0007 A)"
+)]
 pub(crate) fn start(
     spec: &nucleus_spec::PodSpec,
     door_path: &std::path::Path,
     door_app: axum::Router,
     containment: nucleus::ContainmentMode,
     opt_in: nucleus::UnsandboxedOptIn,
+    landlock: nucleus::LandlockWaiver,
     writer: Writer,
     on_exit: Option<ExitHook>,
 ) -> Result<Option<Supervisor>, ApiError> {
@@ -99,7 +104,7 @@ pub(crate) fn start(
         },
     };
     let Some((child, launch)) =
-        workload::start_if_configured(spec, door_path, door_app, containment, opt_in)?
+        workload::start_if_configured(spec, door_path, door_app, containment, opt_in, landlock)?
     else {
         crate::console_line("[workload] no workload configured in pod spec");
         return Ok(None);

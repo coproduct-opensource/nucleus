@@ -6523,6 +6523,7 @@ dependencies = [
  "libc",
  "nucleus-ifc-kernel",
  "nucleus-provenance",
+ "nucleus-spec",
  "parking_lot",
  "portcullis",
  "portcullis-effects",

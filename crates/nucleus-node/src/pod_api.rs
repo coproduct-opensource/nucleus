@@ -1266,6 +1266,7 @@ pub(crate) mod handler_tests {
             )
             .expect("the fixture's driver resolves"),
             broker_vsock_port: a.broker_vsock_port,
+            workload_landlock: nucleus::LandlockWaiver::Absent,
             staging_budget: crate::broker_stream::staging_budget::Budget::new(
                 crate::broker_stream::staging_budget::DEFAULT_BYTES,
             )

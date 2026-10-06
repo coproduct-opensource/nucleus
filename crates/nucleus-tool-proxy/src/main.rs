@@ -100,6 +100,35 @@ fn unsandboxed_opt_in(given: bool) -> nucleus::UnsandboxedOptIn {
     }
 }
 
+/// `--workload-without-landlock` as the typed waiver it is (ADR 0007 A).
+fn landlock_waiver(given: bool) -> nucleus::LandlockWaiver {
+    if given {
+        nucleus::LandlockWaiver::Explicit
+    } else {
+        nucleus::LandlockWaiver::Absent
+    }
+}
+
+/// What this runtime's children's filesystem confinement is, as the console
+/// verdict the node reads (#2696 P3c). Asked of the same decider every spawn
+/// asks, so the line cannot claim a posture the children do not get. `None`
+/// when the decision refuses for another reason (a runtime that cannot drop):
+/// no line, which the node reports as unreported, and the spawn names the
+/// refusal itself.
+fn workload_landlock_verdict(
+    containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
+    landlock: nucleus::LandlockWaiver,
+) -> Option<nucleus_spec::guest_layout::WorkloadLandlockVerdict> {
+    match nucleus::ChildConfinement::for_containment(containment, opt_in, landlock) {
+        Ok(c) => Some(c.filesystem().verdict()),
+        Err(nucleus::NucleusError::LandlockUnavailable { kernel, .. }) => {
+            Some(nucleus_spec::guest_layout::WorkloadLandlockVerdict::Refused { kernel })
+        }
+        Err(_) => None,
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-tool-proxy", mut_args = |a| a.hide_env_values(true))]
 #[command(about = "Tool proxy server running inside nucleus pods")]
@@ -253,6 +282,23 @@ struct Args {
         )
     )]
     unsandboxed: nucleus::UnsandboxedOptIn,
+    /// The node operator's waiver of Landlock (#2696 P3c): on a kernel that
+    /// cannot enforce Landlock ABI 2, start the workload and `/v1/run`
+    /// children anyway, filesystem-unconfined, and record that in the launch
+    /// receipt. Without it every such child is refused by name. It changes
+    /// nothing on a kernel that has Landlock. guest-init passes it when the
+    /// node put `nucleus.workload_landlock=waived` on the command line.
+    ///
+    /// A flag only, never an env var: ambient configuration is not a waiver.
+    #[arg(
+        long = "workload-without-landlock",
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::BoolValueParser::new(),
+            landlock_waiver
+        )
+    )]
+    workload_without_landlock: nucleus::LandlockWaiver,
     /// Comma-separated list of allowed kernel hashes (SHA-256, hex).
     /// If empty, any kernel hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_KERNEL_HASHES")]
@@ -1140,7 +1186,21 @@ async fn main() -> Result<(), ApiError> {
             nucleus::runtime_uid()
         ));
     }
-    let runtime = pod_mgmt::build_runtime(&spec, containment, args.unsandboxed)?;
+    // The filesystem posture every child will get, said once on the console
+    // for the node to report (#2696 P3c), from the decider the spawns use.
+    if let Some(verdict) = workload_landlock_verdict(
+        containment,
+        args.unsandboxed,
+        args.workload_without_landlock,
+    ) {
+        console_line(&verdict.line());
+    }
+    let runtime = pod_mgmt::build_runtime(
+        &spec,
+        containment,
+        args.unsandboxed,
+        args.workload_without_landlock,
+    )?;
     let approvals = Arc::new(ApprovalRegistry::default());
 
     // Load signed approval bundle if present
@@ -1843,6 +1903,7 @@ async fn main() -> Result<(), ApiError> {
             door_app,
             containment,
             args.unsandboxed,
+            args.workload_without_landlock,
             completion_writer,
             Some(spend_shipper::SpendShipper::before_exit(
                 exit_spend.clone(),
@@ -1890,6 +1951,7 @@ async fn main() -> Result<(), ApiError> {
         door_app,
         containment,
         args.unsandboxed,
+        args.workload_without_landlock,
         completion_writer,
         Some(spend_shipper::SpendShipper::before_exit(
             exit_spend.clone(),

@@ -165,6 +165,10 @@ pub struct Executor<'a> {
     /// ([`Self::allow_unsandboxed_local`], [`Self::with_unsandboxed_opt_in`]):
     /// a non-root `Unsandboxed` executor without it refuses every spawn.
     unsandboxed_opt_in: crate::UnsandboxedOptIn,
+    /// The node operator's waiver of Landlock for a kernel that lacks it
+    /// (#2696 P3c). `Absent` unless declared ([`Self::with_landlock_waiver`]):
+    /// a `MicroVM` executor on such a kernel then refuses every spawn.
+    landlock_waiver: crate::LandlockWaiver,
     /// The sealed effects home (B1) that *both* the synchronous and the async
     /// spawns delegate to. Held as the **concrete** `PolicyEnforced<RealEffects>`
     /// (from [`production_effects_concrete`]), not a trait object, for one
@@ -218,6 +222,7 @@ impl<'a> Executor<'a> {
             permissions,
             containment: ContainmentMode::Unconfigured,
             unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
+            landlock_waiver: crate::LandlockWaiver::Absent,
             effects,
         }
     }
@@ -245,6 +250,16 @@ impl<'a> Executor<'a> {
     #[must_use]
     pub fn with_unsandboxed_opt_in(mut self, opt_in: crate::UnsandboxedOptIn) -> Self {
         self.unsandboxed_opt_in = opt_in;
+        self
+    }
+
+    /// Carry the node operator's Landlock waiver (the tool-proxy's
+    /// `--workload-without-landlock`) to the confinement decision. Meaningful
+    /// only under `MicroVM` on a kernel below Landlock ABI 2; it cannot turn
+    /// an enforceable ruleset off.
+    #[must_use]
+    pub fn with_landlock_waiver(mut self, waiver: crate::LandlockWaiver) -> Self {
+        self.landlock_waiver = waiver;
         self
     }
 
@@ -457,7 +472,11 @@ impl<'a> Executor<'a> {
     /// # Errors
     /// [`NucleusError::IsolationNotConfigured`] when no posture was declared.
     pub fn child_confinement(&self) -> Result<ChildConfinement> {
-        ChildConfinement::for_containment(self.containment, self.unsandboxed_opt_in)
+        ChildConfinement::for_containment(
+            self.containment,
+            self.unsandboxed_opt_in,
+            self.landlock_waiver,
+        )
     }
 
     /// Give the sandbox root to a dropped child's uid so it can enter and
