@@ -350,9 +350,32 @@ pub struct PodStreams {
     pub limits: StreamLimits,
     /// The nonces this pod's streams have used.
     pub nonces: StreamNonces,
+    /// Seconds a test has moved this pod's clock forward, so an operator who
+    /// takes minutes can be simulated without a test that takes minutes.
+    #[cfg(test)]
+    pub(crate) skew: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl PodStreams {
+    /// The wall clock a frame from this pod is judged at, read once per frame.
+    pub(crate) fn now_unix(&self) -> u64 {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        now.saturating_add(self.skew_secs())
+    }
+
+    #[cfg(test)]
+    fn skew_secs(&self) -> u64 {
+        self.skew.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(not(test))]
+    const fn skew_secs(&self) -> u64 {
+        0
+    }
+
     /// A pod's streams, with an empty nonce memory.
     #[cfg(test)]
     pub fn new(caller: StreamCaller, limits: StreamLimits) -> Self {
@@ -373,6 +396,8 @@ impl PodStreams {
             caller,
             limits,
             nonces: StreamNonces::new(),
+            #[cfg(test)]
+            skew: Arc::default(),
         }
     }
 }

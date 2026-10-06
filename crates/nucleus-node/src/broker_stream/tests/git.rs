@@ -7,6 +7,7 @@ use super::*;
 use nucleus_cred_protocol::EgressMethod;
 
 mod declassify;
+mod human_paced;
 
 /// What the fake remote saw of one request.
 #[derive(Debug, Clone)]
@@ -252,8 +253,9 @@ async fn a_ref_advertisement_is_a_get_with_its_query_and_the_hosts_credential() 
 }
 
 /// **(d): a push under a profile without push is refused by the PDP before any
-/// byte leaves**, both halves of it; a fetch under the same profile is not; and
-/// the same push under a profile WITH push is performed, so the refusal is
+/// byte leaves**; a fetch under the same profile is not, and neither is the
+/// push's bodiless ref advertisement, which is a read of the same refs (#3266);
+/// and the same push under a profile WITH push is performed, so the refusal is
 /// about `git_push` and nothing else.
 ///
 /// A-19: making `operation_for` call every request a `WebFetch` reds this
@@ -262,7 +264,6 @@ async fn a_ref_advertisement_is_a_get_with_its_query_and_the_hosts_credential() 
 async fn a_push_is_refused_by_the_pdp_under_a_profile_without_push() {
     let (base, hits) = remote().await;
     let pod = declared(&base, without_push());
-    let advertise_push = drive(&pod, &advertise("git-receive-pack", "adv-push"), b"").await;
     let mut send = git_open(
         EgressMethod::Post,
         "org/repo.git/git-receive-pack",
@@ -271,23 +272,20 @@ async fn a_push_is_refused_by_the_pdp_under_a_profile_without_push() {
     );
     send.content_type = "application/x-git-receive-pack-request".into();
     let pack = drive(&pod, &send, b"0000PACK").await;
-    for heard in [&advertise_push, &pack] {
-        assert!(
-            !heard.head.granted,
-            "a push was performed: {:?}",
-            heard.head
-        );
-        assert_eq!(heard.head.reason, "not permitted");
-    }
+    assert!(!pack.head.granted, "a push was performed: {:?}", pack.head);
+    assert_eq!(pack.head.reason, "not permitted");
     assert!(
         hits.lock().unwrap().is_empty(),
         "a refused push reached the remote"
     );
 
-    // The control: a fetch is a read, and this profile reads.
-    let fetch = drive(&pod, &advertise("git-upload-pack", "fetch"), b"").await;
-    assert!(fetch.head.granted, "{:?}", fetch.head);
-    assert_eq!(hits.lock().unwrap().len(), 1);
+    // The control: a fetch is a read, and this profile reads; so is the
+    // push's advertisement, which carries nothing up and answers the refs.
+    for (service, nonce) in [("git-upload-pack", "fetch"), ("git-receive-pack", "adv")] {
+        let read = drive(&pod, &advertise(service, nonce), b"").await;
+        assert!(read.head.granted, "{service}: {:?}", read.head);
+    }
+    assert_eq!(hits.lock().unwrap().len(), 2);
 
     // The control: with push granted, the identical push goes through.
     let (base, hits) = remote().await;
@@ -310,35 +308,53 @@ async fn a_push_is_refused_by_the_pdp_under_a_profile_without_push() {
     assert_eq!((hits[0].method.as_str(), hits[0].body_len), ("POST", 8));
 }
 
+/// The pack of a push: the request that carries the session's data up.
+fn receive_pack(nonce: &str) -> StreamRequest {
+    let mut send = git_open(
+        EgressMethod::Post,
+        "org/repo.git/git-receive-pack",
+        None,
+        nonce,
+    );
+    send.content_type = "application/x-git-receive-pack-request".into();
+    send
+}
+
 /// The safe-pr-fixer profile has no push, so a push from it is refused.
 #[tokio::test]
 async fn the_safe_pr_fixer_profile_cannot_push() {
     let (base, hits) = remote().await;
     let pod = declared(&base, PermissionLattice::safe_pr_fixer());
-    let heard = drive(&pod, &advertise("git-receive-pack", "fixer"), b"").await;
+    let heard = drive(&pod, &receive_pack("fixer"), b"0000PACK").await;
     assert!(!heard.head.granted, "{:?}", heard.head);
     assert!(hits.lock().unwrap().is_empty());
 }
 
 /// A push the guest LABELS as a fetch is refused even where push is allowed:
 /// the host recomputes the label from the method, path and query, and a
-/// mislabelled call is not decided under the weaker capability.
+/// mislabelled call is not decided under the weaker capability. Both ways a
+/// body can name the push service: in the path, and in the query of a POST.
 #[tokio::test]
 async fn a_push_labelled_as_a_fetch_is_refused() {
     let (base, hits) = remote().await;
     let pod = declared(&base, PermissionLattice::permissive());
     for mut req in [
-        advertise("git-receive-pack", "label-adv"),
         git_open(
             EgressMethod::Post,
             "org/repo.git/git%2Dreceive-pack",
             None,
             "label-send",
         ),
+        git_open(
+            EgressMethod::Post,
+            "org/repo.git/info/refs",
+            Some("service=git-receive-pack"),
+            "label-query",
+        ),
     ] {
         assert_eq!(req.operation, "GitPush");
         req.operation = "WebFetch".into();
-        let heard = drive(&pod, &req, b"").await;
+        let heard = drive(&pod, &req, b"0000PACK").await;
         assert!(!heard.head.granted, "{:?}", heard.head);
     }
     assert!(hits.lock().unwrap().is_empty());
@@ -384,14 +400,21 @@ async fn a_credential_looking_query_is_refused_before_upstream_io() {
     );
 }
 
-/// A GET that uploaded a body is refused by name, and nothing is sent.
+/// A GET that uploaded a body is refused by name, and nothing is sent. This
+/// is what makes the push's advertisement a read (#3266): decided as a fetch,
+/// it still cannot carry a pack, or any other byte of the session, up.
 #[tokio::test]
 async fn a_get_with_a_body_is_refused() {
     let (base, hits) = remote().await;
     let pod = declared(&base, PermissionLattice::permissive());
-    let heard = drive(&pod, &advertise("git-upload-pack", "get-body"), b"x").await;
-    assert!(!heard.head.granted);
-    assert_eq!(heard.head.reason, "a GET carries no request body");
+    for (service, body) in [
+        ("git-upload-pack", &b"x"[..]),
+        ("git-receive-pack", &b"0000PACK"[..]),
+    ] {
+        let heard = drive(&pod, &advertise(service, service), body).await;
+        assert!(!heard.head.granted);
+        assert_eq!(heard.head.reason, "a GET carries no request body");
+    }
     assert!(hits.lock().unwrap().is_empty());
 }
 

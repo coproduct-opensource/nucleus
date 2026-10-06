@@ -189,6 +189,10 @@ pub(crate) struct AuthorityArgs {
     /// The inbound exchange listener (`federation_ingress.rs`).
     #[command(flatten)]
     pub ingress: crate::federation_ingress::FederationArgs,
+    /// How long a host effect approval waits for the operator, and how long
+    /// a grant may be spent (#3266).
+    #[command(flatten)]
+    pub approvals: crate::host_decide::effects::ApprovalTimingArgs,
 }
 
 /// Who is asking for a pod, as established by the node — never by the spec.
@@ -738,6 +742,8 @@ pub(crate) struct PodAuthority {
     anchors: Vec<Vec<u8>>,
     max_children: usize,
     state_dir: PathBuf,
+    /// How long every pod's host effect approvals live.
+    approval_timing: crate::host_decide::effects::ApprovalTiming,
     /// The operator's upstream registry; `None` when `--upstreams` is unset.
     registry: Option<std::sync::Arc<UpstreamRegistry>>,
     /// The node's federation issuer; `None` when `--federation-issuer` is unset,
@@ -757,7 +763,9 @@ impl PodAuthority {
     /// The `--upstreams` registry is set and does not load. The node refuses to
     /// start rather than run with a ceiling other than the one written. Also a
     /// registry with a `federated` entry and no usable `--federation-issuer`.
+    /// Also approval timing outside its bounds.
     pub fn new(args: &AuthorityArgs, trust_domain: &str, state_dir: &Path) -> Result<Self, String> {
+        let approval_timing = args.approvals.timing()?;
         let dalek = keys::load_or_create_cert_root_signing_key(state_dir);
         // ring's keypair cannot be built from PKCS#8 v2 DER reliably across
         // encoders; seed + public key is the unambiguous form.
@@ -827,6 +835,7 @@ impl PodAuthority {
             anchors,
             max_children: args.max_children_per_pod,
             state_dir: state_dir.to_path_buf(),
+            approval_timing,
             registry,
             federation,
             bindings: std::sync::Arc::new(bindings),
@@ -1403,7 +1412,12 @@ impl PodAuthority {
                     std::sync::Arc::clone(&self.authorization_signer),
                 )
                 .map_err(|e| HostKernelError::EvidenceUnavailable(e.to_string()))?;
-                let policy = PodPolicy::with_budget(kernel, evidence, entry.ledger.clone());
+                let policy = PodPolicy::with_budget(
+                    kernel,
+                    evidence,
+                    entry.ledger.clone(),
+                    self.approval_timing,
+                );
                 entry.host_policy = PolicyHistory::Live(std::sync::Arc::clone(&policy));
                 Ok(policy)
             }

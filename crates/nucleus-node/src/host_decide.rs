@@ -410,19 +410,20 @@ impl PodPolicy {
         let budget = crate::pod_authority::budget::SharedBudget::memory(
             portcullis::BudgetLedger::for_parent(&kernel.effective().budget),
         );
-        Self::with_budget(kernel, evidence, budget)
+        Self::with_budget(kernel, evidence, budget, effects::ApprovalTiming::HUMAN)
     }
 
     pub(crate) fn with_budget(
         kernel: Kernel,
         evidence: evidence::Evidence,
         budget: crate::pod_authority::budget::SharedBudget,
+        approval_timing: effects::ApprovalTiming,
     ) -> SharedPodPolicy {
         Arc::new(Mutex::new(Self {
             kernel,
             budget,
             taint: HostTaint::clean(),
-            approvals: effects::Approvals::new(),
+            approvals: effects::Approvals::new(approval_timing),
             evidence,
             revoked: tokio::sync::watch::channel(false).0,
         }))

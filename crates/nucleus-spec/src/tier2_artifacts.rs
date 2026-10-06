@@ -276,6 +276,14 @@ pub enum GuestCapability {
     /// completes with an older guest; that guest still refuses, in the guest,
     /// a push after content its own tools read, which is stricter, never wider.
     TaintedPushHeld,
+    /// The tool-proxy labels a push's ref advertisement
+    /// (`GET …/info/refs?service=git-receive-pack`, no body) a `WebFetch`,
+    /// as the shared classifier now decides it, so only the pack's POST is
+    /// held for the operator and one approval completes a `git push` (#3266).
+    /// [`Demand::Optional`]: the node accepts a stricter label and decides
+    /// it, so an older guest's advertisement labelled `GitPush` is still held
+    /// for its own approval, as before. Stricter, never wider.
+    PushAdvertisementIsRead,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -322,7 +330,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 13] = [
+    pub const ALL: [GuestCapability; 14] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -336,6 +344,7 @@ impl GuestCapability {
         GuestCapability::EgressMethodAndQuery,
         GuestCapability::EgressEffectTable,
         GuestCapability::TaintedPushHeld,
+        GuestCapability::PushAdvertisementIsRead,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -356,6 +365,9 @@ impl GuestCapability {
             // The host holds the push either way; an older guest only refuses
             // more (a push after its own tainting read), never less.
             GuestCapability::TaintedPushHeld => Demand::Optional,
+            // The node decides a stricter label too: an older guest only asks
+            // for one more approval (the advertisement's), never for less.
+            GuestCapability::PushAdvertisementIsRead => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -395,6 +407,9 @@ impl GuestCapability {
             // effect table and refuses a tainted push in the guest.
             GuestCapability::EgressEffectTable => FirstShipped::Release("2.5.0"),
             GuestCapability::TaintedPushHeld => FirstShipped::Release("2.5.0"),
+            // #3266 landed after `v2.5.0` (0f2471d52): the published 2.5.0
+            // tool-proxy labels the advertisement `GitPush`.
+            GuestCapability::PushAdvertisementIsRead => FirstShipped::NotYet,
         }
     }
 
@@ -469,6 +484,12 @@ impl GuestCapability {
                  in for the host to hold for the operator's approval of that push; an older \
                  proxy refuses that push in the guest (the node does not require it: the host \
                  holds a push after model calls with either guest)"
+            }
+            GuestCapability::PushAdvertisementIsRead => {
+                "#3266 decides a push's bodiless ref advertisement as a read, so one operator \
+                 approval of the pack completes a git push; an older proxy labels the \
+                 advertisement a push, which the node decides as asked, so that push needs a \
+                 second approval (the node does not require it)"
             }
         }
     }
@@ -790,9 +811,19 @@ mod tests {
         assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
         assert_eq!(guest_skew_for(GUEST_RELEASE, &every_use), Ok(()));
         // No row is left unreleased once the pin moves: every capability this
-        // tree's node and CLI know of is in the pinned release.
+        // tree's node and CLI know of is in the pinned release, except the
+        // ones that landed after it, named here. The change that moves the
+        // pin empties this list, and the assertion fails until it does.
+        let after_the_pin = [GuestCapability::PushAdvertisementIsRead];
         for cap in GuestCapability::ALL {
-            assert_ne!(cap.first_shipped(), FirstShipped::NotYet, "{cap:?}");
+            assert_eq!(
+                cap.first_shipped() == FirstShipped::NotYet,
+                after_the_pin.contains(&cap),
+                "{cap:?}"
+            );
+        }
+        for cap in after_the_pin {
+            assert_eq!(cap.demand(), Demand::Optional, "{cap:?}");
         }
         // The release before the pin (2.4.0) serves every pod and every
         // adapter run, and is refused only for an upstream with an effect
@@ -894,7 +925,8 @@ mod tests {
                 GuestCapability::EgressAdapterUpstreams => GuestCapability::EgressMethodAndQuery,
                 GuestCapability::EgressMethodAndQuery => GuestCapability::EgressEffectTable,
                 GuestCapability::EgressEffectTable => GuestCapability::TaintedPushHeld,
-                GuestCapability::TaintedPushHeld => GuestCapability::CaBundle,
+                GuestCapability::TaintedPushHeld => GuestCapability::PushAdvertisementIsRead,
+                GuestCapability::PushAdvertisementIsRead => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
