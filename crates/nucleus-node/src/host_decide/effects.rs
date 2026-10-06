@@ -8,11 +8,99 @@ use portcullis::kernel::{DecisionToken, TaintHold, Verdict};
 use uuid::Uuid;
 
 use super::PodPolicy;
+#[cfg(test)]
+mod human_paced;
 pub(crate) mod review;
 pub(crate) mod wait;
 
 const MAX_APPROVALS: usize = 1024;
-const APPROVAL_TTL: u64 = 300;
+
+/// How long an approval lives, sized for a human operator (#3266).
+///
+/// A human approves in minutes. Before #3266 a pending approval lived five
+/// minutes from when it was first asked, so the operator acting on an id
+/// from a while ago got "unknown or expired" while the workload's retries
+/// minted a fresh one (three ids for one push in the v2.5.0 journey).
+///
+/// Neither field is a default that grants: each bounds how long something
+/// the operator already decided, or is about to decide, can be acted on.
+/// Private fields, so a value exists only through [`ApprovalTiming::new`]'s
+/// bounds or the human-sized constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ApprovalTiming {
+    /// How long a pending approval waits for the operator, from the LAST time
+    /// the workload asked for its effect: a re-sent request refreshes it in
+    /// place and keeps its id.
+    pending_ttl: u64,
+    /// How long a grant may be spent, from the moment the operator granted
+    /// it: the next identical request inside it is released once.
+    grant_validity: u64,
+}
+
+impl ApprovalTiming {
+    /// Thirty minutes to decide, fifteen to use the grant.
+    pub(crate) const HUMAN: Self = Self {
+        pending_ttl: 30 * 60,
+        grant_validity: 15 * 60,
+    };
+    /// The longest either may be configured: a day.
+    pub(crate) const MAX_SECONDS: u64 = 24 * 60 * 60;
+
+    /// Operator-configured timing, refused outside `1..=MAX_SECONDS`.
+    pub(crate) fn new(pending_ttl: u64, grant_validity: u64) -> Result<Self, String> {
+        for (name, value) in [
+            ("pending approval TTL", pending_ttl),
+            ("grant validity", grant_validity),
+        ] {
+            if !(1..=Self::MAX_SECONDS).contains(&value) {
+                return Err(format!(
+                    "host effect approval {name} must be 1 to {} seconds, not {value}",
+                    Self::MAX_SECONDS
+                ));
+            }
+        }
+        Ok(Self {
+            pending_ttl,
+            grant_validity,
+        })
+    }
+}
+
+/// The node's flags for [`ApprovalTiming`], flattened into the authority's.
+#[derive(clap::Args, Debug, Clone, Copy)]
+pub(crate) struct ApprovalTimingArgs {
+    /// Seconds a pending host effect approval waits for the operator after
+    /// the workload last asked for it (1 to 86400). A re-sent request
+    /// refreshes it and keeps its id.
+    #[arg(
+        long = "effect-approval-pending-ttl-secs",
+        env = "NUCLEUS_NODE_EFFECT_APPROVAL_PENDING_TTL_SECS",
+        default_value_t = ApprovalTiming::HUMAN.pending_ttl
+    )]
+    pub pending_ttl_secs: u64,
+    /// Seconds a granted host effect approval may release the next identical
+    /// request, once, counted from the grant (1 to 86400).
+    #[arg(
+        long = "effect-approval-grant-validity-secs",
+        env = "NUCLEUS_NODE_EFFECT_APPROVAL_GRANT_VALIDITY_SECS",
+        default_value_t = ApprovalTiming::HUMAN.grant_validity
+    )]
+    pub grant_validity_secs: u64,
+}
+
+impl ApprovalTimingArgs {
+    /// The flags as they parse with none given.
+    #[cfg(test)]
+    pub(crate) const HUMAN: Self = Self {
+        pending_ttl_secs: ApprovalTiming::HUMAN.pending_ttl,
+        grant_validity_secs: ApprovalTiming::HUMAN.grant_validity,
+    };
+
+    /// The timing these flags configure, or why they are refused.
+    pub(crate) fn timing(self) -> Result<ApprovalTiming, String> {
+        ApprovalTiming::new(self.pending_ttl_secs, self.grant_validity_secs)
+    }
+}
 
 /// Only the authenticated operator route can construct this authority.
 pub(crate) struct Operator {
@@ -104,15 +192,28 @@ impl SpentApproval {
     }
 }
 
+/// One pod's host approvals.
+///
+/// # The digest is the authority, the id a handle (#3266)
+///
+/// An approval is found by the effect digest it was asked for (method, URL
+/// with its query, forwarded headers, body) and the category the operator was
+/// shown, never by the id of the request that raised it. So a grant releases
+/// the next identical request even when the one that asked has long since
+/// timed out and the workload sent it again, and every re-send of a pending
+/// request finds the same entry, refreshes it and answers with the same id:
+/// the operator never chases churning ids.
 pub(super) struct Approvals {
     entries: HashMap<Uuid, Approval>,
+    timing: ApprovalTiming,
     changed: tokio::sync::watch::Sender<()>,
 }
 
 impl Approvals {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(timing: ApprovalTiming) -> Self {
         Self {
             entries: HashMap::new(),
+            timing,
             changed: tokio::sync::watch::channel(()).0,
         }
     }
@@ -143,11 +244,16 @@ impl Approvals {
         if a.view.status != ApprovalStatus::Pending {
             return Err("approval already decided");
         }
-        a.view.status = if grant {
-            ApprovalStatus::Granted
+        if grant {
+            // The grant's own validity, counted from the grant: how long ago
+            // the request was first held does not shorten it.
+            a.view.status = ApprovalStatus::Granted;
+            a.view.expires_unix = now
+                .checked_add(self.timing.grant_validity)
+                .ok_or("approval clock overflow")?;
         } else {
-            ApprovalStatus::Refused
-        };
+            a.view.status = ApprovalStatus::Refused;
+        }
         self.changed.send_replace(());
         Ok(())
     }
@@ -187,11 +293,17 @@ impl Approvals {
                 }
             });
         }
-        if let Some(a) = self.entries.values().find(|a| {
+        let pending_until = now
+            .checked_add(self.timing.pending_ttl)
+            .ok_or("approval clock overflow")?;
+        // The same request asked again: one pending entry per digest,
+        // refreshed in place, so its id is the one the operator already has.
+        if let Some(a) = self.entries.values_mut().find(|a| {
             a.digest == digest
                 && a.view.category == category
                 && a.view.status == ApprovalStatus::Pending
         }) {
+            a.view.expires_unix = a.view.expires_unix.max(pending_until);
             return Err(format!("host approval required: {}", a.view.id));
         }
         // A live approval for this request in another category can no longer
@@ -215,9 +327,7 @@ impl Approvals {
             return Err("too many host approvals".into());
         }
         let id = Uuid::new_v4();
-        let expires_unix = now
-            .checked_add(APPROVAL_TTL)
-            .ok_or("approval clock overflow")?;
+        let expires_unix = pending_until;
         self.entries.insert(
             id,
             Approval {
@@ -682,15 +792,21 @@ mod tests {
                     digest,
                     Operation::GitCommit,
                     SUBJECT,
-                    NOW + APPROVAL_TTL,
+                    NOW + ApprovalTiming::HUMAN.grant_validity,
                     crate::upstreams::CallCharge::free(),
                     false
                 )
                 .is_err()
         );
-        let pending = policy.list_effect_approvals(operator(), NOW + APPROVAL_TTL);
+        let pending =
+            policy.list_effect_approvals(operator(), NOW + ApprovalTiming::HUMAN.grant_validity);
         policy
-            .settle_effect_approval(operator(), pending[0].id, false, NOW + APPROVAL_TTL)
+            .settle_effect_approval(
+                operator(),
+                pending[0].id,
+                false,
+                NOW + ApprovalTiming::HUMAN.grant_validity,
+            )
             .unwrap();
         assert!(
             policy
@@ -698,7 +814,7 @@ mod tests {
                     digest,
                     Operation::GitCommit,
                     SUBJECT,
-                    NOW + APPROVAL_TTL,
+                    NOW + ApprovalTiming::HUMAN.grant_validity,
                     crate::upstreams::CallCharge::free(),
                     false
                 )

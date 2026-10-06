@@ -22,7 +22,9 @@ pub enum Command {
     },
     /// Inspect and verify the exact host-retained request and payload
     Review { approval_id: Uuid },
-    /// Grant one pending effect matching the reviewed SHA-256 digest
+    /// Grant one pending effect matching the reviewed SHA-256 digest. The grant
+    /// releases the next request with that digest once, within its validity,
+    /// even if the request that asked has since timed out and been retried
     Grant {
         approval_id: Uuid,
         #[arg(long, value_parser = parse_hash)]

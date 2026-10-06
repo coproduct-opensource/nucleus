@@ -993,7 +993,8 @@ mod tests {
 
     /// **A smart-HTTP ref advertisement crosses the door as a GET with its
     /// query (#3210).** The frame the host receives names GET, carries the
-    /// query, is labelled a push by the shared classifier, proposes the
+    /// query, is labelled a read by the shared classifier (#3266: the push is
+    /// the pack, not its bodiless advertisement), proposes the
     /// protocol header, and carries neither the workload's `Authorization`
     /// placeholder nor any body.
     #[tokio::test]
@@ -1019,7 +1020,7 @@ mod tests {
         assert_eq!(frame.method, nucleus_cred_protocol::EgressMethod::Get);
         assert_eq!(frame.path, "org/repo.git/info/refs");
         assert_eq!(frame.query.as_deref(), Some("service=git-receive-pack"));
-        assert_eq!(frame.operation, "GitPush");
+        assert_eq!(frame.operation, "WebFetch");
         assert_eq!(
             frame.headers.get("git-protocol").map(String::as_str),
             Some("version=2")

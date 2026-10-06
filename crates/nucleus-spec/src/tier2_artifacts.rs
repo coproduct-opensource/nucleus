@@ -287,6 +287,14 @@ pub enum GuestCapability {
     /// filesystem as unconfined (no verdict) rather than refusing it; a later
     /// change may make it required once a release carries it.
     WorkloadLandlock,
+    /// The tool-proxy labels a push's ref advertisement
+    /// (`GET …/info/refs?service=git-receive-pack`, no body) a `WebFetch`,
+    /// as the shared classifier now decides it, so only the pack's POST is
+    /// held for the operator and one approval completes a `git push` (#3266).
+    /// [`Demand::Optional`]: the node accepts a stricter label and decides
+    /// it, so an older guest's advertisement labelled `GitPush` is still held
+    /// for its own approval, as before. Stricter, never wider.
+    PushAdvertisementIsRead,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -333,7 +341,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 14] = [
+    pub const ALL: [GuestCapability; 15] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -348,6 +356,7 @@ impl GuestCapability {
         GuestCapability::EgressEffectTable,
         GuestCapability::TaintedPushHeld,
         GuestCapability::WorkloadLandlock,
+        GuestCapability::PushAdvertisementIsRead,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -371,6 +380,9 @@ impl GuestCapability {
             // Reported, not required: an older guest's workload runs without
             // Landlock, and the node says so instead of refusing the pod.
             GuestCapability::WorkloadLandlock => Demand::Optional,
+            // The node decides a stricter label too: an older guest only asks
+            // for one more approval (the advertisement's), never for less.
+            GuestCapability::PushAdvertisementIsRead => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -413,6 +425,9 @@ impl GuestCapability {
             // #2696 P3c, after `v2.5.0`: no published guest confines its
             // children with Landlock, and the pinned 6.1.141 kernel could not.
             GuestCapability::WorkloadLandlock => FirstShipped::NotYet,
+            // #3266 landed after `v2.5.0` (0f2471d52): the published 2.5.0
+            // tool-proxy labels the advertisement `GitPush`.
+            GuestCapability::PushAdvertisementIsRead => FirstShipped::NotYet,
         }
     }
 
@@ -494,6 +509,12 @@ impl GuestCapability {
                  the pod spec and /run hidden), refusing below ABI 2 unless the node waived \
                  it; an older guest runs them with no Landlock at all (the node does not \
                  require it, and reports the workload filesystem as not confined)"
+            }
+            GuestCapability::PushAdvertisementIsRead => {
+                "#3266 decides a push's bodiless ref advertisement as a read, so one operator \
+                 approval of the pack completes a git push; an older proxy labels the \
+                 advertisement a push, which the node decides as asked, so that push needs a \
+                 second approval (the node does not require it)"
             }
         }
     }
@@ -814,29 +835,24 @@ mod tests {
         let every_use = [GuestUse::AgentEgress, GuestUse::EffectTableEgress];
         assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
         assert_eq!(guest_skew_for(GUEST_RELEASE, &every_use), Ok(()));
-        // No row the node DEPENDS on is left unreleased once the pin moves.
-        // A row added after the pin is `NotYet` until the next release, and
-        // may only be one that never refuses a guest: an unreleased Required
-        // or When row would refuse the pinned guest itself, which the two
-        // assertions above already catch, and this names the row.
+        // No row is left unreleased once the pin moves: every capability this
+        // tree's node and CLI know of is in the pinned release, except the
+        // ones that landed after it, named here. The change that moves the
+        // pin empties this list, and the assertion fails until it does.
+        let after_the_pin = [
+            GuestCapability::WorkloadLandlock,
+            GuestCapability::PushAdvertisementIsRead,
+        ];
         for cap in GuestCapability::ALL {
-            if cap.first_shipped() == FirstShipped::NotYet {
-                assert_eq!(
-                    cap.demand(),
-                    Demand::Optional,
-                    "{cap:?} is unreleased and the node demands it"
-                );
-            }
+            assert_eq!(
+                cap.first_shipped() == FirstShipped::NotYet,
+                after_the_pin.contains(&cap),
+                "{cap:?}"
+            );
         }
-        // Today's only unreleased row is #2696 P3c's, and the release that
-        // ships it turns it into `Release(..)`.
-        assert_eq!(
-            GuestCapability::ALL
-                .into_iter()
-                .filter(|c| c.first_shipped() == FirstShipped::NotYet)
-                .collect::<Vec<_>>(),
-            vec![GuestCapability::WorkloadLandlock]
-        );
+        for cap in after_the_pin {
+            assert_eq!(cap.demand(), Demand::Optional, "{cap:?}");
+        }
         // The release before the pin (2.4.0) serves every pod and every
         // adapter run, and is refused only for an upstream with an effect
         // table (#3229), by name: no 2.5.0 row is Required, so the floor
@@ -938,7 +954,8 @@ mod tests {
                 GuestCapability::EgressMethodAndQuery => GuestCapability::EgressEffectTable,
                 GuestCapability::EgressEffectTable => GuestCapability::TaintedPushHeld,
                 GuestCapability::TaintedPushHeld => GuestCapability::WorkloadLandlock,
-                GuestCapability::WorkloadLandlock => GuestCapability::CaBundle,
+                GuestCapability::WorkloadLandlock => GuestCapability::PushAdvertisementIsRead,
+                GuestCapability::PushAdvertisementIsRead => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

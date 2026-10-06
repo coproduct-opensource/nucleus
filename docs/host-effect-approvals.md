@@ -89,11 +89,46 @@ The CLI fetches current metadata and refuses a missing, expired, already-decided
 ambiguous, or mismatched approval before posting a grant. The host remains the
 final authority: it rechecks status and expiry when settling, then rechecks
 policy, taint, revocation, and budget when the workload retries its effect.
-For a workload request paused at the host, a grant resumes that same staged
-request after fresh policy checks. It consumes the approval once. For an
-immediately refused or timed-out request, the workload must retry with the same
-payload and a fresh stream nonce. A changed payload or operator charge needs a
-new approval. Pending approvals expire after five minutes.
+
+A grant is bound to the effect hash and to the category you were shown, not to
+the request that raised it. The approval ID is a handle for the operator. The
+hash is what the grant releases:
+
+- For a workload request still paused at the host, a grant resumes that same
+  staged request after fresh policy checks.
+- If that request was refused immediately or its wait timed out, the grant
+  releases the next request with the same hash. The workload retries with the
+  same payload and a fresh stream nonce, before or after the grant.
+- Either way the grant releases exactly one request. The approval is then
+  `spent`. The same request sent again is held afresh under a new ID.
+- A changed payload, destination, header or operator charge has a different
+  hash and needs its own approval.
+
+Approvals are sized for a human (#3266):
+
+- A **pending** approval lives 30 minutes from the last time the workload asked
+  for its effect. Each retry of the same request refreshes it in place and
+  answers with the same ID, so the ID you are reviewing does not change while
+  the workload retries. There is one pending approval per hash per pod.
+- A **granted** approval can be spent for 15 minutes from the grant, however
+  long ago the request was first held. After that it expires and the next
+  identical request is held afresh.
+
+The node operator can change both, from 1 second up to 24 hours:
+`--effect-approval-pending-ttl-secs` (`NUCLEUS_NODE_EFFECT_APPROVAL_PENDING_TTL_SECS`)
+and `--effect-approval-grant-validity-secs`
+(`NUCLEUS_NODE_EFFECT_APPROVAL_GRANT_VALIDITY_SECS`). A value outside that range
+stops the node from starting. The listed `expires_unix` is the pending deadline
+while an approval is pending and the end of the grant's validity once granted.
+
+A `git push` over smart HTTP is two requests, the ref advertisement
+(`GET …/info/refs?service=git-receive-pack`) and the pack
+(`POST …/git-receive-pack`). Only the pack is a push. The advertisement carries
+no body and is decided as a read (`web_fetch`), so it is never held. One approval
+of the pack completes the push, and a plain retry of `git push` after the grant
+succeeds. A guest older than the release that carries this change labels the
+advertisement as a push, and the node decides it as labelled. On such a guest
+the advertisement needs an approval of its own.
 
 To refuse a request:
 
@@ -128,6 +163,8 @@ Workloads can set `x-nucleus-approval-wait-seconds` to an integer from 0 to 120;
 own timeout must allow the chosen pause plus upstream processing. Operator
 refusal, wait timeout, pod revocation, or broker disconnect does not dispatch
 the pending request. A timeout leaves its review available until approval expiry.
+The approval does not depend on the paused request: granted after the pause
+ended, it releases the workload's next identical request.
 
 The stream protocol makes waiting explicit; an omitted or zero
 `approval_wait_seconds` keeps legacy immediate-refusal behavior. The host caps

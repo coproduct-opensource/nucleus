@@ -78,17 +78,28 @@ impl EgressMethod {
 /// The policy operation a call is, from what it does rather than what the
 /// guest calls it.
 ///
-/// # A push is a write, whichever method carries it
+/// # A push is the request that carries the pack
 ///
 /// Smart HTTP names the push service in the path (`…/git-receive-pack`) for
 /// the POST that carries the pack, and in the query (`service=git-receive-pack`)
-/// for the GET that advertises refs. Either one is a push: the advertisement
-/// is the first half of the same effect, and refusing only the POST would let
-/// a profile without push learn the remote's refs through a capability check
-/// it was meant to fail. So any appearance of the receive service, in the
-/// path or the query, after percent-decoding and ignoring case, is
-/// `GitPush`. A false positive costs a stricter check; a false negative would
-/// send a write under the read capability.
+/// for the GET that advertises the remote's refs before it. Only the POST is
+/// a push (#3266). The advertisement is a GET, which carries no body (the
+/// host refuses a GET that uploaded one), so nothing of the session leaves in
+/// it that the fetch advertisement (`service=git-upload-pack`, a `WebFetch`)
+/// could not carry just as well; and what it answers, the remote's refs, is
+/// what the fetch advertisement answers too. So it is decided as what it is,
+/// a read of the repository: a profile that may read the remote may list its
+/// refs by either service. The pack is what moves the session's data, and it
+/// stays `GitPush`, under its own approval.
+///
+/// Before #3266 the advertisement was `GitPush` too, which made one push two
+/// approvals over two digests, and a human-paced approval could never cover
+/// both: every retry of the push re-held the GET.
+///
+/// So a call is `GitPush` when the receive service appears in its path, or in
+/// the query of a method that carries a body, after percent-decoding and
+/// ignoring case. A false positive costs a stricter check; a false negative
+/// would send a write under the read capability.
 ///
 /// # Then the operator's table (#3229)
 ///
@@ -114,7 +125,9 @@ pub fn operation_for(
     query: Option<&str>,
 ) -> Result<EgressOperation, Unclassified> {
     let names_push = |text: &str| decoded_lowercase(text).contains(RECEIVE_SERVICE);
-    if names_push(path) || query.is_some_and(names_push) {
+    // A bodiless call carries nothing of the session upstream, so a query
+    // naming the push service (the ref advertisement) does not make it a push.
+    if names_push(path) || (method.carries_body() && query.is_some_and(names_push)) {
         return Ok(EgressOperation::GitPush);
     }
     if let Some(declared) = table.declared(method, path) {
@@ -368,31 +381,30 @@ mod tests {
         assert!(serde_json::from_str::<EffectTable>(unknown_operation).is_err());
     }
 
-    /// Both halves of a push are a push; a fetch is a read. The evasions are
-    /// the cases a substring check on the raw text would miss.
+    /// The pack is a push; the ref advertisement before it, and a fetch, are
+    /// reads (#3266). The evasions are the cases a substring check on the raw
+    /// text would miss.
     #[test]
     fn a_push_is_classified_by_what_it_does() {
         use EgressMethod::{Get, Post};
         let push = [
             (Post, "org/repo.git/git-receive-pack", None),
-            (
-                Get,
-                "org/repo.git/info/refs",
-                Some("service=git-receive-pack"),
-            ),
             (Post, "org/repo.git/GIT-RECEIVE-PACK", None),
             (Post, "org/repo.git/git%2dreceive%2Dpack", None),
             (Post, "org/repo.git/git%252dreceive-pack", None),
+            // A body sent under the advertisement's query is still a push.
             (
-                Get,
+                Post,
                 "org/repo.git/info/refs",
                 Some("service=git%2Dreceive-pack"),
             ),
             (
-                Get,
+                Post,
                 "org/repo.git/info/refs",
                 Some("service=git-upload-pack&service=git-receive-pack"),
             ),
+            // A GET whose PATH names the push service is not an advertisement.
+            (Get, "org/repo.git/git-receive-pack", None),
         ];
         for (method, path, query) in push {
             for table in [EffectTable::unclassified(), forge()] {
@@ -420,6 +432,24 @@ mod tests {
                 Ok(EgressOperation::WebFetch),
                 "{method:?} {path} {query:?}"
             );
+        }
+        // The push's ref advertisement, however it spells the service: a
+        // bodiless read of the repository, on an api and on a forge alike.
+        //
+        // A-19: classifying by the query whatever the method (as before
+        // #3266) makes each of these `GitPush` again.
+        for query in [
+            "service=git-receive-pack",
+            "service=git%2Dreceive-pack",
+            "service=git-upload-pack&service=git-receive-pack",
+        ] {
+            for table in [EffectTable::unclassified(), forge()] {
+                assert_eq!(
+                    operation_for(&table, Get, "org/repo.git/info/refs", Some(query)),
+                    Ok(EgressOperation::WebFetch),
+                    "{query}"
+                );
+            }
         }
     }
 }

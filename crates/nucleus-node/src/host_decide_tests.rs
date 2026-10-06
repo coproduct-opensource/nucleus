@@ -47,6 +47,7 @@ fn authority(dir: &Path) -> Arc<PodAuthority> {
         upstreams: None,
         federation_issuer: None,
         ingress: Default::default(),
+        approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
     };
     Arc::new(PodAuthority::new(&args, TD, dir).expect("authority builds"))
 }

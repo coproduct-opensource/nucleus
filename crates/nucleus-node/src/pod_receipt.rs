@@ -567,6 +567,7 @@ mod tests {
                     upstreams: None,
                     federation_issuer: None,
                     ingress: Default::default(),
+                    approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
                 },
                 "nucleus.local",
                 dir,
