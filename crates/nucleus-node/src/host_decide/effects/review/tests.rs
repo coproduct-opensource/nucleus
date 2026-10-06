@@ -65,7 +65,11 @@ fn substituted_payload_is_refused_and_expiry_removes_the_retained_review() {
     assert!(state.effect_review(operator(), id, NOW).is_ok());
     assert!(
         state
-            .effect_review(operator(), id, NOW + super::super::APPROVAL_TTL)
+            .effect_review(
+                operator(),
+                id,
+                NOW + super::super::ApprovalTiming::HUMAN.pending_ttl
+            )
             .is_err()
     );
     assert!(state.approvals.entries.is_empty());

@@ -17,6 +17,7 @@ fn args() -> AuthorityArgs {
         upstreams: None,
         federation_issuer: None,
         ingress: Default::default(),
+        approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
     }
 }
 

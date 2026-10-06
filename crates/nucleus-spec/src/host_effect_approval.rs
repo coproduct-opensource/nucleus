@@ -9,6 +9,9 @@ pub struct ApprovalView {
     pub subject: String,
     pub effect_sha256: String,
     pub call_charge_micro_usd: u64,
+    /// While pending, when it lapses unless the workload asks again (each
+    /// identical request refreshes it and keeps this id); once granted, when
+    /// the grant stops releasing the next identical request (#3266).
     pub expires_unix: u64,
     pub status: ApprovalStatus,
     /// What granting this approval does. Required on the wire: a view that

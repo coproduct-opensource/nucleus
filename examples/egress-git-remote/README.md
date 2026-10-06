@@ -61,13 +61,19 @@ What the workload does **not** use:
 
 - `GET …/info/refs?service=git-upload-pack` and `POST …/git-upload-pack`
   (fetch, clone, ls-remote) are reads and are decided as `web_fetch`.
-- `GET …/info/refs?service=git-receive-pack` and `POST …/git-receive-pack`
-  (push) are decided as `git_push` **and** `web_fetch`. A profile with
+- `POST …/git-receive-pack`, the request that carries the pack, is the push.
+  It is decided as `git_push` **and** `web_fetch`. A profile with
   `git_push: never`, such as `safe-pr-fixer`, is refused by the guest's
   kernel and again by the host's PDP before any byte leaves the node.
+- `GET …/info/refs?service=git-receive-pack`, the push's ref advertisement,
+  is a read, decided as `web_fetch` (#3266). It carries no body, because the
+  host refuses a GET that uploads one, so nothing of the session leaves in it.
+  It returns the same refs the fetch advertisement does. One operator approval
+  of the pack is enough for a `git push`, and a plain retry of the push
+  completes once that approval is granted.
 - The method, the query and the forwarded headers are bound into the host's
-  effect digest, so an operator approval for the GET advertisement cannot be
-  spent on the POST that carries the pack.
+  effect digest, so an operator approval for one request cannot be spent on
+  another.
 - The call record (`egress_stream_call` in the pod's lifecycle log) records the
   method, the path, the operation, the query parameter **names** and the
   forwarded header names. Query values are left out because they may carry

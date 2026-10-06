@@ -548,10 +548,7 @@ where
             // take the instant as a parameter so they are testable without a
             // clock, and so a single request is judged against ONE instant
             // rather than against whatever the clock said at each step.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let now = serving.streams.now_unix();
 
             // A query and a request to ACT are different asks and cannot be
             // confused for one another — see `GuestAsk`, where the property is

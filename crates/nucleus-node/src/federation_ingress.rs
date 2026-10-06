@@ -932,6 +932,7 @@ ceiling = {{ profile = "read_only" }}
             upstreams: Some(path),
             federation_issuer: None,
             ingress: FederationArgs::default(),
+            approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
         };
         let authority = Arc::new(PodAuthority::new(&args, NODE_TD, dir.path()).unwrap());
         let identity =

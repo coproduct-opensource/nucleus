@@ -18,8 +18,13 @@ const SIGNING: [u8; 32] = [59; 32];
 /// on disk, so the signed records are the ones a stranger would verify.
 async fn one_pod(policy: PermissionLattice) -> (Pod, Hits) {
     let (base, hits) = remote().await;
+    (pod_at(&base, policy).await, hits)
+}
+
+/// [`one_pod`], whose git remote is at `base`.
+pub(super) async fn pod_at(base: &str, policy: PermissionLattice) -> Pod {
     let (model, _) = super::super::upstream().await;
-    let mut pod = declared(&base, policy.clone());
+    let mut pod = declared(base, policy.clone());
     pod.credentials = PodCredentials::static_only({
         let mut store = CredentialStore::new();
         for name in ["git-remote", "model-api"] {
@@ -44,29 +49,18 @@ async fn one_pod(policy: PermissionLattice) -> (Pod, Hits) {
     .unwrap();
     pod.host_policy =
         crate::host_decide::PodPolicy::new(portcullis::kernel::Kernel::new(policy), evidence);
-    (pod, hits)
+    pod
 }
 
 /// The model call: an upstream response, which taints the host's view of the
 /// pod before a byte of it reaches the guest.
-async fn model_call(pod: &Pod) {
+pub(super) async fn model_call(pod: &Pod) {
     let heard = drive(pod, &open("model-api", "model-call"), b"{}").await;
     assert!(heard.head.granted, "{:?}", heard.head);
 }
 
-fn receive_pack(nonce: &str) -> StreamRequest {
-    let mut send = git_open(
-        EgressMethod::Post,
-        "org/repo.git/git-receive-pack",
-        None,
-        nonce,
-    );
-    send.content_type = "application/x-git-receive-pack-request".into();
-    send
-}
-
 /// The host's signed authorizations, each verified under the pinned key.
-fn records(pod: &Pod) -> Vec<SignedAuthorization> {
+pub(super) fn records(pod: &Pod) -> Vec<SignedAuthorization> {
     let key = ed25519_dalek::SigningKey::from_bytes(&SIGNING).verifying_key();
     std::fs::read_to_string(pod.dir.path().join(host_effect::LOG_FILE))
         .unwrap()
@@ -109,13 +103,14 @@ fn declassifying(review: nucleus_spec::host_effect_approval::ApprovalReview) -> 
 }
 
 /// **The acceptance journey.** In one pod, after a model call: the push's
-/// advertisement and its pack are each held for approval and refused without
-/// it; approved, each proceeds; a reused approval is refused; and each
-/// released half's signed record names its approval and the tainted labels it
-/// declassified, while the model call's record carries none.
+/// advertisement is a read and proceeds without an approval (#3266); its pack
+/// is held for approval and refused without it; approved, it proceeds once; a
+/// reused approval is refused; and the pack's signed record names its
+/// approval and the tainted labels it declassified, while the model call's
+/// and the advertisement's records carry none.
 ///
 /// A-19: deciding the push with the abort-only `decide_term_with_flow` again
-/// (no hold) reds the first assertion — the host refuses it as
+/// (no hold) reds the pack's held assertion — the host refuses it as
 /// `flow_refused`; leaving the approval `Granted` at commit reds the reuse
 /// assertion.
 #[tokio::test]
@@ -123,25 +118,20 @@ async fn after_a_model_call_a_push_is_held_approved_once_and_declassified() {
     let (pod, hits) = one_pod(PermissionLattice::permissive()).await;
     model_call(&pod).await;
 
-    // Held, not refused, and without an approval nothing leaves.
-    let held = drive(&pod, &advertise("git-receive-pack", "adv"), b"").await;
-    assert!(
-        held.head.reason.starts_with("host approval required:"),
-        "a tainted push must be held for approval, not refused: {:?}",
-        held.head
-    );
-    assert!(hits.lock().unwrap().is_empty(), "an unapproved push left");
-    let advert = declassifying(grant_pending(&pod));
-    let adv = drive(&pod, &advertise("git-receive-pack", "adv-approved"), b"").await;
+    // The advertisement carries nothing up: a read, not held.
+    let adv = drive(&pod, &advertise("git-receive-pack", "adv"), b"").await;
     assert!(adv.head.granted, "{:?}", adv.head);
 
+    // The pack is held, not refused, and without an approval it never leaves.
     let unapproved = drive(&pod, &receive_pack("pack"), b"0000PACK").await;
     assert!(!unapproved.head.granted);
     assert!(
         unapproved
             .head
             .reason
-            .starts_with("host approval required:")
+            .starts_with("host approval required:"),
+        "a tainted push must be held for approval, not refused: {:?}",
+        unapproved.head
     );
     assert_eq!(hits.lock().unwrap().len(), 1, "only the advertisement left");
     let pack = declassifying(grant_pending(&pod));
@@ -165,27 +155,27 @@ async fn after_a_model_call_a_push_is_held_approved_once_and_declassified() {
     assert_eq!(
         sent,
         ["GET", "POST"],
-        "exactly the two approved requests left"
+        "the advertisement and the one approved pack left"
     );
 
     // The receipts: flow evidence, never the payload.
     let records = records(&pod);
     assert_eq!(records.len(), 3, "model call, advertisement, pack");
-    assert_eq!(records[0].authorization.operation, "web_fetch");
-    assert!(records[0].authorization.declassification.is_none());
-    for (record, approval) in records[1..].iter().zip([advert, pack]) {
-        let claim = &record.authorization;
-        assert_eq!(claim.operation, "git_push");
-        let declassified = claim
-            .declassification
-            .as_ref()
-            .expect("a released tainted push names its declassification");
-        assert_eq!(declassified.approval_id, approval);
-        assert_eq!(
-            declassified.input.integrity,
-            nucleus_decision_protocol::IntegLevel::Adversarial
-        );
+    for read in &records[..2] {
+        assert_eq!(read.authorization.operation, "web_fetch");
+        assert!(read.authorization.declassification.is_none());
     }
+    let claim = &records[2].authorization;
+    assert_eq!(claim.operation, "git_push");
+    let declassified = claim
+        .declassification
+        .as_ref()
+        .expect("a released tainted push names its declassification");
+    assert_eq!(declassified.approval_id, pack);
+    assert_eq!(
+        declassified.input.integrity,
+        nucleus_decision_protocol::IntegLevel::Adversarial
+    );
     let log = std::fs::read_to_string(pod.dir.path().join(host_effect::LOG_FILE)).unwrap();
     assert!(!log.contains("PACK"), "the record copied the payload");
 }
@@ -210,22 +200,19 @@ async fn an_untainted_push_records_no_declassification() {
     assert!(records[0].authorization.declassification.is_none());
 }
 
-/// Under `git_push: never` there is no exit: after the model call, both
-/// halves of the push are refused, nothing is held for an operator, and
-/// nothing leaves.
+/// Under `git_push: never` there is no exit: after the model call, the pack
+/// is refused, nothing is held for an operator, and it never leaves. (The
+/// advertisement before it is a read of the refs, which this profile may
+/// make: it carries nothing up, #3266.)
 #[tokio::test]
 async fn under_never_a_push_after_a_model_call_is_refused_before_leaving() {
     let mut never = PermissionLattice::permissive();
     never.capabilities.git_push = portcullis::CapabilityLevel::Never;
     let (pod, hits) = one_pod(never).await;
     model_call(&pod).await;
-    for heard in [
-        drive(&pod, &advertise("git-receive-pack", "never-adv"), b"").await,
-        drive(&pod, &receive_pack("never-pack"), b"0000PACK").await,
-    ] {
-        assert!(!heard.head.granted, "{:?}", heard.head);
-        assert!(!heard.head.reason.starts_with("host approval required:"));
-    }
+    let heard = drive(&pod, &receive_pack("never-pack"), b"0000PACK").await;
+    assert!(!heard.head.granted, "{:?}", heard.head);
+    assert!(!heard.head.reason.starts_with("host approval required:"));
     assert!(hits.lock().unwrap().is_empty());
     let pending = pod
         .host_policy

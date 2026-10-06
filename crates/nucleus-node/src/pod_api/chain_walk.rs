@@ -802,6 +802,7 @@ fn node(dir: &tempfile::TempDir) -> Node {
         upstreams: Some(registry),
         federation_issuer: None,
         ingress: Default::default(),
+        approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
     };
     let authority =
         PodAuthority::new(&args, "nucleus.local", &st.state_dir).expect("authority builds");

@@ -328,10 +328,11 @@ effects = [
 A request whose method and path match an effect is decided as that operation (`web_fetch`,
 `git_push` or `create_pr`): by the guest's kernel, and again by the host, which recomputes the
 classification and refuses a call labelled as anything weaker. A path segment is a literal or
-`*` (exactly one segment); the request path is percent-decoded before matching. A push
-(`git-receive-pack`) is `git_push` whatever the table says. On a `forge`, a write (`POST`) that
-matches no effect is refused rather than decided as a fetch; on an `api`, it is a
-`web_fetch`, as every call was before the table existed. Two effects for one method whose
+`*` (exactly one segment); the request path is percent-decoded before matching. A push (the
+`POST …/git-receive-pack` that carries the pack) is `git_push` whatever the table says; its
+bodiless ref advertisement (`GET …/info/refs?service=git-receive-pack`) is a read (#3266). On a
+`forge`, a write (`POST`) that matches no effect is refused rather than decided as a fetch; on
+an `api`, it is a `web_fetch`, as every call was before the table existed. Two effects for one method whose
 patterns overlap with different operations refuse the registry.
 
 The table is part of the entry's projection: the pod spec carries it and admission compares
