@@ -22,6 +22,10 @@ hex = { workspace = true }
 thiserror = { workspace = true }
 
 portcullis = { path = "../portcullis", features = ["serde", "spec"] }
+# The operator's effect table for an upstream (#3229): one type, so the
+# projection a pod spec carries and the classifier both sides run cannot
+# drift. Serde-only without its `io` feature.
+nucleus-cred-protocol = { path = "../nucleus-cred-protocol" }
 
 [lints]
 workspace = true

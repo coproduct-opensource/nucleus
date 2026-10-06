@@ -255,11 +255,19 @@ pub(crate) async fn credentialed_egress(
                 .to_string(),
         ));
     };
-    // What the call IS, from the one classifier the host also runs: a push is
-    // decided as `GitPush` here and labelled so, and the host refuses a frame
-    // whose label disagrees with its own reading.
-    let operation =
-        nucleus_cred_protocol::egress::operation_for(call.method, &path, call.query.as_deref());
+    // What the call IS, from the one classifier the host also runs, over the
+    // operator's effect table for this upstream (carried in the admitted
+    // spec): a push is `GitPush`, a declared pull-request route `CreatePr`,
+    // and the host refuses a frame whose label disagrees with its own
+    // reading. A write to a forge that the table does not classify is refused
+    // here, before any decision or frame (#3229).
+    let operation = nucleus_cred_protocol::egress::operation_for(
+        &spec.effects,
+        call.method,
+        &path,
+        call.query.as_deref(),
+    )
+    .map_err(|unclassified| ApiError::Spec(unclassified.to_string()))?;
 
     // Per-effect gate (ADR 0004): the method the host will perform is the
     // shape a granted effect must vouch for.
@@ -275,10 +283,12 @@ pub(crate) async fn credentialed_egress(
     // Preserve local hard denials, but carry an approval deferral to the host.
     // Submission does not mint an execution token or satisfy the deferral. A
     // push is decided as a push as well as a network effect, so a profile
-    // without push is refused here before a frame exists.
+    // without push (or without pull requests) is refused here before a frame
+    // exists.
     let gated = match operation {
         nucleus_cred_protocol::egress::EgressOperation::WebFetch => Operation::WebFetch,
         nucleus_cred_protocol::egress::EgressOperation::GitPush => Operation::GitPush,
+        nucleus_cred_protocol::egress::EgressOperation::CreatePr => Operation::CreatePr,
     };
     let submission = crate::mediation::admit_to_broker(&state, &url, gated).await?;
 
@@ -568,6 +578,7 @@ mod tests {
             credential_env: credential_env.into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         }
     }
 
@@ -897,10 +908,12 @@ mod tests {
                     Err(e) => return axum::response::IntoResponse::into_response(e),
                 };
                 let operation = nucleus_cred_protocol::egress::operation_for(
+                    &nucleus_cred_protocol::EffectTable::unclassified(),
                     call.method,
                     &path,
                     call.query.as_deref(),
-                );
+                )
+                .expect("an api upstream classifies every call");
                 let request = call.open_frame(&name, &path, operation, false, 0);
                 let line = format!(
                     "{}\n",

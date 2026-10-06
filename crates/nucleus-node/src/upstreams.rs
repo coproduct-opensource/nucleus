@@ -112,13 +112,29 @@
 //! # node refuses to start if `request_headers` or `fixed_headers` lists one.
 //! # The entry's own `header` is always one.
 //! secret_headers = ["x-account-binding"]
+//! # What its requests ARE (#3229). `kind = "forge"` refuses any write
+//! # (a POST) that no effect below classifies; `kind = "api"` (the default)
+//! # decides such a call as `web_fetch`. A push is `git_push` whatever is
+//! # declared. Operations: web_fetch, git_push, create_pr. Path segments are
+//! # literals or `*` (exactly one segment).
+//! kind    = "forge"
+//! effects = [
+//!   { method = "POST", path = "/repos/*/*/pulls", operation = "create_pr" },
+//! ]
 //!
 //! [upstream.fixed_headers]   # added by the host to every call, never guest-set
 //! x-api-version = "2026-01-01"
 //!
-//! [upstream.credential.env]
-//! var = "FORGE_API_TOKEN"
+//! [upstream.credential.federated]       # an operator-run RFC 8693 minter
+//! token_endpoint = "https://minter.example/token"
+//! grant          = "token-exchange"
+//! encoding       = "form"
+//! audience       = "https://minter.example"
 //! ```
+//!
+//! The effect table is part of the entry's projection: a pod spec carries it,
+//! the guest classifies by it, and admission compares it like every other
+//! field (`nucleus_cred_protocol::egress::EffectTable`).
 //!
 //! # Reserved: a client certificate as the subject
 //!
@@ -197,6 +213,13 @@ struct EntryFile {
     /// Header names only the host may set on calls to this upstream (#3213).
     #[serde(default)]
     secret_headers: Vec<String>,
+    /// `api` or `forge` (#3229). Absent is read by `EffectTable::from_parts`,
+    /// the one place that decides what absence means.
+    #[serde(default)]
+    kind: Option<nucleus_spec::UpstreamKind>,
+    /// The operator's effect classification (#3229).
+    #[serde(default)]
+    effects: Vec<nucleus_spec::DeclaredEffect>,
 }
 
 #[derive(Deserialize)]
@@ -500,6 +523,8 @@ impl UpstreamRegistry {
                 header_policy(&up.name, &up.header, up.fixed_headers, up.secret_headers)?;
             let request_headers =
                 request_headers(&up.name, &up.header, up.request_headers, &header_policy)?;
+            let effects = nucleus_spec::EffectTable::from_parts(up.kind, up.effects)
+                .map_err(|e| format!("upstream {:?}: {e}", up.name))?;
             entries.push(RegistryEntry {
                 request_headers,
                 header_policy,
@@ -510,6 +535,7 @@ impl UpstreamRegistry {
                     up.header,
                     up.value_prefix,
                     env_var,
+                    effects,
                 ),
                 credential,
             });

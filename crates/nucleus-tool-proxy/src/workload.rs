@@ -1470,6 +1470,7 @@ mod tests {
             credential_env: "CRED".into(),
             header: "authorization".into(),
             value_prefix: String::new(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         }
     }
 

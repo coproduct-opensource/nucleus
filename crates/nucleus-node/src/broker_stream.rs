@@ -558,22 +558,13 @@ where
         )
         .await;
     }
-    // The label must be what the call DOES. A push labelled as a fetch would
-    // otherwise be decided under the read capability only (#3210).
-    if !label_matches_effect(req) {
-        return refuse(
-            &Refusal::NotPermitted,
-            0,
-            Remaining::MayFollow,
-            reader,
-            writer,
-        )
-        .await;
-    }
+    // `resolve` also refuses a label weaker than what the call DOES, by the
+    // operator's effect table for the upstream (#3210, #3229).
     let asked = Asked {
         operation: &req.operation,
         target: &req.target,
         justification: &req.justification,
+        method: req.method,
         path: &req.path,
         query: req.query.as_deref(),
     };
@@ -976,20 +967,6 @@ fn describe_stream(
     effect
 }
 
-/// Whether the frame's operation label is what the call does.
-///
-/// [`nucleus_cred_protocol::egress::operation_for`] is the one classifier; the
-/// guest labels with it and the host recomputes it here. A call it calls a
-/// plain `WebFetch` may carry a stricter label (the host then decides that
-/// operation too); a call it calls anything else must carry exactly that
-/// label, so a push cannot be decided as a fetch.
-fn label_matches_effect(req: &StreamRequest) -> bool {
-    let effect =
-        nucleus_cred_protocol::egress::operation_for(req.method, &req.path, req.query.as_deref());
-    effect == nucleus_cred_protocol::egress::EgressOperation::WebFetch
-        || req.operation == effect.label()
-}
-
 /// The headers this call sends besides the credential and the media type: the
 /// guest's proposals this upstream forwards (the operator listed the name, the
 /// shared rule allows proposing it, it is neither fixed nor secret, and the
@@ -1090,6 +1067,7 @@ mod tests {
     //! placeholder.
 
     mod approval_wait;
+    mod forge;
     mod git;
     mod headers;
     mod paced;
@@ -1235,6 +1213,7 @@ mod tests {
                     credential_env: "LLM_API_TOKEN".into(),
                     header: "authorization".into(),
                     value_prefix: "Bearer ".into(),
+                    effects: nucleus_spec::EffectTable::unclassified(),
                 })],
                 ledger: IdempotencyLedger::new(),
                 egress: crate::egress_meter::EgressMeter::new(

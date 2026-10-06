@@ -25,6 +25,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use egress_budget::{EgressBudgetSpec, EgressRateSpec};
+/// The operator's effect table an upstream entry carries (#3229), re-exported
+/// so a caller building a spec need not name the protocol crate.
+pub use nucleus_cred_protocol::egress::{
+    DeclaredEffect, EffectTable, EgressMethod, EgressOperation, UpstreamKind,
+};
 use rootfs_source::ImageSpecWire;
 pub use rootfs_source::{OciDigest, OciReference, OciRootfs, RootfsSource};
 
@@ -1117,6 +1122,18 @@ pub struct CredentialedEgressSpec {
     /// Optional prefix for the header value (e.g. `Bearer `).
     #[serde(default)]
     pub value_prefix: String,
+    /// The operator's effect classification for this upstream (#3229): which
+    /// requests are which policy operation, and whether an unclassified write
+    /// is refused. Copied from the registry entry, and compared with it at
+    /// admission like every other field, so the guest classifies by the
+    /// operator's table and cannot hold a weaker one. Omitted when it is
+    /// [`EffectTable::unclassified`](nucleus_cred_protocol::EffectTable::unclassified),
+    /// so a spec that declares none serialises as it did before.
+    #[serde(
+        default = "nucleus_cred_protocol::EffectTable::unclassified",
+        skip_serializing_if = "nucleus_cred_protocol::EffectTable::is_unclassified"
+    )]
+    pub effects: nucleus_cred_protocol::EffectTable,
 }
 
 impl CredentialedEgressSpec {
@@ -1152,6 +1169,7 @@ impl CredentialedEgressSpec {
         header: String,
         value_prefix: String,
         env_var: Option<String>,
+        effects: nucleus_cred_protocol::EffectTable,
     ) -> Self {
         Self {
             name,
@@ -1159,6 +1177,7 @@ impl CredentialedEgressSpec {
             credential_env: env_var.unwrap_or_default(),
             header,
             value_prefix,
+            effects,
         }
     }
 
@@ -1339,6 +1358,7 @@ mod credentialed_egress_fixity {
             credential_env: "NUCLEUS_TEST_EGRESS_CRED".into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
+            effects: crate::EffectTable::unclassified(),
         }
     }
 

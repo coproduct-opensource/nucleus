@@ -226,6 +226,15 @@ pub enum GuestCapability {
     /// included) fails. A breaking change by the owner's decision, with no
     /// compatibility arm: a 2.3.x guest cannot serve this node.
     EgressMethodAndQuery,
+    /// The tool-proxy reads an upstream's operator-declared effect table from
+    /// the pod spec and labels a call by it (#3229): a forge's pull-request
+    /// route as `CreatePr`, an unclassified forge write refused. An older
+    /// proxy's spec type refuses the unknown `effects` field, and even past
+    /// that would label the call `WebFetch`, which the host refuses as
+    /// mislabelled. Fails closed either way. Required only by a run that
+    /// declares an upstream whose registry entry carries an effect table
+    /// ([`GuestUse::EffectTableEgress`]); ordinary egress does not need it.
+    EgressEffectTable,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -236,6 +245,10 @@ pub enum GuestUse {
     /// `nucleus run --agent … --egress`: the agent in the pod is started under
     /// the guest's egress adapter with the upstreams the run declares.
     AgentEgress,
+    /// `--egress` naming an upstream whose registry entry declares an effect
+    /// table (`kind`/`effects`, #3229): the guest must read the table from the
+    /// pod spec and label calls by it.
+    EffectTableEgress,
 }
 
 /// Whether the node refuses a guest that lacks a [`GuestCapability`].
@@ -268,7 +281,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 11] = [
+    pub const ALL: [GuestCapability; 12] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -280,6 +293,7 @@ impl GuestCapability {
         GuestCapability::StreamingEgress,
         GuestCapability::EgressAdapterUpstreams,
         GuestCapability::EgressMethodAndQuery,
+        GuestCapability::EgressEffectTable,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -299,6 +313,8 @@ impl GuestCapability {
             GuestCapability::HostDecideShadow => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
+            // Only a pod holding an upstream WITH an effect table reads one.
+            GuestCapability::EgressEffectTable => Demand::When(GuestUse::EffectTableEgress),
         }
     }
 
@@ -328,6 +344,10 @@ impl GuestCapability {
             // stream open names no method).
             GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
             GuestCapability::EgressMethodAndQuery => FirstShipped::Release("2.4.0"),
+            // `v2.4.0` was tagged at f3e700763, before #3229 merged: the
+            // published 2.4.0 tool-proxy cannot read an effect table. The next
+            // guest release flips this.
+            GuestCapability::EgressEffectTable => FirstShipped::NotYet,
         }
     }
 
@@ -390,6 +410,12 @@ impl GuestCapability {
                  carry a query and protocol headers, and the node requires the method; an \
                  older proxy's open has none, so the node refuses every credentialed call \
                  from the pod as malformed"
+            }
+            GuestCapability::EgressEffectTable => {
+                "#3229 put the operator's effect table for an upstream in the pod spec, and \
+                 the tool-proxy labels a forge write by it; an older proxy cannot read a spec \
+                 that carries one, and would label a pull request as a fetch, which the node \
+                 refuses"
             }
         }
     }
@@ -688,6 +714,19 @@ mod tests {
             guest_skew_for(GUEST_RELEASE, &[GuestUse::AgentEgress]),
             Ok(())
         );
+        // An upstream with an effect table (#3229) is the one use the pin does
+        // NOT serve: v2.4.0 was tagged before the guest could read one. Refused
+        // by name, for that use only.
+        assert_eq!(
+            guest_skew_for(
+                GUEST_RELEASE,
+                &[GuestUse::AgentEgress, GuestUse::EffectTableEgress]
+            ),
+            Err(GuestSkew::Lacks {
+                release: GUEST_RELEASE.to_string(),
+                missing: vec![GuestCapability::EgressEffectTable],
+            })
+        );
     }
 
     /// THE FINDING, as a refusal. A node built from this tree cannot boot the
@@ -773,7 +812,8 @@ mod tests {
                 GuestCapability::StreamingEgress => GuestCapability::HostDecideShadow,
                 GuestCapability::HostDecideShadow => GuestCapability::EgressAdapterUpstreams,
                 GuestCapability::EgressAdapterUpstreams => GuestCapability::EgressMethodAndQuery,
-                GuestCapability::EgressMethodAndQuery => GuestCapability::CaBundle,
+                GuestCapability::EgressMethodAndQuery => GuestCapability::EgressEffectTable,
+                GuestCapability::EgressEffectTable => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

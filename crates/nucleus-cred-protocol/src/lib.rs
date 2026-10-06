@@ -235,7 +235,7 @@ pub struct PerformReply {
 pub mod egress;
 pub mod stream;
 
-pub use egress::EgressMethod;
+pub use egress::{EffectTable, EgressMethod, EgressOperation, UpstreamKind};
 
 /// A request that the HOST perform a call whose body and reply are STREAMED.
 ///
@@ -455,6 +455,7 @@ mod tests {
             include_str!("lib.rs"),
             include_str!("stream.rs"),
             include_str!("egress.rs"),
+            include_str!("egress/effects.rs"),
         ]
         .iter()
         .flat_map(|src| {

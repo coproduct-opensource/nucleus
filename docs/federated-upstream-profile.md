@@ -298,6 +298,38 @@ lists one there, on a fixed header that is credential-shaped, framing or forward
 a fixed header that is also marked secret. The call's record names the forwarded headers,
 fixed ones included, and never a value.
 
+### What a call does: the effect table
+
+What a write to an upstream DOES depends on the upstream, so the operator declares it per
+entry (#3229):
+
+```toml
+kind    = "forge"   # or "api", the default
+effects = [
+  { method = "POST", path = "/repos/*/*/pulls", operation = "create_pr" },
+  { method = "POST", path = "*/*/git-upload-pack", operation = "web_fetch" },
+]
+```
+
+A request whose method and path match an effect is decided as that operation (`web_fetch`,
+`git_push` or `create_pr`): by the guest's kernel, and again by the host, which recomputes the
+classification and refuses a call labelled as anything weaker. A path segment is a literal or
+`*` (exactly one segment); the request path is percent-decoded before matching. A push
+(`git-receive-pack`) is `git_push` whatever the table says. On a `forge`, a write (`POST`) that
+matches no effect is refused rather than decided as a fetch; on an `api`, it is a
+`web_fetch`, as every call was before the table existed. Two effects for one method whose
+patterns overlap with different operations refuse the registry.
+
+The table is part of the entry's projection: the pod spec carries it and admission compares
+it like every other field, so a pod holds exactly the operator's table. So under a profile
+with `create_pr: never`, opening a pull request is refused by the host's PDP before a byte
+leaves; under a profile that allows it, the host still asks the operator (opening a pull
+request publishes data), and the approval is bound to the request's digest: method, path,
+query, forwarded headers and body.
+
+A forge credential is best minted per call by an operator-run RFC 8693 token exchange, through
+the `federated` credential source above (ADR 0010): nucleus never holds the forge's app key.
+
 `call_charge_micro_usd` is the operator's fixed tariff for each authorized dispatch
 attempt (1,000,000 micro-USD = 1 USD). It is not copied from the pod spec or inferred
 from a model/provider. Omission leaves the entry unpriced: PERFORM and streaming

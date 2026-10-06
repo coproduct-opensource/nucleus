@@ -696,6 +696,7 @@ mod store_population {
             credential_env: credential_env.into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         })
     }
 
