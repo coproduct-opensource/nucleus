@@ -1457,6 +1457,7 @@ requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
                 "authorization".into(),
                 String::new(),
                 Some("LLM_API_TOKEN".into()),
+                nucleus_spec::EffectTable::unclassified(),
             )
         );
     }
