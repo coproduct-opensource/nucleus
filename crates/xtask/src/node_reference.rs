@@ -47,9 +47,13 @@ pub struct Args {
     /// The exact kernel command line.
     #[arg(long, conflicts_with = "cmdline_param")]
     cmdline_exact: Option<String>,
-    /// A parameter the kernel command line must contain (repeatable).
-    #[arg(long)]
+    /// A parameter the kernel command line must contain (repeatable). Does
+    /// not notice an ADDED parameter; prefer `--cmdline-exact-params`.
+    #[arg(long, conflicts_with = "cmdline_exact_params")]
     cmdline_param: Vec<String>,
+    /// The complete set of command-line words, in any order (repeatable).
+    #[arg(long, conflicts_with = "cmdline_exact")]
+    cmdline_exact_params: Vec<String>,
     /// `LOCAL=INSTALL`: hash LOCAL, allow it at INSTALL in the IMA log.
     #[arg(long)]
     ima_file: Vec<String>,
@@ -156,12 +160,19 @@ pub fn manifest(a: &Args) -> Result<ReferenceManifest> {
         })
     };
 
-    let kernel_cmdline = match (&a.cmdline_exact, a.cmdline_param.is_empty()) {
-        (Some(exact), _) => Expect::Required(CmdlineRule::Exact(exact.clone())),
-        (None, false) => Expect::Required(CmdlineRule::RequiredParams(
+    let kernel_cmdline = match (
+        &a.cmdline_exact,
+        a.cmdline_exact_params.is_empty(),
+        a.cmdline_param.is_empty(),
+    ) {
+        (Some(exact), _, _) => Expect::Required(CmdlineRule::Exact(exact.clone())),
+        (None, false, _) => Expect::Required(CmdlineRule::ExactParams(
+            a.cmdline_exact_params.iter().cloned().collect(),
+        )),
+        (None, true, false) => Expect::Required(CmdlineRule::RequiredParams(
             a.cmdline_param.iter().cloned().collect(),
         )),
-        (None, true) => Expect::NotChecked(NOT_SUPPLIED.into()),
+        (None, true, true) => Expect::NotChecked(NOT_SUPPLIED.into()),
     };
 
     let ima = if a.ima_file.is_empty() && a.ima_sums.is_empty() {
@@ -243,6 +254,7 @@ mod tests {
             efi_app_sha256: vec![],
             cmdline_exact: None,
             cmdline_param: vec![],
+            cmdline_exact_params: vec![],
             ima_file: vec![],
             ima_sums: vec![],
             ima_required: vec![],
