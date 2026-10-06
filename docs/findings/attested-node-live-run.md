@@ -111,7 +111,8 @@ asserts that the first one's bytes hash to the digest the live receipt named.
 - A hardware- or CA-anchored AK (`CertificateChain`): Arm bare metal, or an EK/AK
   certificate. Blocked on quota for the one candidate shape (spike, P2).
 - The wasm verifier for `sdks/verifier-js` (and Python). The crate is pure Rust and
-  not yet embedded.
+  not yet embedded. *Since done: ADR 0011, "As built: the stranger's verifiers"; the
+  epoch-4 and perturbed documents above are two of its parity cases.*
 - Reference manifests published with releases, including Authenticode digests for PCR 4.
 - ~~An anonymous, server-auth-only route for evidence (finding 3)~~ (since:
   `--public-evidence-addr`), and binding the digest into the admission record.

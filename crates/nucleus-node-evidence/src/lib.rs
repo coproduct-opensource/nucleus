@@ -62,6 +62,7 @@ pub mod eventlog;
 pub mod evidence;
 pub mod ima;
 pub mod reference;
+pub mod relying_party;
 pub mod tpm;
 mod wire;
 
@@ -81,6 +82,7 @@ pub use reference::{
     CmdlineRule, DigestSet, Expect, ImaReference, REFERENCE_PROFILE, ReferenceManifest,
     ReferenceValues,
 };
+pub use relying_party::{InputError, RelyingParty, Report, report};
 
 /// A binary structure that did not parse.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

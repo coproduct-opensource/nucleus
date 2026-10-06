@@ -951,6 +951,53 @@ pub fn required_bond_from_receipts_js(
     )
 }
 
+// ── Node evidence: what booted the node that signed a receipt (ADR 0011) ──────
+
+/// Core (natively testable) of [`verify_node_evidence_js`]: the report as
+/// JSON text, exactly as `nucleus_node_evidence::report` serializes it.
+fn node_evidence_report(
+    evidence: &[u8],
+    reference_json: &str,
+    relying_party_json: &str,
+) -> Result<String, String> {
+    let report = nucleus_node_evidence::report(
+        evidence,
+        reference_json.as_bytes(),
+        relying_party_json.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    serde_json::to_string(&report).map_err(|e| e.to_string())
+}
+
+/// Appraise a node's TPM evidence document — the one a receipt's
+/// `node_platform.evidence_sha256` names — in the caller's process. Runs the
+/// SAME `nucleus_node_evidence::appraise` that `nucleus-audit
+/// verify-node-evidence` runs: quote signature, PCR digest, boot and IMA log
+/// replay, key binding, freshness, AK anchor, reference comparison.
+///
+/// Every comparison input is the caller's (`relying_party_json`): the executor
+/// key from the receipt, the nonce it sent or the receipt time and maximum
+/// age, its operator pins and trust roots, and `now`. Nothing the evidence
+/// says is used to check the evidence.
+///
+/// `evidence` is the document's exact bytes, not a re-serialized object: the
+/// report's `evidence_sha256` is their digest, which is what a receipt names.
+///
+/// Returns the report as JSON text (the JS wrapper parses it):
+/// `{ outcome: "appraised", evidence_sha256, ear }` — `ear.submods.node
+/// ["ear.status"]` is `affirming` only for `Attested` — or `{ outcome:
+/// "refused", evidence_sha256, refusal }` when the evidence is not evidence.
+/// Throws only when an input document does not parse.
+#[wasm_bindgen(js_name = verifyNodeEvidence)]
+pub fn verify_node_evidence_js(
+    evidence: &[u8],
+    reference_json: &str,
+    relying_party_json: &str,
+) -> Result<String, JsError> {
+    set_panic_hook();
+    node_evidence_report(evidence, reference_json, relying_party_json).map_err(|e| JsError::new(&e))
+}
+
 // ── Native tests for the receipt-verdict core ─────────────────────────────────
 // The crate is also an rlib, so the wasm-free `receipt_verdict` core runs under
 // plain `cargo test` on the host — sign with the real `nucleus-receipt` crate,
@@ -1439,5 +1486,52 @@ mod agent_card_tests {
         let card_json = signed_card_json(&der);
         let err = agent_card_signature_verdict(&card_json, "{}").unwrap_err();
         assert!(err.starts_with("resolved JWK JSON:"), "got: {err}");
+    }
+}
+
+// ── Native parity with the Rust verifier over the real-TPM fixtures ───────────
+// The same cases and goldens `crates/nucleus-node-evidence/tests/parity.rs`
+// checks; test/node-evidence.test.mjs runs them again through the wasm build.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod node_evidence_tests {
+    use super::node_evidence_report;
+
+    const FIXTURES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/nucleus-node-evidence/tests/fixtures"
+    );
+
+    fn read(name: &str) -> String {
+        std::fs::read_to_string(format!("{FIXTURES}/{name}")).unwrap()
+    }
+
+    #[test]
+    fn every_parity_case_reproduces_the_rust_verifiers_golden_report() {
+        let cases: serde_json::Value = serde_json::from_str(&read("parity/cases.json")).unwrap();
+        let cases = cases["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 7);
+        for case in cases {
+            let got = node_evidence_report(
+                read(case["evidence"].as_str().unwrap()).as_bytes(),
+                &read(case["reference"].as_str().unwrap()),
+                &case["relying_party"].to_string(),
+            )
+            .unwrap();
+            let got: serde_json::Value = serde_json::from_str(&got).unwrap();
+            let want: serde_json::Value =
+                serde_json::from_str(&read(case["report"].as_str().unwrap())).unwrap();
+            assert_eq!(got, want, "{}", case["name"]);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_relying_party_document_throws_rather_than_reporting() {
+        let err = node_evidence_report(
+            read("live-node-epoch4-evidence.json").as_bytes(),
+            &read("live-node-reference-exact.json"),
+            "{}",
+        )
+        .unwrap_err();
+        assert!(err.starts_with("relying party:"), "{err}");
     }
 }

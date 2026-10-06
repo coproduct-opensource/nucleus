@@ -157,9 +157,51 @@ fn sdk_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Core (natively testable) of [`verify_node_evidence`].
+fn node_evidence_report(
+    evidence: &[u8],
+    reference_json: &str,
+    relying_party_json: &str,
+) -> Result<String, String> {
+    let report = nucleus_node_evidence::report(
+        evidence,
+        reference_json.as_bytes(),
+        relying_party_json.as_bytes(),
+    )
+    .map_err(|e| e.to_string())?;
+    serde_json::to_string(&report).map_err(|e| e.to_string())
+}
+
+/// Appraise a node's TPM evidence document (ADR 0011) with the same verifier
+/// `nucleus-audit verify-node-evidence` and the JS SDK run.
+///
+/// `evidence` is the document's exact bytes (its SHA-256 is what a receipt's
+/// `node_platform.evidence_sha256` names). `relying_party_json` carries the
+/// caller's own inputs: `{binding, freshness, trust_roots, operator_pins,
+/// now}`, every field required.
+///
+/// Returns the report as JSON text: `{"outcome": "appraised",
+/// "evidence_sha256", "ear"}` (`ear["submods"]["node"]["ear.status"]` is
+/// `"affirming"` only for Attested) or `{"outcome": "refused",
+/// "evidence_sha256", "refusal"}`.
+///
+/// Raises:
+///     ValueError: a document does not parse.
+#[pyfunction]
+#[pyo3(text_signature = "(evidence, reference_json, relying_party_json, /)")]
+fn verify_node_evidence(
+    evidence: &[u8],
+    reference_json: &str,
+    relying_party_json: &str,
+) -> PyResult<String> {
+    node_evidence_report(evidence, reference_json, relying_party_json)
+        .map_err(PyValueError::new_err)
+}
+
 #[pymodule]
 fn nucleus_verifier(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_bundle, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_node_evidence, m)?)?;
     m.add_function(wrap_pyfunction!(verify_payout, m)?)?;
     m.add_function(wrap_pyfunction!(verify_signed_payout, m)?)?;
     m.add_function(wrap_pyfunction!(verify_settlement_set, m)?)?;
@@ -477,5 +519,52 @@ mod commerce_tests {
         assert!(payout_verdict("{not json").is_err());
         assert!(cart_verdict("abc", "{not json").is_err());
         assert!(signed_payout_verdict("{}", "zz").is_err());
+    }
+}
+
+/// The Python surface against the Rust verifier's golden reports over the
+/// real-TPM fixtures (`crates/nucleus-node-evidence/tests/fixtures/parity/`),
+/// the same cases the JS SDK runs through its wasm build.
+#[cfg(test)]
+mod node_evidence_tests {
+    use super::node_evidence_report;
+
+    const FIXTURES: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../crates/nucleus-node-evidence/tests/fixtures"
+    );
+
+    fn read(name: &str) -> String {
+        std::fs::read_to_string(format!("{FIXTURES}/{name}")).unwrap()
+    }
+
+    #[test]
+    fn every_parity_case_reproduces_the_rust_verifiers_golden_report() {
+        let cases: serde_json::Value = serde_json::from_str(&read("parity/cases.json")).unwrap();
+        let cases = cases["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 7);
+        for case in cases {
+            let got = node_evidence_report(
+                read(case["evidence"].as_str().unwrap()).as_bytes(),
+                &read(case["reference"].as_str().unwrap()),
+                &case["relying_party"].to_string(),
+            )
+            .unwrap();
+            let got: serde_json::Value = serde_json::from_str(&got).unwrap();
+            let want: serde_json::Value =
+                serde_json::from_str(&read(case["report"].as_str().unwrap())).unwrap();
+            assert_eq!(got, want, "{}", case["name"]);
+        }
+    }
+
+    #[test]
+    fn an_unreadable_relying_party_document_is_an_error_not_a_verdict() {
+        let err = node_evidence_report(
+            read("live-node-epoch4-evidence.json").as_bytes(),
+            &read("live-node-reference-exact.json"),
+            "{}",
+        )
+        .unwrap_err();
+        assert!(err.starts_with("relying party:"), "{err}");
     }
 }

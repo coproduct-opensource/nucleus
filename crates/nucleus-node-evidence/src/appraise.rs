@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use base64::Engine as _;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Malformed;
 use crate::anchor::{self, AkAnchor, AnchorPolicy, UnanchoredReason};
@@ -38,7 +38,8 @@ use crate::tpm::{AkPublic, SignatureError, parse_quote, verify_quote_signature};
 const PCR_IMA: u8 = 10;
 
 /// What the relying party expects about freshness.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum FreshnessExpectation {
     /// The relying party sent this nonce and wants a quote over it.
     Challenge {

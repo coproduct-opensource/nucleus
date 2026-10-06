@@ -58,6 +58,30 @@ assert report["ok"] is True
 assert report["trust_mode"] in ("out_of_band", "self_check_only")
 ```
 
+### Node evidence: what booted the node that signed a receipt
+
+`verify_node_evidence(evidence_bytes, reference_json, relying_party_json)` runs
+the same `nucleus_node_evidence` verifier as `nucleus-audit
+verify-node-evidence` and the JS SDK (ADR 0011), and returns the report as JSON
+text. Pass the evidence document's exact bytes: the report's `evidence_sha256`
+is their digest, which is what a receipt's `node_platform.evidence_sha256`
+names. The relying-party document is yours (`binding`, `freshness`,
+`trust_roots`, `operator_pins`, `now`; every field required) — see the JS SDK
+README for its shape.
+
+```python
+import json, time
+from nucleus_verifier import verify_node_evidence
+
+r = json.loads(verify_node_evidence(open("evidence.json", "rb").read(),
+                                    open("reference.json").read(),
+                                    json.dumps(relying_party)))
+if r["outcome"] == "appraised":
+    status = r["ear"]["submods"]["node"]["ear.status"]  # "affirming" only for Attested
+```
+
+Raises `ValueError` only when a document does not parse.
+
 ### Report shape
 
 ```python

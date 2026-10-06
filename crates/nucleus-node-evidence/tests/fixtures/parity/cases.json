@@ -1,0 +1,204 @@
+{
+  "_doc": "Parity cases for the node-evidence verifier. Each case is three documents a stranger holds (evidence, reference, relying party) and the EAR status the Rust tests assert for them. `report` names the golden report the Rust verifier produced (tests/parity.rs writes it under NUCLEUS_NODE_EVIDENCE_PARITY_WRITE=1 and otherwise compares). sdks/verifier-js/test/node-evidence.test.mjs runs the same cases through the wasm build and requires a deep-equal report. Paths are relative to tests/fixtures.",
+  "cases": [
+    {
+      "name": "live-epoch4-attested",
+      "evidence": "live-node-epoch4-evidence.json",
+      "reference": "live-node-reference-exact.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "929fbe08d9cbaec3659c5ac626e31bec8065107461fe77aa3b4af1c4f230be85"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "epoch": {
+            "receipt_time": 1791247262,
+            "max_age_secs": 900,
+            "max_future_secs": 60
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [
+          {
+            "source": "gcp-shielded-vm-identity:attest-live-x86",
+            "ak_spki_sha256": "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366"
+          }
+        ],
+        "now": 1791247232
+      },
+      "expect_status": "affirming",
+      "report": "parity/live-epoch4-attested.report.json"
+    },
+    {
+      "name": "live-epoch4-an-hour-later",
+      "evidence": "live-node-epoch4-evidence.json",
+      "reference": "live-node-reference-exact.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "929fbe08d9cbaec3659c5ac626e31bec8065107461fe77aa3b4af1c4f230be85"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "epoch": {
+            "receipt_time": 1791250832,
+            "max_age_secs": 900,
+            "max_future_secs": 60
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [
+          {
+            "source": "gcp-shielded-vm-identity:attest-live-x86",
+            "ak_spki_sha256": "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366"
+          }
+        ],
+        "now": 1791247232
+      },
+      "expect_status": "warning",
+      "report": "parity/live-epoch4-an-hour-later.report.json"
+    },
+    {
+      "name": "live-epoch4-without-a-pin",
+      "evidence": "live-node-epoch4-evidence.json",
+      "reference": "live-node-reference-exact.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "929fbe08d9cbaec3659c5ac626e31bec8065107461fe77aa3b4af1c4f230be85"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "epoch": {
+            "receipt_time": 1791247262,
+            "max_age_secs": 900,
+            "max_future_secs": 60
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [],
+        "now": 1791247232
+      },
+      "expect_status": "none",
+      "report": "parity/live-epoch4-without-a-pin.report.json"
+    },
+    {
+      "name": "live-epoch4-another-executor-key",
+      "evidence": "live-node-epoch4-evidence.json",
+      "reference": "live-node-reference-exact.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "epoch": {
+            "receipt_time": 1791247262,
+            "max_age_secs": 900,
+            "max_future_secs": 60
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [
+          {
+            "source": "gcp-shielded-vm-identity:attest-live-x86",
+            "ak_spki_sha256": "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366"
+          }
+        ],
+        "now": 1791247232
+      },
+      "expect_status": "refused",
+      "report": "parity/live-epoch4-another-executor-key.report.json"
+    },
+    {
+      "name": "live-perturbed-reboot-contested",
+      "evidence": "live-node-perturbed-challenge-evidence.json",
+      "reference": "live-node-reference-exact.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "929fbe08d9cbaec3659c5ac626e31bec8065107461fe77aa3b4af1c4f230be85"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "challenge": {
+            "sent": "763aaf0c5d38195380cd11f0266436c2d78307da527bf47c9d32bd6cebb07c3d"
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [
+          {
+            "source": "gcp-shielded-vm-identity:attest-live-x86",
+            "ak_spki_sha256": "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366"
+          }
+        ],
+        "now": 1791247232
+      },
+      "expect_status": "contraindicated",
+      "report": "parity/live-perturbed-reboot-contested.report.json"
+    },
+    {
+      "name": "vtpm-challenge-attested",
+      "evidence": "vtpm-challenge-evidence.json",
+      "reference": "vtpm-reference.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "challenge": {
+            "sent": "8e90cffae95c5d3cdaf6511ef4d29de32cd294523769a1bd22dcdbf395a57955"
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [
+          {
+            "source": "gcp-shielded-vm-identity:fixture-vm",
+            "ak_spki_sha256": "099de433a6d31eb05252dc44fc02f74d4366c01b5cad7dcb80afe2f341bd5bc3"
+          }
+        ],
+        "now": 1791244156
+      },
+      "expect_status": "affirming",
+      "report": "parity/vtpm-challenge-attested.report.json"
+    },
+    {
+      "name": "vtpm-challenge-replayed-to-another-nonce",
+      "evidence": "vtpm-challenge-evidence.json",
+      "reference": "vtpm-reference.json",
+      "relying_party": {
+        "binding": {
+          "executor_key": {
+            "ed25519": "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"
+          },
+          "federation": "not_federated"
+        },
+        "freshness": {
+          "challenge": {
+            "sent": "1111111111111111111111111111111111111111111111111111111111111111"
+          }
+        },
+        "trust_roots": [],
+        "operator_pins": [
+          {
+            "source": "gcp-shielded-vm-identity:fixture-vm",
+            "ak_spki_sha256": "099de433a6d31eb05252dc44fc02f74d4366c01b5cad7dcb80afe2f341bd5bc3"
+          }
+        ],
+        "now": 1791244156
+      },
+      "expect_status": "warning",
+      "report": "parity/vtpm-challenge-replayed-to-another-nonce.report.json"
+    }
+  ]
+}
