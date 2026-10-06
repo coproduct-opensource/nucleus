@@ -62,6 +62,13 @@ measured_ms = 480000
 # A read missing from here fails CLOSED in a materialized pod -- the file is absent, so the test
 # reds -- unless the test tolerates the absence, which is the case the measurement cannot see.
 # Re-measure before trusting a regeneration made long after this date.
+#
+# Re-measured 2026-10-06 at nucleus 160a26deb (same strace + dep-info method, a spot n2-standard-16):
+# every read a test-libs crate makes is inside the generated scope. New since 2026-10-02:
+# nucleus-rubric-olog's proptest crate-root probes (added below; already covered by the includes)
+# and portcullis's examples/policies/* (covered by examples/policies/**). nucleus-verifier-service
+# reads sdks/verifier-js/pkg/*, which is step 0's OUTPUT inside the pod, not a tree input: it stays
+# a write, outside the scope hash. Serial test work 362 s (303 s on 2026-10-02).
 [fixtures]
 portcullis = [".env", ".ssh", "crates/.env", "crates/escape", "examples/policies/**", "profiles/**", "lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-proto = ["crates/nucleus-control-plane/proto/job_service.proto", "crates/nucleus-identity/proto/workload.proto", "crates/nucleus-node/proto/nucleus_node.proto"]
@@ -73,6 +80,7 @@ ci-spec = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-policy-kernel = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-econ-kernels = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-rubric = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-rubric-olog = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 ck-policy = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-lineage = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-commerce-conformance = ["examples/independent-conformance/vectors.json"]

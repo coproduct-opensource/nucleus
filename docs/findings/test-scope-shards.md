@@ -74,6 +74,8 @@ each way round.
 * **The plan.** `test-node`/`test-libs` in `pipeline.writ`, `test` retired, the policy's required
   list — after gatehouse#261 (writ `Gate.exclude`) merges and `GATEHOUSE_REF` and the prelude
   import move together (`cargo xtask gatehouse-pin`).
-* **The fixtures are from 2026-10-02.** A test that started reading a new path outside its closure
-  since then fails closed in `test-libs` (the path is absent), unless it tolerates the absence.
-  Re-measure (gatehouse `scripts/bench/sublinear/measure.sh`) before the cutover.
+* **The fixtures were re-measured 2026-10-06 at `160a26deb`** (strace and dep-info on a spot VM):
+  every read a `test-libs` crate makes falls inside the generated scope, except
+  `sdks/verifier-js/pkg/*`, which step 0 writes in the pod and step 1 reads, an output rather than a
+  tree input. One new crate's probes were added to the layout. Serial test work grew from 303 s to
+  362 s.
