@@ -57,6 +57,39 @@ pub struct ExecutionClaim {
     pub environment_complete_sha256: String,
     #[serde(default)]
     pub artifacts: BTreeMap<String, ArtifactIdentity>,
+    /// What the signing node's platform evidence is (#2706, ADR 0011). A
+    /// receipt from before this field reads as `Unattested`, never as more.
+    #[serde(default = "NodePlatform::not_recorded")]
+    pub node_platform: NodePlatform,
+}
+
+/// The node's platform evidence as a receipt records it. The digest names an
+/// evidence document; *appraising* it (what booted, how fresh, which anchor)
+/// is `nucleus-node-evidence`'s job, and a relying party's choice to do.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum NodePlatform {
+    /// The node holds no platform evidence, and says why. An honest tier.
+    Unattested {
+        /// Why (e.g. no TPM configured).
+        reason: String,
+    },
+    /// The node's epoch evidence in force when it signed.
+    Evidence {
+        /// SHA-256 of the evidence document's bytes, hex.
+        evidence_sha256: String,
+        /// The epoch counter that document carries.
+        epoch: u64,
+    },
+}
+
+impl NodePlatform {
+    /// What a receipt that predates node evidence records.
+    pub fn not_recorded() -> Self {
+        Self::Unattested {
+            reason: "receipt predates node platform evidence".into(),
+        }
+    }
 }
 
 impl ExecutionClaim {
@@ -308,6 +341,7 @@ pub fn verify_execution(
         environment_inputs_sha256: actual_environment,
         environment_complete_sha256,
         artifacts,
+        node_platform,
     } = &claim;
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
@@ -344,14 +378,27 @@ pub fn verify_execution(
             "manifest differs from controller request",
         ));
     }
-    for (field, digest) in [
-        ("program_digest", actual_program),
-        ("stdout_sha256", stdout_sha256),
-        ("stderr_sha256", stderr_sha256),
-        ("launch_hash", launch_hash),
-        ("environment_inputs_sha256", actual_environment),
-        ("environment_complete_sha256", environment_complete_sha256),
-    ] {
+    // The platform evidence is reported, not required: appraising it is a
+    // separate verdict (nucleus-audit's composite). Its digest must be well
+    // formed so the composite can name it.
+    let evidence_digest = match node_platform {
+        NodePlatform::Unattested { .. } => None,
+        NodePlatform::Evidence {
+            evidence_sha256, ..
+        } => Some(evidence_sha256),
+    };
+    for (field, digest) in evidence_digest
+        .map(|d| ("node_platform.evidence_sha256", d))
+        .into_iter()
+        .chain([
+            ("program_digest", actual_program),
+            ("stdout_sha256", stdout_sha256),
+            ("stderr_sha256", stderr_sha256),
+            ("launch_hash", launch_hash),
+            ("environment_inputs_sha256", actual_environment),
+            ("environment_complete_sha256", environment_complete_sha256),
+        ])
+    {
         if digest.len() != 64
             || !digest
                 .bytes()

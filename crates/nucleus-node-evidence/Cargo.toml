@@ -37,6 +37,17 @@ rsa = { version = "0.9", default-features = false, features = ["std"] }
 # AK certificate chain are checked here with the RustCrypto crates above.
 x509-parser = { version = "0.18", default-features = false }
 
+[features]
+default = []
+# The Attester role: raw TPM 2.0 commands over /dev/tpmrm0 (or a software
+# TPM's socket in tests). Pure Rust and std-only; off by default so the
+# verifier alone stays free of any I/O.
+attester = []
+
+[[example]]
+name = "swtpm_attest"
+required-features = ["attester"]
+
 [dev-dependencies]
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
 rcgen = { version = "0.14", features = ["x509-parser"] }

@@ -90,6 +90,8 @@ nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }
 nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
+# Node platform evidence (#2706): the TPM attester and the evidence types.
+nucleus-node-evidence = { path = "../nucleus-node-evidence", features = ["attester"] }
 nucleus-receipt = { path = "../nucleus-receipt" }
 # The extracted egress matcher the Lean confinement theorem is stated over, so
 # `model_rule` targets the proof's own types rather than a restatement.

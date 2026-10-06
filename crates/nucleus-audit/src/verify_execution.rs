@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 mod export;
 mod logs;
+mod node;
 mod prepare;
 
 #[derive(clap::Subcommand, Debug)]
@@ -19,14 +20,20 @@ pub(crate) enum Command {
     PrepareExecution(prepare::Args),
     /// Verify exact stdout/stderr files against an independently verified execution receipt
     VerifyLogs(logs::Args),
-    /// Verify a collected execution receipt against independently supplied expectations
+    /// Verify a collected execution receipt against independently supplied
+    /// expectations, and report the signing node's platform tier beside it
     VerifyExecution {
         #[arg(long)]
         receipt: PathBuf,
         /// RecordedExecution JSON from the trusted admission/controller record
         #[arg(long)]
         expectations: PathBuf,
+        #[command(flatten)]
+        platform: node::PlatformArgs,
     },
+    /// Appraise a node's platform evidence (TPM quote + boot and IMA logs)
+    /// against a reference manifest; succeeds only for `Attested`
+    VerifyNodeEvidence(node::Args),
     /// Verify a collected bundle's execution receipt and every artifact's bytes
     VerifyArtifacts {
         #[arg(long)]
@@ -69,7 +76,9 @@ impl Command {
     }
 
     fn verify(self) -> Result<()> {
+        let mut platform = serde_json::Value::Null;
         let (claim, artifact_count, output_dir) = match self {
+            Self::VerifyNodeEvidence(args) => return args.run(),
             Self::VerifyLogs(args) => {
                 println!("{}", serde_json::to_string_pretty(&args.verify()?)?);
                 return Ok(());
@@ -81,10 +90,27 @@ impl Command {
             Self::VerifyExecution {
                 receipt,
                 expectations,
+                platform: platform_args,
             } => {
                 let expected: RecordedExecution = read(&expectations)?;
                 let receipt: Receipt = read(&receipt)?;
                 let verified = verify_execution(&receipt, &expected.as_expected())?;
+                // Authorization first (above); the platform is the second
+                // axis of the composite verdict and never substitutes for it.
+                let (report, attested) = node::platform(
+                    &platform_args,
+                    verified.claim(),
+                    receipt.session.issued_at_micros,
+                    &expected.verifying_key,
+                )?;
+                platform = serde_json::json!({
+                    "verdict": if attested {
+                        "authorized_on_an_attested_node"
+                    } else {
+                        "authorized_platform_not_attested"
+                    },
+                    "platform": report,
+                });
                 (verified.into_claim(now()?)?, None, None)
             }
             Self::VerifyArtifacts {
@@ -120,6 +146,7 @@ impl Command {
                 "artifact_bytes_verified": artifact_count,
                 "artifacts_directory": output_dir,
                 "claim": claim,
+                "node_platform": platform,
             }))?
         );
         Ok(())

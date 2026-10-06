@@ -54,6 +54,8 @@
 
 pub mod anchor;
 pub mod appraise;
+#[cfg(feature = "attester")]
+pub mod attester;
 pub mod binding;
 mod crypto;
 pub mod eventlog;

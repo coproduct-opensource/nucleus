@@ -1,0 +1,35 @@
+{
+  "eat_profile": "nucleus-node-evidence/v1",
+  "binding": {
+    "executor_key": {
+      "ed25519": "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c"
+    },
+    "federation": "not_federated"
+  },
+  "freshness": {
+    "epoch": {
+      "counter": 4,
+      "iat": 1791250300
+    }
+  },
+  "tpm": {
+    "ak_public": "AFgAIwALAAUAcgAAABAAGAALAAMAEAAg+qnDj01m+uRK8VigbdcQbibMyagrlJaThw9c89dkM+sAIDuH1Dh2zcK1GgdM/2pcJDVpKVzfUchZwVwwlRiup0Uc",
+    "attest": "/1RDR4AYACIAC9cOQ8wJp8hQJKxxMk8Cu60v1mYdaTAQ77LOGm/26OHtACAUQKhEWQ+ONd4ZIVzE5L8CjxfxVSDDMg03keD9+p08WwAAAAAAAAbDAAAAAQAAAAABIBkQIwAWNjYAAAABAAsDAQABACCqKSFEY5awXL7pWvivYW5djbEwA6+uqNjUQTzz0P+6Pw==",
+    "signature": "ABgACwAgmFuoaKt+2yFEl5mplMsVykMQojEwhAi9QyTmbSHKigUAIMvHvQXE8O7fkRA/huLnDyChauDEdTGSxXimAFAcVS8g",
+    "pcrs": {
+      "0": "0000000000000000000000000000000000000000000000000000000000000000",
+      "16": "33e611205e3088f23f3c7895d8b9adebf4d21934b09e11afdf3bd1dc2b19b31b"
+    }
+  },
+  "boot_event_log": {
+    "absent": "/nonexistent/swtpm-has-no-firmware-log: No such file or directory (os error 2)"
+  },
+  "ima_log": {
+    "absent": "/nonexistent/swtpm-has-no-ima: No such file or directory (os error 2)"
+  },
+  "ak_anchor": {
+    "operator_fetched": {
+      "source": "swtpm-operator"
+    }
+  }
+}

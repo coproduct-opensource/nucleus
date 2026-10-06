@@ -72,7 +72,13 @@ pub(crate) async fn observe_claim(
         .clone()
         .ok_or_else(|| ApiError::SupervisorUnavailable("proxy address is not ready".into()))?;
     let observed = fetch(&state.http_client, &address).await?;
-    let claim = completed_claim(&pod.spec, id, backend, observed)?;
+    let claim = completed_claim(
+        &pod.spec,
+        id,
+        backend,
+        observed,
+        state.node_platform.platform(),
+    )?;
     Ok((claim, address))
 }
 
@@ -106,6 +112,7 @@ fn completed_claim(
     id: Uuid,
     backend: Backend,
     observed: WorkloadResult,
+    node_platform: nucleus_ci_verdict::execution::NodePlatform,
 ) -> Result<ExecutionClaim, ApiError> {
     if backend == Backend::Firecracker {
         require_image_pins(spec)?;
@@ -171,6 +178,7 @@ fn completed_claim(
         environment_inputs_sha256: environment.inputs_sha256,
         environment_complete_sha256: environment.complete_sha256,
         artifacts: Default::default(),
+        node_platform,
     })
 }
 
@@ -284,12 +292,30 @@ mod tests {
         }
     }
 
+    fn unattested() -> nucleus_ci_verdict::execution::NodePlatform {
+        nucleus_ci_verdict::execution::NodePlatform::Unattested {
+            reason: "test node".into(),
+        }
+    }
+
     #[test]
     fn signing_preparation_preserves_actual_exit_and_backend() {
         let spec = spec();
-        let claim = completed_claim(&spec, Uuid::nil(), Backend::Local, observed(&spec)).unwrap();
+        let claim = completed_claim(
+            &spec,
+            Uuid::nil(),
+            Backend::Local,
+            observed(&spec),
+            unattested(),
+        )
+        .unwrap();
         assert_eq!(claim.exit_code, Some(23));
         assert_eq!(claim.backend, Backend::Local);
+        assert_eq!(
+            claim.node_platform,
+            unattested(),
+            "the node's platform is recorded as given"
+        );
         assert!(!claim.uid_isolated);
     }
 
@@ -303,7 +329,9 @@ mod tests {
                 reason: "lost pipe".into(),
             },
         ] {
-            assert!(completed_claim(&spec, Uuid::nil(), Backend::Local, result).is_err());
+            assert!(
+                completed_claim(&spec, Uuid::nil(), Backend::Local, result, unattested()).is_err()
+            );
         }
         let mut observation = observed(&spec);
         if let WorkloadResult::Exited { program, .. } = &mut observation {
@@ -311,7 +339,16 @@ mod tests {
                 digest: "another program".into(),
             };
         }
-        assert!(completed_claim(&spec, Uuid::nil(), Backend::Local, observation).is_err());
+        assert!(
+            completed_claim(
+                &spec,
+                Uuid::nil(),
+                Backend::Local,
+                observation,
+                unattested()
+            )
+            .is_err()
+        );
     }
 
     #[test]
