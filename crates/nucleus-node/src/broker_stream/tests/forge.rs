@@ -248,7 +248,7 @@ async fn an_allowed_pull_request_is_approved_then_sent_with_the_hosts_credential
 /// a read is not.** None of the refused calls reaches the forge.
 ///
 /// The `WebFetch`-labelled frames are exactly what a guest that predates
-/// effect tables (the published 2.4.0) sends for these calls: it labels by
+/// effect tables (2.4.0 and earlier) sends for these calls: it labels by
 /// the push classifier alone. The host classifies by the REGISTRY's table,
 /// which no frame carries, so such a guest cannot bypass it by not knowing
 /// the table.

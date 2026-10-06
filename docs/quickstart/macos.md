@@ -158,8 +158,11 @@ workload door (#3031), the in-guest MCP bridge (#3135), and streaming
 egress (#3178). So is v2.3.0: its tool-proxy's egress stream opens name no
 method (#3210).
 
-The pinned release is **`2.4.0`**, the first build whose guest meets every
-`GuestCapability`. Each
+The pinned release is **`2.5.0`**, the first build whose guest meets every
+`GuestCapability`. It is pinned ahead of its tag, so until the tag's assets are
+published `setup` refuses it up front and `--artifacts local` is the way
+through. v2.4.0 still serves every pod except a run whose upstream declares an
+effect table (#3229). Each
 downloaded asset is checked against the release API digest and, when `gh` is on
 PATH, against its Sigstore build provenance — the output says which of the two
 happened rather than implying both.

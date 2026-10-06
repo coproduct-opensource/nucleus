@@ -357,12 +357,13 @@ impl GuestCapability {
             // stream open names no method).
             GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
             GuestCapability::EgressMethodAndQuery => FirstShipped::Release("2.4.0"),
-            // `v2.4.0` was tagged at f3e700763, before #3229 merged: the
-            // published 2.4.0 tool-proxy cannot read an effect table. The next
-            // guest release flips this.
-            GuestCapability::EgressEffectTable => FirstShipped::NotYet,
-            // #3255, after `v2.4.0` (f3e700763).
-            GuestCapability::TaintedPushHeld => FirstShipped::NotYet,
+            // #3246 (936e24606, #3229's effect table) and #3257 (587c3524f,
+            // #3255's held push) merged after `v2.4.0` (f3e700763): the
+            // published 2.4.0 tool-proxy reads no effect table and refuses a
+            // tainted push in the guest. Both are on main when the pin moves to
+            // 2.5.0, so 2.5.0 is the first release cut from a tree carrying them.
+            GuestCapability::EgressEffectTable => FirstShipped::Release("2.5.0"),
+            GuestCapability::TaintedPushHeld => FirstShipped::Release("2.5.0"),
         }
     }
 
@@ -555,7 +556,11 @@ fn skew_against(
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.4.0` is the first release whose tool-proxy names the method of each
+/// `2.5.0` is the first release whose tool-proxy reads an upstream's effect
+/// table from the pod spec (#3229) and submits a tainted push to the host to
+/// be held for approval (#3255). Neither is required of every pod, so the
+/// node still serves a 2.4.0 guest; only a run declaring an upstream with an
+/// effect table refuses one. `2.4.0` is the first release whose tool-proxy names the method of each
 /// stream open and may carry a query and protocol headers (#3210), which this
 /// node requires: a breaking change, owner-approved, with no compatibility arm
 /// for 2.3.x opens. `2.3.0` was the first release whose rootfs runs the egress
@@ -586,7 +591,7 @@ fn skew_against(
 /// naming a release the pin has not reached.
 ///
 /// `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.4.0";
+pub const GUEST_RELEASE: &str = "2.5.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -727,24 +732,27 @@ mod tests {
     /// Every USE as well, not just the uses every pod makes: a
     /// [`Demand::When`] row left at [`FirstShipped::NotYet`] when the pin moves
     /// to the release that ships it would refuse that use on a guest that
-    /// serves it. `GuestUse` has one variant, so the list is exhaustive.
+    /// serves it. `GuestUse` has two variants, so the list is exhaustive.
     #[test]
     fn the_pinned_release_serves_this_tree() {
+        let every_use = [GuestUse::AgentEgress, GuestUse::EffectTableEgress];
         assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
+        assert_eq!(guest_skew_for(GUEST_RELEASE, &every_use), Ok(()));
+        // No row is left unreleased once the pin moves: every capability this
+        // tree's node and CLI know of is in the pinned release.
+        for cap in GuestCapability::ALL {
+            assert_ne!(cap.first_shipped(), FirstShipped::NotYet, "{cap:?}");
+        }
+        // The release before the pin (2.4.0) serves every pod and every
+        // adapter run, and is refused only for an upstream with an effect
+        // table (#3229), by name: no 2.5.0 row is Required, so the floor
+        // stays at 2.4.0.
+        assert_eq!(guest_skew("2.4.0"), Ok(()));
+        assert_eq!(guest_skew_for("2.4.0", &[GuestUse::AgentEgress]), Ok(()));
         assert_eq!(
-            guest_skew_for(GUEST_RELEASE, &[GuestUse::AgentEgress]),
-            Ok(())
-        );
-        // An upstream with an effect table (#3229) is the one use the pin does
-        // NOT serve: v2.4.0 was tagged before the guest could read one. Refused
-        // by name, for that use only.
-        assert_eq!(
-            guest_skew_for(
-                GUEST_RELEASE,
-                &[GuestUse::AgentEgress, GuestUse::EffectTableEgress]
-            ),
+            guest_skew_for("2.4.0", &every_use),
             Err(GuestSkew::Lacks {
-                release: GUEST_RELEASE.to_string(),
+                release: "2.4.0".to_string(),
                 missing: vec![GuestCapability::EgressEffectTable],
             })
         );
@@ -901,7 +909,7 @@ mod tests {
     /// the use and by no other. 2.3.0's adapter takes one `--upstream` (#3211
     /// is not in it): a run that starts its agent under the adapter (#3212) is
     /// refused for it by name, while a plain pod is refused for #3210 alone.
-    /// The pin (2.4.0) ships both.
+    /// 2.4.0, the release before the pin, ships both.
     #[test]
     fn a_capability_for_one_use_refuses_only_that_use() {
         assert_eq!(
