@@ -465,6 +465,7 @@
             ],
             "unquoted_tail": 0
           },
+          "ima_not_in_scope": [],
           "not_checked": {
             "efi_applications": "Authenticode digests not generated",
             "ima": "checked in the live run against the full module set"
