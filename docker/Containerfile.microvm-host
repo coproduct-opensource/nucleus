@@ -23,28 +23,25 @@
 # installs from:
 #   * Firecracker/jailer — nucleus_spec::vmm_version::PINNED (1.17.0)
 #   * guest kernel       — nucleus_spec::tier2_artifacts::KERNEL_AARCH64
-#   * guest rootfs       — Tier2Artifact::Rootfs at 2.4.0, one release behind
-#                          GUEST_RELEASE (2.5.0), digest as the release API
-#                          reports it
+#   * guest rootfs       — Tier2Artifact::Rootfs at GUEST_RELEASE (2.5.0),
+#                          digest as the release API reports it
 #
-# The release is the one microvm_host's tests name (IMAGE_TRAILS_THE_PIN_AT,
-# 2.4.0): they derive every nucleus release URL below from
-# Tier2Artifact::asset_url and red if one names another version. The digests
-# cannot be derived — they exist only once the tag has built the assets — so
-# the image trails a pin bump by one release (#3143's precedent) until the
-# post-tag follow-up moves this file to the published 2.5.0 digests and
-# deletes the trailing constant (#3248 did it for 2.4.0). This file's current
-# digests are v2.4.0's, each checked against the release API and its
-# build-provenance attestation from release.yml at refs/tags/v2.4.0. The 2.4.0
-# node and rootfs below are a consistent pair.
+# The release is GUEST_RELEASE and nothing else: microvm_host's tests derive
+# every nucleus release URL below from Tier2Artifact::asset_url(GUEST_RELEASE)
+# and red if one names another version. The digests cannot be derived — they
+# exist only once the tag has built the assets — so a pin bump reds those tests
+# until this file is moved with the published digests (#3197 did it for 2.3.0,
+# #3248 for 2.4.0). This file's current digests are v2.5.0's, each checked
+# against the release API and its build-provenance attestation from release.yml
+# at refs/tags/v2.5.0.
 #
-# `NODE_SOURCE=release` (default) takes the 2.4.0 musl nucleus-node and
-# nucleus-mcp — the published node/rootfs pairing. `NODE_SOURCE=source` builds
-# both from this tree. Against the
+# `NODE_SOURCE=release` (default) takes the GUEST_RELEASE 2.5.0 musl
+# nucleus-node and nucleus-mcp — the node/rootfs pairing `nucleus setup`
+# installs today. `NODE_SOURCE=source` builds both from this tree. Against the
 # 2.2.0 rootfs that node could not boot a pod (measured in the spike: no
 # `NUCLEUS_EGRESS_PROBE:` line, and a read-only rootfs died creating its
 # identity directory); 2.3.0 ships both fixes and 2.4.0 the stream opens a
-# source-built node requires (#3210), but a source-built node on the 2.4.0
+# source-built node requires (#3210), but a source-built node on the 2.5.0
 # rootfs has not been measured here, so the default stays the release.
 
 ARG NODE_SOURCE=release
@@ -62,10 +59,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
 
 # ── nucleus-node + nucleus-mcp from the pinned guest release ──────────
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS node-release
-ADD --checksum=sha256:1e2cf9700c63c425342b0cc16e0f320e4d389c06966972a1f80cf6d575e55520 \
-    https://github.com/coproduct-opensource/nucleus/releases/download/v2.4.0/nucleus-node-2.4.0-aarch64-unknown-linux-musl.tar.gz /tmp/node.tgz
-ADD --checksum=sha256:9853ab1ebee5a72133346a3f553ec1c8cce180a87de819c6c1dd53501a4d7be2 \
-    https://github.com/coproduct-opensource/nucleus/releases/download/v2.4.0/nucleus-mcp-2.4.0-aarch64-unknown-linux-musl.tar.gz /tmp/mcp.tgz
+ADD --checksum=sha256:55254881887e45c01334736f4341ac7867383d770a0f012bc1919ba64a35ac1c \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.5.0/nucleus-node-2.5.0-aarch64-unknown-linux-musl.tar.gz /tmp/node.tgz
+ADD --checksum=sha256:223a3d9e405fddc215d795ad95a97513916ad53937748271a0d6d3bf34c79fd7 \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.5.0/nucleus-mcp-2.5.0-aarch64-unknown-linux-musl.tar.gz /tmp/mcp.tgz
 RUN mkdir -p /out /tmp/x && tar -xzf /tmp/node.tgz -C /tmp/x && tar -xzf /tmp/mcp.tgz -C /tmp/x \
     && find /tmp/x -type f \( -name nucleus-node -o -name nucleus-mcp \) -exec cp {} /out/ \;
 
@@ -98,8 +95,8 @@ ADD --checksum=sha256:e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a9
     https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz /tmp/fc.tgz
 ADD --checksum=sha256:69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31adde44 \
     https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141 /out/artifacts/vmlinux
-ADD --checksum=sha256:efa18070b5d6894abc2281d14914566c7478c64935addc4a5de0bb4398174fca \
-    https://github.com/coproduct-opensource/nucleus/releases/download/v2.4.0/nucleus-rootfs-2.4.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
+ADD --checksum=sha256:b437dd658a6e386116e11042fc630d134a46f7867e0b773fb13036a6cad7c8e0 \
+    https://github.com/coproduct-opensource/nucleus/releases/download/v2.5.0/nucleus-rootfs-2.5.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
 # `ADD <url>` lays files down 0600. The jailed VMM (an unprivileged uid) could
 # open the kernel only because the node used to chown it into every jail, which
 # handed the shared artifact to the jail user (#3152). The node no longer chowns
