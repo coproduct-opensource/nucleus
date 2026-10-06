@@ -148,5 +148,11 @@
 # 2026-10-04 (#3002): recompute source and dependency changes move the WASM.
 # Replaces 8517eb3e... with identical canonical Linux output observed in both
 # Gatehouse clippy and test builds of eb3e84b43dbe7c32c5ae9444c9ff68cfb9fdae9f.
-5dbb506ea239d4417e55999874f4e7495ec54012e4d097e292a71e37f3afaf82  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
-e12ff8119a5e13c332081d2bf96d64a7869e345b7ff3205c548f88cd27a1aae2  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
+# 2026-10-06 (#3244): BOTH artifacts moved, because the SOURCE did: `sdks/verifier-js` now
+# embeds `nucleus-node-evidence` (ADR 0011) and exports `verifyNodeEvidence`. The new export
+# is why the .js shim moved too -- a new binding, not a platform difference. Both digests are taken from CI's Clippy run of this PR's head
+# (2c3625084) and land in a pins-only commit; the .js digest also equals an aarch64 Linux
+# build of the same tree. `5dbb506e…` and `e12ff811…` are REPLACED, on the rule above.
+# From now on ANY change to `nucleus-node-evidence` moves this pin too.
+9b3bd79b1821cca16d37cb6686778db1a1c1f5aff7d4cfc3798435e7319b3ccc  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
