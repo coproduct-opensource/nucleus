@@ -92,6 +92,10 @@ pub fn parse_operation(name: &str) -> Option<Operation> {
         "WebSearch" => Some(Operation::WebSearch),
         "WebFetch" => Some(Operation::WebFetch),
         "GitCommit" => Some(Operation::GitCommit),
+        // A smart-HTTP push through host-performed egress (#3210): the
+        // label `nucleus_cred_protocol::egress::operation_for` gives a call
+        // naming the receive service, decided against `git_push`.
+        "GitPush" => Some(Operation::GitPush),
         _ => None,
     }
 }

@@ -106,12 +106,16 @@ fn declared(base: &str, policy: PermissionLattice) -> Pod {
     pod
 }
 
-/// A stream open for `method path?query`.
+/// A stream open for `method path?query`, labelled by the shared classifier
+/// exactly as the guest's tool-proxy labels it.
 fn git_open(method: EgressMethod, path: &str, query: Option<&str>, nonce: &str) -> StreamRequest {
     let mut req = open("git-remote", nonce);
     req.method = method;
     req.path = path.into();
     req.query = query.map(str::to_string);
+    req.operation = nucleus_cred_protocol::egress::operation_for(method, path, query)
+        .label()
+        .into();
     req.content_type = "application/x-git-upload-pack-request".into();
     req
 }
@@ -153,6 +157,12 @@ fn grant_pending(pod: &Pod) -> nucleus_spec::host_effect_approval::ApprovalRevie
         .settle_effect_approval(operator(), pending[0].id, true, now())
         .unwrap();
     review
+}
+
+fn without_push() -> PermissionLattice {
+    let mut policy = PermissionLattice::permissive();
+    policy.capabilities.git_push = portcullis::CapabilityLevel::Never;
+    policy
 }
 
 /// **(a) + (b): a GET with a query goes end to end with the host's
@@ -217,6 +227,99 @@ async fn a_ref_advertisement_is_a_get_with_its_query_and_the_hosts_credential() 
         "the record copied the query's value: {audit}"
     );
     assert!(!audit.contains(TOKEN));
+}
+
+/// **(d): a push under a profile without push is refused by the PDP before any
+/// byte leaves**, both halves of it; a fetch under the same profile is not; and
+/// the same push under a profile WITH push is performed, so the refusal is
+/// about `git_push` and nothing else.
+///
+/// A-19: making `operation_for` call every request a `WebFetch` reds this
+/// test (the push is then decided under the read capability and performed).
+#[tokio::test]
+async fn a_push_is_refused_by_the_pdp_under_a_profile_without_push() {
+    let (base, hits) = remote().await;
+    let pod = declared(&base, without_push());
+    let advertise_push = drive(&pod, &advertise("git-receive-pack", "adv-push"), b"").await;
+    let mut send = git_open(
+        EgressMethod::Post,
+        "org/repo.git/git-receive-pack",
+        None,
+        "push",
+    );
+    send.content_type = "application/x-git-receive-pack-request".into();
+    let pack = drive(&pod, &send, b"0000PACK").await;
+    for heard in [&advertise_push, &pack] {
+        assert!(
+            !heard.head.granted,
+            "a push was performed: {:?}",
+            heard.head
+        );
+        assert_eq!(heard.head.reason, "not permitted");
+    }
+    assert!(
+        hits.lock().unwrap().is_empty(),
+        "a refused push reached the remote"
+    );
+
+    // The control: a fetch is a read, and this profile reads.
+    let fetch = drive(&pod, &advertise("git-upload-pack", "fetch"), b"").await;
+    assert!(fetch.head.granted, "{:?}", fetch.head);
+    assert_eq!(hits.lock().unwrap().len(), 1);
+
+    // The control: with push granted, the identical push goes through.
+    let (base, hits) = remote().await;
+    let pod = declared(&base, PermissionLattice::permissive());
+    // A push is an exfiltration vector, so the host kernel still asks the
+    // operator: the refusal is now an approval request, not "not permitted".
+    send.nonce = "push-allowed".into();
+    let asked = drive(&pod, &send, b"0000PACK").await;
+    assert!(
+        asked.head.reason.starts_with("host approval required:"),
+        "{:?}",
+        asked.head
+    );
+    grant_pending(&pod);
+    send.nonce = "push-approved".into();
+    let pushed = drive(&pod, &send, b"0000PACK").await;
+    assert!(pushed.head.granted, "{:?}", pushed.head);
+    assert_eq!(pushed.body, RESULT);
+    let hits = hits.lock().unwrap().clone();
+    assert_eq!((hits[0].method.as_str(), hits[0].body_len), ("POST", 8));
+}
+
+/// The safe-pr-fixer profile has no push, so a push from it is refused.
+#[tokio::test]
+async fn the_safe_pr_fixer_profile_cannot_push() {
+    let (base, hits) = remote().await;
+    let pod = declared(&base, PermissionLattice::safe_pr_fixer());
+    let heard = drive(&pod, &advertise("git-receive-pack", "fixer"), b"").await;
+    assert!(!heard.head.granted, "{:?}", heard.head);
+    assert!(hits.lock().unwrap().is_empty());
+}
+
+/// A push the guest LABELS as a fetch is refused even where push is allowed:
+/// the host recomputes the label from the method, path and query, and a
+/// mislabelled call is not decided under the weaker capability.
+#[tokio::test]
+async fn a_push_labelled_as_a_fetch_is_refused() {
+    let (base, hits) = remote().await;
+    let pod = declared(&base, PermissionLattice::permissive());
+    for mut req in [
+        advertise("git-receive-pack", "label-adv"),
+        git_open(
+            EgressMethod::Post,
+            "org/repo.git/git%2Dreceive-pack",
+            None,
+            "label-send",
+        ),
+    ] {
+        assert_eq!(req.operation, "GitPush");
+        req.operation = "WebFetch".into();
+        let heard = drive(&pod, &req, b"").await;
+        assert!(!heard.head.granted, "{:?}", heard.head);
+    }
+    assert!(hits.lock().unwrap().is_empty());
 }
 
 /// **(c): a credential-looking query parameter is refused before upstream
