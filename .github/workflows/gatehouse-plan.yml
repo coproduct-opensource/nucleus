@@ -60,7 +60,14 @@ jobs:
       # had not taken: the policy stops describing a machine (see the comment above `policy` in
       # .gatehouse/pipeline.writ). An earlier draft pinned #206's pre-merge head, 502d787, whose
       # prelude let the pins widen `platformMatches_b`; the merged prelude hashes differently.
-      GATEHOUSE_REF: 0d7a8e604fca05eb717e891a4566f3645855cf6c
+      #
+      # Moved 0d7a8e6 -> efa1e1a on 2026-10-05 for scope excludes (gatehouse#261) and
+      # `scope witness --check` (gatehouse#263), which the test shards need: test-libs's scope is
+      # `crates/**` minus the node crates, and the kernel derives it only in that form. The prelude
+      # appended a field to `ci.Gate` (`exclude`), so every gate in .gatehouse/pipeline.writ gained
+      # a trailing `[] : Bytes`; the gate JSON already carried `scope.exclude`, so no gate's
+      # definition hash moved. `test-shards --check --gate` now runs below.
+      GATEHOUSE_REF: efa1e1a2e7ecd5e3de051c45223d8ef982d79721
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -125,6 +132,15 @@ jobs:
         run: |
           cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate
           gatehouse/target/debug/gate plan check .gatehouse/pipeline.writ
+
+      # The shards' generation is checked above without gatehouse; this is the half that needs it.
+      # A shard whose scope the kernel stops deriving still runs and still goes green, and its
+      # receipts never cross a tree, so sharding would cost an attempt and save nothing. A few new
+      # crates can push test-libs over the derivation caps (its first generation was refused at 74
+      # patterns, gatehouse F-182), and nothing else would say so.
+      - name: Both test shards' scopes derive under the writ kernel
+        if: steps.tok.outputs.present == 'true'
+        run: cargo run -q -p xtask -- test-shards --check --gate gatehouse/target/debug/gate
 
       # The committed elaboration is only worth comparing against while it still IS the
       # elaboration. Re-running `gate plan gates` at the pinned ref and refusing any difference is

@@ -39,7 +39,12 @@ writes = ["target/**", "sdks/verifier-js/pkg/**", "sdks/verifier-js/target/**"]
 # nucleus-microvm-host joined 2026-10-05: it was added after the measured tree (#3070) and depends
 # on nucleus-spec, so in test-libs it would build against an empty stub. `cargo xtask test-shards`
 # refused the layout until it moved -- the first thing the generator caught.
-packages = ["nucleus", "nucleus-audit", "nucleus-cli", "nucleus-guest-init", "nucleus-mcp", "nucleus-microvm-host", "nucleus-node", "nucleus-oidc-provider", "nucleus-perf", "nucleus-sdk", "nucleus-spec", "nucleus-tool-proxy", "portcullis-effects", "xtask"]
+#
+# nucleus-egress-http joined the same day, for the same reason: #3211 gave it a dependency on
+# nucleus-spec. The second time in one day is the measurement worth keeping: nucleus-spec is the
+# node cluster's most-depended-on crate (11 dependents) and changed 40 times since 2026-09-01, so a
+# library that starts using it moves here, and the check catches it rather than a red test run.
+packages = ["nucleus", "nucleus-audit", "nucleus-cli", "nucleus-egress-http", "nucleus-guest-init", "nucleus-mcp", "nucleus-microvm-host", "nucleus-node", "nucleus-oidc-provider", "nucleus-perf", "nucleus-sdk", "nucleus-spec", "nucleus-tool-proxy", "portcullis-effects", "xtask"]
 # Test binaries that read the WHOLE repository at runtime (strace: hundreds to thousands of files
 # across every crate, docs/**, .github/**, or `git ls-files`). Their scope is `**` wherever they
 # live, so they run here and are filtered out of test-libs. nucleus-node::olog and

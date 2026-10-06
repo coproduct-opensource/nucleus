@@ -75,6 +75,8 @@
         "-p",
         "nucleus-cli",
         "-p",
+        "nucleus-egress-http",
+        "-p",
         "nucleus-guest-init",
         "-p",
         "nucleus-mcp",
@@ -137,6 +139,6 @@
   },
   "falsifier": null,
   "seeds": [
-    "main-e8cb8d499-x86_64-t@sha256:fb0c1c307911f8448d4195cab94f739adba39a955c9a21be3c96ede0a32d0218"
+    "main-160a26deb-x86_64-t@sha256:8a60b29b66616be893525eb5db393f93e6a0a176573cd12f991cf5c87dcc2245"
   ]
 }
