@@ -1,7 +1,8 @@
 # ADR 0011 — A receipt carries third-party-verifiable evidence of what booted the node that signed it
 
 - Status: **accepted** (2026-10-05). PR-1 lands the evidence format and the verifier with
-  this ADR. PR-2 adds the node attester and the receipt binding. PR-3, a live run, follows.
+  this ADR. PR-2 adds the node attester and the receipt binding. PR-3 is the live run,
+  recorded in `docs/findings/attested-node-live-run.md`.
 - Tracks: #2706 (L-5, attestation; North Star confidentiality row C9, "verify from the
   outside").
 - Rests on: the measured facts in `docs/findings/attested-node-gcp-spike.md` (draft PR #3224).
@@ -102,7 +103,7 @@ quotes evidence (`NotAnAttestationKey`).
 A reference manifest (`nucleus-node-reference/v1`, CoRIM field naming —
 draft-ietf-rats-corim — in JSON) lists exact PCR pins, Secure Boot state, EFI application
 digests (PCR 4), files the boot loader loaded (PCR 9: kernel image, configuration), the
-kernel command line (PCR 8, exact or required parameters — a dm-verity root hash goes here),
+kernel command line (PCR 8: exact, an exact parameter set, or — weaker, it misses an *added* parameter, measured in PR-3 — required parameters; a dm-verity root hash goes here),
 and an IMA allowlist of the node's files by install path with required paths. Every check is
 an explicit `required` or `not_checked` *with a reason*; an omitted check is a parse error,
 not a pass, and every `not_checked` item is reported beside the verdict.

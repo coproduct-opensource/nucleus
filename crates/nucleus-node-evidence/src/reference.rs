@@ -41,9 +41,14 @@ pub struct DigestSet {
 pub enum CmdlineRule {
     /// The measured command line equals this string.
     Exact(String),
-    /// Each of these whitespace-separated parameters appears in it (for
-    /// command lines that carry a per-machine value such as a partition id).
+    /// Each of these whitespace-separated parameters appears in it. It does
+    /// NOT notice a parameter that was ADDED (measured live: an appended
+    /// `nucleus.perturbed=1` satisfied it); prefer [`Self::ExactParams`].
     RequiredParams(BTreeSet<String>),
+    /// The measured words are exactly this set: nothing missing, nothing
+    /// added, in any order. GRUB measures the image path as the first word
+    /// (`/vmlinuz-...`), where `/proc/cmdline` shows `BOOT_IMAGE=/vmlinuz-...`.
+    ExactParams(BTreeSet<String>),
 }
 
 /// IMA reference values: the node's binaries by install path.

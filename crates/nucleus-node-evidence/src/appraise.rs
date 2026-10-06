@@ -585,6 +585,10 @@ fn compare(
                             let toks: BTreeSet<&str> = c.split_whitespace().collect();
                             ps.iter().all(|p| toks.contains(p.as_str()))
                         }
+                        CmdlineRule::ExactParams(ps) => {
+                            let toks: BTreeSet<&str> = c.split_whitespace().collect();
+                            toks == ps.iter().map(String::as_str).collect()
+                        }
                     });
                     if !ok {
                         out.push(Divergence::KernelCmdline {
