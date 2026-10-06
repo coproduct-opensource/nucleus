@@ -76,7 +76,7 @@ pub struct OperatorStoreArgs {
     /// elsewhere.
     #[arg(long, value_enum, default_value_t = default_store())]
     key_store: KeyStoreKind,
-    /// The file store's directory. Default: `<config dir>/nucleus/operator-key`.
+    /// The file store's directory. Default: `~/.config/nucleus/operator-key`.
     #[arg(long, env = "NUCLEUS_OPERATOR_KEY_DIR", hide_env_values = true)]
     key_dir: Option<PathBuf>,
     /// How long one keychain access may take before it is abandoned with an
@@ -107,10 +107,7 @@ impl OperatorStoreArgs {
             KeyStoreKind::File => {
                 let dir = match &self.key_dir {
                     Some(d) => d.clone(),
-                    None => dirs::config_dir()
-                        .context("no config directory; pass --key-dir")?
-                        .join("nucleus")
-                        .join("operator-key"),
+                    None => crate::config::nucleus_dir()?.join("operator-key"),
                 };
                 Box::new(operator_key::FileStore::new(dir))
             }
@@ -139,11 +136,11 @@ pub struct OperatorAssertionArgs {
     audience: String,
     /// The issuer registered with the relying party (an `https` URL; it need
     /// not resolve when the JWKS is registered inline).
-    #[arg(long, env = "NUCLEUS_OPERATOR_ISSUER")]
+    #[arg(long, env = "NUCLEUS_OPERATOR_ISSUER", hide_env_values = true)]
     issuer: String,
     /// The operator's trust domain; the subject is
     /// `spiffe://<trust domain>/ns/system/sa/operator-automation`.
-    #[arg(long, env = "NUCLEUS_OPERATOR_TRUST_DOMAIN")]
+    #[arg(long, env = "NUCLEUS_OPERATOR_TRUST_DOMAIN", hide_env_values = true)]
     trust_domain: String,
     /// Assertion lifetime in seconds (at most 900).
     #[arg(long, default_value_t = 300)]

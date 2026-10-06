@@ -59,6 +59,8 @@
 "bundle publish" = "reach"
 "federation issuer" = "emit"        # --export writes the well-known files; --jwks/--claims-for only print
 "federation rotate" = "emit"        # stages, promotes or retires key files in the node state dir; no network
+"federation operator-assertion" = "reach"  # on macOS execs /usr/bin/security to read the operator key
+"federation operator-key" = "reach"  # on macOS execs /usr/bin/security; elsewhere writes owner-only key files
 "grant propose" = "emit"
 "grant seal" = "emit"
 "grant show" = "observe"

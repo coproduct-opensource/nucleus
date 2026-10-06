@@ -432,7 +432,7 @@ macOS the key is a Keychain item read and written only through `/usr/bin/securit
 the `nucleus` process: Keychain access lists are per binary, so a rebuilt `nucleus` reading
 the item itself would raise a dialog and an unattended credential helper would wait on it
 forever. Every `security` call is killed after `--keychain-timeout-ms` (default 5000) with a
-named error. Elsewhere the key is an owner-only file under `<config dir>/nucleus/operator-key`.
+named error. Elsewhere the key is an owner-only file under `~/.config/nucleus/operator-key`.
 
 **Output.** `--format jwt` (default) prints the compact JWT. `--format executable-credential`
 prints the "executable-credential v1" interop response that OIDC token-exchange clients read
