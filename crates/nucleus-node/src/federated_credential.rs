@@ -795,6 +795,15 @@ mod through_the_broker {
 
     /// The registry the operator would write, pointed at the two mocks.
     fn registry(tokens: &TokenEndpoint, up: &Upstream) -> Vec<RegistryEntry> {
+        registry_encoded(tokens, up, r#"value_prefix = "Bearer ""#)
+    }
+
+    /// [`registry`] with `encoding` (TOML lines) in place of its prefix.
+    fn registry_encoded(
+        tokens: &TokenEndpoint,
+        up: &Upstream,
+        encoding: &str,
+    ) -> Vec<RegistryEntry> {
         let toml = format!(
             r#"
 [[upstream]]
@@ -802,7 +811,7 @@ name = "model-api"
 call_charge_micro_usd = 0
 base_url = "{up}/v1"
 header = "authorization"
-value_prefix = "Bearer "
+{encoding}
 
 [upstream.credential.federated]
 token_endpoint = "{tok}/oauth/token"
@@ -1376,6 +1385,35 @@ policy_id = "example-policy-0001"
         assert!(pod.call("k2", NOW + 1).await.granted);
         assert_eq!(tokens.minted(), 2);
         assert_eq!(up.seen()[1], "Bearer minted-token-2");
+    }
+
+    /// **#3252, the buffered path: a minted token is sent as Basic.** The
+    /// node mints, and the upstream receives `Basic base64("token-user:" +
+    /// minted)` (written out, not recomputed), while the token endpoint and
+    /// the cache hold it bare: the next call reuses it and encodes it again.
+    #[tokio::test]
+    async fn a_minted_token_is_sent_basic_encoded_on_the_buffered_path() {
+        let tokens = TokenEndpoint::start(Some(3600), Duration::ZERO, &[]).await;
+        let up = Upstream::start(&[]).await;
+        let pod = Pod::new(
+            POD_A,
+            &source(),
+            registry_encoded(
+                &tokens,
+                &up,
+                r#"value_encoding = { basic = { username = "token-user" } }"#,
+            ),
+            NOW + DAY,
+        );
+        assert!(pod.call("k1", NOW).await.granted);
+        assert!(pod.call("k2", NOW + 1).await.granted);
+        assert_eq!(tokens.minted(), 1, "the cached token was not reused");
+        // Identical on the cached call: a cache holding the encoded value
+        // would have been encoded twice.
+        assert_eq!(
+            up.seen(),
+            vec!["Basic dG9rZW4tdXNlcjptaW50ZWQtdG9rZW4tMQ==".to_string(); 2]
+        );
     }
 
     /// **Never across pods.** Two pods on one issuer each exchange for

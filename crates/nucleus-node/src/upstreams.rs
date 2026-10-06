@@ -17,7 +17,8 @@
 //! # The model
 //!
 //! The pod spec SELECTS; the operator DEFINES. An entry here is a name, a base
-//! URL, a header and prefix, and a **credential source**:
+//! URL, a header, a prefix or an encoding of the header value (host-only, see
+//! [`ValueEncoding`]), and a **credential source**:
 //!
 //! * `env { var }` — a static value from the node's environment, chosen by the
 //!   operator rather than the spec author;
@@ -91,15 +92,19 @@
 //! name         = "git-remote"
 //! base_url     = "https://forge.example/"
 //! header       = "authorization"
-//! value_prefix = "Basic "
 //! call_charge_micro_usd = 0
 //! # Guest-proposed headers forwarded to this upstream (default: none beyond
 //! # content-type). Never authorization, cookie, proxy-* or this entry's own
 //! # `header`: the node refuses to start on one.
 //! request_headers = ["accept", "git-protocol", "content-encoding"]
+//! # The host sends `Basic base64("token-user:" + credential)` (#3252). The
+//! # credential is held bare, so a minted one works too. Default "raw":
+//! # `value_prefix + credential`. `value_prefix` is refused beside `basic`; a
+//! # username that is empty or contains ':' refuses the registry.
+//! value_encoding = { basic = { username = "token-user" } }
 //!
 //! [upstream.credential.env]
-//! var = "GIT_REMOTE_BASIC"
+//! var = "GIT_REMOTE_TOKEN"
 //!
 //! [[upstream]]
 //! name         = "forge-api"
@@ -199,6 +204,9 @@ struct EntryFile {
     header: String,
     #[serde(default)]
     value_prefix: String,
+    /// How the credential becomes the header value (#3252). Absent is `raw`.
+    #[serde(default)]
+    value_encoding: Option<ValueEncodingFile>,
     credential: CredentialFile,
     /// Missing prices never imply free calls. The broker refuses unpriced entries.
     call_charge_micro_usd: Option<u64>,
@@ -220,6 +228,21 @@ struct EntryFile {
     /// The operator's effect classification (#3229).
     #[serde(default)]
     effects: Vec<nucleus_spec::DeclaredEffect>,
+}
+
+/// `value_encoding = "raw"` or `value_encoding = { basic = { username = "…" } }`.
+/// An unknown variant, or an unknown field in `basic`, refuses the registry.
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum ValueEncodingFile {
+    Raw,
+    Basic(BasicFile),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BasicFile {
+    username: String,
 }
 
 #[derive(Deserialize)]
@@ -294,11 +317,77 @@ pub(crate) struct FederatedUpstream {
     pub assertion_ttl: Duration,
 }
 
+/// How the host renders a credential into its header value (#3252).
+///
+/// # Host-only, applied at injection
+///
+/// The credential is stored and minted bare; the encoding is applied by
+/// [`RegistryEntry::header_value`] at the moment the header is built, on the
+/// one path both the buffered and the streamed call take
+/// (`broker_perform::credential_header`, ADR 0007 G-1). So a federated token
+/// never exists pre-encoded at rest, and a static one need not either.
+///
+/// It is not part of the spec projection: the guest never sees it, cannot
+/// choose it, and needs no capability to parse it. A pod selects an entry by
+/// its projection and names are unique, so the encoding a pod gets is the one
+/// the operator wrote for that name: [`UpstreamRegistry::resolve`] copies it
+/// out of the registry, never out of a spec.
+///
+/// # Closed
+///
+/// Two variants and no catch-all (ADR 0007 A-1, B-3). A third scheme is a
+/// new variant every `match` on this must answer, not a string that falls
+/// through to one of these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ValueEncoding {
+    /// `value_prefix` followed by the credential, verbatim.
+    Raw,
+    /// `Basic ` followed by base64(`username` `:` credential), RFC 7617. The
+    /// scheme is the encoding's, so the entry's `value_prefix` is refused at
+    /// load rather than prepended to it.
+    Basic(BasicUsername),
+}
+
+/// An RFC 7617 user-id: non-empty, no `:` (the first colon ends it, so one
+/// inside would move part of the username into the password the upstream
+/// reads), and no control character. Constructed only by
+/// [`BasicUsername::new`] (ADR 0007 C-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BasicUsername(String);
+
+/// The longest username accepted: generous for any account name, and a bound
+/// on what one registry line makes the host encode per call.
+const MAX_BASIC_USERNAME: usize = 256;
+
+impl BasicUsername {
+    /// # Errors
+    /// Empty, longer than [`MAX_BASIC_USERNAME`] bytes, or containing `:` or
+    /// a control character; the message names which.
+    pub(crate) fn new(username: &str) -> Result<Self, &'static str> {
+        if username.is_empty() {
+            return Err("username must be non-empty");
+        }
+        if username.len() > MAX_BASIC_USERNAME {
+            return Err("username is longer than 256 bytes");
+        }
+        if username.contains(':') {
+            return Err("username may not contain ':', which ends a Basic user-id");
+        }
+        if username.chars().any(char::is_control) {
+            return Err("username may not contain a control character");
+        }
+        Ok(Self(username.to_string()))
+    }
+}
+
 /// One operator-defined upstream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RegistryEntry {
     /// What a pod spec sees and admission compares. See the module docs.
     spec: CredentialedEgressSpec,
+    /// How the credential becomes the header value. Host-only; see
+    /// [`ValueEncoding`].
+    value_encoding: ValueEncoding,
     credential: CredentialSource,
     call_charge: Option<CallCharge>,
     /// Lower-case header names the guest may propose for this upstream,
@@ -374,6 +463,22 @@ impl RegistryEntry {
         &self.spec
     }
 
+    /// The credential header's value for `credential`: the entry's
+    /// [`ValueEncoding`] applied to it. The only place a credential header
+    /// value is built, so the buffered and streamed paths cannot disagree
+    /// about it (ADR 0007 G-1). Never logged.
+    pub(crate) fn header_value(&self, credential: &str) -> String {
+        use base64::Engine as _;
+        match &self.value_encoding {
+            ValueEncoding::Raw => format!("{}{credential}", self.spec.value_prefix),
+            ValueEncoding::Basic(BasicUsername(username)) => format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD
+                    .encode(format!("{username}:{credential}"))
+            ),
+        }
+    }
+
     /// Where the credential comes from.
     pub fn credential(&self) -> &CredentialSource {
         &self.credential
@@ -435,6 +540,7 @@ impl RegistryEntry {
         };
         Self {
             spec,
+            value_encoding: ValueEncoding::Raw,
             credential,
             call_charge: Some(CallCharge::free()),
             request_headers: BTreeSet::new(),
@@ -519,6 +625,7 @@ impl UpstreamRegistry {
                     None,
                 ),
             };
+            let value_encoding = value_encoding(&up.name, &up.value_prefix, up.value_encoding)?;
             let header_policy =
                 header_policy(&up.name, &up.header, up.fixed_headers, up.secret_headers)?;
             let request_headers =
@@ -526,6 +633,7 @@ impl UpstreamRegistry {
             let effects = nucleus_spec::EffectTable::from_parts(up.kind, up.effects)
                 .map_err(|e| format!("upstream {:?}: {e}", up.name))?;
             entries.push(RegistryEntry {
+                value_encoding,
                 request_headers,
                 header_policy,
                 call_charge: up.call_charge_micro_usd.map(CallCharge),
@@ -581,6 +689,33 @@ impl UpstreamRegistry {
             .filter(|entry| entry.spec.admitted_by(admitted))
             .cloned()
             .collect()
+    }
+}
+
+/// Validate an entry's `value_encoding` against its `value_prefix`.
+///
+/// `basic` carries its own scheme, so a `value_prefix` beside it is refused
+/// rather than ignored or prepended: either would leave the operator's file
+/// saying something the wire does not. The node refuses to START on it,
+/// naming the entry.
+fn value_encoding(
+    name: &str,
+    value_prefix: &str,
+    file: Option<ValueEncodingFile>,
+) -> Result<ValueEncoding, String> {
+    match file {
+        None | Some(ValueEncodingFile::Raw) => Ok(ValueEncoding::Raw),
+        Some(ValueEncodingFile::Basic(BasicFile { username })) => {
+            if !value_prefix.is_empty() {
+                return Err(format!(
+                    "upstream {name:?}: value_prefix may not be set with value_encoding.basic, \
+                     which sends its own \"Basic \" scheme"
+                ));
+            }
+            BasicUsername::new(&username)
+                .map(ValueEncoding::Basic)
+                .map_err(|e| format!("upstream {name:?}: value_encoding.basic: {e}"))
+        }
     }
 }
 
@@ -1251,5 +1386,120 @@ requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
         let mut as_env = reg.entries()[0].clone();
         as_env.credential_env = "NUCLEUS_NODE_PROXY_AUTH_SECRET".into();
         assert!(reg.resolve(&[as_env]).is_empty());
+    }
+
+    /// `ONE` with `value_prefix` removed and `encoding` (a TOML value) set as
+    /// its `value_encoding`.
+    fn encoded(encoding: &str) -> String {
+        ONE.replace(
+            "value_prefix = \"Bearer \"",
+            &format!("value_encoding = {encoding}"),
+        )
+    }
+
+    /// **#3252: `basic` builds RFC 7617's value from the bare credential**, at
+    /// the one function both call paths build their header with. The expected
+    /// value is written out, not recomputed with the code under test. `raw`,
+    /// spelled or absent, is `value_prefix` + credential, unchanged.
+    #[test]
+    fn basic_encoding_is_built_from_the_bare_credential_at_injection() {
+        let reg =
+            UpstreamRegistry::from_toml_str(&encoded(r#"{ basic = { username = "token-user" } }"#))
+                .expect("a basic entry loads");
+        let entry = &reg.resolve(reg.entries())[0];
+        assert_eq!(
+            entry.header_value("test-token-123"),
+            "Basic dG9rZW4tdXNlcjp0ZXN0LXRva2VuLTEyMw=="
+        );
+        // The same entry in TOML's table form loads identically.
+        let table = ONE.replace(
+            "value_prefix = \"Bearer \"\n",
+            "[upstream.value_encoding.basic]\nusername = \"token-user\"\n",
+        );
+        let reg_table = UpstreamRegistry::from_toml_str(&table).expect("table form loads");
+        assert_eq!(&reg_table.resolve(reg_table.entries())[0], entry);
+
+        for raw in [
+            ONE.to_string(),
+            ONE.replace(
+                "[upstream.credential",
+                "value_encoding = \"raw\"\n\n[upstream.credential",
+            ),
+        ] {
+            let reg = UpstreamRegistry::from_toml_str(&raw).expect("a raw entry loads");
+            assert_eq!(
+                reg.resolve(reg.entries())[0].header_value("test-token-123"),
+                "Bearer test-token-123"
+            );
+        }
+    }
+
+    /// The encoding is host-only: a basic entry's projection, which is what
+    /// the guest sees and a pod spec selects by, carries neither the scheme
+    /// nor the username, and is the projection the CLI computes from the
+    /// same file (no `value_prefix`, so `""`).
+    #[test]
+    fn the_encoding_is_not_in_the_projection() {
+        let reg =
+            UpstreamRegistry::from_toml_str(&encoded(r#"{ basic = { username = "token-user" } }"#))
+                .unwrap();
+        let projection = &reg.entries()[0];
+        assert_eq!(projection.value_prefix, "");
+        let as_json = serde_json::to_string(projection).unwrap();
+        for private in ["token-user", "basic", "Basic"] {
+            assert!(!as_json.contains(private), "{private:?} in {as_json}");
+        }
+        assert_eq!(
+            projection,
+            &CredentialedEgressSpec::registry_projection(
+                "model-api".into(),
+                "https://model-api.invalid/v1".into(),
+                "authorization".into(),
+                String::new(),
+                Some("LLM_API_TOKEN".into()),
+                nucleus_spec::EffectTable::unclassified(),
+            )
+        );
+    }
+
+    /// Every malformed encoding refuses the whole registry, naming the entry:
+    /// an empty username, one with `:` (which would move part of it into the
+    /// password the upstream reads), a control character, an over-long one, a
+    /// `value_prefix` beside `basic`, an unknown variant, and an unknown field.
+    #[test]
+    fn a_malformed_encoding_refuses_the_registry() {
+        let long = format!(r#"{{ basic = {{ username = "{}" }} }}"#, "u".repeat(257));
+        for (encoding, why) in [
+            (r#"{ basic = { username = "" } }"#, "non-empty"),
+            (r#"{ basic = { username = "token:user" } }"#, "':'"),
+            (r#"{ basic = { username = "token\nuser" } }"#, "control"),
+            (long.as_str(), "longer"),
+        ] {
+            let err = UpstreamRegistry::from_toml_str(&encoded(encoding)).expect_err(encoding);
+            assert!(
+                err.contains("model-api") && err.contains(why),
+                "{encoding}: {err}"
+            );
+        }
+        let with_prefix = ONE.replace(
+            "[upstream.credential",
+            "value_encoding = { basic = { username = \"token-user\" } }\n\n[upstream.credential",
+        );
+        let err = UpstreamRegistry::from_toml_str(&with_prefix).expect_err("prefix + basic");
+        assert!(err.contains("value_prefix"), "{err}");
+        for unknown in [
+            r#""bearer""#,
+            r#"{ digest = { username = "token-user" } }"#,
+            r#"{ basic = { username = "token-user", password = "x" } }"#,
+            r#"{ basic = {} }"#,
+        ] {
+            assert!(
+                UpstreamRegistry::from_toml_str(&encoded(unknown)).is_err(),
+                "{unknown} loaded"
+            );
+        }
+        // The control: the boundary username loads.
+        let max = format!(r#"{{ basic = {{ username = "{}" }} }}"#, "u".repeat(256));
+        assert!(UpstreamRegistry::from_toml_str(&encoded(&max)).is_ok());
     }
 }

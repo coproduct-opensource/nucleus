@@ -17,9 +17,16 @@ environment (or minted per exchange, see `docs/federated-upstream-profile.md`).
 start if `authorization`, `cookie`, `proxy-authorization` or the entry's own
 `header` appears there, because credential headers are set only by the host.
 
+Smart HTTP takes the token as Basic auth, so the entry sets
+`value_encoding = { basic = { username = "…" } }`: the host sends
+`Basic base64("<username>:" + token)`, built when it injects the header. The
+variable holds the bare token, and a federated (minted) credential works the
+same way. `value_prefix` may not be set beside it.
+
 The pod spec selects the entry by name under `credentialed_egress`. The spec
 copy must match the registry entry exactly (`name`, `upstream`, `header`,
-`value_prefix`, `credential_env`).
+`value_prefix`, `credential_env`). `value_encoding` is host-only and is not
+part of the spec copy.
 
 ## 2. The workload (guest side)
 

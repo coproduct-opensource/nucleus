@@ -280,6 +280,20 @@ framing or forwarding header, or the entry's own credential `header`. Streamed c
 credential-looking parameter name is refused. See `examples/egress-git-remote/` for a git
 remote reached this way.
 
+An entry may set `value_encoding` to say how the host turns the credential into the header
+value (#3252). The default, `"raw"`, sends `value_prefix` followed by the credential.
+`{ basic = { username = "<name>" } }` sends `Basic base64("<name>:" + credential)` (RFC 7617),
+which is what a git smart-HTTP endpoint expects. The host applies the encoding when it injects
+the header, on buffered and streamed calls alike, so a minted token is never stored
+pre-encoded. `value_prefix` is refused beside `basic`, and so is a username that is empty,
+longer than 256 bytes, or contains `:` or a control character. The encoding is not part of
+the spec projection: the guest never sees it, and a pod gets the encoding the operator wrote
+for the entry it selected. Records name the credential header only.
+
+```toml
+value_encoding = { basic = { username = "token-user" } }
+```
+
 Two more header kinds are the operator's alone:
 
 ```toml
