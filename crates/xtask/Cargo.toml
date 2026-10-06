@@ -52,6 +52,9 @@ signal-hook = "0.4"
 # `microvm-host-release-context` stages the workspace sources as one tarball,
 # because Apple Container drops nested files from a directory `COPY` (#3206).
 tar = { version = "0.4", default-features = false }
+# `release-reference-manifest` hashes the node binary inside the release's
+# `.tar.gz` and Firecracker/jailer inside the upstream `.tgz`.
+flate2 = "1.1"
 # `node-reference-manifest` writes the verifier's own manifest type, so the
 # generator and the appraiser cannot disagree about the schema (ADR 0007 G-1).
 nucleus-node-evidence = { path = "../nucleus-node-evidence" }

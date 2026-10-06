@@ -38,6 +38,10 @@ enum Command {
     /// Write a node reference manifest (expected boot and IMA measurements)
     /// from build outputs, for `nucleus-node-evidence` appraisal.
     NodeReferenceManifest(Box<node_reference::Args>),
+    /// The node reference manifest a release publishes: IMA allowlist digests
+    /// of the shipped node, firecracker and jailer; boot checks `not_checked`.
+    #[command(subcommand)]
+    ReleaseReferenceManifest(release_reference::Args),
     /// Verify host broker journals after a real guest transaction on Linux/KVM.
     HostEvidenceLive {
         #[arg(long)]
@@ -531,6 +535,7 @@ mod plan_measurements;
 mod portability;
 mod prepush;
 mod push_auth;
+mod release_reference;
 mod rerun_plan;
 mod schedule_liveness;
 mod scoreboard;
@@ -546,6 +551,7 @@ mod workspace_members;
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::NodeReferenceManifest(args) => node_reference::run(&args),
+        Command::ReleaseReferenceManifest(args) => release_reference::run(&args),
         Command::HostEvidenceLive { bin_dir, sudo } => {
             host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
         }
