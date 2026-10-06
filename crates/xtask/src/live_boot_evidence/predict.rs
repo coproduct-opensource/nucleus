@@ -7,6 +7,12 @@
 //! measured while the pod ran. A disagreement means a release built from
 //! this tree would publish reference values that contest an honest node of
 //! its own, and is a hard failure.
+//!
+//! The prediction mirrors the appraisal's IMA scope (#3276): a release
+//! manifest governs its install directory only, so a measured binary outside
+//! that scope is neither predicted nor contested. It is listed as not checked
+//! beside the verdicts, as the appraisal lists it as not in scope, so it is
+//! named and counted, never silently passed.
 
 use std::path::Path;
 
@@ -22,7 +28,7 @@ use crate::release_reference::{self, Arch, EmitArgs};
 /// summary beside the verdicts so a green run does not read as more.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NotChecked {
-    pub what: &'static str,
+    pub what: String,
     pub reason: String,
 }
 
@@ -74,7 +80,7 @@ pub fn check(manifest: &ReferenceManifest, measured: &[Measured]) -> (Vec<Check>
     let mut boot = |what: &'static str, reason: Option<&String>| {
         match reason {
         Some(reason) => not_checked.push(NotChecked {
-            what,
+            what: what.into(),
             reason: reason.clone(),
         }),
         // A release manifest never pins the host's boot; one that does was
@@ -109,6 +115,18 @@ pub fn check(manifest: &ReferenceManifest, measured: &[Measured]) -> (Vec<Check>
             return (checks, not_checked);
         }
     };
+    // The generator refuses to write an incoherent reference, and the
+    // appraisal reports one as not evaluable; a manifest that reaches here
+    // incoherent was not produced by this build's generator.
+    if let Some(why) = ima.incoherence() {
+        checks.push(Check::new(
+            "prediction.ima",
+            Verdict::Fail(format!(
+                "the manifest's IMA reference could not be appraised: {why}"
+            )),
+        ));
+        return (checks, not_checked);
+    }
     for (path, allowed) in &ima.allowlist {
         let name = format!("prediction.{path}");
         let verdict = match measured.iter().find(|m| &m.path == path) {
@@ -133,7 +151,17 @@ pub fn check(manifest: &ReferenceManifest, measured: &[Measured]) -> (Vec<Check>
         checks.push(Check::new(name, verdict));
     }
     for m in measured {
-        if !ima.allowlist.contains_key(&m.path) {
+        if !ima.scope.contains(&m.path) {
+            not_checked.push(NotChecked {
+                what: format!("prediction.{}", m.path),
+                reason: format!(
+                    "{} booted ({} {}) outside the manifest's IMA scope: the release vouches for its install directory only",
+                    m.path,
+                    m.sha256,
+                    how(&m.how)
+                ),
+            });
+        } else if !ima.allowlist.contains_key(&m.path) {
             checks.push(Check::new(
                 format!("prediction.{}", m.path),
                 Verdict::Fail(format!(
@@ -174,7 +202,7 @@ fn how(how: &MeasuredHow) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nucleus_node_evidence::{ImaReference, REFERENCE_PROFILE, ReferenceValues};
+    use nucleus_node_evidence::{ImaReference, ImaScope, REFERENCE_PROFILE, ReferenceValues};
     use std::collections::{BTreeMap, BTreeSet};
 
     const NODE: &str = "/usr/local/bin/nucleus-node";
@@ -195,6 +223,8 @@ mod tests {
                 boot_files: nc(),
                 kernel_cmdline: nc(),
                 ima: Expect::Required(ImaReference {
+                    // As `release_reference::manifest` scopes it.
+                    scope: ImaScope::PathPrefixes(["/usr/local/bin".to_string()].into()),
                     allowlist: [(NODE.into(), one(node_digest)), (FC.into(), one("fc"))]
                         .into_iter()
                         .collect(),
@@ -286,5 +316,43 @@ mod tests {
             checks.iter().any(|c| c.name == "prediction.secure_boot"
                 && matches!(c.verdict, Verdict::CouldNotRun(_)))
         );
+    }
+
+    /// #3276: a binary measured outside the scope is listed, not predicted
+    /// and not red; an unnamed binary inside it is still red.
+    #[test]
+    fn a_binary_outside_the_ima_scope_is_listed_not_contested() {
+        let mut m = measured();
+        m.push(Measured {
+            path: "/opt/elsewhere/helper".into(),
+            sha256: "h".into(),
+            how: MeasuredHow::ConfiguredFile,
+        });
+        let (checks, not_checked) = check(&manifest("node"), &m);
+        assert!(fails(&checks).is_empty(), "{checks:?}");
+        assert!(
+            not_checked
+                .iter()
+                .any(|n| n.what == "prediction./opt/elsewhere/helper"
+                    && n.reason.contains("outside the manifest's IMA scope")),
+            "{not_checked:?}"
+        );
+        // The same file under the install directory is unnamed and contests.
+        m.last_mut().unwrap().path = "/usr/local/bin/helper".into();
+        let (checks, _) = check(&manifest("node"), &m);
+        assert_eq!(fails(&checks), vec!["prediction./usr/local/bin/helper"]);
+    }
+
+    /// An incoherent IMA reference (an allowlisted path outside its own
+    /// scope) is red, never appraised as written.
+    #[test]
+    fn an_incoherent_ima_reference_is_red() {
+        let mut m = manifest("node");
+        let Expect::Required(ima) = &mut m.reference_values.ima else {
+            unreachable!()
+        };
+        ima.scope = ImaScope::PathPrefixes(["/opt".to_string()].into());
+        let (checks, _) = check(&m, &measured());
+        assert_eq!(fails(&checks), vec!["prediction.ima"]);
     }
 }
