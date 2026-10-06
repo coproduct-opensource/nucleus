@@ -235,6 +235,15 @@ pub enum GuestCapability {
     /// declares an upstream whose registry entry carries an effect table
     /// ([`GuestUse::EffectTableEgress`]); ordinary egress does not need it.
     EgressEffectTable,
+    /// The tool-proxy decides a credentialed push (and pull request) with the
+    /// effect decider, so a push from a session its own flow graph has tainted
+    /// is submitted to the host to be held for the operator's action-bound
+    /// approval instead of being refused in the guest (#3255).
+    /// [`Demand::Optional`]: the host holds and declassifies regardless, and a
+    /// push after only model calls (taint the host observed, not the guest)
+    /// completes with an older guest; that guest still refuses, in the guest,
+    /// a push after content its own tools read, which is stricter, never wider.
+    TaintedPushHeld,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -281,7 +290,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 12] = [
+    pub const ALL: [GuestCapability; 13] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -294,6 +303,7 @@ impl GuestCapability {
         GuestCapability::EgressAdapterUpstreams,
         GuestCapability::EgressMethodAndQuery,
         GuestCapability::EgressEffectTable,
+        GuestCapability::TaintedPushHeld,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -311,6 +321,9 @@ impl GuestCapability {
             | GuestCapability::EgressMethodAndQuery => Demand::Required,
             // Shadow mode: nothing the node does depends on the guest asking.
             GuestCapability::HostDecideShadow => Demand::Optional,
+            // The host holds the push either way; an older guest only refuses
+            // more (a push after its own tainting read), never less.
+            GuestCapability::TaintedPushHeld => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -348,6 +361,8 @@ impl GuestCapability {
             // published 2.4.0 tool-proxy cannot read an effect table. The next
             // guest release flips this.
             GuestCapability::EgressEffectTable => FirstShipped::NotYet,
+            // #3255, after `v2.4.0` (f3e700763).
+            GuestCapability::TaintedPushHeld => FirstShipped::NotYet,
         }
     }
 
@@ -416,6 +431,12 @@ impl GuestCapability {
                  the tool-proxy labels a forge write by it; an older proxy cannot read a spec \
                  that carries one, and would label a pull request as a fetch, which the node \
                  refuses"
+            }
+            GuestCapability::TaintedPushHeld => {
+                "#3255 has the tool-proxy submit a push from a session it saw untrusted content \
+                 in for the host to hold for the operator's approval of that push; an older \
+                 proxy refuses that push in the guest (the node does not require it: the host \
+                 holds a push after model calls with either guest)"
             }
         }
     }
@@ -813,7 +834,8 @@ mod tests {
                 GuestCapability::HostDecideShadow => GuestCapability::EgressAdapterUpstreams,
                 GuestCapability::EgressAdapterUpstreams => GuestCapability::EgressMethodAndQuery,
                 GuestCapability::EgressMethodAndQuery => GuestCapability::EgressEffectTable,
-                GuestCapability::EgressEffectTable => GuestCapability::CaBundle,
+                GuestCapability::EgressEffectTable => GuestCapability::TaintedPushHeld,
+                GuestCapability::TaintedPushHeld => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

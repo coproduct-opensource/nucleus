@@ -61,6 +61,14 @@ impl Command {
             "Verified {} host authorizations for pod {}; head {}",
             chain.count, pod, chain.previous
         );
+        if chain.declassified > 0 {
+            println!(
+                "{} of them carried a tainted session's data to a sink, each released by a \
+                 single-use operator approval of that exact effect (the record names the \
+                 approval and the labels it declassified).",
+                chain.declassified
+            );
+        }
         if let Some(path) = outcomes {
             let count = outcomes::verify(&path, &pod, &key, &authorizations)?;
             println!(
@@ -82,6 +90,8 @@ struct Chain<'a> {
     pod: &'a str,
     key: &'a VerifyingKey,
     count: usize,
+    /// Records whose signed claim carries a declassification (#3255).
+    declassified: usize,
     previous: String,
 }
 impl<'a> Chain<'a> {
@@ -90,6 +100,7 @@ impl<'a> Chain<'a> {
             pod,
             key,
             count: 0,
+            declassified: 0,
             previous: String::new(),
         }
     }
@@ -115,6 +126,7 @@ impl<'a> Chain<'a> {
             .map_err(|_| invalid(line, "host signature does not verify"))?;
         self.previous = record_hash(record).map_err(|e| invalid(line, e.to_string()))?;
         self.count += 1;
+        self.declassified += usize::from(claim.declassification.is_some());
         Ok(())
     }
 }
@@ -135,6 +147,7 @@ mod tests {
             subject: "https://upstream.invalid".into(),
             authorized_unix: 123,
             call_charge_micro_usd: 0,
+            declassification: None,
             previous_record_sha256: previous,
         };
         let signature = hex::encode(key.sign(&signing_bytes(&authorization).unwrap()).to_bytes());
@@ -175,6 +188,7 @@ mod tests {
             "version",
             "operation",
             "charge",
+            "declassification",
         ] {
             let mut tampered = first.clone();
             match changed {
@@ -184,6 +198,21 @@ mod tests {
                 "version" => tampered.authorization.version += 1,
                 "operation" => tampered.authorization.operation = "git_commit".into(),
                 "charge" => tampered.authorization.call_charge_micro_usd = 1,
+                // A declassification cannot be added to, or stripped from, a
+                // signed record.
+                "declassification" => {
+                    tampered.authorization.declassification = Some(
+                        serde_json::from_value(serde_json::json!({
+                            "approval_id": "00000000-0000-0000-0000-000000000000",
+                            "input": {
+                                "integrity": "adversarial",
+                                "confidentiality": "internal",
+                                "derivation": "deterministic",
+                            },
+                        }))
+                        .unwrap(),
+                    )
+                }
                 _ => unreachable!(),
             }
             assert!(

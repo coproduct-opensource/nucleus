@@ -263,6 +263,11 @@ mod tests {
                 let (da, _) = a.decide_term_with_flow(term(), Some(&g));
                 let (db, _) = b.decide_term_with_flow(term(), Some(&t));
                 prop_assert_eq!(outcome_of(&da.verdict), outcome_of(&db.verdict), "{:?}", op);
+                // And the effect decider — the one with an approval exit — too.
+                let ea = a.decide_effect_with_flow(term(), Some(&g));
+                let eb = b.decide_effect_with_flow(term(), Some(&t));
+                prop_assert_eq!(outcome_of(&ea.decision.verdict), outcome_of(&eb.decision.verdict));
+                prop_assert_eq!(ea.hold, eb.hold, "{:?}", op);
             }
         }
 
@@ -303,6 +308,63 @@ mod tests {
             t.session_exfiltration_check(ConfLevel::Internal)
                 .is_denied()
         );
+    }
+
+    /// #3255's agreement table, like #3218's profile agreement: the guest over
+    /// its own flow graph and the host over the taint it was told about hold,
+    /// refuse or allow a push alike, for every `git_push` level. A guest that
+    /// refuses where the host holds (or the reverse) fails here.
+    #[test]
+    fn guest_and_host_hold_a_tainted_push_alike() {
+        use portcullis::CapabilityLevel;
+        let refused = Outcome::Denied {
+            reason: DenyReason::FlowRefused,
+        };
+        let not_granted = Outcome::Denied {
+            reason: DenyReason::NotGranted,
+        };
+        let asked = Outcome::ApprovalRequired;
+        let web: &[NodeKind] = &[NodeKind::WebContent];
+        let secret: &[NodeKind] = &[NodeKind::WebContent, NodeKind::Secret];
+        // (session, git_push, outcome, held for its taint). A clean push under
+        // this profile already asks the operator (a push is an exfiltration
+        // vector); a tainted one is asked the same question, and the approval
+        // that answers it is then a declassification.
+        let table: [(&[NodeKind], CapabilityLevel, Outcome, bool); 9] = [
+            (&[], CapabilityLevel::Never, not_granted, false),
+            (&[], CapabilityLevel::LowRisk, asked, false),
+            (&[], CapabilityLevel::Always, asked, false),
+            (web, CapabilityLevel::Never, refused, false),
+            (web, CapabilityLevel::LowRisk, asked, true),
+            (web, CapabilityLevel::Always, asked, true),
+            // A secret-bearing session is never held, whatever the profile.
+            (secret, CapabilityLevel::Never, refused, false),
+            (secret, CapabilityLevel::LowRisk, refused, false),
+            (secret, CapabilityLevel::Always, refused, false),
+        ];
+        for (kinds, level, expected, taint_hold) in table {
+            let g = graph_of(kinds);
+            let t = host_told(&g);
+            let mut policy = PermissionLattice::permissive();
+            policy.capabilities.git_push = level;
+            let term = || ActionTerm::from_operation(Operation::GitPush, "https://forge.invalid/r");
+            let guest = Kernel::new(policy.clone()).decide_effect_with_flow(term(), Some(&g));
+            let host = Kernel::new(policy.clone()).decide_effect_with_flow(term(), Some(&t));
+            let case = format!("{kinds:?} at {level:?}");
+            assert_eq!(
+                outcome_of(&guest.decision.verdict),
+                expected,
+                "guest: {case}"
+            );
+            assert_eq!(outcome_of(&host.decision.verdict), expected, "host: {case}");
+            assert_eq!(guest.hold.is_some(), taint_hold, "{case}");
+            assert_eq!(guest.hold, host.hold, "{case}");
+            if taint_hold {
+                // The exit is new: the abort-only decider refuses the same push.
+                let (before, _) = Kernel::new(policy).decide_term_with_flow(term(), Some(&g));
+                assert_eq!(outcome_of(&before.verdict), refused, "{case}");
+            }
+        }
     }
 
     #[test]

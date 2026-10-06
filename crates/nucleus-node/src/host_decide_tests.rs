@@ -192,9 +192,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Guest<S> {
             assert_eq!(got, HostFrame::Observed { seq });
             self.reported = Some(report);
         }
-        let (decision, _token) = self
+        // As the proxy decides: a tool call with `decide_term_with_flow`, a
+        // broker submission with `decide_effect_with_flow`. They differ only
+        // for a push or a pull request, which the proxy decides only as a
+        // broker submission (#3255), so the effect decider is the proxy's
+        // answer for every operation in the corpus.
+        let decision = self
             .kernel
-            .decide_term_with_flow(ActionTerm::from_operation(op, subject), Some(&self.graph));
+            .decide_effect_with_flow(ActionTerm::from_operation(op, subject), Some(&self.graph))
+            .decision;
         let guest = outcome_of(&decision.verdict);
         let subject = Subject::new(subject).expect("short subject");
         let decided = self.seq();

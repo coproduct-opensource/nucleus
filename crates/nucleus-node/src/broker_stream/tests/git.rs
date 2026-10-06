@@ -6,6 +6,8 @@
 use super::*;
 use nucleus_cred_protocol::EgressMethod;
 
+mod declassify;
+
 /// What the fake remote saw of one request.
 #[derive(Debug, Clone)]
 struct Hit {

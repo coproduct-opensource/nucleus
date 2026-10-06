@@ -2,8 +2,9 @@
 use std::collections::HashMap;
 
 use nucleus_decision_protocol::{ArgsDigest, Outcome};
+use nucleus_spec::host_effect::{Declassification, InputLabel};
 use portcullis::Operation;
-use portcullis::kernel::{DecisionToken, Verdict};
+use portcullis::kernel::{DecisionToken, TaintHold, Verdict};
 use uuid::Uuid;
 
 use super::PodPolicy;
@@ -47,6 +48,40 @@ struct EffectCheck {
     phase: Phase,
     charge: crate::upstreams::CallCharge,
     require_approval: bool,
+}
+
+/// A granted approval, spent by the commit that consumed it. Minted only when
+/// a commit spends one; neither `Clone` nor constructible elsewhere, and taken
+/// by value by whatever it releases (ADR 0007 C-4), so one approval releases
+/// one effect.
+#[must_use]
+struct SpentApproval {
+    id: Uuid,
+}
+
+impl SpentApproval {
+    /// The declassification one approval makes of one held flow (#3255): the
+    /// approval and the host's label for the data it released. The hold and
+    /// the spent approval are both consumed, so neither can release another.
+    fn declassify(
+        self,
+        hold: TaintHold,
+        sink: Operation,
+        input: nucleus_decision_protocol::IFCLabel,
+    ) -> Result<Declassification, String> {
+        // The hold names the sink it was decided for; it releases that one.
+        if hold.operation() != sink {
+            return Err("a taint hold cannot release another operation".into());
+        }
+        Ok(Declassification {
+            approval_id: self.id,
+            input: InputLabel {
+                integrity: input.integrity,
+                confidentiality: input.confidentiality,
+                derivation: input.derivation,
+            },
+        })
+    }
 }
 
 pub(super) struct Approvals {
@@ -104,7 +139,7 @@ impl Approvals {
         subject: &str,
         now: u64,
         check: EffectCheck,
-    ) -> Result<(), String> {
+    ) -> Result<Option<SpentApproval>, String> {
         let EffectCheck {
             phase,
             charge,
@@ -116,10 +151,13 @@ impl Approvals {
             .values_mut()
             .find(|a| a.digest == digest && a.view.status == ApprovalStatus::Granted)
         {
-            if matches!(phase, Phase::Commit) {
-                a.view.status = ApprovalStatus::Spent;
-            }
-            return Ok(());
+            return Ok(match phase {
+                Phase::Preflight => None,
+                Phase::Commit => {
+                    a.view.status = ApprovalStatus::Spent;
+                    Some(SpentApproval { id: a.view.id })
+                }
+            });
         }
         if let Some(a) = self
             .entries
@@ -248,7 +286,7 @@ impl PodPolicy {
         charge: crate::upstreams::CallCharge,
         require_approval: bool,
     ) -> Result<EffectPermit, String> {
-        let tokens = self.check_effect(
+        let (tokens, declassification) = self.check_effect(
             digest,
             op,
             subject,
@@ -260,7 +298,8 @@ impl PodPolicy {
             },
         )?;
         let record = self.budget.commit(charge.usd(), || {
-            self.evidence.commit(digest, op, subject, now, charge)
+            self.evidence
+                .commit(digest, op, subject, now, charge, declassification)
         })?;
         Ok(EffectPermit {
             _decisions: tokens,
@@ -276,7 +315,7 @@ impl PodPolicy {
         subject: &str,
         now: u64,
         check: EffectCheck,
-    ) -> Result<Vec<DecisionToken>, String> {
+    ) -> Result<(Vec<DecisionToken>, Option<Declassification>), String> {
         let EffectCheck {
             phase,
             charge,
@@ -290,6 +329,9 @@ impl PodPolicy {
         }
         let mut tokens = Vec::new();
         let mut approval_ops = Vec::new();
+        // A taint the kernel held this effect for (#3255). Only the operation
+        // beyond the network read can be one, so there is at most one.
+        let mut held: Option<TaintHold> = None;
         for operation in [
             Some(Operation::WebFetch),
             (op != Operation::WebFetch).then_some(op),
@@ -297,11 +339,19 @@ impl PodPolicy {
         .into_iter()
         .flatten()
         {
-            let (decision, token) = self.decide(operation, subject);
+            let decided = self.decide_effect(operation, subject);
+            let decision = decided.decision;
+            if let Some(hold) = decided.hold
+                && held.replace(hold).is_some()
+            {
+                return Err("host policy held one effect twice".into());
+            }
             match decision.verdict {
-                Verdict::Allow => {
-                    tokens.push(token.ok_or("host allowed without a decision token")?)
-                }
+                Verdict::Allow => tokens.push(
+                    decided
+                        .token
+                        .ok_or("host allowed without a decision token")?,
+                ),
                 Verdict::RequiresApproval => approval_ops.push(operation),
                 Verdict::Deny(_) => {
                     let outcome = nucleus_decision_protocol::kernel::outcome_of(&decision.verdict);
@@ -312,8 +362,9 @@ impl PodPolicy {
                 }
             }
         }
+        let mut declassification = None;
         if require_approval || !approval_ops.is_empty() {
-            self.approvals.check_or_request(
+            let spent = self.approvals.check_or_request(
                 digest,
                 op,
                 subject,
@@ -324,17 +375,25 @@ impl PodPolicy {
                     require_approval,
                 },
             )?;
-            for operation in approval_ops
-                .into_iter()
-                .filter(|_| matches!(phase, Phase::Commit))
-            {
-                tokens.push(
-                    self.kernel
-                        .issue_approved_token(operation, "action-bound host operator approval"),
-                );
+            // Only a commit spends the approval, and only a spent approval
+            // releases the held operations and declassifies a held flow.
+            if let Some(spent) = spent {
+                for operation in approval_ops {
+                    tokens.push(
+                        self.kernel
+                            .issue_approved_token(operation, "action-bound host operator approval"),
+                    );
+                }
+                declassification = match held {
+                    Some(hold) => Some(spent.declassify(hold, op, self.taint.label())?),
+                    None => {
+                        let SpentApproval { id: _ } = spent;
+                        None
+                    }
+                };
             }
         }
-        Ok(tokens)
+        Ok((tokens, declassification))
     }
 }
 

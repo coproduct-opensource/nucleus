@@ -85,6 +85,7 @@ use crate::{ActionTerm, PreflightContext, PreflightResult, PreflightVerdict};
 mod dlc;
 /// IFC flow gate (poison + tainted-outbound denial) — extends `impl Kernel`.
 mod ifc;
+pub use ifc::{EffectDecision, TaintHold};
 
 /// A single decision made by the kernel.
 ///
@@ -1235,6 +1236,16 @@ impl Kernel {
         operation: Operation,
         subject: &str,
     ) -> (Decision, Option<DecisionToken>) {
+        self.decide_held(operation, subject, ifc::TaintExit::Closed)
+    }
+
+    /// [`Self::decide`], with what to do once every check but approval passes.
+    fn decide_held(
+        &mut self,
+        operation: Operation,
+        subject: &str,
+        exit: ifc::TaintExit,
+    ) -> (Decision, Option<DecisionToken>) {
         let pre_hash = self.effective.checksum();
         let pre_exposure_count = self.exposure.count();
         let contributed_label = exposure_core::classify_operation(operation);
@@ -1527,6 +1538,16 @@ impl Kernel {
             *flow_label = flow_label.join(intrinsic);
         }
 
+        // 6b. An action held for an approval of itself (#3255): no count of
+        // pre-granted approvals discharges it, so it never reaches step 7.
+        if exit == ifc::TaintExit::ActionBoundApproval {
+            let (count, label) = (pre_exposure_count, contributed_label);
+            let held = Verdict::RequiresApproval;
+            return self.record_with_exposure(
+                operation, subject, held, &pre_hash, count, label, false, true,
+            );
+        }
+
         // 7. Static approval check (obligations from lattice structure)
         if self.effective.requires_approval(operation) {
             if self.consume_approval(operation) {
@@ -1622,14 +1643,21 @@ impl Kernel {
     /// `Operation + subject` kernel path. The resulting [`Decision`] carries
     /// the serialized term and preflight result for audit/replay.
     pub fn decide_term(&mut self, term: ActionTerm) -> (Decision, Option<DecisionToken>) {
+        self.decide_term_held(term, ifc::TaintExit::Closed)
+    }
+
+    fn decide_term_held(
+        &mut self,
+        term: ActionTerm,
+        exit: ifc::TaintExit,
+    ) -> (Decision, Option<DecisionToken>) {
         let operation = term.operation();
         let subject = term.subject().to_string();
         let preflight =
             crate::action_term::preflight_action(&term, &PreflightContext::new(&self.effective));
 
-        #[allow(deprecated)] // decide_term delegates to decide; this is the migration bridge
         let (mut decision, token) = match preflight.verdict {
-            PreflightVerdict::Pass => self.decide(operation, &subject),
+            PreflightVerdict::Pass => self.decide_held(operation, &subject, exit),
             PreflightVerdict::RequiresApproval => {
                 let pre_hash = self.effective.checksum();
                 let pre_exposure_count = self.exposure.count();
@@ -1703,65 +1731,7 @@ impl Kernel {
             return denied;
         }
 
-        // DLC-D verified admission (`kernel::dlc`): deny-narrowing, inert
-        // until `set_dlc_admission` provisions credentials.
-        #[cfg(feature = "dlc")]
-        if let Some(denied) = self.dlc_admission_gate(&term) {
-            return denied;
-        }
-
-        // Only the Cedar consult below uses `operation`; bind it under the same
-        // cfg so non-cedar feature combos don't trip `-D unused-variables`.
-        #[cfg(feature = "cedar")]
-        let operation = term.operation();
-
-        // Cedar policy consult (#1634): after the IFC check, if a Cedar policy is
-        // loaded, deny any operation Cedar does not `permit`. Uses the session's
-        // current flow label (integrity/authority/confidentiality) as context.
-        // No policy loaded ⇒ skipped entirely (default-on feature is inert here).
-        #[cfg(feature = "cedar")]
-        if let Some(ref cedar) = self.cedar_evaluator {
-            let label = self.flow_label.unwrap_or_else(|| {
-                portcullis_core::IFCLabel::user_prompt(chrono::Utc::now().timestamp() as u64)
-            });
-            let subject = term.subject().to_string();
-            let result = cedar.evaluate(
-                &self.session_id.to_string(),
-                operation,
-                &subject,
-                label.integrity,
-                label.authority,
-                label.confidentiality,
-            );
-            if !result.is_allowed() {
-                let pre_hash = self.effective.checksum();
-                let pre_exposure_count = self.exposure.count();
-                let contributed_label = exposure_core::classify_operation(operation);
-                let detail = if result.reasons.is_empty() {
-                    "no matching Cedar `permit` rule (default deny)".to_string()
-                } else {
-                    result.reasons.join(", ")
-                };
-                tracing::warn!(?operation, subject, %detail, "Cedar denied operation");
-                let (mut decision, token) = self.record_with_exposure(
-                    operation,
-                    &subject,
-                    Verdict::Deny(DenyReason::CedarDenied { detail }),
-                    &pre_hash,
-                    pre_exposure_count,
-                    contributed_label,
-                    false,
-                    false,
-                );
-                decision.action_term = Some(term.clone());
-                if let Some(last) = self.trace.last_mut() {
-                    last.action_term = Some(term);
-                }
-                return (decision, token);
-            }
-        }
-
-        self.decide_term(term)
+        self.decide_term_past_flow(term, ifc::TaintExit::Closed)
     }
 
     /// Load a Cedar policy that gates every subsequent decision through

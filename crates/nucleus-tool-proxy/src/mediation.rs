@@ -435,7 +435,11 @@ pub(crate) fn decide_for_broker(
     let mut require_approval = false;
     for term in std::iter::once(network).chain(further) {
         let operation = term.operation();
-        let (decision, _token) = kernel.decide_term_with_flow(term, Some(graph));
+        // The effect decider, as the host's `check_effect` uses: a push from a
+        // tainted session is held for the operator's approval of that exact
+        // request, which the host alone can grant (#3255). No guest grant
+        // discharges it, and a submission mints no execution token.
+        let decision = kernel.decide_effect_with_flow(term, Some(graph)).decision;
         shadow.submit(kernel, graph, operation, subject, &decision.verdict);
         crate::verdict_sink::record_kernel_decision(
             sink,
@@ -592,6 +596,41 @@ mod broker_tests {
         let sink = Sink::default();
         assert!(decide(PermissionLattice::permissive(), Operation::CreatePr, &sink).is_ok());
         assert_eq!(sink.0.lock().unwrap().len(), 2, "WebFetch, then CreatePr");
+    }
+
+    /// #3255: a push from a session that read untrusted content goes to the
+    /// host as a submission that requires approval — the host's action-bound
+    /// approval is its only exit — while `git_push: never` is still refused
+    /// here, before a frame exists.
+    #[test]
+    fn a_tainted_push_is_submitted_for_approval_unless_push_is_never() {
+        let mut tainted = FlowGraph::new();
+        tainted
+            .insert_observation(portcullis::NodeKind::WebContent, &[], 1)
+            .unwrap();
+        let decide = |policy: PermissionLattice| {
+            decide_for_broker(
+                MediationEnv {
+                    sink: &Sink::default(),
+                    actor: ActorIdentity::Unknown,
+                    transport: "http",
+                    grants: &GuestGrant,
+                    shadow: &crate::host_decide::HostDecide::Off,
+                },
+                &mut Kernel::new(policy),
+                &tainted,
+                "https://forge.invalid/org/repo.git/git-receive-pack",
+                Operation::GitPush,
+            )
+        };
+        let held = decide(PermissionLattice::permissive()).expect("held, not refused");
+        assert!(
+            held.require_approval(),
+            "the host must hold it for approval"
+        );
+        let mut never = PermissionLattice::permissive();
+        never.capabilities.git_push = CapabilityLevel::Never;
+        assert!(matches!(decide(never), Err(ApiError::IfcDenied(_))));
     }
 
     #[test]

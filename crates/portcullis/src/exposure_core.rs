@@ -277,13 +277,51 @@ pub(crate) fn ifc_egress_disposition<F: EgressAggregates + ?Sized>(
             TaintResponse::Allow => {}
         }
     }
-    if flow
-        .effective_exfiltration_check(op, sink_max_conf_for(op))
-        .is_denied()
-    {
+    if confidentiality_refuses(flow, op) {
         return EgressDisposition::Confidentiality;
     }
     EgressDisposition::Pass
+}
+
+/// The confidentiality half of the egress gate: the session holds more than
+/// `op`'s sink may emit. One expression, read by both dispositions below.
+fn confidentiality_refuses<F: EgressAggregates + ?Sized>(flow: &F, op: Operation) -> bool {
+    flow.effective_exfiltration_check(op, sink_max_conf_for(op))
+        .is_denied()
+}
+
+/// The egress gate for an effect an operator approves as one exact request
+/// (#3255), such as a push the host performs only after an approval bound to
+/// its digest.
+///
+/// The DETECTION is [`ifc_egress_disposition`]'s, ungraded. Only the response
+/// to an integrity taint differs: it becomes [`EgressDisposition::TaintedApproval`]
+/// — a hold for that one approval — instead of a refusal with no exit. This is
+/// recoverable information-flow control in the sense of APPA ("Recoverable
+/// Information-Flow Control for Real-World LLM Agents", arXiv 2607.24625): the
+/// flow rule is unchanged, and the human approval of the exact action is the
+/// declassification.
+///
+/// Confidentiality is never held: a session whose ceiling exceeds the sink is
+/// refused here as it is there, with or without an integrity taint, and so is
+/// a poisoned session (the caller checks poison first).
+pub(crate) fn action_bound_egress_disposition<F: EgressAggregates + ?Sized>(
+    flow: &F,
+    op: Operation,
+    kind: NodeKind,
+) -> EgressDisposition {
+    match ifc_egress_disposition(flow, op, kind, false) {
+        EgressDisposition::Tainted if confidentiality_refuses(flow, op) => {
+            EgressDisposition::Confidentiality
+        }
+        EgressDisposition::Tainted => EgressDisposition::TaintedApproval,
+        // Exhaustive (E-2): a new disposition is a build error here until
+        // someone decides whether an approval may hold it.
+        d @ (EgressDisposition::Pass
+        | EgressDisposition::Poisoned
+        | EgressDisposition::TaintedApproval
+        | EgressDisposition::Confidentiality) => d,
+    }
 }
 
 /// Clock-free IFC egress denial check for the live kernel gate (most-paranoid
