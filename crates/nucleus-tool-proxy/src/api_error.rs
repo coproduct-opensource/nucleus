@@ -234,7 +234,8 @@ impl ApiError {
             | ApiError::Nucleus(NucleusError::ChildSeparationUnavailable { .. })
             | ApiError::Nucleus(NucleusError::ChildSharesRuntimeUid { .. })
             | ApiError::Nucleus(NucleusError::UnsandboxedNotOptedIn { .. })
-            | ApiError::Nucleus(NucleusError::LandlockUnavailable { .. }) => {
+            | ApiError::Nucleus(NucleusError::LandlockUnavailable { .. })
+            | ApiError::Nucleus(NucleusError::LandlockRuleset { .. }) => {
                 (StatusCode::FORBIDDEN, "isolation_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {

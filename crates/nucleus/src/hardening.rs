@@ -554,6 +554,28 @@ impl ChildConfinement {
         }
     }
 
+    /// Compile this child's Landlock ruleset NOW, in the parent, and name
+    /// what stopped it (#2696 P3c). A spawn site calls this before the spawn,
+    /// so an operator sees [`NucleusError::LandlockRuleset`] with the path
+    /// and the reason, not the bare errno the `pre_exec` hook can carry back.
+    /// The hook still refuses on its own if the compile fails there: this is
+    /// the naming, not the enforcement.
+    ///
+    /// # Errors
+    /// [`NucleusError::LandlockRuleset`] under
+    /// [`FilesystemConfinement::Landlock`] when the ruleset cannot be compiled.
+    pub fn preflight_filesystem(&self) -> Result<()> {
+        match self.filesystem() {
+            FilesystemConfinement::Landlock { abi } => landlock::Ruleset::compile(abi)
+                .map(drop)
+                .map_err(|e| NucleusError::LandlockRuleset {
+                    path: e.path.display().to_string(),
+                    error: e.error,
+                }),
+            FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => Ok(()),
+        }
+    }
+
     /// The uid the child will run as, when it is not the runtime's.
     #[must_use]
     pub fn drop_uid(&self) -> Option<u32> {
@@ -892,7 +914,8 @@ mod imp {
                 Ok(ruleset) => Landlock::Restrict(ruleset),
                 Err(e) => {
                     tracing::error!(
-                        error = %e,
+                        path = %e.path.display(),
+                        error = %e.error,
                         abi,
                         "the Landlock ruleset could not be compiled; refusing the confined spawn"
                     );

@@ -580,6 +580,13 @@ pub(crate) fn spawn_admitted(
              without ownership of it (expected when the scratch is read-only)"
         );
     }
+    // A ruleset that cannot be compiled refuses the spawn with its path and
+    // reason (`NucleusError::LandlockRuleset`), which reaches the console as
+    // the workload's start error; the pre_exec hook alone could carry back only
+    // an errno (the x86_64 live boot showed "Not supported (os error 95)").
+    confinement
+        .preflight_filesystem()
+        .map_err(std::io::Error::other)?;
     confinement.apply(cmd.as_std_mut());
 
     tracing::info!(

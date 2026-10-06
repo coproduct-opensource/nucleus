@@ -261,6 +261,21 @@ pub enum NucleusError {
         minimum: u32,
     },
 
+    /// The kernel enforces Landlock, but this child's ruleset could not be
+    /// compiled from the guest layout (#2696 P3c). Fail closed: the child is
+    /// not started with a partial or no ruleset. Named, with the path and the
+    /// reason, because the alternative an operator saw was a bare errno.
+    #[error(
+        "the Landlock ruleset for this child could not be compiled at {path}: {error}. The \
+         child was not started"
+    )]
+    LandlockRuleset {
+        /// The path the compile stopped at (`/` for the ruleset itself).
+        path: String,
+        /// What the filesystem or the kernel said.
+        error: String,
+    },
+
     /// IO error from underlying operation.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

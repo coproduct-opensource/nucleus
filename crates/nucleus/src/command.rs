@@ -506,6 +506,10 @@ impl<'a> Executor<'a> {
         // The hook is ALWAYS installed: there is no `None` to forget. Under
         // MicroVM the child leaves the runtime's (root) uid exactly as the
         // workload does; `hardening.rs` has the table.
+        // The ruleset's failure, named, before the spawn turns it into an errno.
+        confinement
+            .preflight_filesystem()
+            .map_err(io::Error::other)?;
         let hook = move |cmd: &mut Command| confinement.apply(cmd);
         let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = Some(&hook);
 
@@ -926,6 +930,7 @@ impl<'a> Executor<'a> {
     ) -> Result<Output> {
         // The same confinement as the synchronous spawn, on `tokio::process`.
         let confinement = self.child_confinement()?;
+        confinement.preflight_filesystem()?;
         self.hand_over_workspace(confinement);
         let hook = move |cmd: &mut tokio::process::Command| confinement.apply(cmd.as_std_mut());
         let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> = Some(&hook);

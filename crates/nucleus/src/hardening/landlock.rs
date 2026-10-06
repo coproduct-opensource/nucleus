@@ -184,6 +184,15 @@ fn push_unless_link(rules: &mut Vec<Rule>, path: PathBuf, kind: Kind, grant: Gra
 /// effect of a newer kernel.
 const FS_ABI_LEVELS: [u32; 4] = [5, 3, 2, 1];
 
+/// Why the ruleset could not be compiled: the path it stopped at and what
+/// the kernel or filesystem said. Carried to the spawn's refusal by name
+/// (`NucleusError::LandlockRuleset`), never collapsed to an errno.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CompileError {
+    pub(crate) path: PathBuf,
+    pub(crate) error: String,
+}
+
 pub(crate) use imp::Ruleset;
 
 #[cfg(target_os = "linux")]
@@ -197,11 +206,11 @@ mod imp {
     use std::path::Path;
 
     use landlock::{
-        ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, RulesetAttr,
-        RulesetCreated, RulesetCreatedAttr, RulesetStatus,
+        ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, PathFdError,
+        RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus,
     };
 
-    use super::{FS_ABI_LEVELS, Grant, Kind, LandlockSupport, Rule, plan};
+    use super::{CompileError, FS_ABI_LEVELS, Grant, Kind, LandlockSupport, Rule, plan};
 
     fn abi(level: u32) -> ABI {
         ABI::from(i32::try_from(level).unwrap_or(0))
@@ -240,8 +249,11 @@ mod imp {
             .map_or(LandlockSupport::Unavailable, LandlockSupport::Abi)
     }
 
-    fn other(what: &Path, e: impl std::fmt::Display) -> io::Error {
-        io::Error::other(format!("{}: {e}", what.display()))
+    fn failed(path: &Path, e: impl std::fmt::Display) -> CompileError {
+        CompileError {
+            path: path.to_path_buf(),
+            error: e.to_string(),
+        }
     }
 
     /// A ruleset compiled in the PARENT: created and every rule added. The
@@ -276,22 +288,57 @@ mod imp {
         /// Any failure to create the ruleset, list a directory, open a path or
         /// add a rule, including a right the kernel cannot enforce. The caller
         /// refuses the spawn on any of them.
-        pub(crate) fn compile(level: u32) -> io::Result<Self> {
-            Self::compile_rules(level, &plan(&mut list)?)
+        pub(crate) fn compile(level: u32) -> Result<Self, CompileError> {
+            let rules = plan(&mut list).map_err(|e| failed(Path::new("/"), e))?;
+            Self::compile_rules(level, &rules)
         }
 
-        pub(crate) fn compile_rules(level: u32, rules: &[Rule]) -> io::Result<Self> {
-            let root = Path::new("/");
+        /// # Absent paths
+        ///
+        /// A rule whose path is absent when it is opened (`ENOENT`), or which
+        /// turns out to be a symlink, grants nothing and is skipped, with a
+        /// debug line naming it. That is the safe direction: every rule here
+        /// is a GRANT (hidden paths never become rules at all), so skipping
+        /// one can only take access away. Measured on the x86_64 live boot: a
+        /// `/dev/ptmx` the walk had listed could not be opened (`ENOENT`, the
+        /// shape of a link to an unmounted `/dev/pts/ptmx`), and failing the
+        /// whole ruleset on it refused every workload on that rootfs. Any
+        /// OTHER failure (a path that exists and cannot be opened, a right the
+        /// kernel refuses) still fails the compile, and the spawn with it.
+        pub(crate) fn compile_rules(level: u32, rules: &[Rule]) -> Result<Self, CompileError> {
             let mut created = hard()
                 .handle_access(handled(level))
                 .and_then(landlock::Ruleset::create)
-                .map_err(|e| other(root, e))?;
+                .map_err(|e| failed(Path::new("/"), e))?;
             for rule in rules {
-                let is_dir = std::fs::symlink_metadata(&rule.path)?.is_dir();
-                let fd = PathFd::new(&rule.path).map_err(|e| other(&rule.path, e))?;
+                let meta = match std::fs::symlink_metadata(&rule.path) {
+                    Ok(meta) if meta.file_type().is_symlink() => {
+                        tracing::debug!(path = %rule.path.display(), "a symlink gets no Landlock rule; skipped");
+                        continue;
+                    }
+                    Ok(meta) => meta,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                        tracing::debug!(path = %rule.path.display(), "absent, so it grants nothing; no Landlock rule");
+                        continue;
+                    }
+                    Err(e) => return Err(failed(&rule.path, e)),
+                };
+                let fd = match PathFd::new(&rule.path) {
+                    Ok(fd) => fd,
+                    Err(PathFdError::OpenCall { source, .. })
+                        if source.kind() == io::ErrorKind::NotFound =>
+                    {
+                        tracing::debug!(path = %rule.path.display(), "vanished before it was opened, so it grants nothing; no Landlock rule");
+                        continue;
+                    }
+                    Err(e) => return Err(failed(&rule.path, e)),
+                };
                 created = created
-                    .add_rule(PathBeneath::new(fd, rights(rule.grant, level, is_dir)))
-                    .map_err(|e| other(&rule.path, e))?;
+                    .add_rule(PathBeneath::new(
+                        fd,
+                        rights(rule.grant, level, meta.is_dir()),
+                    ))
+                    .map_err(|e| failed(&rule.path, e))?;
             }
             Ok(Self {
                 created: Some(created),
@@ -318,7 +365,7 @@ mod imp {
 
 #[cfg(not(target_os = "linux"))]
 mod imp {
-    use super::LandlockSupport;
+    use super::{CompileError, LandlockSupport};
 
     pub(super) fn probe() -> LandlockSupport {
         LandlockSupport::Unavailable
@@ -329,6 +376,16 @@ mod imp {
     /// `Unavailable`.
     #[derive(Debug)]
     pub(crate) enum Ruleset {}
+
+    impl Ruleset {
+        /// Never reached (see above); refuses by name if it were.
+        pub(crate) fn compile(_level: u32) -> Result<Self, CompileError> {
+            Err(CompileError {
+                path: std::path::PathBuf::from("/"),
+                error: "no Landlock off Linux".to_string(),
+            })
+        }
+    }
 }
 
 #[cfg(test)]
@@ -496,6 +553,72 @@ mod tests {
         assert!(read.contains(AccessFs::ReadDir));
         assert!(!rights(Grant::ReadWrite, 5, false).contains(AccessFs::ReadDir));
         assert_eq!(rights(Grant::ReadWrite, 2, true), handled(2));
+    }
+
+    /// THE x86_64 live-boot failure (#3273): `/dev/ptmx` was listed and then
+    /// could not be opened (`ENOENT`, a link to an unmounted `/dev/pts/ptmx`),
+    /// and the whole ruleset failed, refusing every workload. An absent or
+    /// dangling grant now grants nothing and is skipped; the rest of the
+    /// ruleset compiles. Red if the compile fails on the first absent path.
+    /// Needs a kernel with Landlock to create a ruleset at all.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_absent_or_dangling_granted_path_is_skipped_not_fatal() {
+        let Some(level) = LandlockSupport::probe().enforceable() else {
+            eprintln!("SKIPPED: this kernel has no Landlock ABI >= 2; nothing to compile");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let dangling = dir.path().join("ptmx");
+        std::os::unix::fs::symlink("pts/ptmx", &dangling).unwrap();
+        let rules = [
+            Rule {
+                path: dir.path().to_path_buf(),
+                grant: Grant::ReadWrite,
+            },
+            Rule {
+                path: dangling,
+                grant: Grant::ReadWrite,
+            },
+            Rule {
+                path: dir.path().join("absent-device"),
+                grant: Grant::ReadWrite,
+            },
+        ];
+        if let Err(e) = Ruleset::compile_rules(level, &rules) {
+            panic!("an absent grant must be skipped, not fatal: {e:?}");
+        }
+    }
+
+    /// The skip is for ABSENT paths only: a path that exists and cannot be
+    /// examined still fails the compile, naming the path (fail closed).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_present_path_that_cannot_be_examined_still_fails_the_compile() {
+        use std::os::unix::fs::PermissionsExt;
+        let Some(level) = LandlockSupport::probe().enforceable() else {
+            eprintln!("SKIPPED: this kernel has no Landlock ABI >= 2; nothing to compile");
+            return;
+        };
+        if crate::runtime_uid() == 0 {
+            eprintln!("SKIPPED: root reads through a mode-000 directory");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let inside = locked.join("x");
+        let err = Ruleset::compile_rules(
+            level,
+            &[Rule {
+                path: inside.clone(),
+                grant: Grant::Read,
+            }],
+        )
+        .expect_err("EACCES is not absence");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(err.path, inside);
     }
 
     /// The ruleset never handles more than ABI 5's filesystem rights: a newer
