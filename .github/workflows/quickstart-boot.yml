@@ -693,12 +693,12 @@ jobs:
           node-version: "22"
       - name: Live boot evidence, verified by the public verifiers
         if: steps.scope.outputs.relevant == 'true'
-        # posture.landlock is allowed to be could_not_run only until the guest
-        # prints its NUCLEUS_WORKLOAD_LANDLOCK verdict (#3273); the summary
-        # warns when the allowance has become unnecessary.
+        # No check may be could_not_run: the guest prints its
+        # NUCLEUS_WORKLOAD_LANDLOCK verdict since #3273, so posture.landlock
+        # needs no allowance.
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --out live-boot-evidence --allow-could-not-run posture.landlock
+          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --out live-boot-evidence
 
       - name: Upload the live boot evidence bundle
         if: ${{ !cancelled() && steps.scope.outputs.relevant == 'true' }}
