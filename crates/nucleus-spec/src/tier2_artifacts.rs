@@ -358,10 +358,9 @@ impl GuestCapability {
             GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
             GuestCapability::EgressMethodAndQuery => FirstShipped::Release("2.4.0"),
             // #3246 (936e24606, #3229's effect table) and #3257 (587c3524f,
-            // #3255's held push) merged after `v2.4.0` (f3e700763): the
-            // published 2.4.0 tool-proxy reads no effect table and refuses a
-            // tainted push in the guest. Both are on main when the pin moves to
-            // 2.5.0, so 2.5.0 is the first release cut from a tree carrying them.
+            // #3255's held push) are ancestors of `v2.5.0` (0f2471d52) and not
+            // of `v2.4.0` (f3e700763): the published 2.4.0 tool-proxy reads no
+            // effect table and refuses a tainted push in the guest.
             GuestCapability::EgressEffectTable => FirstShipped::Release("2.5.0"),
             GuestCapability::TaintedPushHeld => FirstShipped::Release("2.5.0"),
         }
