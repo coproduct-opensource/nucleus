@@ -1,0 +1,52 @@
+# nucleus's constitution: the paths that define a check, a check's threshold, the plan, CI, or the
+# instructions agents are held to. Read by gatehouse's `gatehouse/autonomy` check at a pull
+# request's BASE commit (never its head, so a pull request cannot change the rules it is judged by).
+# A pull request that touches any of these needs a human approval signed with a presence-bound
+# hardware key (`gate approve`); one that touches none is eligible to merge on its gates alone.
+#
+# Source: gatehouse docs/autonomy-guardrails.md §2 (the classification, and the counterfactual
+# over 2026-09-29..10-06: 70 of 144 agent PRs touched one of these). Grammar: gatehouse's scope
+# globs, which allow a wildcard only at the START of a component, so a guardrail it cannot spell is
+# written wider and asks a human MORE often, never less:
+#   scripts/check-*, scripts/*allowlist*, scripts/*ratchet*, ... -> scripts/**
+#   LICENSE*                                                      -> the files that exist
+#
+# Known over-flagging, to measure on live pull requests before this is made a required check:
+#   crates/xtask/** holds tooling as well as gates;
+#   .github/** catches dependabot's action-pin bumps (11 of the week's 19 non-agent human PRs).
+# NOT covered here: a change that loosens a test inside ordinary source (nucleus#3254 deleted a test
+# block in a crate's src/). That needs the measured per-test inventory, step 2 of the design.
+version = 1
+constitutional = [
+  ".gatehouse/**",
+  ".github/**",
+  "ci/**",
+  "action.yml",
+  "scripts/**",
+  "*-ratchet.toml",
+  ".clippy-unanalysed.txt",
+  ".sandbox-unpinned-ceiling",
+  ".kani-minimum-proofs",
+  "kani-divergence.toml",
+  "sandbox-trusted-base.txt",
+  "clippy.toml",
+  "deny.toml",
+  ".cargo/**",
+  ".config/**",
+  "rust-toolchain.toml",
+  ".pre-commit-config.yaml",
+  "docs/vendor-neutrality-allowlist",
+  "**/.axiom-ratchet",
+  "**/.research-sorry-baseline",
+  "**/*axiom-baseline",
+  "**/*.pins",
+  "crates/xtask/**",
+  "tools/**",
+  "PolicyManifest.toml",
+  "steering.toml",
+  "**/CLAUDE.md",
+  "**/AGENTS.md",
+  "LICENSE",
+  "LICENSE-APACHE",
+  "SECURITY.md",
+]

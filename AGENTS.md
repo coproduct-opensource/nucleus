@@ -197,6 +197,18 @@ reproduces; adding a cedar-bearing package to the same invocation does not.
   0%). A workspace-wide floor is moved by whatever is cheapest to cover
   anywhere, which is rarely the diff that tripped it.
 
+## Guardrail paths need a human: `.gatehouse/constitution.toml`
+
+`.gatehouse/constitution.toml` lists the paths that define or could weaken a check: gate
+definitions, CI, check scripts, ratchet ceilings, lint config, this file. Gatehouse's
+`gatehouse/autonomy` check reads it at a pull request's base. A pull request that touches none of
+them is eligible to merge on its gates alone. One that touches any of them needs the owner's
+approval, signed with a Secure Enclave key that asks for Touch ID (`gate approve`). An agent cannot
+produce that approval, by design. If a change can be made without touching a guardrail, make it
+that way. If it cannot, say so in the PR body, so the approver knows what they are signing for. The
+check is informational until its over-flagging has been measured (gatehouse
+docs/autonomy-guardrails.md §9).
+
 ## Disk
 
 The writable allowance is fixed and small relative to a Rust workspace, so `df`
