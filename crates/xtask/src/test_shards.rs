@@ -118,6 +118,49 @@ fn needs_main(kind: &str) -> bool {
     )
 }
 
+/// The target files cargo cannot LOAD the manifest without: the crate roots, and every target the
+/// manifest declares. A target cargo merely discovered (a file under `tests/`, `benches/`,
+/// `examples/` or `src/bin/`) needs no stub: in test-libs's pod its directory is excluded, an
+/// absent directory discovers nothing, and that is not an error.
+///
+/// Stubbing every target instead made test-libs's definition move whenever a node crate gained a
+/// test file. On 2026-10-06 #3227 and #3238 each added one, the plan hash changed, and the
+/// generation every open pull request had committed went stale against main -- a red on pull
+/// requests that never touched a node crate.
+fn load_bearing(manifest: &str) -> Result<BTreeSet<String>> {
+    let m: toml::Value = toml::from_str(manifest).context("parsing a member's Cargo.toml")?;
+    let norm = |p: &str| p.trim_start_matches("./").to_string();
+    let mut out: BTreeSet<String> = ["src/lib.rs", "src/main.rs"].map(String::from).into();
+    if let Some(p) = m
+        .get("lib")
+        .and_then(|l| l.get("path"))
+        .and_then(toml::Value::as_str)
+    {
+        out.insert(norm(p));
+    }
+    for (key, dir) in [
+        ("bin", "src/bin"),
+        ("test", "tests"),
+        ("bench", "benches"),
+        ("example", "examples"),
+    ] {
+        for t in m
+            .get(key)
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(p) = t.get("path").and_then(toml::Value::as_str) {
+                out.insert(norm(p));
+            } else if let Some(n) = t.get("name").and_then(toml::Value::as_str) {
+                out.insert(format!("{dir}/{n}.rs"));
+                out.insert(format!("{dir}/{n}/main.rs"));
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub fn members_from_metadata(meta: &Value, root: &Path) -> Result<Vec<Member>> {
     let root = root
         .canonicalize()
@@ -152,6 +195,10 @@ pub fn members_from_metadata(meta: &Value, root: &Path) -> Result<Vec<Member>> {
             .with_context(|| format!("{name} lives outside the workspace root"))?
             .to_string_lossy()
             .into_owned();
+        let loads = load_bearing(
+            &fs::read_to_string(manifest)
+                .with_context(|| format!("reading {}", manifest.display()))?,
+        )?;
         let mut targets = Vec::new();
         for t in p["targets"].as_array().context("no targets")? {
             let src = Path::new(t["src_path"].as_str().context("target without src_path")?);
@@ -161,7 +208,10 @@ pub fn members_from_metadata(meta: &Value, root: &Path) -> Result<Vec<Member>> {
                 .to_string_lossy()
                 .into_owned();
             for k in t["kind"].as_array().context("target without kind")? {
-                targets.push((k.as_str().unwrap_or_default().to_string(), rel.clone()));
+                let kind = k.as_str().unwrap_or_default();
+                if kind == "custom-build" || loads.contains(&rel) {
+                    targets.push((kind.to_string(), rel.clone()));
+                }
             }
         }
         let mut deps = Vec::new();
@@ -895,6 +945,35 @@ pub fn run(root: &Path, check: bool, gate: Option<&Path>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A discovered test file is not load-bearing; a declared one, and every crate root, is.
+    #[test]
+    fn only_roots_and_declared_targets_need_a_stub() {
+        let loads = super::load_bearing(
+            r#"
+            [package]
+            name = "n"
+            [[test]]
+            name = "declared"
+            [[bin]]
+            name = "tool"
+            path = "./src/tools/tool.rs"
+            "#,
+        )
+        .unwrap();
+        for need in [
+            "src/lib.rs",
+            "src/main.rs",
+            "tests/declared.rs",
+            "src/tools/tool.rs",
+        ] {
+            assert!(loads.contains(need), "{need} must be stubbed: {loads:?}");
+        }
+        assert!(
+            !loads.contains("tests/discovered.rs"),
+            "a test cargo merely discovered needs no stub"
+        );
+    }
 
     fn member(name: &str, targets: &[(&str, &str)], deps: &[(&str, &str)]) -> Member {
         Member {

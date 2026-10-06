@@ -101,6 +101,27 @@ This is gatehouse F-186's shape one level down: F-186 said a stub wildcard must 
 test-libs's own crates; it did not say a stub path must be derivably inside its exclude, because
 the excludes it was tested with were `crates/<c>/**`, which the order handles.
 
+## 6. Stubbing every target made test-libs move with every node test file (2026-10-06)
+
+**The wrong belief:** every target `cargo metadata` reports needs a stub, or cargo cannot load
+the workspace. The generator stubbed all 49 of them: roots, and every `tests/*.rs` of every node
+crate. Then #3227 and #3238 each added a test file to a node crate. Each one changed test-libs's
+definition and the plan hash. Every open pull request's committed generation then went stale
+against main: CI checks the merge commit, and `test-shards --check` went red on pull requests
+that touched no node crate (#3225, run 37413103259).
+
+**What is true:** cargo needs a file only for a crate's roots (`src/lib.rs`, `src/main.rs`) and
+for targets the manifest DECLARES. A target it merely discovered under `tests/`, `benches/`,
+`examples/` or `src/bin/` needs no stub: in test-libs's pod that directory is excluded, an absent
+directory discovers nothing, and that is not an error. `load_bearing` in
+`crates/xtask/src/test_shards.rs` keeps only those, which is 18 stubs. Adding a test file to a
+node crate no longer moves test-libs.
+
+**Method:** test-libs's selection was materialized from `git ls-files` with the gate's own
+include and exclude patterns (1,234 files). The gate's runner then wrote the 18 stubs and ran
+`cargo metadata --no-deps --offline`, which loaded all 94 workspace members, exit 0. The lane run
+is still the real measurement.
+
 ## Not yet
 
 * ~~**The plan.**~~ Done 2026-10-05, see §5.
