@@ -94,3 +94,26 @@ nucleus-lineage = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
 nucleus-commerce-conformance = ["examples/independent-conformance/vectors.json"]
 nucleus-github-oidc = ["crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"]
 nucleus-trust-registry = ["crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"]
+
+# clippy, split the same way (2026-10-06; docs/findings/clippy-split.md). clippy-libs lints the
+# workspace minus the node packages with the node crates stubbed, clippy-node lints the node packages
+# by name with --no-deps, both under --workspace-features so every member compiles with the features
+# the unsplit `cargo clippy --all-features` gave it. The env, pins, seed, tools and resources come
+# from .gatehouse/shards/clippy-base.json (the unsplit gate's definition, moved), and its workspace
+# pass must equal `command` + `lints` below or the generation is refused. Package passes after it
+# (`-p portcullis`) go to the group owning the package, argv unchanged.
+# measured_ms is the unsplit gate's (1,152 s) for each group, an upper bound until the first runs.
+[clippy]
+command = ["cargo", "clippy", "--offline", "--all-targets", "--all-features", "--locked"]
+lints = ["--", "-D", "warnings"]
+replaces = ["Clippy"]
+reads = ["clippy.toml"]
+# Runtime probes of absent paths by test processes (see [fixtures]); clippy runs no test. Each must
+# match no tracked file, or the generation is refused. Dropping them keeps clippy-libs derivable.
+drop = [".env", ".ssh", "lib.rs", "main.rs"]
+[clippy.node]
+timeout_s = 2600
+measured_ms = 1152000
+[clippy.libs]
+timeout_s = 2600
+measured_ms = 1152000

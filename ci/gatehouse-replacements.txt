@@ -13,7 +13,7 @@
 # Only the two whose workflow jobs are still in the tree can be compared, and they are the two
 # whose jobs will be deleted after one release -- at which point CI-RP-3 says the lines may go.
 Rustfmt <- fmt
-Clippy <- clippy
+Clippy <- clippy-libs + clippy-node
 #
 # 2026-09-17, wave 2: the eleven text gates. CI consolidated eleven one-script jobs into one pod
 # (`Text gates (one pod)`) and kept eleven status contexts, each produced by a relay job that

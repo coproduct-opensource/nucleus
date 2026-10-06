@@ -144,7 +144,24 @@ fn invocation(line: &str) -> Option<String> {
         key.push_str(words.next()?);
     }
     let rest: Vec<&str> = words.collect();
+    // `tools/test-shard` (nucleus's shard runner) writes stubs and then execs the command after
+    // its own `--`: `cargo run … --manifest-path tools/test-shard/Cargo.toml … -- [runner args]
+    // -- <argv>`. Read as written, every wrapped step is `cargo run`, and the `cargo clippy` it
+    // runs is invisible -- a parity check that cannot see the command a gate executes passes or
+    // fails for the wrong reason. So the runner is looked through, once, to the argv it execs.
+    if key == "cargo run" && rest.contains(&"tools/test-shard/Cargo.toml") {
+        let seps: Vec<usize> = rest
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| **w == "--")
+            .map(|(i, _)| i)
+            .collect();
+        if let Some(&second) = seps.get(1) {
+            return invocation(&rest[second + 1..].join(" "));
+        }
+    }
     let mut scopes = BTreeSet::new();
+    let mut excludes = BTreeSet::new();
     let mut denials = BTreeSet::new();
     let mut i = 0;
     while i < rest.len() {
@@ -161,6 +178,14 @@ fn invocation(line: &str) -> Option<String> {
                 }
                 i += 1;
             }
+            // A run over the workspace MINUS some packages lints less than the whole workspace,
+            // so the exclusions are part of what it decides (see `covers`).
+            "--exclude" => {
+                if let Some(v) = rest.get(i + 1) {
+                    excludes.insert(v.trim_matches('"').to_string());
+                }
+                i += 1;
+            }
             _ => {}
         }
         i += 1;
@@ -168,6 +193,10 @@ fn invocation(line: &str) -> Option<String> {
     for s in scopes {
         key.push_str(" -p ");
         key.push_str(&s);
+    }
+    for e in excludes {
+        key.push_str(" --exclude ");
+        key.push_str(&e);
     }
     for d in denials {
         key.push_str(" -D ");
@@ -202,38 +231,80 @@ fn invocations(run: &str) -> Vec<String> {
 
 /// Whether the gate's expanded command runs `key`. The scopes and denials are compared as sets,
 /// so flag order and the gate's own extra flags do not matter.
+///
+/// A run that EXCLUDES packages covers a whole-workspace command only if every excluded package
+/// is linted by another invocation of the same program in the same gate set, with at least the
+/// same denials: `cargo clippy --workspace --exclude a` plus `cargo clippy -p a` is the workspace,
+/// and the first alone is not. Until 2026-10-06 `--exclude` was read as noise, so a narrowed run
+/// satisfied the parity of the whole-workspace command it replaced (docs/findings/clippy-split.md).
 fn covers(expanded: &str, key: &str) -> bool {
-    let gate: BTreeSet<String> = invocations(expanded).into_iter().collect();
-    if gate.contains(key) {
-        return true;
-    }
-    // A gate may deny MORE than the context did (`-D warnings -D clippy::pedantic` covers
-    // `-D warnings`), and may run the same program and scope with extra flags.
-    let (head, want) = split_key(key);
+    let gate: Vec<Key> = invocations(expanded)
+        .iter()
+        .map(|k| Key::parse(k))
+        .collect();
+    let want = Key::parse(key);
     gate.iter().any(|g| {
-        let (gh, have) = split_key(g);
-        gh == head && want.iter().all(|w| have.contains(w))
+        g.head == want.head
+            && g.scopes == want.scopes
+            && want.denials.is_subset(&g.denials)
+            && want.excludes.is_subset(&g.excludes)
+            && g.excludes.difference(&want.excludes).all(|e| {
+                gate.iter().any(|o| {
+                    o.head == want.head
+                        && o.excludes.is_empty()
+                        && o.scopes.contains(e)
+                        && want.denials.is_subset(&o.denials)
+                })
+            })
     })
 }
 
-/// `"cargo clippy -p x -D warnings"` → `("cargo clippy -p x", {"-D warnings"})`.
-fn split_key(key: &str) -> (String, BTreeSet<String>) {
-    let mut head = String::new();
-    let mut denials = BTreeSet::new();
-    let mut words = key.split_whitespace().peekable();
-    while let Some(w) = words.next() {
-        if w == "-D" {
-            if let Some(v) = words.next() {
-                denials.insert(format!("-D {v}"));
+/// A parsed invocation key: `cargo clippy -p x --exclude y -D warnings`.
+struct Key {
+    head: String,
+    scopes: BTreeSet<String>,
+    excludes: BTreeSet<String>,
+    denials: BTreeSet<String>,
+}
+
+impl Key {
+    fn parse(key: &str) -> Key {
+        let mut head = String::new();
+        let (mut scopes, mut excludes, mut denials) =
+            (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+        let mut words = key.split_whitespace();
+        while let Some(w) = words.next() {
+            match w {
+                "-D" => {
+                    if let Some(v) = words.next() {
+                        denials.insert(v.to_string());
+                    }
+                }
+                "-p" => {
+                    if let Some(v) = words.next() {
+                        scopes.insert(v.to_string());
+                    }
+                }
+                "--exclude" => {
+                    if let Some(v) = words.next() {
+                        excludes.insert(v.to_string());
+                    }
+                }
+                _ => {
+                    if !head.is_empty() {
+                        head.push(' ');
+                    }
+                    head.push_str(w);
+                }
             }
-        } else {
-            if !head.is_empty() {
-                head.push(' ');
-            }
-            head.push_str(w);
+        }
+        Key {
+            head,
+            scopes,
+            excludes,
+            denials,
         }
     }
-    (head, denials)
 }
 
 /// `${{ needs.text-gates.outputs.verify_strict }}` → `("text-gates", "verify_strict")`.

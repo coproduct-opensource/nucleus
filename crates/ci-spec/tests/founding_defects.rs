@@ -872,3 +872,55 @@ fn rp_a_replacement_naming_no_gate_is_red_and_one_with_no_producer_is_noted() {
     );
     assert!(!rules(&r).contains(&"CI-RP-2"));
 }
+
+/// The shard runner as the generated clippy gates spell it: `cargo run … tools/test-shard … --
+/// [runner args] -- <argv>`.
+const RUNNER: &str = "cargo run --offline --locked --quiet --manifest-path tools/test-shard/Cargo.toml \
+                      --target-dir target/test-shard --";
+
+#[test]
+fn rp_a_context_two_gates_took_over_together_is_clean_and_either_alone_is_red() {
+    // nucleus's Clippy, split into clippy-libs (the workspace minus the node crates, through the
+    // shard runner, which stubs them) and clippy-node (those crates, by name).
+    let libs = format!(
+        "{RUNNER} --workspace-features --stub node:src/lib.rs -- cargo clippy --offline --all-targets \
+         --all-features --locked --workspace --exclude node -- -D warnings && {RUNNER} --stub \
+         node:src/lib.rs -- cargo clippy --offline -p portcullis --all-targets --locked -- -D warnings"
+    );
+    let node = format!(
+        "{RUNNER} --workspace-features -- cargo clippy --offline --all-targets --all-features \
+         --locked --no-deps -p node -- -D warnings"
+    );
+    let gates: &[(&str, &[&str])] = &[
+        ("clippy-libs", &["sh", "-c", libs.as_str()]),
+        ("clippy-node", &["sh", "-c", node.as_str()]),
+    ];
+    let rp = |r: &ci_spec::Report| -> Vec<String> {
+        r.findings
+            .iter()
+            .filter(|f| f.rule.starts_with("CI-RP"))
+            .map(|f| format!("{} {}", f.rule, f.why))
+            .collect()
+    };
+    // Together they are the workspace, seen through the runner.
+    let r = run_rp(
+        RP_WORKFLOW,
+        "RP Clippy <- clippy-libs + clippy-node\n",
+        gates,
+    );
+    assert!(rp(&r).is_empty(), "{:#?}", rp(&r));
+    // libs alone lints everything but `node`: it does not cover the whole-workspace command.
+    // Before `--exclude` was read, this passed.
+    let r = run_rp(RP_WORKFLOW, "RP Clippy <- clippy-libs\n", gates);
+    assert!(rules(&r).contains(&"CI-RP-2"), "{:#?}", r.findings);
+    // node alone runs neither the workspace pass nor the portcullis pass.
+    let r = run_rp(RP_WORKFLOW, "RP Clippy <- clippy-node\n", gates);
+    assert!(rules(&r).contains(&"CI-RP-2"), "{:#?}", r.findings);
+    // A union naming a gate that does not exist is undefined, not a partial pass.
+    let r = run_rp(
+        RP_WORKFLOW,
+        "RP Clippy <- clippy-libs + nosuchgate\n",
+        gates,
+    );
+    assert!(rules(&r).contains(&"CI-RP-1"), "{:#?}", r.findings);
+}

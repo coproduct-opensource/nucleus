@@ -1,0 +1,186 @@
+{
+  "scope": {
+    "include": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/independent-conformance/**"
+    ],
+    "exclude": [],
+    "external": [],
+    "git_history": false
+  },
+  "env": {
+    "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+    "platform": "linux/amd64",
+    "toolchains": {
+      "rust": "1.96.1"
+    },
+    "env_vars": {},
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
+    ]
+  },
+  "cap": {
+    "net": "none",
+    "fs_read": [
+      "Cargo.toml",
+      "Cargo.lock",
+      "rust-toolchain.toml",
+      ".cargo/config.toml",
+      "clippy.toml",
+      "crates/**",
+      "tests/**",
+      "benchmarks/**",
+      "scripts/**",
+      "sdks/verifier-js/Cargo.toml",
+      "sdks/verifier-js/Cargo.lock",
+      "sdks/verifier-js/package.json",
+      "sdks/verifier-js/index.js",
+      "sdks/verifier-js/index.d.ts",
+      "sdks/verifier-js/src/**",
+      "sdks/verifier-js/test/**",
+      "sdks/verifier-js/tests/**",
+      "sdks/verifier-js/demo-fixtures/**",
+      "examples/independent-conformance/**"
+    ],
+    "fs_write": [
+      "target/**",
+      "sdks/verifier-js/pkg/**",
+      "sdks/verifier-js/target/**"
+    ],
+    "exec": "scoped",
+    "wall_ms": 3000000,
+    "cpu_ms": 3000000,
+    "mem_mb": 8192,
+    "secrets": []
+  },
+  "cmd": [],
+  "steps": [
+    {
+      "program": "cargo",
+      "args": [
+        "run",
+        "--offline",
+        "--locked",
+        "--quiet",
+        "--manifest-path",
+        "tools/test-shard/Cargo.toml",
+        "--target-dir",
+        "target/test-shard",
+        "--",
+        "--workspace-features",
+        "--",
+        "cargo",
+        "clippy",
+        "--offline",
+        "--all-targets",
+        "--all-features",
+        "--locked",
+        "--no-deps",
+        "-p",
+        "nucleus",
+        "-p",
+        "nucleus-audit",
+        "-p",
+        "nucleus-cli",
+        "-p",
+        "nucleus-egress-http",
+        "-p",
+        "nucleus-guest-init",
+        "-p",
+        "nucleus-mcp",
+        "-p",
+        "nucleus-microvm-host",
+        "-p",
+        "nucleus-node",
+        "-p",
+        "nucleus-oidc-provider",
+        "-p",
+        "nucleus-perf",
+        "-p",
+        "nucleus-sdk",
+        "-p",
+        "nucleus-spec",
+        "-p",
+        "nucleus-tool-proxy",
+        "-p",
+        "portcullis-effects",
+        "-p",
+        "xtask",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "reads": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        ".cargo/config.toml",
+        "clippy.toml",
+        "crates/**",
+        "tests/**",
+        "benchmarks/**",
+        "scripts/**",
+        "sdks/verifier-js/Cargo.toml",
+        "sdks/verifier-js/Cargo.lock",
+        "sdks/verifier-js/package.json",
+        "sdks/verifier-js/index.js",
+        "sdks/verifier-js/index.d.ts",
+        "sdks/verifier-js/src/**",
+        "sdks/verifier-js/test/**",
+        "sdks/verifier-js/tests/**",
+        "sdks/verifier-js/demo-fixtures/**",
+        "examples/independent-conformance/**"
+      ],
+      "writes": [
+        "target/**",
+        "sdks/verifier-js/pkg/**",
+        "sdks/verifier-js/target/**"
+      ]
+    }
+  ],
+  "tools": [
+    "sh@0.5.12",
+    "cargo@1.96.1",
+    "rustc@1.96.1",
+    "clippy-driver@0.1.96",
+    "wasm-pack@0.13.1",
+    "wasm-bindgen@0.2.122",
+    "unshare@2.38.1"
+  ],
+  "cwd": "",
+  "timeout_s": 2600,
+  "outputs": [],
+  "resources": {
+    "cpus": 3,
+    "mem_mb": 8192,
+    "disk_mb": 8192
+  },
+  "falsifier": null,
+  "seeds": [
+    "main-160a26deb-x86_64-l@sha256:734239e3325efa8762d7f34f663e3285b824da44d5899dfc46d5d47b63e8112a"
+  ]
+}
