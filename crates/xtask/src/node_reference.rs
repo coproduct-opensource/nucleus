@@ -63,6 +63,11 @@ pub struct Args {
     /// An install path that IMA must have measured (repeatable).
     #[arg(long)]
     ima_required: Vec<String>,
+    /// A published reference manifest (e.g. a release's, from `cargo xtask
+    /// release-reference-manifest`) whose IMA allowlist and required paths are
+    /// folded into this one, verbatim (repeatable).
+    #[arg(long)]
+    ima_from_manifest: Vec<PathBuf>,
     /// `INDEX=HEX`: pin an exact SHA-256 PCR value.
     #[arg(long)]
     pcr: Vec<String>,
@@ -101,6 +106,30 @@ fn sums(path: &Path) -> Result<Vec<(String, String)>> {
         bail!("{} lists no files", path.display());
     }
     Ok(out)
+}
+
+/// The IMA reference of a published manifest. One that checks no IMA has
+/// nothing to contribute, and including it is refused rather than read as an
+/// empty allowlist.
+fn included_ima(path: &Path) -> Result<ImaReference> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let m: ReferenceManifest =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    if m.profile != REFERENCE_PROFILE {
+        bail!(
+            "{} has profile {:?}, not {REFERENCE_PROFILE}",
+            path.display(),
+            m.profile
+        );
+    }
+    match m.reference_values.ima {
+        Expect::Required(ima) => Ok(ima),
+        Expect::NotChecked(why) => bail!(
+            "{} checks no IMA ({why}): there is no allowlist to include",
+            path.display()
+        ),
+    }
 }
 
 /// Build the manifest from the arguments.
@@ -175,7 +204,7 @@ pub fn manifest(a: &Args) -> Result<ReferenceManifest> {
         (None, true, true) => Expect::NotChecked(NOT_SUPPLIED.into()),
     };
 
-    let ima = if a.ima_file.is_empty() && a.ima_sums.is_empty() {
+    let ima = if a.ima_file.is_empty() && a.ima_sums.is_empty() && a.ima_from_manifest.is_empty() {
         if !a.ima_required.is_empty() {
             bail!("--ima-required names files but no --ima-file / --ima-sums allows any");
         }
@@ -196,14 +225,22 @@ pub fn manifest(a: &Args) -> Result<ReferenceManifest> {
                 allowlist.entry(path).or_default().insert(digest);
             }
         }
-        for r in &a.ima_required {
+        let mut required: BTreeSet<String> = a.ima_required.iter().cloned().collect();
+        for path in &a.ima_from_manifest {
+            let published = included_ima(path)?;
+            for (file, digests) in published.allowlist {
+                allowlist.entry(file).or_default().extend(digests);
+            }
+            required.extend(published.required);
+        }
+        for r in &required {
             if !allowlist.contains_key(r) {
                 bail!("--ima-required {r} is not in the allowlist: it could never be satisfied");
             }
         }
         Expect::Required(ImaReference {
             allowlist,
-            required: a.ima_required.iter().cloned().collect(),
+            required,
         })
     };
 
@@ -258,6 +295,7 @@ mod tests {
             ima_file: vec![],
             ima_sums: vec![],
             ima_required: vec![],
+            ima_from_manifest: vec![],
             pcr: vec![],
         }
     }
@@ -293,6 +331,61 @@ mod tests {
         );
         a.ima_required = vec!["/opt/nucleus/bin/missing".into()];
         assert!(manifest(&a).is_err());
+    }
+
+    #[test]
+    fn a_published_manifest_is_folded_in_and_its_required_paths_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let published = dir.path().join("release.json");
+        let release = ReferenceManifest {
+            profile: REFERENCE_PROFILE.into(),
+            tag_id: "nucleus-9.9.9-x86_64".into(),
+            reference_values: ReferenceValues {
+                pcrs: BTreeMap::new(),
+                secure_boot: Expect::NotChecked("r".into()),
+                efi_applications: Expect::NotChecked("r".into()),
+                boot_files: Expect::NotChecked("r".into()),
+                kernel_cmdline: Expect::NotChecked("r".into()),
+                ima: Expect::Required(ImaReference {
+                    allowlist: [(
+                        "/usr/local/bin/nucleus-node".to_string(),
+                        ["ab".repeat(32)].into_iter().collect(),
+                    )]
+                    .into_iter()
+                    .collect(),
+                    required: ["/usr/local/bin/nucleus-node".to_string()]
+                        .into_iter()
+                        .collect(),
+                }),
+            },
+        };
+        std::fs::write(&published, serde_json::to_string(&release).unwrap()).unwrap();
+        let modules = dir.path().join("modules.sha256");
+        std::fs::write(
+            &modules,
+            format!("{}  /usr/lib/modules/x.ko\n", "cd".repeat(32)),
+        )
+        .unwrap();
+        let mut a = args();
+        a.secure_boot = Some("required".into());
+        a.ima_sums = vec![modules];
+        a.ima_from_manifest = vec![published.clone()];
+        let Expect::Required(ima) = manifest(&a).unwrap().reference_values.ima else {
+            panic!("ima should be required")
+        };
+        assert_eq!(ima.allowlist.len(), 2);
+        assert!(ima.required.contains("/usr/local/bin/nucleus-node"));
+
+        // A published manifest that checks no IMA is refused, not read as empty.
+        let mut none = release;
+        none.reference_values.ima = Expect::NotChecked("r".into());
+        std::fs::write(&published, serde_json::to_string(&none).unwrap()).unwrap();
+        assert!(
+            manifest(&a)
+                .unwrap_err()
+                .to_string()
+                .contains("checks no IMA")
+        );
     }
 
     #[test]

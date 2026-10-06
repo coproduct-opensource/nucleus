@@ -108,8 +108,21 @@ and an IMA allowlist of the node's files by install path with required paths. Ev
 an explicit `required` or `not_checked` *with a reason*; an omitted check is a parse error,
 not a pass, and every `not_checked` item is reported beside the verdict.
 `cargo xtask node-reference-manifest` writes it from files or `sha256sum` listings —
-never from the event log it will be compared with. Publishing manifests with releases is
-later work.
+never from the event log it will be compared with.
+
+*Since the release-manifest change:* every release publishes
+`nucleus-<version>-<arch>.node-reference.json`, written by
+`cargo xtask release-reference-manifest emit` from the shipped musl `nucleus-node` and the
+upstream Firecracker archive at the pinned version. It is signed with `cosign sign-blob`
+like every other asset, so its digest is in the public Sigstore log and the inclusion proof
+ships in `<asset>.sigstore.json` (the publish-measurements-to-a-log pattern of arXiv
+2409.03720). It holds only the IMA allowlist (`nucleus-node` required; `firecracker` and
+`jailer` allowed). Every boot check is `not_checked`, because the release publishes no
+host image. `node-reference-manifest --ima-from-manifest` folds it into an operator's
+boot pins. Nucleus's own transparency log (`nucleus-lineage`) is not used for this: it
+would need a hosted log and a signing key that the release workflow does not have, and
+Sigstore already gives an independently operated log. The stranger's procedure is in
+`docs/stranger-verification.md`.
 
 Following Keylime's measured-boot and IMA policy approach, the IMA log is expected to be
 **narrow**: the node's policy measures executables on its own install filesystem (by

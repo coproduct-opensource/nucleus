@@ -11,6 +11,7 @@
 - [Writing an Effect Pack](effect-authoring.md)
 - [Posture for an Adversarial Model](adversarial-model-posture.md)
 - [Integration Endpoints](integration-endpoints.md)
+- [Verifying a Receipt as a Stranger](stranger-verification.md)
 - [Split-Trust Deployment](split-trust.md)
 - [Federated Upstream Profile](federated-upstream-profile.md)
 - [The SPIFFE Taxonomy](spiffe-taxonomy.md)

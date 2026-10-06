@@ -13995,6 +13995,7 @@ dependencies = [
  "ck-kernel",
  "ck-types",
  "clap",
+ "flate2",
  "hex",
  "nucleus-node-evidence",
  "nucleus-oci-rootfs",
