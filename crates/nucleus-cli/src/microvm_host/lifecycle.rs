@@ -1072,7 +1072,13 @@ mod tests {
         let first = HostLock::acquire(dir.path(), Duration::ZERO).expect("first");
         assert!(HostLock::acquire(dir.path(), Duration::from_millis(300)).is_err());
         drop(first);
-        assert!(HostLock::acquire(dir.path(), Duration::ZERO).is_ok());
+        // Released means re-acquirable, but not necessarily in the same instant. `try_lock` is
+        // flock(2), which belongs to the open file DESCRIPTION, and a test elsewhere in this binary
+        // that forks a child while `first` is open shares that description until the child
+        // execs. With `Duration::ZERO` this assertion lost that race in the coverage job (slower,
+        // so the window is wider) on #3228 while `Tests` passed the same commit. A short wait
+        // still fails a lock that is never released.
+        assert!(HostLock::acquire(dir.path(), Duration::from_secs(5)).is_ok());
     }
 
     #[test]
