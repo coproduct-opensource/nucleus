@@ -322,11 +322,11 @@ impl GuestCapability {
             // the tool-proxy's shadow client (its "host-decide shadow" log
             // string is in the image).
             GuestCapability::HostDecideShadow => FirstShipped::Release("2.3.0"),
-            // #3211 is not in v2.3.0 (the 2.3.0 adapter takes one `--upstream`);
-            // it merged before `v2.4.0` is tagged, so the change that moves the
-            // pin to 2.4.0 turns this row from `NotYet` into 2.4.0.
+            // #3211 (75e2f18c2) and #3226 (0d3a72fa0, the protocol half of
+            // #3210) are ancestors of `v2.4.0` (f3e700763) and not of `v2.3.0`
+            // (the 2.3.0 adapter takes one `--upstream`, and its tool-proxy's
+            // stream open names no method).
             GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
-            // #3210 lands before `v2.4.0` is tagged; the pin moves first.
             GuestCapability::EgressMethodAndQuery => FirstShipped::Release("2.4.0"),
         }
     }
@@ -526,7 +526,7 @@ fn skew_against(
 ///
 /// Bumped BEFORE the tag is cut, matching how `2.1.0` was bumped from its RC in
 /// the change that was released as `2.1.0`. The ordering is deliberate and it
-/// has a cost worth naming: between this landing and the `v2.3.0` assets being
+/// has a cost worth naming: between this landing and the tag's assets being
 /// built, `setup` points at a release that does not exist yet. That window is
 /// inherent to pinning your own next version, and the alternative — tag first,
 /// bump after — ships a release whose CLI pins the *previous* release's guest,

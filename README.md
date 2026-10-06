@@ -174,11 +174,12 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
-Guest artifacts come from the pinned release **v2.3.0**.
+Guest artifacts come from the pinned release **v2.4.0**.
 `tier2_artifacts::GuestCapability` lists what the node and CLI require of a guest
 and which release first shipped each, and `setup` refuses a release that lacks
-one rather than installing a pod that cannot boot. v2.2.0 and earlier are refused:
-they predate the egress attestation (#2365), the SVID on tmpfs (#2379), the
+one rather than installing a pod that cannot boot. v2.3.0 is refused: its
+tool-proxy's egress stream opens name no method (#3210). v2.2.0 and earlier
+also predate the egress attestation (#2365), the SVID on tmpfs (#2379), the
 workload door (#3031), the in-guest MCP bridge (#3135), and streaming
 egress (#3178). A guest built from the same checkout is always an option
 (`nucleus setup --artifacts local`). **Measured 48.7 s** from a deleted VM to
