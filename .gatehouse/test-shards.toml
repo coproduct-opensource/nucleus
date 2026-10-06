@@ -1,6 +1,8 @@
 # The test suite as two scope shards. `cargo xtask test-shards` generates
-# .gatehouse/shards/test-node.json and test-libs.json from this file, `cargo metadata` and the tree;
-# `cargo xtask test-shards --check` refuses a stale generation.
+# .gatehouse/gates/test-node.json and test-libs.json AND their two `ci.Gate` terms in
+# .gatehouse/pipeline.writ (between the generated markers) from this file, `cargo metadata`, the
+# tree and .gatehouse/shards/base.json; `cargo xtask test-shards --check` refuses a stale generation
+# of any of the three.
 #
 # Why two, and why this split: gatehouse docs/sublinear-testing.md §3-4 and §4a. Measured on
 # nucleus 2fc73eda over the 40 merged PRs before it, and re-priced 2026-10-05 with the lane's
@@ -9,7 +11,8 @@
 # because each extra shard pays a whole attempt and the long tail of crates holds little test work.
 #
 # The env, image pins, seed, tools and resources are NOT here: they are read from
-# .gatehouse/gates/test.json, so the shards cannot drift from the gate they replace.
+# .gatehouse/shards/base.json, the definition of the `test` gate the shards replaced, kept as their
+# one shared environment. A seed re-pin edits it and regenerates.
 
 # Every shard's run goes through this runner (tools/test-shard): it writes the stubs this file's
 # generation names, then execs the command. It is outside the workspace so it builds before cargo

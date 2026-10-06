@@ -256,9 +256,18 @@ pub fn probes() -> Vec<Probe> {
                 sub: "test-shards",
                 flags: "--check",
             },
-            target: ".gatehouse/shards/test-libs.json",
+            target: ".gatehouse/gates/test-libs.json",
             desc: "a committed shard generation the layout no longer generates",
             perturb: pert!(perturb_test_shards_generation_stale),
+        },
+        Probe {
+            family: Family::XtaskFlagged {
+                sub: "test-shards",
+                flags: "--check",
+            },
+            target: ".gatehouse/pipeline.writ",
+            desc: "a generated shard term in the plan the layout no longer generates",
+            perturb: pert!(perturb_test_shards_plan_term_stale),
         },
         Probe {
             family: xtask("workspace-members"),

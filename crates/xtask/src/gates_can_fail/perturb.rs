@@ -638,6 +638,18 @@ pub fn perturb_test_shards_generation_stale(_: &Path, t: &str) -> Perturbed {
     ok(out)
 }
 
+/// The plan's generated test-libs term edited by hand: its first `crates/xtask/*/*/**` gone.
+pub fn perturb_test_shards_plan_term_stale(_: &Path, t: &str) -> Perturbed {
+    let out = t.replacen(r#"#b"crates/xtask/*/*/**", "#, "", 1);
+    if out == t {
+        return moved(
+            t.to_string(),
+            "pipeline.writ's generated test-libs term no longer names crates/xtask/*/*/**;\n         this perturbation no longer applies and must be updated.",
+        );
+    }
+    ok(out)
+}
+
 pub fn perturb_unported_shell_gate(_: &Path, t: &str) -> Perturbed {
     ok(append(
         t,

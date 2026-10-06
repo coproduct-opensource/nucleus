@@ -1,7 +1,8 @@
 # The test suite as two scope shards: what generating them found (2026-10-05)
 
 `cargo xtask test-shards` generates `test-node` and `test-libs` from `.gatehouse/test-shards.toml`,
-`cargo metadata`, the tracked files and `.gatehouse/gates/test.json`; `tools/test-shard` writes the
+`cargo metadata`, the tracked files and `.gatehouse/shards/base.json` (until the shards entered the
+plan, `.gatehouse/gates/test.json`); `tools/test-shard` writes the
 stubs a shard's pod needs and execs the run. The design and the measurement behind the two-shard
 layout are gatehouse's `docs/sublinear-testing.md` (§3–4, §4a); the prototype was nucleus#3138.
 Three things turned up writing the real one, each on nucleus `0462daae3`.
@@ -69,11 +70,40 @@ the part that makes the shard derivable. **Done 2026-10-05:** `gate-defs` compar
 (absent in a plan elaborated by an older gatehouse, which reads as excluding nothing), with a test
 each way round.
 
+## 5. In the plan: the kernel's glob order is not the selection's glob order
+
+The shards entered `pipeline.writ` on 2026-10-05 (gatehouse pinned at `efa1e1a`, which has
+`Gate.exclude`), as terms `cargo xtask test-shards` renders from the same JSON it writes, so the
+plan and the executor definitions agree by construction and `gate-defs` still checks them against
+the kernel's own elaboration. The first rendering was **refused by two conjuncts**, found by
+binding each conjunct as its own `So` term:
+
+* **`writesOutsideScope_b`.** test-libs declared each stub as a write, one path per file
+  (`crates/nucleus/src/lib.rs`), inside an exclude `crates/nucleus/*/*/**`. **I assumed the
+  kernel's `coveredGlob` matched what `gatehouse-scope` and this repository's `glob_match` match.
+  It does not:** probed directly, the prelude derives `crates/nucleus/src/lib.rs ⊑
+  crates/nucleus/src/**` and `crates/nucleus/*/*/** ⊑ crates/**`, but **not**
+  `crates/nucleus/src/lib.rs ⊑ crates/nucleus/*/*/**` and not `… ⊑ crates/nucleus/*/**` — its order
+  has no single-segment `*`. So the exclude arm of `insideScope` never fired for the `*/*/**`
+  excludes, the one exclude form the derivation caps admit (§2), and every stub under one read as
+  a write into the scope. Fixed in the generator, not by widening anything: a stub is DECLARED as
+  the exclude that holds it (each `crates/<c>/*/*/**` holding one, plus the literal files and
+  test-node's `src/**`/`tests/**`), which the kernel derives by reflexivity. That is also the
+  truer statement — the gate may write where its selection carved the node crates out — and it no
+  longer moves when a test file is added. The runner still gets one `--stub` per path.
+* **`bounded_b`.** The ceiling's `**` has no top in that order either (probed: `.env`, `lib.rs`,
+  `tools/test-shard/**` are not `⊑ **`), so test-libs's explicit reads had to be listed in the
+  ceiling, as every other gate's already were; and the ceiling's writes gained `crates/**` for the
+  stub regions. The plan's comment above `ceiling` says why that admits no write a gate could use
+  against what it verifies (`writesOutsideScope_b` still refuses writes inside a gate's own scope).
+
+This is gatehouse F-186's shape one level down: F-186 said a stub wildcard must not name
+test-libs's own crates; it did not say a stub path must be derivably inside its exclude, because
+the excludes it was tested with were `crates/<c>/**`, which the order handles.
+
 ## Not yet
 
-* **The plan.** `test-node`/`test-libs` in `pipeline.writ`, `test` retired, the policy's required
-  list — after gatehouse#261 (writ `Gate.exclude`) merges and `GATEHOUSE_REF` and the prelude
-  import move together (`cargo xtask gatehouse-pin`).
+* ~~**The plan.**~~ Done 2026-10-05, see §5.
 * **The fixtures were re-measured 2026-10-06 at `160a26deb`** (strace and dep-info on a spot VM):
   every read a `test-libs` crate makes falls inside the generated scope, except
   `sdks/verifier-js/pkg/*`, which step 0 writes in the pod and step 1 reads, an output rather than a

@@ -83,6 +83,9 @@ const DECLARED_SATELLITES: &[&str] = &[
     "tools/nucleus-observed-lint",
     "tools/nucleus-preimage-lint",
     "tools/nucleus-rest-pattern-lint",
+    // The test shards' runner (.gatehouse/test-shards.toml): outside the workspace so it builds
+    // before cargo loads a workspace whose excluded members have no sources. std only.
+    "tools/test-shard",
 ];
 
 /// A resolved graph far smaller than the real one has stopped reading. Measured 2026-09-20:
