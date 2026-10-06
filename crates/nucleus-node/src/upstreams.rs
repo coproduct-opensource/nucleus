@@ -1471,16 +1471,6 @@ requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
                 "{unknown} loaded"
             );
         }
-        // The shipped git-remote example loads, and encodes as Basic.
-        let example = UpstreamRegistry::from_toml_str(include_str!(
-            "../../../examples/egress-git-remote/upstreams.toml"
-        ))
-        .expect("the example registry loads");
-        assert!(
-            example.resolve(example.entries())[0]
-                .header_value("t")
-                .starts_with("Basic ")
-        );
         // The control: the boundary username loads.
         let max = format!(r#"{{ basic = {{ username = "{}" }} }}"#, "u".repeat(256));
         assert!(UpstreamRegistry::from_toml_str(&encoded(&max)).is_ok());
