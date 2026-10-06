@@ -237,7 +237,10 @@ mod tests {
         let s = prefixes(&["/usr/local/bin"]);
         assert!(s.contains("/usr/local/bin/nucleus-node"));
         assert!(s.contains("/usr/local/bin/sub/dir"));
-        assert!(!s.contains("/usr/local/bin"), "the directory is not a file in it");
+        assert!(
+            !s.contains("/usr/local/bin"),
+            "the directory is not a file in it"
+        );
         assert!(!s.contains("/usr/local/bin/"));
         assert!(!s.contains("/usr/local/binx/implant"));
         assert!(!s.contains("/usr/lib/modules/7.0.0/kernel/x.ko"));

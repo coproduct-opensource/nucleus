@@ -739,7 +739,11 @@ fn a_platform_module_outside_the_scope_is_listed_not_contested() {
     // Scoped to the node's install directory, it is named, not judged.
     let a = appraise_against(&e, &scoped(&["/opt/nucleus/bin"]));
     assert_eq!(a.tier(), &Tier::Attested, "{:#?}", a.divergences());
-    let listed: Vec<&str> = a.ima_not_in_scope().iter().map(|e| e.path.as_str()).collect();
+    let listed: Vec<&str> = a
+        .ima_not_in_scope()
+        .iter()
+        .map(|e| e.path.as_str())
+        .collect();
     assert_eq!(listed, [MODULE]);
     let ear = a.to_ear("test", NOW);
     assert_eq!(
@@ -791,7 +795,11 @@ fn a_required_binary_measured_only_outside_the_scope_is_missing() {
 #[test]
 fn an_incoherent_scope_is_not_evaluable_never_attested() {
     let e = running(vec![(NODE_BIN, [0xAA; 32])]);
-    for r in [scoped(&["/usr/local/bin"]), scoped(&[]), scoped(&["/opt/nucleus/bin/"])] {
+    for r in [
+        scoped(&["/usr/local/bin"]),
+        scoped(&[]),
+        scoped(&["/opt/nucleus/bin/"]),
+    ] {
         let a = appraise_against(&e, &r);
         assert_eq!(a.tier(), &Tier::Contested);
         assert!(

@@ -22,8 +22,8 @@ use std::collections::BTreeSet;
 
 use nucleus_node_evidence::{
     AkAnchor, AnchorPolicy, AppraisalPolicy, Divergence, ExecutorKey, Expect, Federation,
-    FreshnessExpectation, ImaScope, KeyBinding, NodeEvidence, OperatorPin, Refusal,
-    ReferenceManifest, Tier, appraise, evidence_digest,
+    FreshnessExpectation, ImaScope, KeyBinding, NodeEvidence, OperatorPin, ReferenceManifest,
+    Refusal, Tier, appraise, evidence_digest,
 };
 
 const EVIDENCE: &str = "attested-journey-epoch8-evidence.json";
@@ -121,7 +121,10 @@ fn appraise_with(
 
 #[test]
 fn the_fixture_is_the_document_the_receipt_names() {
-    assert_eq!(hex::encode(evidence_digest(&bytes(EVIDENCE))), RECEIPT_DIGEST);
+    assert_eq!(
+        hex::encode(evidence_digest(&bytes(EVIDENCE))),
+        RECEIPT_DIGEST
+    );
 }
 
 #[test]
@@ -137,7 +140,10 @@ fn before_the_published_unscoped_manifest_contests_the_platform_modules() {
     }
     assert_eq!(paths.len(), 64, "the count #3276 measured");
     assert!(paths.iter().all(|p| p.starts_with(MODULES)), "{paths:?}");
-    assert!(a.ima_not_in_scope().is_empty(), "no scope, nothing out of it");
+    assert!(
+        a.ima_not_in_scope().is_empty(),
+        "no scope, nothing out of it"
+    );
 }
 
 #[test]
@@ -208,13 +214,17 @@ fn an_in_scope_binary_off_the_allowlist_is_still_contested() {
     let Expect::Required(ima) = &mut m.reference_values.ima else {
         unreachable!()
     };
-    ima.allowlist
-        .insert(NODE_BINARIES[0].into(), ["00".repeat(32)].into_iter().collect());
+    ima.allowlist.insert(
+        NODE_BINARIES[0].into(),
+        ["00".repeat(32)].into_iter().collect(),
+    );
     let a = appraise_with(&m, &federating()).unwrap();
     assert_eq!(a.tier(), &Tier::Contested);
-    assert!(a.divergences().iter().any(
-        |d| matches!(d, Divergence::ImaRequiredMissing { path } if path == NODE_BINARIES[0])
-    ));
+    assert!(
+        a.divergences().iter().any(
+            |d| matches!(d, Divergence::ImaRequiredMissing { path } if path == NODE_BINARIES[0])
+        )
+    );
 }
 
 #[test]
