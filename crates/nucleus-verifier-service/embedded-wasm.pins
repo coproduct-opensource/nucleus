@@ -154,5 +154,10 @@
 # (2c3625084) and land in a pins-only commit; the .js digest also equals an aarch64 Linux
 # build of the same tree. `5dbb506e…` and `e12ff811…` are REPLACED, on the rule above.
 # From now on ANY change to `nucleus-node-evidence` moves this pin too.
-9b3bd79b1821cca16d37cb6686778db1a1c1f5aff7d4cfc3798435e7319b3ccc  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-10-06 (#3279): the .wasm moved because the SOURCE did: `nucleus-node-evidence` gained
+# the IMA scope (`ima_not_in_scope`) and split `BindingMismatch` into
+# `ExecutorKeyMismatch` / `FederationMismatch`. The digest is from CI's Clippy run of this
+# PR's final source tree (db68a2a01), and it lands in a pins-only commit. `9b3bd79b…` is
+# REPLACED, on the rule above. The .js shim did not move: no export changed.
+f2b7954f921a5cb27a78dfc8cda700ccd3b9fc8ce42f7b728fca995a5669ede0  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

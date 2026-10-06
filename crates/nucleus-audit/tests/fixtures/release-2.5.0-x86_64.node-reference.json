@@ -1,0 +1,37 @@
+{
+  "profile": "nucleus-node-reference/v1",
+  "tag-id": "nucleus-2.5.0-x86_64",
+  "reference-values": {
+    "pcrs": {},
+    "secure_boot": {
+      "not_checked": "the release publishes no host image: boot measurements (Secure Boot, EFI applications, boot files, kernel command line, PCR pins) are the operator's to supply"
+    },
+    "efi_applications": {
+      "not_checked": "the release publishes no host image: boot measurements (Secure Boot, EFI applications, boot files, kernel command line, PCR pins) are the operator's to supply"
+    },
+    "boot_files": {
+      "not_checked": "the release publishes no host image: boot measurements (Secure Boot, EFI applications, boot files, kernel command line, PCR pins) are the operator's to supply"
+    },
+    "kernel_cmdline": {
+      "not_checked": "the release publishes no host image: boot measurements (Secure Boot, EFI applications, boot files, kernel command line, PCR pins) are the operator's to supply"
+    },
+    "ima": {
+      "required": {
+        "allowlist": {
+          "/usr/local/bin/firecracker": [
+            "99ad0f5cd0514a88aad0e9ae8cfdb3cc3b4ab9d190e1194602406c786b5de7a5"
+          ],
+          "/usr/local/bin/jailer": [
+            "65ef226e96f0ceda55ba643f445801ef2cc0ea667ef67cad8ac4f406c9c8434f"
+          ],
+          "/usr/local/bin/nucleus-node": [
+            "9929a2f6dfeb902b38f43f0717a064528f38ce38433ef3e9a191d3ff1f8642cf"
+          ]
+        },
+        "required": [
+          "/usr/local/bin/nucleus-node"
+        ]
+      }
+    }
+  }
+}

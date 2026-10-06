@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use nucleus_node_evidence::{
-    CmdlineRule, DigestSet, Expect, ImaReference, REFERENCE_PROFILE, ReferenceManifest,
+    CmdlineRule, DigestSet, Expect, ImaReference, ImaScope, REFERENCE_PROFILE, ReferenceManifest,
     ReferenceValues,
 };
 use sha2::{Digest, Sha256};
@@ -65,9 +65,16 @@ pub struct Args {
     ima_required: Vec<String>,
     /// A published reference manifest (e.g. a release's, from `cargo xtask
     /// release-reference-manifest`) whose IMA allowlist and required paths are
-    /// folded into this one, verbatim (repeatable).
+    /// folded into this one, verbatim (repeatable). Its IMA scope is not:
+    /// this manifest's scope is `--ima-scope-prefix`, or every measured file.
     #[arg(long)]
     ima_from_manifest: Vec<PathBuf>,
+    /// A directory whose measured files this manifest governs (repeatable).
+    /// Omitted, the manifest governs every measured file, so each must be
+    /// allowlisted (kernel modules included). Every allowlisted and required
+    /// path must lie under one.
+    #[arg(long)]
+    ima_scope_prefix: Vec<String>,
     /// `INDEX=HEX`: pin an exact SHA-256 PCR value.
     #[arg(long)]
     pcr: Vec<String>,
@@ -238,10 +245,20 @@ pub fn manifest(a: &Args) -> Result<ReferenceManifest> {
                 bail!("--ima-required {r} is not in the allowlist: it could never be satisfied");
             }
         }
-        Expect::Required(ImaReference {
+        let scope = if a.ima_scope_prefix.is_empty() {
+            ImaScope::AllMeasured
+        } else {
+            ImaScope::PathPrefixes(a.ima_scope_prefix.iter().cloned().collect())
+        };
+        let ima = ImaReference {
+            scope,
             allowlist,
             required,
-        })
+        };
+        if let Some(why) = ima.incoherence() {
+            bail!("the IMA reference would not be evaluable: {why}");
+        }
+        Expect::Required(ima)
     };
 
     let mut pcrs = BTreeMap::new();
@@ -296,6 +313,7 @@ mod tests {
             ima_sums: vec![],
             ima_required: vec![],
             ima_from_manifest: vec![],
+            ima_scope_prefix: vec![],
             pcr: vec![],
         }
     }
@@ -347,6 +365,7 @@ mod tests {
                 boot_files: Expect::NotChecked("r".into()),
                 kernel_cmdline: Expect::NotChecked("r".into()),
                 ima: Expect::Required(ImaReference {
+                    scope: ImaScope::PathPrefixes(["/usr/local/bin".to_string()].into()),
                     allowlist: [(
                         "/usr/local/bin/nucleus-node".to_string(),
                         ["ab".repeat(32)].into_iter().collect(),
@@ -375,6 +394,23 @@ mod tests {
         };
         assert_eq!(ima.allowlist.len(), 2);
         assert!(ima.required.contains("/usr/local/bin/nucleus-node"));
+        // The release's scope is not inherited: this manifest lists modules,
+        // so it governs every measured file.
+        assert_eq!(ima.scope, ImaScope::AllMeasured);
+        // A scope that leaves an allowlisted file outside it is refused.
+        a.ima_scope_prefix = vec!["/usr/local/bin".into()];
+        assert!(
+            manifest(&a)
+                .unwrap_err()
+                .to_string()
+                .contains("/usr/lib/modules/x.ko")
+        );
+        a.ima_scope_prefix = vec!["/usr/local/bin".into(), "/usr/lib/modules".into()];
+        let Expect::Required(ima) = manifest(&a).unwrap().reference_values.ima else {
+            panic!("ima should be required")
+        };
+        assert!(ima.scope.contains("/usr/lib/modules/x.ko"));
+        a.ima_scope_prefix = vec![];
 
         // A published manifest that checks no IMA is refused, not read as empty.
         let mut none = release;

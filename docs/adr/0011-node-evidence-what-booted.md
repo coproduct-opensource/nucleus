@@ -68,8 +68,12 @@ and the freshness value (challenge nonce, or epoch counter + time). The encoding
 injective and pinned by a golden vector computed independently of the crate. This is what
 lets a stranger tie a receipt's signer to the attested boot: a quote taken for one key, or
 one challenge, cannot be presented for another. The verifier checks both that the evidence's
-binding equals the relying party's expectation (`BindingMismatch`) and that the TPM signed
-exactly that binding (`QualifyingData`).
+binding equals the relying party's expectation and that the TPM signed exactly that binding
+(`QualifyingData`). A binding to another executor key is `ExecutorKeyMismatch`. A binding to
+another federation set is `FederationMismatch`, which names both sets so a relying party
+can see which JWKS digest to check (#3277). `verify-execution` derives the expected
+federation set from the evidence document the signed receipt names, while standalone
+`verify-node-evidence` takes it as `--federation`.
 
 ### Freshness
 
@@ -127,8 +131,24 @@ Sigstore already gives an independently operated log. The stranger's procedure i
 
 Following Keylime's measured-boot and IMA policy approach, the IMA log is expected to be
 **narrow**: the node's policy measures executables on its own install filesystem (by
-`fsuuid`) plus whatever the platform's Secure Boot policy adds (kernel modules), and every
-measured file must be allowlisted.
+`fsuuid`) plus whatever the platform's Secure Boot policy adds (kernel modules).
+
+*IMA scope (#3276).* An IMA reference declares the measurements it governs:
+`all_measured`, or `path_prefixes`. `all_measured` is the default when `scope` is
+omitted, so manifests written before scopes keep their meaning. `path_prefixes` matches
+whole path components. A measured file in scope must be allowlisted. A file out of scope
+is neither allowed nor divergent: the appraisal reports it in `ima_not_in_scope`, with its
+path and digest. A release manifest is scoped to its install directory, because the
+release vouches for its binaries and not for the host's modules. Measured on the attested
+journey re-run (v2.5.0, a Secure Boot x86 host), the unscoped release manifest gave
+`Contested` with 64 module divergences. The scoped one gave `Attested` with those 64
+listed as out of scope.
+
+`ima-ng` records no filesystem identity, only the pathname, so the boundary is a path and
+not the `fsuuid` the node's policy uses. The scope is in the signed manifest, so the
+evidence never sets or widens it (ADR 0007 C-1). A violation entry is always a divergence,
+because it names no file the verifier can place outside the scope. A required path outside
+the scope, or a malformed prefix, makes the check `not_evaluable`.
 
 ### Results (EAR / AR4SI tiers, draft-ietf-rats-ear)
 

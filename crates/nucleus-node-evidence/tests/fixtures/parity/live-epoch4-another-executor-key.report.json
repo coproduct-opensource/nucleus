@@ -2,6 +2,6 @@
   "outcome": "refused",
   "evidence_sha256": "d0689ce45219cf0e9e7827e0988c00a0a8545df93f773339734d92f44837bcab",
   "refusal": {
-    "refusal": "binding_mismatch"
+    "refusal": "executor_key_mismatch"
   }
 }

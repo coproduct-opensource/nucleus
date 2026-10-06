@@ -22,6 +22,14 @@
 //! is not allowed, which contests the evidence. `nucleus-node` is required —
 //! the evidence exists only because it ran.
 //!
+//! The IMA reference is scoped to the install directory
+//! (`scope: {path_prefixes: [<install-dir>]}`, #3276). A host whose Secure
+//! Boot IMA policy measures kernel modules logs files the release cannot
+//! vouch for; out of scope they are listed beside the verdict, not contested.
+//! Inside the scope nothing is forgiven: an unlisted or replaced binary there
+//! contests. The scope is in the signed manifest, so the evidence never sets
+//! or widens it.
+//!
 //! The manifest is published as a release asset and signed like every other
 //! asset (`cosign sign-blob`), which records its digest in the public Sigstore
 //! transparency log — the "publish measurements to a log" pattern of arXiv
@@ -34,7 +42,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use nucleus_node_evidence::{
-    Expect, ImaReference, REFERENCE_PROFILE, ReferenceManifest, ReferenceValues,
+    Expect, ImaReference, ImaScope, REFERENCE_PROFILE, ReferenceManifest, ReferenceValues,
 };
 use nucleus_spec::tier2_artifacts::Tier2Artifact;
 use nucleus_spec::vmm_version::PINNED_STR as FIRECRACKER_VERSION;
@@ -202,6 +210,19 @@ pub fn manifest(a: &EmitArgs) -> Result<ReferenceManifest> {
         allow(at(bin), member_digest(&a.firecracker_tgz, &member)?);
     }
 
+    // The release vouches for its own binaries and nothing else the host's IMA
+    // policy measures (a Secure Boot policy adds every kernel module loaded),
+    // so its IMA reference governs the install directory only. Files measured
+    // elsewhere are reported as not in scope, never as allowed or divergent.
+    let ima = ImaReference {
+        scope: ImaScope::PathPrefixes([dir.to_string()].into_iter().collect()),
+        allowlist,
+        required: [node].into_iter().collect(),
+    };
+    if let Some(why) = ima.incoherence() {
+        bail!("--install-dir {:?}: {why}", a.install_dir);
+    }
+
     let not_checked = || NO_HOST_IMAGE.to_string();
     Ok(ReferenceManifest {
         profile: REFERENCE_PROFILE.into(),
@@ -212,10 +233,7 @@ pub fn manifest(a: &EmitArgs) -> Result<ReferenceManifest> {
             efi_applications: Expect::NotChecked(not_checked()),
             boot_files: Expect::NotChecked(not_checked()),
             kernel_cmdline: Expect::NotChecked(not_checked()),
-            ima: Expect::Required(ImaReference {
-                allowlist,
-                required: [node].into_iter().collect(),
-            }),
+            ima: Expect::Required(ima),
         },
     })
 }
@@ -350,6 +368,11 @@ mod tests {
             .collect()
         );
         assert_eq!(ima.required, one("/usr/local/bin/nucleus-node"));
+        assert_eq!(
+            ima.scope,
+            ImaScope::PathPrefixes(one("/usr/local/bin")),
+            "the release governs its install directory, not the host's modules"
+        );
     }
 
     #[test]
@@ -412,8 +435,17 @@ mod tests {
                 .all(|p| p.starts_with("/opt/nucleus/bin/"))
         );
         assert!(ima.required.contains("/opt/nucleus/bin/nucleus-node"));
+        assert_eq!(
+            ima.scope,
+            ImaScope::PathPrefixes(["/opt/nucleus/bin".to_string()].into_iter().collect())
+        );
         a.install_dir = "bin".into();
         assert!(manifest(&a).is_err());
+        // `/` would scope nothing out; `..` would name another directory.
+        for bad in ["/", "/opt/../usr"] {
+            a.install_dir = bad.into();
+            assert!(manifest(&a).is_err(), "{bad}");
+        }
     }
 
     #[test]
