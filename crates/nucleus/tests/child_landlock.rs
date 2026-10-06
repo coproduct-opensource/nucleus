@@ -119,7 +119,7 @@ fn run(exe: &Path, confinement: ChildConfinement, op: &str) -> String {
     ])
     .env(OP_ENV, op)
     .current_dir(Path::new("/"));
-    confinement.apply(&mut cmd);
+    let _ = confinement.apply(&mut cmd, nucleus::RlimitPolicy::node_ceiling().at_ceiling());
     let out = cmd
         .output()
         .unwrap_or_else(|e| panic!("{op}: the confined child did not spawn: {e}"));

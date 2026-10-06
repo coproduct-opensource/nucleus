@@ -110,7 +110,9 @@ pub(crate) fn start(
         return Ok(None);
     };
     crate::console_line(&format!("[workload] started (pid={:?})", child.id()));
-    let isolation = if launch.hardened && launch.uid_boundary == workload::UidBoundary::Distinct {
+    let isolation = if launch.hardening.is_hardened()
+        && launch.uid_boundary == workload::UidBoundary::Distinct
+    {
         WorkloadIsolation::UidIsolated
     } else {
         WorkloadIsolation::Unconfined
