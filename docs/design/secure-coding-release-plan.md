@@ -36,7 +36,7 @@ below; the final PR and merge-group checks must still run.
 | Outcome | Implemented and exercised | Still required |
 |---|---|---|
 | Host-owned effects | Shared authority, effect-bound one-shot approval, bounded staging, revocation and fixed tariffs; operator review/grant/refuse | Durable runtime history, variable charging, broader certificate revocation |
-| Coding workflow | Matched local Apple image, fresh setup, saved host selection, workspace transfer, managed adapter, independent receipt/log/artifact verification and public-key enrollment. **Two model-driven repairs completed (2026-10-05):** two distinct harnesses each repaired the fixture inside a Firecracker pod with the tests unchanged, with keyless federated model access and independently verified evidence (see "Model-driven repairs" below) | Action-bound approval and opening a PR through mediated egress, which needs `git push` over host-performed egress (#3210); the same journeys on a published release image rather than an integration build |
+| Coding workflow | **Release journey completed on published v2.5.0 (2026-10-06) by two distinct harnesses:** repair inside a Firecracker pod, unchanged tests passing, push and pull request each held as a declassification and released by the operator's action-bound approval, PR opened through mediated egress with a per-call minted forge token; evidence verified with the release verifier (see "Release journey (v2.5.0)" below) | Platform attestation on a TPM-backed host (this run is `Unattested`), approvals that keep pace with a human (#3266), publication of a curated evidence bundle |
 | Outbound accounting and audit credentials | Shared Firecracker direct-packet and broker upload allowance; paced replay; scoped Unix audit minter protocol | Physical broker wire overhead, other drivers, provider integration and credential refresh |
 | Resource admission and lifecycle | Aggregate CPU/memory/swap admission, cgroup ancestry, bounded queue/probe waits, owned launch tasks and confirmed cleanup before release | Durable recovery across node termination; network-allocation recovery across restart |
 | Persistent memory | Owner-scoped labeled JSONL storage and verified replay for local/mediated-container drivers | VM transport, durable declassification and compaction |
@@ -46,6 +46,24 @@ The source-built Apple image is a local validation artifact. Its harness startup
 and fixture preflight are not model sessions. The merge milestone requires the
 normal Gatehouse and repository checks; no skipped or cancelled manual mutation
 run is counted as a passing result.
+
+### Release journey (v2.5.0, 2026-10-06)
+
+Two distinct open-source harnesses each completed the full journey on the **published v2.5.0 release**, on the first attempt, on the Apple Container microVM host. Both pull requests are public and left open as evidence (`coproduct-opensource/nucleus-journey-fixture` #1 and #2).
+
+| Step | Harness A | Harness B |
+|---|---|---|
+| Repair in a Firecracker pod; fixture tests unchanged | 9 tests OK | 9 tests OK |
+| Push held as a declassification, released by a single-use operator approval | yes | yes |
+| PR held as a declassification, released by a single-use operator approval | yes | yes |
+| PR opened through mediated egress with a per-call minted forge token | yes | yes |
+
+- **Credentials:** the pods never held a model or forge credential. Model access was keyless (ADR 0010). Forge tokens were minted per call by an operator-run RFC 8693 exchange, scoped to the fixture repository.
+- **Approvals:** every approval was category `declassification`. The input labels were integrity `adversarial`, confidentiality `internal` and derivation `opaque_external`; the wording is under review in #3268.
+- **Verified with the release `nucleus-audit`:** execution, logs, artifacts and the signed host-effect journal. The journal names each approval as the declassification it released. Tamper controls were refused: an artifact byte, the root hash, stdout, a stripped declassification and a wrong host key.
+- **Credential scan:** no credential material appeared in any guest-visible output.
+- **Platform tier is `Unattested`:** the host has no TPM, so `--require-attested` fails, as designed.
+- **Not a plain `git push`:** a two-request push cannot complete under human-paced approval because of the 300 s TTL and the 120 s wait (#3266). The journey therefore sent the receive-pack request alone.
 
 ### Model-driven repairs (2026-10-05)
 
