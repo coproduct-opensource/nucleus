@@ -1756,7 +1756,7 @@ async fn main() -> Result<(), ApiError> {
         .layer(axum::Extension(completion_reader))
         .route(
             "/v1/egress/{name}/{*path}",
-            post(egress::credentialed_egress),
+            get(egress::credentialed_egress).post(egress::credentialed_egress),
         )
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))

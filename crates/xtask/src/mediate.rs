@@ -225,8 +225,19 @@ impl Calls {
     }
 }
 
+/// The first verb of a method router: `get(h).post(h)` is `get(h)`. A route
+/// that serves several methods is still one route with one handler to judge;
+/// without this it fell out of the census, and the ratio moved for a route
+/// that had not changed.
+fn innermost_verb(expr: &syn::Expr) -> &syn::Expr {
+    match expr {
+        syn::Expr::MethodCall(chain) => innermost_verb(&chain.receiver),
+        other => other,
+    }
+}
+
 /// `(path, handler path segments)` for every `.route("<path>", verb(<handler>))`
-/// in the router file.
+/// in the router file, the verb possibly chained (`get(h).post(h)`).
 pub fn routes(src: &str) -> Result<Vec<(String, Vec<String>)>> {
     struct V(Vec<(String, Vec<String>)>);
     impl<'ast> Visit<'ast> for V {
@@ -237,7 +248,7 @@ pub fn routes(src: &str) -> Result<Vec<(String, Vec<String>)>> {
                     lit: syn::Lit::Str(path),
                     ..
                 }) = &m.args[0]
-                && let syn::Expr::Call(verb) = &m.args[1]
+                && let syn::Expr::Call(verb) = innermost_verb(&m.args[1])
                 && let Some(syn::Expr::Path(h)) = verb.args.first()
             {
                 self.0.push((
@@ -600,7 +611,8 @@ mod tests {
     #[test]
     fn routes_are_read_from_top_level_functions_only() {
         let src = r#"
-            fn main() { Router::new().route("/v1/a", post(a)).route("/v1/b", get(m::b)); }
+            fn main() { Router::new().route("/v1/a", post(a)).route("/v1/b", get(m::b))
+                .route("/v1/c", get(m::c).post(m::c)); }
             #[cfg(test)] mod tests { fn t() { Router::new().route("/v1/test", post(t)); } }
         "#;
         assert_eq!(
@@ -608,6 +620,7 @@ mod tests {
             vec![
                 ("/v1/a".to_string(), vec!["a".to_string()]),
                 ("/v1/b".to_string(), vec!["m".to_string(), "b".to_string()]),
+                ("/v1/c".to_string(), vec!["m".to_string(), "c".to_string()]),
             ]
         );
     }

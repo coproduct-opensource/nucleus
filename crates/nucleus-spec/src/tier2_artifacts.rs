@@ -219,6 +219,13 @@ pub enum GuestCapability {
     /// [`Demand::When`]`(`[`GuestUse::AgentEgress`]`)`: only a run that
     /// declares an upstream depends on it.
     EgressAdapterUpstreams,
+    /// The tool-proxy's stream open names the call's method (GET or POST), may
+    /// carry a query and proposes protocol headers (#3210). The node requires
+    /// the method: an older proxy's open has none, so the node refuses it as
+    /// malformed and every credentialed call from the pod (a model call
+    /// included) fails. A breaking change by the owner's decision, with no
+    /// compatibility arm: a 2.3.x guest cannot serve this node.
+    EgressMethodAndQuery,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -261,7 +268,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 10] = [
+    pub const ALL: [GuestCapability; 11] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -272,6 +279,7 @@ impl GuestCapability {
         GuestCapability::HostDecideShadow,
         GuestCapability::StreamingEgress,
         GuestCapability::EgressAdapterUpstreams,
+        GuestCapability::EgressMethodAndQuery,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -285,7 +293,8 @@ impl GuestCapability {
             | GuestCapability::SvidOnTmpfs
             | GuestCapability::WorkloadDoor
             | GuestCapability::McpBridge
-            | GuestCapability::StreamingEgress => Demand::Required,
+            | GuestCapability::StreamingEgress
+            | GuestCapability::EgressMethodAndQuery => Demand::Required,
             // Shadow mode: nothing the node does depends on the guest asking.
             GuestCapability::HostDecideShadow => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
@@ -313,8 +322,12 @@ impl GuestCapability {
             // the tool-proxy's shadow client (its "host-decide shadow" log
             // string is in the image).
             GuestCapability::HostDecideShadow => FirstShipped::Release("2.3.0"),
-            // #3211 is not in v2.3.0 (the 2.3.0 adapter takes one `--upstream`).
-            GuestCapability::EgressAdapterUpstreams => FirstShipped::NotYet,
+            // #3211 is not in v2.3.0 (the 2.3.0 adapter takes one `--upstream`);
+            // it merged before `v2.4.0` is tagged, so the change that moves the
+            // pin to 2.4.0 turns this row from `NotYet` into 2.4.0.
+            GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
+            // #3210 lands before `v2.4.0` is tagged; the pin moves first.
+            GuestCapability::EgressMethodAndQuery => FirstShipped::Release("2.4.0"),
         }
     }
 
@@ -371,6 +384,12 @@ impl GuestCapability {
                  upstreams and take --export and --placeholder, which `nucleus run --egress` \
                  starts the agent with; an older adapter refuses those flags, so the agent \
                  never starts"
+            }
+            GuestCapability::EgressMethodAndQuery => {
+                "#3210 made the tool-proxy's stream open name its method (GET or POST) and \
+                 carry a query and protocol headers, and the node requires the method; an \
+                 older proxy's open has none, so the node refuses every credentialed call \
+                 from the pod as malformed"
             }
         }
     }
@@ -489,11 +508,14 @@ fn skew_against(
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.3.0` is the first release whose rootfs meets every [`GuestCapability`]:
-/// it runs the egress probe (#2365), keeps its SVID on tmpfs (#2379), serves
-/// the workload its own door (#3122), carries the MCP bridge (#3135), and
-/// streams credentialed egress (#3178); it also carries the optional shadow
-/// decision client (#3177). 2.2.0
+/// `2.4.0` is the first release whose tool-proxy names the method of each
+/// stream open and may carry a query and protocol headers (#3210), which this
+/// node requires: a breaking change, owner-approved, with no compatibility arm
+/// for 2.3.x opens. `2.3.0` was the first release whose rootfs runs the egress
+/// probe (#2365), keeps its SVID on tmpfs (#2379), serves the workload its own
+/// door (#3122), carries the MCP bridge (#3135), and streams credentialed
+/// egress (#3178); it also carries the optional shadow decision client
+/// (#3177). 2.2.0
 /// was the first release matching a post-#2214 node, and it stopped serving
 /// `main` the day after it was tagged. 2.1.0 was the first release containing
 /// everything a pod needed to boot at the time
@@ -517,7 +539,7 @@ fn skew_against(
 /// naming a release the pin has not reached.
 ///
 /// `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.3.0";
+pub const GUEST_RELEASE: &str = "2.4.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -654,9 +676,18 @@ mod tests {
 
     /// The pin must serve the tree that pins it. From 2.2.0's tag until 2.3.0 it
     /// did not, and `setup --artifacts release` refused the pinned guest.
+    ///
+    /// Every USE as well, not just the uses every pod makes: a
+    /// [`Demand::When`] row left at [`FirstShipped::NotYet`] when the pin moves
+    /// to the release that ships it would refuse that use on a guest that
+    /// serves it. `GuestUse` has one variant, so the list is exhaustive.
     #[test]
     fn the_pinned_release_serves_this_tree() {
         assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
+        assert_eq!(
+            guest_skew_for(GUEST_RELEASE, &[GuestUse::AgentEgress]),
+            Ok(())
+        );
     }
 
     /// THE FINDING, as a refusal. A node built from this tree cannot boot the
@@ -678,7 +709,23 @@ mod tests {
                 GuestCapability::WorkloadDoor,
                 GuestCapability::McpBridge,
                 GuestCapability::StreamingEgress,
+                GuestCapability::EgressMethodAndQuery,
             ]
+        );
+        // The release before the pin now, refused for exactly the open format
+        // #3210 changed, and told so by name.
+        let previous = guest_skew("2.3.0").expect_err("2.3.0 writes opens without a method");
+        assert_eq!(
+            previous,
+            GuestSkew::Lacks {
+                release: "2.3.0".to_string(),
+                missing: vec![GuestCapability::EgressMethodAndQuery],
+            }
+        );
+        assert!(previous.to_string().contains("#3210"), "{previous}");
+        assert!(
+            previous.to_string().contains("first released in v2.4.0"),
+            "{previous}"
         );
         let msg = skew.to_string();
         for needle in [
@@ -725,7 +772,8 @@ mod tests {
                 GuestCapability::McpBridge => GuestCapability::StreamingEgress,
                 GuestCapability::StreamingEgress => GuestCapability::HostDecideShadow,
                 GuestCapability::HostDecideShadow => GuestCapability::EgressAdapterUpstreams,
-                GuestCapability::EgressAdapterUpstreams => GuestCapability::CaBundle,
+                GuestCapability::EgressAdapterUpstreams => GuestCapability::EgressMethodAndQuery,
+                GuestCapability::EgressMethodAndQuery => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
@@ -748,6 +796,7 @@ mod tests {
             ("2.2.0", GuestCapability::WorkloadDoor),
             ("2.2.0", GuestCapability::McpBridge),
             ("2.2.0", GuestCapability::StreamingEgress),
+            ("2.3.0", GuestCapability::EgressMethodAndQuery),
         ] {
             match guest_skew(broken) {
                 Err(GuestSkew::Lacks { missing, .. }) => {
@@ -787,29 +836,54 @@ mod tests {
     }
 
     /// A capability demanded `When` a use is required by the caller that makes
-    /// the use and by no other. The pinned release serves every pod, and is
-    /// refused by name only for a run that starts its agent under the egress
-    /// adapter (#3212), which the pin does not yet ship (#3211).
+    /// the use and by no other. 2.3.0's adapter takes one `--upstream` (#3211
+    /// is not in it): a run that starts its agent under the adapter (#3212) is
+    /// refused for it by name, while a plain pod is refused for #3210 alone.
+    /// The pin (2.4.0) ships both.
     #[test]
     fn a_capability_for_one_use_refuses_only_that_use() {
         assert_eq!(
             GuestCapability::EgressAdapterUpstreams.demand(),
             Demand::When(GuestUse::AgentEgress)
         );
-        assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
-        let skew = guest_skew_for(GUEST_RELEASE, &[GuestUse::AgentEgress])
-            .expect_err("the pinned adapter takes one --upstream and no --export");
+        assert_eq!(
+            guest_skew_for(GUEST_RELEASE, &[GuestUse::AgentEgress]),
+            Ok(())
+        );
+        let skew = guest_skew_for("2.3.0", &[GuestUse::AgentEgress])
+            .expect_err("the 2.3.0 adapter takes one --upstream and no --export");
         assert_eq!(
             skew,
             GuestSkew::Lacks {
-                release: GUEST_RELEASE.to_string(),
-                missing: vec![GuestCapability::EgressAdapterUpstreams],
+                release: "2.3.0".to_string(),
+                missing: vec![
+                    GuestCapability::EgressAdapterUpstreams,
+                    GuestCapability::EgressMethodAndQuery,
+                ],
             }
         );
         let msg = skew.to_string();
-        for needle in ["#3211", "in no published release yet", "build-rootfs.sh"] {
+        for needle in ["#3211", "first released in v2.4.0", "build-rootfs.sh"] {
             assert!(msg.contains(needle), "missing {needle:?} in: {msg}");
         }
+        // The same release, for a caller that makes no such use, never names it.
+        let Err(GuestSkew::Lacks { missing, .. }) = guest_skew("2.3.0") else {
+            panic!("2.3.0 lacks #3210");
+        };
+        assert!(!missing.contains(&GuestCapability::EgressAdapterUpstreams));
+        // A `When` row still unreleased is refused for its use, and only for it.
+        let not_yet = |c: GuestCapability| match c {
+            GuestCapability::EgressAdapterUpstreams => FirstShipped::NotYet,
+            _ => FirstShipped::Release("2.2.0"),
+        };
+        assert_eq!(
+            skew_against("2.4.0", &[GuestUse::AgentEgress], not_yet),
+            Err(GuestSkew::Lacks {
+                release: "2.4.0".to_string(),
+                missing: vec![GuestCapability::EgressAdapterUpstreams],
+            })
+        );
+        assert_eq!(skew_against("2.4.0", &[], not_yet), Ok(()));
         // Once a release carries it, the use is served by that release.
         let shipped = |c: GuestCapability| match c {
             GuestCapability::EgressAdapterUpstreams => FirstShipped::Release("2.4.0"),
@@ -848,12 +922,20 @@ mod tests {
             assert!(skew_against(rc, &[], all_by_2_2_0).is_err(), "{rc}");
             assert!(guest_skew(rc).is_err(), "{rc}");
         }
-        // 2.3.0 raised the floor past 2.2.0: a prerelease of 2.2.0 is refused by
-        // the real table, while one of 2.3.0 itself is accepted.
-        for rc in ["2.2.0-rc.1", "v2.2.0-rc.2", "2.2.0+build.7"] {
+        // 2.3.0 raised the floor past 2.2.0, and 2.4.0 past 2.3.0 (#3210: the
+        // node requires the stream open's method): a prerelease of either is
+        // refused by the real table, while one of 2.4.0 itself is accepted.
+        for rc in [
+            "2.2.0-rc.1",
+            "v2.2.0-rc.2",
+            "2.2.0+build.7",
+            "2.3.0",
+            "2.3.0-rc.1",
+            "v2.3.1",
+        ] {
             assert!(guest_skew(rc).is_err(), "{rc}");
         }
-        assert_eq!(guest_skew("2.3.0-rc.1"), Ok(()));
+        assert_eq!(guest_skew("2.4.0-rc.1"), Ok(()));
     }
 
     /// "Could not order it" is its own answer, not a refusal for being old.

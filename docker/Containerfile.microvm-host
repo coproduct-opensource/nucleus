@@ -23,14 +23,19 @@
 # installs from:
 #   * Firecracker/jailer — nucleus_spec::vmm_version::PINNED (1.17.0)
 #   * guest kernel       — nucleus_spec::tier2_artifacts::KERNEL_AARCH64
-#   * guest rootfs       — Tier2Artifact::Rootfs at GUEST_RELEASE (2.3.0),
-#                          digest as the release API reports it
+#   * guest rootfs       — Tier2Artifact::Rootfs at 2.3.0, one release behind
+#                          GUEST_RELEASE (2.4.0), digest as the release API
+#                          reports it
 #
-# The release is GUEST_RELEASE and nothing else: microvm_host's tests derive
-# every nucleus release URL below from Tier2Artifact::asset_url(GUEST_RELEASE)
-# and red if one names another version. The digests cannot be derived — they
-# exist only once the tag has built the assets — so a pin bump reds those tests
-# until this file is moved with the published digests.
+# The release is the one microvm_host's tests name (IMAGE_TRAILS_THE_PIN_AT,
+# 2.3.0): they derive every nucleus release URL below from
+# Tier2Artifact::asset_url and red if one names another version. The digests
+# cannot be derived — they exist only once the tag has built the assets — so
+# the image trails a pin bump by one release (#3143's precedent) until the
+# follow-up moves this file to the published 2.4.0 digests and deletes the
+# trailing constant. The 2.3.0 node and rootfs below are a consistent pair; a
+# NODE_SOURCE=source node from this tree cannot make credentialed calls from
+# the 2.3.0 rootfs (#3210 requires the 2.4.0 tool-proxy's stream opens).
 #
 # `NODE_SOURCE=release` (default) takes the GUEST_RELEASE 2.3.0 musl
 # nucleus-node and nucleus-mcp — the node/rootfs pairing `nucleus setup`

@@ -190,6 +190,11 @@ pub(super) const GUEST_FROM_THIS_TREE: &str = "local";
 /// (#3075); this only names it for `--egress`. Without `--egress` nothing is
 /// checked: the capability is demanded only for that use.
 ///
+/// The pinned release (2.4.0) ships the adapter (#3211), so a run on the pin
+/// passes. `--guest-release` remains a user assertion the CLI cannot verify,
+/// since the node does not report which guest it boots (#3223); this checks
+/// the claim, not the guest.
+///
 /// # Errors
 /// When `upstreams` is non-empty and the guest lacks a capability the use
 /// demands, or its release cannot be ordered.
@@ -489,17 +494,22 @@ var = "SEARCH_API_TOKEN"
         assert!(err.contains("web_fetch: never"), "{err}");
     }
 
-    /// The guest check for `--egress`: the pin is refused by name, a guest
-    /// built from this checkout is accepted, a named release is checked as
-    /// given, and a run declaring nothing is never checked.
+    /// The guest check for `--egress`: the pin (2.4.0) ships the adapter and
+    /// is accepted, 2.3.0 is refused by name, a guest built from this checkout
+    /// is accepted, a named release is checked as given, and a run declaring
+    /// nothing is never checked.
     #[test]
     fn the_guest_is_checked_for_the_adapter_only_when_egress_is_declared() {
         let ups = strings(&["model-api"]);
-        let err = refuse_guest_skew(&ups, None).unwrap_err().to_string();
+        refuse_guest_skew(&ups, None).unwrap();
+        let err = refuse_guest_skew(&ups, Some("2.3.0"))
+            .unwrap_err()
+            .to_string();
         assert!(
-            err.contains("the pinned guest release does not ship EgressAdapterUpstreams"),
+            err.contains("guest release does not ship EgressAdapterUpstreams"),
             "{err}"
         );
+        assert!(err.contains("#3211"), "{err}");
         assert!(err.contains("--guest-release local"), "{err}");
         refuse_guest_skew(&ups, Some(GUEST_FROM_THIS_TREE)).unwrap();
         let err = refuse_guest_skew(&ups, Some("2.2.0"))

@@ -45,6 +45,13 @@ pub struct EffectRequest {
     pub body_sha256: [u8; 32],
     pub body_bytes: u64,
     pub call_charge_micro_usd: Option<u64>,
+    /// Guest-proposed headers the host forwards (names lower-case), after the
+    /// operator's per-upstream allowlist. Bound into the digest because they
+    /// change what the upstream does (a protocol version, an encoding); absent
+    /// from the preimage when empty, so a call without any keeps the digest it
+    /// had before the field existed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub request_headers: std::collections::BTreeMap<String, String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -95,6 +102,7 @@ mod tests {
             body_sha256: Sha256::digest(b"hello").into(),
             body_bytes: 5,
             call_charge_micro_usd: Some(1234),
+            request_headers: Default::default(),
         };
         // Golden hash of the pre-existing v3 serialized broker effect.
         assert_eq!(

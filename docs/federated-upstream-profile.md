@@ -271,6 +271,15 @@ var = "SEARCH_API_TOKEN"
 A pod spec selects an upstream by `name`. A spec whose `credentialed_egress` entry differs
 from the registry entry in any field is refused at admission.
 
+An entry may list `request_headers = ["accept", "git-protocol", ...]`: the request header
+names a guest may set on calls to it (default: none beyond `content-type`). A guest-proposed
+header outside the list is dropped and the call's record names what was forwarded. The node
+refuses to start on a list naming `authorization`, `cookie`, `proxy-authorization`, a
+framing or forwarding header, or the entry's own credential `header`. Streamed calls carry
+`GET` or `POST` and an optional query, both bound into the effect digest; a query with a
+credential-looking parameter name is refused. See `examples/egress-git-remote/` for a git
+remote reached this way.
+
 `call_charge_micro_usd` is the operator's fixed tariff for each authorized dispatch
 attempt (1,000,000 micro-USD = 1 USD). It is not copied from the pod spec or inferred
 from a model/provider. Omission leaves the entry unpriced: PERFORM and streaming

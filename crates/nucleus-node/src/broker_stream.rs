@@ -37,7 +37,7 @@
 mod staged;
 pub(crate) mod staging_budget;
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -191,8 +191,14 @@ impl StreamNonces {
 /// and an `Err` in it aborts the request.
 pub struct StreamCall {
     _permit: crate::host_decide::effects::ExecutingEffect,
-    /// Absolute URL, already resolved against the operator's fixed base.
+    /// The method the guest asked for and the effect digest bound.
+    pub method: nucleus_cred_protocol::EgressMethod,
+    /// Absolute URL, already resolved against the operator's fixed base, with
+    /// the query the shared rule admitted.
     pub url: String,
+    /// Guest-proposed headers the operator's allowlist for this upstream
+    /// admitted. Never the credential header: see `RegistryEntry::forwards_header`.
+    pub headers: BTreeMap<String, String>,
     /// Header the credential goes in, from the operator's entry.
     pub header_name: String,
     /// The credential, with its prefix. Never logged.
@@ -268,7 +274,8 @@ pub fn refusing_stream_caller() -> StreamCaller {
     })
 }
 
-/// The production caller: a streamed `POST` through a shared client.
+/// The production caller: the call's method through a shared client, its
+/// body streamed when the method carries one.
 ///
 /// Makes no decision, for the reason [`crate::broker_transport::http_caller`]
 /// gives: a policy choice below the layer that holds the credential is one
@@ -278,16 +285,45 @@ pub fn http_stream_caller(client: reqwest::Client) -> StreamCaller {
     Arc::new(move |call: StreamCall| {
         let client = client.clone();
         Box::pin(async move {
-            let body = reqwest::Body::wrap_stream(call.body);
-            let resp = client
-                .request(crate::broker_perform::effect::METHOD, &call.url)
-                .header(&call.header_name, &call.header_value)
-                .header(reqwest::header::CONTENT_TYPE, &call.content_type)
-                .header(reqwest::header::CONTENT_LENGTH, call.content_length)
-                .body(body)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
+            use nucleus_cred_protocol::EgressMethod;
+            let StreamCall {
+                _permit,
+                method,
+                url,
+                headers,
+                header_name,
+                header_value,
+                content_type,
+                content_length,
+                body,
+            } = call;
+            let mut request = client.request(
+                match method {
+                    EgressMethod::Get => reqwest::Method::GET,
+                    EgressMethod::Post => reqwest::Method::POST,
+                },
+                &url,
+            );
+            // The proposals first, the credential last: a header map keeps the
+            // LAST value set, so even a proposal that slipped every check could
+            // not displace the injected credential.
+            for (name, value) in &headers {
+                request = request.header(name, value);
+            }
+            request = request.header(&header_name, &header_value);
+            // A GET carries no body (the host refused one that uploaded any),
+            // and its empty staged body is held, not sent, so its egress
+            // charge settles as it does for any call.
+            let _unsent = if method.carries_body() {
+                request = request
+                    .header(reqwest::header::CONTENT_TYPE, &content_type)
+                    .header(reqwest::header::CONTENT_LENGTH, content_length)
+                    .body(reqwest::Body::wrap_stream(body));
+                None
+            } else {
+                Some(body)
+            };
+            let resp = request.send().await.map_err(|e| e.to_string())?;
             let status = resp.status().as_u16();
             let content_type = resp
                 .headers()
@@ -393,6 +429,8 @@ struct CallRecord {
     status: u16,
     upload_bytes: u64,
     download_bytes: u64,
+    /// Names of the proposed headers sent upstream; empty when refused.
+    headers_forwarded: Vec<String>,
 }
 
 /// A media type the host will put in a request header: visible ASCII and
@@ -425,8 +463,18 @@ pub async fn serve_stream<R, W>(
     W: AsyncWrite + Unpin,
 {
     let record = run(req, ctx, now, reader, writer).await;
+    // Method, path and operation, and the NAMES of the query parameters and
+    // headers: what the call was, without copying values that may carry data
+    // the workload read (`query_parameter_names`). The effect digest in the
+    // host's signed evidence binds the values.
     let detail = serde_json::json!({
         "target": req.target,
+        "method": req.method.as_str(),
+        "path": req.path,
+        "operation": req.operation,
+        "query_parameters": query_parameter_names(req.query.as_deref()),
+        "headers_proposed": req.headers.keys().collect::<Vec<_>>(),
+        "headers_forwarded": record.headers_forwarded,
         "outcome": record.outcome,
         "reason": record.reason,
         "status": record.status,
@@ -481,6 +529,7 @@ where
         status: 0,
         upload_bytes,
         download_bytes: 0,
+        headers_forwarded: Vec::new(),
     }
 }
 
@@ -511,6 +560,7 @@ where
         target: &req.target,
         justification: &req.justification,
         path: &req.path,
+        query: req.query.as_deref(),
     };
     let Some(resolved) =
         crate::broker_perform::resolve(&asked, ctx.identity, ctx.policy, ctx.upstreams, now)
@@ -527,6 +577,7 @@ where
     if !header_safe(&req.content_type) {
         return refuse(&Refusal::Malformed, 0, Remaining::MayFollow, reader, writer).await;
     }
+    let forwarded = forwarded_headers(req, resolved.entry());
 
     // 4. A replayed open frame is refused before anything is charged.
     match ctx.streams.nonces.claim(&req.nonce, now) {
@@ -566,19 +617,16 @@ where
         Ok(body) => body,
         Err(reason) => return refuse(&reason, 0, Remaining::MayFollow, reader, writer).await,
     };
+    if !req.method.carries_body() && staged.len() > 0 {
+        let reason = Refusal::Named(format!("a {} carries no request body", req.method.as_str()));
+        return refuse(&reason, 0, Remaining::Ended, reader, writer).await;
+    }
     let current_time = || {
         let elapsed = started.elapsed();
         now.saturating_add(elapsed.as_secs())
             .saturating_add(u64::from(elapsed.subsec_nanos() != 0))
     };
-    let mut effect_request = crate::broker_perform::effect::describe_body(
-        &req.operation,
-        &resolved,
-        &req.content_type,
-        staged.digest(),
-        staged.len(),
-    );
-    effect_request.require_approval = req.require_approval;
+    let effect_request = describe_stream(req, &resolved, &forwarded, &staged);
     let effect = match effect_request.digest() {
         Ok(effect) => nucleus_decision_protocol::ArgsDigest::new(effect),
         Err(_) => return refuse(&Refusal::NotPermitted, 0, Remaining::Ended, reader, writer).await,
@@ -588,7 +636,7 @@ where
             Some(op) => policy.preflight_effect(
                 effect,
                 op,
-                resolved.url(),
+                resolved.subject(),
                 current_time(),
                 call_charge,
                 req.require_approval,
@@ -602,6 +650,7 @@ where
             ctx.host_policy,
             req,
             &resolved,
+            &forwarded,
             &mut staged,
             effect,
             current_time(),
@@ -628,7 +677,7 @@ where
         }
     }
     let uploaded = staged.len();
-    let open_bytes = req.path.len().saturating_add(req.content_type.len()) as u64;
+    let open_bytes = open_frame_bytes(req);
     let mut charge = match ctx
         .egress
         .reserve_upload(open_bytes.saturating_add(uploaded))
@@ -701,7 +750,7 @@ where
             Some(op) => policy.authorize_effect(
                 effect,
                 op,
-                resolved.url(),
+                resolved.subject(),
                 current_time(),
                 call_charge,
                 req.require_approval,
@@ -718,6 +767,7 @@ where
                 ctx.host_policy,
                 req,
                 &resolved,
+                &forwarded,
                 &mut staged,
                 effect,
                 current_time(),
@@ -735,11 +785,13 @@ where
     // The body owns the charge through HTTP handoff and cancellation.
     let call = (ctx.streams.caller)(StreamCall {
         _permit: permit,
+        method: req.method,
         url: resolved.url().to_string(),
         header_name: spec.header.clone(),
         header_value,
         content_type: req.content_type.clone(),
         content_length: staged.len(),
+        headers: forwarded.clone(),
         body: upload::UploadBody::new(rx, charge, current_time()),
     });
     // One deadline covers both upload and response headers, including a caller
@@ -807,6 +859,7 @@ where
         status: response.status,
         upload_bytes: uploaded,
         download_bytes: 0,
+        headers_forwarded: forwarded.keys().cloned().collect(),
     };
     if write_line(writer, &encode_line(&head)).await.is_err() {
         record.outcome = "guest_gone";
@@ -884,10 +937,78 @@ where
     record
 }
 
+/// The effect a stream performs, as its digest binds it and an operator
+/// reviews it. One function for the decision and the review (G-1): the method,
+/// the query (inside the URL) and the forwarded headers are all in it, so an
+/// approval for `GET …/info/refs?service=…` cannot be spent on a `POST`, on
+/// another query, or with another protocol header.
+fn describe_stream(
+    req: &StreamRequest,
+    resolved: &crate::broker_perform::Resolved<'_>,
+    forwarded: &BTreeMap<String, String>,
+    staged: &staged::StagedBody,
+) -> nucleus_spec::host_effect_approval::EffectRequest {
+    let mut effect = crate::broker_perform::effect::describe_body(
+        &req.operation,
+        resolved,
+        &req.content_type,
+        staged.digest(),
+        staged.len(),
+    );
+    effect.require_approval = req.require_approval;
+    effect.method = req.method.as_str().into();
+    effect.request_headers.clone_from(forwarded);
+    effect
+}
+
+/// The guest's proposed headers this upstream forwards: the operator listed the
+/// name (and the shared rule allows proposing it), and the value is
+/// header-safe. Everything else is dropped, and counted in the call's record.
+fn forwarded_headers(req: &StreamRequest, entry: &RegistryEntry) -> BTreeMap<String, String> {
+    req.headers
+        .iter()
+        .filter(|(name, value)| {
+            entry.forwards_header(name)
+                && nucleus_spec::workload_egress::header_value_admissible(value)
+        })
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect()
+}
+
+/// Guest-chosen bytes in the open frame that reach the upstream, charged as
+/// upload like the body: the path, the query, the media type and the proposed
+/// headers.
+fn open_frame_bytes(req: &StreamRequest) -> u64 {
+    let headers: usize = req
+        .headers
+        .iter()
+        .map(|(name, value)| name.len().saturating_add(value.len()))
+        .fold(0, usize::saturating_add);
+    req.path
+        .len()
+        .saturating_add(req.query.as_ref().map_or(0, String::len))
+        .saturating_add(req.content_type.len())
+        .saturating_add(headers) as u64
+}
+
+/// The query's parameter NAMES, for the call's record. Values are left out:
+/// a value may carry data the workload read, and the record is an audit log
+/// readers other than the operator see. The effect digest binds the values.
+fn query_parameter_names(query: Option<&str>) -> Vec<&str> {
+    query
+        .map(|q| {
+            q.split('&')
+                .map(|pair| pair.split_once('=').map_or(pair, |(name, _)| name))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn capture_review(
     policy: &crate::host_decide::SharedPodPolicy,
     request: &nucleus_cred_protocol::StreamRequest,
     resolved: &crate::broker_perform::Resolved<'_>,
+    forwarded: &BTreeMap<String, String>,
     staged: &mut staged::StagedBody,
     effect: nucleus_decision_protocol::ArgsDigest,
     now: u64,
@@ -899,14 +1020,7 @@ async fn capture_review(
     if !needed {
         return Ok(());
     }
-    let mut metadata = crate::broker_perform::effect::describe_body(
-        &request.operation,
-        resolved,
-        &request.content_type,
-        staged.digest(),
-        staged.len(),
-    );
-    metadata.require_approval = request.require_approval;
+    let metadata = describe_stream(request, resolved, forwarded, staged);
     let body = match staged.review_bytes().await {
         Ok(body) => body,
         Err(error) => {
@@ -933,6 +1047,7 @@ mod tests {
     //! placeholder.
 
     mod approval_wait;
+    mod git;
     mod paced;
 
     use super::*;
@@ -1116,8 +1231,11 @@ mod tests {
             target: target.into(),
             justification: "credentialed egress".into(),
             nonce: nonce.into(),
+            method: nucleus_cred_protocol::EgressMethod::Post,
             path: "/complete".into(),
+            query: None,
             content_type: "application/json".into(),
+            headers: BTreeMap::new(),
         }
     }
 
@@ -1384,7 +1502,9 @@ mod tests {
         });
         let response = caller(StreamCall {
             _permit: permit,
+            method: nucleus_cred_protocol::EgressMethod::Post,
             url: format!("http://{address}/call"),
+            headers: BTreeMap::new(),
             header_name: "authorization".into(),
             header_value: "test-token".into(),
             content_type: "application/json".into(),
@@ -1458,7 +1578,9 @@ mod tests {
         let caller = http_stream_caller(reqwest::Client::new());
         let mut response = caller(StreamCall {
             _permit: permit,
+            method: nucleus_cred_protocol::EgressMethod::Post,
             url: format!("http://{address}/call"),
+            headers: BTreeMap::new(),
             header_name: "authorization".into(),
             header_value: "test-token".into(),
             content_type: "application/json".into(),

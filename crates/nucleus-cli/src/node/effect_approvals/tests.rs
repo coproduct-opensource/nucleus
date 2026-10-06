@@ -313,6 +313,7 @@ fn review_fixture() -> ApprovalReview {
         body_sha256: Sha256::digest(body).into(),
         body_bytes: body.len() as u64,
         call_charge_micro_usd: Some(approval.call_charge_micro_usd),
+        request_headers: Default::default(),
     };
     approval.effect_sha256 = hex::encode(request.digest().unwrap());
     ApprovalReview {
