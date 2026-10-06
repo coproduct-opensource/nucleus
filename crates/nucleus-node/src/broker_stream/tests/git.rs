@@ -448,7 +448,7 @@ async fn an_approval_for_a_get_cannot_be_spent_as_a_post_or_another_query() {
 /// **(e) A 2.3.x guest's open is refused, never read as a POST.** The change
 /// is breaking by the owner's decision: an open without a method (exactly what
 /// the 2.3.0 tool-proxy writes) is refused before any upstream I/O, and the
-/// pin (`GUEST_RELEASE` 2.4.0, `GuestCapability::EgressMethodAndQuery`) is
+/// pin (`GUEST_RELEASE` 2.4.0 or later, `GuestCapability::EgressMethodAndQuery`) is
 /// what keeps the CLI from installing that guest against this node. A frame
 /// that names a method but is otherwise malformed is refused the same way.
 #[tokio::test]

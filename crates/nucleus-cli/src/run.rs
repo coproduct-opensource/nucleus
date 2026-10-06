@@ -1892,7 +1892,7 @@ mod tests {
         assert!(skewed.contains("#3211"), "{skewed}");
 
         // Both checks pass: the run stops only at the missing node, so the
-        // refusals above are the checks', not this. The pinned release (2.4.0)
+        // refusals above are the checks', not this. The pinned release (2.5.0)
         // ships the adapter, so no --guest-release is needed on the pin.
         let admitted = run("safe-pr-fixer", EGRESS_LOCAL_GUEST).await;
         assert!(admitted.contains("node config required"), "{admitted}");

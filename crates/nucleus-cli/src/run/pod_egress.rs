@@ -173,9 +173,9 @@ impl PodEgress {
     /// Refuse a guest that cannot read an upstream's effect table (#3229),
     /// when a declared upstream carries one. Known only once the registry is
     /// read, so after [`declare`]; an upstream with no table demands nothing
-    /// beyond [`refuse_guest_skew`]. The published 2.4.0 guest predates the
-    /// table, so on the pin this refuses by name rather than letting the pod
-    /// fail on a spec its guest cannot parse.
+    /// beyond [`refuse_guest_skew`]. The 2.4.0 guest predates the table, so
+    /// `--guest-release 2.4.0` refuses by name rather than letting the pod fail
+    /// on a spec its guest cannot parse; the pin (2.5.0) ships it.
     ///
     /// # Errors
     /// When a declared upstream has an effect table and the guest lacks
@@ -226,7 +226,7 @@ pub(super) const GUEST_FROM_THIS_TREE: &str = "local";
 /// (#3075); this only names it for `--egress`. Without `--egress` nothing is
 /// checked: the capability is demanded only for that use.
 ///
-/// The pinned release (2.4.0) ships the adapter (#3211), so a run on the pin
+/// The pinned release (2.5.0) ships the adapter (#3211, since 2.4.0), so a run on the pin
 /// passes. `--guest-release` remains a user assertion the CLI cannot verify,
 /// since the node does not report which guest it boots (#3223); this checks
 /// the claim, not the guest.
@@ -489,8 +489,8 @@ var = "SEARCH_API_TOKEN"
         .unwrap();
         assert_eq!(specs[0].effects, expected);
 
-        // The published pin (2.4.0) predates effect tables: refused by name,
-        // where the same upstream without a table is not (#3229).
+        // 2.4.0 predates effect tables: refused by name, where the same
+        // upstream without a table is not (#3229). The pin (2.5.0) ships them.
         let declared_forge = |effects: &str| {
             let file = tempfile::NamedTempFile::new().unwrap();
             std::fs::write(
@@ -516,12 +516,16 @@ var = "SEARCH_API_TOKEN"
             "kind = \"forge\"\neffects = [{ method = \"POST\", path = \"/repos/*/*/pulls\", \
              operation = \"create_pr\" }]",
         );
-        let err = with_table.refuse_guest_skew(None).unwrap_err().to_string();
+        let err = with_table
+            .refuse_guest_skew(Some("2.4.0"))
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("does not ship EgressEffectTable"), "{err}");
+        with_table.refuse_guest_skew(None).unwrap();
         with_table
             .refuse_guest_skew(Some(GUEST_FROM_THIS_TREE))
             .unwrap();
-        declared_forge("").refuse_guest_skew(None).unwrap();
+        declared_forge("").refuse_guest_skew(Some("2.4.0")).unwrap();
         let err = forge(r#"[{ method = "POST", path = "repos/*x", operation = "create_pr" }]"#)
             .unwrap_err();
         assert!(format!("{err:#}").contains("forge-api"), "{err:#}");
@@ -614,7 +618,7 @@ var = "SEARCH_API_TOKEN"
         assert!(err.contains("web_fetch: never"), "{err}");
     }
 
-    /// The guest check for `--egress`: the pin (2.4.0) ships the adapter and
+    /// The guest check for `--egress`: the pin (2.5.0) ships the adapter and
     /// is accepted, 2.3.0 is refused by name, a guest built from this checkout
     /// is accepted, a named release is checked as given, and a run declaring
     /// nothing is never checked.

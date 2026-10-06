@@ -23,20 +23,24 @@
 # installs from:
 #   * Firecracker/jailer — nucleus_spec::vmm_version::PINNED (1.17.0)
 #   * guest kernel       — nucleus_spec::tier2_artifacts::KERNEL_AARCH64
-#   * guest rootfs       — Tier2Artifact::Rootfs at GUEST_RELEASE (2.4.0),
-#                          digest as the release API reports it
+#   * guest rootfs       — Tier2Artifact::Rootfs at 2.4.0, one release behind
+#                          GUEST_RELEASE (2.5.0), digest as the release API
+#                          reports it
 #
-# The release is GUEST_RELEASE and nothing else: microvm_host's tests derive
-# every nucleus release URL below from Tier2Artifact::asset_url(GUEST_RELEASE)
-# and red if one names another version. The digests cannot be derived — they
-# exist only once the tag has built the assets — so a pin bump reds those tests
-# until this file is moved with the published digests (#3197 did it for 2.3.0,
-# this file's current digests are v2.4.0's, each checked against the release
-# API and its build-provenance attestation from release.yml at refs/tags/v2.4.0).
+# The release is the one microvm_host's tests name (IMAGE_TRAILS_THE_PIN_AT,
+# 2.4.0): they derive every nucleus release URL below from
+# Tier2Artifact::asset_url and red if one names another version. The digests
+# cannot be derived — they exist only once the tag has built the assets — so
+# the image trails a pin bump by one release (#3143's precedent) until the
+# post-tag follow-up moves this file to the published 2.5.0 digests and
+# deletes the trailing constant (#3248 did it for 2.4.0). This file's current
+# digests are v2.4.0's, each checked against the release API and its
+# build-provenance attestation from release.yml at refs/tags/v2.4.0. The 2.4.0
+# node and rootfs below are a consistent pair.
 #
-# `NODE_SOURCE=release` (default) takes the GUEST_RELEASE 2.4.0 musl
-# nucleus-node and nucleus-mcp — the node/rootfs pairing `nucleus setup`
-# installs today. `NODE_SOURCE=source` builds both from this tree. Against the
+# `NODE_SOURCE=release` (default) takes the 2.4.0 musl nucleus-node and
+# nucleus-mcp — the published node/rootfs pairing. `NODE_SOURCE=source` builds
+# both from this tree. Against the
 # 2.2.0 rootfs that node could not boot a pod (measured in the spike: no
 # `NUCLEUS_EGRESS_PROBE:` line, and a read-only rootfs died creating its
 # identity directory); 2.3.0 ships both fixes and 2.4.0 the stream opens a
