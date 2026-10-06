@@ -122,7 +122,7 @@ include and exclude patterns (1,234 files). The gate's runner then wrote the 18 
 `cargo metadata --no-deps --offline`, which loaded all 94 workspace members, exit 0. The lane run
 is still the real measurement.
 
-## 7. Live on the lanes: a PR waits less and the lanes spend more, because the seed is `test`'s (2026-10-06)
+## 7. Live on the lanes: a PR waits less and the lanes spend more (2026-10-06; the cause given here is corrected in §8)
 
 #3225 merged at 15:58Z. Its push set plan `e35be2e0` at 16:03Z through the OIDC upload, with
 nobody touching it, and the shards ran on the x86 lanes within the hour. Both passed. Measured from
@@ -154,6 +154,42 @@ tools and seed pin (`.gatehouse/shards/base.json`). They share the pin, not the 
   crates. That is the saving the shards exist for, and it needs scope-derived reuse to happen on
   real pull requests. Re-measure lane-seconds per PR once per-shard seeds land, over enough PRs to
   see the reuse rate.
+
+## 8. §7 compared two seeds' ages, not two layouts (corrected 2026-10-06)
+
+**The wrong belief in §7:** that the shards recompile 41-48 registry crates because each shard
+resolves a different feature set from the whole-workspace build its seed came from, so each shard
+needs a seed of its own. The "old `test`: 3 registry crates, 329 s" baseline in §7 came from early
+on 2026-10-06, when seed `main-160a26deb` still matched main. The shards ran after main had moved.
+
+Measured from controld's receipts (`sandbox.cache.compiled_registry` and duration), every run on
+seed `main-160a26deb-x86_64-t`:
+
+| old `test`, by hour (UTC) | runs | registry crates recompiled | mean time |
+|---|---|---|---|
+| 03 | 5 | 0-2 | 353 s |
+| 04-06 (#3238's rmcp 2.2 merged 04:41; #3230/#3231 added `nucleus-node-evidence` at 00:46/01:25) | 24 | 0 then 66 | 309-412 s |
+| 07-16 | 24 | 66-67 | 427-477 s |
+
+**At the same drift:**
+- **Old `test`** recompiled 67 registry crates in about 447 s.
+- **`test-node`** recompiles 41-44 in 292 s (mean of 21 runs).
+- **`test-libs`** recompiles 112 in 379 s (6 runs). Its step 0, the verifier SDK's wasm build,
+  accounts for 64 of them; that step was seeded too, and its units went stale with the rest.
+- **Both shards per tree:** about 671 lane-seconds against 447 (+50%), and a wait of about 379 s
+  against 447 (-15%).
+
+**So the cause is a stale seed, not a per-shard mismatch.** With workspace feature unification, the
+shards' units are the full build's units (gatehouse docs/sublinear-testing.md §5: 0 units differ,
+and a shard at the seed's own tree compiled 0 crates). A dependency change anywhere in the
+workspace changes registry units for every build, the old `test` included. Per-shard seeds would go
+stale exactly the same way. The lever is keeping the seed fresh: gatehouse
+docs/seed-freshness-2026-10-06.md measures it (stale for about 72% of seeded `test` and `clippy`
+runs over the week, about 13% of all gate time) and designs automatic re-minting.
+
+**What §7 still gets right:** the shards cost more lane-seconds per tree than the old gate whenever
+both run. The +50% at equal drift is the honest number. Whether the reuse of `test-libs` on
+node-only trees repays it still needs measuring over real pull requests, after the seed is fresh.
 
 ## Not yet
 
