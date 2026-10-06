@@ -79,7 +79,8 @@ pub use budget::AtomicBudget;
 pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
 pub use hardening::{
-    ChildConfinement, ChildUid, DEFAULT_CHILD_UID, SyscallFilter, UnsandboxedOptIn, runtime_uid,
+    ChildConfinement, ChildUid, DEFAULT_CHILD_UID, FilesystemConfinement, LandlockSupport,
+    LandlockWaiver, MIN_LANDLOCK_ABI, SyscallFilter, UnsandboxedOptIn, runtime_uid,
 };
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};

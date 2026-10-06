@@ -944,6 +944,7 @@ fn pod_listing_reports_root_lineage_explicitly() {
         labels: BTreeMap::new(),
         parent_pod_id: None,
         posture: None,
+        workload_filesystem: None,
     };
     let value = serde_json::to_value(&info).unwrap();
     assert_eq!(

@@ -276,6 +276,17 @@ pub enum GuestCapability {
     /// completes with an older guest; that guest still refuses, in the guest,
     /// a push after content its own tools read, which is stricter, never wider.
     TaintedPushHeld,
+    /// The tool-proxy confines every child it spawns (the workload and each
+    /// `/v1/run` command) with a Landlock ruleset compiled from
+    /// `guest_layout::RESERVED`: read-only rootfs, read-write `/work`, `/tmp`
+    /// and `/cache`, the pod spec, SVID and `/run` hidden. It refuses to start
+    /// a child on a kernel below Landlock ABI 2 unless the node waived it
+    /// (`guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG`), and prints its verdict
+    /// as `guest_layout::WORKLOAD_LANDLOCK_VERDICT` (#2696 P3c).
+    /// [`Demand::Optional`]: the node reports an older guest's workload
+    /// filesystem as unconfined (no verdict) rather than refusing it; a later
+    /// change may make it required once a release carries it.
+    WorkloadLandlock,
     /// The tool-proxy labels a push's ref advertisement
     /// (`GET …/info/refs?service=git-receive-pack`, no body) a `WebFetch`,
     /// as the shared classifier now decides it, so only the pack's POST is
@@ -330,7 +341,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 14] = [
+    pub const ALL: [GuestCapability; 15] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -344,6 +355,7 @@ impl GuestCapability {
         GuestCapability::EgressMethodAndQuery,
         GuestCapability::EgressEffectTable,
         GuestCapability::TaintedPushHeld,
+        GuestCapability::WorkloadLandlock,
         GuestCapability::PushAdvertisementIsRead,
     ];
 
@@ -365,6 +377,9 @@ impl GuestCapability {
             // The host holds the push either way; an older guest only refuses
             // more (a push after its own tainting read), never less.
             GuestCapability::TaintedPushHeld => Demand::Optional,
+            // Reported, not required: an older guest's workload runs without
+            // Landlock, and the node says so instead of refusing the pod.
+            GuestCapability::WorkloadLandlock => Demand::Optional,
             // The node decides a stricter label too: an older guest only asks
             // for one more approval (the advertisement's), never for less.
             GuestCapability::PushAdvertisementIsRead => Demand::Optional,
@@ -407,6 +422,9 @@ impl GuestCapability {
             // effect table and refuses a tainted push in the guest.
             GuestCapability::EgressEffectTable => FirstShipped::Release("2.5.0"),
             GuestCapability::TaintedPushHeld => FirstShipped::Release("2.5.0"),
+            // #2696 P3c, after `v2.5.0`: no published guest confines its
+            // children with Landlock, and the pinned 6.1.141 kernel could not.
+            GuestCapability::WorkloadLandlock => FirstShipped::NotYet,
             // #3266 landed after `v2.5.0` (0f2471d52): the published 2.5.0
             // tool-proxy labels the advertisement `GitPush`.
             GuestCapability::PushAdvertisementIsRead => FirstShipped::NotYet,
@@ -484,6 +502,13 @@ impl GuestCapability {
                  in for the host to hold for the operator's approval of that push; an older \
                  proxy refuses that push in the guest (the node does not require it: the host \
                  holds a push after model calls with either guest)"
+            }
+            GuestCapability::WorkloadLandlock => {
+                "#2696 (P3c) has the tool-proxy confine the workload's and every command's \
+                 filesystem with Landlock (read-only rootfs, writable /work, /tmp and /cache, \
+                 the pod spec and /run hidden), refusing below ABI 2 unless the node waived \
+                 it; an older guest runs them with no Landlock at all (the node does not \
+                 require it, and reports the workload filesystem as not confined)"
             }
             GuestCapability::PushAdvertisementIsRead => {
                 "#3266 decides a push's bodiless ref advertisement as a read, so one operator \
@@ -814,7 +839,10 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin = [GuestCapability::PushAdvertisementIsRead];
+        let after_the_pin = [
+            GuestCapability::WorkloadLandlock,
+            GuestCapability::PushAdvertisementIsRead,
+        ];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -925,7 +953,8 @@ mod tests {
                 GuestCapability::EgressAdapterUpstreams => GuestCapability::EgressMethodAndQuery,
                 GuestCapability::EgressMethodAndQuery => GuestCapability::EgressEffectTable,
                 GuestCapability::EgressEffectTable => GuestCapability::TaintedPushHeld,
-                GuestCapability::TaintedPushHeld => GuestCapability::PushAdvertisementIsRead,
+                GuestCapability::TaintedPushHeld => GuestCapability::WorkloadLandlock,
+                GuestCapability::WorkloadLandlock => GuestCapability::PushAdvertisementIsRead,
                 GuestCapability::PushAdvertisementIsRead => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");

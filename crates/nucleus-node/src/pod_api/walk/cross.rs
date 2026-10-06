@@ -222,6 +222,7 @@ impl Run {
             .expect("a child spawns");
         let firecracker = crate::FirecrackerPod {
             direct_cgroup: Mutex::new(None),
+            workload_filesystem: crate::net::confinement::WorkloadFilesystem::Unreported,
             pod_dir: dir.path().to_path_buf(),
             jail: Mutex::new(None),
             child: Arc::new(Mutex::new(child)),

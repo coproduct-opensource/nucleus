@@ -122,8 +122,8 @@ impl PreparedPod {
         spec: &PodSpec,
         id: Uuid,
         child: &mut tokio::process::Child,
-    ) -> Result<(), ApiError> {
-        net::confinement::gate(addr, pod_dir, spec, id, child).await?;
+    ) -> Result<net::confinement::WorkloadFilesystem, ApiError> {
+        let filesystem = net::confinement::gate(addr, pod_dir, spec, id, child).await?;
         if self.identity.withholding.is_some() {
             let console = tokio::fs::read_to_string(pod_dir.join("firecracker.log"))
                 .await
@@ -132,7 +132,7 @@ impl PreparedPod {
                 })?;
             crate::cred_split::verify_guest_ack(&console)?;
         }
-        Ok(())
+        Ok(filesystem)
     }
 
     pub(crate) fn into_parts(

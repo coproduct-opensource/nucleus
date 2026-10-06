@@ -169,6 +169,82 @@ fn absent_problem() -> String {
     )
 }
 
+/// What a pod's guest reported about its children's filesystem (#2696 P3c),
+/// as the node reports it in the pod's posture.
+///
+/// Reported, not required: `GuestCapability::WorkloadLandlock` is
+/// `Demand::Optional`, so a guest that predates it is not refused. But it is
+/// not called confined either: no verdict reads as `Unreported`, which the
+/// posture spells as not enforced. "Could not tell" is never "confined"
+/// (ADR 0007 A-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorkloadFilesystem {
+    /// The guest's own `NUCLEUS_WORKLOAD_LANDLOCK:` verdict.
+    Reported(nucleus_spec::guest_layout::WorkloadLandlockVerdict),
+    /// No verdict on the console: an older guest, or one that failed before
+    /// the tool-proxy decided.
+    Unreported,
+}
+
+impl WorkloadFilesystem {
+    /// Pure parse of a captured console.
+    pub(crate) fn from_console(console: &str) -> Self {
+        match nucleus_spec::guest_layout::WorkloadLandlockVerdict::parse(console) {
+            Some(v) => Self::Reported(v),
+            None => Self::Unreported,
+        }
+    }
+
+    /// Whether the guest's children are held to the Landlock ruleset.
+    pub(crate) fn enforced(&self) -> bool {
+        use nucleus_spec::guest_layout::WorkloadLandlockVerdict as V;
+        match self {
+            Self::Reported(V::Enforced { .. }) => true,
+            Self::Reported(V::Waived { .. } | V::Refused { .. } | V::NotApplied)
+            | Self::Unreported => false,
+        }
+    }
+
+    /// The posture the pod listing shows, stating enforced or not first.
+    pub(crate) fn posture(&self) -> String {
+        use nucleus_spec::guest_layout::WorkloadLandlockVerdict as V;
+        match self {
+            Self::Reported(V::Enforced { abi }) => format!("landlock enforced (ABI {abi})"),
+            Self::Reported(V::Waived { kernel }) => {
+                format!("landlock NOT enforced: waived by the operator; the kernel offers {kernel}")
+            }
+            Self::Reported(V::Refused { kernel }) => format!(
+                "landlock NOT enforced: the kernel offers {kernel}, so the guest refuses its \
+                 workload and commands"
+            ),
+            Self::Reported(V::NotApplied) => {
+                "landlock NOT enforced: not applied under this containment".to_string()
+            }
+            Self::Unreported => format!(
+                "landlock NOT enforced: the guest reported no verdict. If it predates the \
+                 confinement: {}",
+                nucleus_spec::tier2_artifacts::GuestCapability::WorkloadLandlock.change()
+            ),
+        }
+    }
+}
+
+/// Read the pod's console for the guest's filesystem verdict and log it. The
+/// tool-proxy prints it before it serves health, so once the health wait has
+/// passed it is already there or it is not coming.
+async fn report_workload_filesystem(pod_dir: &Path, pod_id: &str) -> WorkloadFilesystem {
+    let console = tokio::fs::read_to_string(pod_dir.join("firecracker.log"))
+        .await
+        .unwrap_or_default();
+    let fs = WorkloadFilesystem::from_console(&console);
+    if fs.enforced() {
+        tracing::info!(target: "confinement", pod = %pod_id, posture = %fs.posture(), "workload filesystem");
+    } else {
+        tracing::warn!(target: "confinement", pod = %pod_id, posture = %fs.posture(), "workload filesystem");
+    }
+    fs
+}
+
 /// Health, then attestation — the single gate a pod passes to be called up.
 ///
 /// Named `gate` and not `health_then_attest` for a dull reason worth recording:
@@ -184,7 +260,7 @@ pub(crate) async fn gate(
     spec: &PodSpec,
     pod_id: uuid::Uuid,
     vmm: &mut tokio::process::Child,
-) -> Result<(), crate::ApiError> {
+) -> Result<WorkloadFilesystem, crate::ApiError> {
     // `wait_for_proxy_health` moved into `guest_diagnosis` (#2355), which also
     // enriches a timeout with the guest console's actual cause. Both halves read
     // the same console: one to explain why the pod never came up, this one to
@@ -194,7 +270,8 @@ pub(crate) async fn gate(
     crate::guest_diagnosis::wait_for_proxy_health(addr, &console, vmm).await?;
     attest(pod_dir, spec, &pod_id.to_string())
         .await
-        .map_err(crate::ApiError::Driver)
+        .map_err(crate::ApiError::Driver)?;
+    Ok(report_workload_filesystem(pod_dir, &pod_id.to_string()).await)
 }
 
 #[cfg(test)]
@@ -206,6 +283,43 @@ mod tests {
     #[test]
     fn a_proving_console_passes() {
         assert_eq!(verdict(CONFINED, true), Verdict::Proved);
+    }
+
+    /// #2696 P3c: the posture says enforced only for the guest's own
+    /// `enforced` verdict. Silence (an older guest), a waiver and a refusal
+    /// all read as NOT enforced, and say which.
+    #[test]
+    fn only_an_enforced_verdict_reports_the_workload_filesystem_as_confined() {
+        use nucleus_spec::guest_layout::WorkloadLandlockVerdict as V;
+        let enforced = WorkloadFilesystem::from_console(&format!(
+            "{CONFINED}[proxy] {}\n",
+            V::Enforced { abi: 2 }.line()
+        ));
+        assert!(enforced.enforced());
+        assert_eq!(enforced.posture(), "landlock enforced (ABI 2)");
+
+        let silent = WorkloadFilesystem::from_console(CONFINED);
+        assert_eq!(silent, WorkloadFilesystem::Unreported);
+        assert!(!silent.enforced());
+        assert!(
+            silent.posture().starts_with("landlock NOT enforced"),
+            "{}",
+            silent.posture()
+        );
+
+        for v in [
+            V::Waived {
+                kernel: "no Landlock".into(),
+            },
+            V::Refused {
+                kernel: "Landlock ABI 1".into(),
+            },
+            V::NotApplied,
+        ] {
+            let fs = WorkloadFilesystem::from_console(&v.line());
+            assert!(!fs.enforced(), "{v:?}");
+            assert!(fs.posture().starts_with("landlock NOT enforced"), "{v:?}");
+        }
     }
 
     /// The case the module exists for: the guest says the fence is open.

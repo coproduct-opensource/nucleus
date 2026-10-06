@@ -108,6 +108,32 @@
 //! cannot be compiled or installed fails the spawn; it is never skipped
 //! (ADR 0007 A-1).
 //!
+//! # The filesystem: Landlock (#2696 P3c)
+//!
+//! A `MicroVM` child is also held to a Landlock ruleset compiled from the
+//! guest layout (`hardening/landlock.rs`, `nucleus_spec::guest_layout`): the
+//! image read-only, `/work`, `/tmp` and `/cache` read-write, the pod spec,
+//! `/etc/nucleus` and `/run` hidden, only the ordinary devices. Which mode gets
+//! it, and what happens on a kernel without it, is decided once, by
+//! `ChildConfinement::filesystem_for`:
+//!
+//! | Mode | kernel at ABI ≥ 2 | kernel below ABI 2 / no Landlock |
+//! |---|---|---|
+//! | `MicroVM` | enforced | **refused** ([`NucleusError::LandlockUnavailable`]), or [`FilesystemConfinement::Waived`] with [`LandlockWaiver::Explicit`] |
+//! | `HostHardened`, `Unsandboxed` | not applied | not applied |
+//!
+//! Fail closed, not best-effort (#3148): "could not confine" is never "fine"
+//! (ADR 0007 A-1). The waiver is the node operator's (`nucleus-node
+//! --allow-workload-without-landlock`), reaches the guest as
+//! `guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG`, and is recorded in the
+//! workload's launch receipt. `HostHardened` is not given the guest's ruleset
+//! because the host's filesystem is not the guest layout; a host ruleset is
+//! its own decision, not made here.
+//!
+//! The ruleset is compiled in the parent and only `landlock_restrict_self`
+//! runs in the `pre_exec` hook, after `no_new_privs` and before the syscall
+//! filter.
+//!
 //! [`apply`]: ChildConfinement::apply
 
 use std::path::Path;
@@ -115,8 +141,11 @@ use std::path::Path;
 use crate::command::ContainmentMode;
 use crate::error::{NucleusError, Result};
 
+mod landlock;
 #[cfg(target_os = "linux")]
 mod seccomp;
+
+pub use landlock::{LandlockSupport, MIN_LANDLOCK_ABI};
 
 /// The uid a separated child runs as when nothing more specific is
 /// configured: `nobody`. A high, unprivileged, non-root value — the guest
@@ -148,7 +177,70 @@ enum Posture {
     /// Self-restriction without a uid change (`ContainmentMode::HostHardened`).
     Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
-    DropTo(u32, SyscallFilter),
+    DropTo(u32, SyscallFilter, FilesystemConfinement),
+}
+
+/// How a confined child's filesystem is held (#2696 P3c). Decided per
+/// [`ContainmentMode`] and per kernel in one exhaustive match; see the module
+/// docs.
+///
+/// Three named cases rather than an `Option` (ADR 0007 B-2), no `Default`
+/// (B-1), and "the kernel could not" is not a case at all: it is the refusal
+/// [`NucleusError::LandlockUnavailable`] unless the operator waived it, and
+/// then it is [`Self::Waived`], which says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilesystemConfinement {
+    /// The guest layout's Landlock ruleset, enforced at this ABI (at least
+    /// [`MIN_LANDLOCK_ABI`]). Failing to compile or apply it fails the spawn.
+    Landlock {
+        /// The kernel's Landlock ABI.
+        abi: u32,
+    },
+    /// The kernel cannot enforce Landlock at the minimum ABI, and the operator
+    /// waived it ([`LandlockWaiver::Explicit`]): the child's filesystem is
+    /// held by DAC, the uid drop and nothing else. Recorded, never silent.
+    Waived {
+        /// What the kernel offered instead.
+        kernel: LandlockSupport,
+    },
+    /// This mode does not hold the filesystem with Landlock: the bare tier,
+    /// and `HostHardened`, whose filesystem is the host's, not the guest
+    /// layout the ruleset is compiled from.
+    NotApplied,
+}
+
+impl FilesystemConfinement {
+    /// The console verdict the tool-proxy prints for this posture, in the
+    /// vocabulary the node parses (`guest_layout::WorkloadLandlockVerdict`).
+    #[must_use]
+    pub fn verdict(self) -> nucleus_spec::guest_layout::WorkloadLandlockVerdict {
+        use nucleus_spec::guest_layout::WorkloadLandlockVerdict as V;
+        match self {
+            Self::Landlock { abi } => V::Enforced { abi },
+            Self::Waived { kernel } => V::Waived {
+                kernel: kernel.to_string(),
+            },
+            Self::NotApplied => V::NotApplied,
+        }
+    }
+}
+
+/// The node operator's explicit acceptance that a guest whose kernel cannot
+/// enforce Landlock at [`MIN_LANDLOCK_ABI`] may still run its workload and
+/// `/v1/run` children, filesystem-unconfined (#2696 P3c).
+///
+/// A named two-case type rather than a `bool` (ADR 0007 A), with no `Default`
+/// (B-1): the absent case is the refusal. It reaches the tool-proxy only as
+/// `--workload-without-landlock`, which guest-init passes when the node put
+/// `guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG` on the kernel command line.
+/// It changes nothing on a kernel that has Landlock: the waiver cannot turn an
+/// enforceable ruleset off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LandlockWaiver {
+    /// No waiver: a kernel without Landlock refuses every `MicroVM` child.
+    Absent,
+    /// The operator waived Landlock for kernels that lack it.
+    Explicit,
 }
 
 /// Which syscall filter a confined child installs (#2696 P3b).
@@ -215,20 +307,38 @@ impl ChildConfinement {
     ///   [`ContainmentMode::Unsandboxed`] on a non-root runtime without
     ///   [`UnsandboxedOptIn::Explicit`].
     ///
+    /// * [`NucleusError::LandlockUnavailable`] for [`ContainmentMode::MicroVM`]
+    ///   on a kernel below [`MIN_LANDLOCK_ABI`] without
+    ///   [`LandlockWaiver::Explicit`].
+    ///
     /// A root runtime's child drops to [`DEFAULT_CHILD_UID`] in every mode
     /// (owner decision 2), so it needs no opt-in.
-    pub fn for_containment(mode: ContainmentMode, opt_in: UnsandboxedOptIn) -> Result<Self> {
-        Self::decide(mode, runtime_uid(), opt_in)
+    pub fn for_containment(
+        mode: ContainmentMode,
+        opt_in: UnsandboxedOptIn,
+        landlock: LandlockWaiver,
+    ) -> Result<Self> {
+        Self::decide(
+            mode,
+            runtime_uid(),
+            opt_in,
+            LandlockSupport::probe(),
+            landlock,
+        )
     }
 
-    /// The decision itself, with the runtime's uid as an input so the root
-    /// case is testable without root.
+    /// The decision itself, with the runtime's uid and the kernel's Landlock
+    /// support as inputs so the root and no-Landlock cases are testable
+    /// anywhere.
     pub(crate) fn decide(
         mode: ContainmentMode,
         runtime_uid: u32,
         opt_in: UnsandboxedOptIn,
+        kernel: LandlockSupport,
+        landlock: LandlockWaiver,
     ) -> Result<Self> {
         let syscalls = Self::syscall_filter_for(mode)?;
+        let filesystem = || Self::filesystem_for(mode, kernel, landlock);
         // Exhaustive and `_`-free on purpose (ADR 0007 B-3): a new mode does
         // not compile until its children's confinement is written here.
         match mode {
@@ -238,7 +348,7 @@ impl ChildConfinement {
             // namespace or seccomp confinement" (its `syscalls` is
             // `Unfiltered`), but a root runtime can always drop, so it does.
             ContainmentMode::Unsandboxed | ContainmentMode::HostHardened if runtime_uid == 0 => {
-                Self::separate(DEFAULT_CHILD_UID, runtime_uid, syscalls)
+                Self::separate(DEFAULT_CHILD_UID, runtime_uid, syscalls, filesystem)
             }
             ContainmentMode::Unsandboxed => Self::bare(runtime_uid, opt_in),
             ContainmentMode::HostHardened => Ok(Self {
@@ -248,7 +358,9 @@ impl ChildConfinement {
             // tool-proxy is PID 1 and root, and holds every pod secret. A
             // command it runs for the agent is separated from it exactly as
             // the workload is — or not run.
-            ContainmentMode::MicroVM => Self::separate(DEFAULT_CHILD_UID, runtime_uid, syscalls),
+            ContainmentMode::MicroVM => {
+                Self::separate(DEFAULT_CHILD_UID, runtime_uid, syscalls, filesystem)
+            }
         }
     }
 
@@ -293,12 +405,22 @@ impl ChildConfinement {
     /// * [`NucleusError::UnsandboxedNotOptedIn`] for the bare tier
     ///   (`Unsandboxed`, default uid, non-root runtime) without
     ///   [`UnsandboxedOptIn::Explicit`].
+    /// * [`NucleusError::LandlockUnavailable`] under `MicroVM` on a kernel
+    ///   below [`MIN_LANDLOCK_ABI`] without [`LandlockWaiver::Explicit`].
     pub fn workload(
         mode: ContainmentMode,
         requested: Option<u32>,
         opt_in: UnsandboxedOptIn,
+        landlock: LandlockWaiver,
     ) -> Result<Self> {
-        Self::decide_workload(mode, requested, runtime_uid(), opt_in)
+        Self::decide_workload(
+            mode,
+            requested,
+            runtime_uid(),
+            opt_in,
+            LandlockSupport::probe(),
+            landlock,
+        )
     }
 
     pub(crate) fn decide_workload(
@@ -306,9 +428,12 @@ impl ChildConfinement {
         requested: Option<u32>,
         runtime_uid: u32,
         opt_in: UnsandboxedOptIn,
+        kernel: LandlockSupport,
+        landlock: LandlockWaiver,
     ) -> Result<Self> {
         let uid = requested.unwrap_or(DEFAULT_CHILD_UID);
         let syscalls = Self::syscall_filter_for(mode)?;
+        let filesystem = || Self::filesystem_for(mode, kernel, landlock);
         match mode {
             ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
             // The bare host tier, declared. A root runtime still drops (a
@@ -321,10 +446,10 @@ impl ChildConfinement {
             // mode is not, by itself, consent to a same-uid workload.
             ContainmentMode::Unsandboxed => match requested {
                 None if runtime_uid != 0 => Self::bare(runtime_uid, opt_in),
-                None | Some(_) => Self::separate(uid, runtime_uid, syscalls),
+                None | Some(_) => Self::separate(uid, runtime_uid, syscalls, filesystem),
             },
             ContainmentMode::HostHardened | ContainmentMode::MicroVM => {
-                Self::separate(uid, runtime_uid, syscalls)
+                Self::separate(uid, runtime_uid, syscalls, filesystem)
             }
         }
     }
@@ -345,7 +470,16 @@ impl ChildConfinement {
     /// "This child must not share the runtime's authority" — the one rule the
     /// workload and the MicroVM `/v1/run` child share. A drop, or a named
     /// refusal; there is no third outcome.
-    fn separate(uid: u32, runtime_uid: u32, syscalls: SyscallFilter) -> Result<Self> {
+    ///
+    /// The filesystem is decided only once the uid boundary holds, so a
+    /// runtime that cannot drop is refused for THAT, by name, whatever its
+    /// kernel offers.
+    fn separate(
+        uid: u32,
+        runtime_uid: u32,
+        syscalls: SyscallFilter,
+        filesystem: impl FnOnce() -> Result<FilesystemConfinement>,
+    ) -> Result<Self> {
         if uid == runtime_uid {
             Err(NucleusError::ChildSharesRuntimeUid { uid })
         } else if runtime_uid != 0 {
@@ -355,8 +489,41 @@ impl ChildConfinement {
             })
         } else {
             Ok(Self {
-                posture: Posture::DropTo(uid, syscalls),
+                posture: Posture::DropTo(uid, syscalls, filesystem()?),
             })
+        }
+    }
+
+    /// The ONE answer to "how is this mode's children's filesystem held"
+    /// (#2696 P3c, ADR 0007 G-1), for the workload and the `/v1/run` child
+    /// alike. Exhaustive with no `_` arm (B-3, E).
+    ///
+    /// `MicroVM` enforces the guest layout's Landlock ruleset, or refuses:
+    /// below [`MIN_LANDLOCK_ABI`] the child does not start unless the operator
+    /// waived it, and a waiver is a named posture, not a silent skip (A-1).
+    fn filesystem_for(
+        mode: ContainmentMode,
+        kernel: LandlockSupport,
+        landlock: LandlockWaiver,
+    ) -> Result<FilesystemConfinement> {
+        match mode {
+            ContainmentMode::Unconfigured => Err(NucleusError::IsolationNotConfigured),
+            // The bare tier attests nothing about confinement; `HostHardened`
+            // runs on the host, whose filesystem is not the guest layout the
+            // ruleset is compiled from.
+            ContainmentMode::Unsandboxed | ContainmentMode::HostHardened => {
+                Ok(FilesystemConfinement::NotApplied)
+            }
+            ContainmentMode::MicroVM => match (kernel.enforceable(), landlock) {
+                (Some(abi), LandlockWaiver::Absent | LandlockWaiver::Explicit) => {
+                    Ok(FilesystemConfinement::Landlock { abi })
+                }
+                (None, LandlockWaiver::Explicit) => Ok(FilesystemConfinement::Waived { kernel }),
+                (None, LandlockWaiver::Absent) => Err(NucleusError::LandlockUnavailable {
+                    kernel: kernel.to_string(),
+                    minimum: MIN_LANDLOCK_ABI,
+                }),
+            },
         }
     }
 
@@ -364,7 +531,7 @@ impl ChildConfinement {
     #[must_use]
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
-            Posture::DropTo(uid, _) => ChildUid::Distinct(uid),
+            Posture::DropTo(uid, ..) => ChildUid::Distinct(uid),
             Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
         }
     }
@@ -374,7 +541,38 @@ impl ChildConfinement {
     pub fn syscall_filter(&self) -> SyscallFilter {
         match self.posture {
             Posture::Unsandboxed => SyscallFilter::Unfiltered,
-            Posture::Restricted(filter) | Posture::DropTo(_, filter) => filter,
+            Posture::Restricted(filter) | Posture::DropTo(_, filter, _) => filter,
+        }
+    }
+
+    /// How the child's filesystem is held (#2696 P3c).
+    #[must_use]
+    pub fn filesystem(&self) -> FilesystemConfinement {
+        match self.posture {
+            Posture::DropTo(_, _, fs) => fs,
+            Posture::Unsandboxed | Posture::Restricted(_) => FilesystemConfinement::NotApplied,
+        }
+    }
+
+    /// Compile this child's Landlock ruleset NOW, in the parent, and name
+    /// what stopped it (#2696 P3c). A spawn site calls this before the spawn,
+    /// so an operator sees [`NucleusError::LandlockRuleset`] with the path
+    /// and the reason, not the bare errno the `pre_exec` hook can carry back.
+    /// The hook still refuses on its own if the compile fails there: this is
+    /// the naming, not the enforcement.
+    ///
+    /// # Errors
+    /// [`NucleusError::LandlockRuleset`] under
+    /// [`FilesystemConfinement::Landlock`] when the ruleset cannot be compiled.
+    pub fn preflight_filesystem(&self) -> Result<()> {
+        match self.filesystem() {
+            FilesystemConfinement::Landlock { abi } => landlock::Ruleset::compile(abi)
+                .map(drop)
+                .map_err(|e| NucleusError::LandlockRuleset {
+                    path: e.path.display().to_string(),
+                    error: e.error,
+                }),
+            FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => Ok(()),
         }
     }
 
@@ -436,14 +634,21 @@ impl ChildConfinement {
     /// compiled or installed fails the spawn (`Unsupported`, or the kernel's
     /// errno); it is never skipped.
     ///
+    /// The Landlock ruleset, under [`FilesystemConfinement::Landlock`], is
+    /// compiled here too, and the hook calls `landlock_restrict_self` after
+    /// `no_new_privs` and before the syscall filter. A ruleset that cannot be
+    /// compiled or applied fails the spawn the same way.
+    ///
     /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
     pub fn apply(&self, cmd: &mut std::process::Command) {
         match self.posture {
             Posture::Unsandboxed => {}
-            Posture::Restricted(filter) => imp::install(cmd, filter),
-            Posture::DropTo(uid, filter) => {
+            Posture::Restricted(filter) => {
+                imp::install(cmd, filter, FilesystemConfinement::NotApplied);
+            }
+            Posture::DropTo(uid, filter, filesystem) => {
                 imp::drop_to(cmd, uid);
-                imp::install(cmd, filter);
+                imp::install(cmd, filter, filesystem);
             }
         }
     }
@@ -544,9 +749,10 @@ mod hook {
 mod imp {
     use std::io;
 
-    use super::SyscallFilter;
+    use super::landlock::Ruleset;
     use super::seccomp::Program;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
+    use super::{FilesystemConfinement, SyscallFilter};
 
     // Generous-but-bounded: contain abuse without breaking build/test work.
     const RLIMIT_NPROC_MAX: libc::rlim_t = 512;
@@ -579,10 +785,22 @@ mod imp {
         Refuse,
     }
 
+    /// The Landlock ruleset as the hook sees it: decided AND compiled in the
+    /// parent. Three cases for the same reason as [`Seccomp`].
+    enum Landlock {
+        /// `FilesystemConfinement::Waived` or `NotApplied`.
+        NotRequested,
+        /// The compiled ruleset, applied after `no_new_privs`.
+        Restrict(Ruleset),
+        /// The ruleset was required and could not be compiled, so the spawn
+        /// fails. The reason was logged in the parent.
+        Refuse,
+    }
+
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
-    fn harden_child(seccomp: &mut Seccomp) -> io::Result<()> {
+    fn harden_child(seccomp: &mut Seccomp, landlock: &mut Landlock) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
         // scalars or a pointer to a fully-initialized local `rlimit`; none
         // allocates or takes a lock, satisfying the `pre_exec` contract.
@@ -649,6 +867,15 @@ mod imp {
                     return Err(io::Error::last_os_error());
                 }
             }
+            // The filesystem ruleset: after `no_new_privs` (without which an
+            // unprivileged `landlock_restrict_self` is `EPERM`) and before the
+            // syscall filter, so the filter can never stand between the
+            // child and its own restriction.
+            match landlock {
+                Landlock::NotRequested => {}
+                Landlock::Refuse => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
+                Landlock::Restrict(ruleset) => ruleset.restrict_self()?,
+            }
             // The syscall filter, LAST: after the uid drop (std did it before
             // this hook ran) and after `no_new_privs`. `fprog` borrows the
             // parent-compiled instructions, and `ErrorKind` errors do not
@@ -672,9 +899,30 @@ mod imp {
         Ok(())
     }
 
-    /// Install the self-restriction hook, with `filter` compiled here, in the
-    /// parent.
-    pub(super) fn install(cmd: &mut std::process::Command, filter: SyscallFilter) {
+    /// Install the self-restriction hook, with `filter` and the filesystem
+    /// ruleset compiled here, in the parent.
+    pub(super) fn install(
+        cmd: &mut std::process::Command,
+        filter: SyscallFilter,
+        filesystem: FilesystemConfinement,
+    ) {
+        let mut landlock = match filesystem {
+            FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { .. } => {
+                Landlock::NotRequested
+            }
+            FilesystemConfinement::Landlock { abi } => match Ruleset::compile(abi) {
+                Ok(ruleset) => Landlock::Restrict(ruleset),
+                Err(e) => {
+                    tracing::error!(
+                        path = %e.path.display(),
+                        error = %e.error,
+                        abi,
+                        "the Landlock ruleset could not be compiled; refusing the confined spawn"
+                    );
+                    Landlock::Refuse
+                }
+            },
+        };
         let mut seccomp = match filter {
             SyscallFilter::Unfiltered => Seccomp::NotRequested,
             SyscallFilter::WorkloadDenylist => match Program::workload_denylist() {
@@ -688,23 +936,34 @@ mod imp {
                 }
             },
         };
-        super::hook::pre_exec(cmd, move || harden_child(&mut seccomp));
+        super::hook::pre_exec(cmd, move || harden_child(&mut seccomp, &mut landlock));
     }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
 mod imp {
-    use super::SyscallFilter;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
+    use super::{FilesystemConfinement, SyscallFilter};
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
     /// A posture that requires the syscall filter cannot have it here, so its
     /// spawn fails rather than running unfiltered (ADR 0007 A-1).
-    pub(super) fn install(cmd: &mut std::process::Command, filter: SyscallFilter) {
-        match filter {
-            SyscallFilter::Unfiltered => {}
-            SyscallFilter::WorkloadDenylist => {
+    ///
+    /// Landlock likewise: the probe answers `Unavailable` off Linux, so a
+    /// `Landlock` posture cannot be decided here, and if one were, it refuses.
+    pub(super) fn install(
+        cmd: &mut std::process::Command,
+        filter: SyscallFilter,
+        filesystem: FilesystemConfinement,
+    ) {
+        let landlock_required = match filesystem {
+            FilesystemConfinement::Landlock { .. } => true,
+            FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => false,
+        };
+        match (filter, landlock_required) {
+            (SyscallFilter::Unfiltered, false) => {}
+            (SyscallFilter::WorkloadDenylist, _) | (SyscallFilter::Unfiltered, true) => {
                 // std transports a pre_exec error by errno; a bare ErrorKind loses
                 // its identity and arrives in the parent as EINVAL.
                 super::hook::pre_exec(cmd, || {
@@ -719,6 +978,11 @@ mod imp {
 mod tests {
     use super::*;
 
+    /// A kernel that enforces, and no waiver: the posture every test below
+    /// that is not about Landlock runs under.
+    const LL: LandlockSupport = LandlockSupport::Abi(MIN_LANDLOCK_ABI);
+    const NO: LandlockWaiver = LandlockWaiver::Absent;
+
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn a_required_syscall_filter_refuses_the_spawn_off_linux() {
@@ -726,6 +990,8 @@ mod tests {
             ContainmentMode::HostHardened,
             1000,
             UnsandboxedOptIn::Absent,
+            LL,
+            NO,
         )
         .expect("the posture requires a filter");
         let mut cmd = std::process::Command::new("/bin/true");
@@ -747,7 +1013,7 @@ mod tests {
             ContainmentMode::HostHardened,
             ContainmentMode::MicroVM,
         ] {
-            let c = ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent)
+            let c = ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent, LL, NO)
                 .expect("a declared mode confines");
             assert_eq!(c.drop_uid(), Some(DEFAULT_CHILD_UID), "{mode:?}");
             assert!(c.restricts(), "{mode:?}");
@@ -765,7 +1031,9 @@ mod tests {
                 ContainmentMode::Unsandboxed,
                 None,
                 1000,
-                UnsandboxedOptIn::Absent
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO
             ),
             Err(NucleusError::UnsandboxedNotOptedIn { runtime_uid: 1000 })
         ));
@@ -774,6 +1042,8 @@ mod tests {
             None,
             1000,
             UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
         )
         .expect("the opted-in bare tier runs");
         assert!(c.is_unsandboxed());
@@ -781,9 +1051,15 @@ mod tests {
         // The opt-in is not needed where nothing shares a uid: a root runtime
         // drops, with or without it.
         for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
-            let c =
-                ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 0, opt_in)
-                    .unwrap();
+            let c = ChildConfinement::decide_workload(
+                ContainmentMode::Unsandboxed,
+                None,
+                0,
+                opt_in,
+                LL,
+                NO,
+            )
+            .unwrap();
             assert_eq!(c.child_uid(), ChildUid::Distinct(DEFAULT_CHILD_UID));
         }
     }
@@ -795,17 +1071,31 @@ mod tests {
     #[test]
     fn a_bare_run_child_needs_the_same_opt_in_as_the_workload() {
         assert!(matches!(
-            ChildConfinement::decide(ContainmentMode::Unsandboxed, 1000, UnsandboxedOptIn::Absent),
+            ChildConfinement::decide(
+                ContainmentMode::Unsandboxed,
+                1000,
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO
+            ),
             Err(NucleusError::UnsandboxedNotOptedIn { runtime_uid: 1000 })
         ));
         for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
             assert_eq!(
-                ChildConfinement::decide(ContainmentMode::Unsandboxed, 1000, opt_in).ok(),
-                ChildConfinement::decide_workload(ContainmentMode::Unsandboxed, None, 1000, opt_in)
-                    .ok(),
+                ChildConfinement::decide(ContainmentMode::Unsandboxed, 1000, opt_in, LL, NO).ok(),
+                ChildConfinement::decide_workload(
+                    ContainmentMode::Unsandboxed,
+                    None,
+                    1000,
+                    opt_in,
+                    LL,
+                    NO
+                )
+                .ok(),
                 "{opt_in:?}: the run child and the default workload are one decision"
             );
-            let c = ChildConfinement::decide(ContainmentMode::Unsandboxed, 0, opt_in).unwrap();
+            let c =
+                ChildConfinement::decide(ContainmentMode::Unsandboxed, 0, opt_in, LL, NO).unwrap();
             assert_eq!(c.drop_uid(), Some(DEFAULT_CHILD_UID));
         }
     }
@@ -817,7 +1107,14 @@ mod tests {
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
                 matches!(
-                    ChildConfinement::decide_workload(mode, None, 1000, UnsandboxedOptIn::Explicit),
+                    ChildConfinement::decide_workload(
+                        mode,
+                        None,
+                        1000,
+                        UnsandboxedOptIn::Explicit,
+                        LL,
+                        NO
+                    ),
                     Err(NucleusError::ChildSeparationUnavailable { .. })
                 ),
                 "{mode:?}"
@@ -830,8 +1127,14 @@ mod tests {
     /// Executor handed the spawn home `None` for every mode but HostHardened.
     #[test]
     fn a_microvm_child_of_a_root_runtime_drops_to_the_workload_uid_and_is_restricted() {
-        let c = ChildConfinement::decide(ContainmentMode::MicroVM, 0, UnsandboxedOptIn::Absent)
-            .expect("MicroVM confines");
+        let c = ChildConfinement::decide(
+            ContainmentMode::MicroVM,
+            0,
+            UnsandboxedOptIn::Absent,
+            LL,
+            NO,
+        )
+        .expect("MicroVM confines");
         assert_eq!(c.drop_uid(), Some(DEFAULT_CHILD_UID));
         assert_eq!(c.drop_uid(), Some(65534));
         assert!(c.restricts(), "no_new_privs + rlimits");
@@ -847,14 +1150,18 @@ mod tests {
                 ChildConfinement::decide(
                     ContainmentMode::MicroVM,
                     runtime,
-                    UnsandboxedOptIn::Absent
+                    UnsandboxedOptIn::Absent,
+                    LL,
+                    NO
                 )
                 .ok(),
                 ChildConfinement::decide_workload(
                     ContainmentMode::MicroVM,
                     None,
                     runtime,
-                    UnsandboxedOptIn::Absent
+                    UnsandboxedOptIn::Absent,
+                    LL,
+                    NO
                 )
                 .ok(),
             );
@@ -868,7 +1175,13 @@ mod tests {
     #[test]
     fn a_non_root_runtime_refuses_a_microvm_child_by_name() {
         assert!(matches!(
-            ChildConfinement::decide(ContainmentMode::MicroVM, 1000, UnsandboxedOptIn::Absent),
+            ChildConfinement::decide(
+                ContainmentMode::MicroVM,
+                1000,
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO
+            ),
             Err(NucleusError::ChildSeparationUnavailable {
                 runtime_uid: 1000,
                 child_uid: DEFAULT_CHILD_UID,
@@ -885,7 +1198,9 @@ mod tests {
                 for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
                     assert!(
                         matches!(
-                            ChildConfinement::decide_workload(mode, requested, 1000, opt_in),
+                            ChildConfinement::decide_workload(
+                                mode, requested, 1000, opt_in, LL, NO
+                            ),
                             Err(NucleusError::ChildSeparationUnavailable { .. })
                         ),
                         "{mode:?} / {requested:?} / {opt_in:?}"
@@ -904,6 +1219,8 @@ mod tests {
             None,
             1000,
             UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
         )
         .expect("the declared, opted-in bare tier runs");
         assert!(c.is_unsandboxed());
@@ -915,7 +1232,9 @@ mod tests {
                     ContainmentMode::Unsandboxed,
                     Some(4242),
                     1000,
-                    opt_in
+                    opt_in,
+                    LL,
+                    NO
                 ),
                 Err(NucleusError::ChildSeparationUnavailable { .. })
             ));
@@ -932,11 +1251,11 @@ mod tests {
         ] {
             for opt_in in [UnsandboxedOptIn::Absent, UnsandboxedOptIn::Explicit] {
                 assert!(matches!(
-                    ChildConfinement::decide_workload(mode, Some(1000), 1000, opt_in),
+                    ChildConfinement::decide_workload(mode, Some(1000), 1000, opt_in, LL, NO),
                     Err(NucleusError::ChildSharesRuntimeUid { uid: 1000 })
                 ));
                 assert!(matches!(
-                    ChildConfinement::decide_workload(mode, Some(0), 0, opt_in),
+                    ChildConfinement::decide_workload(mode, Some(0), 0, opt_in, LL, NO),
                     Err(NucleusError::ChildSharesRuntimeUid { uid: 0 })
                 ));
             }
@@ -951,6 +1270,8 @@ mod tests {
             Some(4242),
             0,
             UnsandboxedOptIn::Absent,
+            LL,
+            NO,
         )
         .unwrap();
         assert_eq!(c.child_uid(), ChildUid::Distinct(4242));
@@ -974,8 +1295,9 @@ mod tests {
                     ),
                     (ContainmentMode::Unsandboxed, SyscallFilter::Unfiltered),
                 ] {
-                    let run_child = ChildConfinement::decide(mode, runtime, opt_in);
-                    let workload = ChildConfinement::decide_workload(mode, None, runtime, opt_in);
+                    let run_child = ChildConfinement::decide(mode, runtime, opt_in, LL, NO);
+                    let workload =
+                        ChildConfinement::decide_workload(mode, None, runtime, opt_in, LL, NO);
                     for (what, got) in [("run child", run_child), ("workload", workload)] {
                         // A refusal (non-root MicroVM, unopted bare tier) has
                         // no filter to check; every posture that runs does.
@@ -992,16 +1314,24 @@ mod tests {
         }
         // Non-vacuity: the filtering rows above were actually reached.
         assert_eq!(
-            ChildConfinement::decide(ContainmentMode::MicroVM, 0, UnsandboxedOptIn::Absent)
-                .unwrap()
-                .syscall_filter(),
+            ChildConfinement::decide(
+                ContainmentMode::MicroVM,
+                0,
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO
+            )
+            .unwrap()
+            .syscall_filter(),
             SyscallFilter::WorkloadDenylist
         );
         assert_eq!(
             ChildConfinement::decide(
                 ContainmentMode::HostHardened,
                 1000,
-                UnsandboxedOptIn::Absent
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO
             )
             .unwrap()
             .syscall_filter(),
@@ -1009,17 +1339,162 @@ mod tests {
         );
         // A root runtime's Unsandboxed child drops its uid and is still
         // unfiltered.
-        let root_bare =
-            ChildConfinement::decide(ContainmentMode::Unsandboxed, 0, UnsandboxedOptIn::Absent)
-                .unwrap();
+        let root_bare = ChildConfinement::decide(
+            ContainmentMode::Unsandboxed,
+            0,
+            UnsandboxedOptIn::Absent,
+            LL,
+            NO,
+        )
+        .unwrap();
         assert_eq!(root_bare.drop_uid(), Some(DEFAULT_CHILD_UID));
         assert_eq!(root_bare.syscall_filter(), SyscallFilter::Unfiltered);
+    }
+
+    /// The kernels a MicroVM child must refuse without a waiver: Landlock
+    /// compiled out or disabled at boot (the 6.1.141 guest, #3148), and ABI 1.
+    const BELOW_MINIMUM: [LandlockSupport; 2] =
+        [LandlockSupport::Unavailable, LandlockSupport::Abi(1)];
+
+    /// #2696 P3c, fail closed (A-19): on a kernel that cannot enforce the
+    /// ruleset, a MicroVM child, the workload and the `/v1/run` child alike,
+    /// is REFUSED by name. Red if the absent-waiver arm ever answers anything
+    /// but the refusal (a skipped ruleset is "could not look ⇒ fine").
+    #[test]
+    fn a_microvm_child_on_a_kernel_without_landlock_is_refused_by_name() {
+        for kernel in BELOW_MINIMUM {
+            for requested in [None, Some(4242)] {
+                let workload = ChildConfinement::decide_workload(
+                    ContainmentMode::MicroVM,
+                    requested,
+                    0,
+                    UnsandboxedOptIn::Absent,
+                    kernel,
+                    LandlockWaiver::Absent,
+                );
+                assert!(
+                    matches!(
+                        workload,
+                        Err(NucleusError::LandlockUnavailable {
+                            minimum: MIN_LANDLOCK_ABI,
+                            ..
+                        })
+                    ),
+                    "{kernel:?} / {requested:?}: {workload:?}"
+                );
+            }
+            let run_child = ChildConfinement::decide(
+                ContainmentMode::MicroVM,
+                0,
+                UnsandboxedOptIn::Absent,
+                kernel,
+                LandlockWaiver::Absent,
+            );
+            assert!(
+                matches!(run_child, Err(NucleusError::LandlockUnavailable { .. })),
+                "{kernel:?}: {run_child:?}"
+            );
+        }
+        // The refusal names the way through, so an operator is not left to
+        // guess which flag means "I accept this".
+        let msg = ChildConfinement::decide(
+            ContainmentMode::MicroVM,
+            0,
+            UnsandboxedOptIn::Absent,
+            BELOW_MINIMUM[0],
+            LandlockWaiver::Absent,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(msg.contains("--allow-workload-without-landlock"), "{msg}");
+    }
+
+    /// The operator's waiver admits the child and SAYS so: the posture is
+    /// `Waived` with the kernel's answer, never `Landlock`, and the uid drop
+    /// and syscall filter are untouched by it.
+    #[test]
+    fn the_waiver_admits_the_child_as_waived_never_as_confined() {
+        for kernel in BELOW_MINIMUM {
+            let c = ChildConfinement::decide_workload(
+                ContainmentMode::MicroVM,
+                None,
+                0,
+                UnsandboxedOptIn::Absent,
+                kernel,
+                LandlockWaiver::Explicit,
+            )
+            .expect("a waived kernel admits");
+            assert_eq!(c.filesystem(), FilesystemConfinement::Waived { kernel });
+            assert_eq!(c.drop_uid(), Some(DEFAULT_CHILD_UID));
+            assert_eq!(c.syscall_filter(), SyscallFilter::WorkloadDenylist);
+        }
+    }
+
+    /// A waiver cannot turn an enforceable ruleset off: on a Landlock kernel
+    /// the child is confined whether or not the operator waived it.
+    #[test]
+    fn a_waiver_does_not_disable_landlock_on_a_kernel_that_has_it() {
+        for abi in [2, 3, 7] {
+            for landlock in [LandlockWaiver::Absent, LandlockWaiver::Explicit] {
+                let c = ChildConfinement::decide(
+                    ContainmentMode::MicroVM,
+                    0,
+                    UnsandboxedOptIn::Absent,
+                    LandlockSupport::Abi(abi),
+                    landlock,
+                )
+                .unwrap();
+                assert_eq!(c.filesystem(), FilesystemConfinement::Landlock { abi });
+            }
+        }
+    }
+
+    /// Only the guest gets the guest layout's ruleset. `HostHardened` and the
+    /// bare tier are not filesystem-confined by it, on any kernel, and a
+    /// kernel without Landlock never refuses them.
+    #[test]
+    fn only_microvm_children_are_held_to_the_guest_ruleset() {
+        for kernel in BELOW_MINIMUM.into_iter().chain([LL]) {
+            for (mode, runtime) in [
+                (ContainmentMode::HostHardened, 0),
+                (ContainmentMode::HostHardened, 1000),
+                (ContainmentMode::Unsandboxed, 0),
+            ] {
+                let c =
+                    ChildConfinement::decide(mode, runtime, UnsandboxedOptIn::Absent, kernel, NO)
+                        .unwrap_or_else(|e| panic!("{mode:?}/{runtime}/{kernel:?}: {e}"));
+                assert_eq!(c.filesystem(), FilesystemConfinement::NotApplied);
+            }
+        }
+    }
+
+    /// The uid boundary is decided first: a non-root runtime is refused for
+    /// the separation it cannot do, whatever its kernel, so the refusal an
+    /// operator sees names the actual first problem.
+    #[test]
+    fn a_non_root_microvm_refusal_names_the_uid_before_the_kernel() {
+        assert!(matches!(
+            ChildConfinement::decide(
+                ContainmentMode::MicroVM,
+                1000,
+                UnsandboxedOptIn::Absent,
+                BELOW_MINIMUM[0],
+                NO
+            ),
+            Err(NucleusError::ChildSeparationUnavailable { .. })
+        ));
     }
 
     #[test]
     fn unconfigured_is_refused_not_passed_through() {
         assert!(matches!(
-            ChildConfinement::decide(ContainmentMode::Unconfigured, 0, UnsandboxedOptIn::Absent),
+            ChildConfinement::decide(
+                ContainmentMode::Unconfigured,
+                0,
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO
+            ),
             Err(NucleusError::IsolationNotConfigured)
         ));
         assert!(matches!(
@@ -1027,7 +1502,9 @@ mod tests {
                 ContainmentMode::Unconfigured,
                 None,
                 0,
-                UnsandboxedOptIn::Explicit
+                UnsandboxedOptIn::Explicit,
+                LL,
+                NO
             ),
             Err(NucleusError::IsolationNotConfigured)
         ));
@@ -1040,6 +1517,8 @@ mod tests {
             ContainmentMode::HostHardened,
             1000,
             UnsandboxedOptIn::Absent,
+            LL,
+            NO,
         )
         .unwrap();
         assert_eq!(c.drop_uid(), None);
@@ -1054,6 +1533,8 @@ mod tests {
             ContainmentMode::Unsandboxed,
             1000,
             UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
         )
         .unwrap();
         assert!(c.is_unsandboxed());
@@ -1062,7 +1543,7 @@ mod tests {
         assert!(!c.closes_inherited_fds());
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
-                ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent)
+                ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent, LL, NO)
                     .is_ok_and(|c| !c.is_unsandboxed()),
                 "{mode:?}"
             );

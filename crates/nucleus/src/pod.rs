@@ -34,6 +34,11 @@ pub struct PodSpec {
     /// `--unsandboxed`). `Absent` by default: a non-root `Unsandboxed` pod
     /// then refuses every spawn by name. See [`crate::UnsandboxedOptIn`].
     pub unsandboxed_opt_in: crate::UnsandboxedOptIn,
+    /// The node operator's waiver of Landlock for a guest kernel that lacks
+    /// it (the tool-proxy's `--workload-without-landlock`, #2696 P3c).
+    /// `Absent` by default: a `MicroVM` pod on such a kernel then refuses
+    /// every spawn by name. See [`crate::LandlockWaiver`].
+    pub landlock_waiver: crate::LandlockWaiver,
     /// Third-party artifacts this pod pulls (images/packages/models/MCP servers).
     /// Each must carry a verified provenance attestation under [`Self::provenance`]
     /// or the pod refuses to spawn (most-paranoid next-bet #3).
@@ -62,6 +67,7 @@ impl PodSpec {
             budget_model: BudgetModel::default(),
             containment: ContainmentMode::Unconfigured,
             unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
+            landlock_waiver: crate::LandlockWaiver::Absent,
             artifacts: Vec::new(),
             attestations: Vec::new(),
             provenance: nucleus_provenance::ProvenancePolicy::Unconfigured,
@@ -79,6 +85,13 @@ impl PodSpec {
     #[must_use]
     pub fn with_unsandboxed_opt_in(mut self, opt_in: crate::UnsandboxedOptIn) -> Self {
         self.unsandboxed_opt_in = opt_in;
+        self
+    }
+
+    /// Carry the node operator's Landlock waiver to this pod's executor.
+    #[must_use]
+    pub fn with_landlock_waiver(mut self, waiver: crate::LandlockWaiver) -> Self {
+        self.landlock_waiver = waiver;
         self
     }
 
@@ -174,6 +187,7 @@ impl PodRuntime {
             match crate::ChildConfinement::for_containment(
                 spec.containment,
                 spec.unsandboxed_opt_in,
+                spec.landlock_waiver,
             ) {
                 Ok(confinement) => sandbox.owned_for(confinement),
                 Err(_) => sandbox,
@@ -212,7 +226,8 @@ impl PodRuntime {
             .with_time_guard(&self.time_guard)
             .with_budget_model(self.spec.budget_model)
             .with_containment(self.spec.containment)
-            .with_unsandboxed_opt_in(self.spec.unsandboxed_opt_in);
+            .with_unsandboxed_opt_in(self.spec.unsandboxed_opt_in)
+            .with_landlock_waiver(self.spec.landlock_waiver);
 
         if let Some(ref approver) = self.approver {
             executor = executor.with_approver(approver.clone());

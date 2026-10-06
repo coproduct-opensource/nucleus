@@ -569,9 +569,13 @@ population_floor = 23
 # 2026-10-05 (#2696 P5): the host agent launch takes its --unsandboxed
 # declaration by value beside the shared launch protocol's inputs, an expiring
 # clippy::too_many_arguments waiver. Measured 30/148 = 20.27%; tighten both pins.
-floor_bp = 2027
+# 2026-10-06 (#2696 P3c): the workload supervisor takes the Landlock waiver
+# beside its other decision inputs, an expiring clippy::too_many_arguments
+# waiver (the ruleset itself goes through the `landlock` crate, no `unsafe`).
+# Measured 31/149 = 20.80% (`cargo xtask scorecard`); tighten both pins.
+floor_bp = 2080
 floor_set = "measurement"
-population_floor = 148
+population_floor = 149
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

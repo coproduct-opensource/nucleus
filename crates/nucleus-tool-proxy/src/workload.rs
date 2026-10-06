@@ -369,6 +369,7 @@ impl WorkloadLaunch {
         self,
         containment: nucleus::ContainmentMode,
         opt_in: nucleus::UnsandboxedOptIn,
+        landlock: nucleus::LandlockWaiver,
     ) -> Result<AdmittedWorkloadPlan, Refused> {
         // The workload must never run as the runtime's uid. The runtime holds
         // every per-pod secret in its own environment, and Linux lets a process
@@ -390,8 +391,9 @@ impl WorkloadLaunch {
         // confinement reports as such and the spawn announces -- and only
         // with the operator's explicit `--unsandboxed` (owner decision 1,
         // 2026-10-02); without it the bare tier refuses by name too.
-        let confinement = nucleus::ChildConfinement::workload(containment, self.uid, opt_in)
-            .map_err(|e| Refused(e.to_string()))?;
+        let confinement =
+            nucleus::ChildConfinement::workload(containment, self.uid, opt_in, landlock)
+                .map_err(|e| Refused(e.to_string()))?;
 
         // Reserved-namespace fail-safe — closes the `_ => OrdinaryData`
         // fallthrough in `env_classifier`. A `NUCLEUS_*` key the classifier does
@@ -578,6 +580,13 @@ pub(crate) fn spawn_admitted(
              without ownership of it (expected when the scratch is read-only)"
         );
     }
+    // A ruleset that cannot be compiled refuses the spawn with its path and
+    // reason (`NucleusError::LandlockRuleset`), which reaches the console as
+    // the workload's start error; the pre_exec hook alone could carry back only
+    // an errno (the x86_64 live boot showed "Not supported (os error 95)").
+    confinement
+        .preflight_filesystem()
+        .map_err(std::io::Error::other)?;
     confinement.apply(cmd.as_std_mut());
 
     tracing::info!(
@@ -664,6 +673,11 @@ pub(crate) struct LaunchReceipt {
     /// request, so a non-root runtime that ran the workload at its own uid
     /// still recorded `distinct`.
     pub(crate) uid_boundary: UidBoundary,
+    /// How the workload's filesystem was held, read off the plan's
+    /// confinement (#2696 P3c): the Landlock ABI enforced, or the operator's
+    /// waiver and what the kernel offered instead. In the hashed preimage, so
+    /// a waived launch cannot share a hash with a confined one.
+    pub(crate) filesystem: FilesystemBoundary,
     /// Whether the async-signal-safe hardening hook (groups dropped, gid set,
     /// no_new_privs, rlimits) was applied.
     pub(crate) hardened: bool,
@@ -675,6 +689,42 @@ pub(crate) struct LaunchReceipt {
     /// Commit the resolved values actually passed to env_clear/env, separately
     /// from the authority inventory. Never expose those values in the receipt.
     pub(crate) environment: nucleus_spec::workload_result::EnvironmentIdentity,
+}
+
+/// How the workload's filesystem was held (#2696 P3c). Three values for the
+/// three postures `nucleus::FilesystemConfinement` has; "the kernel could not
+/// and nobody waived it" is a refusal at admission, never a value here.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub(crate) enum FilesystemBoundary {
+    /// The guest layout's Landlock ruleset, at this ABI.
+    Landlock { abi: u32 },
+    /// No Landlock: the kernel offered `kernel`, and the operator waived it.
+    WaivedNoLandlock { kernel: String },
+    /// The containment does not hold the filesystem with Landlock (the bare
+    /// tier, `HostHardened`).
+    NotApplied,
+}
+
+impl FilesystemBoundary {
+    fn of(fs: nucleus::FilesystemConfinement) -> Self {
+        match fs {
+            nucleus::FilesystemConfinement::Landlock { abi } => Self::Landlock { abi },
+            nucleus::FilesystemConfinement::Waived { kernel } => Self::WaivedNoLandlock {
+                kernel: kernel.to_string(),
+            },
+            nucleus::FilesystemConfinement::NotApplied => Self::NotApplied,
+        }
+    }
+
+    /// The receipt preimage's spelling.
+    fn preimage(&self) -> String {
+        match self {
+            Self::Landlock { abi } => format!("landlock:{abi}"),
+            Self::WaivedNoLandlock { kernel } => format!("waived:{kernel}"),
+            Self::NotApplied => "not_applied".to_string(),
+        }
+    }
 }
 
 /// Whether the workload runs under a uid other than the runtime's.
@@ -712,7 +762,8 @@ pub(crate) struct ReceiptEnvEntry {
 }
 
 impl LaunchReceipt {
-    const SCHEMA_VERSION: u32 = 1;
+    /// 2: the preimage gained `fs=` (#2696 P3c).
+    const SCHEMA_VERSION: u32 = 2;
 
     fn from_admitted(plan: &AdmittedWorkloadPlan, hardened: bool, child_pid: Option<u32>) -> Self {
         let env: Vec<ReceiptEnvEntry> = plan
@@ -730,16 +781,18 @@ impl LaunchReceipt {
             nucleus::ChildUid::Distinct(_) => UidBoundary::Distinct,
             nucleus::ChildUid::SharedWithRuntime => UidBoundary::SharedUnsandboxed,
         };
+        let filesystem = FilesystemBoundary::of(plan.confinement.filesystem());
         let argv_len = plan.args.len();
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
             uid_boundary.as_str(),
+            filesystem.preimage(),
         );
         for e in &env {
             preimage.push_str(&format!(
@@ -757,6 +810,7 @@ impl LaunchReceipt {
             env,
             stdio,
             uid_boundary,
+            filesystem,
             hardened,
             argv_len,
             child_pid,
@@ -806,6 +860,7 @@ pub(crate) fn start_if_configured(
     door_app: axum::Router,
     containment: nucleus::ContainmentMode,
     opt_in: nucleus::UnsandboxedOptIn,
+    landlock: nucleus::LandlockWaiver,
 ) -> Result<Option<(tokio::process::Child, LaunchReceipt)>, crate::ApiError> {
     let Some(w) = spec.spec.workload.as_ref() else {
         return Ok(None);
@@ -817,7 +872,7 @@ pub(crate) fn start_if_configured(
         &spec.spec.work_dir,
         &spec.spec.credentialed_egress,
     )
-    .admit(containment, opt_in)
+    .admit(containment, opt_in, landlock)
     .map_err(|e| {
         crate::ApiError::Spec(format!("refused to launch workload {:?}: {e}", w.command))
     })?;
@@ -900,7 +955,7 @@ mod tests {
             "test -d \"$HOME\" && printf %s \"$HOME\"".into(),
         ];
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit(HARNESS, OPTED_IN)
+            .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
         let (child, _receipt) = spawn_admitted(plan).unwrap();
         let output = child.wait_with_output().await.unwrap();
@@ -962,7 +1017,7 @@ mod tests {
             dir.path(),
             &[],
         )
-        .admit(HARNESS, OPTED_IN);
+        .admit(HARNESS, OPTED_IN, NO_WAIVER);
         let err = refused.expect_err("a proxy credential must not cross");
         assert!(err.to_string().contains("workload door"), "{err}");
     }
@@ -988,7 +1043,7 @@ mod tests {
     fn the_door_admits_the_uid_the_child_runs_as() {
         let dir = tempfile::tempdir().expect("tempdir");
         let plan = WorkloadLaunch::build(&spec_with(&[]), DOOR, dir.path(), &[])
-            .admit(HARNESS, OPTED_IN)
+            .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .expect("a clean spec admits");
         let expected = if nix_getuid() == 0 {
             RunsAs::Dropped(DEFAULT_WORKLOAD_UID)
@@ -1017,7 +1072,7 @@ mod tests {
             dir.path(),
             &[],
         )
-        .admit(HARNESS, OPTED_IN);
+        .admit(HARNESS, OPTED_IN, NO_WAIVER);
         assert!(
             refused.is_err(),
             "an unclassified NUCLEUS_* key must be refused, not delivered as OrdinaryData"
@@ -1027,7 +1082,7 @@ mod tests {
         // (NUCLEUS_TOOL_PROXY_URL) is allowlisted and must still admit.
         assert!(
             WorkloadLaunch::build(&spec_with(&[]), url, dir.path(), &[])
-                .admit(HARNESS, OPTED_IN)
+                .admit(HARNESS, OPTED_IN, NO_WAIVER)
                 .is_ok(),
             "NUCLEUS_TOOL_PROXY_URL is public runtime config and must still admit"
         );
@@ -1040,7 +1095,7 @@ mod tests {
                 dir.path(),
                 &[],
             )
-            .admit(HARNESS, OPTED_IN)
+            .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .is_ok(),
             "a non-NUCLEUS_ operator var must be unaffected by the reserved-namespace fence"
         );
@@ -1054,6 +1109,9 @@ mod tests {
     /// ...and the harness opts in to it explicitly, as `--unsandboxed` does
     /// (owner decision 1): declaring the mode alone is refused.
     const OPTED_IN: nucleus::UnsandboxedOptIn = nucleus::UnsandboxedOptIn::Explicit;
+    /// No Landlock waiver: a test admitted under `MicroVM` on a kernel without
+    /// Landlock is refused, exactly as in production.
+    const NO_WAIVER: nucleus::LandlockWaiver = nucleus::LandlockWaiver::Absent;
 
     /// **The workload never runs as the runtime's uid — for EVERY pod, not only
     /// under credentialed egress.** The runtime holds every per-pod secret in
@@ -1066,8 +1124,11 @@ mod tests {
     #[test]
     fn admit_assigns_a_distinct_default_uid_or_refuses_by_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let admitted = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
-            .admit(nucleus::ContainmentMode::MicroVM, OPTED_IN);
+        let admitted = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[]).admit(
+            nucleus::ContainmentMode::MicroVM,
+            OPTED_IN,
+            NO_WAIVER,
+        );
         match nix_getuid() {
             0 => assert_eq!(
                 admitted
@@ -1094,8 +1155,11 @@ mod tests {
     #[test]
     fn a_bare_tier_workload_without_the_opt_in_is_refused_by_name() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let admitted = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[])
-            .admit(HARNESS, nucleus::UnsandboxedOptIn::Absent);
+        let admitted = WorkloadLaunch::build(&spec_with(&[]), "u", dir.path(), &[]).admit(
+            HARNESS,
+            nucleus::UnsandboxedOptIn::Absent,
+            NO_WAIVER,
+        );
         match nix_getuid() {
             0 => assert_eq!(
                 admitted
@@ -1128,7 +1192,7 @@ mod tests {
             nucleus::ContainmentMode::MicroVM,
         ] {
             let refused = WorkloadLaunch::build(&spec, "u", dir.path(), &[])
-                .admit(mode, OPTED_IN)
+                .admit(mode, OPTED_IN, NO_WAIVER)
                 .expect_err("a workload sharing the runtime uid must be refused");
             assert!(
                 refused.0.contains("shares the runtime's uid"),
@@ -1150,7 +1214,8 @@ mod tests {
             nucleus::ContainmentMode::Unsandboxed,
             nucleus::ContainmentMode::MicroVM,
         ] {
-            let admitted = WorkloadLaunch::build(&spec, "u", dir.path(), &[]).admit(mode, OPTED_IN);
+            let admitted =
+                WorkloadLaunch::build(&spec, "u", dir.path(), &[]).admit(mode, OPTED_IN, NO_WAIVER);
             match nix_getuid() {
                 0 => assert_eq!(
                     admitted
@@ -1185,7 +1250,7 @@ mod tests {
             ),
         ];
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit(mode, opt_in)?;
+            .admit(mode, opt_in, NO_WAIVER)?;
         let (child, receipt) = spawn_admitted(plan).unwrap();
         let out = child.wait_with_output().await.unwrap();
         let text = String::from_utf8_lossy(&out.stdout).to_string();
@@ -1314,7 +1379,7 @@ mod tests {
         // Through the real path: build → admit → spawn_admitted. A plan that did
         // not classify-and-admit every entry could not be constructed.
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit(HARNESS, OPTED_IN)
+            .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .expect("a clean spec must admit");
         let (mut child, receipt) = spawn_admitted(plan).expect("sh must be spawnable");
         let status = child.wait().await.expect("child ran");
@@ -1687,7 +1752,7 @@ mod tests {
         spec.command = "/usr/bin/env".into();
         spec.args.clear();
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
-            .admit(HARNESS, OPTED_IN)
+            .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
         let (child, receipt) = spawn_admitted(plan).unwrap();
         let output = child.wait_with_output().await.unwrap();

@@ -794,6 +794,22 @@ impl FirecrackerConfig {
         self
     }
 
+    /// Carry the operator's Landlock waiver to the guest (#2696 P3c). The
+    /// guest refuses its workload on a kernel without Landlock unless this
+    /// token is on the command line. Not a secret, and not per-pod material:
+    /// it is the node's configuration, the same for every pod.
+    pub(crate) fn waiving_workload_landlock(mut self, waiver: nucleus::LandlockWaiver) -> Self {
+        match waiver {
+            nucleus::LandlockWaiver::Explicit => {
+                let args = self.boot_source.boot_args.get_or_insert_with(String::new);
+                args.push(' ');
+                args.push_str(nucleus_spec::guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG);
+            }
+            nucleus::LandlockWaiver::Absent => {}
+        }
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_spec(
         spec: &PodSpec,

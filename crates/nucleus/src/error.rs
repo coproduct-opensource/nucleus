@@ -242,6 +242,40 @@ pub enum NucleusError {
         runtime_uid: u32,
     },
 
+    /// A `MicroVM` child must be held to the guest layout's Landlock ruleset
+    /// (#2696 P3c), and this kernel cannot enforce it at the minimum ABI. Fail
+    /// closed: the child is not started filesystem-unconfined unless the node
+    /// operator waived Landlock explicitly.
+    #[error(
+        "the guest kernel cannot confine this child's filesystem: it offers {kernel}, and \
+         Landlock ABI {minimum} or newer is required. The child was not started. Boot the \
+         pinned guest kernel (nucleus_spec::tier2_artifacts, Firecracker CI 6.1.186, which \
+         has Landlock), or, to run workloads on this kernel without filesystem confinement, \
+         start the node with --allow-workload-without-landlock; the waiver is recorded in \
+         each workload's launch receipt"
+    )]
+    LandlockUnavailable {
+        /// What the kernel offered, as `LandlockSupport` renders it.
+        kernel: String,
+        /// The lowest ABI a confined child is started under.
+        minimum: u32,
+    },
+
+    /// The kernel enforces Landlock, but this child's ruleset could not be
+    /// compiled from the guest layout (#2696 P3c). Fail closed: the child is
+    /// not started with a partial or no ruleset. Named, with the path and the
+    /// reason, because the alternative an operator saw was a bare errno.
+    #[error(
+        "the Landlock ruleset for this child could not be compiled at {path}: {error}. The \
+         child was not started"
+    )]
+    LandlockRuleset {
+        /// The path the compile stopped at (`/` for the ruleset itself).
+        path: String,
+        /// What the filesystem or the kernel said.
+        error: String,
+    },
+
     /// IO error from underlying operation.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

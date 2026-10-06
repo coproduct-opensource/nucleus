@@ -24,7 +24,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use nucleus::{ChildConfinement, ContainmentMode, UnsandboxedOptIn};
+use nucleus::{ChildConfinement, ContainmentMode, LandlockWaiver, UnsandboxedOptIn};
 
 const OP_ENV: &str = "NUCLEUS_CHILD_SECCOMP_OP";
 const RESULT: &str = "CHILD_SECCOMP_RESULT ";
@@ -281,8 +281,12 @@ fn confining() -> Vec<(ContainmentMode, ChildConfinement)> {
     let all: Vec<_> = modes
         .iter()
         .map(|&m| {
-            let c = ChildConfinement::for_containment(m, UnsandboxedOptIn::Absent)
-                .unwrap_or_else(|e| panic!("{m:?} confines on this runtime: {e}"));
+            let c = ChildConfinement::for_containment(
+                m,
+                UnsandboxedOptIn::Absent,
+                LandlockWaiver::Absent,
+            )
+            .unwrap_or_else(|e| panic!("{m:?} confines on this runtime: {e}"));
             (m, c)
         })
         .collect();
@@ -383,8 +387,11 @@ fn a_confined_child_carries_one_more_filter_and_the_bare_tier_none() {
             "{mode:?}"
         );
     }
-    let bare =
-        ChildConfinement::for_containment(ContainmentMode::Unsandboxed, UnsandboxedOptIn::Explicit)
-            .expect("the opted-in bare tier runs");
+    let bare = ChildConfinement::for_containment(
+        ContainmentMode::Unsandboxed,
+        UnsandboxedOptIn::Explicit,
+        LandlockWaiver::Absent,
+    )
+    .expect("the opted-in bare tier runs");
     assert_eq!(run(Some(bare), "filters"), format!("filters={base}"));
 }

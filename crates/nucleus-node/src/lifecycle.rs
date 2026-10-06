@@ -112,6 +112,14 @@ impl PodHandle {
             labels: self.spec.metadata.labels.clone(),
             parent_pod_id: self.parent_pod_id,
             posture: self.posture_stamp.clone(),
+            workload_filesystem: match &self.driver_state {
+                DriverState::Firecracker(firecracker) => {
+                    Some(firecracker.workload_filesystem.posture())
+                }
+                DriverState::Container(_) => None,
+                #[cfg(feature = "local-driver")]
+                DriverState::Local(_) => None,
+            },
         }
     }
 

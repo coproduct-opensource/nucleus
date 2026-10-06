@@ -44,6 +44,13 @@ pub(crate) struct PodInfo {
     /// list, because admission refused it. See `posture.rs`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) posture: Option<String>,
+    /// Whether the pod's workload and commands are filesystem-confined by
+    /// Landlock, as the guest reported it at boot (#2696 P3c): `landlock
+    /// enforced (ABI n)`, or `landlock NOT enforced: <why>`. Firecracker pods
+    /// only; absent for drivers that run no guest. An older guest that reports
+    /// nothing is shown as NOT enforced, never omitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) workload_filesystem: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
