@@ -203,11 +203,12 @@ mod imp {
     //! kernel cannot enforce is an error, never a silent best-effort drop.
 
     use std::io;
+    use std::os::unix::fs::OpenOptionsExt;
     use std::path::Path;
 
     use landlock::{
-        ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, PathFd, PathFdError,
-        RulesetAttr, RulesetCreated, RulesetCreatedAttr, RulesetStatus,
+        ABI, Access, AccessFs, BitFlags, CompatLevel, Compatible, PathBeneath, RulesetAttr,
+        RulesetCreated, RulesetCreatedAttr, RulesetStatus,
     };
 
     use super::{CompileError, FS_ABI_LEVELS, Grant, Kind, LandlockSupport, Rule, plan};
@@ -281,6 +282,20 @@ mod imp {
         Ok(out)
     }
 
+    /// The rule's fd: `O_PATH | O_NOFOLLOW | O_CLOEXEC`, opened here rather
+    /// than through the crate's `PathFd`, so the flags are stated where the
+    /// ruleset is built. `O_PATH` resolves the path and NEVER opens the file:
+    /// no device driver runs, so `/dev/tty` without a controlling terminal
+    /// (`ENXIO` on a real open) or `/dev/ptmx` without devpts (`ENOENT`) still
+    /// yields a rule. A device's presence is checked by `O_PATH`/`fstat` only.
+    /// `O_NOFOLLOW` keeps a link from becoming a grant on its target.
+    pub(super) fn path_fd(path: &Path) -> io::Result<std::fs::File> {
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(path)
+    }
+
     impl Ruleset {
         /// Compile the guest layout at filesystem level `level`.
         ///
@@ -323,15 +338,25 @@ mod imp {
                     }
                     Err(e) => return Err(failed(&rule.path, e)),
                 };
-                let fd = match PathFd::new(&rule.path) {
+                let fd = match path_fd(&rule.path) {
                     Ok(fd) => fd,
-                    Err(PathFdError::OpenCall { source, .. })
-                        if source.kind() == io::ErrorKind::NotFound =>
-                    {
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
                         tracing::debug!(path = %rule.path.display(), "vanished before it was opened, so it grants nothing; no Landlock rule");
                         continue;
                     }
-                    Err(e) => return Err(failed(&rule.path, e)),
+                    // Name what the path IS beside the error: an O_PATH open
+                    // that fails for a present path is the case to diagnose.
+                    Err(e) => {
+                        use std::os::unix::fs::MetadataExt;
+                        return Err(failed(
+                            &rule.path,
+                            format!(
+                                "O_PATH open failed: {e} (file type {:?}, rdev {:#x})",
+                                meta.file_type(),
+                                meta.rdev()
+                            ),
+                        ));
+                    }
                 };
                 created = created
                     .add_rule(PathBeneath::new(
@@ -497,8 +522,14 @@ mod tests {
         // Only the named devices; never the disk, the vsock or the kernel log.
         assert_eq!(grant_of(&rules, "/dev/null"), Some(Grant::ReadWrite));
         assert_eq!(grant_of(&rules, "/dev/urandom"), Some(Grant::ReadWrite));
-        assert_eq!(grant_of(&rules, "/dev/pts"), Some(Grant::ReadWrite));
-        for denied in ["/dev", "/dev/vda", "/dev/vsock", "/dev/kmsg", "/"] {
+        for denied in [
+            "/dev",
+            "/dev/vda",
+            "/dev/vsock",
+            "/dev/kmsg",
+            "/dev/pts",
+            "/",
+        ] {
             assert_eq!(grant_of(&rules, denied), None, "{denied}");
         }
         // Directories holding a hole are not granted whole.
@@ -587,6 +618,45 @@ mod tests {
         ];
         if let Err(e) = Ruleset::compile_rules(level, &rules) {
             panic!("an absent grant must be skipped, not fatal: {e:?}");
+        }
+    }
+
+    /// The x86_64 live boot's second failure (#3273): the rule for `/dev/tty`
+    /// failed with `ENXIO`, which is what OPENING the tty driver answers in a
+    /// session without a controlling terminal. A rule fd must only resolve the
+    /// path (`O_PATH`), never open the device. Asserted only where a real open
+    /// of `/dev/tty` does fail (run under `setsid`, or in CI, which has no
+    /// terminal), so the case is the measured one. Red if `path_fd` opens.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_device_whose_open_fails_still_gets_a_rule() {
+        let Some(level) = LandlockSupport::probe().enforceable() else {
+            eprintln!("SKIPPED: this kernel has no Landlock ABI >= 2; nothing to compile");
+            return;
+        };
+        let tty = std::path::Path::new("/dev/tty");
+        match std::fs::File::open(tty) {
+            Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {}
+            other => {
+                eprintln!(
+                    "SKIPPED: /dev/tty opens here ({other:?}); run under `setsid` to drop the \
+                     controlling terminal"
+                );
+                return;
+            }
+        }
+        assert!(
+            super::imp::path_fd(tty).is_ok(),
+            "O_PATH must not open the tty driver"
+        );
+        if let Err(e) = Ruleset::compile_rules(
+            level,
+            &[Rule {
+                path: tty.to_path_buf(),
+                grant: Grant::ReadWrite,
+            }],
+        ) {
+            panic!("a device that cannot be opened must still get a rule: {e:?}");
         }
     }
 

@@ -103,9 +103,13 @@ pub enum WorkloadFs {
 /// Nothing else under `/dev` is granted (the block devices, `vsock`, `kmsg`).
 /// Symlinks such as `/dev/stdout` resolve into `/proc`, which is
 /// [`WorkloadFs::Read`].
-pub const WORKLOAD_DEVICES: &[&str] = &[
-    "null", "zero", "full", "random", "urandom", "tty", "ptmx", "pts",
-];
+///
+/// Minimal on purpose: the data sinks and sources every program assumes, and
+/// `tty` (a program asking for its controlling terminal gets `ENXIO` in a
+/// pod, which it handles; denying the path would be a different error it
+/// may not). No `ptmx`/`pts`: the guest mounts no devpts, so a pseudo-terminal
+/// cannot be allocated there whatever the grant says.
+pub const WORKLOAD_DEVICES: &[&str] = &["null", "zero", "full", "random", "urandom", "tty"];
 
 /// The kernel command-line token by which the NODE waives Landlock for the
 /// workloads of a pod whose kernel cannot enforce it (#2696 P3c). Without it, a
