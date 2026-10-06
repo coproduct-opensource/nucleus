@@ -29,6 +29,7 @@
   - [CI Assurance](assurance/ci-assurance.md)
   - [The economic layer boundary](econ-layer-boundary.md)
 - [Decision Records]()
+  - [0011 — Evidence of what booted the node](adr/0011-node-evidence-what-booted.md)
   - [0010 — A credential minted per exchange, never stored](adr/0010-a-credential-minted-per-exchange-never-stored.md)
   - [0009 — The public/private line](adr/0009-the-public-private-line.md)
   - [0007 — Make the defect unwritable](adr/0007-make-the-defect-unwritable.md)

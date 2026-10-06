@@ -35,6 +35,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write a node reference manifest (expected boot and IMA measurements)
+    /// from build outputs, for `nucleus-node-evidence` appraisal.
+    NodeReferenceManifest(Box<node_reference::Args>),
     /// Verify host broker journals after a real guest transaction on Linux/KVM.
     HostEvidenceLive {
         #[arg(long)]
@@ -521,6 +524,7 @@ mod line_ratchet;
 mod local_coverage;
 mod mediate;
 mod microvm_host_context;
+mod node_reference;
 mod pin_parity;
 mod pipefail;
 mod plan_measurements;
@@ -541,6 +545,7 @@ mod workspace_members;
 
 fn main() -> Result<()> {
     match Cli::parse().command {
+        Command::NodeReferenceManifest(args) => node_reference::run(&args),
         Command::HostEvidenceLive { bin_dir, sudo } => {
             host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
         }

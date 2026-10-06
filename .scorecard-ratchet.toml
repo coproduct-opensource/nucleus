@@ -243,9 +243,13 @@ population_floor = 278
 # 2026-10-05: the standalone unprivileged HTTP adapter declares all seven
 # totality lints. Typed response construction replaces its expect and signal
 # exit conversion uses checked arithmetic. 35 of 92 = 38.04%; floor rises.
-floor_bp = 3804
+# 2026-10-05 (#2706 PR-1): new crate nucleus-node-evidence, the node-attestation
+# verifier -- it parses TPM structures, event logs and IMA logs a node hands it --
+# declares all seven from its first commit; a panic on crafted evidence would be
+# a denial of service against every relying party. 36 of 93 = 38.70%.
+floor_bp = 3870
 floor_set = "measurement"
-population_floor = 92
+population_floor = 93
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
