@@ -183,7 +183,7 @@ pub struct NucleusMcpServer {
 
 /// Convert a tool-level error into a CallToolResult error.
 fn err_result(msg: impl std::fmt::Display) -> CallToolResult {
-    CallToolResult::error(vec![Content::text(format!("{msg}"))])
+    CallToolResult::error(vec![ContentBlock::text(format!("{msg}"))])
 }
 
 // ---------------------------------------------------------------------------
@@ -601,7 +601,7 @@ impl NucleusMcpServer {
                 // Brick 3: content-address the exact bytes read.
                 self.observe_flow(NodeKind::FileRead, contents.as_bytes())
                     .await;
-                Ok(CallToolResult::success(vec![Content::text(contents)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(contents)]))
             }
             Err(e) => {
                 self.record_verdict(
@@ -722,7 +722,7 @@ impl NucleusMcpServer {
         }) {
             Ok(()) => {
                 self.record_verdict(Operation::WriteFiles, &checked, VerdictOutcome::Allow);
-                Ok(CallToolResult::success(vec![Content::text("ok")]))
+                Ok(CallToolResult::success(vec![ContentBlock::text("ok")]))
             }
             Err(e) => {
                 self.record_verdict(
@@ -894,7 +894,7 @@ impl NucleusMcpServer {
                 // taint it (opt-in) so it can't drive a later privileged action.
                 // Brick 3: content-address the exact tool-result bytes ingested.
                 self.observe_tool_result(&checked, json.as_bytes()).await;
-                Ok(CallToolResult::success(vec![Content::text(json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
             Err(e) => {
                 self.record_verdict_ext(
@@ -1038,7 +1038,7 @@ impl NucleusMcpServer {
                 let listing = paths.join("\n");
                 self.observe_flow(NodeKind::FileRead, listing.as_bytes())
                     .await; // (#1633)
-                Ok(CallToolResult::success(vec![Content::text(listing)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(listing)]))
             }
             Err(e) => {
                 self.record_verdict(
@@ -1282,7 +1282,7 @@ impl NucleusMcpServer {
                 // Brick 3: content-address the exact grep output ingested.
                 self.observe_flow(NodeKind::FileRead, matches.as_bytes())
                     .await; // (#1633)
-                Ok(CallToolResult::success(vec![Content::text(matches)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(matches)]))
             }
             Err(e) => {
                 self.record_verdict(
@@ -1634,7 +1634,7 @@ impl NucleusMcpServer {
                 // Brick 3: content-address the exact fetched response ingested.
                 self.observe_flow(NodeKind::WebContent, response.as_bytes())
                     .await;
-                Ok(CallToolResult::success(vec![Content::text(response)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(response)]))
             }
             Err(e) => {
                 self.record_verdict(
