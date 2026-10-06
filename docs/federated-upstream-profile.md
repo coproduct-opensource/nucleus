@@ -280,6 +280,24 @@ framing or forwarding header, or the entry's own credential `header`. Streamed c
 credential-looking parameter name is refused. See `examples/egress-git-remote/` for a git
 remote reached this way.
 
+Two more header kinds are the operator's alone:
+
+```toml
+secret_headers = ["x-account-binding"]   # never guest-supplied; host-injected only
+
+[upstream.fixed_headers]                  # added by the host to every call
+x-api-version = "2026-01-01"
+```
+
+A fixed header (an API version an upstream requires, say) is added to every call, streamed
+or buffered. It is not secret: its value is in the effect an operator reviews and the
+digest an approval binds. A secret name is one only the host may set; the entry's own
+credential `header` is always one. A guest proposal of a fixed or secret name is dropped
+even when `request_headers` lists it, and the node refuses to start on a registry that
+lists one there, on a fixed header that is credential-shaped, framing or forwarding, or on
+a fixed header that is also marked secret. The call's record names the forwarded headers,
+fixed ones included, and never a value.
+
 `call_charge_micro_usd` is the operator's fixed tariff for each authorized dispatch
 attempt (1,000,000 micro-USD = 1 USD). It is not copied from the pod spec or inferred
 from a model/provider. Omission leaves the entry unpriced: PERFORM and streaming

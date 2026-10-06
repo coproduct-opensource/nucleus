@@ -218,6 +218,9 @@ pub struct UpstreamCall {
     pub header_name: String,
     /// The credential, with the spec's prefix applied. Never logged.
     pub header_value: String,
+    /// The operator's fixed headers for this upstream (#3213). A perform
+    /// frame proposes none of its own.
+    pub headers: std::collections::BTreeMap<String, String>,
     /// Exact host-bound request bytes, yielded under the shared egress pace.
     pub body: crate::egress_meter::body::UploadBody,
 }
@@ -873,6 +876,7 @@ where
                     url,
                     header_name: spec.header.clone(),
                     header_value,
+                    headers: resolved.entry().fixed_headers().clone(),
                     body: crate::egress_meter::body::UploadBody::from_bytes(
                         req.body.clone(),
                         charge,
@@ -1534,6 +1538,54 @@ var = "LLM_API_TOKEN"
         assert_eq!(call.header_name, "authorization");
         assert_eq!(call.header_value, format!("Bearer {SECRET}"));
         assert_eq!(call.body.collect_bytes().await, b"{\"prompt\":\"hi\"}");
+        assert!(call.headers.is_empty(), "no fixed headers were declared");
+    }
+
+    /// **A buffered call carries the operator's fixed headers too (#3213)**,
+    /// and its effect binds them: the same request to an entry that fixes a
+    /// different version is a different effect.
+    #[tokio::test]
+    async fn a_buffered_call_carries_the_fixed_headers_and_binds_them() {
+        let fixed =
+            |version: &str| vec![upstream().with_header_policy(&[("x-api-version", version)], &[])];
+        let (policy, store, ledger, id) = (
+            PermissionLattice::permissive(),
+            store(),
+            IdempotencyLedger::new(),
+            who(),
+        );
+        let ups = fixed("2026-01-01");
+        let net = Upstream::default();
+        let reply = handle_perform(
+            &request(),
+            &ctx(&policy, &store, &ups, &ledger, &id),
+            NOW,
+            net.caller(),
+        )
+        .await;
+        assert!(reply.granted, "reason was {:?}", reply.reason);
+        let call = net.calls.lock().unwrap().remove(0);
+        assert_eq!(call.headers["x-api-version"], "2026-01-01");
+
+        let other = fixed("2027-01-01");
+        let digest = |ups: &[RegistryEntry]| {
+            let resolved = resolve(
+                &Asked {
+                    operation: "WebFetch",
+                    target: "model-api",
+                    justification: "the agent asked",
+                    path: "/messages",
+                    query: None,
+                },
+                &id,
+                &policy,
+                ups,
+                NOW,
+            )
+            .expect("resolves");
+            effect::digest(&request(), &resolved).unwrap()
+        };
+        assert_ne!(digest(&ups), digest(&other));
     }
 
     /// **The credential does not come back.** The guest gets the result of the

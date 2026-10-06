@@ -64,7 +64,9 @@ pub(crate) fn describe_body(
             .call_charge()
             .ok()
             .map(|charge| charge.micro_usd()),
-        request_headers: std::collections::BTreeMap::new(),
+        // The operator's fixed headers are part of what the call sends, so an
+        // approval binds them; a streamed call adds its forwarded proposals.
+        request_headers: resolved.entry().fixed_headers().clone(),
     }
 }
 

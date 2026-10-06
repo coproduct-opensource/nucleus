@@ -100,6 +100,24 @@
 //!
 //! [upstream.credential.env]
 //! var = "GIT_REMOTE_BASIC"
+//!
+//! [[upstream]]
+//! name         = "forge-api"
+//! base_url     = "https://api.forge.example/"
+//! header       = "authorization"
+//! value_prefix = "Bearer "
+//! call_charge_micro_usd = 0
+//! request_headers = ["accept"]
+//! # Names only the host may set (#3213): a guest proposal is dropped, and the
+//! # node refuses to start if `request_headers` or `fixed_headers` lists one.
+//! # The entry's own `header` is always one.
+//! secret_headers = ["x-account-binding"]
+//!
+//! [upstream.fixed_headers]   # added by the host to every call, never guest-set
+//! x-api-version = "2026-01-01"
+//!
+//! [upstream.credential.env]
+//! var = "FORGE_API_TOKEN"
 //! ```
 //!
 //! # Reserved: a client certificate as the subject
@@ -172,6 +190,13 @@ struct EntryFile {
     /// #3213). Default empty: only `content-type` is forwarded.
     #[serde(default)]
     request_headers: Vec<String>,
+    /// Headers the host adds to every call to this upstream, name to value
+    /// (#3213). Not secret: the values are in the effect an operator reviews.
+    #[serde(default)]
+    fixed_headers: BTreeMap<String, String>,
+    /// Header names only the host may set on calls to this upstream (#3213).
+    #[serde(default)]
+    secret_headers: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -256,6 +281,41 @@ pub(crate) struct RegistryEntry {
     /// Lower-case header names the guest may propose for this upstream,
     /// validated at load. See [`RegistryEntry::forwards_header`].
     request_headers: BTreeSet<String>,
+    /// The operator's fixed headers and secret names, validated at load.
+    header_policy: HeaderPolicy,
+}
+
+/// What the operator fixed about an upstream's request headers beyond the
+/// guest's allowlist (#3213).
+///
+/// # Two kinds of header no guest sets
+///
+/// * **Fixed**: a name and value the host adds to every call, such as an API
+///   version an upstream requires. Not secret: the value is in the effect the
+///   operator reviews and the digest an approval binds. A guest proposal of
+///   the same name is dropped, so the guest cannot choose the version the
+///   operator pinned.
+/// * **Secret**: a name only the host may inject. A guest proposal is dropped
+///   whatever else is configured, and the node refuses to start on a registry
+///   that lists one in `request_headers` or `fixed_headers`. The entry's
+///   credential `header` is always secret without being listed. A value the
+///   host injects never reaches a record: the call's record carries forwarded
+///   header NAMES, and the effect binds the credential header by name only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HeaderPolicy {
+    fixed: BTreeMap<String, String>,
+    secret: BTreeSet<String>,
+}
+
+impl HeaderPolicy {
+    /// No fixed headers and no secret names beyond the credential header.
+    #[cfg(test)]
+    pub(crate) fn none() -> Self {
+        Self {
+            fixed: BTreeMap::new(),
+            secret: BTreeSet::new(),
+        }
+    }
 }
 
 /// A fixed operator tariff for one authorized dispatch attempt, never guest usage.
@@ -310,6 +370,29 @@ impl RegistryEntry {
         self.request_headers.contains(name)
             && nucleus_spec::workload_egress::guest_may_propose_header(name)
             && !name.eq_ignore_ascii_case(&self.spec.header)
+            && !self.header_policy.secret.contains(name)
+            && !self.header_policy.fixed.contains_key(name)
+    }
+
+    /// The headers the host adds to every call to this upstream, lower-case
+    /// name to value. Never a guest's: [`Self::forwards_header`] drops a
+    /// proposal of any of these names.
+    pub fn fixed_headers(&self) -> &BTreeMap<String, String> {
+        &self.header_policy.fixed
+    }
+
+    /// This entry with `fixed` and `secret` as its header policy,
+    /// unvalidated: for tests of the per-call checks on their own.
+    #[cfg(test)]
+    pub(crate) fn with_header_policy(mut self, fixed: &[(&str, &str)], secret: &[&str]) -> Self {
+        self.header_policy = HeaderPolicy {
+            fixed: fixed
+                .iter()
+                .map(|(n, v)| ((*n).to_string(), (*v).to_string()))
+                .collect(),
+            secret: secret.iter().map(|n| (*n).to_string()).collect(),
+        };
+        self
     }
 
     /// This entry with `names` as its request-header allowlist, unvalidated:
@@ -332,6 +415,7 @@ impl RegistryEntry {
             credential,
             call_charge: Some(CallCharge::free()),
             request_headers: BTreeSet::new(),
+            header_policy: HeaderPolicy::none(),
         }
     }
 }
@@ -412,9 +496,13 @@ impl UpstreamRegistry {
                     None,
                 ),
             };
-            let request_headers = request_headers(&up.name, &up.header, up.request_headers)?;
+            let header_policy =
+                header_policy(&up.name, &up.header, up.fixed_headers, up.secret_headers)?;
+            let request_headers =
+                request_headers(&up.name, &up.header, up.request_headers, &header_policy)?;
             entries.push(RegistryEntry {
                 request_headers,
+                header_policy,
                 call_charge: up.call_charge_micro_usd.map(CallCharge),
                 spec: CredentialedEgressSpec::registry_projection(
                     up.name,
@@ -481,16 +569,24 @@ fn request_headers(
     name: &str,
     credential_header: &str,
     listed: Vec<String>,
+    policy: &HeaderPolicy,
 ) -> Result<BTreeSet<String>, String> {
     let mut names = BTreeSet::new();
     for header in listed {
         let lower = header.to_ascii_lowercase();
         if lower.eq_ignore_ascii_case(credential_header)
             || !nucleus_spec::workload_egress::guest_may_propose_header(&lower)
+            || policy.secret.contains(&lower)
         {
             return Err(format!(
                 "upstream {name:?}: request_headers may not list {header:?}: credential, \
-                 framing and forwarding headers are set by the host only"
+                 secret, framing and forwarding headers are set by the host only"
+            ));
+        }
+        if policy.fixed.contains_key(&lower) {
+            return Err(format!(
+                "upstream {name:?}: request_headers may not list {header:?}: it is a fixed \
+                 header, and a guest may not choose the value the operator fixed"
             ));
         }
         names.insert(lower);
@@ -503,6 +599,74 @@ fn request_headers(
         ));
     }
     Ok(names)
+}
+
+/// Validate an entry's `fixed_headers` and `secret_headers`.
+///
+/// A secret name must be a header token; it is stored lower-case. A fixed
+/// header must be a name a guest could have proposed
+/// (`workload_egress::guest_may_propose_header`): a credential-shaped name
+/// belongs in the entry's credential source, where its value never reaches a
+/// review, and a framing or forwarding header belongs to the host's HTTP
+/// client. It may not be the credential header or a secret name, and its value
+/// must be a non-empty admissible header value. The node refuses to START on a
+/// violation, naming it.
+fn header_policy(
+    name: &str,
+    credential_header: &str,
+    fixed: BTreeMap<String, String>,
+    secret: Vec<String>,
+) -> Result<HeaderPolicy, String> {
+    let mut secret_names = BTreeSet::new();
+    for header in secret {
+        let lower = header.to_ascii_lowercase();
+        if lower.is_empty()
+            || lower.len() > 64
+            || !lower
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(format!(
+                "upstream {name:?}: secret_headers lists {header:?}, which is not a header name"
+            ));
+        }
+        secret_names.insert(lower);
+    }
+    let mut fixed_headers = BTreeMap::new();
+    for (header, value) in fixed {
+        let lower = header.to_ascii_lowercase();
+        if lower.eq_ignore_ascii_case(credential_header)
+            || secret_names.contains(&lower)
+            || !nucleus_spec::workload_egress::guest_may_propose_header(&lower)
+        {
+            return Err(format!(
+                "upstream {name:?}: fixed_headers may not set {header:?}: a fixed header is \
+                 not secret, so it may not be a credential, secret, framing or forwarding header"
+            ));
+        }
+        if value.is_empty() || !nucleus_spec::workload_egress::header_value_admissible(&value) {
+            return Err(format!(
+                "upstream {name:?}: fixed_headers sets {header:?} to a value that is not a \
+                 non-empty visible-ASCII header value"
+            ));
+        }
+        if fixed_headers.insert(lower, value).is_some() {
+            return Err(format!(
+                "upstream {name:?}: fixed_headers sets {header:?} twice, in different cases"
+            ));
+        }
+    }
+    if fixed_headers.len() > nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS {
+        return Err(format!(
+            "upstream {name:?}: fixed_headers sets {} headers, above the {} a call may carry",
+            fixed_headers.len(),
+            nucleus_spec::workload_egress::MAX_PROPOSED_HEADERS
+        ));
+    }
+    Ok(HeaderPolicy {
+        fixed: fixed_headers,
+        secret: secret_names,
+    })
 }
 
 /// Validate one `federated` table.
@@ -780,6 +944,74 @@ policy_id = "example-policy-0001"
         ]);
         assert!(!unvalidated.forwards_header("authorization"));
         assert!(!unvalidated.forwards_header("x-forge-key"));
+        assert!(unvalidated.forwards_header("accept"), "the control");
+    }
+
+    /// Fixed and secret headers (#3213): a fixed header loads lower-cased and
+    /// is never a guest's; a secret name is never forwarded; and each misuse
+    /// refuses the whole registry by name. The per-call check stands alone:
+    /// an unvalidated entry listing a fixed or secret name still drops it.
+    #[test]
+    fn fixed_and_secret_headers_are_never_the_guests() {
+        let with = |extra: &str| {
+            format!(
+                "[[upstream]]\nname = \"forge-api\"\nbase_url = \"https://forge.invalid/\"\n\
+                 header = \"authorization\"\n{extra}\n\
+                 [upstream.credential.env]\nvar = \"FORGE_API_TOKEN\"\n"
+            )
+        };
+        let reg = UpstreamRegistry::from_toml_str(&with(
+            "request_headers = [\"accept\"]\nsecret_headers = [\"X-Account-Binding\"]\n\
+             fixed_headers = { \"X-Api-Version\" = \"2026-01-01\" }",
+        ))
+        .expect("fixed and secret headers load");
+        let entry = &reg.resolve(reg.entries())[0];
+        assert_eq!(
+            entry.fixed_headers(),
+            &BTreeMap::from([("x-api-version".to_string(), "2026-01-01".to_string())])
+        );
+        assert!(entry.forwards_header("accept"), "the control");
+        assert!(!entry.forwards_header("x-api-version"), "fixed");
+        assert!(!entry.forwards_header("x-account-binding"), "secret");
+
+        for (extra, refused) in [
+            (
+                "secret_headers = [\"x-bind\"]\nrequest_headers = [\"x-bind\"]",
+                "request_headers may not list",
+            ),
+            (
+                "fixed_headers = { \"x-v\" = \"1\" }\nrequest_headers = [\"X-V\"]",
+                "it is a fixed header",
+            ),
+            (
+                "secret_headers = [\"x-bind\"]\nfixed_headers = { \"x-bind\" = \"1\" }",
+                "fixed_headers may not set",
+            ),
+            (
+                "fixed_headers = { \"authorization\" = \"1\" }",
+                "fixed_headers may not set",
+            ),
+            (
+                "fixed_headers = { \"x-access-token\" = \"1\" }",
+                "fixed_headers may not set",
+            ),
+            (
+                "fixed_headers = { \"host\" = \"elsewhere.invalid\" }",
+                "fixed_headers may not set",
+            ),
+            ("fixed_headers = { \"x-v\" = \"\" }", "not a"),
+            ("fixed_headers = { \"x-v\" = \"a\\nb\" }", "not a"),
+            ("secret_headers = [\"x bind\"]", "not a header name"),
+        ] {
+            let err = UpstreamRegistry::from_toml_str(&with(extra)).expect_err(extra);
+            assert!(err.contains(refused), "{extra}: {err}");
+        }
+
+        let unvalidated = RegistryEntry::env(reg.entries()[0].clone())
+            .with_request_headers(&["accept", "x-api-version", "x-account-binding"])
+            .with_header_policy(&[("x-api-version", "2026-01-01")], &["x-account-binding"]);
+        assert!(!unvalidated.forwards_header("x-api-version"));
+        assert!(!unvalidated.forwards_header("x-account-binding"));
         assert!(unvalidated.forwards_header("accept"), "the control");
     }
 
