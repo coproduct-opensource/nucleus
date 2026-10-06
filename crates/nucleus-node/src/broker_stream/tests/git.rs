@@ -320,29 +320,34 @@ async fn an_approval_for_a_get_cannot_be_spent_as_a_post_or_another_query() {
     assert_eq!(hits.lock().unwrap()[0].method, "GET");
 }
 
-/// **(e): a stream open from an older guest is refused by name**, not as a
-/// malformed request and not read as a POST. The frame is a version 2 open
-/// with the fields version 1 lacked removed, signed under the pod's real key.
+/// **(e) A 2.3.x guest's open is refused, never read as a POST.** The change
+/// is breaking by the owner's decision: an open without a method (exactly what
+/// the 2.3.0 tool-proxy writes) is refused before any upstream I/O, and the
+/// pin (`GUEST_RELEASE` 2.4.0, `GuestCapability::EgressMethodAndQuery`) is
+/// what keeps the CLI from installing that guest against this node. A frame
+/// that names a method but is otherwise malformed is refused the same way.
 #[tokio::test]
-async fn an_older_guest_frame_is_refused_by_name() {
+async fn a_2_3_guest_open_without_a_method_is_refused_not_read_as_a_post() {
     let (base, hits) = remote().await;
     let pod = declared(&base, PermissionLattice::permissive());
-    let mut legacy = serde_json::to_value(advertise("git-upload-pack", "legacy")).unwrap();
-    for field in ["version", "method", "query"] {
-        legacy.as_object_mut().unwrap().remove(field);
-    }
-    let reason = refusal_for(&pod, &legacy.to_string()).await;
-    assert!(
-        reason.contains("stream open frame version 1 is not supported")
-            && reason.contains("speaks version 2"),
-        "{reason}"
+    let released_2_3 = serde_json::json!({
+        "require_approval": false,
+        "operation": "WebFetch",
+        "target": "git-remote",
+        "justification": "credentialed egress",
+        "nonce": "released-2-3",
+        "path": "org/repo.git/git-upload-pack",
+        "content_type": "application/x-git-upload-pack-request",
+    });
+    assert_eq!(
+        refusal_for(&pod, &released_2_3.to_string()).await,
+        "malformed request"
     );
-    let mut newer = serde_json::to_value(advertise("git-upload-pack", "newer")).unwrap();
-    newer["version"] = 3.into();
-    assert!(
-        refusal_for(&pod, &newer.to_string())
-            .await
-            .contains("version 3")
+    let mut unknown = serde_json::to_value(advertise("git-upload-pack", "unknown")).unwrap();
+    unknown["method"] = "PUT".into();
+    assert_eq!(
+        refusal_for(&pod, &unknown.to_string()).await,
+        "malformed request"
     );
     assert!(hits.lock().unwrap().is_empty());
 }

@@ -611,12 +611,6 @@ where
                     let _ = writer.shutdown().await;
                     return;
                 }
-                // Named, unlike every other malformed frame: the frame is
-                // authentic, so the reader is the mediating proxy, and the cause
-                // (a guest image from another release) is the operator's to fix.
-                Err(crate::envelope_frame::FrameError::StreamVersion(mismatch)) => {
-                    refusal_line(&mismatch.to_string())
-                }
                 Err(_) => refusal_line("malformed request"),
             }
         }

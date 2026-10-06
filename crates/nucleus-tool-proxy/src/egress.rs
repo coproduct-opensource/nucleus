@@ -436,7 +436,6 @@ impl WorkloadCall {
             target: name.to_string(),
             justification: "credentialed egress".to_string(),
             nonce: uuid::Uuid::new_v4().to_string(),
-            version: nucleus_cred_protocol::egress::OPEN_VERSION,
             method: self.method,
             path: path.to_string(),
             query: self.query.clone(),
@@ -990,7 +989,6 @@ mod tests {
         assert_eq!(frame.path, "org/repo.git/info/refs");
         assert_eq!(frame.query.as_deref(), Some("service=git-upload-pack"));
         assert_eq!(frame.operation, "WebFetch");
-        assert_eq!(frame.version, nucleus_cred_protocol::egress::OPEN_VERSION);
         assert_eq!(
             frame.headers.get("git-protocol").map(String::as_str),
             Some("version=2")

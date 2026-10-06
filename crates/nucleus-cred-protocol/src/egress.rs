@@ -11,17 +11,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The version of [`crate::StreamRequest`] this crate writes and accepts.
-///
-/// Version 1 had no `version` field, no method (every call was a POST) and no
-/// query. A node that read a version 1 frame as a version 2 one would have to
-/// invent a method for it; refusing it by name instead tells the operator the
-/// guest image is older than the node, which is the actual cause.
-pub const OPEN_VERSION: u32 = 2;
-
-/// The version a frame without a `version` field was written at.
-const LEGACY_VERSION: u32 = 1;
-
 /// The HTTP method of a host-performed call.
 ///
 /// # Closed, and with no default (ADR 0007 B-3)
@@ -72,54 +61,6 @@ impl EgressMethod {
     }
 }
 
-/// The least a host reads of a frame to tell an older stream open from a
-/// malformed one.
-///
-/// Every stream open carries `nonce`, and no other ask does, so a frame with
-/// a nonce and the wrong version is an old (or newer) GUEST, not garbage, and
-/// is refused by [`VersionMismatch`]'s name instead of as malformed.
-#[derive(Debug, Deserialize)]
-pub struct OpenProbe {
-    /// The frame's version; absent means version 1.
-    #[serde(default = "legacy_version")]
-    pub version: u32,
-    /// Present on every stream open, and only there.
-    #[serde(default)]
-    pub nonce: Option<serde::de::IgnoredAny>,
-}
-
-fn legacy_version() -> u32 {
-    LEGACY_VERSION
-}
-
-impl OpenProbe {
-    /// The mismatch, when this is a stream open at a version this crate does
-    /// not speak.
-    #[must_use]
-    pub fn mismatch(&self) -> Option<VersionMismatch> {
-        (self.nonce.is_some() && self.version != OPEN_VERSION)
-            .then_some(VersionMismatch { got: self.version })
-    }
-}
-
-/// A stream open at a version this side does not speak, named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VersionMismatch {
-    /// The version the frame carried (1 for a frame with none).
-    pub got: u32,
-}
-
-impl std::fmt::Display for VersionMismatch {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "stream open frame version {} is not supported: this node speaks version {OPEN_VERSION}; \
-             the guest image's tool-proxy is a different release than the node",
-            self.got
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,30 +82,5 @@ mod tests {
         }
         assert!(!EgressMethod::Get.carries_body());
         assert!(EgressMethod::Post.carries_body());
-    }
-
-    #[test]
-    fn an_older_stream_open_is_named_and_other_asks_are_not() {
-        let probe = |json: &str| serde_json::from_str::<OpenProbe>(json).unwrap();
-        let legacy = probe(r#"{"operation":"WebFetch","nonce":"n","path":"p"}"#);
-        let mismatch = legacy.mismatch().expect("a version 1 stream open");
-        assert_eq!(mismatch.got, 1);
-        assert!(mismatch.to_string().contains("version 1 is not supported"));
-        assert!(mismatch.to_string().contains("speaks version 2"));
-
-        assert_eq!(
-            probe(r#"{"version":3,"nonce":"n"}"#)
-                .mismatch()
-                .unwrap()
-                .got,
-            3
-        );
-        assert!(probe(r#"{"version":2,"nonce":"n"}"#).mismatch().is_none());
-        // A query or perform frame carries no nonce: not a stream, not named.
-        assert!(
-            probe(r#"{"operation":"WebFetch","target":"t","justification":"j"}"#)
-                .mismatch()
-                .is_none()
-        );
     }
 }

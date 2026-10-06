@@ -283,12 +283,10 @@ pub struct StreamRequest {
     pub justification: String,
     /// Unique per stream. The host refuses one it has already seen.
     pub nonce: String,
-    /// [`egress::OPEN_VERSION`]. Required: a frame without it is version 1,
-    /// which a host refuses by name (`egress::OpenProbe`) rather than guess
-    /// what an older guest meant.
-    pub version: u32,
     /// The HTTP method the host performs. Required and closed (ADR 0007 B-3):
-    /// see [`EgressMethod`].
+    /// see [`EgressMethod`]. An open without one (what a 2.3.x tool-proxy
+    /// writes) is refused: the change is breaking, and the node and CLI pin a
+    /// guest release that writes it (`GuestCapability::EgressMethodAndQuery`).
     pub method: EgressMethod,
     /// Path beneath the upstream's configured base.
     pub path: String,
@@ -506,7 +504,6 @@ mod tests {
             target: "model-api".into(),
             justification: "credentialed egress".into(),
             nonce: "n-1".into(),
-            version: egress::OPEN_VERSION,
             method: EgressMethod::Post,
             path: "/v1/complete".into(),
             query: None,
@@ -519,17 +516,15 @@ mod tests {
     /// every older frame meant (B-3). The query and headers are optional and
     /// absent from the wire when empty.
     #[test]
-    fn a_stream_open_must_name_its_method_and_version() {
+    fn a_stream_open_must_name_its_method() {
         let mut json: serde_json::Value = serde_json::to_value(stream_request()).unwrap();
         assert!(json.get("query").is_none() && json.get("headers").is_none());
-        for field in ["method", "version"] {
-            let mut without = json.clone();
-            without.as_object_mut().unwrap().remove(field);
-            assert!(
-                serde_json::from_value::<StreamRequest>(without).is_err(),
-                "a frame without {field} was accepted"
-            );
-        }
+        let mut without = json.clone();
+        without.as_object_mut().unwrap().remove("method");
+        assert!(
+            serde_json::from_value::<StreamRequest>(without).is_err(),
+            "a frame without a method (a 2.3.x open) was accepted"
+        );
         json["method"] = "PUT".into();
         assert!(serde_json::from_value::<StreamRequest>(json.clone()).is_err());
         json["method"] = "GET".into();

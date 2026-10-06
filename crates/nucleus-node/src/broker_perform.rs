@@ -128,16 +128,6 @@ pub fn classify(raw: &str) -> Result<GuestAsk, FrameError> {
         return Ok(GuestAsk::Perform(Box::new(req)));
     }
 
-    // A stream open from a guest of another release is refused BY NAME, before
-    // it can fall through to the query parse and be reported as malformed:
-    // only a stream open carries `nonce`, so this names nothing else.
-    if raw.len() <= crate::envelope_frame::MAX_FRAME_BYTES
-        && let Ok(probe) = serde_json::from_str::<nucleus_cred_protocol::egress::OpenProbe>(raw)
-        && let Some(mismatch) = probe.mismatch()
-    {
-        return Err(FrameError::StreamVersion(mismatch));
-    }
-
     // A stream's open frame carries no body, so it gets the query's 8 KiB
     // bound, not the perform's: the size it needs arrives as chunks.
     if raw.len() <= crate::envelope_frame::MAX_FRAME_BYTES

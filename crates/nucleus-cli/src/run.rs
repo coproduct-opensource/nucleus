@@ -373,7 +373,10 @@ pub struct RunArgs {
     /// The guest the node boots, checked for what `--egress` needs before
     /// anything starts: a release version, or `local` for a guest built from
     /// this checkout (`setup --artifacts local`). Default: the pinned release
-    /// `setup` installs.
+    /// `setup` installs (2.4.0 and later ship the adapter `--egress` needs).
+    /// This is the user's assertion about the node's guest, which the CLI
+    /// cannot verify: the node does not yet report the release it boots
+    /// (#3223).
     #[arg(long, value_name = "VERSION|local", requires = "egress")]
     pub guest_release: Option<String>,
 }
@@ -1832,8 +1835,9 @@ mod tests {
     /// is configured here), which is the point the pod would be created from.
     ///
     /// The same for a guest that cannot start the agent under the egress
-    /// adapter the way `--egress` does (the `GuestCapability` table): the
-    /// pinned release is refused by name for `--egress`, and only for it.
+    /// adapter the way `--egress` does (the `GuestCapability` table): a 2.3.0
+    /// guest is refused by name for `--egress`, and only for it; the pin ships
+    /// the adapter.
     #[tokio::test]
     async fn egress_under_a_profile_that_cannot_call_is_refused_before_any_pod() {
         let dir = std::env::temp_dir();
@@ -1860,24 +1864,35 @@ mod tests {
             "--guest-release",
             "local",
         ];
+        const EGRESS_2_3_0_GUEST: &[&str] = &[
+            "--egress",
+            "model-api",
+            "--upstreams",
+            "/r.toml",
+            "--guest-release",
+            "2.3.0",
+        ];
 
         let refused = run("codegen", EGRESS_LOCAL_GUEST).await;
         assert!(refused.contains("profile 'codegen'"), "{refused}");
         assert!(refused.contains("safe-pr-fixer"), "{refused}");
 
-        // The profile that grants the call, on the pinned guest: refused by
-        // name for the adapter the pin does not ship.
-        let skewed = run("safe-pr-fixer", EGRESS).await;
+        // The profile that grants the call, on a 2.3.0 guest: refused by name
+        // for the adapter 2.3.0 does not ship.
+        let skewed = run("safe-pr-fixer", EGRESS_2_3_0_GUEST).await;
         assert!(
-            skewed.contains("the pinned guest release does not ship EgressAdapterUpstreams"),
+            skewed.contains("guest release does not ship EgressAdapterUpstreams"),
             "{skewed}"
         );
         assert!(skewed.contains("#3211"), "{skewed}");
 
         // Both checks pass: the run stops only at the missing node, so the
-        // refusals above are the checks', not this.
+        // refusals above are the checks', not this. The pinned release (2.4.0)
+        // ships the adapter, so no --guest-release is needed on the pin.
         let admitted = run("safe-pr-fixer", EGRESS_LOCAL_GUEST).await;
         assert!(admitted.contains("node config required"), "{admitted}");
+        let pinned = run("safe-pr-fixer", EGRESS).await;
+        assert!(pinned.contains("node config required"), "{pinned}");
         // A run with no --egress is untouched by either check on the pin.
         let plain = run("codegen", &[]).await;
         assert!(plain.contains("node config required"), "{plain}");

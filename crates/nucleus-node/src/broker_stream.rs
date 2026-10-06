@@ -1231,7 +1231,6 @@ mod tests {
             target: target.into(),
             justification: "credentialed egress".into(),
             nonce: nonce.into(),
-            version: nucleus_cred_protocol::egress::OPEN_VERSION,
             method: nucleus_cred_protocol::EgressMethod::Post,
             path: "/complete".into(),
             query: None,
