@@ -111,6 +111,7 @@ fn declared(base: &str, policy: PermissionLattice) -> Pod {
             credential_env: "GIT_REMOTE_TOKEN".into(),
             header: "authorization".into(),
             value_prefix: "Basic ".into(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         })
         .with_request_headers(&["accept", "git-protocol"]),
     ];
@@ -126,9 +127,15 @@ fn git_open(method: EgressMethod, path: &str, query: Option<&str>, nonce: &str) 
     req.method = method;
     req.path = path.into();
     req.query = query.map(str::to_string);
-    req.operation = nucleus_cred_protocol::egress::operation_for(method, path, query)
-        .label()
-        .into();
+    req.operation = nucleus_cred_protocol::egress::operation_for(
+        &nucleus_spec::EffectTable::unclassified(),
+        method,
+        path,
+        query,
+    )
+    .expect("an api upstream classifies every call")
+    .label()
+    .into();
     req.content_type = "application/x-git-upload-pack-request".into();
     req
 }

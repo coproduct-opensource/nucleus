@@ -209,6 +209,14 @@ enum Command {
     /// Shell constructs that behave differently on the platform CI runs (GNU) and the one
     /// this is written on (BSD). Decided from the shell text alone.
     Portability,
+    /// OPERATOR TOOLING (not a gate): create, list or delete the disposable spot build VM
+    /// agents compile on, from a pre-baked image family, through the `gcloud` CLI. Every
+    /// site-specific value is a flag or `AGENT_BUILDER_*` variable. See
+    /// crates/xtask/src/agent_builder.rs and the xtask README.
+    AgentBuilder {
+        #[command(subcommand)]
+        action: agent_builder::Action,
+    },
     /// A `with:` key an action does not declare is dropped with only a log warning. The local
     /// action is decided from this checkout; third-party ones need their action.yml at the
     /// pinned ref, and are reported as unchecked rather than passed without `--network`.
@@ -498,6 +506,7 @@ enum CiSpecCmd {
 }
 
 mod action_inputs;
+mod agent_builder;
 mod alg;
 mod allowlist_gates;
 mod assurance_required;
@@ -601,6 +610,7 @@ fn main() -> Result<()> {
             0 => Ok(()),
             code => std::process::exit(code),
         },
+        Command::AgentBuilder { action } => agent_builder::run(action),
         Command::FlyPools => fly_pools::check(&std::env::current_dir()?),
         Command::PushAuth => push_auth::check(&std::env::current_dir()?),
         Command::CoverageFloor => coverage_floor::check(&std::env::current_dir()?),

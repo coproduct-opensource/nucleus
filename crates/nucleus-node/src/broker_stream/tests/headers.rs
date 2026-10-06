@@ -67,6 +67,7 @@ fn entry(base: &str, fixed: &[(&str, &str)]) -> RegistryEntry {
         credential_env: "LLM_API_TOKEN".into(),
         header: "authorization".into(),
         value_prefix: "Bearer ".into(),
+        effects: nucleus_spec::EffectTable::unclassified(),
     })
     .with_request_headers(&["accept", "x-api-version", "x-account-binding"])
     .with_header_policy(fixed, &["x-account-binding"])

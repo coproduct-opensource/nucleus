@@ -812,6 +812,7 @@ pub(crate) mod serving_tests {
             credential_env: "NUCLEUS_TEST_TRANSPORT_CRED".into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         })
     }
 
@@ -1943,6 +1944,7 @@ mod listener_tests {
                         credential_env: "NUCLEUS_TEST_TRANSPORT_CRED".into(),
                         header: "authorization".into(),
                         value_prefix: "Bearer ".into(),
+                        effects: nucleus_spec::EffectTable::unclassified(),
                     },
                 )]),
                 caller,

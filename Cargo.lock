@@ -7681,6 +7681,7 @@ name = "nucleus-spec"
 version = "1.0.0"
 dependencies = [
  "hex",
+ "nucleus-cred-protocol",
  "portcullis",
  "serde",
  "serde_json",

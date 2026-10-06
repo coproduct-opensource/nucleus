@@ -714,6 +714,7 @@ impl Host for Node {
                     credential_env: "LLM_API_TOKEN".into(),
                     header: "authorization".into(),
                     value_prefix: "Bearer ".into(),
+                    effects: nucleus_spec::EffectTable::unclassified(),
                 },
             )]),
             caller,

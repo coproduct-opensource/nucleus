@@ -471,6 +471,8 @@ pub(crate) struct Asked<'a> {
     pub(crate) operation: &'a str,
     pub(crate) target: &'a str,
     pub(crate) justification: &'a str,
+    /// The method the host will perform: a perform frame's is always POST.
+    pub(crate) method: nucleus_cred_protocol::EgressMethod,
     pub(crate) path: &'a str,
     /// A streamed call's query; a perform frame has none.
     pub(crate) query: Option<&'a str>,
@@ -531,6 +533,12 @@ pub(crate) fn resolve<'u>(
     let approved = crate::broker::pdp_decide(&envelope, identity, policy, now_unix).ok()?;
     // 2. A name the operator configured, or nothing.
     let entry = upstreams.iter().find(|e| e.spec().name == asked.target)?;
+    // 2b. The label must be what the call DOES, by the operator's table for
+    //     this upstream (#3210, #3229). An unclassified write to a forge is
+    //     refused here, and so is a frame whose label is weaker than the call.
+    if !label_matches_effect(asked, entry) {
+        return None;
+    }
     // 3. The path may pick a resource under the base. It may not pick the base,
     //    and a query may not carry a credential (one rule, shared with the
     //    guest: `url_for_request`).
@@ -540,6 +548,26 @@ pub(crate) fn resolve<'u>(
         entry,
         url,
     })
+}
+
+/// Whether the frame's operation label is what the call does.
+///
+/// [`nucleus_cred_protocol::egress::operation_for`] is the one classifier,
+/// over the upstream's effect table from the operator's registry; the guest
+/// labels with it and the host recomputes it here, for the perform frame and
+/// the streamed call alike. A call it calls a plain `WebFetch` may carry a
+/// stricter label (the host then decides that operation too); a call it calls
+/// anything else must carry exactly that label, so a push or a pull request
+/// cannot be decided as a fetch. A write it refuses to classify is refused.
+fn label_matches_effect(asked: &Asked<'_>, entry: &RegistryEntry) -> bool {
+    use nucleus_cred_protocol::egress::{EgressOperation, operation_for};
+    match operation_for(&entry.spec().effects, asked.method, asked.path, asked.query) {
+        Ok(EgressOperation::WebFetch) => true,
+        Ok(effect @ (EgressOperation::GitPush | EgressOperation::CreatePr)) => {
+            asked.operation == effect.label()
+        }
+        Err(nucleus_cred_protocol::egress::Unclassified) => false,
+    }
 }
 
 /// The credential header for a resolved call, and whether it was minted.
@@ -693,6 +721,7 @@ where
             operation: &req.operation,
             target: &req.target,
             justification: &req.justification,
+            method: nucleus_cred_protocol::EgressMethod::Post,
             path: &req.path,
             query: None,
         },
@@ -791,6 +820,7 @@ where
             operation: &req.operation,
             target: &req.target,
             justification: &req.justification,
+            method: nucleus_cred_protocol::EgressMethod::Post,
             path: &req.path,
             query: None,
         },
@@ -965,6 +995,7 @@ mod tests {
             credential_env: "NUCLEUS_TEST_PERFORM_CRED".into(),
             header: "authorization".into(),
             value_prefix: "Bearer ".into(),
+            effects: nucleus_spec::EffectTable::unclassified(),
         })
     }
 
@@ -1576,6 +1607,7 @@ var = "LLM_API_TOKEN"
                     operation: "WebFetch",
                     target: "model-api",
                     justification: "the agent asked",
+                    method: nucleus_cred_protocol::EgressMethod::Post,
                     path: "/messages",
                     query: None,
                 },

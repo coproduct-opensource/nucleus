@@ -137,6 +137,24 @@ fn projection(registry: &toml::Table, name: &str) -> Result<CredentialedEgressSp
         (None, Some(_)) => None,
         _ => bail!("--egress {name}: `credential` must be exactly one of `env` or `federated`"),
     };
+    // The operator's effect table (#3229), read into the node's own types and
+    // validated by the node's own constructor, so the projection here is the
+    // one admission compares against.
+    let kind = entry
+        .get("kind")
+        .cloned()
+        .map(toml::Value::try_into::<nucleus_spec::UpstreamKind>)
+        .transpose()
+        .with_context(|| format!("--egress {name}: `kind`"))?;
+    let effects = entry
+        .get("effects")
+        .cloned()
+        .map(toml::Value::try_into::<Vec<nucleus_spec::DeclaredEffect>>)
+        .transpose()
+        .with_context(|| format!("--egress {name}: `effects`"))?
+        .unwrap_or_default();
+    let effects = nucleus_spec::EffectTable::from_parts(kind, effects)
+        .with_context(|| format!("--egress {name}: `effects`"))?;
     Ok(CredentialedEgressSpec::registry_projection(
         field("name")?,
         field("base_url")?,
@@ -147,10 +165,28 @@ fn projection(registry: &toml::Table, name: &str) -> Result<CredentialedEgressSp
             .unwrap_or_default()
             .to_string(),
         env_var,
+        effects,
     ))
 }
 
 impl PodEgress {
+    /// Refuse a guest that cannot read an upstream's effect table (#3229),
+    /// when a declared upstream carries one. Known only once the registry is
+    /// read, so after [`declare`]; an upstream with no table demands nothing
+    /// beyond [`refuse_guest_skew`]. The published 2.4.0 guest predates the
+    /// table, so on the pin this refuses by name rather than letting the pod
+    /// fail on a spec its guest cannot parse.
+    ///
+    /// # Errors
+    /// When a declared upstream has an effect table and the guest lacks
+    /// `EgressEffectTable`, or its release cannot be ordered.
+    pub(super) fn refuse_guest_skew(&self, guest: Option<&str>) -> Result<()> {
+        if self.specs.iter().all(|s| s.effects.is_unclassified()) {
+            return Ok(());
+        }
+        refuse_skew_for(guest, &[GuestUse::AgentEgress, GuestUse::EffectTableEgress])
+    }
+
     /// Start `agent` under the guest's egress adapter, and return the spec's
     /// `credentialed_egress` beside it. The adapter's argv is the flags, `--`,
     /// then the agent's own argv unchanged; the workload's env stays empty.
@@ -202,12 +238,17 @@ pub(super) fn refuse_guest_skew(upstreams: &[String], guest: Option<&str>) -> Re
     if upstreams.is_empty() {
         return Ok(());
     }
+    refuse_skew_for(guest, &[GuestUse::AgentEgress])
+}
+
+/// The one guest-skew refusal for `--egress`, for the `uses` a run makes.
+fn refuse_skew_for(guest: Option<&str>, uses: &[GuestUse]) -> Result<()> {
     let (release, which) = match guest {
         None => (tier2_artifacts::GUEST_RELEASE, "the pinned guest release"),
         Some(GUEST_FROM_THIS_TREE) => return Ok(()),
         Some(release) => (release, "guest release"),
     };
-    tier2_artifacts::guest_skew_for(release, &[GuestUse::AgentEgress]).map_err(|skew| {
+    tier2_artifacts::guest_skew_for(release, uses).map_err(|skew| {
         let cause = match &skew {
             GuestSkew::Lacks { missing, .. } => {
                 let names: Vec<String> = missing.iter().map(|c| format!("{c:?}")).collect();
@@ -395,6 +436,7 @@ var = "SEARCH_API_TOKEN"
                     "authorization".into(),
                     "Bearer ".into(),
                     None,
+                    nucleus_spec::EffectTable::unclassified(),
                 ),
                 CredentialedEgressSpec::registry_projection(
                     "search-api".into(),
@@ -402,9 +444,87 @@ var = "SEARCH_API_TOKEN"
                     "x-api-key".into(),
                     String::new(),
                     Some("SEARCH_API_TOKEN".into()),
+                    nucleus_spec::EffectTable::unclassified(),
                 ),
             ]
         );
+    }
+
+    /// **A forge entry projects its effect table (#3229)**, built by the
+    /// node's own constructor, so the spec carries what admission compares
+    /// against; an invalid table is refused here, by name, before a pod.
+    #[test]
+    fn a_forge_entry_projects_its_effect_table() {
+        let forge = |effects: &str| {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(
+                file.path(),
+                format!(
+                    "[[upstream]]\nname = \"forge-api\"\nbase_url = \"https://forge.example/\"\n\
+                     header = \"authorization\"\nkind = \"forge\"\neffects = {effects}\n\
+                     [upstream.credential.env]\nvar = \"FORGE_API_TOKEN\"\n"
+                ),
+            )
+            .unwrap();
+            let ups = strings(&["forge-api"]);
+            declare(&EgressFlags {
+                upstreams: &ups,
+                registry: Some(file.path()),
+                exports: &[],
+                placeholders: &[],
+            })
+            .map(|egress| egress.unwrap().wrap(agent()).1)
+        };
+        let specs =
+            forge(r#"[{ method = "POST", path = "/repos/*/*/pulls", operation = "create_pr" }]"#)
+                .unwrap();
+        let expected = nucleus_spec::EffectTable::from_parts(
+            Some(nucleus_spec::UpstreamKind::Forge),
+            vec![nucleus_spec::DeclaredEffect {
+                method: nucleus_spec::EgressMethod::Post,
+                path: "/repos/*/*/pulls".into(),
+                operation: nucleus_spec::EgressOperation::CreatePr,
+            }],
+        )
+        .unwrap();
+        assert_eq!(specs[0].effects, expected);
+
+        // The published pin (2.4.0) predates effect tables: refused by name,
+        // where the same upstream without a table is not (#3229).
+        let declared_forge = |effects: &str| {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(
+                file.path(),
+                format!(
+                    "[[upstream]]\nname = \"forge-api\"\nbase_url = \"https://forge.example/\"\n\
+                     header = \"authorization\"\n{effects}\n\
+                     [upstream.credential.env]\nvar = \"FORGE_API_TOKEN\"\n"
+                ),
+            )
+            .unwrap();
+            let ups = strings(&["forge-api"]);
+            declare(&EgressFlags {
+                upstreams: &ups,
+                registry: Some(file.path()),
+                exports: &[],
+                placeholders: &[],
+            })
+            .unwrap()
+            .unwrap()
+        };
+        let with_table = declared_forge(
+            "kind = \"forge\"\neffects = [{ method = \"POST\", path = \"/repos/*/*/pulls\", \
+             operation = \"create_pr\" }]",
+        );
+        let err = with_table.refuse_guest_skew(None).unwrap_err().to_string();
+        assert!(err.contains("does not ship EgressEffectTable"), "{err}");
+        with_table
+            .refuse_guest_skew(Some(GUEST_FROM_THIS_TREE))
+            .unwrap();
+        declared_forge("").refuse_guest_skew(None).unwrap();
+        let err = forge(r#"[{ method = "POST", path = "repos/*x", operation = "create_pr" }]"#)
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("forge-api"), "{err:#}");
     }
 
     #[test]

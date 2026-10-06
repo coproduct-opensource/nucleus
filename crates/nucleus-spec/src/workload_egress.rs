@@ -297,6 +297,7 @@ mod tests {
             credential_env: "NUCLEUS_TEST_EGRESS_CRED".into(),
             header: "authorization".into(),
             value_prefix: "Basic ".into(),
+            effects: crate::EffectTable::unclassified(),
         }
     }
 
@@ -428,5 +429,40 @@ mod tests {
         assert!(!header_value_admissible(
             &"x".repeat(MAX_HEADER_VALUE_BYTES + 1)
         ));
+    }
+
+    /// **An upstream's effect table is part of what admission compares
+    /// (#3229)**, and a spec that declares none serialises as before: a pod
+    /// spec carrying a weaker table than the operator's (none, or an `api`
+    /// kind) is not admitted by the operator's entry.
+    #[test]
+    fn the_effect_table_is_compared_at_admission_and_omitted_when_unclassified() {
+        let plain = spec();
+        let wire = serde_json::to_string(&plain).unwrap();
+        assert!(!wire.contains("effects"), "{wire}");
+        assert_eq!(
+            serde_json::from_str::<crate::CredentialedEgressSpec>(&wire).unwrap(),
+            plain
+        );
+
+        let pr = || crate::DeclaredEffect {
+            method: crate::EgressMethod::Post,
+            path: "/repos/*/*/pulls".into(),
+            operation: crate::EgressOperation::CreatePr,
+        };
+        let mut forge = spec();
+        forge.effects =
+            crate::EffectTable::from_parts(Some(crate::UpstreamKind::Forge), vec![pr()]).unwrap();
+        let wire = serde_json::to_string(&forge).unwrap();
+        assert_eq!(
+            serde_json::from_str::<crate::CredentialedEgressSpec>(&wire).unwrap(),
+            forge
+        );
+        let mut api_kind = spec();
+        api_kind.effects = crate::EffectTable::from_parts(None, vec![pr()]).unwrap();
+        let ceiling = [forge.clone()];
+        assert!(forge.admitted_by(&ceiling));
+        assert!(!plain.admitted_by(&ceiling), "a spec without the table");
+        assert!(!api_kind.admitted_by(&ceiling), "a spec with a weaker kind");
     }
 }
