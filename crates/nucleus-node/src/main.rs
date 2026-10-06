@@ -64,6 +64,7 @@ mod pod_receipt;
 mod pod_resources;
 mod pod_view;
 mod production_confinement;
+mod public_evidence;
 mod rootfs_source;
 mod sealed_rootfs;
 mod spec_posture;
@@ -124,6 +125,7 @@ mod snapshot_store;
 mod snapshot_vmm;
 #[cfg(test)]
 mod spiffe_walk;
+mod tls_ingress;
 mod trust_gate;
 mod upstreams;
 mod vsock_bridge;
@@ -1055,6 +1057,7 @@ async fn main() -> Result<(), ApiError> {
     start_pod_reaper(state.clone());
 
     federation_ingress::spawn(&state, &args.authority.ingress).await?;
+    public_evidence::spawn(&state, &args.node_evidence.public).await?;
     http_serve::serve(&state, &args.listen, app).await?;
 
     Ok(())
