@@ -125,7 +125,9 @@ mod tests {
         let command = vec![
             "/bin/sh".into(),
             "-c".into(),
-            "echo $$ > \"$1\"; exec sleep 30".into(),
+            // Write then rename: `>` creates the file before echo fills it,
+            // and the poll below would read an empty pid.
+            "echo $$ > \"$1.tmp\"; mv \"$1.tmp\" \"$1\"; exec sleep 30".into(),
             "fixture".into(),
             pid_file.as_os_str().into(),
         ];
