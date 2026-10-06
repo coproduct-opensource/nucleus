@@ -30,7 +30,9 @@ impl Operator {
     }
 }
 
-pub(crate) use nucleus_spec::host_effect_approval::{ApprovalStatus, ApprovalView};
+pub(crate) use nucleus_spec::host_effect_approval::{
+    ApprovalCategory, ApprovalStatus, ApprovalView,
+};
 
 struct Approval {
     review: Option<review::Payload>,
@@ -57,30 +59,48 @@ struct EffectCheck {
 #[must_use]
 struct SpentApproval {
     id: Uuid,
+    /// What the operator was shown this approval would do when granting it.
+    category: ApprovalCategory,
+}
+
+/// The dimensions of the host's taint an operator is shown and a
+/// declassification records — one projection for both (ADR 0007 G-1).
+fn input_label(label: nucleus_decision_protocol::IFCLabel) -> InputLabel {
+    InputLabel {
+        integrity: label.integrity,
+        confidentiality: label.confidentiality,
+        derivation: label.derivation,
+    }
 }
 
 impl SpentApproval {
-    /// The declassification one approval makes of one held flow (#3255): the
-    /// approval and the host's label for the data it released. The hold and
-    /// the spent approval are both consumed, so neither can release another.
-    fn declassify(
+    /// What one spent approval releases. A held flow (#3255) is declassified
+    /// only by an approval the operator granted AS a declassification, and
+    /// the record carries the label the operator was shown (#3258). The hold
+    /// and the spent approval are both consumed, so neither can release
+    /// another.
+    fn release(
         self,
-        hold: TaintHold,
+        hold: Option<TaintHold>,
         sink: Operation,
-        input: nucleus_decision_protocol::IFCLabel,
-    ) -> Result<Declassification, String> {
-        // The hold names the sink it was decided for; it releases that one.
-        if hold.operation() != sink {
-            return Err("a taint hold cannot release another operation".into());
+    ) -> Result<Option<Declassification>, String> {
+        match (hold, self.category) {
+            (None, ApprovalCategory::Ordinary) => Ok(None),
+            (Some(hold), ApprovalCategory::Declassification { input }) => {
+                // The hold names the sink it was decided for; it releases that one.
+                if hold.operation() != sink {
+                    return Err("a taint hold cannot release another operation".into());
+                }
+                Ok(Some(Declassification {
+                    approval_id: self.id,
+                    input,
+                }))
+            }
+            (Some(_), ApprovalCategory::Ordinary)
+            | (None, ApprovalCategory::Declassification { input: _ }) => {
+                Err("the approval's category does not match the held flow".into())
+            }
         }
-        Ok(Declassification {
-            approval_id: self.id,
-            input: InputLabel {
-                integrity: input.integrity,
-                confidentiality: input.confidentiality,
-                derivation: input.derivation,
-            },
-        })
     }
 }
 
@@ -139,6 +159,7 @@ impl Approvals {
         subject: &str,
         now: u64,
         check: EffectCheck,
+        category: ApprovalCategory,
     ) -> Result<Option<SpentApproval>, String> {
         let EffectCheck {
             phase,
@@ -146,25 +167,49 @@ impl Approvals {
             require_approval: _,
         } = check;
         self.prune(now);
-        if let Some(a) = self
-            .entries
-            .values_mut()
-            .find(|a| a.digest == digest && a.view.status == ApprovalStatus::Granted)
-        {
+        // An approval releases the request only as what the operator was
+        // shown it would do (#3258): one granted as ordinary never
+        // declassifies a session that became tainted since, and one granted
+        // for a label never releases a session labelled otherwise.
+        if let Some(a) = self.entries.values_mut().find(|a| {
+            a.digest == digest
+                && a.view.category == category
+                && a.view.status == ApprovalStatus::Granted
+        }) {
             return Ok(match phase {
                 Phase::Preflight => None,
                 Phase::Commit => {
                     a.view.status = ApprovalStatus::Spent;
-                    Some(SpentApproval { id: a.view.id })
+                    Some(SpentApproval {
+                        id: a.view.id,
+                        category: a.view.category,
+                    })
                 }
             });
         }
-        if let Some(a) = self
-            .entries
-            .values()
-            .find(|a| a.digest == digest && a.view.status == ApprovalStatus::Pending)
-        {
+        if let Some(a) = self.entries.values().find(|a| {
+            a.digest == digest
+                && a.view.category == category
+                && a.view.status == ApprovalStatus::Pending
+        }) {
             return Err(format!("host approval required: {}", a.view.id));
+        }
+        // A live approval for this request in another category can no longer
+        // release it: refuse it, so one request has one live approval and the
+        // operator is asked afresh with what granting now does.
+        let mut superseded = false;
+        for a in self.entries.values_mut().filter(|a| {
+            a.digest == digest
+                && matches!(
+                    a.view.status,
+                    ApprovalStatus::Pending | ApprovalStatus::Granted
+                )
+        }) {
+            a.view.status = ApprovalStatus::Refused;
+            superseded = true;
+        }
+        if superseded {
+            self.changed.send_replace(());
         }
         if self.entries.len() >= MAX_APPROVALS {
             return Err("too many host approvals".into());
@@ -186,6 +231,7 @@ impl Approvals {
                     call_charge_micro_usd: charge.micro_usd(),
                     expires_unix,
                     status: ApprovalStatus::Pending,
+                    category,
                 },
             },
         );
@@ -364,6 +410,13 @@ impl PodPolicy {
         }
         let mut declassification = None;
         if require_approval || !approval_ops.is_empty() {
+            // What a grant would do, shown to the operator before they decide.
+            let category = match held {
+                Some(_) => ApprovalCategory::Declassification {
+                    input: input_label(self.taint.label()),
+                },
+                None => ApprovalCategory::Ordinary,
+            };
             let spent = self.approvals.check_or_request(
                 digest,
                 op,
@@ -374,6 +427,7 @@ impl PodPolicy {
                     charge,
                     require_approval,
                 },
+                category,
             )?;
             // Only a commit spends the approval, and only a spent approval
             // releases the held operations and declassifies a held flow.
@@ -384,13 +438,7 @@ impl PodPolicy {
                             .issue_approved_token(operation, "action-bound host operator approval"),
                     );
                 }
-                declassification = match held {
-                    Some(hold) => Some(spent.declassify(hold, op, self.taint.label())?),
-                    None => {
-                        let SpentApproval { id: _ } = spent;
-                        None
-                    }
-                };
+                declassification = spent.release(held, op)?;
             }
         }
         Ok((tokens, declassification))
@@ -435,6 +483,71 @@ mod tests {
             .settle_effect_approval(operator(), id, true, NOW)
             .unwrap();
         id
+    }
+
+    /// A push the operator granted as ORDINARY, in a session tainted after
+    /// the grant, is not released by that grant (#3258): the operator never
+    /// consented to a declassification. The stale grant is refused and a
+    /// fresh approval is asked for, listed as a declassification with the
+    /// host's labels; granted as such, it releases the push once.
+    ///
+    /// A-19: matching a granted approval by digest alone (dropping the
+    /// category test in `check_or_request`) releases the push on the
+    /// ordinary grant and reds the first assertion.
+    #[test]
+    fn an_ordinary_grant_never_declassifies_a_session_tainted_since() {
+        let mut lattice = PermissionLattice::permissive();
+        lattice.obligations.insert(Operation::GitPush);
+        let shared = super::super::test_policy(lattice);
+        let digest = ArgsDigest::new([7; 32]);
+        let commit = |policy: &mut PodPolicy| {
+            policy.authorize_effect(
+                digest,
+                Operation::GitPush,
+                SUBJECT,
+                NOW,
+                crate::upstreams::CallCharge::free(),
+                false,
+            )
+        };
+        let ordinary = {
+            let mut policy = shared.lock().unwrap();
+            assert!(commit(&mut policy).is_err());
+            let listed = policy.list_effect_approvals(operator(), NOW);
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].category, ApprovalCategory::Ordinary);
+            policy
+                .settle_effect_approval(operator(), listed[0].id, true, NOW)
+                .unwrap();
+            listed[0].id
+        };
+        PodPolicy::observe_response(&shared, NOW).unwrap();
+        let mut policy = shared.lock().unwrap();
+        let held = commit(&mut policy).expect_err("an ordinary grant released a tainted push");
+        assert!(held.starts_with("host approval required:"), "{held}");
+        let listed = policy.list_effect_approvals(operator(), NOW);
+        let stale = listed.iter().find(|a| a.id == ordinary).unwrap();
+        assert_eq!(stale.status, ApprovalStatus::Refused);
+        let fresh = listed
+            .iter()
+            .find(|a| a.status == ApprovalStatus::Pending)
+            .unwrap();
+        let ApprovalCategory::Declassification { input } = fresh.category else {
+            panic!("a held push was listed as {:?}", fresh.category);
+        };
+        assert_eq!(
+            input.integrity,
+            nucleus_decision_protocol::IntegLevel::Adversarial
+        );
+        let fresh = fresh.id;
+        policy
+            .settle_effect_approval(operator(), fresh, true, NOW)
+            .unwrap();
+        let _permit = commit(&mut policy).unwrap();
+        assert!(
+            commit(&mut policy).is_err(),
+            "one grant released two pushes"
+        );
     }
 
     #[test]

@@ -152,6 +152,7 @@ fn approval() -> ApprovalView {
             .as_secs()
             + 300,
         status: ApprovalStatus::Pending,
+        category: ApprovalCategory::Ordinary,
     }
 }
 
@@ -350,7 +351,7 @@ async fn mtls_review_verifies_and_safely_renders_the_exact_payload() {
 fn review_rejects_payload_destination_tariff_and_approval_substitution() {
     let review = review_fixture();
     let expected = review.approval.clone();
-    for case in 0..5 {
+    for case in 0..6 {
         let mut changed = review.clone();
         match case {
             0 => {
@@ -361,10 +362,195 @@ fn review_rejects_payload_destination_tariff_and_approval_substitution() {
             2 => changed.request.call_charge_micro_usd = Some(0),
             3 => changed.approval.id = Uuid::new_v4(),
             4 => changed.request.body_bytes += 1,
+            // The review cannot say less about what a grant does than the
+            // listing did.
+            5 => changed.approval.category = ApprovalCategory::Ordinary,
             _ => unreachable!(),
         }
+        let expected = if case == 5 {
+            let mut held = expected.clone();
+            held.category = adversarial();
+            held
+        } else {
+            expected.clone()
+        };
         assert!(render_review(changed, &expected).is_err());
     }
+}
+
+fn adversarial() -> ApprovalCategory {
+    // The node's wire form of a model call's taint, as the CLI receives it.
+    let input: InputLabel = serde_json::from_value(serde_json::json!({
+        "integrity": "adversarial", "confidentiality": "public", "derivation": "a_i_derived",
+    }))
+    .unwrap();
+    ApprovalCategory::Declassification { input }
+}
+
+/// A push the host held because the session is tainted (#3255), as the node
+/// lists and reviews it: the git smart-HTTP pack upload, with its protocol
+/// header and a query on the URL.
+fn held_push_review() -> ApprovalReview {
+    use nucleus_spec::host_effect_approval::EffectRequest;
+    use sha2::{Digest, Sha256};
+    let body = b"0000PACK";
+    let mut approval = approval();
+    approval.operation = "git_push".into();
+    approval.subject = "https://forge.invalid/org/repo.git/git-receive-pack?service=git-receive-pack&service=again".into();
+    approval.category = adversarial();
+    let request = EffectRequest {
+        require_approval: false,
+        operation: "GitPush".into(),
+        upstream: "git-remote".into(),
+        url: approval.subject.clone(),
+        method: "POST".into(),
+        credential_header: "authorization".into(),
+        content_type: "application/x-git-receive-pack-request".into(),
+        body_sha256: Sha256::digest(body).into(),
+        body_bytes: body.len() as u64,
+        call_charge_micro_usd: Some(approval.call_charge_micro_usd),
+        request_headers: [("git-protocol".to_string(), "version=2".to_string())]
+            .into_iter()
+            .collect(),
+    };
+    approval.effect_sha256 = hex::encode(request.digest().unwrap());
+    ApprovalReview {
+        approval,
+        request,
+        body_base64: base64::engine::general_purpose::STANDARD.encode(body),
+    }
+}
+
+/// **The acceptance check (#3258).** Reviewing a held push says, before the
+/// operator grants it, that the grant declassifies tainted data: the host's
+/// labels in words, the sink, and the bound request (method, URL, query
+/// parameter names, forwarded header names, body digest and size). Reviewing
+/// an ordinary approval says none of it, and renders as before.
+///
+/// A-19: rendering every review as ordinary (dropping the
+/// `Declassification` arm in `render_review`) reds the first half; a node view
+/// that drops the hold (`category: ordinary`) reds it too, because the CLI
+/// words only what the node sent.
+#[test]
+fn review_names_a_held_push_as_a_declassification_with_its_labels() {
+    let review = held_push_review();
+    let expected = review.approval.clone();
+    let output = render_review(review.clone(), &expected).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let block = &json["declassification"];
+    assert!(
+        block["notice"]
+            .as_str()
+            .unwrap()
+            .contains("DECLASSIFIES TAINTED DATA"),
+        "{output}"
+    );
+    assert_eq!(block["input"]["integrity"], "adversarial");
+    assert!(
+        block["input_described"]["integrity"]
+            .as_str()
+            .unwrap()
+            .starts_with("adversarial: content an outside party controls")
+    );
+    assert!(
+        block["input_described"]["derivation"]
+            .as_str()
+            .unwrap()
+            .starts_with("AI-derived: model output")
+    );
+    assert_eq!(block["sink"]["operation"], "git_push");
+    assert_eq!(block["sink"]["subject"], review.approval.subject.as_str());
+    let bound = &block["bound_request"];
+    assert_eq!(bound["method"], "POST");
+    assert_eq!(bound["url"], review.request.url.as_str());
+    assert_eq!(
+        bound["query_parameter_names"],
+        serde_json::json!(["service"])
+    );
+    assert_eq!(
+        bound["forwarded_header_names"],
+        serde_json::json!(["git-protocol"])
+    );
+    assert_eq!(
+        bound["body_sha256"],
+        hex::encode(review.request.body_sha256)
+    );
+    assert_eq!(bound["body_bytes"], 8);
+    // The listing's JSON carries the same category and labels.
+    let listed: serde_json::Value = serde_json::to_value(&expected).unwrap();
+    assert_eq!(
+        listed["category"]["declassification"]["input"],
+        block["input"]
+    );
+
+    // An ordinary approval: no declassification, nothing added.
+    let ordinary = review_fixture();
+    let expected = ordinary.approval.clone();
+    let output = render_review(ordinary, &expected).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert!(json.get("declassification").is_none(), "{output}");
+    assert!(!output.contains("DECLASSIFIES"));
+    assert_eq!(json["approval"]["category"], "ordinary");
+    assert_eq!(
+        json.as_object().unwrap().keys().collect::<Vec<_>>(),
+        ["approval", "request", "body_base64", "body_utf8"]
+    );
+}
+
+/// Over the wire: the CLI reviews a held push the node lists, and its output
+/// names the declassification.
+#[tokio::test]
+async fn mtls_review_of_a_held_push_names_the_declassification() {
+    let review = held_push_review();
+    let approval = review.approval.clone();
+    let f = fixture_with_review(vec![approval.clone()], false, 204, Some(review)).await;
+    let output = run(
+        &f.client,
+        &f.url,
+        Uuid::new_v4(),
+        &Command::Review {
+            approval_id: approval.id,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(output.contains("DECLASSIFIES TAINTED DATA"), "{output}");
+    let listed = run(
+        &f.client,
+        &f.url,
+        Uuid::new_v4(),
+        &Command::List { wait_secs: None },
+    )
+    .await
+    .unwrap();
+    let listed: Vec<ApprovalView> = serde_json::from_str(&listed).unwrap();
+    assert_eq!(listed[0].category, approval.category);
+    f.server.abort();
+    let _ = f.server.await;
+}
+
+/// There is no bulk grant: `grant` settles exactly one approval id, so a
+/// declassification can never be approved alongside ordinary ones (#3258).
+/// A-19: making `approval_id` a `Vec<Uuid>` reds this.
+#[test]
+fn grant_takes_exactly_one_approval_id() {
+    use clap::Parser;
+    #[derive(Parser)]
+    struct Parse {
+        #[command(subcommand)]
+        command: Command,
+    }
+    let digest = "ab".repeat(32);
+    let one = Uuid::new_v4().to_string();
+    let two = Uuid::new_v4().to_string();
+    assert!(Parse::try_parse_from(["approval", "grant", &one, "--effect-sha256", &digest]).is_ok());
+    assert!(
+        Parse::try_parse_from(["approval", "grant", &one, &two, "--effect-sha256", &digest])
+            .is_err()
+    );
+    assert!(
+        Parse::try_parse_from(["approval", "grant", "--all", "--effect-sha256", &digest]).is_err()
+    );
 }
 
 #[tokio::test]
