@@ -919,12 +919,12 @@ mod tests {
     /// than against a second copy of the version (ADR 0007 G-1). The MCP bridge
     /// has no `Tier2Artifact` row (`setup` does not install it on the host);
     /// its URL is the node's with the binary name swapped.
-    fn release_urls_at_the_pin() -> Vec<String> {
-        let node = Tier2Artifact::Node.asset_url(GUEST_RELEASE, "aarch64");
+    fn release_urls_at(release: &str) -> Vec<String> {
+        let node = Tier2Artifact::Node.asset_url(release, "aarch64");
         let mcp = node.replace("/nucleus-node-", "/nucleus-mcp-");
         assert_ne!(node, mcp, "the node asset name changed shape");
         let mut urls = vec![
-            Tier2Artifact::Rootfs.asset_url(GUEST_RELEASE, "aarch64"),
+            Tier2Artifact::Rootfs.asset_url(release, "aarch64"),
             node,
             mcp,
         ];
@@ -935,7 +935,7 @@ mod tests {
     /// Whether a recipe downloads exactly [`GUEST_RELEASE`]'s node, MCP bridge
     /// and rootfs — each on the line after an `ADD --checksum=sha256:<64 hex>`
     /// — and no other asset of this repository's releases.
-    fn image_is_at_the_pin(recipe: &str) -> Result<(), String> {
+    fn image_is_at(recipe: &str, release: &str) -> Result<(), String> {
         let prefix = format!("https://github.com/{RELEASE_REPO}/releases/download/");
         let lines: Vec<&str> = recipe.lines().collect();
         let mut found = Vec::new();
@@ -953,21 +953,31 @@ mod tests {
             }
         }
         found.sort_unstable();
-        let expected = release_urls_at_the_pin();
+        let expected = release_urls_at(release);
         if found == expected {
             Ok(())
         } else {
             Err(format!(
-                "the image downloads {found:?}, not GUEST_RELEASE {GUEST_RELEASE}'s {expected:?}"
+                "the image downloads {found:?}, not release {release}'s {expected:?}"
             ))
         }
     }
 
-    /// The image is at the pin. The pin moves BEFORE the tag (a release's
-    /// digests exist only once the tag has built them), so the change that
-    /// bumps [`GUEST_RELEASE`] reds this until the follow-up copies the
-    /// published digests into the recipe — which is the point: the image
-    /// cannot silently stay on the previous guest.
+    /// The release the image still downloads while it trails the pin.
+    ///
+    /// The image takes the release's node, MCP bridge and rootfs by digest, and
+    /// a release's digests exist only once its tag has built them, while the
+    /// pin moves BEFORE the tag (#3143's precedent, again in #3226 and #3262).
+    /// So the change that bumps [`GUEST_RELEASE`] to 2.6.0 cannot move the
+    /// image in the same commit; the image trails by one release until the
+    /// post-tag follow-up that copies the published 2.6.0 digests in. That
+    /// follow-up deletes this constant and asserts the image is at
+    /// [`GUEST_RELEASE`] (as #3264 did for 2.5.0); the test below reds until it
+    /// does.
+    const IMAGE_TRAILS_THE_PIN_AT: &str = "2.5.0";
+
+    /// The image pins the same VMM and guest kernel, and its release trails the
+    /// pin by exactly the release that has not been tagged yet.
     #[test]
     fn the_image_pins_the_same_vmm_guest_kernel_and_release() {
         let r = recipe(IMAGE_SOURCE);
@@ -975,24 +985,37 @@ mod tests {
         assert!(r.contains(&format!("/v{fc}/firecracker-v{fc}-aarch64.tgz")));
         assert!(r.contains(&format!("--checksum=sha256:{}", KERNEL_AARCH64.sha256)));
         assert!(r.contains(KERNEL_AARCH64.url));
-        assert_eq!(image_is_at_the_pin(&r), Ok(()));
+        // Teeth both ways: the trailing release really is older than the pin,
+        // and the image moving to the pin reds this until the trail is removed.
+        let (pin, trail) = (
+            crate::tier2_artifacts::parse_release(GUEST_RELEASE),
+            crate::tier2_artifacts::parse_release(IMAGE_TRAILS_THE_PIN_AT),
+        );
+        assert!(
+            trail.is_some() && trail < pin,
+            "{IMAGE_TRAILS_THE_PIN_AT} does not trail {GUEST_RELEASE}"
+        );
+        assert_eq!(image_is_at(&r, IMAGE_TRAILS_THE_PIN_AT), Ok(()));
+        assert!(
+            image_is_at(&r, GUEST_RELEASE).is_err(),
+            "the image is at the pin: drop IMAGE_TRAILS_THE_PIN_AT and assert that"
+        );
     }
 
-    /// The check has teeth: the recipe left on the previous release (2.4.0, as
-    /// it stood until this release's follow-up), one asset dropped, and the
-    /// downloads stripped of their checksums are each refused.
+    /// The check has teeth: the recipe left on an older release, one asset
+    /// dropped, and the downloads stripped of their checksums are each refused.
     #[test]
     fn an_image_off_the_pin_or_unpinned_is_refused() {
         let r = recipe(IMAGE_SOURCE);
-        let previous = r.replace(GUEST_RELEASE, "2.4.0");
+        let previous = r.replace(IMAGE_TRAILS_THE_PIN_AT, "2.4.0");
         assert_ne!(previous, r, "the substitution matched nothing");
-        assert!(image_is_at_the_pin(&previous).is_err());
+        assert!(image_is_at(&previous, IMAGE_TRAILS_THE_PIN_AT).is_err());
 
         let mcp_line = r
             .lines()
             .find(|l| l.contains("/nucleus-mcp-"))
             .expect("the recipe downloads the MCP bridge");
-        assert!(image_is_at_the_pin(&r.replace(mcp_line, "")).is_err());
+        assert!(image_is_at(&r.replace(mcp_line, ""), IMAGE_TRAILS_THE_PIN_AT).is_err());
 
         let unpinned: Vec<&str> = r
             .lines()
@@ -1004,7 +1027,7 @@ mod tests {
                 }
             })
             .collect();
-        assert!(image_is_at_the_pin(&unpinned.join("\n")).is_err());
+        assert!(image_is_at(&unpinned.join("\n"), IMAGE_TRAILS_THE_PIN_AT).is_err());
     }
 
     // ── versions and the Mac ──
