@@ -122,6 +122,39 @@ include and exclude patterns (1,234 files). The gate's runner then wrote the 18 
 `cargo metadata --no-deps --offline`, which loaded all 94 workspace members, exit 0. The lane run
 is still the real measurement.
 
+## 7. Live on the lanes: a PR waits less and the lanes spend more, because the seed is `test`'s (2026-10-06)
+
+#3225 merged at 15:58Z. Its push set plan `e35be2e0` at 16:03Z through the OIDC upload, with
+nobody touching it, and the shards ran on the x86 lanes within the hour. Both passed. Measured from
+each attempt's `controller.log`: the step time, and `gate_cache`'s compile counts. Every run was on
+seed `main-160a26deb`.
+
+| gate | runs | step time | compiled workspace / registry |
+|---|---|---|---|
+| old `test` (same seed, earlier today) | 4 | 320-352 s, mean 329 s | 35-38 / **3** |
+| `test-node` | 3 | 257-276 s | 45 / **41** |
+| `test-libs` | 2 | 263-267 s | 62 / **48** |
+
+**What it means:**
+- **Wait:** a pull request's wait falls by about 60 s (329 s against ~265 s in parallel).
+- **Cost:** lane-seconds rise to about 530 s whenever both shards run (+60%).
+- **The cause:** the registry recompiles. The seed was harvested from the old whole-workspace
+  `test` build. Each shard resolves a different feature set (`--workspace-features`, and its own
+  package selection), so 41-48 registry crates no longer match the seed's artifacts and are
+  rebuilt every time.
+
+**The wrong belief:** that a shard inherits `test`'s seed for free because they share the image,
+tools and seed pin (`.gatehouse/shards/base.json`). They share the pin, not the compilation.
+
+**What follows:**
+- **Per-shard seeds.** Each shard needs a seed built from its own command, so its registry count
+  returns to near zero. That is the harvest work already pending (gatehouse
+  docs/sublinear-testing.md); the shards make it a requirement, not an optimisation.
+- **Not yet measured:** whether `test-libs` is reused across trees whose changes touch only node
+  crates. That is the saving the shards exist for, and it needs scope-derived reuse to happen on
+  real pull requests. Re-measure lane-seconds per PR once per-shard seeds land, over enough PRs to
+  see the reuse rate.
+
 ## Not yet
 
 * ~~**The plan.**~~ Done 2026-10-05, see §5.
