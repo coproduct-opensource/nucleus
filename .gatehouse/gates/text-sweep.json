@@ -1,0 +1,160 @@
+{
+  "scope": {
+    "include": [
+      ".sandbox-unpinned-ceiling",
+      "crates/**",
+      "sandbox-trusted-base.txt",
+      "tests/**",
+      "scripts/check-verify-strict.sh",
+      "scripts/verify-strict-allowlist.txt",
+      "scripts/check-sandbox-trusted-base.sh",
+      "scripts/check-failclosed-verifiers.sh",
+      "scripts/check-extracted-callsites.sh",
+      "scripts/extracted-callsites-manifest.txt",
+      "scripts/check-declassify-governor-keys-sealed.sh"
+    ],
+    "exclude": [],
+    "external": [],
+    "git_history": false,
+    "git_checkout": true
+  },
+  "env": {
+    "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+    "platform": "linux/amd64",
+    "toolchains": {
+      "rust": "1.96.1"
+    },
+    "env_vars": {},
+    "pins": [
+      {
+        "platform": "linux/arm64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c"
+      },
+      {
+        "platform": "linux/amd64",
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628"
+      }
+    ]
+  },
+  "cap": {
+    "net": "none",
+    "fs_read": [
+      ".sandbox-unpinned-ceiling",
+      "crates/**",
+      "sandbox-trusted-base.txt",
+      "tests/**",
+      "scripts/check-verify-strict.sh",
+      "scripts/verify-strict-allowlist.txt",
+      "scripts/check-sandbox-trusted-base.sh",
+      "scripts/check-failclosed-verifiers.sh",
+      "scripts/check-extracted-callsites.sh",
+      "scripts/extracted-callsites-manifest.txt",
+      "scripts/check-declassify-governor-keys-sealed.sh"
+    ],
+    "fs_write": [],
+    "exec": "scoped",
+    "wall_ms": 1620000,
+    "cpu_ms": 1620000,
+    "mem_mb": 2048,
+    "secrets": []
+  },
+  "cmd": [],
+  "steps": [
+    {
+      "program": "scripts/check-verify-strict.sh",
+      "reads": [
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "sandbox-trusted-base.txt",
+        "tests/**",
+        "scripts/check-verify-strict.sh",
+        "scripts/verify-strict-allowlist.txt",
+        "scripts/check-sandbox-trusted-base.sh",
+        "scripts/check-failclosed-verifiers.sh",
+        "scripts/check-extracted-callsites.sh",
+        "scripts/extracted-callsites-manifest.txt",
+        "scripts/check-declassify-governor-keys-sealed.sh"
+      ]
+    },
+    {
+      "program": "scripts/check-sandbox-trusted-base.sh",
+      "reads": [
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "sandbox-trusted-base.txt",
+        "tests/**",
+        "scripts/check-verify-strict.sh",
+        "scripts/verify-strict-allowlist.txt",
+        "scripts/check-sandbox-trusted-base.sh",
+        "scripts/check-failclosed-verifiers.sh",
+        "scripts/check-extracted-callsites.sh",
+        "scripts/extracted-callsites-manifest.txt",
+        "scripts/check-declassify-governor-keys-sealed.sh"
+      ]
+    },
+    {
+      "program": "scripts/check-failclosed-verifiers.sh",
+      "reads": [
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "sandbox-trusted-base.txt",
+        "tests/**",
+        "scripts/check-verify-strict.sh",
+        "scripts/verify-strict-allowlist.txt",
+        "scripts/check-sandbox-trusted-base.sh",
+        "scripts/check-failclosed-verifiers.sh",
+        "scripts/check-extracted-callsites.sh",
+        "scripts/extracted-callsites-manifest.txt",
+        "scripts/check-declassify-governor-keys-sealed.sh"
+      ]
+    },
+    {
+      "program": "scripts/check-extracted-callsites.sh",
+      "reads": [
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "sandbox-trusted-base.txt",
+        "tests/**",
+        "scripts/check-verify-strict.sh",
+        "scripts/verify-strict-allowlist.txt",
+        "scripts/check-sandbox-trusted-base.sh",
+        "scripts/check-failclosed-verifiers.sh",
+        "scripts/check-extracted-callsites.sh",
+        "scripts/extracted-callsites-manifest.txt",
+        "scripts/check-declassify-governor-keys-sealed.sh"
+      ]
+    },
+    {
+      "program": "scripts/check-declassify-governor-keys-sealed.sh",
+      "reads": [
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "sandbox-trusted-base.txt",
+        "tests/**",
+        "scripts/check-verify-strict.sh",
+        "scripts/verify-strict-allowlist.txt",
+        "scripts/check-sandbox-trusted-base.sh",
+        "scripts/check-failclosed-verifiers.sh",
+        "scripts/check-extracted-callsites.sh",
+        "scripts/extracted-callsites-manifest.txt",
+        "scripts/check-declassify-governor-keys-sealed.sh"
+      ]
+    }
+  ],
+  "tools": [
+    "sh@0.5.12",
+    "git@2.39.5",
+    "rg@13.0.0",
+    "awk@mawk-1.3.4",
+    "python3@3.11.2"
+  ],
+  "cwd": "",
+  "timeout_s": 1620,
+  "outputs": [],
+  "resources": {
+    "cpus": 2,
+    "mem_mb": 2048,
+    "disk_mb": 4096
+  },
+  "falsifier": null
+}

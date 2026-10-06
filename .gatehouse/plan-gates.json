@@ -1,32 +1,103 @@
 [
   {
     "cap": {
-      "cpu_ms": 1800000,
+      "cpu_ms": 360000,
       "exec": "scoped",
       "fs_read": [
-        ".github/workflows/**",
-        ".sandbox-unpinned-ceiling",
         "crates/**",
-        "docs/**",
         "kani-divergence.toml",
-        "sandbox-trusted-base.txt",
-        "scripts/**",
-        "tests/**"
+        "scripts/check-kani-divergence.sh"
       ],
       "fs_write": [],
       "mem_mb": 2048,
       "net": "none",
       "secrets": [],
-      "wall_ms": 1800000
+      "wall_ms": 360000
     },
     "cmd": [],
     "disk_mb": 4096,
     "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
     "exclude": [],
     "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
-    "measured_ms": 874000,
+    "measured_ms": 79454,
     "mem_mb": 2048,
-    "name": "text-gates",
+    "name": "text-history",
+    "outputs": [],
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
+    "reads": [],
+    "replaces": [
+      "cfg(kani) divergences are inventoried and ratcheted"
+    ],
+    "scope": [
+      "crates/**",
+      "kani-divergence.toml",
+      "scripts/check-kani-divergence.sh"
+    ],
+    "seeds": [],
+    "steps": [
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-kani-divergence.sh",
+        "reads": [
+          "crates/**",
+          "kani-divergence.toml",
+          "scripts/check-kani-divergence.sh"
+        ],
+        "uid": 0,
+        "writes": []
+      }
+    ],
+    "timeout_ms": 360000,
+    "tools": [
+      "sh@0.5.12",
+      "git@2.39.5",
+      "rg@13.0.0",
+      "awk@mawk-1.3.4",
+      "python3@3.11.2"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 1620000,
+      "exec": "scoped",
+      "fs_read": [
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "sandbox-trusted-base.txt",
+        "tests/**",
+        "scripts/check-verify-strict.sh",
+        "scripts/verify-strict-allowlist.txt",
+        "scripts/check-sandbox-trusted-base.sh",
+        "scripts/check-failclosed-verifiers.sh",
+        "scripts/check-extracted-callsites.sh",
+        "scripts/extracted-callsites-manifest.txt",
+        "scripts/check-declassify-governor-keys-sealed.sh"
+      ],
+      "fs_write": [],
+      "mem_mb": 2048,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 1620000
+    },
+    "cmd": [],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "exclude": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 397272,
+    "mem_mb": 2048,
+    "name": "text-sweep",
     "outputs": [],
     "pins": [
       {
@@ -44,14 +115,356 @@
       "Ed25519 verify_strict gate (M-3)",
       "Sandbox trusted-base gate",
       "Fail-closed verifier gate",
-      "Mediation backstop gate (North Star)",
-      "The North Star status table cannot outrun its wiring",
       "Extracted predicates have live call sites (C8)",
+      "Governor trusted-key set is not workload-writable"
+    ],
+    "scope": [
+      ".sandbox-unpinned-ceiling",
+      "crates/**",
+      "sandbox-trusted-base.txt",
+      "tests/**",
+      "scripts/check-verify-strict.sh",
+      "scripts/verify-strict-allowlist.txt",
+      "scripts/check-sandbox-trusted-base.sh",
+      "scripts/check-failclosed-verifiers.sh",
+      "scripts/check-extracted-callsites.sh",
+      "scripts/extracted-callsites-manifest.txt",
+      "scripts/check-declassify-governor-keys-sealed.sh"
+    ],
+    "seeds": [],
+    "steps": [
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-verify-strict.sh",
+        "reads": [
+          ".sandbox-unpinned-ceiling",
+          "crates/**",
+          "sandbox-trusted-base.txt",
+          "tests/**",
+          "scripts/check-verify-strict.sh",
+          "scripts/verify-strict-allowlist.txt",
+          "scripts/check-sandbox-trusted-base.sh",
+          "scripts/check-failclosed-verifiers.sh",
+          "scripts/check-extracted-callsites.sh",
+          "scripts/extracted-callsites-manifest.txt",
+          "scripts/check-declassify-governor-keys-sealed.sh"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-sandbox-trusted-base.sh",
+        "reads": [
+          ".sandbox-unpinned-ceiling",
+          "crates/**",
+          "sandbox-trusted-base.txt",
+          "tests/**",
+          "scripts/check-verify-strict.sh",
+          "scripts/verify-strict-allowlist.txt",
+          "scripts/check-sandbox-trusted-base.sh",
+          "scripts/check-failclosed-verifiers.sh",
+          "scripts/check-extracted-callsites.sh",
+          "scripts/extracted-callsites-manifest.txt",
+          "scripts/check-declassify-governor-keys-sealed.sh"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-failclosed-verifiers.sh",
+        "reads": [
+          ".sandbox-unpinned-ceiling",
+          "crates/**",
+          "sandbox-trusted-base.txt",
+          "tests/**",
+          "scripts/check-verify-strict.sh",
+          "scripts/verify-strict-allowlist.txt",
+          "scripts/check-sandbox-trusted-base.sh",
+          "scripts/check-failclosed-verifiers.sh",
+          "scripts/check-extracted-callsites.sh",
+          "scripts/extracted-callsites-manifest.txt",
+          "scripts/check-declassify-governor-keys-sealed.sh"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-extracted-callsites.sh",
+        "reads": [
+          ".sandbox-unpinned-ceiling",
+          "crates/**",
+          "sandbox-trusted-base.txt",
+          "tests/**",
+          "scripts/check-verify-strict.sh",
+          "scripts/verify-strict-allowlist.txt",
+          "scripts/check-sandbox-trusted-base.sh",
+          "scripts/check-failclosed-verifiers.sh",
+          "scripts/check-extracted-callsites.sh",
+          "scripts/extracted-callsites-manifest.txt",
+          "scripts/check-declassify-governor-keys-sealed.sh"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-declassify-governor-keys-sealed.sh",
+        "reads": [
+          ".sandbox-unpinned-ceiling",
+          "crates/**",
+          "sandbox-trusted-base.txt",
+          "tests/**",
+          "scripts/check-verify-strict.sh",
+          "scripts/verify-strict-allowlist.txt",
+          "scripts/check-sandbox-trusted-base.sh",
+          "scripts/check-failclosed-verifiers.sh",
+          "scripts/check-extracted-callsites.sh",
+          "scripts/extracted-callsites-manifest.txt",
+          "scripts/check-declassify-governor-keys-sealed.sh"
+        ],
+        "uid": 0,
+        "writes": []
+      }
+    ],
+    "timeout_ms": 1620000,
+    "tools": [
+      "sh@0.5.12",
+      "git@2.39.5",
+      "rg@13.0.0",
+      "awk@mawk-1.3.4",
+      "python3@3.11.2"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 1320000,
+      "exec": "scoped",
+      "fs_read": [
+        "crates/nucleus/src/**",
+        "crates/nucleus-tool-proxy/src/**",
+        "crates/nucleus-mcp/src/**",
+        "crates/nucleus-mcp-guard/src/**",
+        "crates/portcullis-effects/src/**",
+        "crates/nucleus-task-compiler/**",
+        "scripts/check-mediation.sh",
+        "scripts/mediation-allowlist.txt",
+        "scripts/mediation-net-allowlist.txt",
+        "scripts/mediation-vsock-allowlist.txt",
+        "scripts/check-task-compiler-offline.sh",
+        "scripts/check-ingest-hashed.sh",
+        "scripts/ingest-hashed-allowlist.txt",
+        "scripts/check-sealed-home.sh",
+        "scripts/sealed-home-allowlist.txt"
+      ],
+      "fs_write": [],
+      "mem_mb": 2048,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 1320000
+    },
+    "cmd": [],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "exclude": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 317818,
+    "mem_mb": 2048,
+    "name": "text-narrow",
+    "outputs": [],
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
+    "reads": [],
+    "replaces": [
+      "Mediation backstop gate (North Star)",
       "The task compiler is offline by construction",
       "No-unwitnessed-ingest gate (InputsAuthorized)",
-      "cfg(kani) divergences are inventoried and ratcheted",
-      "Sealed-home integrity gate (North Star)",
-      "Governor trusted-key set is not workload-writable"
+      "Sealed-home integrity gate (North Star)"
+    ],
+    "scope": [
+      "crates/nucleus/src/**",
+      "crates/nucleus-tool-proxy/src/**",
+      "crates/nucleus-mcp/src/**",
+      "crates/nucleus-mcp-guard/src/**",
+      "crates/portcullis-effects/src/**",
+      "crates/nucleus-task-compiler/**",
+      "scripts/check-mediation.sh",
+      "scripts/mediation-allowlist.txt",
+      "scripts/mediation-net-allowlist.txt",
+      "scripts/mediation-vsock-allowlist.txt",
+      "scripts/check-task-compiler-offline.sh",
+      "scripts/check-ingest-hashed.sh",
+      "scripts/ingest-hashed-allowlist.txt",
+      "scripts/check-sealed-home.sh",
+      "scripts/sealed-home-allowlist.txt"
+    ],
+    "seeds": [],
+    "steps": [
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-mediation.sh",
+        "reads": [
+          "crates/nucleus/src/**",
+          "crates/nucleus-tool-proxy/src/**",
+          "crates/nucleus-mcp/src/**",
+          "crates/nucleus-mcp-guard/src/**",
+          "crates/portcullis-effects/src/**",
+          "crates/nucleus-task-compiler/**",
+          "scripts/check-mediation.sh",
+          "scripts/mediation-allowlist.txt",
+          "scripts/mediation-net-allowlist.txt",
+          "scripts/mediation-vsock-allowlist.txt",
+          "scripts/check-task-compiler-offline.sh",
+          "scripts/check-ingest-hashed.sh",
+          "scripts/ingest-hashed-allowlist.txt",
+          "scripts/check-sealed-home.sh",
+          "scripts/sealed-home-allowlist.txt"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-task-compiler-offline.sh",
+        "reads": [
+          "crates/nucleus/src/**",
+          "crates/nucleus-tool-proxy/src/**",
+          "crates/nucleus-mcp/src/**",
+          "crates/nucleus-mcp-guard/src/**",
+          "crates/portcullis-effects/src/**",
+          "crates/nucleus-task-compiler/**",
+          "scripts/check-mediation.sh",
+          "scripts/mediation-allowlist.txt",
+          "scripts/mediation-net-allowlist.txt",
+          "scripts/mediation-vsock-allowlist.txt",
+          "scripts/check-task-compiler-offline.sh",
+          "scripts/check-ingest-hashed.sh",
+          "scripts/ingest-hashed-allowlist.txt",
+          "scripts/check-sealed-home.sh",
+          "scripts/sealed-home-allowlist.txt"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-ingest-hashed.sh",
+        "reads": [
+          "crates/nucleus/src/**",
+          "crates/nucleus-tool-proxy/src/**",
+          "crates/nucleus-mcp/src/**",
+          "crates/nucleus-mcp-guard/src/**",
+          "crates/portcullis-effects/src/**",
+          "crates/nucleus-task-compiler/**",
+          "scripts/check-mediation.sh",
+          "scripts/mediation-allowlist.txt",
+          "scripts/mediation-net-allowlist.txt",
+          "scripts/mediation-vsock-allowlist.txt",
+          "scripts/check-task-compiler-offline.sh",
+          "scripts/check-ingest-hashed.sh",
+          "scripts/ingest-hashed-allowlist.txt",
+          "scripts/check-sealed-home.sh",
+          "scripts/sealed-home-allowlist.txt"
+        ],
+        "uid": 0,
+        "writes": []
+      },
+      {
+        "args": [],
+        "loopback": 0,
+        "program": "scripts/check-sealed-home.sh",
+        "reads": [
+          "crates/nucleus/src/**",
+          "crates/nucleus-tool-proxy/src/**",
+          "crates/nucleus-mcp/src/**",
+          "crates/nucleus-mcp-guard/src/**",
+          "crates/portcullis-effects/src/**",
+          "crates/nucleus-task-compiler/**",
+          "scripts/check-mediation.sh",
+          "scripts/mediation-allowlist.txt",
+          "scripts/mediation-net-allowlist.txt",
+          "scripts/mediation-vsock-allowlist.txt",
+          "scripts/check-task-compiler-offline.sh",
+          "scripts/check-ingest-hashed.sh",
+          "scripts/ingest-hashed-allowlist.txt",
+          "scripts/check-sealed-home.sh",
+          "scripts/sealed-home-allowlist.txt"
+        ],
+        "uid": 0,
+        "writes": []
+      }
+    ],
+    "timeout_ms": 1320000,
+    "tools": [
+      "sh@0.5.12",
+      "git@2.39.5",
+      "rg@13.0.0",
+      "awk@mawk-1.3.4",
+      "python3@3.11.2"
+    ]
+  },
+  {
+    "cap": {
+      "cpu_ms": 360000,
+      "exec": "scoped",
+      "fs_read": [
+        ".github/workflows/**",
+        ".sandbox-unpinned-ceiling",
+        "crates/**",
+        "docs/**",
+        "kani-divergence.toml",
+        "sandbox-trusted-base.txt",
+        "scripts/**",
+        "tests/**"
+      ],
+      "fs_write": [],
+      "mem_mb": 2048,
+      "net": "none",
+      "secrets": [],
+      "wall_ms": 360000
+    },
+    "cmd": [],
+    "disk_mb": 4096,
+    "env": "e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "exclude": [],
+    "image": "docker.io/library/rust@sha256:e18a79fc84dfcfc3ab5ba72290398a644c135c97eaa881447fddc354ee4701a3",
+    "measured_ms": 79454,
+    "mem_mb": 2048,
+    "name": "text-north-star",
+    "outputs": [],
+    "pins": [
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "platform": "linux/arm64"
+      },
+      {
+        "image": "gatehouse/nucleus-gate-tools@sha256:1a4332229194f85209b899fad44069680d409c9982aa25e7e74ed43dd9ce5628",
+        "platform": "linux/amd64"
+      }
+    ],
+    "platform": "linux/amd64",
+    "reads": [],
+    "replaces": [
+      "The North Star status table cannot outrun its wiring"
     ],
     "scope": [
       ".github/workflows/**",
@@ -68,177 +481,7 @@
       {
         "args": [],
         "loopback": 0,
-        "program": "scripts/check-verify-strict.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-sandbox-trusted-base.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-failclosed-verifiers.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-mediation.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
         "program": "scripts/check-north-star-ledger.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-extracted-callsites.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-task-compiler-offline.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-ingest-hashed.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-kani-divergence.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-sealed-home.sh",
-        "reads": [
-          ".github/workflows/**",
-          ".sandbox-unpinned-ceiling",
-          "crates/**",
-          "docs/**",
-          "kani-divergence.toml",
-          "sandbox-trusted-base.txt",
-          "scripts/**",
-          "tests/**"
-        ],
-        "uid": 0,
-        "writes": []
-      },
-      {
-        "args": [],
-        "loopback": 0,
-        "program": "scripts/check-declassify-governor-keys-sealed.sh",
         "reads": [
           ".github/workflows/**",
           ".sandbox-unpinned-ceiling",
@@ -253,7 +496,7 @@
         "writes": []
       }
     ],
-    "timeout_ms": 1800000,
+    "timeout_ms": 360000,
     "tools": [
       "sh@0.5.12",
       "git@2.39.5",

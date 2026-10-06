@@ -217,7 +217,7 @@ jobs:
         id: ingest_hash
         continue-on-error: true
         run: scripts/check-ingest-hashed.sh
-      - name: Every cfg(kani) site is listed and justified; the total only shrinks
+      - name: Every cfg(kani) site is listed and justified, and the total only shrinks
         id: kani_divergence
         continue-on-error: true
         env:
@@ -1151,7 +1151,7 @@ jobs:
           STEP: ${{ needs.text-gates.outputs.kani_divergence }}
         run: |
           case "$JOB" in skipped) exit 0;; success) ;; *) echo "::error::text-gates job: $JOB"; exit 1;; esac
-          case "$STEP" in success|skipped) exit 0;; *) echo "::error::kani_divergence: $STEP (see 'Text gates (one pod)' → 'Every cfg(kani) site is listed and justified; the total only shrinks')"; exit 1;; esac
+          case "$STEP" in success|skipped) exit 0;; *) echo "::error::kani_divergence: $STEP (see 'Text gates (one pod)' → 'Every cfg(kani) site is listed and justified, and the total only shrinks')"; exit 1;; esac
 
   sealed-home-gate:
     name: Sealed-home integrity gate (North Star)
