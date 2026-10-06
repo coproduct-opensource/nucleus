@@ -139,7 +139,7 @@ fn firecracker_for(pod: Uuid) -> Result<Measured> {
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with("firecracker"))
         });
-        if is_firecracker && args.iter().any(|a| *a == id.as_bytes()) {
+        if is_firecracker && args.contains(&id.as_bytes()) {
             found.push(pid);
         }
     }
