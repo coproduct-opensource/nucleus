@@ -644,7 +644,7 @@ fn writ_gate(
     bound: &BTreeMap<String, String>,
 ) -> Result<String> {
     let by_name = |v: &str| -> Result<String> {
-        Ok(bound.get(v).cloned().map_or_else(|| writ_bytes(v), Ok)?)
+        bound.get(v).cloned().map_or_else(|| writ_bytes(v), Ok)
     };
     let cap = &g["cap"];
     let net = match cap["net"].as_str() {
