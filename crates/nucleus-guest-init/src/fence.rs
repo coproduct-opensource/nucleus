@@ -11,9 +11,9 @@
 //!
 //! # Why x_tables and not nftables
 //!
-//! The owner decision was "nftables over netlink". The pinned guest kernel
-//! (Firecracker CI `vmlinux-6.1.141`, [`nucleus_spec::tier2_artifacts`]) was
-//! measured before this was written, by booting it with a probe as `/init`:
+//! The owner decision was "nftables over netlink". The guest kernel pinned when
+//! this was written (Firecracker CI `vmlinux-6.1.141`) was measured first, by
+//! booting it with a probe as `/init`:
 //!
 //! * `socket(AF_NETLINK, SOCK_RAW, NETLINK_NETFILTER)` → `EPROTONOSUPPORT`.
 //!   There is no nfnetlink, so there is no nf_tables to talk to, by any crate.
@@ -27,9 +27,15 @@
 //! crate that would have helped was ruled out on its own terms first —
 //! `rustables` is GPL-3.0, `nftnl`/`mnl` link the C libraries, the `nftables`
 //! crate runs the `nft` binary — and none of them would have reached this
-//! kernel anyway. If the guest kernel gains `CONFIG_NF_TABLES`, the rule set
-//! below ([`EgressPolicy`]) is the input an nftables encoder would take; the
-//! policy parsing and the verdict order do not change.
+//! kernel anyway.
+//!
+//! The pin has since moved to Firecracker CI `vmlinux-6.1.186`
+//! ([`nucleus_spec::tier2_artifacts`], #2696 P3). Its config keeps every
+//! x_tables option this module relies on (`IP_NF_IPTABLES`, `IP_NF_FILTER`,
+//! `NETFILTER_XT_MATCH_CONNTRACK`) and adds `CONFIG_NF_TABLES=y`, so the
+//! nftables route is now open. The rule set below ([`EgressPolicy`]) is the
+//! input an nftables encoder would take; the policy parsing and the verdict
+//! order do not change.
 //!
 //! # The rule set, reproduced
 //!

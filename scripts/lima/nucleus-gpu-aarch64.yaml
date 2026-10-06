@@ -92,7 +92,7 @@ provision:
 
       # Download kernel if not present
       if [ ! -f /var/lib/nucleus/artifacts/vmlinux ]; then
-        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.14/aarch64/vmlinux-6.1" \
+        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/aarch64/vmlinux-6.1.186" \
           -o /var/lib/nucleus/artifacts/vmlinux
       fi
 

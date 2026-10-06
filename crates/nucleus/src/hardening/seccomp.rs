@@ -6,8 +6,8 @@
 //! The uid drop (#3119) separates a child from the runtime's *files and
 //! environment*. It does not take away the kernel interfaces every uid has.
 //! The P3 spike (#3148, `docs/findings/p3-workload-confinement-spike.md`)
-//! measured two of them open to an unprivileged workload on the pinned guest
-//! kernel (6.1.141), and identical on 6.1.186 and 6.18.51:
+//! measured two of them open to an unprivileged workload on the guest kernel
+//! pinned then (6.1.141), and identical on 6.1.186 and 6.18.51:
 //!
 //! * `socket(AF_VSOCK)` succeeds (fd 4). The vsock is the guest-to-host
 //!   channel, and the host's listeners on it identify the POD, never a process

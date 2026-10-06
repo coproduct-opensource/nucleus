@@ -202,7 +202,7 @@ echo "              one pod launches at a time without the jailer."
 #       ROOTFS_IMG=/build/rootfs.ext4 bash scripts/firecracker/build-rootfs.sh'
 #
 # The kernel can come from the same place smoke-test.sh uses:
-#   https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/<arch>/vmlinux-6.1.141
+#   https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/<arch>/vmlinux-6.1.186
 #
 # Then copy `rootfs.ext4`, `vmlinux` and a Linux-built `nucleus-node` to $FC_DIR
 # on the KVM host and run this script.

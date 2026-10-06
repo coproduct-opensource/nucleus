@@ -93,8 +93,8 @@ RUN gcc -O2 -Wall -Werror -o /kvm-probe /src/kvm-probe.c
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421 AS artifacts
 ADD --checksum=sha256:e351ebe4f7a16b5873bbd51005d2e6767103cff4d5ebc829df2d3f95a93e2256 \
     https://github.com/firecracker-microvm/firecracker/releases/download/v1.17.0/firecracker-v1.17.0-aarch64.tgz /tmp/fc.tgz
-ADD --checksum=sha256:69aa3308219ec1a070bc9a8e7f80c3b34056fed8ae05efb44e55f73b31adde44 \
-    https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.13/aarch64/vmlinux-6.1.141 /out/artifacts/vmlinux
+ADD --checksum=sha256:5699d939bd168c1fcc4aa8c217344f00b8cf2b7dffbf973af3d9440ce766a6bd \
+    https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/aarch64/vmlinux-6.1.186 /out/artifacts/vmlinux
 ADD --checksum=sha256:b437dd658a6e386116e11042fc630d134a46f7867e0b773fb13036a6cad7c8e0 \
     https://github.com/coproduct-opensource/nucleus/releases/download/v2.5.0/nucleus-rootfs-2.5.0-aarch64.ext4.gz /tmp/rootfs.ext4.gz
 # `ADD <url>` lays files down 0600. The jailed VMM (an unprivileged uid) could

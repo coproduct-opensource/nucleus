@@ -42,6 +42,10 @@ enum Command {
     /// of the shipped node, firecracker and jailer; boot checks `not_checked`.
     #[command(subcommand)]
     ReleaseReferenceManifest(release_reference::Args),
+    /// Mirror the pinned guest kernel as a release asset: fetch config, then a
+    /// digest-checked stage into the release directory.
+    #[command(subcommand)]
+    GuestKernelMirror(guest_kernel_mirror::Args),
     /// Verify host broker journals after a real guest transaction on Linux/KVM.
     HostEvidenceLive {
         #[arg(long)]
@@ -535,6 +539,7 @@ mod gate_budget;
 mod gate_defs;
 mod gatehouse_pin;
 mod gates_can_fail;
+mod guest_kernel_mirror;
 mod guest_layer;
 mod host_evidence_live;
 mod inert_authority;
@@ -571,6 +576,7 @@ fn main() -> Result<()> {
     match Cli::parse().command {
         Command::NodeReferenceManifest(args) => node_reference::run(&args),
         Command::ReleaseReferenceManifest(args) => release_reference::run(&args),
+        Command::GuestKernelMirror(args) => guest_kernel_mirror::run(&args),
         Command::HostEvidenceLive { bin_dir, sudo } => {
             host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
         }
