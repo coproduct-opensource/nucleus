@@ -131,6 +131,9 @@ pub enum ClaimsError {
     /// The requested lifetime is zero or above [`MAX_TTL`].
     #[error("assertion lifetime must be between 1s and {}s", MAX_TTL.as_secs())]
     Lifetime,
+    /// An operator assertion's lifetime is zero or above [`OPERATOR_MAX_TTL`].
+    #[error("operator assertion lifetime must be between 1s and {}s", OPERATOR_MAX_TTL.as_secs())]
+    OperatorLifetime,
     /// The system random source failed, so no `jti` could be drawn.
     #[error("no randomness available for jti")]
     Random,
@@ -221,6 +224,120 @@ impl AssertionClaims {
     pub fn expires_at(&self) -> u64 {
         self.exp
     }
+}
+
+/// The longest operator assertion ([`OperatorClaims`]). An operator assertion
+/// is minted per token exchange by a credential helper the relying party runs
+/// on demand, so it only has to outlive one exchange; fifteen minutes is
+/// generous for that and far short of a session.
+pub const OPERATOR_MAX_TTL: Duration = Duration::from_secs(900);
+
+/// An operator's SPIFFE ID, as the subject of an [`OperatorClaims`].
+///
+/// A principal in the taxonomy's one spelling (`docs/spiffe-taxonomy.md`):
+/// `spiffe://<td>/ns/<ns>/sa/<sa>[/...]`, parsed by the same
+/// [`SpiffeId::parse`](nucleus_oidc_core::spiffe_federation::SpiffeId::parse)
+/// the federation listener uses. Like [`AssertionSubject`] it is not
+/// `Deserialize`: the subject is the operator's own configuration, never
+/// something read off a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OperatorSubject(String);
+
+impl OperatorSubject {
+    /// The subject for `spiffe_id`, refused unless it is a canonical
+    /// principal (`ns/<ns>/sa/<sa>` at least).
+    pub fn new(spiffe_id: &str) -> Result<Self, ClaimsError> {
+        let id = nucleus_oidc_core::spiffe_federation::SpiffeId::parse(spiffe_id)
+            .map_err(|_| ClaimsError::Subject)?;
+        let segments: Vec<&str> = id.path.trim_start_matches('/').split('/').collect();
+        match segments.as_slice() {
+            ["ns", _, "sa", _, ..] => Ok(Self(spiffe_id.to_string())),
+            _ => Err(ClaimsError::Subject),
+        }
+    }
+
+    /// The SPIFFE ID, which is the assertion's `sub`.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The claims of an operator assertion: the operator's own identity presented
+/// to a relying party that federates it (an OIDC workload-identity provider),
+/// so automation acting for the operator holds no stored credential and no
+/// human login that expires.
+///
+/// Unlike [`AssertionClaims`] there is no pod, so there are no `nucleus_*`
+/// claims; `nbf` is sent because relying parties of this kind check it.
+/// `exp - iat` is the requested lifetime exactly, at most
+/// [`OPERATOR_MAX_TTL`]. Built only by [`OperatorClaims::new`] and not
+/// `Deserialize`, for the same reason as [`AssertionClaims`].
+#[derive(Debug, Clone, Serialize)]
+pub struct OperatorClaims {
+    iss: String,
+    sub: String,
+    aud: String,
+    iat: u64,
+    nbf: u64,
+    exp: u64,
+    jti: String,
+}
+
+impl OperatorClaims {
+    /// Claims for one exchange with `audience` as `subject`, issued at
+    /// `now_unix` and living `ttl`. A fresh `jti` every call.
+    pub fn new(
+        subject: &OperatorSubject,
+        issuer: &str,
+        audience: &str,
+        now_unix: u64,
+        ttl: Duration,
+    ) -> Result<Self, ClaimsError> {
+        if !is_valid_issuer(issuer) {
+            return Err(ClaimsError::Issuer);
+        }
+        if audience.is_empty() {
+            return Err(ClaimsError::Empty);
+        }
+        if ttl.is_zero() || ttl > OPERATOR_MAX_TTL {
+            return Err(ClaimsError::OperatorLifetime);
+        }
+        Ok(Self {
+            iss: issuer.to_string(),
+            sub: subject.0.clone(),
+            aud: audience.to_string(),
+            iat: now_unix,
+            nbf: now_unix,
+            exp: now_unix.saturating_add(ttl.as_secs()),
+            jti: fresh_jti()?,
+        })
+    }
+
+    /// `sub` — the operator's SPIFFE ID.
+    pub fn subject(&self) -> &str {
+        &self.sub
+    }
+    /// `jti`.
+    pub fn jti(&self) -> &str {
+        &self.jti
+    }
+    /// `exp`, seconds since the epoch.
+    pub fn expires_at(&self) -> u64 {
+        self.exp
+    }
+}
+
+/// A claim set [`mint`] will sign: one of this crate's checked claim types,
+/// and nothing else. Sealed, so a caller cannot sign an arbitrary JSON value
+/// under the issuer key by implementing it.
+pub trait SignableClaims: Serialize + sealed::Sealed {}
+impl SignableClaims for AssertionClaims {}
+impl SignableClaims for OperatorClaims {}
+
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for super::AssertionClaims {}
+    impl Sealed for super::OperatorClaims {}
 }
 
 /// Whether `issuer` can be this crate's `iss`: an `https://` URL with a
@@ -489,8 +606,8 @@ struct Header<'a> {
 }
 
 /// Sign `claims` with `signer` into a compact JWT.
-pub fn mint(
-    claims: &AssertionClaims,
+pub fn mint<C: SignableClaims>(
+    claims: &C,
     signer: &dyn AssertionSigner,
 ) -> Result<CompactJwt, SignError> {
     let kid = signer.kid();

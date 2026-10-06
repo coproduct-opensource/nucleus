@@ -8,7 +8,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use nucleus_federation::{
     AssertionClaims, AssertionSigner, AssertionSubject, ClaimsError, DEFAULT_TTL, EcdsaP256Signer,
-    MAX_TTL, SIGNING_ALG, SignError, mint,
+    MAX_TTL, OPERATOR_MAX_TTL, OperatorClaims, OperatorSubject, SIGNING_ALG, SignError, mint,
 };
 use ring::signature::{ECDSA_P256_SHA256_FIXED, UnparsedPublicKey};
 
@@ -255,4 +255,93 @@ fn a_kid_outside_base64url_is_refused() {
         mint(&claims(1), &Bad(fixture_signer())).unwrap_err(),
         SignError::Kid
     );
+}
+
+const OPERATOR: &str = "spiffe://operator.example/ns/system/sa/operator-automation";
+
+fn operator_claims(now: u64, ttl: Duration) -> Result<OperatorClaims, ClaimsError> {
+    OperatorClaims::new(
+        &OperatorSubject::new(OPERATOR).unwrap(),
+        "https://operator.example.invalid",
+        "//relying-party.example/providers/operator",
+        now,
+        ttl,
+    )
+}
+
+/// The operator assertion carries exactly the registered claims a relying
+/// party's OIDC provider checks, `exp - iat` is the requested lifetime, and
+/// it verifies under the published key with an independent library.
+#[test]
+fn an_operator_assertion_has_exactly_the_registered_claims() {
+    let s = fixture_signer();
+    let c = operator_claims(1_700_000_000, Duration::from_secs(300)).unwrap();
+    let jwt = mint(&c, &s).unwrap();
+    let (h, p, _, input) = parts(jwt.expose());
+    assert_eq!(h["alg"], SIGNING_ALG);
+    assert_eq!(h["kid"], FIXTURE_KID);
+    let keys: HashSet<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        HashSet::from(["iss", "sub", "aud", "iat", "nbf", "exp", "jti"]),
+        "no pod claims, nothing extra"
+    );
+    assert_eq!(p["sub"], OPERATOR);
+    assert_eq!(p["iss"], "https://operator.example.invalid");
+    assert_eq!(p["aud"], "//relying-party.example/providers/operator");
+    assert_eq!(p["iat"], 1_700_000_000u64);
+    assert_eq!(p["nbf"], 1_700_000_000u64);
+    assert_eq!(p["exp"], 1_700_000_300u64);
+    assert_eq!(p["jti"], c.jti());
+    let sig_b64 = jwt.expose().rsplit('.').next().unwrap();
+    let key = jsonwebtoken::DecodingKey::from_ec_components(FIXTURE_X, FIXTURE_Y).unwrap();
+    assert!(
+        jsonwebtoken::crypto::verify(
+            sig_b64,
+            input.as_bytes(),
+            &key,
+            jsonwebtoken::Algorithm::ES256, // alg-pin-allow: test verifies our ES256 output with an independent library
+        )
+        .unwrap()
+    );
+}
+
+/// 1..=900 s; the expiry is never later than the requested lifetime.
+#[test]
+fn an_operator_assertion_lifetime_is_capped_at_fifteen_minutes() {
+    assert_eq!(OPERATOR_MAX_TTL, Duration::from_secs(900));
+    for secs in [1, 300, 900] {
+        let c = operator_claims(1_000, Duration::from_secs(secs)).unwrap();
+        assert_eq!(c.expires_at(), 1_000 + secs);
+    }
+    for ttl in [Duration::ZERO, Duration::from_secs(901), MAX_TTL] {
+        assert_eq!(
+            operator_claims(1_000, ttl).unwrap_err(),
+            ClaimsError::OperatorLifetime
+        );
+    }
+}
+
+/// The subject is a canonical principal or nothing: the taxonomy's grammar
+/// (no uppercase trust domain, no dot segments) and at least `ns/<ns>/sa/<sa>`.
+#[test]
+fn an_operator_subject_must_be_a_canonical_principal() {
+    assert!(OperatorSubject::new(OPERATOR).is_ok());
+    assert!(OperatorSubject::new("spiffe://td.example/ns/system/sa/cli/automation").is_ok());
+    for bad in [
+        "spiffe://td.example/operator/automation",
+        "spiffe://td.example/ns/system",
+        "spiffe://TD.example/ns/system/sa/x",
+        "spiffe://td.example/ns/system/sa/../x",
+        "spiffe://td.example/ns/system/sa/x/",
+        "spiffe://td.example",
+        "https://td.example/ns/system/sa/x",
+        "",
+    ] {
+        assert_eq!(
+            OperatorSubject::new(bad).unwrap_err(),
+            ClaimsError::Subject,
+            "{bad}"
+        );
+    }
 }

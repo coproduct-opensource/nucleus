@@ -89,8 +89,9 @@ mod net;
 
 pub use assertion::{
     AssertionClaims, AssertionSigner, AssertionSubject, ClaimsError, CompactJwt, CurrentSigner,
-    DEFAULT_TTL, EcdsaP256Signer, Es256Signature, MAX_TTL, PublicJwk, SIGNING_ALG, SignError,
-    is_valid_issuer, jwks, mint,
+    DEFAULT_TTL, EcdsaP256Signer, Es256Signature, MAX_TTL, OPERATOR_MAX_TTL, OperatorClaims,
+    OperatorSubject, PublicJwk, SIGNING_ALG, SignError, SignableClaims, is_valid_issuer, jwks,
+    mint,
 };
 pub use inbound::{
     ConfigError, ExternalIssuerConfig, ExternalIssuerValidator, InboundError, JwksSource,

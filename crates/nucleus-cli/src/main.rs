@@ -53,6 +53,7 @@ mod mediation;
 mod microvm_host;
 mod node;
 mod observe;
+mod operator_key;
 mod profiles;
 mod provision;
 mod replay;

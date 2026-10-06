@@ -104,6 +104,9 @@ pem = "4"
 # `provision`: secrets are staged as owner-only files and copied, never spliced
 # into a shell command (#3158).
 tempfile = { workspace = true }
+# `federation operator-key`: the operator's PKCS#8 key is wiped on drop (the
+# same crate and line nucleus-federation uses).
+zeroize = "1"
 
 # macOS Keychain (conditional)
 [target.'cfg(target_os = "macos")'.dependencies]
