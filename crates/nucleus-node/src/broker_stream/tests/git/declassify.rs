@@ -86,6 +86,28 @@ fn records(pod: &Pod) -> Vec<SignedAuthorization> {
         .collect()
 }
 
+/// The operator's review of a held push says it is a declassification and
+/// carries the host's label for the data it releases (#3258), which is the
+/// label the released effect's signed record names.
+///
+/// A-19: listing every approval as `Ordinary` (dropping the hold from the
+/// view) reds this.
+fn declassifying(review: nucleus_spec::host_effect_approval::ApprovalReview) -> uuid::Uuid {
+    let crate::host_decide::effects::ApprovalCategory::Declassification { input } =
+        review.approval.category
+    else {
+        panic!(
+            "a held push was shown as {:?}, not a declassification",
+            review.approval.category
+        );
+    };
+    assert_eq!(
+        input.integrity,
+        nucleus_decision_protocol::IntegLevel::Adversarial
+    );
+    review.approval.id
+}
+
 /// **The acceptance journey.** In one pod, after a model call: the push's
 /// advertisement and its pack are each held for approval and refused without
 /// it; approved, each proceeds; a reused approval is refused; and each
@@ -109,7 +131,7 @@ async fn after_a_model_call_a_push_is_held_approved_once_and_declassified() {
         held.head
     );
     assert!(hits.lock().unwrap().is_empty(), "an unapproved push left");
-    let advert = grant_pending(&pod).approval.id;
+    let advert = declassifying(grant_pending(&pod));
     let adv = drive(&pod, &advertise("git-receive-pack", "adv-approved"), b"").await;
     assert!(adv.head.granted, "{:?}", adv.head);
 
@@ -122,7 +144,7 @@ async fn after_a_model_call_a_push_is_held_approved_once_and_declassified() {
             .starts_with("host approval required:")
     );
     assert_eq!(hits.lock().unwrap().len(), 1, "only the advertisement left");
-    let pack = grant_pending(&pod).approval.id;
+    let pack = declassifying(grant_pending(&pod));
     let pushed = drive(&pod, &receive_pack("pack-approved"), b"0000PACK").await;
     assert!(pushed.head.granted, "{:?}", pushed.head);
     assert_eq!(pushed.body, RESULT);
@@ -175,7 +197,12 @@ async fn an_untainted_push_records_no_declassification() {
     let (pod, _hits) = one_pod(PermissionLattice::permissive()).await;
     let asked = drive(&pod, &receive_pack("clean"), b"0000PACK").await;
     assert!(asked.head.reason.starts_with("host approval required:"));
-    grant_pending(&pod);
+    let review = grant_pending(&pod);
+    assert_eq!(
+        review.approval.category,
+        crate::host_decide::effects::ApprovalCategory::Ordinary,
+        "an untainted push is not a declassification"
+    );
     let pushed = drive(&pod, &receive_pack("clean-approved"), b"0000PACK").await;
     assert!(pushed.head.granted, "{:?}", pushed.head);
     let records = records(&pod);

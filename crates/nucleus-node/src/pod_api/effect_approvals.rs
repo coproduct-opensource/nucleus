@@ -221,6 +221,9 @@ mod tests {
             .await
             .unwrap();
         let views: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // An approval of an untainted commit says on the wire that it is not
+        // a declassification (#3258).
+        assert_eq!(views[0]["category"], "ordinary");
         let settle_path = format!("{path}/{}", views[0]["id"].as_str().unwrap());
         assert_eq!(
             crate::auth::operation_for_route(&Method::POST, &settle_path),

@@ -49,6 +49,35 @@ for review is refused. Review data is held in memory and is separate from the
 durable authorization and outcome journals. The request describes what will be
 sent; understanding the remote API's semantics remains part of operator review.
 
+## Approvals that declassify tainted data
+
+Each listed approval has a `category`. Most are `"ordinary"`. A push or pull
+request from a session that has received untrusted content (an upstream or model
+response, for example) is held rather than refused. Its approval is listed as
+`{"declassification": {"input": {...}}}`. Granting it releases that session's
+data into the sink, which is the declassification. `input` is the host's label
+for the data when it held the request (integrity, confidentiality, derivation).
+The signed authorization record of the released effect carries the same label.
+
+Review of a declassifying approval adds a `declassification` block with:
+
+- a notice;
+- the labels in words, for example `adversarial: content an outside party controls`;
+- the sink (operation and destination);
+- the bound request: method, URL, query parameter names, forwarded header names,
+  and body SHA-256 and size.
+
+The full payload is in `body_base64`, and in `body_utf8` when it is valid UTF-8,
+as for every review. An ordinary approval's review has no such block.
+
+A grant releases only what the operator was shown. Suppose a request was granted
+as ordinary and the session became tainted before the request ran. The grant does
+not release it: the host refuses the stale approval and lists a fresh
+declassifying one. There is no bulk grant. Each `grant` settles exactly one
+approval by its ID and effect hash.
+
+## Granting and refusing
+
 Grant the exact effect you reviewed:
 
 ```sh

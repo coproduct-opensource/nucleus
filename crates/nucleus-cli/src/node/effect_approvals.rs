@@ -2,8 +2,9 @@
 use anyhow::{Context, Result, bail};
 use base64::Engine as _;
 use clap::Subcommand;
+use nucleus_spec::host_effect::InputLabel;
 use nucleus_spec::host_effect_approval::{
-    ApprovalDecision, ApprovalReview, ApprovalStatus, ApprovalView,
+    ApprovalCategory, ApprovalDecision, ApprovalReview, ApprovalStatus, ApprovalView,
 };
 use uuid::Uuid;
 
@@ -11,7 +12,9 @@ use super::{HttpClient, REQUEST_TIMEOUT};
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Print host review metadata as JSON (payload contents are not included)
+    /// Print host review metadata as JSON, each with its category: `ordinary`,
+    /// or a `declassification` with its input labels (payload contents are not
+    /// included)
     List {
         /// Wait for an unexpired pending effect; print only pending entries
         #[arg(long, value_parser = clap::value_parser!(u64).range(1..=86400))]
@@ -198,13 +201,51 @@ fn render_review(review: ApprovalReview, expected: &ApprovalView) -> Result<Stri
         || review.request.url != expected.subject
         || review.approval.operation != expected.operation
         || review.request.call_charge_micro_usd != Some(expected.call_charge_micro_usd)
+        || review.approval.category != expected.category
     {
         bail!("request review does not match the host approval; do not grant it");
     }
-    Ok(serde_json::to_string_pretty(&serde_json::json!({
+    let mut rendered = serde_json::json!({
         "approval": review.approval, "request": review.request,
         "body_base64": review.body_base64, "body_utf8": String::from_utf8(body).ok(),
-    }))?)
+    });
+    match review.approval.category {
+        ApprovalCategory::Ordinary => {}
+        ApprovalCategory::Declassification { input } => {
+            rendered["declassification"] = declassification(&review, input)?;
+        }
+    }
+    Ok(serde_json::to_string_pretty(&rendered)?)
+}
+
+/// What granting a held request does, said before the operator decides
+/// (#3258). The labels are the host's, carried on the approval it listed;
+/// this only words them and names the verified request they would reach.
+fn declassification(review: &ApprovalReview, input: InputLabel) -> Result<serde_json::Value> {
+    let url = reqwest::Url::parse(&review.request.url).context("invalid reviewed URL")?;
+    let mut query_parameter_names: Vec<String> = Vec::new();
+    for (name, _) in url.query_pairs() {
+        if !query_parameter_names.iter().any(|seen| *seen == name) {
+            query_parameter_names.push(name.into_owned());
+        }
+    }
+    Ok(serde_json::json!({
+        "notice": "GRANTING THIS APPROVAL DECLASSIFIES TAINTED DATA: the session holds data labelled below, and this one request would carry it to the sink",
+        "input": input,
+        "input_described": input.describe(),
+        "sink": {
+            "operation": review.approval.operation,
+            "subject": review.approval.subject,
+        },
+        "bound_request": {
+            "method": review.request.method,
+            "url": review.request.url,
+            "query_parameter_names": query_parameter_names,
+            "forwarded_header_names": review.request.request_headers.keys().collect::<Vec<_>>(),
+            "body_sha256": hex::encode(review.request.body_sha256),
+            "body_bytes": review.request.body_bytes,
+        },
+    }))
 }
 
 #[cfg(test)]
