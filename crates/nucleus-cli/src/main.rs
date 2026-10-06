@@ -214,7 +214,11 @@ async fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let cli = Cli::parse();
-    init_logging(cli.verbose);
+    // A credential helper's reader merges stderr into the stdout it parses,
+    // so one log line there is a refused credential: no subscriber at all.
+    if !matches!(&cli.command, Commands::Federation(f) if f.is_credential_helper()) {
+        init_logging(cli.verbose);
+    }
 
     let config_path = shellexpand::tilde(&cli.config).to_string();
     info!(config_path = %config_path, "Starting nucleus");
