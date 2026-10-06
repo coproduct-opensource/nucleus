@@ -1025,11 +1025,13 @@ fn resolve_canary(host: &Tier2Host) -> Result<String> {
 /// including the ones that used to be indistinguishable from success.
 ///
 /// The in-guest sweep (`nucleus-workload-probe::check_credential_absence`) emits one
-/// `NUCLEUS_E2E_LEAK <site>: looked=<y/n> canary=<absent|PRESENT>` line per leak site
-/// — booleans only, never values. This asserts the sweep RAN and READ its sites
-/// (`looked=yes` on the always-readable ones — otherwise "no canary" means "no
-/// look"), then that no site saw the canary, and finally that the canary value does
-/// not appear anywhere on the console (a path the four sites might not enumerate).
+/// `NUCLEUS_E2E_LEAK <site>: looked=<yes|denied|no> canary=<absent|PRESENT>` line per
+/// leak site — never values. This asserts that no site saw the canary, that the sweep
+/// RAN and READ its sites (each required site must report an outcome in
+/// [`REQUIRED_SWEEP_SITES`] — otherwise "no canary" means "no look"), and finally
+/// that the canary value does not appear anywhere on the console (a path the four
+/// sites might not enumerate). A `looked=` or `canary=` word outside the known set
+/// is refused rather than read as either answer (ADR 0007 A-1, B-3).
 fn assess_leak_sweep(contents: &str, canary: &str) -> Result<LeakSweep> {
     let sweep: Vec<&str> = contents
         .lines()
@@ -1062,21 +1064,9 @@ fn assess_leak_sweep(contents: &str, canary: &str) -> Result<LeakSweep> {
         return Ok(LeakSweep::NoProbeWorkload);
     }
 
-    // Non-vacuity: the always-readable sites must report looked=yes.
-    for site in ["cmdline", "workload-env", "pod-spec"] {
-        let looked = sweep
-            .iter()
-            .any(|l| l.contains(&format!("{site}:")) && l.contains("looked=yes"));
-        if !looked {
-            bail!(
-                "the leak sweep did not read the {site} site (no looked=yes line): it is \
-                 not reading the places it claims to, so its silence about the canary is \
-                 not evidence."
-            );
-        }
-    }
-
-    // The leak, reported by the in-guest sweep as a PATH, never a value.
+    // The leak, reported by the in-guest sweep as a PATH, never a value. Read off
+    // the raw lines FIRST, so a leak is reported as a leak even on a line the
+    // parser below would refuse for another reason.
     if let Some(hit) = sweep.iter().find(|l| l.contains("canary=PRESENT")) {
         bail!(
             "a node-held secret surfaced in the guest — {}. The value is deliberately \
@@ -1085,10 +1075,123 @@ fn assess_leak_sweep(contents: &str, canary: &str) -> Result<LeakSweep> {
         );
     }
 
+    let parsed = sweep
+        .iter()
+        .map(|l| SweepLine::parse(l))
+        .collect::<Result<Vec<_>>>()?;
+
+    // Non-vacuity: every required site must report an outcome that is evidence.
+    for (site, accepted) in REQUIRED_SWEEP_SITES {
+        let looked = parsed
+            .iter()
+            .any(|l| l.site == site && accepted.contains(&l.looked));
+        if !looked {
+            let words: Vec<&str> = accepted.iter().map(|a| a.word()).collect();
+            bail!(
+                "the leak sweep did not read the {site} site (no looked={} line): it is \
+                 not reading the places it claims to, so its silence about the canary is \
+                 not evidence.",
+                words.join(" or looked=")
+            );
+        }
+    }
+
     // Belt-and-suspenders: the canary VALUE must not appear anywhere on the console,
     // catching a leak on any path the four enumerated sites do not cover.
     assert_canary_absent_from_console(contents, canary)?;
     Ok(LeakSweep::Clean)
+}
+
+/// The sites whose sweep line must be evidence, and the `looked=` outcomes that
+/// count as evidence for each.
+///
+/// `pod-spec` also accepts [`SweepLook::Denied`]: the workload's Landlock
+/// ruleset withholds `/etc/nucleus/pod.yaml` (read answers `EACCES`), which is
+/// positive evidence the spec is out of the workload's reach — the confinement
+/// working, not the sweep failing. `cmdline` and `workload-env` are the
+/// workload's own view and must be READ: a denial there is a broken probe.
+/// `proxy-environ` is absent on purpose — the uid fence legitimately hides PID 1.
+///
+/// A released guest (2.5.0 and earlier) emits only `yes`/`no`, and a `yes` is
+/// accepted on every site, so it still passes.
+const REQUIRED_SWEEP_SITES: [(&str, &[SweepLook]); 3] = [
+    ("cmdline", &[SweepLook::Yes]),
+    ("workload-env", &[SweepLook::Yes]),
+    ("pod-spec", &[SweepLook::Yes, SweepLook::Denied]),
+];
+
+/// The in-guest sweep's `looked=` outcome for one site
+/// (`nucleus-workload-probe`'s `SiteLook`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SweepLook {
+    /// Read, and the site's positive-control token was present.
+    Yes,
+    /// The read was refused with `EACCES`/`EPERM`: confinement withheld it.
+    Denied,
+    /// Not evidence of anything: absent, another error, or no control token.
+    No,
+}
+
+impl SweepLook {
+    fn parse(word: &str) -> Option<Self> {
+        match word {
+            "yes" => Some(Self::Yes),
+            "denied" => Some(Self::Denied),
+            "no" => Some(Self::No),
+            _ => None,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Self::Yes => "yes",
+            Self::Denied => "denied",
+            Self::No => "no",
+        }
+    }
+}
+
+/// One `NUCLEUS_E2E_LEAK <site>: looked=<..> canary=<..>` line, parsed strictly.
+/// The console may prefix it (`[    0.96] [workload] `); nothing may change its
+/// shape after the marker.
+#[derive(Debug, PartialEq, Eq)]
+struct SweepLine<'a> {
+    site: &'a str,
+    looked: SweepLook,
+}
+
+impl<'a> SweepLine<'a> {
+    const MARKER: &'static str = "NUCLEUS_E2E_LEAK ";
+
+    fn parse(line: &'a str) -> Result<Self> {
+        let malformed = || {
+            anyhow!(
+                "a leak-sweep line has a shape this verifier does not know, so it is not \
+                 evidence either way: {:?}",
+                line.trim()
+            )
+        };
+        let start = line.find(Self::MARKER).ok_or_else(malformed)?;
+        let mut words = line[start + Self::MARKER.len()..].split_whitespace();
+        let site = words
+            .next()
+            .and_then(|w| w.strip_suffix(':'))
+            .filter(|s| !s.is_empty())
+            .ok_or_else(malformed)?;
+        let looked = words
+            .next()
+            .and_then(|w| w.strip_prefix("looked="))
+            .and_then(SweepLook::parse)
+            .ok_or_else(malformed)?;
+        match words.next().and_then(|w| w.strip_prefix("canary=")) {
+            Some("absent" | "PRESENT") => {}
+            Some(_) | None => return Err(malformed()),
+        }
+        if words.next().is_some() {
+            return Err(malformed());
+        }
+        Ok(Self { site, looked })
+    }
 }
 
 /// What the guest log could establish about the leak sweep.
@@ -1399,6 +1502,77 @@ mod leak_sweep {
         let sneaky = format!("{}some_other_line SECRET={CANARY}\n", clean_sweep());
         let err = assess_leak_sweep(&sneaky, CANARY).expect_err("the value is on the console");
         assert!(!format!("{err}").contains(CANARY));
+    }
+
+    /// The sweep exactly as a Landlock-confined workload emits it on the console
+    /// (live x86 boot, job 112536300293, `[workload]`-prefixed): the spec read is
+    /// refused with `EACCES`, which is the confinement withholding the site.
+    fn landlocked_sweep() -> String {
+        "[    0.959776] [workload] NUCLEUS_E2E_LEAK cmdline: looked=yes canary=absent\n\
+         [    0.960889] [workload] NUCLEUS_E2E_LEAK workload-env: looked=yes canary=absent\n\
+         [    0.962144] [workload] NUCLEUS_E2E_LEAK proxy-environ: looked=no canary=absent\n\
+         [    0.963327] [workload] NUCLEUS_E2E_LEAK pod-spec: looked=denied canary=absent\n"
+            .to_string()
+    }
+
+    /// Landlock withholding the pod spec is evidence it is out of reach, so the
+    /// sweep is clean (ADR 0007 A-1: "withheld" is its own outcome).
+    #[test]
+    fn a_pod_spec_withheld_by_confinement_passes() {
+        assert_eq!(
+            assess_leak_sweep(&landlocked_sweep(), CANARY).expect("a denied pod spec is evidence"),
+            LeakSweep::Clean
+        );
+    }
+
+    /// ...but a pod-spec read that failed for any other reason is still not a look.
+    #[test]
+    fn a_pod_spec_that_was_not_read_is_refused() {
+        let blind = landlocked_sweep().replace("pod-spec: looked=denied", "pod-spec: looked=no");
+        let err = assess_leak_sweep(&blind, CANARY).expect_err("pod-spec looked=no is no look");
+        assert!(format!("{err}").contains("pod-spec"), "{err}");
+    }
+
+    /// `denied` is accepted ONLY where confinement is expected to withhold the
+    /// site. The workload's own cmdline and environment must be READ.
+    #[test]
+    fn a_denied_own_view_site_is_refused() {
+        for site in ["cmdline", "workload-env"] {
+            let denied = landlocked_sweep().replace(
+                &format!("{site}: looked=yes"),
+                &format!("{site}: looked=denied"),
+            );
+            let err = assess_leak_sweep(&denied, CANARY).expect_err("own view must be read");
+            assert!(format!("{err}").contains(site), "{err}");
+        }
+    }
+
+    /// A `looked=` word the verifier does not know is refused, on any site —
+    /// including one that is not required — rather than read as either answer
+    /// (ADR 0007 B-3: no arm that grants).
+    #[test]
+    fn an_unknown_looked_value_is_refused() {
+        for (from, to) in [
+            ("proxy-environ: looked=no", "proxy-environ: looked=maybe"),
+            ("pod-spec: looked=denied", "pod-spec: looked=withheld"),
+            ("cmdline: looked=yes", "cmdline: looked=yes-ish"),
+        ] {
+            let odd = landlocked_sweep().replace(from, to);
+            let err = assess_leak_sweep(&odd, CANARY).expect_err("an unknown word is no evidence");
+            assert!(format!("{err}").contains("shape"), "{to}: {err}");
+        }
+    }
+
+    /// `canary=PRESENT` fails whatever the site's `looked=` says — a denied site
+    /// that somehow saw the canary is still a leak.
+    #[test]
+    fn a_present_canary_fails_even_on_a_denied_site() {
+        let leaked = landlocked_sweep().replace(
+            "pod-spec: looked=denied canary=absent",
+            "pod-spec: looked=denied canary=PRESENT",
+        );
+        let err = assess_leak_sweep(&leaked, CANARY).expect_err("the canary is present");
+        assert!(format!("{err}").contains("surfaced"), "{err}");
     }
 }
 

@@ -75,7 +75,13 @@ const SYSCALL_FILTER_OP_LINE: &str = "NUCLEUS_SYSCALL_FILTER_OP: ";
 /// `DENIED_ERRNO`). `EPERM` is 1 on every Linux architecture
 /// (`asm-generic/errno-base.h`); restated because this binary is
 /// dependency-light and runs only in the guest.
-const FILTER_ERRNO: i32 = 1;
+const FILTER_ERRNO: i32 = EPERM;
+
+/// `EPERM` and `EACCES` (`asm-generic/errno-base.h`, the same on every Linux
+/// architecture). Restated for the same reason as [`FILTER_ERRNO`]; the
+/// Linux-only tests pin both to `libc`.
+const EPERM: i32 = 1;
+const EACCES: i32 = 13;
 
 /// The contention probe's per-request line and its summary line, read back off
 /// the guest console by whoever ran the pod.
@@ -201,37 +207,80 @@ fn main() {
 /// never leave this process. `nucleus verify --tier2` reads these lines back off the
 /// guest console. Emitted on BOTH streams because the proxy drains stderr to the
 /// console log and `/v1/run` captures stdout.
+///
+/// `looked` has THREE values, not two (ADR 0007 A-1): a site the workload's
+/// confinement withholds (Landlock answers `EACCES`) is positive evidence the
+/// secret is out of reach, and is not the same observation as a broken read.
+/// See [`SiteLook`]. Each read keeps its `Result` for that reason: an
+/// `unwrap_or_default` collapsed a denial into an empty site (ADR 0007 B-4).
 fn check_credential_absence() {
-    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
-    let env_blob: String = std::env::vars()
+    let cmdline = std::fs::read_to_string("/proc/cmdline");
+    let env_blob: std::io::Result<String> = Ok(std::env::vars()
         .map(|(k, v)| format!("{k}={v}\n"))
-        .collect();
-    let proxy_environ = std::fs::read("/proc/1/environ")
-        .map(|b| String::from_utf8_lossy(&b).replace('\0', "\n"))
-        .unwrap_or_default();
-    let pod_spec = std::fs::read_to_string("/etc/nucleus/pod.yaml").unwrap_or_default();
+        .collect());
+    let proxy_environ =
+        std::fs::read("/proc/1/environ").map(|b| String::from_utf8_lossy(&b).replace('\0', "\n"));
+    let pod_spec = std::fs::read_to_string("/etc/nucleus/pod.yaml");
 
     // (site, content, a token known to be present in that site = the positive control)
-    let sites: [(&str, &str, &str); 4] = [
-        ("cmdline", cmdline.as_str(), "console"),
-        ("workload-env", env_blob.as_str(), "NUCLEUS_TOOL_PROXY_URL"),
-        (
-            "proxy-environ",
-            proxy_environ.as_str(),
-            "NUCLEUS_TOOL_PROXY",
-        ),
-        ("pod-spec", pod_spec.as_str(), "apiVersion"),
+    let sites: [(&str, std::io::Result<String>, &str); 4] = [
+        ("cmdline", cmdline, "console"),
+        ("workload-env", env_blob, "NUCLEUS_TOOL_PROXY_URL"),
+        ("proxy-environ", proxy_environ, "NUCLEUS_TOOL_PROXY"),
+        ("pod-spec", pod_spec, "apiVersion"),
     ];
-    for (name, content, token) in sites {
-        let looked = if content.contains(token) { "yes" } else { "no" };
-        let canary = if content.contains(CANARY_PREFIX) {
-            "PRESENT"
-        } else {
-            "absent"
+    for (name, read, token) in sites {
+        let looked = SiteLook::of(&read, token);
+        let canary = match &read {
+            Ok(content) if content.contains(CANARY_PREFIX) => "PRESENT",
+            _ => "absent",
         };
-        let line = format!("NUCLEUS_E2E_LEAK {name}: looked={looked} canary={canary}");
+        let line = format!(
+            "NUCLEUS_E2E_LEAK {name}: looked={} canary={canary}",
+            looked.render()
+        );
         println!("{line}");
         eprintln!("{line}");
+    }
+}
+
+/// What one leak-sweep read established about its site.
+///
+/// The verifier (`nucleus verify --tier2`, `assess_leak_sweep`) parses
+/// [`SiteLook::render`]'s words back; it accepts `denied` only where
+/// confinement is expected to withhold the site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SiteLook {
+    /// The read succeeded AND the site's positive-control token is present, so
+    /// a missing canary is evidence of absence.
+    Yes,
+    /// The read was refused with `EACCES` or `EPERM`: the workload's
+    /// confinement (Landlock, DAC) withheld the site, so nothing in it can
+    /// reach the workload.
+    Denied,
+    /// Anything else — `ENOENT`, another errno, or a read that succeeded
+    /// without the control token. Not evidence of anything.
+    No,
+}
+
+impl SiteLook {
+    fn of(read: &std::io::Result<String>, token: &str) -> Self {
+        match read {
+            Ok(content) if content.contains(token) => Self::Yes,
+            Ok(_) => Self::No,
+            Err(err) => match err.raw_os_error() {
+                Some(EACCES | EPERM) => Self::Denied,
+                Some(_) | None => Self::No,
+            },
+        }
+    }
+
+    fn render(self) -> &'static str {
+        match self {
+            Self::Yes => "yes",
+            Self::Denied => "denied",
+            Self::No => "no",
+        }
     }
 }
 
@@ -1224,5 +1273,57 @@ mod auction_tests {
         ] {
             assert_eq!(auction_outcome(reply), "other", "{reply:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod site_look_tests {
+    use super::{EACCES, EPERM, SiteLook};
+    use std::io;
+
+    fn errno(n: i32) -> io::Result<String> {
+        Err(io::Error::from_raw_os_error(n))
+    }
+
+    /// The control: a read that worked and carries its token is a look.
+    #[test]
+    fn a_read_with_its_control_token_looked() {
+        let read = Ok("apiVersion: v1\n".to_string());
+        assert_eq!(SiteLook::of(&read, "apiVersion"), SiteLook::Yes);
+    }
+
+    /// Landlock answers EACCES; DAC and LSMs may answer EPERM. Both are the
+    /// confinement withholding the site.
+    #[test]
+    fn eacces_and_eperm_are_denied() {
+        assert_eq!(SiteLook::of(&errno(EACCES), "apiVersion"), SiteLook::Denied);
+        assert_eq!(SiteLook::of(&errno(EPERM), "apiVersion"), SiteLook::Denied);
+    }
+
+    /// Could not look is not "withheld" (ADR 0007 A-1): a missing file, any
+    /// other errno, an error with no errno, or a read without its control.
+    #[test]
+    fn everything_else_did_not_look() {
+        const ENOENT: i32 = 2;
+        const EIO: i32 = 5;
+        assert_eq!(SiteLook::of(&errno(ENOENT), "apiVersion"), SiteLook::No);
+        assert_eq!(SiteLook::of(&errno(EIO), "apiVersion"), SiteLook::No);
+        let no_errno = Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_eq!(SiteLook::of(&no_errno, "apiVersion"), SiteLook::No);
+        assert_eq!(SiteLook::of(&Ok(String::new()), "apiVersion"), SiteLook::No);
+    }
+
+    #[test]
+    fn the_rendered_words_are_the_verifiers() {
+        assert_eq!(SiteLook::Yes.render(), "yes");
+        assert_eq!(SiteLook::Denied.render(), "denied");
+        assert_eq!(SiteLook::No.render(), "no");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_restated_errnos_match_libc() {
+        assert_eq!(EPERM, libc::EPERM);
+        assert_eq!(EACCES, libc::EACCES);
     }
 }
