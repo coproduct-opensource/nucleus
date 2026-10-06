@@ -197,7 +197,8 @@ pub struct StreamCall {
     /// the query the shared rule admitted.
     pub url: String,
     /// Guest-proposed headers the operator's allowlist for this upstream
-    /// admitted. Never the credential header: see `RegistryEntry::forwards_header`.
+    /// admitted, and the operator's fixed headers for it. Never the credential
+    /// header or a secret name: see `RegistryEntry::forwards_header`.
     pub headers: BTreeMap<String, String>,
     /// Header the credential goes in, from the operator's entry.
     pub header_name: String,
@@ -429,7 +430,9 @@ struct CallRecord {
     status: u16,
     upload_bytes: u64,
     download_bytes: u64,
-    /// Names of the proposed headers sent upstream; empty when refused.
+    /// Names of the headers sent upstream besides the credential and the
+    /// media type: forwarded proposals and the operator's fixed headers.
+    /// Empty when refused.
     headers_forwarded: Vec<String>,
 }
 
@@ -987,18 +990,32 @@ fn label_matches_effect(req: &StreamRequest) -> bool {
         || req.operation == effect.label()
 }
 
-/// The guest's proposed headers this upstream forwards: the operator listed the
-/// name (and the shared rule allows proposing it), and the value is
-/// header-safe. Everything else is dropped, and counted in the call's record.
+/// The headers this call sends besides the credential and the media type: the
+/// guest's proposals this upstream forwards (the operator listed the name, the
+/// shared rule allows proposing it, it is neither fixed nor secret, and the
+/// value is header-safe), then the operator's fixed headers (#3213).
+///
+/// A proposal of a fixed or secret name is dropped, never merged: the fixed
+/// value is the operator's, whatever the guest sent. Everything dropped is
+/// counted in the call's record, which names the forwarded headers (fixed
+/// ones included) and never a value.
 fn forwarded_headers(req: &StreamRequest, entry: &RegistryEntry) -> BTreeMap<String, String> {
-    req.headers
+    let mut forwarded: BTreeMap<String, String> = req
+        .headers
         .iter()
         .filter(|(name, value)| {
             entry.forwards_header(name)
                 && nucleus_spec::workload_egress::header_value_admissible(value)
         })
         .map(|(name, value)| (name.clone(), value.clone()))
-        .collect()
+        .collect();
+    forwarded.extend(
+        entry
+            .fixed_headers()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone())),
+    );
+    forwarded
 }
 
 /// Guest-chosen bytes in the open frame that reach the upstream, charged as
@@ -1074,6 +1091,7 @@ mod tests {
 
     mod approval_wait;
     mod git;
+    mod headers;
     mod paced;
 
     use super::*;

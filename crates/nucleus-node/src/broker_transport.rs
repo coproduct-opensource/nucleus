@@ -457,8 +457,13 @@ pub fn http_caller(client: reqwest::Client) -> UpstreamCaller {
     Arc::new(move |call: UpstreamCall| {
         let client = client.clone();
         Box::pin(async move {
-            let resp = client
-                .request(crate::broker_perform::METHOD, &call.url)
+            // The operator's fixed headers first, the credential last: a
+            // header map keeps the LAST value set.
+            let mut request = client.request(crate::broker_perform::METHOD, &call.url);
+            for (name, value) in &call.headers {
+                request = request.header(name, value);
+            }
+            let resp = request
                 .header(&call.header_name, &call.header_value)
                 .header("content-type", crate::broker_perform::CONTENT_TYPE)
                 .body(reqwest::Body::wrap_stream(call.body))
