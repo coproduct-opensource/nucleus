@@ -43,6 +43,10 @@ nucleus-receipt = { path = "../../crates/nucleus-receipt" }
 # Signed A2A Agent Card verification (verify-before-you-act). Default
 # features only — `sign` stays server-side; verify_card is secret-free.
 nucleus-agent-card = { path = "../../crates/nucleus-agent-card" }
+# Node evidence (ADR 0011): appraise the TPM evidence a receipt's node names —
+# what booted the node that signed it. Verifier only: the `attester` feature
+# (raw TPM commands) stays off, so nothing here does I/O.
+nucleus-node-evidence = { path = "../../crates/nucleus-node-evidence" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1", features = ["derive"] }

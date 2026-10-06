@@ -23,6 +23,9 @@ nucleus-lineage = { path = "../../crates/nucleus-lineage" }
 # so "any runtime, any language" was not true for a payee checking its own share.
 nucleus-recompute = { path = "../../crates/nucleus-recompute", features = ["envelope"] }
 nucleus-receipt = { path = "../../crates/nucleus-receipt" }
+# Node evidence (ADR 0011): what booted the node that signed a receipt.
+# Verifier only; the `attester` feature stays off.
+nucleus-node-evidence = { path = "../../crates/nucleus-node-evidence" }
 # abi3-py38 = single wheel covers CPython 3.8 through 3.13+; PyO3 0.28+
 # generates 3.8 ABI-stable bindings.
 # `extension-module` is NOT listed here on purpose. It was, and it made the crate

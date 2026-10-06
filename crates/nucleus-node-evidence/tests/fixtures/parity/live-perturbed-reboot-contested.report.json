@@ -1,0 +1,501 @@
+{
+  "outcome": "appraised",
+  "evidence_sha256": "1f9b2fa800e46dedfaf66163841db10bd38e914d4303ca3691cf00e5c54614d4",
+  "ear": {
+    "ear.verifier-id": {
+      "build": "1.0.0",
+      "developer": "nucleus"
+    },
+    "eat_profile": "tag:github.com,2023:veraison/ear",
+    "iat": 1791247232,
+    "submods": {
+      "node": {
+        "ear.status": "contraindicated",
+        "nucleus.appraisal": {
+          "anchor": {
+            "operator_fetched": {
+              "source": "gcp-shielded-vm-identity:attest-live-x86"
+            }
+          },
+          "binding": {
+            "executor_key": {
+              "ed25519": "929fbe08d9cbaec3659c5ac626e31bec8065107461fe77aa3b4af1c4f230be85"
+            },
+            "federation": "not_federated"
+          },
+          "boot": {
+            "boot_files": [
+              {
+                "path_label": "(hd0,gpt15)/EFI/ubuntu/grub.cfg",
+                "sha256": "d85c2e600556fc37fa2091d12b2d51164aa7109e137abdcea0ef627bc4d9a19a"
+              },
+              {
+                "path_label": "(hd0,gpt15)/EFI/ubuntu/grub.cfg",
+                "sha256": "d85c2e600556fc37fa2091d12b2d51164aa7109e137abdcea0ef627bc4d9a19a"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/x86_64-efi/command.lst",
+                "sha256": "aef695413d1a1b9eaff753a15512d0ba79e23e5524033eec20c7a1c7c20eb1c4"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/x86_64-efi/fs.lst",
+                "sha256": "32fc7f5de8c0a5dc0b1e7eb609ca31a77eb3475539e1d97a4543dca1b9b26c57"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/x86_64-efi/crypto.lst",
+                "sha256": "1b766f38a94927fe9b7bc1e809f0363e778e14c601e800faea271a2e75d3fc43"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/x86_64-efi/terminal.lst",
+                "sha256": "46f888c52f36baf9b62d60bc8d06426a314aad5a0ff86a4362a91c2512a1df9c"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/grub.cfg",
+                "sha256": "06ba0b1670cac2d16901ceb6ea4d75b0707982febaab1191242f6db2bc9cece9"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/grubenv",
+                "sha256": "f64122858064885ef0733e42c6a3d2d3fd642671f714db0d974b880c0f087430"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/grubenv",
+                "sha256": "f64122858064885ef0733e42c6a3d2d3fd642671f714db0d974b880c0f087430"
+              },
+              {
+                "path_label": "(hd0,gpt16)/grub/x86_64-efi/bli.mod",
+                "sha256": "b49a7fd5edc02f168f0de51309313278dc2347c0f83a5cbedcb8974790a5e7e8"
+              },
+              {
+                "path_label": "/vmlinuz-7.0.0-1011-gcp",
+                "sha256": "d99d5fe55b545db18594e22b72f9c1430ef61af0bd3ff479830b489107678b09"
+              }
+            ],
+            "efi_applications": [
+              "724de6844dd0fe618ba5776c7bca0728be38a6544e24e44ef259b987b7abce80",
+              "4caffb530989433f184353c48d8150fcdce6037933ab129249f50f0068cf1815",
+              "60a2ea075c0a77df7599595b676b5844419e1c4f774bfb1acc4a43838d259cd6"
+            ],
+            "kernel_cmdlines": [
+              "/vmlinuz-7.0.0-1011-gcp root=PARTUUID=25738ee1-aeb2-42e1-895b-9a587dbb9157 ro nucleus.perturbed=1 console=ttyS0,115200 panic=-1"
+            ],
+            "secure_boot": "enabled",
+            "verified_pcrs": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              14
+            ]
+          },
+          "divergences": [
+            {
+              "digest": "06ba0b1670cac2d16901ceb6ea4d75b0707982febaab1191242f6db2bc9cece9",
+              "item": "boot_file_not_allowed",
+              "path_label": "(hd0,gpt16)/grub/grub.cfg"
+            },
+            {
+              "item": "kernel_cmdline",
+              "observed": [
+                "/vmlinuz-7.0.0-1011-gcp root=PARTUUID=25738ee1-aeb2-42e1-895b-9a587dbb9157 ro nucleus.perturbed=1 console=ttyS0,115200 panic=-1"
+              ]
+            }
+          ],
+          "evidence_freshness": {
+            "challenge": {
+              "eat_nonce": "763aaf0c5d38195380cd11f0266436c2d78307da527bf47c9d32bd6cebb07c3d"
+            }
+          },
+          "freshness": "fresh",
+          "ima": {
+            "entries": [
+              {
+                "algorithm": "sha256",
+                "digest": "e90cf0130550f2dd9600e47b20b5a3587715d8e2816f4d7dbaba42cdcf4b1561",
+                "path": "boot_aggregate",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "cdfc602da37a6c3594d62b64336899685b9a51cd572ba5d7a1b2b57a11643bc5",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/autofs/autofs4.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "406de8f7b5bb2f89a70d21a310176c511b5f5cbd4484c4f5012ff2d602800c54",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/x_tables.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "9ec87ed23bb1d3a2ca1fff1870e118d8a4afe34636917ab978f7af4b42b20df6",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/ipv4/netfilter/ip_tables.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "a702ecae7f77209cb2cdc60122ad7d5d4683a3c46687a0d6b2dfb0fbcc698e6d",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/char/hw_random/virtio-rng.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "aba6fd9b068e43c069e12e151b2c4345f045113393df90e4f66a39b86144f6b2",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/firmware/dmi-sysfs.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "ef44c6a68fd8f0b765300f8252953940c6930a773a822464092342afc82d03aa",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/firmware/efi/efi-pstore.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "ea5eebb2636aa979eb7dd5742d01530004921e7343159bb9b02248702f8053a6",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/nvme/host/nvme-fabrics.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "131f0543d9a096de863ace600c1e30c0396e66cfb8727eda94b07cb9cc4eab6a",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/md/dm-multipath.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "6c8503be3d868d18962659238092dcb11b73fce88acdd5e1bb724ef4a991e74d",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/sched/sch_fq_codel.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "ab558fc353d8afd8fea964114b8d117dac5cb2246c9282ca6e38667018dfeb8a",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/macintosh/mac_hid.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "0c45e7077543d4771586260dfe7f12ee41bef8a699e237007a9485ca01ed0b37",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/input/serio/serio_raw.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "15638f7c94746c8cc022096a0ec54c18d99e85c3405fcd7ecb82b57b9e9a1035",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/i2c/i2c-smbus.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "ab953915818fea5596f6e184a55b85316eb6b58a153733eed665a47d3e2c5416",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/misc/pvpanic/pvpanic.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "46c945cdea59381c11ee0644d6b9fbcb9598c4ac54d95c598bafcf00dba0eb20",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/input/input-leds.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "9f18c417a1bb9c9f9de5a1d6f301a197a98b287ba41dd4c4bfd577c50c306ff5",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/events/intel/intel-cstate.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "f057f090b71d61b162852329209671cb74d93094d3a20de4cb55c646e2eabdff",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/i2c/busses/i2c-piix4.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "5dd6af15b37c28873f986c670d91de472b0c01477883dd13411405895148d0a8",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/misc/pvpanic/pvpanic-mmio.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "4044891b74d4aa6b891624cb86e80d00206549f40b5fab763e3e65eeb11843ac",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/input/mouse/psmouse.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "77ea3fe119999bdf7be84f1968be53df344fd9e61acd85d2ccaca3a4775423b9",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/events/rapl.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "29fe6eac3e7566d991228dd07aace35fe1c05b1ef1006bf9cf6295f14e3bc45d",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/crypto/aesni-intel.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "cfe9e2484572f3a346872be8ada6172dc063279163e0f9acb52a25e07b924d5f",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/crypto/ghash-clmulni-intel.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "4966177714c264673e11892cbee9ef85b872a6e62e4ae942f7dafb1138407706",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/virt/lib/irqbypass.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "48c96d21d01dad9998e830e1d952649b7d4217a6d087228ef1243a66623818da",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/kvm/kvm.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "06d4882b3469c044277a8241866f7740d0ce48d1ce04f377a2625d1b908418ba",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/arch/x86/kvm/kvm-intel.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "17eff92689f94bdcfae1a36f89bcf51d0fb89385fc0981acc3e622a25ce74953",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/nls/nls_iso8859-1.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "281d4f7c65d2250c8858d2c9695bdb497f03cecc795f51bc27b74addac46ccfc",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/acpi/nfit/nfit.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "fae5f7c1c4a41c412c8b76f2710953c028b581ba14a862b49fd9db27bf2d93de",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/edac/skx_edac_common.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "734d601e1974e41a0a469e90c3e1c821ed81d805e7096f4069549aedb0d83267",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/edac/skx_edac.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "d0818d382d576ff3be9e819deda5e1d436566ef078cae046226bf38a7ba16ba6",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/platform/x86/intel/speed_select_if/isst_if_common.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "7ff997e4f316ae928d331dd0447b5b2219804e4d3246f0b109e72fd1a64343ad",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/platform/x86/intel/uncore-frequency/intel-uncore-frequency-common.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "3efe7d32defc3bdd58c4f6ad46ae100a267c6b90cb8ba7125994714d8ced971d",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/platform/x86/intel/uncore-frequency/intel-uncore-frequency.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "6143b2ac562fc92ba5e9399a262565cf85759c42f502de4c1e0e971e8e122695",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/powercap/intel_rapl_common.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "ff9173d9962137d9afdc150d08d4f94252287ea6cad80f6accff3bf9adbbc676",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/powercap/intel_rapl_msr.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "8fbcc26ef887aa7178eeded13028fb657d4331a2ed7ed768af496e49f49161e6",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/binfmt_misc.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "91bc2a087cfbd8ac7ae8e027310aad0d224b2684e4cdddfc0dad3b33a5f89792",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/llc/llc.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "7ba5befe20553f15c9a678e26b2263c43b8d8b4a907628fbe31908a8ab899fcb",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/802/stp.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "b06e21074a4f1174ef90e7f84e78cc3e2c330e08cd83e51909eb2d0e1bc03768",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/802/mrp.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "63bc8ffd225b3a3a51330a88745a2d047384f3541ad190c431f2aca8528683a8",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/802/garp.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "0c3b9031952f4d73125ac07a819edb1e74e14eda4588797c819743d3f79ee694",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/8021q/8021q.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "641ecd3d87f4fc760370e623ed084b8986728cc33a451e02f1d8e9cf006720af",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/wireless/cfg80211.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "d078005d5afa8133d2857a3bcc5cc2e03fe796df165fb04b126b2f1d37fed5f0",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/ipv4/udp_tunnel.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "4413f577b23fac80034c5380970fd9093dda6e5dba46b375ff86a03125a93b23",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/ipv6/ip6_udp_tunnel.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "88ddeb149edb112e3c8b3694d2e6fbf86f1becd580291bc022fa1e4afd86093f",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/drivers/net/vxlan/vxlan.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "f1bd238477d692c3d52ee0a904a32a0e2cdc29735561a8eaffa52b0b41bb2fab",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/fs/overlayfs/overlay.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "070bbad93c878cca6530210b46bcf58d2b812f1d4f5df7e432b71604fab0615e",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/nf_tables.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "0bb29803b416a5f13cac3e15f18816a653bea8ed47974aa69d73618e9dbbf0e1",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/nft_compat.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "a0a011fa59d7db29674b132e94d609892b8679a52793314504e851cf56887fb6",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/xt_addrtype.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "63da8f6b04c590e1c5744c6c35d60fbc851f55a74831ed140e25e2bb8f6662b6",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/nf_nat.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "59c7e660ebef6d62ede63e80d07f60933b754dd48f8b24da8d0a38448a07f431",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/nft_chain_nat.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "8398e82d3ca479c88ecf56907b374ccaab018adcd1703603783a5e55776774f1",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/ipset/ip_set.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "e57b155865b10d7c2491355f85f674907c94dbe9b2030f53a8b2549a3fda5542",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/xt_set.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "6352e9ac195c07b8f28aec327c160417c04b8c5efd79a1e869165d72601afde9",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/xfrm/xfrm_algo.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "7cf3ad4103fc4ba80dba38d0f85e9406e25f67a98d75bdb0f6273f3990d9974a",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/xfrm/xfrm_user.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "7a05e0467f3bfb3998f594215c9cab07e39e4f6b775a8fac4c5e0dbf5577dbf7",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/bridge/bridge.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "48afd68c9bf73e6cfe3ffe0fc0f9ff11635940632c906f00bc2bdb27492ac91d",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/xt_MASQUERADE.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "b5b367981b177199948cb18bb7fddd9ec8108456f6e745dde3c4100d1088bec0",
+                "path": "/usr/lib/modules/7.0.0-1011-gcp/kernel/net/netfilter/xt_conntrack.ko.zst",
+                "template": "ima-ng"
+              },
+              {
+                "algorithm": "sha256",
+                "digest": "88859dafa9c33a0b7f0b6005e7365089cefd05181801a6597eebe4eb00273a6c",
+                "path": "/opt/nucleus/bin/nucleus-node",
+                "template": "ima-ng"
+              }
+            ],
+            "unquoted_tail": 0
+          },
+          "not_checked": {
+            "efi_applications": "Authenticode digests not generated",
+            "ima": "checked in the live run against the full module set"
+          },
+          "quote": {
+            "ak_family": "ecdsa-p256",
+            "ak_spki_sha256": "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366",
+            "clock": 1196472,
+            "firmware_version": 2312041029275363328,
+            "pcrs": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              14
+            ],
+            "reset_count": 6,
+            "restart_count": 0
+          },
+          "tier": {
+            "tier": "contested"
+          }
+        }
+      }
+    }
+  }
+}

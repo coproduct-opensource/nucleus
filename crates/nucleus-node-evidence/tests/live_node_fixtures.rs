@@ -207,3 +207,23 @@ fn required_params_alone_misses_an_added_parameter() {
         [Divergence::BootFileNotAllowed { .. }]
     ));
 }
+
+#[test]
+fn the_checked_in_reference_is_the_one_these_tests_build() {
+    // `live-node-reference-exact.json` is what the parity cases (and so the
+    // browser and Python verifiers) appraise the live fixtures against. It must
+    // be this file's `reference(exact())`, not a second copy that could drift.
+    let path = format!(
+        "{}/tests/fixtures/live-node-reference-exact.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let built = reference(exact());
+    if std::env::var_os("NUCLEUS_NODE_EVIDENCE_PARITY_WRITE").is_some() {
+        let mut text = serde_json::to_string_pretty(&built).unwrap();
+        text.push('\n');
+        std::fs::write(&path, text).unwrap();
+    }
+    let on_disk: ReferenceManifest =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(on_disk, built);
+}

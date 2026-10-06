@@ -43,9 +43,10 @@ The spike measured one cloud's VMs (2026-10-05) and found:
 
 - **Attester**: the node. It asks its TPM for a quote and publishes the evidence.
 - **Verifier**: `nucleus_node_evidence::appraise`, and the audit CLI built on it. Pure Rust,
-  no `libtss2`, no `ring`, no C, so it can compile to wasm for the browser verifier later.
-  It is a **new crate not embedded by `sdks/verifier-js`**, so it does not move that crate's
-  wasm pin; embedding it is a later change.
+  no `libtss2`, no `ring`, no C, so it compiles to wasm. Since the browser-verifier change
+  (below, "As built: the stranger's verifiers") `sdks/verifier-js` embeds it and
+  `sdks/verifier-py` links it, so a change to this crate moves that SDK's pinned wasm
+  digest.
 - **Relying party**: whoever checks a receipt. It supplies everything the evidence is
   compared against — the executor key the receipt names, the freshness requirement, the
   reference manifest, its own trust roots and operator pins. The evidence supplies none of
@@ -175,6 +176,30 @@ the verifier's parsers, the verifier is tested against quotes from an independen
 - The federation binding is the SHA-256 of `serde_json::to_vec(jwks)` from the node's
   keyring, taken at each quote when `--federation-issuer` is set.
 
+### As built: the stranger's verifiers
+
+- `nucleus_node_evidence::report(evidence, reference, relying_party)` takes the three
+  documents a stranger holds as bytes and returns `appraised { evidence_sha256, ear }` or
+  `refused { evidence_sha256, refusal }`. It adds no decision: it parses, calls `appraise`,
+  and serializes. The relying party's inputs are one JSON document (`RelyingParty`:
+  `binding`, `freshness`, `trust_roots`, `operator_pins`, `now`), every field required, so
+  "trust no pin" is written `[]` and never reached by omission (B-1).
+- `sdks/verifier-js` exposes it as `verifyNodeEvidence(evidenceBytes, reference,
+  relyingParty)` through its wasm build; `sdks/verifier-py` as `verify_node_evidence`.
+  Both return the crate's own serialization (F-1); neither restates a tier. Evidence is
+  taken as bytes, never a parsed object, because `evidence_sha256` must be the digest a
+  receipt names.
+- Parity: `crates/nucleus-node-evidence/tests/fixtures/parity/cases.json` lists seven
+  cases over the real-TPM fixtures (live epoch-4 `Attested`, an hour later `Expired`,
+  without a pin `Unattested`, another executor key refused, the perturbed reboot
+  `Contested`, the PR-1 vTPM challenge `Attested` and replayed `Expired`). The Rust test
+  checks each status and writes/compares the golden report; the JS (through the wasm
+  build) and Python bindings must reproduce each report exactly. A-19: making `report`
+  check the evidence against its own binding instead of the relying party's turns the
+  Rust, native-JS and wasm-JS parity tests red on the other-executor-key case.
+- Cost: the release wasm grew from 1,335,516 to 2,079,937 bytes (457 KB to 700 KB
+  gzipped), the P-256/P-384/RSA verifiers and the X.509 parser.
+
 ## Evidence for this decision (PR-1)
 
 - Real cloud vTPM fixtures (x86 Shielded VM, Ubuntu 24.04, kernel 7.0): an ECC AK re-created
@@ -205,7 +230,10 @@ the verifier's parsers, the verifier is tested against quotes from an independen
   The TPM's `resetCount`/`clock` are recorded in every appraisal for correlation.
 - **EFI application digests** (PCR 4) are Authenticode hashes; the reference generator does
   not compute them yet, so they are `not_checked` in the fixture reference.
-- The verifier is not yet compiled to wasm or embedded in the JS/Python verifiers.
+- ~~The verifier is not yet compiled to wasm or embedded in the JS/Python verifiers.~~
+  Since the browser-verifier change: it is (see "As built: the stranger's verifiers").
+  What remains is publishing what a stranger feeds it — reference manifests with
+  releases, and evidence reachable without a node credential.
 
 ## References
 

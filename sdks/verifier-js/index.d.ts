@@ -349,3 +349,47 @@ export function requiredBondFromReceipts(
   receipts: object[] | string,
   maxDefectionGainMicro: number | bigint,
 ): Promise<bigint>;
+
+// ── Node evidence (ADR 0011) ───────────────────────────────────────────────────
+
+/**
+ * The relying party's inputs: every field required. Nothing here comes from
+ * the evidence. `binding.executor_key.ed25519` is the key the receipt names.
+ */
+export interface NodeEvidenceRelyingParty {
+  binding: {
+    executor_key: { ed25519: string };
+    federation: "not_federated" | { jwks_sha256: string };
+  };
+  freshness:
+    | { challenge: { sent: string } }
+    | { epoch: { receipt_time: number; max_age_secs: number; max_future_secs: number } };
+  /** Root certificates (base64 DER) an AK certificate chain may end at. */
+  trust_roots: string[];
+  /** Operator pins this relying party accepts — the weakest anchor. */
+  operator_pins: { source: string; ak_spki_sha256: string }[];
+  /** Unix seconds, for certificate validity. */
+  now: number;
+}
+
+/**
+ * The report `nucleus_node_evidence::report` serializes, parsed. Its inner
+ * shape is the crate's own (ADR 0011): `ear.submods.node["ear.status"]` is
+ * `"affirming"` only for Attested, `"contraindicated"` (Contested),
+ * `"warning"` (Expired) or `"none"` (Unattested).
+ */
+export type NodeEvidenceReport =
+  | { outcome: "appraised"; evidence_sha256: string; ear: Record<string, unknown> }
+  | { outcome: "refused"; evidence_sha256: string; refusal: Record<string, unknown> };
+
+/**
+ * Appraise a node's TPM evidence in-process with the same verifier
+ * `nucleus-audit verify-node-evidence` runs. `evidence` must be the
+ * document's exact bytes or text (its digest is what a receipt names).
+ * Throws `VerifyError` (`INPUT`) when a document does not parse.
+ */
+export function verifyNodeEvidence(
+  evidence: string | Uint8Array,
+  reference: string | object,
+  relyingParty: string | NodeEvidenceRelyingParty,
+): Promise<NodeEvidenceReport>;

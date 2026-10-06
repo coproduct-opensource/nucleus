@@ -13,9 +13,11 @@ categories = ["cryptography"]
 [lints]
 workspace = true
 
-# The verifier is pure Rust on purpose: no libtss2, no ring, no C. It is meant to
-# compile to wasm32 for the browser verifier in a later change (it is NOT embedded
-# by sdks/verifier-js yet, so this crate does not move that crate's wasm pin).
+# The verifier is pure Rust on purpose: no libtss2, no ring, no C, so it compiles
+# to wasm32. sdks/verifier-js EMBEDS it (and sdks/verifier-py links it), so ANY
+# change to this crate moves the pinned wasm digest in
+# crates/nucleus-verifier-service/embedded-wasm.pins: take the new digest from CI's
+# build and replace the pin; never generate it locally.
 #
 # Two digest generations are in the lockfile: the workspace's sha2 0.11 hashes
 # everything here, and the RustCrypto signature crates below (p256/p384 0.13,

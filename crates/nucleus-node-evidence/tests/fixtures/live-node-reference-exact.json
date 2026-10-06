@@ -1,0 +1,45 @@
+{
+  "profile": "nucleus-node-reference/v1",
+  "tag-id": "live-run",
+  "reference-values": {
+    "pcrs": {},
+    "secure_boot": {
+      "required": true
+    },
+    "efi_applications": {
+      "not_checked": "Authenticode digests not generated"
+    },
+    "boot_files": {
+      "required": {
+        "allowed": [
+          "1b766f38a94927fe9b7bc1e809f0363e778e14c601e800faea271a2e75d3fc43",
+          "32fc7f5de8c0a5dc0b1e7eb609ca31a77eb3475539e1d97a4543dca1b9b26c57",
+          "46f888c52f36baf9b62d60bc8d06426a314aad5a0ff86a4362a91c2512a1df9c",
+          "7cef518f319061feaedbef862ea0926ac4d8929cde6793b9a3fff98a43882c33",
+          "aef695413d1a1b9eaff753a15512d0ba79e23e5524033eec20c7a1c7c20eb1c4",
+          "b49a7fd5edc02f168f0de51309313278dc2347c0f83a5cbedcb8974790a5e7e8",
+          "d85c2e600556fc37fa2091d12b2d51164aa7109e137abdcea0ef627bc4d9a19a",
+          "d99d5fe55b545db18594e22b72f9c1430ef61af0bd3ff479830b489107678b09",
+          "f64122858064885ef0733e42c6a3d2d3fd642671f714db0d974b880c0f087430"
+        ],
+        "required": [
+          "d99d5fe55b545db18594e22b72f9c1430ef61af0bd3ff479830b489107678b09"
+        ]
+      }
+    },
+    "kernel_cmdline": {
+      "required": {
+        "exact_params": [
+          "/vmlinuz-7.0.0-1011-gcp",
+          "console=ttyS0,115200",
+          "panic=-1",
+          "ro",
+          "root=PARTUUID=25738ee1-aeb2-42e1-895b-9a587dbb9157"
+        ]
+      }
+    },
+    "ima": {
+      "not_checked": "checked in the live run against the full module set"
+    }
+  }
+}

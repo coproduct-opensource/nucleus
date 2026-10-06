@@ -72,6 +72,45 @@ key). Only malformed *input* throws (bad JSON, wrong key length, a key that is
 not a curve point). The verifying key is yours to pin — typically the issuer's
 JWKS `x` field, decoded.
 
+### `verifyNodeEvidence()` — what booted the node that signed a receipt
+
+A receipt's `node_platform.evidence_sha256` names a node evidence document: a
+TPM quote, the boot event log and a narrow IMA log, bound to the executor key
+that signs receipts (ADR 0011). `verifyNodeEvidence()` appraises it in your
+process with the *same* `nucleus_node_evidence::appraise` that `nucleus-audit
+verify-node-evidence` runs.
+
+```ts
+import { verifyNodeEvidence } from "@coproduct/verify";
+
+const r = await verifyNodeEvidence(
+  evidenceBytes,            // the document's exact bytes: its digest is what the receipt names
+  referenceManifest,        // nucleus-node-reference/v1: what should have booted
+  {
+    binding: { executor_key: { ed25519: receiptExecutorKeyHex }, federation: "not_federated" },
+    freshness: { epoch: { receipt_time, max_age_secs: 900, max_future_secs: 60 } },
+    // or: freshness: { challenge: { sent: nonceYouSentHex } }
+    trust_roots: [],        // base64 DER roots an AK certificate chain may end at
+    operator_pins: [{ source, ak_spki_sha256 }], // the operator's word for the AK — the weakest anchor
+    now: Math.floor(Date.now() / 1000),
+  },
+);
+// r.evidence_sha256 === the receipt's node_platform.evidence_sha256 ?
+if (r.outcome === "appraised") {
+  r.ear.submods.node["ear.status"]; // "affirming" only for Attested;
+  // "contraindicated" (Contested), "warning" (Expired), "none" (Unattested)
+} else {
+  r.refusal; // not evidence: bad signature, log does not replay, another key...
+}
+```
+
+Every comparison input is yours; nothing the evidence says is used to check
+the evidence. The report shape is the Rust crate's own serialization, and
+`test/node-evidence.test.mjs` requires the wasm build to reproduce the Rust
+verifier's golden report for each real-TPM fixture
+(`crates/nucleus-node-evidence/tests/fixtures/parity/`). Only unparseable input
+throws (`VerifyError` code `INPUT`).
+
 ### What it checks
 
 A receipt is a portable **bundle** of an agent's execution lineage. `verify()`
@@ -266,9 +305,13 @@ The SDK does NOT:
 
 ## Size
 
-Release builds are ~380 KB gzipped to ~120 KB. This is the cost of
-shipping a full verifier — Ed25519, SHA-256, RFC 9162 Merkle, JSON,
-the whole envelope state machine — in 100% pure-Rust crypto.
+Measured 2026-10-06 (wasm-pack 0.13.1, Linux): the release `.wasm` is
+2.08 MB, 700 KB gzipped. Embedding the node-evidence verifier (P-256,
+P-384 and RSA signature checks plus an X.509 parser) added 744 KB of that
+(from 1.34 MB / 457 KB gzipped). This is the cost of shipping full
+verifiers — Ed25519, ECDSA, RSA, SHA-256, RFC 9162 Merkle, JSON, the
+envelope state machine, TPM quote and event-log replay — in pure-Rust
+crypto.
 
 ## Testing
 

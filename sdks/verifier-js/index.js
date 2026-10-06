@@ -614,3 +614,55 @@ export async function requiredBondFromReceipts(receipts, maxDefectionGainMicro) 
     big(maxDefectionGainMicro),
   );
 }
+
+// ── NODE EVIDENCE: what booted the node that signed a receipt (ADR 0011) ──────
+// The WASM runs the SAME `nucleus_node_evidence::appraise` that `nucleus-audit
+// verify-node-evidence` runs. The report is the crate's own serialization,
+// parsed here and nothing else: no tier is restated in JS.
+
+/**
+ * Appraise a node's TPM evidence document against a reference manifest and
+ * the relying party's own inputs, in-process, trusting no server.
+ *
+ * @param {string | Uint8Array} evidence
+ *   The evidence document's EXACT bytes (or text). Not a parsed object: the
+ *   report's `evidence_sha256` is the digest of these bytes, which is what a
+ *   receipt's `node_platform.evidence_sha256` names, and re-serializing an
+ *   object would change it.
+ * @param {string | object} reference The reference manifest (`nucleus-node-reference/v1`).
+ * @param {string | object} relyingParty
+ *   `{ binding, freshness, trust_roots, operator_pins, now }` — every field
+ *   required. `binding.executor_key.ed25519` comes from the receipt;
+ *   `freshness` is `{ challenge: { sent } }` or `{ epoch: { receipt_time,
+ *   max_age_secs, max_future_secs } }`; `now` is Unix seconds.
+ * @returns {Promise<
+ *   | { outcome: "appraised", evidence_sha256: string, ear: object }
+ *   | { outcome: "refused", evidence_sha256: string, refusal: object }
+ * >} `ear.submods.node["ear.status"]` is `"affirming"` only for Attested.
+ * @throws {VerifyError} code `INPUT` when a document does not parse.
+ */
+export async function verifyNodeEvidence(evidence, reference, relyingParty) {
+  let bytes;
+  if (typeof evidence === "string") {
+    bytes = new TextEncoder().encode(evidence);
+  } else if (evidence instanceof Uint8Array) {
+    bytes = evidence;
+  } else {
+    throw new VerifyError(
+      "INPUT",
+      "evidence must be the document's bytes or text, not a parsed object: its digest is what a receipt names",
+    );
+  }
+  const mod = await initWasm();
+  let text;
+  try {
+    text = mod.verifyNodeEvidence(
+      bytes,
+      typeof reference === "string" ? reference : JSON.stringify(reference),
+      typeof relyingParty === "string" ? relyingParty : JSON.stringify(relyingParty),
+    );
+  } catch (e) {
+    throw new VerifyError("INPUT", e instanceof Error ? e.message : String(e), { cause: e });
+  }
+  return JSON.parse(text);
+}
