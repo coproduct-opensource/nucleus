@@ -1,8 +1,17 @@
 //! Compare the fields shared by the elaborated plan and executor definitions.
 //! The pinned gatehouse workflow separately re-elaborates the writ snapshot.
 //! This preserves the existing checker boundary: capability, command/list
-//! fields, scope inclusion, timeout, platform, and platform image pins. Step
-//! contents and scope exclusions are not part of this comparison.
+//! fields, scope inclusion AND exclusion, timeout, platform, and platform image
+//! pins. Step contents are not part of this comparison.
+//!
+//! Exclusions joined 2026-10-05, with the first gate to have any (`test-libs`,
+//! docs/findings/test-scope-shards.md §4). Until then this said exclusions were
+//! out of scope and no gate had one, so nothing was missing; a shard scope is
+//! `crates/**` minus 35 excludes, and those excludes are exactly what makes its
+//! hash derivable. A definition whose excludes the plan does not state selects
+//! something other than what the kernel admitted. A plan elaborated by a
+//! gatehouse whose `Gate` has no `exclude` reads as excluding nothing, which is
+//! what that plan meant.
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use serde_json::Value;
@@ -49,6 +58,8 @@ struct PlanGate {
     #[serde(default)]
     pins: Vec<Pin>,
     scope: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
     timeout_ms: u64,
 }
 #[derive(Debug, Deserialize)]
@@ -61,6 +72,8 @@ struct Env {
 #[derive(Debug, Deserialize)]
 struct Scope {
     include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
 }
 #[derive(Debug, Deserialize)]
 struct Gate {
@@ -99,6 +112,9 @@ fn compare(plan: &PlanGate, gate: &Gate) -> Vec<String> {
     }
     if plan.scope != gate.scope.include {
         bad.push("scope.include differs from the plan".into());
+    }
+    if plan.exclude != gate.scope.exclude {
+        bad.push("scope.exclude differs from the plan".into());
     }
     if plan.platform != gate.env.platform {
         bad.push("env.platform differs from the plan".into());
@@ -177,7 +193,7 @@ pub(crate) fn check(root: &Path, elaborated: Option<&Path>) -> Result<()> {
         );
     }
     println!(
-        "OK: {} gate(s) agree on command, tools, seeds, outputs, capability, scope inclusion, timeout, platform and pins",
+        "OK: {} gate(s) agree on command, tools, seeds, outputs, capability, scope inclusion and exclusion, timeout, platform and pins",
         indexed.len()
     );
     Ok(())
@@ -243,6 +259,26 @@ mod tests {
             fs::write(&path, serde_json::to_vec(&plans).unwrap()).unwrap();
             assert!(check(dir.path(), None).is_err(), "{case}");
         }
+    }
+    #[test]
+    fn an_exclude_the_plan_does_not_state_is_refused_either_way_round() {
+        // On the definition only.
+        let dir = tree();
+        let path = dir.path().join(".gatehouse/gates/fmt.json");
+        let mut gate: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        gate["scope"]["exclude"] = serde_json::json!(["crates/xtask/**"]);
+        fs::write(&path, serde_json::to_vec(&gate).unwrap()).unwrap();
+        let err = check(dir.path(), None).unwrap_err().to_string();
+        assert!(err.contains("fmt: scope.exclude differs"), "{err}");
+        // On the plan only.
+        let dir = tree();
+        let path = dir.path().join(".gatehouse/plan-gates.json");
+        let mut plans: Vec<Value> = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let fmt = plans.iter_mut().find(|p| p["name"] == "fmt").unwrap();
+        fmt["exclude"] = serde_json::json!(["crates/xtask/**"]);
+        fs::write(&path, serde_json::to_vec(&plans).unwrap()).unwrap();
+        let err = check(dir.path(), None).unwrap_err().to_string();
+        assert!(err.contains("fmt: scope.exclude differs"), "{err}");
     }
     #[test]
     fn a_capability_change_or_timeout_overflow_is_refused() {

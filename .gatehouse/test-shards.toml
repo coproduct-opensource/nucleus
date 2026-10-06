@@ -1,0 +1,96 @@
+# The test suite as two scope shards. `cargo xtask test-shards` generates
+# .gatehouse/gates/test-node.json and test-libs.json AND their two `ci.Gate` terms in
+# .gatehouse/pipeline.writ (between the generated markers) from this file, `cargo metadata`, the
+# tree and .gatehouse/shards/base.json; `cargo xtask test-shards --check` refuses a stale generation
+# of any of the three.
+#
+# Why two, and why this split: gatehouse docs/sublinear-testing.md §3-4 and §4a. Measured on
+# nucleus 2fc73eda over the 40 merged PRs before it, and re-priced 2026-10-05 with the lane's
+# measured per-attempt cost: two shards save 13-23 % of lane-seconds per PR and cut the head's
+# wait from ~359 s to ~238 s; three to six shards cost more than two at every overhead measured,
+# because each extra shard pays a whole attempt and the long tail of crates holds little test work.
+#
+# The env, image pins, seed, tools and resources are NOT here: they are read from
+# .gatehouse/shards/base.json, the definition of the `test` gate the shards replaced, kept as their
+# one shared environment. A seed re-pin edits it and regenerates.
+
+# Every shard's run goes through this runner (tools/test-shard): it writes the stubs this file's
+# generation names, then execs the command. It is outside the workspace so it builds before cargo
+# can load a workspace whose excluded members have no sources.
+runner = ["cargo", "run", "--offline", "--locked", "--quiet", "--manifest-path", "tools/test-shard/Cargo.toml", "--target-dir", "target/test-shard", "--"]
+
+# The command every shard runs, before its selection and filter.
+nextest = ["cargo", "nextest", "run", "--offline", "--locked", "--all-features", "--no-fail-fast", "--no-tests=fail"]
+
+# Inputs every shard reads whatever it selects: cargo loads the whole workspace to resolve one
+# package (`--locked` holds it to the lockfile), and with workspace feature unification any
+# member's manifest can change what a selected package compiles with (gatehouse F-179).
+global = ["Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/**", ".config/**", "tools/test-shard/**"]
+
+# What the verifier SDK step reads (scripts/gatehouse-verifier-sdk.sh builds sdks/verifier-js for
+# nucleus-verifier-service's build script), and what it writes.
+# The whole directory rather than its ten inputs one by one: patterns are what a scope's
+# derivation pays for (gatehouse F-182), and the outputs below are carved back out as excludes.
+sdk_reads = ["scripts/gatehouse-verifier-sdk.sh", "sdks/verifier-js/**"]
+writes = ["target/**", "sdks/verifier-js/pkg/**", "sdks/verifier-js/target/**"]
+
+[node]
+# nucleus-node's cluster: the crates that change on most trees anyway, so they cost nothing extra
+# to keep together. Scope `**`, because four test binaries read the whole repository (below) and
+# because `git_checkout` puts the whole commit in the pod regardless (gatehouse F-180).
+#
+# nucleus-microvm-host joined 2026-10-05: it was added after the measured tree (#3070) and depends
+# on nucleus-spec, so in test-libs it would build against an empty stub. `cargo xtask test-shards`
+# refused the layout until it moved -- the first thing the generator caught.
+#
+# nucleus-egress-http joined the same day, for the same reason: #3211 gave it a dependency on
+# nucleus-spec. The second time in one day is the measurement worth keeping: nucleus-spec is the
+# node cluster's most-depended-on crate (11 dependents) and changed 40 times since 2026-09-01, so a
+# library that starts using it moves here, and the check catches it rather than a red test run.
+packages = ["nucleus", "nucleus-audit", "nucleus-cli", "nucleus-egress-http", "nucleus-guest-init", "nucleus-mcp", "nucleus-microvm-host", "nucleus-node", "nucleus-oidc-provider", "nucleus-perf", "nucleus-sdk", "nucleus-spec", "nucleus-tool-proxy", "portcullis-effects", "xtask"]
+# Test binaries that read the WHOLE repository at runtime (strace: hundreds to thousands of files
+# across every crate, docs/**, .github/**, or `git ls-files`). Their scope is `**` wherever they
+# live, so they run here and are filtered out of test-libs. nucleus-node::olog and
+# xtask::bin/xtask are in this shard's packages already.
+whole_repository = ["nucleus-action-key::escapes_population", "nucleus-delivery-conformance::claim_honesty"]
+timeout_s = 1800
+measured_ms = 360000
+
+[libs]
+timeout_s = 1800
+measured_ms = 480000
+
+# Paths a package's tests read OUTSIDE its dependency closure: strace of every test process
+# (open/exec/stat of a file, directory listings as dir/**, probes of absent paths whose parent
+# exists), rustc dep-info NORMALIZED (include_str!("../../../x") leaves the crate only after
+# normpath), and build-script rerun-if-changed. Measured on nucleus 2fc73eda, 2026-10-02
+# (gatehouse docs/sublinear-testing.md §2). lib.rs/main.rs/crates/lib.rs/crates/main.rs are
+# proptest's search for a crate root; .env/.ssh are probes the tests make.
+#
+# A read missing from here fails CLOSED in a materialized pod -- the file is absent, so the test
+# reds -- unless the test tolerates the absence, which is the case the measurement cannot see.
+# Re-measure before trusting a regeneration made long after this date.
+#
+# Re-measured 2026-10-06 at nucleus 160a26deb (same strace + dep-info method, a spot n2-standard-16):
+# every read a test-libs crate makes is inside the generated scope. New since 2026-10-02:
+# nucleus-rubric-olog's proptest crate-root probes (added below; already covered by the includes)
+# and portcullis's examples/policies/* (covered by examples/policies/**). nucleus-verifier-service
+# reads sdks/verifier-js/pkg/*, which is step 0's OUTPUT inside the pod, not a tree input: it stays
+# a write, outside the scope hash. Serial test work 362 s (303 s on 2026-10-02).
+[fixtures]
+portcullis = [".env", ".ssh", "crates/.env", "crates/escape", "examples/policies/**", "profiles/**", "lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-proto = ["crates/nucleus-control-plane/proto/job_service.proto", "crates/nucleus-identity/proto/workload.proto", "crates/nucleus-node/proto/nucleus_node.proto"]
+nucleus-ifc-kernel = ["docs/architecture/mediated-set.md"]
+ck-kernel = ["PolicyManifest.toml"]
+nucleus-identity = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-authority-exchange = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+ci-spec = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-policy-kernel = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-econ-kernels = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-rubric = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-rubric-olog = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+ck-policy = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-lineage = ["lib.rs", "main.rs", "crates/lib.rs", "crates/main.rs"]
+nucleus-commerce-conformance = ["examples/independent-conformance/vectors.json"]
+nucleus-github-oidc = ["crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"]
+nucleus-trust-registry = ["crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"]

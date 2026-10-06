@@ -235,6 +235,15 @@ enum Command {
     /// A crate outside the workspace is reached by no `--workspace` command. Decided from
     /// `cargo metadata` and Cargo.toml's own `exclude` list.
     WorkspaceMembers,
+    /// The test suite as two scope shards (`.gatehouse/test-shards.toml` -> `.gatehouse/shards/
+    /// test-node.json` and `test-libs.json`). `--check` refuses a stale generation.
+    TestShards {
+        #[arg(long)]
+        check: bool,
+        /// gatehouse's `gate` binary: also refuse a scope the writ kernel does not derive.
+        #[arg(long)]
+        gate: Option<std::path::PathBuf>,
+    },
     /// A claim's falsifier must produce a REQUIRED context. A gate CI runs, that goes red, and
     /// that the merge queue merges past anyway enforces nothing — it is a red light beside an
     /// open gate. Ratcheted, not driven to zero: whether a given check should be required is a
@@ -552,6 +561,7 @@ mod scorecard;
 mod self_pin;
 mod stress_zoo;
 mod suppress;
+mod test_shards;
 mod tot;
 mod typed;
 mod visibility;
@@ -644,6 +654,9 @@ fn main() -> Result<()> {
         Command::EconBoundary => econ_boundary::check(&std::env::current_dir()?),
         Command::Visibility => visibility::check(&std::env::current_dir()?),
         Command::WorkspaceMembers => workspace_members::check(&std::env::current_dir()?),
+        Command::TestShards { check, gate } => {
+            test_shards::run(&std::env::current_dir()?, check, gate.as_deref())
+        }
         Command::Grammar => match command_grammar::run(&std::env::current_dir()?)? {
             0 => Ok(()),
             // 2 is "could not look", which is never a pass. Mapped here rather than

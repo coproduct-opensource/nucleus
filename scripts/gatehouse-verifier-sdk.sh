@@ -30,8 +30,8 @@ set -eu
 # wasm-pack's fresh mtime and cargo rebuilds from it as before.
 #
 # SOUNDNESS. Back-dating a file tells cargo "the outputs you hold were built from this". That is
-# true here, and only here, because this script is step 0 of the clippy and test gates
-# (.gatehouse/pipeline.writ, .gatehouse/gates/{clippy,test}.json): no cargo step has written the
+# true here, and only here, because this script is step 0 of the clippy and test-libs gates
+# (.gatehouse/pipeline.writ, .gatehouse/gates/{clippy,test-libs}.json): no cargo step has written the
 # seed's target dir in this pod yet, wasm-pack builds into its own target dir (its own subdir of
 # the gate's, below; the workspace's units never live there and none of them reads pkg/), and a
 # file byte-equal to the seed's source yields the same compilation as the seed's did. Two guards
