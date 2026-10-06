@@ -67,7 +67,9 @@ by a second authentication path.**
 ### 1. The operator owns the upstream registry; the spec only selects
 
 The node takes `--upstreams <toml>`. Each entry is `name`, `base_url`, `header`,
-`value_prefix`, and `credential`, which is one of:
+`value_prefix` (or a host-only `value_encoding`, #3252: `"raw"` or
+`{ basic = { username } }`, applied to the bare credential at injection), and
+`credential`, which is one of:
 
 - `env { var }` — today's behavior, now chosen by the operator rather than the spec author;
 - `federated { token_endpoint, grant, encoding, audience, scope?, request_audience?, params, assertion_ttl_secs? }`.

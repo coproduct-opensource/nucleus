@@ -29,6 +29,13 @@ const RESULT: &[u8] = b"000eunpack ok\n0000";
 /// anything else is a 404. A host that performed the wrong method would get
 /// the 404, not the advertisement.
 async fn remote() -> (String, Hits) {
+    remote_requiring(None).await
+}
+
+/// [`remote`], answering 401 to any request whose `authorization` is not
+/// exactly `required` (when set) — as a smart-HTTP endpoint that takes only
+/// Basic auth answers a bearer token.
+async fn remote_requiring(required: Option<&'static str>) -> (String, Hits) {
     let hits: Hits = Arc::new(Mutex::new(Vec::new()));
     let log = Arc::clone(&hits);
     let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
@@ -62,7 +69,13 @@ async fn remote() -> (String, Hits) {
                 .and_then(|q| q.strip_prefix("service="))
                 .unwrap_or_default()
                 .to_string();
+            let authorized = required.is_none_or(|r| header("authorization").as_deref() == Some(r));
             let (status, content_type, reply) = match parts.method.as_str() {
+                _ if !authorized => (
+                    401,
+                    "text/plain".to_string(),
+                    &b"authentication required"[..],
+                ),
                 "GET" if path.ends_with("/info/refs") => (
                     200,
                     format!("application/x-{service}-advertisement"),
@@ -473,4 +486,207 @@ async fn refusal_for(pod: &Pod, payload: &str) -> String {
     let head: StreamHead = serde_json::from_str(&head).unwrap();
     assert!(!head.granted);
     head.reason
+}
+
+/// The pod identity the federated fixture mints for.
+const FEDERATED_POD: &str = "spiffe://nodes.example.invalid/ns/pods/sa/git-pod";
+
+/// `Basic base64("token-user:minted-token-1")`, written out rather than
+/// recomputed with the code under test.
+const BASIC_MINTED: &str = "Basic dG9rZW4tdXNlcjptaW50ZWQtdG9rZW4tMQ==";
+
+/// A token endpoint that answers every exchange with `minted-token-1`.
+async fn token_endpoint() -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "minted-token-1",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            })),
+        )
+        .mount(&server)
+        .await;
+    server
+}
+
+/// A pod holding no credential at all, whose `git-remote` is a FEDERATED
+/// registry entry with `encoding` (TOML lines) for its header value, loaded
+/// through the operator registry's own parser.
+fn federated(base: &str, tokens: &str, encoding: &str) -> Pod {
+    let mut pod = Pod::holding(base, 1 << 30, StreamLimits::DEFAULT, &[]);
+    let registry = crate::upstreams::UpstreamRegistry::from_toml_str(&format!(
+        r#"
+[[upstream]]
+name = "git-remote"
+call_charge_micro_usd = 0
+base_url = "{base}"
+header = "authorization"
+request_headers = ["accept", "git-protocol"]
+{encoding}
+
+[upstream.credential.federated]
+token_endpoint = "{tokens}/oauth/token"
+grant = "token-exchange"
+encoding = "form"
+audience = "https://auth.forge.example.invalid"
+"#
+    ))
+    .expect("the fixture registry loads");
+    pod.upstreams = registry.resolve(registry.entries());
+    let der = nucleus_federation::EcdsaP256Signer::generate_pkcs8().expect("keygen");
+    let signer = nucleus_federation::EcdsaP256Signer::from_pkcs8(&der).expect("loads");
+    let source = crate::federated_credential::FederatedSource::new(
+        Arc::new(signer),
+        "https://federation.example.invalid",
+        nucleus_federation::default_client().expect("client"),
+    )
+    .expect("an https issuer");
+    let subject = crate::federated_credential::FederationSubject::new(
+        nucleus_federation::AssertionSubject::new(
+            FEDERATED_POD,
+            "tenant-a.example.invalid",
+            "spiffe://tenant-a.example.invalid/ns/ci/sa/release",
+            "ab".repeat(32),
+        )
+        .expect("a valid subject"),
+        now() + 86_400,
+    );
+    pod.credentials = PodCredentials::new(
+        nucleus_cred_broker::CredentialStore::new(),
+        Some((Arc::new(source), subject)),
+    );
+    pod.identity = PodIdentity::observed_by_host(FEDERATED_POD);
+    pod
+}
+
+/// Drive `req`, granting the operator approval a push asks for and driving
+/// it again under a fresh nonce.
+async fn drive_approved(pod: &Pod, req: &StreamRequest, body: &[u8]) -> Heard {
+    let heard = drive(pod, req, body).await;
+    if !heard.head.reason.starts_with("host approval required:") {
+        return heard;
+    }
+    grant_pending(pod);
+    let mut again = req.clone();
+    again.nonce = format!("{}-approved", req.nonce);
+    drive(pod, &again, body).await
+}
+
+/// `ls-remote` then `push`, as git sends them over smart HTTP: the two ref
+/// advertisements and the two pack exchanges. The fetch pair shares a
+/// federated pod; each push request gets a fresh one, because once a pod has
+/// observed an upstream response its host kernel refuses a push as a flow
+/// (`flow_refused`), which is a separate property from the one under test.
+/// Returns what the guest heard of each request, and every pod's record.
+async fn ls_remote_and_push(base: &str, tokens: &str, encoding: &str) -> (Vec<Heard>, String) {
+    let mut upload = git_open(
+        EgressMethod::Post,
+        "org/repo.git/git-upload-pack",
+        None,
+        "upload",
+    );
+    upload.headers = BTreeMap::from([("git-protocol".into(), "version=2".into())]);
+    let mut receive = git_open(
+        EgressMethod::Post,
+        "org/repo.git/git-receive-pack",
+        None,
+        "receive",
+    );
+    receive.content_type = "application/x-git-receive-pack-request".into();
+    let mut heard = Vec::new();
+    let mut audit = String::new();
+    for pods in [
+        vec![
+            (advertise("git-upload-pack", "ls-adv"), &b""[..]),
+            (upload, &b"0014command=ls-refs\n0000"[..]),
+        ],
+        vec![(advertise("git-receive-pack", "push-adv"), &b""[..])],
+        vec![(receive, &b"0000PACK"[..])],
+    ] {
+        let pod = federated(base, tokens, encoding);
+        for (req, body) in pods {
+            heard.push(drive_approved(&pod, &req, body).await);
+        }
+        audit.push_str(&pod.audit());
+    }
+    (heard, audit)
+}
+
+/// **#3252: a smart-HTTP remote that takes only Basic auth accepts the
+/// host-minted token for `ls-remote` and `push`.** The pod holds no
+/// credential; the host mints one per exchange (ADR 0010) and builds
+/// `Basic base64("token-user:" + token)` at injection, on the streamed path.
+/// All four requests reach the remote with it and are answered, and neither
+/// the guest nor the call record sees the token, its encoding or the
+/// username.
+///
+/// A-19: the same entry as `raw` with `value_prefix = "Basic "` (the only
+/// way to write it before #3252) sends `Basic minted-token-1`, and the
+/// remote refuses all four.
+#[tokio::test]
+async fn a_basic_only_remote_accepts_the_minted_token_for_ls_remote_and_push() {
+    let tokens = token_endpoint().await;
+    let (base, hits) = remote_requiring(Some(BASIC_MINTED)).await;
+    let (heard, audit) = ls_remote_and_push(
+        &base,
+        &tokens.uri(),
+        r#"value_encoding = { basic = { username = "token-user" } }"#,
+    )
+    .await;
+    assert_eq!(heard.len(), 4);
+    for (n, h) in heard.iter().enumerate() {
+        assert!(h.head.granted, "request {n}: {:?}", h.head);
+        assert_eq!(h.head.status, 200, "request {n}: {:?}", h.head);
+        for secret in ["minted-token-1", BASIC_MINTED, "dG9rZW4tdXNlcjpt"] {
+            assert!(!h.raw.contains(secret), "{secret:?} reached the guest");
+        }
+    }
+    assert_eq!(heard[1].body, RESULT);
+    assert_eq!(heard[3].body, RESULT);
+    let hits = hits.lock().unwrap().clone();
+    let seen: Vec<_> = hits
+        .iter()
+        .map(|h| {
+            (
+                h.method.as_str(),
+                h.path.as_str(),
+                h.authorization.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("GET", "/org/repo.git/info/refs", Some(BASIC_MINTED)),
+            ("POST", "/org/repo.git/git-upload-pack", Some(BASIC_MINTED)),
+            ("GET", "/org/repo.git/info/refs", Some(BASIC_MINTED)),
+            ("POST", "/org/repo.git/git-receive-pack", Some(BASIC_MINTED)),
+        ]
+    );
+    assert!(
+        audit.contains("egress_stream_call"),
+        "no call was recorded: {audit}"
+    );
+    for secret in ["minted-token-1", BASIC_MINTED, "token-user"] {
+        assert!(!audit.contains(secret), "{secret:?} reached the record");
+    }
+
+    // A-19: raw, prefixed the only way the registry could express it before.
+    let (base, hits) = remote_requiring(Some(BASIC_MINTED)).await;
+    let (heard, _) = ls_remote_and_push(&base, &tokens.uri(), r#"value_prefix = "Basic ""#).await;
+    assert_eq!(heard.len(), 4);
+    for h in heard {
+        assert!(!h.head.granted, "a raw token was accepted: {:?}", h.head);
+    }
+    let hits = hits.lock().unwrap().clone();
+    assert_eq!(hits.len(), 4, "{hits:?}");
+    assert!(
+        hits.iter()
+            .all(|h| h.authorization.as_deref() == Some("Basic minted-token-1")),
+        "{hits:?}"
+    );
 }

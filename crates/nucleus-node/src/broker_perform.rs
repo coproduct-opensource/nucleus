@@ -544,7 +544,8 @@ pub(crate) fn resolve<'u>(
 
 /// The credential header for a resolved call, and whether it was minted.
 pub(crate) struct InjectedHeader {
-    /// The header value, with the spec's prefix applied. Never logged.
+    /// The header value, with the entry's encoding applied
+    /// (`RegistryEntry::header_value`). Never logged.
     pub(crate) value: String,
     /// Whether it came from a federated exchange, so a 401 evicts it.
     pub(crate) federated: bool,
@@ -596,12 +597,13 @@ pub(crate) async fn credential_header(
         CredentialSource::Env { .. } => None,
     };
     let federated = refilled.is_some();
-    let prefix = &resolved.entry.spec().value_prefix;
+    // The entry's encoding is applied here, at injection, so the stored or
+    // minted credential is never held pre-encoded (#3252).
     let value = credentials
         .read(|store| {
             crate::broker::cdp_fetch(&resolved.approved, store, now_unix)
                 .ok()
-                .map(|credential| format!("{prefix}{}", credential.expose()))
+                .map(|credential| resolved.entry.header_value(credential.expose()))
         })
         .flatten();
     drop(refilled);
