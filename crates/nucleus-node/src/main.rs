@@ -835,7 +835,17 @@ async fn main() -> Result<(), ApiError> {
             None
         };
 
-    let authority = pod_authority::PodAuthority::from_args(&args).map_err(ApiError::Driver)?;
+    // Where the node's keys are held: decided once from the flags (ADR 0012,
+    // A2). Under TPM custody the role keys below are unsealed, or migrated
+    // into the TPM, as each is loaded.
+    let custody = args.node_evidence.custody().map_err(ApiError::Driver)?;
+    let authority = pod_authority::PodAuthority::new(
+        &args.authority,
+        &args.identity_trust_domain,
+        &args.state_dir,
+        &custody,
+    )
+    .map_err(ApiError::Driver)?;
 
     // A zero bound is refused at start-up, not discovered as a refusal of
     // every streamed call later (ADR 0007 B).
@@ -852,7 +862,8 @@ async fn main() -> Result<(), ApiError> {
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
     let memory = Arc::new(args.memory.load(&host_roots)?);
-    let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir);
+    let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys)
+        .map_err(ApiError::Driver)?;
     let node_platform = Arc::new(
         node_evidence::NodePlatformSource::start(
             &args.node_evidence,
@@ -911,9 +922,10 @@ async fn main() -> Result<(), ApiError> {
             std::sync::Arc::new(k)
         },
         proxy_approval_secret: args.proxy_approval_secret.clone(),
-        approval_signer: std::sync::Arc::new(keys::load_or_create_approval_signing_key(
-            &args.state_dir,
-        )),
+        approval_signer: std::sync::Arc::new(
+            keys::load_or_create_approval_signing_key(&args.state_dir, &custody.node_keys)
+                .map_err(ApiError::Driver)?,
+        ),
         proxy_actor: Some(args.proxy_actor.clone()).filter(|actor| !actor.trim().is_empty()),
         trusted_postures: posture::PostureRegistry::from_operator_str(&args.trusted_postures),
         audit_sinks: Arc::new(args.audit_sinks.load().map_err(ApiError::Driver)?),

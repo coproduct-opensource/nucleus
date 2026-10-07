@@ -25,6 +25,7 @@ use crate::crypto::sha256;
 use crate::evidence::{BootLog, EVIDENCE_PROFILE, ImaLog, NodeEvidence, TpmQuote};
 use crate::ima::ImaLogFormat;
 use crate::wire::Reader;
+use zeroize::Zeroizing;
 
 const TPM_ST_NO_SESSIONS: u16 = 0x8001;
 const TPM_ST_SESSIONS: u16 = 0x8002;
@@ -228,10 +229,11 @@ pub struct Tpm<T: Transport> {
     transport: T,
 }
 
-/// One command's response, past the header.
+/// One command's response, past the header. The parameters are wiped when
+/// dropped: an `Unseal` response carries a sealed secret (A2).
 pub(crate) struct Response {
     pub(crate) handles: Vec<u32>,
-    pub(crate) params: Vec<u8>,
+    pub(crate) params: Zeroizing<Vec<u8>>,
 }
 
 impl<T: Transport> Tpm<T> {
@@ -248,7 +250,9 @@ impl<T: Transport> Tpm<T> {
         response_handles: usize,
         params: &[u8],
     ) -> Result<Response, AttestError> {
-        let mut body = Vec::new();
+        // Every buffer that holds command or response bytes is wiped on drop:
+        // `Create` of a sealed object carries the secret in, `Unseal` out.
+        let mut body = Zeroizing::new(Vec::new());
         for h in handles {
             body.extend_from_slice(&h.to_be_bytes());
         }
@@ -263,7 +267,7 @@ impl<T: Transport> Tpm<T> {
         };
         let size = u32::try_from(body.len().saturating_add(10))
             .map_err(|_| AttestError::Other("command too long".into()))?;
-        let mut cmd = Vec::with_capacity(body.len().saturating_add(10));
+        let mut cmd = Zeroizing::new(Vec::with_capacity(body.len().saturating_add(10)));
         cmd.extend_from_slice(&tag.to_be_bytes());
         cmd.extend_from_slice(&size.to_be_bytes());
         cmd.extend_from_slice(&code.to_be_bytes());
@@ -271,7 +275,7 @@ impl<T: Transport> Tpm<T> {
         // TPM_RC_RETRY, TPM_RC_YIELDED and TPM_RC_TESTING ask the caller to
         // send the same command again; anything else nonzero is a failure.
         let mut attempts = 0usize;
-        let resp = loop {
+        let resp = Zeroizing::new(loop {
             let resp = self.transport.transmit(&cmd)?;
             let rc = resp
                 .get(6..10)
@@ -284,7 +288,7 @@ impl<T: Transport> Tpm<T> {
                 }
                 _ => break resp,
             }
-        };
+        });
         let mut r = Reader::new(&resp, "TPM response");
         let rtag = r.be_u16()?;
         let _size = r.be_u32()?;
@@ -301,9 +305,9 @@ impl<T: Transport> Tpm<T> {
         }
         let params = if rtag == TPM_ST_SESSIONS {
             let n = usize::try_from(r.be_u32()?).map_err(|_| AttestError::Other("size".into()))?;
-            r.bytes(n)?.to_vec()
+            Zeroizing::new(r.bytes(n)?.to_vec())
         } else {
-            r.bytes(r.remaining())?.to_vec()
+            Zeroizing::new(r.bytes(r.remaining())?.to_vec())
         };
         Ok(Response {
             handles: out_handles,

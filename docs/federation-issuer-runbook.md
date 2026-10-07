@@ -50,6 +50,16 @@ the statements at `node-evidence/federation-keys.json` (also `GET /v1/node/feder
   the waiver at start-up, and every custody statement it publishes says "file" and why. There
   is no conversion between the two layouts. A directory of the wrong custody stops the node:
   move it aside to start over with a new key.
+- **The node's Ed25519 keys are sealed too** (executor, approval, certificate root, task
+  issuer; ADR 0012, addendum A2). On a node with `--node-evidence-tpm` each one is sealed to
+  the same boot PCRs as `<role>_signing_key.sealed.json` and unsealed into memory at start-up.
+  The first start with a TPM migrates existing `.der` files in place with the **same public
+  keys**: it seals each key, unseals what it wrote to check it, and only then deletes the
+  file. `GET /v1/node/key-custody` says which keys are sealed and under which policy. This
+  protects the keys at rest only: the running node holds them in RAM. Its own waiver is
+  `--allow-node-keys-in-file`, independent of the federation key's, so a node can keep a
+  file federation key and still seal its node keys. After an upgrade of the bound boot chain,
+  each node key is a new key: the old blob is kept as `….sealed.json.unusable-<time>`.
 
 ## 1. Publish the issuer
 
@@ -168,3 +178,7 @@ order:
 | node will not start: "holds file federation keys but this node is configured for TPM-resident custody" | the node gained `--node-evidence-tpm` over a file key | pass `--allow-federation-key-in-file`, or move the file key aside and publish the new TPM key's JWKS |
 | log: "TPM-resident key … is bound to another boot state; regenerating" | the node booted a different kernel, initrd or command line | publish the new JWKS (`issuer --export`); the old key cannot sign in this boot |
 | `rotate --stage` refused: "holds TPM-resident federation keys" | `--tpm` was not given | pass `--tpm /dev/tpmrm0` |
+| node will not start: "… This node seals its keys to the TPM and does not fall back to a key file" | the TPM could not be reached, or refused to seal an Ed25519 node key | fix the TPM; the key file is untouched. `--allow-node-keys-in-file` keeps the keys as files |
+| node will not start: "… holds the key sealed to a TPM … The custody is never crossed" | `--node-evidence-tpm` was removed, or `--allow-node-keys-in-file` added, over sealed node keys | restore the TPM flag without the waiver |
+| node will not start: "… holds a DIFFERENT key from the sealed one" | a `.der` file was put back beside a sealed key | move one of them aside; the node will not pick an identity |
+| log: "… cannot be unsealed: it is sealed to another boot state … A NEW key replaces it" | the node booted a different kernel, initrd, boot loader or command line | expected after an upgrade; tell anything that pinned the old node key. Booting back and restoring `….unusable-<time>` recovers the old key |

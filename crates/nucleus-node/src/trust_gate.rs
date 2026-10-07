@@ -48,7 +48,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::keys::{
-    generate_signing_key, load_or_create_signing_key, load_or_create_task_issuer_signing_key,
+    NodeKeyCustody, generate_signing_key, load_or_create_signing_key,
+    load_or_create_task_issuer_signing_key,
 };
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -125,29 +126,34 @@ fn executor_id_from_key(key: &SigningKey) -> String {
 
 impl TrustGateConfig {
     /// Create from environment variables, persisting the per-executor signing
-    /// key under `state_dir` so the executor's identity survives restarts.
-    pub fn from_env(state_dir: &Path) -> Self {
+    /// key under `state_dir` so the executor's identity survives restarts,
+    /// held at rest as `custody` says (A2).
+    ///
+    /// # Errors
+    /// The executor or task-issuer key cannot be unsealed or sealed
+    /// (`keys::load_or_create_role_key`).
+    pub fn from_env(state_dir: &Path, custody: &NodeKeyCustody) -> Result<Self, String> {
         let receipt_secret = std::env::var("TRUST_RECEIPT_SECRET")
             .ok()
             .and_then(|s| base64::prelude::BASE64_STANDARD.decode(&s).ok())
             .map(Arc::new);
 
-        let executor_signing_key = load_or_create_signing_key(state_dir);
+        let executor_signing_key = load_or_create_signing_key(state_dir, custody)?;
         // Role-separated key that signs live-path session capability tokens.
-        let task_issuer_signing_key = load_or_create_task_issuer_signing_key(state_dir);
+        let task_issuer_signing_key = load_or_create_task_issuer_signing_key(state_dir, custody)?;
 
         // Prefer an explicit id; otherwise derive a stable one from the
         // persistent key (not a fresh uuid per process — #1636).
         let executor_id = std::env::var("TRUST_EXECUTOR_ID")
             .unwrap_or_else(|_| executor_id_from_key(&executor_signing_key));
 
-        Self {
+        Ok(Self {
             trust_api_url: std::env::var("TRUST_API_URL").unwrap_or_default(),
             receipt_secret,
             executor_signing_key: Arc::new(executor_signing_key),
             executor_id,
             task_issuer_signing_key: Arc::new(task_issuer_signing_key),
-        }
+        })
     }
 
     /// Whether the trust gate is enabled.
@@ -1328,7 +1334,8 @@ mod tests {
     #[test]
     fn test_from_env_provisions_role_separated_task_issuer_key() {
         let dir = tempfile::tempdir().unwrap();
-        let config = TrustGateConfig::from_env(dir.path());
+        let config =
+            TrustGateConfig::from_env(dir.path(), &crate::pod_authority::NO_TPM.node_keys).unwrap();
         assert_ne!(
             config.executor_signing_key.verifying_key().as_bytes(),
             config.task_issuer_signing_key.verifying_key().as_bytes(),
@@ -1339,14 +1346,18 @@ mod tests {
     #[test]
     fn test_executor_id_from_key_is_deterministic_and_keyed() {
         let dir = tempfile::tempdir().unwrap();
-        let key = load_or_create_signing_key(dir.path());
+        let key = load_or_create_signing_key(dir.path(), &crate::pod_authority::NO_TPM.node_keys)
+            .unwrap();
         let id1 = executor_id_from_key(&key);
         let id2 = executor_id_from_key(&key);
         assert_eq!(id1, id2, "id must be a deterministic function of the key");
         assert!(id1.starts_with("nucleus-executor/"));
         // A different key yields a different id.
         let other = tempfile::tempdir().unwrap();
-        let id_other = executor_id_from_key(&load_or_create_signing_key(other.path()));
+        let id_other = executor_id_from_key(
+            &load_or_create_signing_key(other.path(), &crate::pod_authority::NO_TPM.node_keys)
+                .unwrap(),
+        );
         assert_ne!(id1, id_other);
     }
     #[test]
