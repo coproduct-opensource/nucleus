@@ -329,6 +329,16 @@ fn run(confinement: Option<ChildConfinement>, op: &str) -> String {
 
 /// [`run`], with the pod's derived classes `policy`.
 fn run_under(confinement: Option<ChildConfinement>, policy: SeccompPolicy, op: &str) -> String {
+    try_run_under(confinement, policy, op)
+        .unwrap_or_else(|e| panic!("{op}: the confined child did not spawn: {e}"))
+}
+
+/// [`run_under`], with a spawn failure returned rather than a panic.
+fn try_run_under(
+    confinement: Option<ChildConfinement>,
+    policy: SeccompPolicy,
+    op: &str,
+) -> std::io::Result<String> {
     let exe = child_exe(confinement.and_then(|c| c.drop_uid()).is_some());
     let mut cmd = Command::new(&exe.path);
     cmd.args([
@@ -358,14 +368,11 @@ fn run_under(confinement: Option<ChildConfinement>, policy: SeccompPolicy, op: &
                 attempt += 1;
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            other => {
-                break other
-                    .unwrap_or_else(|e| panic!("{op}: the confined child did not spawn: {e}"));
-            }
+            other => break other?,
         }
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
-    stdout
+    Ok(stdout
         .lines()
         .find_map(|l| l.strip_prefix(RESULT))
         .map(str::to_string)
@@ -375,7 +382,51 @@ fn run_under(confinement: Option<ChildConfinement>, policy: SeccompPolicy, op: &
                 out.status,
                 String::from_utf8_lossy(&out.stderr)
             )
-        })
+        }))
+}
+
+/// Whether this runtime can place an exec pin: a descriptor at or above the
+/// child's `RLIMIT_NOFILE` (the node ceiling, 4096). A root runtime raises its
+/// own hard limit; a non-root one needs a hard limit above the ceiling. A
+/// runner whose hard limit is the kernel's default 4096 (the gate lanes) can
+/// not, and must REFUSE the exec-denied child rather than start it unfiltered
+/// (ADR 0007 A-1); `Err` carries the hard limit for the message.
+fn pin_fits() -> Result<(), u64> {
+    let ceiling = nucleus::RlimitVector::NODE_CEILING.nofile;
+    let mut rl = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: getrlimit into an initialized local.
+    let rc = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut rl) };
+    assert_eq!(rc, 0, "getrlimit");
+    if nucleus::runtime_uid() == 0 || rl.rlim_max > ceiling {
+        Ok(())
+    } else {
+        Err(rl.rlim_max)
+    }
+}
+
+/// Where the pin cannot be placed: every exec-denied child is refused at the
+/// spawn, in every mode, and nothing runs. Returns true when that is the
+/// case, so the caller asserts the refusal instead of the denial.
+fn exec_denial_is_refused_here(policy: SeccompPolicy) -> bool {
+    let Err(hard) = pin_fits() else {
+        return false;
+    };
+    eprintln!(
+        "RLIMIT_NOFILE hard {hard} cannot hold an exec pin: asserting that every exec-denied \
+         child is refused instead"
+    );
+    for (mode, c) in confining() {
+        let got = try_run_under(Some(c), policy, "execve");
+        assert_eq!(
+            got.as_ref().map_err(std::io::Error::raw_os_error),
+            Err(Some(libc::EOPNOTSUPP)),
+            "{mode:?}: an exec-denied child that cannot be pinned must not start"
+        );
+    }
+    true
 }
 
 /// Every mode that confines on this runtime, with its confinement.
@@ -513,6 +564,9 @@ fn a_confined_child_carries_one_more_filter_and_the_bare_tier_none() {
 #[test]
 fn a_child_under_run_bash_never_cannot_exec() {
     let policy = derived(CapabilityLevel::Never, CapabilityLevel::Always);
+    if exec_denial_is_refused_here(policy) {
+        return;
+    }
     for (mode, c) in confining() {
         assert_eq!(run(Some(c), "execve"), "ok", "{mode:?}: control");
         assert_eq!(
@@ -578,7 +632,14 @@ fn the_derived_classes_add_no_second_filter() {
         .strip_prefix("filters=")
         .and_then(|n| n.parse().ok())
         .expect("Seccomp_filters is readable (Linux 5.9+)");
-    let policy = derived(CapabilityLevel::Never, CapabilityLevel::Never);
+    // Both classes where the exec pin fits; the socket class alone where it
+    // cannot (that runner refuses an exec-denied child, which
+    // `a_child_under_run_bash_never_cannot_exec` asserts).
+    let run_bash = match pin_fits() {
+        Ok(()) => CapabilityLevel::Never,
+        Err(_) => CapabilityLevel::Always,
+    };
+    let policy = derived(run_bash, CapabilityLevel::Never);
     for (mode, c) in confining() {
         assert_eq!(
             run_under(Some(c), policy, "filters"),
