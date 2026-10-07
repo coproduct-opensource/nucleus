@@ -159,9 +159,7 @@ egress (#3178). So is v2.3.0: its tool-proxy's egress stream opens name no
 method (#3210).
 
 The pinned release is **`2.6.0`**, the first build whose guest meets every
-`GuestCapability`. It is pinned ahead of its tag, so until the tag's assets are
-published `setup` refuses it up front and `--artifacts local` is the way
-through. v2.5.0 still serves every pod; its workload runs without Landlock
+`GuestCapability`. v2.5.0 still serves every pod; its workload runs without Landlock
 (#2696 P3c), and the node reports that pod's workload filesystem as not
 confined. v2.4.0 still serves every pod except a run whose upstream
 declares an effect table (#3229). Each

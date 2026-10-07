@@ -1,12 +1,14 @@
 //! `cargo xtask guest-kernel-mirror` — publish the pinned guest kernel's bytes
 //! as a release asset (#2696 P3, S4).
 //!
-//! The guest kernel is pinned to a Firecracker CI build under a DATED bucket
-//! prefix (`nucleus_spec::tier2_artifacts::KERNEL_*`), the first upstream line
-//! with Landlock compiled in. A dated prefix is CI output: nothing promises it
-//! stays. So each release mirrors the exact pinned bytes as an asset, signed
-//! and attested like every other asset in `release.yml`, and a later pin can
-//! name the mirror with the SAME digest.
+//! The guest kernel is a Firecracker CI build under a DATED bucket prefix, the
+//! first upstream line with Landlock compiled in. A dated prefix is CI output:
+//! nothing promises it stays. So each release mirrors the exact pinned bytes as
+//! an asset, signed and attested like every other asset in `release.yml`.
+//! v2.6.0 was the first to publish it, and the pin
+//! (`nucleus_spec::tier2_artifacts::KERNEL_*`) now names v2.6.0's mirror with
+//! the SAME digest it had on the upstream URL. A later release therefore fetches
+//! from that mirror and republishes the same bytes under its own version.
 //!
 //! Two steps, the shape `release-reference-manifest` already has: this command
 //! writes a `curl --config` for the pinned URL (the workflow runs curl), then
