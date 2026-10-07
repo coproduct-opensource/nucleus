@@ -72,6 +72,11 @@ mod tests {
         assert!(super::admit(1));
     }
 
+    #[test]
+    fn parity_open() {
+        assert!(super::Gate.open(1));
+    }
+
     pub fn helper() {}
 }
 "#;
@@ -431,12 +436,112 @@ fn aeneas_paths_normalize_to_symbol_keys() {
     assert!(lean::extracted(PROOFS).is_none());
 }
 
-/// The committed registry holds on this tree: every seeded row passes.
+#[test]
+fn a_function_a_binary_defines_resolves() {
+    let dir = fixture();
+    write(
+        dir.path(),
+        "crates/demo/src/main.rs",
+        "fn main() {}\n\nfn remount() -> bool {\n    true\n}\n",
+    );
+    let (_, _, errors) = violations(
+        dir.path(),
+        "[[obligation]]\nfunction = \"demo::remount\"\nkind = \"missing\"\nstatus = \"allowlisted\"\ntracking = \"#1\"\n",
+    )
+    .unwrap();
+    assert_eq!(errors, Vec::<String>::new());
+    // The library and the binary both defining one path is ambiguous, not first-walked-wins.
+    write(
+        dir.path(),
+        "crates/demo/src/main.rs",
+        "fn main() {}\n\npub fn admit(x: u8) -> bool {\n    x < 11\n}\n",
+    );
+    let err = violations(dir.path(), PASSING).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("more than one of the crate's targets"),
+        "{err:#}"
+    );
+}
+
+/// The registry the ratchet tests start from: one gap still missing (`Gate::open`).
+const RATCHETED: &str = PASSING;
+
+fn discharged() -> String {
+    // `Gate::open`'s gap closed: its `missing` row became the proof's row, `tracking` kept.
+    PASSING.replace(
+        "function = \"demo::Gate::open\"\nkind = \"missing\"\nstatus = \"allowlisted\"",
+        "function = \"demo::Gate::open\"\nkind = \"parity\"\nartifact = \"crates/demo/src/lib.rs::parity_open\"\nstatus = \"proved\"",
+    )
+}
+
+#[test]
+fn the_ratchet_holds_at_its_ceiling() {
+    let (gaps, errors) = ratchet(RATCHETED, 1).unwrap();
+    assert_eq!(
+        gaps,
+        Gaps {
+            missing: 1,
+            discharged: 0
+        }
+    );
+    assert_eq!(errors, Vec::<String>::new());
+}
+
+#[test]
+fn a_new_missing_row_is_over_the_ceiling() {
+    let grown = format!(
+        "{RATCHETED}\n[[obligation]]\nfunction = \"demo::tests::helper\"\nkind = \"missing\"\nstatus = \"allowlisted\"\ntracking = \"#3\"\n"
+    );
+    let (_, errors) = ratchet(&grown, 1).unwrap();
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].contains("a new `missing` row"), "{errors:#?}");
+}
+
+#[test]
+fn a_missing_row_deleted_without_a_proof_is_under_the_ceiling() {
+    let start = RATCHETED
+        .find("[[obligation]]\nfunction = \"demo::Gate::open\"")
+        .unwrap();
+    let deleted = &RATCHETED[..start];
+    let (gaps, errors) = ratchet(deleted, 1).unwrap();
+    assert_eq!(gaps.missing, 0);
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(errors[0].contains("without a proof"), "{errors:#?}");
+}
+
+#[test]
+fn a_discharged_gap_lowers_missing_without_touching_the_ceiling() {
+    let text = discharged();
+    assert_eq!(violations_of(&text), Vec::<String>::new());
+    let (gaps, errors) = ratchet(&text, 1).unwrap();
+    assert_eq!(
+        gaps,
+        Gaps {
+            missing: 0,
+            discharged: 1
+        }
+    );
+    assert_eq!(errors, Vec::<String>::new());
+}
+
+#[test]
+fn the_ceiling_must_be_read_not_assumed() {
+    assert_eq!(parse_ceiling("# c\nMISSING_CEILING=7\n").unwrap(), 7);
+    assert!(parse_ceiling("# no line\n").is_err());
+    assert!(parse_ceiling("MISSING_CEILING=\n").is_err());
+    assert!(parse_ceiling("MISSING_CEILING=1\nMISSING_CEILING=2\n").is_err());
+    assert!(missing_ceiling(fixture().path()).is_err());
+}
+
+/// The committed registry holds on this tree: every seeded row passes, and the missing ratchet
+/// sits exactly at its ceiling.
 #[test]
 fn the_committed_registry_holds() {
-    let root = repo();
-    let text = std::fs::read_to_string(root.join(REGISTRY)).unwrap();
-    let (total, _, errors) = violations(&root, &text).unwrap();
+    let (total, _, gaps, errors) = check(&repo()).unwrap();
     assert!(total > 0);
+    assert!(
+        gaps.missing > 0,
+        "the ratchet counted no missing row: {gaps:?}"
+    );
     assert_eq!(errors, Vec::<String>::new());
 }

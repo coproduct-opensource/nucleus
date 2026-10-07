@@ -453,6 +453,29 @@ pub fn perturb_proof_obligation_vacuous_harness(_: &Path, t: &str) -> Perturbed 
     ok(text)
 }
 
+/// The ceiling READ out of the file and lowered by one: a hard-coded value would stop biting the
+/// day a proof PR lowers the real one.
+pub fn perturb_proof_obligation_missing_ceiling(_: &Path, t: &str) -> Perturbed {
+    let Some(n) = t.lines().find_map(|l| {
+        l.trim()
+            .strip_prefix("MISSING_CEILING=")
+            .and_then(|v| v.trim().parse::<usize>().ok())
+    }) else {
+        return moved(t.to_string(), "no MISSING_CEILING=<n> line");
+    };
+    let Some(lower) = n.checked_sub(1) else {
+        return moved(
+            t.to_string(),
+            "MISSING_CEILING is 0: there is no gap left to over-count",
+        );
+    };
+    let (text, hits) = awk_replace(t, r"^MISSING_CEILING=", &format!("MISSING_CEILING={lower}"));
+    if hits != 1 {
+        return moved(text, "MISSING_CEILING= is not on exactly one line");
+    }
+    ok(text)
+}
+
 pub fn perturb_assurance_required_pin(_: &Path, t: &str) -> Perturbed {
     ok(awk_replace(t, r"^UNREQUIRED_FALSIFIERS=", "UNREQUIRED_FALSIFIERS=255").0)
 }

@@ -10,7 +10,8 @@
 #   source_hash  optional: SHA-256 of the function's signature + body tokens; a code edit
 #                without re-pinning is red.
 #   constant     lean-mirror only: the hand-written Lean constant the theorem is about.
-#   tracking     missing only: the issue that will discharge the row.
+#   tracking     on a missing row, the issue that will discharge it; on an artifact row, the gap
+#                it discharged (kept, so the missing ratchet still counts the gap).
 #
 # Non-vacuity, per kind: a Kani harness must be run by a workflow lane, name the function,
 # and END with a satisfiable `kani::cover!`; a Lean theorem must be in a module a workflow's
@@ -347,3 +348,163 @@ function = "nucleus_ifc_kernel::extracted::mediation::sinkcode"
 kind = "lean-extracted"
 artifact = "crates/portcullis-core/lean/MediationScopeExtracted.lean::sinkcode_eq_iff"
 status = "proved"
+
+# --- #2594: the security-kernel functions with no proof artifact -------------------------
+#
+# Each is `missing`, allowlisted against the issue that will discharge it. `missing` may only
+# shrink: the gap count (rows carrying `tracking`) must equal MISSING_CEILING in
+# ci/proof-obligations-ratchet.txt. To discharge a gap, turn its row into the artifact row that
+# proves the function and KEEP `tracking`: the gap is then counted as discharged, the ceiling
+# file is untouched, and deleting a row instead is red.
+#
+# `kernel::ifc::ifc_flow_gate`, on #2594's list, is not here: it already has the kani row above.
+
+[[obligation]]
+function = "portcullis::kernel::Kernel::decide"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3310"
+
+[[obligation]]
+function = "portcullis::kernel::Kernel::decide_term"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3310"
+
+[[obligation]]
+function = "portcullis::kernel::Kernel::decide_term_with_flow"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3310"
+
+[[obligation]]
+function = "nucleus_node::pod_authority::PodAuthority::admit"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3311"
+
+[[obligation]]
+function = "nucleus_tool_proxy::mediation::decide_and_record"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3312"
+
+[[obligation]]
+function = "nucleus_tool_proxy::run_gate::preflight_runbash"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3313"
+
+[[obligation]]
+function = "nucleus_tool_proxy::run_gate::preflight_web"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3313"
+
+[[obligation]]
+function = "nucleus_tool_proxy::run_gate::preflight_fs"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3313"
+
+[[obligation]]
+function = "nucleus_tool_proxy::run_gate::preflight_read_fs"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3313"
+
+[[obligation]]
+function = "nucleus_tool_proxy::run_gate::preflight_grep_fs"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3313"
+
+[[obligation]]
+function = "nucleus_tool_proxy::run_gate::preflight_glob_fs"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3313"
+
+[[obligation]]
+function = "nucleus_tool_proxy::pod_cert::resolve_pod_certificate"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3314"
+
+[[obligation]]
+function = "nucleus_tool_proxy::pod_cert::delegation_authority"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3314"
+
+[[obligation]]
+function = "nucleus_tool_proxy::pod_cert::evaluate_request_cert"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3314"
+
+[[obligation]]
+function = "nucleus_tool_proxy::auth::select_auth_tier"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3315"
+
+[[obligation]]
+function = "nucleus_tool_proxy::session_token::VerifiedSessionToken::verify"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3316"
+
+[[obligation]]
+function = "nucleus_control_plane_server::auth::verify_jwt_svid"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3317"
+
+[[obligation]]
+function = "nucleus_control_plane_server::routes::require_owner"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3317"
+
+[[obligation]]
+function = "nucleus_envelope::verify::verify_bundle"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3318"
+
+[[obligation]]
+function = "nucleus_receipt::Receipt::verify"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3319"
+
+[[obligation]]
+function = "nucleus_lineage::verify::verify_chain"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3320"
+
+[[obligation]]
+function = "nucleus_trust_registry::federation::build_federation_store"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3321"
+
+[[obligation]]
+function = "nucleus_trust_registry::federation::apply_to_store"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3321"
+
+[[obligation]]
+function = "nucleus::command::Executor::spawn_checked"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3322"
+
+[[obligation]]
+function = "nucleus_guest_init::remount_root_ro"
+kind = "missing"
+status = "allowlisted"
+tracking = "#3323"
