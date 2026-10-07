@@ -216,7 +216,12 @@ the exploratory alignment-tax / cohomology / braid formalizations are
 research-tier and **not discharged** (23 open `sorry` proof holes across 10
 files — see `crates/portcullis-core/lean/CONJECTURES.md`). The
 `portcullis-core-proven-lean.yml` CI gate `lake build`s the proven tier and
-fails if any proof hole appears outside that manifest.
+fails if any proof hole appears outside that manifest. Because that manifest is
+by file, the same job also runs `cargo xtask lean-axiom-audit`: it derives the
+proven build's first-party import closure from the workflow and the lakefile and
+fails if any declaration in it depends on `sorryAx`, or on an axiom outside
+`propext` / `Classical.choice` / `Quot.sound` that the exceptions file does not
+name, naming each built library whose closure reaches one (#3302).
 
 (†) `FlowGraphProofs.lean` now uses kernel-checked `decide` for its three
 finite examples. Remaining native-evaluation exceptions are named per theorem

@@ -14,7 +14,12 @@ name: Portcullis-Core Proven Lean
 #      crates/portcullis-core/lean/CONJECTURES.md — so a proven lib cannot rot,
 #      and a research hole cannot escape quarantine, and
 #   3. runs a `#print axioms` audit on the enforcement core to catch any
-#      `sorryAx` that a textual grep would miss via the proof dependency graph.
+#      `sorryAx` that a textual grep would miss via the proof dependency graph,
+#   4. audits the axioms of every declaration in every first-party module the
+#      build compiles, imports included (`cargo xtask lean-axiom-audit`, #3302).
+#      A library listed below whose import closure reaches a `sorryAx` is red
+#      and named — the list is checked against its closures, so a research
+#      file cannot ride into the proven build behind an `import`.
 #
 # Native evaluation is admitted only by the per-theorem exception list.
 # FlowGraphProofs uses kernel-checked decide; owned compiler overrides are
@@ -203,7 +208,6 @@ jobs:
             WasiIfcBoundary
             BelnapDecisionProofs
             RepairAlgebraProofs
-            MatrixBridge
             PortcullisCoreCapQuantale
             CapabilityResiduatedQuantaleProofs
             PortcullisCoreIdentity
