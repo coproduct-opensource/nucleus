@@ -106,10 +106,10 @@ nucleus-trust-registry = ["crates/nucleus-fly-oidc/testdata/jwt_test_priv.pem"]
 #
 # Compile-time reads (include_str!/include_bytes!) are derived, not listed: the generator adds every
 # one a group's build makes outside its scope (docs/findings/compile-time-reads-in-scope.md).
-# clippy-base.json's include carries ONE such read by hand, examples/egress-git-remote/upstreams.toml,
-# ahead of its reader: nucleus#3287 restores the test that reads it, and controld runs a PR under the
-# plan main SERVES, so the widening has to be on main before the reader can go green. #3287 removes
-# the hand entry; the generator then derives the same include in the same place.
+# examples/egress-git-remote/upstreams.toml (nucleus-node's include_str!) was named by hand in
+# clippy-base.json ahead of its reader, because controld runs a PR under the plan main SERVES; the
+# change that restored the reader (#3287) removed the entry, and the generator derives the same
+# include in the same place.
 [clippy]
 command = ["cargo", "clippy", "--offline", "--all-targets", "--all-features", "--locked"]
 lints = ["--", "-D", "warnings"]
