@@ -109,6 +109,22 @@
 //! cannot be compiled or installed fails the spawn; it is never skipped
 //! (ADR 0007 A-1).
 //!
+//! # The pod's derived classes (#2907)
+//!
+//! The denylist is the same for every pod. A pod's own lattice takes more away:
+//! `portcullis::SeccompPolicy::derive` names the classes (`exec` under
+//! `run_bash: never`, `inet_socket` under `web_fetch: never` with no declared
+//! egress), [`ChildConfinement::apply`] takes that policy BY VALUE beside the
+//! rlimits, and the program it compiles is the denylist plus those classes in
+//! one filter: the union, never fewer. A derived denial answers `EPERM`, like
+//! the denylist. The bare tier (`Unfiltered`) installs neither, and the
+//! receipt says so ([`InstalledFilter`]).
+//!
+//! A policy that denies exec cannot let std exec the child: the filter is
+//! already installed. The hook starts the child itself through one pinned
+//! descriptor (`hardening/exec_pin.rs`, `hardening/seccomp.rs`), and that is
+//! the only exec the filter allows.
+//!
 //! # The filesystem: Landlock (#2696 P3c)
 //!
 //! A `MicroVM` child is also held to a Landlock ruleset compiled from the
@@ -139,9 +155,15 @@
 
 use std::path::Path;
 
+use portcullis::SeccompPolicy;
+
 use crate::command::ContainmentMode;
 use crate::error::{NucleusError, Result};
 
+// The parent half of a pinned exec (#2907). No `unsafe`: the descriptor is
+// placed through `rustix`, and the child's `execveat` is in `imp`'s block.
+#[cfg(target_os = "linux")]
+mod exec_pin;
 mod landlock;
 mod rlimit;
 #[cfg(target_os = "linux")]
@@ -650,20 +672,33 @@ impl ChildConfinement {
     /// [`SpawnHardening::Hardened`] only this method can mint, and only when
     /// it installed the hook.
     ///
+    /// The syscall classes the pod's lattice denies are `syscalls`, taken by
+    /// value: only `portcullis::SeccompPolicy::derive` mints one (#2907). They
+    /// are compiled into the same program as the denylist, so a posture with
+    /// the denylist gets their union and the bare tier gets neither. Under a
+    /// policy that denies exec the hook starts the child itself, through the
+    /// one descriptor the filter allows (`hardening/exec_pin.rs`), and the
+    /// command's environment becomes exactly what it declared.
+    ///
     /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
     pub fn apply(
         &self,
         cmd: &mut std::process::Command,
         rlimits: AppliedRlimits,
+        syscalls: SeccompPolicy,
     ) -> SpawnHardening {
         match self.posture {
             Posture::Unsandboxed => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
-            Posture::Restricted(filter) => {
-                Self::restrict(cmd, filter, FilesystemConfinement::NotApplied, rlimits)
-            }
+            Posture::Restricted(filter) => Self::restrict(
+                cmd,
+                filter,
+                FilesystemConfinement::NotApplied,
+                rlimits,
+                syscalls,
+            ),
             Posture::DropTo(uid, filter, filesystem) => {
                 imp::drop_to(cmd, uid);
-                Self::restrict(cmd, filter, filesystem, rlimits)
+                Self::restrict(cmd, filter, filesystem, rlimits, syscalls)
             }
         }
     }
@@ -675,9 +710,21 @@ impl ChildConfinement {
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
         rlimits: AppliedRlimits,
+        syscalls: SeccompPolicy,
     ) -> SpawnHardening {
-        match imp::install(cmd, filter, filesystem, rlimits) {
-            Hook::Installed => SpawnHardening::Hardened(Hardened { rlimits }),
+        // What the filter the hook installs enforces, read off the same
+        // `filter` the hook compiles from (ADR 0007 G-1).
+        let installed = match filter {
+            SyscallFilter::WorkloadDenylist => {
+                InstalledFilter::WorkloadDenylist { derived: syscalls }
+            }
+            SyscallFilter::Unfiltered => InstalledFilter::Unfiltered,
+        };
+        match imp::install(cmd, filter, filesystem, rlimits, syscalls) {
+            Hook::Installed => SpawnHardening::Hardened(Hardened {
+                rlimits,
+                syscalls: installed,
+            }),
             Hook::NoneOnThisPlatform => {
                 SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
             }
@@ -730,12 +777,13 @@ impl SpawnHardening {
     }
 }
 
-/// The evidence that the confinement hook was installed, and with which
-/// limits. Private field: only [`ChildConfinement::apply`] mints one (ADR
-/// 0007 C-1, C-2).
+/// The evidence that the confinement hook was installed, with which limits
+/// and which syscall filter. Private fields: only [`ChildConfinement::apply`]
+/// mints one (ADR 0007 C-1, C-2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct Hardened {
     rlimits: AppliedRlimits,
+    syscalls: InstalledFilter,
 }
 
 impl Hardened {
@@ -743,6 +791,40 @@ impl Hardened {
     #[must_use]
     pub fn rlimits(&self) -> AppliedRlimits {
         self.rlimits
+    }
+
+    /// The syscall filter the hook installs.
+    #[must_use]
+    pub fn syscalls(&self) -> InstalledFilter {
+        self.syscalls
+    }
+}
+
+/// The syscall filter a hardened child runs under, as its launch receipt
+/// states it (#2907): the ONE record of the pod's derived classes, written
+/// where the hook that installs them reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum InstalledFilter {
+    /// The workload denylist and, in the same program, the classes the pod's
+    /// lattice denies.
+    WorkloadDenylist {
+        /// The derived classes, serialized as their names.
+        derived: SeccompPolicy,
+    },
+    /// No filter: the declared bare tier's contract. The pod's derived
+    /// classes are NOT applied, and this says so.
+    Unfiltered,
+}
+
+impl InstalledFilter {
+    /// The canonical spelling a receipt's hashed preimage carries.
+    #[must_use]
+    pub fn canonical(&self) -> String {
+        match self {
+            Self::WorkloadDenylist { derived } => format!("denylist+{}", derived.canonical()),
+            Self::Unfiltered => "unfiltered".to_string(),
+        }
     }
 }
 
@@ -846,6 +928,9 @@ mod hook {
 mod imp {
     use std::io;
 
+    use portcullis::{SeccompPolicy, SyscallClass};
+
+    use super::exec_pin::PinnedExec;
     use super::landlock::Ruleset;
     use super::seccomp::Program;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
@@ -926,6 +1011,16 @@ mod imp {
         Refuse,
     }
 
+    /// Who execs the child once the hook is done (#2907). Two named cases
+    /// rather than an `Option` (ADR 0007 B-2).
+    enum Start {
+        /// std's own `execvp`, after the hook returns.
+        ByStd,
+        /// The policy denies exec: the hook execs through the pin, the one
+        /// exec the filter allows, and returns only its error.
+        Pinned(PinnedExec),
+    }
+
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
@@ -933,10 +1028,13 @@ mod imp {
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
         limits: &HookLimits,
+        start: &Start,
     ) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
-        // scalars or a pointer to a fully-initialized local `rlimit`; none
-        // allocates or takes a lock, satisfying the `pre_exec` contract.
+        // scalars, a pointer to a fully-initialized local `rlimit`, or (the
+        // pinned `execveat`) pointers into buffers the parent built and the
+        // closure owns; none allocates or takes a lock, satisfying the
+        // `pre_exec` contract.
         unsafe {
             // Mark every fd from 3 up close-on-exec rather than closing it
             // HERE: std still owns a CLOEXEC status pipe in this window, used
@@ -1023,17 +1121,40 @@ mod imp {
                     }
                 }
             }
+            // Under the filter now. A policy that denies exec allows exactly
+            // the pinned `execveat`, which does not return on success: its
+            // descriptor and the NUL-terminated argv/envp arrays (addresses
+            // of `CString`s the pin keeps alive; `usize` and a pointer share
+            // one layout) were built in the parent, and the kernel only reads
+            // them (#2907).
+            match start {
+                Start::ByStd => {}
+                Start::Pinned(pinned) => {
+                    let (fd, argv, envp) = pinned.execveat_args();
+                    libc::syscall(
+                        libc::SYS_execveat,
+                        libc::c_long::from(fd),
+                        c"".as_ptr(),
+                        argv,
+                        envp,
+                        libc::c_long::from(libc::AT_EMPTY_PATH),
+                    );
+                    return Err(io::Error::last_os_error());
+                }
+            }
         }
         Ok(())
     }
 
-    /// Install the self-restriction hook, with `filter` and the filesystem
-    /// ruleset compiled and `rlimits` converted here, in the parent.
+    /// Install the self-restriction hook, with `filter` (the denylist plus
+    /// `syscalls`' classes) and the filesystem ruleset compiled, `rlimits`
+    /// converted and any exec pin opened here, in the parent.
     pub(super) fn install(
         cmd: &mut std::process::Command,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
         rlimits: AppliedRlimits,
+        syscalls: SeccompPolicy,
     ) -> Hook {
         let limits = hook_limits(rlimits);
         let mut landlock = match filesystem {
@@ -1053,28 +1174,54 @@ mod imp {
                 }
             },
         };
-        let mut seccomp = match filter {
-            SyscallFilter::Unfiltered => Seccomp::NotRequested,
-            SyscallFilter::WorkloadDenylist => match Program::workload_denylist() {
-                Ok(program) => Seccomp::Install(program),
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        "the workload syscall filter could not be built; refusing the confined spawn"
-                    );
-                    Seccomp::Refuse
+        let (mut seccomp, start) = match filter {
+            SyscallFilter::Unfiltered => (Seccomp::NotRequested, Start::ByStd),
+            SyscallFilter::WorkloadDenylist => {
+                match compile(cmd, syscalls, rlimits.limits().nofile) {
+                    Ok((program, start)) => (Seccomp::Install(program), start),
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            derived = %syscalls.canonical(),
+                            "the workload syscall filter could not be built; refusing the confined spawn"
+                        );
+                        (Seccomp::Refuse, Start::ByStd)
+                    }
                 }
-            },
+            }
         };
         super::hook::pre_exec(cmd, move || {
-            harden_child(&mut seccomp, &mut landlock, &limits)
+            harden_child(&mut seccomp, &mut landlock, &limits, &start)
         });
         Hook::Installed
+    }
+
+    /// The denylist plus `syscalls`' classes, and who starts the child: a
+    /// policy that denies exec gets a pin at or above `nofile` (the limit the
+    /// hook sets), and the program pins `execveat` to it.
+    fn compile(
+        cmd: &mut std::process::Command,
+        syscalls: SeccompPolicy,
+        nofile: u64,
+    ) -> Result<(Program, Start), String> {
+        let start = if syscalls.denies(SyscallClass::Exec) {
+            Start::Pinned(PinnedExec::prepare(cmd, nofile).map_err(|e| e.to_string())?)
+        } else {
+            Start::ByStd
+        };
+        let pin = match &start {
+            Start::Pinned(p) => Some(p.pin()),
+            Start::ByStd => None,
+        };
+        let program = Program::workload(syscalls, pin).map_err(|e| e.to_string())?;
+        Ok((program, start))
     }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
 mod imp {
+    use portcullis::SeccompPolicy;
+
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
     use super::{AppliedRlimits, FilesystemConfinement, Hook, SyscallFilter};
 
@@ -1087,12 +1234,15 @@ mod imp {
     /// `Landlock` posture cannot be decided here, and if one were, it refuses.
     ///
     /// No limit is set here either, so nothing this returns claims a hook
-    /// (`rlimits` is unused off Linux).
+    /// (`rlimits` is unused off Linux). A pod's derived classes ride on the
+    /// denylist's filter, which refuses here, so they are never silently
+    /// dropped either.
     pub(super) fn install(
         cmd: &mut std::process::Command,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
         _rlimits: AppliedRlimits,
+        _syscalls: SeccompPolicy,
     ) -> Hook {
         let landlock_required = match filesystem {
             FilesystemConfinement::Landlock { .. } => true,
@@ -1121,6 +1271,15 @@ mod tests {
     const LL: LandlockSupport = LandlockSupport::Abi(MIN_LANDLOCK_ABI);
     const NO: LandlockWaiver = LandlockWaiver::Absent;
 
+    /// The derived policy that adds nothing to the denylist.
+    #[cfg(all(unix, not(target_os = "linux")))]
+    fn nothing_derived() -> SeccompPolicy {
+        SeccompPolicy::derive(
+            &portcullis::PermissionLattice::permissive(),
+            portcullis::NetworkEgress::Declared,
+        )
+    }
+
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn a_required_syscall_filter_refuses_the_spawn_off_linux() {
@@ -1133,7 +1292,11 @@ mod tests {
         )
         .expect("the posture requires a filter");
         let mut cmd = std::process::Command::new("/bin/true");
-        let _ = confinement.apply(&mut cmd, RlimitPolicy::node_ceiling().at_ceiling());
+        let _ = confinement.apply(
+            &mut cmd,
+            RlimitPolicy::node_ceiling().at_ceiling(),
+            nothing_derived(),
+        );
         let err = cmd
             .status()
             .expect_err("an unavailable filter must prevent exec");
@@ -1695,6 +1858,12 @@ mod tests {
     fn only_an_installed_hook_claims_hardening() {
         let rlimits =
             RlimitPolicy::for_pod(std::time::Duration::from_secs(60), Some(2)).at_ceiling();
+        // Derives the socket class only, so no exec pin is needed for
+        // `/bin/true` on a host without one.
+        let derived = SeccompPolicy::derive(
+            &portcullis::PermissionLattice::codegen(),
+            portcullis::NetworkEgress::None,
+        );
         let bare = ChildConfinement::decide(
             ContainmentMode::Unsandboxed,
             1000,
@@ -1704,7 +1873,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            bare.apply(&mut std::process::Command::new("/bin/true"), rlimits),
+            bare.apply(
+                &mut std::process::Command::new("/bin/true"),
+                rlimits,
+                derived
+            ),
             SpawnHardening::Unhardened(Unhardened::DeclaredBareTier)
         );
         let restricted = ChildConfinement::decide(
@@ -1715,10 +1888,19 @@ mod tests {
             NO,
         )
         .unwrap();
-        let got = restricted.apply(&mut std::process::Command::new("/bin/true"), rlimits);
+        let got = restricted.apply(
+            &mut std::process::Command::new("/bin/true"),
+            rlimits,
+            derived,
+        );
         #[cfg(target_os = "linux")]
         match got {
-            SpawnHardening::Hardened(h) => assert_eq!(h.rlimits(), rlimits),
+            SpawnHardening::Hardened(h) => {
+                assert_eq!(h.rlimits(), rlimits);
+                // #2907: the receipt's one record of the derived classes is
+                // what the hook installs, read off the posture's filter.
+                assert_eq!(h.syscalls(), InstalledFilter::WorkloadDenylist { derived });
+            }
             SpawnHardening::Unhardened(why) => {
                 panic!("a restricted child was not hardened: {why:?}")
             }
@@ -1728,5 +1910,29 @@ mod tests {
             got,
             SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
         );
+        // A root runtime's bare-tier child drops its uid and is hardened, but
+        // its posture has no filter, so the receipt must not claim the
+        // derived classes were installed.
+        #[cfg(target_os = "linux")]
+        {
+            let root_bare = ChildConfinement::decide(
+                ContainmentMode::Unsandboxed,
+                0,
+                UnsandboxedOptIn::Absent,
+                LL,
+                NO,
+            )
+            .unwrap();
+            match root_bare.apply(
+                &mut std::process::Command::new("/bin/true"),
+                rlimits,
+                derived,
+            ) {
+                SpawnHardening::Hardened(h) => {
+                    assert_eq!(h.syscalls(), InstalledFilter::Unfiltered);
+                }
+                SpawnHardening::Unhardened(why) => panic!("{why:?}"),
+            }
+        }
     }
 }

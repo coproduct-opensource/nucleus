@@ -19,9 +19,31 @@
 //!
 //! # Shape
 //!
-//! [`TABLE`] is the ONE statement of what is denied (ADR 0007 F-1, G-1): the
-//! program is derived from it by [`Program::workload_denylist`], and the tests
-//! walk the same table. Each entry carries its reason beside it.
+//! [`TABLE`] is the ONE statement of what every confined child is denied (ADR
+//! 0007 F-1, G-1), and [`derived_rules`] the ONE statement of what each class
+//! of a pod's derived [`SeccompPolicy`] adds (#2907). [`Program::workload`]
+//! compiles their union, and the tests walk the same two tables. Each entry
+//! carries its reason beside it.
+//!
+//! # The derived classes (#2907)
+//!
+//! `portcullis::SeccompPolicy` names the classes a pod's lattice takes away.
+//! They are installed in the SAME program as the denylist, after its entries,
+//! so a derived rule can only add a denial: every block either denies or falls
+//! through to the next, and only the final instruction allows.
+//!
+//! * `Exec`: `execve` is denied, and `execveat` is denied unless its `dirfd`
+//!   is the one descriptor the runtime starts the child through ([`ExecPin`]).
+//!   The filter is installed before the child's own exec, so without the pin
+//!   the child could never start. The pin is a descriptor number at or above
+//!   the child's `RLIMIT_NOFILE`, which the hook sets (hard and soft) before
+//!   the filter: once the pinned descriptor closes at exec (it is
+//!   close-on-exec), no process under the filter can ever hold that number
+//!   again. `dup2`, `fcntl(F_DUPFD)`, `open`, `pidfd_getfd` and `SCM_RIGHTS`
+//!   all allocate below the limit, raising the hard limit needs
+//!   `CAP_SYS_RESOURCE`, and a user namespace (where that capability would be
+//!   granted) is refused by [`TABLE`]. So the pinned exec happens exactly once.
+//! * `InetSocket`: `socket` and `socketpair` with `AF_INET` or `AF_INET6`.
 //!
 //! The program is built in the PARENT, before fork (it allocates). The child's
 //! `pre_exec` hook only hands the finished instructions to `prctl`, which is
@@ -41,18 +63,23 @@
 //! 2. Load `seccomp_data.nr`. On x86_64, a number with the x32 bit set is
 //!    denied: x32 shares `AUDIT_ARCH_X86_64`, so its calls would otherwise
 //!    reach the table under numbers that match no entry.
-//! 3. One block per [`TABLE`] entry.
+//! 3. One block per [`TABLE`] entry, then one per [`derived_rules`] entry. A
+//!    block that inspects an argument reloads the number and falls through
+//!    when the argument does not match, so two blocks for one syscall
+//!    (`socket` for `AF_VSOCK` and for `AF_INET`) compose as a union.
 //! 4. Allow.
 //!
 //! Classic BPF reads `args[0]` 32 bits at a time; the rules below read only its
-//! low word, which is correct for both argument rules: the kernel truncates
-//! `socket`'s `domain` to `int`, and the legacy `clone` uses only the low 32
-//! bits of its flags (`lower_32_bits(clone_flags)` in `kernel/fork.c`).
+//! low word, which is correct for every argument rule: the kernel truncates
+//! `socket`'s `domain` and `execveat`'s `dirfd` to `int`, and the legacy
+//! `clone` uses only the low 32 bits of its flags (`lower_32_bits(clone_flags)`
+//! in `kernel/fork.c`).
 
 use std::fmt;
 use std::mem::offset_of;
 
 use libc::{c_int, c_long};
+use portcullis::{SeccompPolicy, SyscallClass};
 
 /// The errno a denied call fails with. `EPERM` is what the kernel itself
 /// answers for an operation the caller is not permitted (and what an
@@ -77,11 +104,14 @@ pub(crate) enum Rule {
     /// Always fails with [`DENIED_ERRNO`].
     Deny,
     /// Fails with [`DENIED_ERRNO`] when the low word of `args[0]` equals the
-    /// value; allowed otherwise.
+    /// value; otherwise the next block decides.
     DenyWhenArg0Is(c_int),
     /// Fails with [`DENIED_ERRNO`] when the low word of `args[0]` has any of
-    /// these bits; allowed otherwise.
+    /// these bits; otherwise the next block decides.
     DenyWhenArg0Has(c_int),
+    /// Fails with [`DENIED_ERRNO`] unless the low word of `args[0]` equals the
+    /// value; when it does, the next block decides. The exec pin.
+    DenyUnlessArg0Is(c_int),
     /// Fails with `ENOSYS`: "this kernel has no such call". Used where the
     /// argument that matters is behind a pointer the filter cannot read, so
     /// libc falls back to a call the filter CAN inspect.
@@ -185,6 +215,50 @@ pub(crate) const TABLE: &[(&str, c_long, Rule)] = &[
     ("delete_module", libc::SYS_delete_module, Rule::Deny),
 ];
 
+/// The descriptor a child under a derived `Exec` denial is started through
+/// (see the module docs). Decided in the parent: a number at or above the
+/// child's `RLIMIT_NOFILE`. Only [`super::exec_pin`] builds one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExecPin(pub(crate) c_int);
+
+/// What a derived policy's classes add to [`TABLE`]: ONE statement per class
+/// (ADR 0007 F-1). Exhaustive over [`SyscallClass`] with no `_` arm (B-3).
+///
+/// # Errors
+/// [`FilterError::ExecWithoutPin`] when `policy` denies `Exec` and no pin was
+/// given: the child could not be started, so the spawn is refused.
+pub(crate) fn derived_rules(
+    policy: SeccompPolicy,
+    pin: Option<ExecPin>,
+) -> Result<Vec<(&'static str, c_long, Rule)>, FilterError> {
+    let mut rules = Vec::new();
+    for class in policy.denied() {
+        match class {
+            // `run_bash: never`. `execve` whole; `execveat` except on the pin,
+            // the runtime's own one exec of the child.
+            SyscallClass::Exec => {
+                let ExecPin(fd) = pin.ok_or(FilterError::ExecWithoutPin)?;
+                rules.push(("execve", libc::SYS_execve, Rule::Deny));
+                rules.push(("execveat", libc::SYS_execveat, Rule::DenyUnlessArg0Is(fd)));
+            }
+            // `web_fetch: never` and no declared egress: no internet socket.
+            // `socketpair` cannot make one today; listed so the family is
+            // closed at both entry points, as `AF_VSOCK` is.
+            SyscallClass::InetSocket => {
+                for family in [libc::AF_INET, libc::AF_INET6] {
+                    rules.push(("socket", libc::SYS_socket, Rule::DenyWhenArg0Is(family)));
+                    rules.push((
+                        "socketpair",
+                        libc::SYS_socketpair,
+                        Rule::DenyWhenArg0Is(family),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(rules)
+}
+
 /// `kexec_file_load`. The `libc` crate's aarch64 musl module (the guest's
 /// target) omits it; aarch64 takes it from `asm-generic/unistd.h`, where it is
 /// 294 (`__NR_kexec_file_load`). Everywhere else, libc's own constant.
@@ -210,6 +284,8 @@ pub(crate) enum FilterError {
     UnsupportedArch,
     /// A constant did not fit the field BPF gives it.
     Overflow(&'static str),
+    /// The policy denies `Exec` and no [`ExecPin`] was given.
+    ExecWithoutPin,
 }
 
 impl fmt::Display for FilterError {
@@ -232,6 +308,11 @@ impl fmt::Display for FilterError {
                     "workload syscall filter: {what} does not fit its BPF field"
                 )
             }
+            FilterError::ExecWithoutPin => write!(
+                f,
+                "the pod's policy denies exec (run_bash: never) and the child has no pinned \
+                 descriptor to be started through"
+            ),
         }
     }
 }
@@ -328,12 +409,18 @@ impl fmt::Debug for Program {
 }
 
 impl Program {
-    /// Compile [`TABLE`] for this architecture.
+    /// Compile [`TABLE`] and `policy`'s [`derived_rules`] for this
+    /// architecture.
     ///
     /// # Errors
-    /// [`FilterError`] when the architecture is unknown or a constant does not
-    /// fit; the caller refuses the spawn.
-    pub(crate) fn workload_denylist() -> Result<Self, FilterError> {
+    /// [`FilterError`] when the architecture is unknown, a constant does not
+    /// fit, or `policy` denies exec without a `pin`; the caller refuses the
+    /// spawn.
+    pub(crate) fn workload(
+        policy: SeccompPolicy,
+        pin: Option<ExecPin>,
+    ) -> Result<Self, FilterError> {
+        let derived = derived_rules(policy, pin)?;
         let arch = audit_arch()?;
         let op = Ops::new()?;
         let off_nr: u32 = fit(offset_of!(libc::seccomp_data, nr), "offsetof(nr)")?;
@@ -358,8 +445,22 @@ impl Program {
             p.push(insn(op.jge, 0, 1, X32_SYSCALL_BIT));
             p.push(insn(op.ret, 0, 0, deny));
         }
-        for &(name, nr, rule) in TABLE {
+        for &(name, nr, rule) in TABLE.iter().chain(derived.iter()) {
             let nr: u32 = fit(nr, name)?;
+            // An argument block: nr matches, so load arg0 and test it; the
+            // test either reaches the `ret deny` or jumps over it to the
+            // reload of nr, so the next block sees the number again. nr does
+            // not match: skip the four instructions after the first.
+            let arg_block = |test: u16, deny_on_match: bool, k: u32| {
+                let (jt, jf) = if deny_on_match { (0, 1) } else { (1, 0) };
+                [
+                    insn(op.jeq, 0, 4, nr),
+                    insn(op.ld_w_abs, 0, 0, off_arg0),
+                    insn(test, jt, jf, k),
+                    insn(op.ret, 0, 0, deny),
+                    insn(op.ld_w_abs, 0, 0, off_nr),
+                ]
+            };
             match rule {
                 Rule::Deny => {
                     p.push(insn(op.jeq, 0, 1, nr));
@@ -370,20 +471,13 @@ impl Program {
                     p.push(insn(op.ret, 0, 0, unimplemented));
                 }
                 Rule::DenyWhenArg0Is(value) => {
-                    // nr matches: inspect arg0 and decide here; it does not:
-                    // skip the four instructions of this block.
-                    p.push(insn(op.jeq, 0, 4, nr));
-                    p.push(insn(op.ld_w_abs, 0, 0, off_arg0));
-                    p.push(insn(op.jeq, 0, 1, fit(value, name)?));
-                    p.push(insn(op.ret, 0, 0, deny));
-                    p.push(insn(op.ret, 0, 0, allow));
+                    p.extend(arg_block(op.jeq, true, fit(value, name)?));
                 }
                 Rule::DenyWhenArg0Has(bits) => {
-                    p.push(insn(op.jeq, 0, 4, nr));
-                    p.push(insn(op.ld_w_abs, 0, 0, off_arg0));
-                    p.push(insn(op.jset, 0, 1, fit(bits, name)?));
-                    p.push(insn(op.ret, 0, 0, deny));
-                    p.push(insn(op.ret, 0, 0, allow));
+                    p.extend(arg_block(op.jset, true, fit(bits, name)?));
+                }
+                Rule::DenyUnlessArg0Is(value) => {
+                    p.extend(arg_block(op.jeq, false, fit(value, name)?));
                 }
             }
         }
@@ -414,6 +508,7 @@ impl Program {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use portcullis::CapabilityLevel;
 
     /// A classic-BPF interpreter for exactly the opcodes [`Program`] emits,
     /// run over a synthetic `seccomp_data`. It is how every table entry is
@@ -490,8 +585,202 @@ mod tests {
         libc::SECCOMP_RET_ERRNO | u32::try_from(DENIED_ERRNO).unwrap()
     }
 
+    /// A derived policy from the two capability levels the rule reads, with
+    /// no declared egress.
+    fn policy(run_bash: CapabilityLevel, web_fetch: CapabilityLevel) -> SeccompPolicy {
+        let caps = portcullis::CapabilityLattice {
+            run_bash,
+            web_fetch,
+            ..portcullis::CapabilityLattice::default()
+        };
+        SeccompPolicy::from_capabilities(&caps, portcullis::NetworkEgress::None)
+    }
+
+    /// The policy that derives nothing: the denylist alone.
+    fn nothing() -> SeccompPolicy {
+        policy(CapabilityLevel::Always, CapabilityLevel::Always)
+    }
+
+    /// Every derived policy the two classes can make.
+    fn every_policy() -> [SeccompPolicy; 4] {
+        use CapabilityLevel::{Always, Never};
+        [
+            policy(Always, Always),
+            policy(Never, Always),
+            policy(Always, Never),
+            policy(Never, Never),
+        ]
+    }
+
+    const PIN: ExecPin = ExecPin(4096);
+
     fn program() -> Program {
-        Program::workload_denylist().expect("the denylist compiles for this target")
+        Program::workload(nothing(), None).expect("the denylist compiles for this target")
+    }
+
+    fn derived(p: SeccompPolicy) -> Program {
+        Program::workload(p, Some(PIN)).expect("the derived program compiles")
+    }
+
+    /// #2907: `run_bash: never` denies `execve` whole and `execveat` on any
+    /// descriptor but the pin, and the pinned one is allowed: the runtime's
+    /// own start of the child.
+    #[test]
+    fn a_derived_exec_denial_leaves_only_the_pinned_execveat() {
+        let p = derived(policy(CapabilityLevel::Never, CapabilityLevel::Always));
+        assert_eq!(verdict(&p, native(), libc::SYS_execve, 0), deny());
+        let pin = u64::try_from(PIN.0).unwrap();
+        assert_eq!(
+            verdict(&p, native(), libc::SYS_execveat, pin),
+            libc::SECCOMP_RET_ALLOW
+        );
+        for other in [
+            0,
+            3,
+            pin - 1,
+            pin + 1,
+            u64::from(libc::AT_FDCWD.cast_unsigned()),
+        ] {
+            assert_eq!(
+                verdict(&p, native(), libc::SYS_execveat, other),
+                deny(),
+                "execveat({other})"
+            );
+        }
+        // Not the socket class: an internet socket is still allowed.
+        let inet = u64::try_from(libc::AF_INET).unwrap();
+        assert_eq!(
+            verdict(&p, native(), libc::SYS_socket, inet),
+            libc::SECCOMP_RET_ALLOW
+        );
+    }
+
+    /// #2907: `web_fetch: never` with no egress denies both internet families
+    /// at both entry points, and the union keeps `AF_VSOCK` denied and
+    /// `AF_UNIX` (the workload door) allowed.
+    #[test]
+    fn a_derived_socket_denial_adds_the_internet_families_to_vsock() {
+        let p = derived(policy(CapabilityLevel::Always, CapabilityLevel::Never));
+        for nr in [libc::SYS_socket, libc::SYS_socketpair] {
+            for family in [libc::AF_INET, libc::AF_INET6, libc::AF_VSOCK] {
+                let family = u64::try_from(family).unwrap();
+                assert_eq!(verdict(&p, native(), nr, family), deny(), "{nr}/{family}");
+            }
+            for family in [libc::AF_UNIX, libc::AF_NETLINK] {
+                let family = u64::try_from(family).unwrap();
+                assert_eq!(
+                    verdict(&p, native(), nr, family),
+                    libc::SECCOMP_RET_ALLOW,
+                    "{nr}/{family}"
+                );
+            }
+        }
+        assert_eq!(
+            verdict(&p, native(), libc::SYS_execve, 0),
+            libc::SECCOMP_RET_ALLOW
+        );
+    }
+
+    /// The union, never fewer: under every derived policy, every denylist
+    /// entry still answers exactly as it does alone. A derived block that
+    /// allowed on a mismatch (the shape the denylist's own blocks had before
+    /// #2907) would let `socket` reach its second block never, and red here.
+    #[test]
+    fn every_derived_policy_keeps_every_denylist_entry() {
+        let base = program();
+        for pol in every_policy() {
+            let p = derived(pol);
+            for &(name, nr, rule) in TABLE {
+                let args: &[u64] = match rule {
+                    Rule::DenyWhenArg0Is(v) | Rule::DenyUnlessArg0Is(v) => {
+                        &[0, u64::try_from(v).unwrap()]
+                    }
+                    Rule::DenyWhenArg0Has(bits) => &[0, u64::try_from(bits).unwrap()],
+                    Rule::Deny | Rule::Unimplemented => &[0],
+                };
+                for &a in args {
+                    let want = verdict(&base, native(), nr, a);
+                    let got = verdict(&p, native(), nr, a);
+                    // Only a derived class may change an answer, and only to a denial.
+                    assert!(
+                        got == want || got == deny(),
+                        "{name}({a:#x}) under {}: {got:#x} vs {want:#x}",
+                        pol.canonical()
+                    );
+                    if want != libc::SECCOMP_RET_ALLOW {
+                        assert_eq!(got, want, "{name}({a:#x}) under {}", pol.canonical());
+                    }
+                }
+            }
+        }
+    }
+
+    /// The derived program is monotone in the policy: a policy that denies a
+    /// superset of classes answers "allow" to a subset of calls, over every
+    /// call this file's tests name.
+    #[test]
+    fn a_tighter_policy_allows_no_call_a_looser_one_denies() {
+        let pin = u64::try_from(PIN.0).unwrap();
+        let calls: Vec<(c_long, u64)> = [
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_socket,
+            libc::SYS_socketpair,
+            libc::SYS_read,
+            libc::SYS_clone,
+        ]
+        .into_iter()
+        .flat_map(|nr| {
+            [0, pin, 3]
+                .into_iter()
+                .chain(
+                    [libc::AF_INET, libc::AF_INET6, libc::AF_UNIX, libc::AF_VSOCK]
+                        .map(|f| u64::try_from(f).unwrap()),
+                )
+                .map(move |a| (nr, a))
+        })
+        .collect();
+        for tight in every_policy() {
+            for loose in every_policy() {
+                if !tight.at_least_as_tight_as(&loose) {
+                    continue;
+                }
+                let (pt, pl) = (derived(tight), derived(loose));
+                for &(nr, a) in &calls {
+                    if verdict(&pl, native(), nr, a) != libc::SECCOMP_RET_ALLOW {
+                        assert_ne!(
+                            verdict(&pt, native(), nr, a),
+                            libc::SECCOMP_RET_ALLOW,
+                            "{nr}({a}): {} allows what {} denies",
+                            tight.canonical(),
+                            loose.canonical()
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Exec denied with nothing to start the child through is a refusal,
+    /// never a program without the class.
+    #[test]
+    fn an_exec_denial_without_a_pin_is_refused() {
+        assert_eq!(
+            Program::workload(
+                policy(CapabilityLevel::Never, CapabilityLevel::Always),
+                None
+            )
+            .map(drop),
+            Err(FilterError::ExecWithoutPin)
+        );
+        // Without the class, a pin is not needed.
+        assert!(
+            Program::workload(
+                policy(CapabilityLevel::Always, CapabilityLevel::Never),
+                None
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -513,7 +802,7 @@ mod tests {
                     libc::SECCOMP_RET_ERRNO | u32::try_from(libc::ENOSYS).unwrap(),
                     "{name}"
                 ),
-                Rule::DenyWhenArg0Is(_) | Rule::DenyWhenArg0Has(_) => {}
+                Rule::DenyWhenArg0Is(_) | Rule::DenyWhenArg0Has(_) | Rule::DenyUnlessArg0Is(_) => {}
             }
         }
     }

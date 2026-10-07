@@ -580,7 +580,8 @@ pub(crate) fn build_runtime(
         .with_containment(containment)
         .with_unsandboxed_opt_in(opt_in)
         .with_landlock_waiver(landlock)
-        .with_rlimit_policy(crate::workload::rlimit_policy(&spec.spec));
+        .with_rlimit_policy(crate::workload::rlimit_policy(&spec.spec))
+        .with_seccomp_policy(crate::workload::seccomp_policy(&spec.spec)?);
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }

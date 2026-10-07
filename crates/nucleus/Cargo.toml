@@ -86,6 +86,10 @@ libc = "0.2"
 # 0.4.7 is the latest release; its rust-version is 1.71.
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4.7"
+# The exec pin (#2907) raises the runtime's own RLIMIT_NOFILE and places a
+# descriptor at a floor (`F_DUPFD_CLOEXEC`) without `unsafe`. Already in the
+# lockfile (1.1.4, through tempfile).
+rustix = { version = "1.1.4", features = ["process"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

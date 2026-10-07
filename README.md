@@ -251,7 +251,7 @@ Every tool call flows through the permission kernel. `nucleus run` tracks data p
 | Tool | Real count | Scope | CI gate |
 |------|-----------|-------|---------|
 | **Lean 4 + Mathlib** (kernel-checked) | ~277 theorems in the security core (more, incl. research formalizations) | Capability Heyting algebra, IFC semilattice, taint monotonicity, exposure monoid, delegation, **integrity noninterference over Aeneas-extracted Rust** | `portcullis-core-proven-lean.yml` `lake build`s the whole proven tier and fails on any `sorry`/`admit` outside the research manifest (`crates/portcullis-core/lean/CONJECTURES.md`); `aeneas-ifc-scoped.yml` asserts a clean axiom set for the extracted integrity-noninterference theorem (`IntegrityNoninterferenceExtracted.lean`) |
-| **Kani** (bounded model checking) | 120 harnesses repo-wide (portcullis 70, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) — census by `scripts/formal-numbers.sh` | DecisionToken linearity, lattice adjunction, flow-graph isolation, constitutional-kernel admission contract | `kani-nightly.yml` runs `cargo kani -p portcullis` (70) + `-p ck-kernel` (17). **Of ck-kernel's 17, only 5 have ever completed** — every harness that constructs a `BTreeSet<String>` fails to terminate, including the refinement bridge that would carry the other 12 (`KANI-STATUS.md`) |
+| **Kani** (bounded model checking) | 121 harnesses repo-wide (portcullis 71, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1) — census by `scripts/formal-numbers.sh` | DecisionToken linearity, lattice adjunction, flow-graph isolation, constitutional-kernel admission contract | `kani-nightly.yml` runs `cargo kani -p portcullis` (71) + `-p ck-kernel` (17). **Of ck-kernel's 17, only 5 have ever completed** — every harness that constructs a `BTreeSet<String>` fails to terminate, including the refinement bridge that would carry the other 12 (`KANI-STATUS.md`) |
 | **Tests** | ~4,400 (`#[test]` / `#[tokio::test]`) + ~47 `proptest` suites | Workspace-wide | `ci.yml` |
 | **Code** | ~165K LOC Rust | — | — |
 
@@ -283,7 +283,7 @@ Nucleus is built on a vendor-agnostic algebraic core (`portcullis-core`, depende
 - **Policy enforced by the type system** — I/O goes through sealed effect traits (`FileEffect`, `ShellEffect`, `GitEffect`); the only constructor for a real handler is `production_effects(policy)`, so unpoliced file/shell/git I/O is unconstructible. (Web fetch/search and agent-spawn effects on the real handler return `NotImplemented` and delegate to other crates.)
 - **Governed memory** — a key-value store with per-entry IFC labels, authority classes, provenance flags, TTL, and `poisoned_entries()` detection for memory-poisoning attack classes.
 
-This cluster carries **over a thousand passing library unit tests** (`portcullis-core` ~1081, `portcullis-effects` 69, `nucleus-spec` 32, `nucleus-memory` 17, `nucleus-ifc` 14, `portcullis-profiles` 4 — roughly **~1217** in total) plus 96 Kani harnesses (portcullis 70 + portcullis-core 26).
+This cluster carries **over a thousand passing library unit tests** (`portcullis-core` ~1081, `portcullis-effects` 69, `nucleus-spec` 32, `nucleus-memory` 17, `nucleus-ifc` 14, `portcullis-profiles` 4 — roughly **~1217** in total) plus 97 Kani harnesses (portcullis 71 + portcullis-core 26).
 
 ---
 

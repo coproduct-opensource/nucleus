@@ -479,8 +479,12 @@ enum FilterOp {
     CloneNewuser,
     /// `ptrace(PTRACE_TRACEME)`.
     Ptrace,
-    /// `socket(AF_INET, SOCK_STREAM)`: must still work.
-    InetSocket,
+    /// `socket(AF_UNIX, SOCK_STREAM)`: must still work, so the vsock refusal
+    /// is not "every socket is refused". Not `AF_INET`: since #2907 a pod
+    /// whose lattice says `web_fetch: never` with no egress (the `codegen`
+    /// pod `verify --tier2` boots) is denied it by its derived policy, which
+    /// this probe cannot see.
+    UnixSocket,
     /// A raw fork (`clone(SIGCHLD)`): must still work.
     Fork,
 }
@@ -491,7 +495,7 @@ impl FilterOp {
         FilterOp::UnshareUserns,
         FilterOp::CloneNewuser,
         FilterOp::Ptrace,
-        FilterOp::InetSocket,
+        FilterOp::UnixSocket,
         FilterOp::Fork,
     ];
 
@@ -501,7 +505,7 @@ impl FilterOp {
             FilterOp::UnshareUserns => "unshare-userns",
             FilterOp::CloneNewuser => "clone-newuser",
             FilterOp::Ptrace => "ptrace",
-            FilterOp::InetSocket => "inet-socket",
+            FilterOp::UnixSocket => "unix-socket",
             FilterOp::Fork => "fork",
         }
     }
@@ -517,7 +521,7 @@ impl FilterOp {
             | FilterOp::UnshareUserns
             | FilterOp::CloneNewuser
             | FilterOp::Ptrace => Outcome::Errno(FILTER_ERRNO),
-            FilterOp::InetSocket | FilterOp::Fork => Outcome::Ok,
+            FilterOp::UnixSocket | FilterOp::Fork => Outcome::Ok,
         }
     }
 
@@ -544,11 +548,11 @@ impl FilterOp {
             outcome(r)
         };
         match self {
-            FilterOp::Vsock | FilterOp::InetSocket => {
+            FilterOp::Vsock | FilterOp::UnixSocket => {
                 let family = if self == FilterOp::Vsock {
                     libc::AF_VSOCK
                 } else {
-                    libc::AF_INET
+                    libc::AF_UNIX
                 };
                 let r = sys(
                     libc::SYS_socket,

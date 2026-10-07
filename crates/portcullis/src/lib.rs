@@ -268,6 +268,7 @@ pub mod pipeline;
 pub mod progress;
 pub mod quantale;
 pub mod region;
+pub mod seccomp_policy;
 mod time;
 pub mod trust;
 pub mod verdict_sink;
@@ -343,6 +344,7 @@ pub use progress::{ProgressDimension, ProgressLattice, ProgressLevel};
 pub use region::CodeRegion;
 #[cfg(all(feature = "spec", not(kani)))]
 pub use sealed_grant::{SealedGrantError, SealedTaskGrant, VerifiedGrant, GRANT_BINDING_MARKER};
+pub use seccomp_policy::{NetworkEgress, SeccompPolicy, SyscallClass};
 #[cfg(feature = "spec")]
 pub use task_grant::{
     render as render_grant, render_capabilities, ClippedEffect, CompilerProvenance, Disclosure,

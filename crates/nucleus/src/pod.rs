@@ -44,6 +44,11 @@ pub struct PodSpec {
     /// tool-proxy derives the pod's own from its spec
     /// ([`crate::RlimitPolicy::for_pod`]), which can only lower it.
     pub rlimit_policy: crate::RlimitPolicy,
+    /// The syscall classes this pod's children are denied beyond the
+    /// workload denylist (#2907). Derived from [`Self::policy`] with
+    /// [`portcullis::NetworkEgress::Declared`] by default; the tool-proxy
+    /// derives the pod's own from its spec, which names its egress.
+    pub seccomp_policy: portcullis::SeccompPolicy,
     /// Third-party artifacts this pod pulls (images/packages/models/MCP servers).
     /// Each must carry a verified provenance attestation under [`Self::provenance`]
     /// or the pod refuses to spawn (most-paranoid next-bet #3).
@@ -65,8 +70,11 @@ impl PodSpec {
     /// pod that declares no artifacts is admitted; declaring one without a policy
     /// is fail-closed.
     pub fn new(policy: PermissionLattice, work_dir: PathBuf, timeout: Duration) -> Self {
+        let policy = policy.normalize();
+        let seccomp_policy =
+            portcullis::SeccompPolicy::derive(&policy, portcullis::NetworkEgress::Declared);
         Self {
-            policy: policy.normalize(),
+            policy,
             work_dir,
             timeout,
             budget_model: BudgetModel::default(),
@@ -74,6 +82,7 @@ impl PodSpec {
             unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
             landlock_waiver: crate::LandlockWaiver::Absent,
             rlimit_policy: crate::RlimitPolicy::node_ceiling(),
+            seccomp_policy,
             artifacts: Vec::new(),
             attestations: Vec::new(),
             provenance: nucleus_provenance::ProvenancePolicy::Unconfigured,
@@ -91,6 +100,13 @@ impl PodSpec {
     #[must_use]
     pub fn with_rlimit_policy(mut self, policy: crate::RlimitPolicy) -> Self {
         self.rlimit_policy = policy;
+        self
+    }
+
+    /// Deny this pod's children the syscall classes `policy` names (#2907).
+    #[must_use]
+    pub fn with_seccomp_policy(mut self, policy: portcullis::SeccompPolicy) -> Self {
+        self.seccomp_policy = policy;
         self
     }
 
@@ -228,6 +244,11 @@ impl PodRuntime {
         self.spec.rlimit_policy
     }
 
+    /// The syscall classes this pod's children are denied (#2907).
+    pub fn seccomp_policy(&self) -> portcullis::SeccompPolicy {
+        self.spec.seccomp_policy
+    }
+
     /// The cost model this pod charges executions under.
     pub fn budget_model(&self) -> BudgetModel {
         self.spec.budget_model
@@ -246,7 +267,8 @@ impl PodRuntime {
             .with_containment(self.spec.containment)
             .with_unsandboxed_opt_in(self.spec.unsandboxed_opt_in)
             .with_landlock_waiver(self.spec.landlock_waiver)
-            .with_rlimit_policy(self.spec.rlimit_policy);
+            .with_rlimit_policy(self.spec.rlimit_policy)
+            .with_seccomp_policy(self.spec.seccomp_policy);
 
         if let Some(ref approver) = self.approver {
             executor = executor.with_approver(approver.clone());

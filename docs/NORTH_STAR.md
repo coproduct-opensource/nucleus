@@ -180,7 +180,7 @@ for months; the numbers below are recomputed from the tree
 
 | Metric | Count | Where |
 |---|---|---|
-| Kani BMC harnesses | 120 | portcullis 70, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
+| Kani BMC harnesses | 121 | portcullis 71, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
 | Lean 4 theorems over **extracted** Rust | ~280 in the security core | IFC noninterference family, `decide_pure`, ck-policy gate, `chain_effective_authority`, certificate-chain monotonicity (`chain_attenuates`, #2451) |
 | Open `sorry` holes | 23 across 10 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
 | Budget conservation | Kani E1/E2 over the shipped `LedgerCore` | `Σ child allocations + consumed ≤ max` |
@@ -197,7 +197,7 @@ objective, and it is worth exactly what the claims behind it are worth.
 
 | Milestone | Kani harnesses | Extracted Lean | What |
 |---|---|---|---|
-| **Current** | 120 | ~277 theorems | Lattice laws, BMC safety, IFC noninterference, budget conservation |
+| **Current** | 121 | ~277 theorems | Lattice laws, BMC safety, IFC noninterference, budget conservation |
 | **T1** | 150 | verify_certificate extracted (#2451) | Prove the certificate chain's monotonicity soundness over the real code |
 | **T2** | 200 | identity/card verification extracted (#2452) | Reconciler convergence, executor pool fairness |
 | **T3: verify-rust-std density** | — | — | Proof-to-code ratio ≥ AWS std lib effort |
