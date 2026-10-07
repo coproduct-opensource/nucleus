@@ -343,6 +343,27 @@ jobs:
         shell: bash
         run: cargo run -q -p xtask -- assurance-required
 
+  # #2585: `proof-obligations.toml` maps security-kernel functions to the artifact that proves
+  # each, and this refuses a row whose function is gone, whose artifact no workflow runs or
+  # builds, or whose artifact is vacuous (a harness that does not end in `kani::cover!`, a
+  # theorem whose statement does not name the extracted constant). Static: it reads Rust with
+  # `syn`, Lean statements and workflow YAML, and runs neither Kani nor Lean.
+  #
+  # Not in ci/required-checks.txt: a required context is a branch-protection change, which is
+  # the owner's to make. Until then a red here is visible and does not block the queue.
+  proof-obligations:
+    name: Proof Obligations
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Every registered proof obligation still holds
+        shell: bash
+        run: cargo run -q -p xtask -- proof-obligations
+
   workspace-tests:
     name: Workspace build + tests (one pod)
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}

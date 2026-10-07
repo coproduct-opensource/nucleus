@@ -329,6 +329,15 @@ enum Command {
     },
     /// Every source Kani harness must have a CI lane or a named documented exception.
     KaniCoverage,
+    /// Every row of `proof-obligations.toml` (#2585) still holds: the function exists, its
+    /// artifact exists and is run (a Kani lane; a Lean-action tier), and the artifact is not
+    /// vacuous (a harness names the function and ends in `kani::cover!`; a theorem's
+    /// statement names the extracted constant).
+    ProofObligations {
+        /// Print the rows the tree already supports, derived, instead of checking.
+        #[arg(long)]
+        derive: bool,
+    },
     /// A mechanism declared dead in `scripts/law-mechanisms-manifest.txt` must
     /// still be dead: its anchor present in the file that declares it, and
     /// absent from every other production region.
@@ -626,6 +635,7 @@ mod pipefail;
 mod plan_measurements;
 mod portability;
 mod prepush;
+mod proof_obligations;
 mod push_auth;
 mod release_reference;
 mod rerun_plan;
@@ -808,6 +818,7 @@ fn main() -> Result<()> {
             }
         }
         Command::KaniCoverage => kani_coverage::check(&std::env::current_dir()?),
+        Command::ProofObligations { derive } => proof_obligations::run(&repo_root()?, derive),
         // Exit code mapped here rather than inside the check, so a unit test
         // calling `run()` survives — the SelfPin arm's reasoning.
         Command::Convergence => match convergence::run()? {

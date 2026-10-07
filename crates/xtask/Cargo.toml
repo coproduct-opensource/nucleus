@@ -29,6 +29,10 @@ ci-fly-runner = { path = "../ci-fly-runner" }
 
 # Parse the actual Rust attributes and workflow arguments for Kani coverage.
 syn = { version = "3", features = ["full", "visit"] }
+# `proof-obligations` hashes a function's signature and body as tokens (`source_hash`), so a
+# comment or doc edit does not move the pin and any code edit does.
+quote = "1"
+proc-macro2 = "1"
 toml = { workspace = true }
 # `schedule-liveness` compares a run timestamp against now.
 chrono = { workspace = true }

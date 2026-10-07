@@ -162,6 +162,14 @@ pub fn probes() -> Vec<Probe> {
             desc: "a claim whose falsifier the merge queue does not gate on, past the pin",
             perturb: pert!(perturb_assurance_required_pin),
         },
+        // #2585: the probe is the issue's trivial harness -- the registered artifact for
+        // `check_argv_bytes` keeps calling it and loses its terminal covers.
+        Probe {
+            family: xtask("proof-obligations"),
+            target: "crates/portcullis-core/src/argv.rs",
+            desc: "a registered Kani harness that no longer ends in kani::cover!",
+            perturb: pert!(perturb_proof_obligation_vacuous_harness),
+        },
         Probe {
             family: xtask("pin-parity"),
             target: "ci/lean/lean-toolchain",

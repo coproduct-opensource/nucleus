@@ -8,10 +8,12 @@ use anyhow::{Context, Result, bail};
 use serde_yaml::Value;
 use syn::visit::Visit;
 
+/// One `#[kani::proof]` function. `key` is `<file>::<name>`, the form
+/// `KANI-STATUS.md` and `proof-obligations.toml` name a harness by.
 #[derive(Debug)]
-struct Harness {
-    key: String,
-    package: String,
+pub(crate) struct Harness {
+    pub(crate) key: String,
+    pub(crate) package: String,
     name: String,
     source_target: bool,
 }
@@ -64,7 +66,7 @@ fn rust_files(path: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn sources(root: &Path) -> Result<Vec<Harness>> {
+pub(crate) fn sources(root: &Path) -> Result<Vec<Harness>> {
     let mut harnesses = Vec::new();
     let mut linked_sources = BTreeSet::new();
     for entry in std::fs::read_dir(root.join("crates"))? {
@@ -119,9 +121,11 @@ fn sources(root: &Path) -> Result<Vec<Harness>> {
     Ok(harnesses)
 }
 
+/// One Kani invocation a workflow makes: the package it selects and the harnesses it
+/// names (none named = every harness of the package).
 #[derive(Debug)]
-struct Lane {
-    label: String,
+pub(crate) struct Lane {
+    pub(crate) label: String,
     package: String,
     selectors: Vec<String>,
 }
@@ -226,7 +230,7 @@ fn workflow_lanes(path: &str, workflow: &Value) -> Result<Vec<Lane>> {
     Ok(lanes)
 }
 
-fn covers(lane: &Lane, harness: &Harness) -> bool {
+pub(crate) fn covers(lane: &Lane, harness: &Harness) -> bool {
     harness.source_target
         && lane.package == harness.package
         && (lane.selectors.is_empty() || lane.selectors.iter().any(|s| s == &harness.name))
@@ -256,8 +260,8 @@ fn exceptions(text: &str) -> Result<BTreeMap<String, String>> {
     Ok(entries)
 }
 
-pub fn check(root: &Path) -> Result<()> {
-    let harnesses = sources(root)?;
+/// Every Kani lane every workflow under `.github/workflows` runs.
+pub(crate) fn lanes(root: &Path) -> Result<Vec<Lane>> {
     let mut lanes = Vec::new();
     for entry in std::fs::read_dir(root.join(".github/workflows"))? {
         let path = entry?.path();
@@ -270,6 +274,12 @@ pub fn check(root: &Path) -> Result<()> {
             &workflow,
         )?);
     }
+    Ok(lanes)
+}
+
+pub fn check(root: &Path) -> Result<()> {
+    let harnesses = sources(root)?;
+    let lanes = lanes(root)?;
     let exceptions = exceptions(&std::fs::read_to_string(root.join("KANI-STATUS.md"))?)?;
     let keys: BTreeSet<_> = harnesses.iter().map(|h| h.key.as_str()).collect();
     let mut errors = Vec::new();

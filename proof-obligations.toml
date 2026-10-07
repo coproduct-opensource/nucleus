@@ -1,0 +1,349 @@
+# Proof obligations (#2585): which function is held to which proof artifact.
+#
+# Checked by `cargo xtask proof-obligations` (crates/xtask/src/proof_obligations). Each row:
+#
+#   function     the Rust function, `crate::module::fn` or `crate::module::Type::fn`, resolved
+#                by a `syn` walk of the crate's module tree. Renamed or deleted = red.
+#   kind         lean-extracted | lean-mirror | kani | parity | typestate-fault-injection | missing
+#   artifact     `<file>::<name>`: a Kani harness, a Lean theorem, or a #[test].
+#   status       proved | allowlisted (allowlisted is for `missing` rows, with `tracking`)
+#   source_hash  optional: SHA-256 of the function's signature + body tokens; a code edit
+#                without re-pinning is red.
+#   constant     lean-mirror only: the hand-written Lean constant the theorem is about.
+#   tracking     missing only: the issue that will discharge the row.
+#
+# Non-vacuity, per kind: a Kani harness must be run by a workflow lane, name the function,
+# and END with a satisfiable `kani::cover!`; a Lean theorem must be in a module a workflow's
+# Lean-action build elaborates (lean_tier), and its STATEMENT must name the constant Aeneas
+# extracted the function to (read from the generated doc comment, never listed here).
+#
+# Seeded 2026-10-07. The lean-extracted rows are the output of
+# `cargo xtask proof-obligations --derive`: every extracted, shipping function of every
+# Lean-action tier paired with the first theorem (by file, then position) whose statement names
+# its constant. The kani rows are the three scheduled harnesses that end in `kani::cover!`,
+# each paired with the call its assertions are about; `--derive` prints every function those
+# harnesses name as commented candidates, because which call is the subject is a reading.
+
+[[obligation]]
+function = "portcullis::capability::CapabilityLattice::request_ceiling"
+kind = "kani"
+artifact = "crates/portcullis/src/kani.rs::proof_request_ceiling_leq_verified"
+status = "proved"
+
+[[obligation]]
+function = "portcullis::kernel::ifc::ifc_flow_gate"
+kind = "kani"
+artifact = "crates/portcullis/src/kernel/ifc.rs::proof_ifc_flow_gate_rejects_iff_forbidden"
+status = "proved"
+
+[[obligation]]
+function = "portcullis_core::argv::check_argv_bytes"
+kind = "kani"
+artifact = "crates/portcullis-core/src/argv.rs::proof_argv_check_fail_closed"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::budget_violated"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::passed_core_decomp"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::budget_within"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::budget_not_violated"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::cap_violated"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::passed_core_decomp"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::dropped_u32"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::proofreq_not_violated_flag_on"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::io_violated"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::passed_core_decomp"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::passed_core"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::passed_core_decomp"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::proofreq_violated"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::passed_core_decomp"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::rules_non_weakening"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::passed_core_decomp"
+status = "proved"
+
+[[obligation]]
+function = "ck_policy::extracted::subset_u32"
+kind = "lean-extracted"
+artifact = "crates/ck-policy/lean-aeneas/CkPolicyAeneas.lean::cap_not_violated_flag_on"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_github_oidc::extracted::jwt_svid_claims::decide_claims"
+kind = "lean-extracted"
+artifact = "crates/nucleus-github-oidc/lean/JwtSvidClaimsProofs.lean::admit_sound"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_github_oidc::extracted::oidc_spiffe::is_spiffe_byte"
+kind = "lean-extracted"
+artifact = "crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean::is_spiffe_byte_all"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_github_oidc::extracted::oidc_spiffe::sanitize_bytes"
+kind = "lean-extracted"
+artifact = "crates/nucleus-github-oidc/lean/OidcSpiffeProofs.lean::collapse_lossy_step"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::capability_quantale::capbot"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean::capbot_annihilates"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::capability_quantale::capleq"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean::residuation_adjunction"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::capability_quantale::capmeet"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean::residuation_adjunction"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::capability_quantale::capresidual"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean::residuation_adjunction"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::capability_quantale::capunit"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CapabilityResiduatedQuantaleProofs.lean::capunit_right"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::channel::channel_admits"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean::channel_admits_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::channel::channel_reaches_workload"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean::channel_reaches_workload_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::channel::chanrank"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean::chanrank_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::channel::is_public"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean::is_public_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::credential::cred_may_deliver"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean::cred_may_deliver_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::credential::credential_may_reach"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean::a_credential_never_reaches_the_guest"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::credential::sink_ceiling"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/CredentialNoninterferenceExtracted.lean::sink_ceiling_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::declassify::declass_fresh"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean::declass_fresh_is_unburned"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::declassify::declass_release_ok"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean::declass_release_ok_total"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::declassify::declass_step"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean::declass_step_total"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::declassify::effective_conf"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean::effective_conf_total"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::declassify::mask_admits"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean::mask_admits_total"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::declassify::value_authorized"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/DeclassifySinkScopeExtracted.lean::value_authorized_total"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::egress::in_cidr"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/EgressConfinementExtracted.lean::in_cidr_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::egress::netmask"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/EgressConfinementExtracted.lean::netmask_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::egress::rule_admits"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/EgressConfinementExtracted.lean::rule_admits_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::egress::rule_matches"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/EgressConfinementExtracted.lean::rule_matches_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::identity::ident_may_deliver"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean::env_admission_is_exactly_the_identity_relation"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::identity::identity_reaches_workload"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean::identity_reaches_workload_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::identity::mat_label"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ChannelAdmissionExtracted.lean::no_channel_delivers_secret_to_the_workload"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::identity::principal_ceiling"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/IdentityMaterialNoninterferenceExtracted.lean::principal_ceiling_never_fails"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_confidentiality::cflows_to"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean::cflows_to_ok"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_confidentiality::cjoin"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean::cjoin_ok"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_confidentiality::crank"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean::crank_pub"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_confidentiality::crun_step"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/ConfidentialityNoninterferenceExtracted.lean::crun_step_ok"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_integrity::iflows_to"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean::iflows_to_ok"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_integrity::imeet"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean::imeet_ok"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_integrity::irank"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean::irank_adv"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::ifc_integrity::irun_step"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/IntegrityNoninterferenceExtracted.lean::irun_step_ok"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::mediation::med_idle"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/MediationScopeExtracted.lean::no_sink_reachable_without_discharge"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::mediation::med_step"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/MediationScopeExtracted.lean::effect_requires_held"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::mediation::opcode"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/MediationScopeExtracted.lean::opcode_eq_iff"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::mediation::scope_admits"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/MediationScopeExtracted.lean::scope_admits_total"
+status = "proved"
+
+[[obligation]]
+function = "nucleus_ifc_kernel::extracted::mediation::sinkcode"
+kind = "lean-extracted"
+artifact = "crates/portcullis-core/lean/MediationScopeExtracted.lean::sinkcode_eq_iff"
+status = "proved"
