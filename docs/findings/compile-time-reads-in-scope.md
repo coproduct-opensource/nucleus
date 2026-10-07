@@ -70,7 +70,8 @@ table for every scope:
 | scope | patterns | reduction rows | of the cap |
 |---|---|---|---|
 | clippy-node before | 19 | 3,332,773 | 79.5 % |
-| **clippy-node after** | **20** | **3,382,925** | **80.7 %** |
+| **clippy-node after** (this change alone) | **20** | **3,382,925** | **80.7 %** |
+| clippy-node with #3296's `tools/test-shard/**` too | 21 | 3,440,901 | 82.0 % |
 | clippy-libs (unchanged) | 34 | 3,316,954 | 79.1 % |
 | test-libs (unchanged) | 37 | 3,440,088 | 82.0 % |
 | test-node (unchanged, `**`) | 1 | 3,241,191 | 77.3 % |
