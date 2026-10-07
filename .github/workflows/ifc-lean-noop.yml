@@ -12,6 +12,8 @@ on:
       - "crates/nucleus-ifc-kernel/lean/**"
       - ".github/workflows/ifc-lean.yml"
       - "scripts/lean-axiom-audit.sh"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
   group: ifc-lean-noop-${{ github.head_ref || github.ref }}

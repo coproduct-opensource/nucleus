@@ -18,6 +18,8 @@ on:
       - "ci/lean/**"
       - "scripts/check-ci-spec-bite.sh"
       - ".github/workflows/ci-spec-lean.yml"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.

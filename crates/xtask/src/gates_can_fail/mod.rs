@@ -1194,6 +1194,21 @@ fn account(h: &mut Harness, probes: &[Probe]) -> i32 {
         if probed_subs.contains(sub.as_str()) || listed(table::UNCOVERED, &gate) {
             continue;
         }
+        // Self-falsified in its own job: the row is a claim that CI runs `--self-test`, and it
+        // is CHECKED, so the row cannot outlive the falsifier it names.
+        if listed(table::SELF_FALSIFIED, &gate) {
+            let self_tested = wiring::xtask_invocations(&root, sub)
+                .iter()
+                .any(|flags| flags.split_whitespace().any(|w| w == "--self-test"));
+            if !self_tested {
+                h.fail(&[
+                    format!("  FAIL  {gate} — SELF_FALSIFIED says it proves it can fail with"),
+                    "        --self-test in its own job, and no workflow runs it with --self-test."
+                        .into(),
+                ]);
+            }
+            continue;
+        }
         // Covered through a script? The row names WHICH, and the row is verified.
         let mut shim = false;
         for row in table::SHIM_COVERED {

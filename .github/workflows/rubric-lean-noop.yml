@@ -16,6 +16,8 @@ on:
       - "scripts/lean-axiom-audit.sh"
       - "crates/nucleus-rubric/lean/**"
       - ".github/workflows/rubric-lean.yml"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.

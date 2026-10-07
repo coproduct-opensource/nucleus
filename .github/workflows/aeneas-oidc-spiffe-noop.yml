@@ -14,6 +14,8 @@ on:
     paths-ignore:
       - "crates/nucleus-github-oidc/**"
       - ".github/workflows/aeneas-oidc-spiffe.yml"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.

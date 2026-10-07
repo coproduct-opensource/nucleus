@@ -92,6 +92,29 @@ fn every_real_probe_changes_its_subject_restores_it_and_is_accounted_for() {
     fs::remove_file(root.join("scripts/check-unaccounted-fixture.sh")).unwrap();
     fs::remove_file(root.join(".github/workflows/unaccounted-fixture.yml")).unwrap();
     assert_eq!(account(&mut harness(root, Mode::Probe), &probes), 0);
+    // A SELF_FALSIFIED xtask row is a checked claim: with no workflow running its
+    // `--self-test`, the row exempts a gate whose falsifier is gone, and accounting fails.
+    let mut saved = Vec::new();
+    for entry in fs::read_dir(root.join(".github/workflows")).unwrap() {
+        let path = entry.unwrap().path();
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.contains("lean-replay --self-test") {
+            let gone = text.replace("lean-replay --self-test", "lean-replay --self-test-gone");
+            fs::write(&path, gone).unwrap();
+            saved.push((path, text));
+        }
+    }
+    assert!(
+        !saved.is_empty(),
+        "no workflow runs lean-replay --self-test"
+    );
+    assert_eq!(account(&mut harness(root, Mode::Probe), &probes), 1);
+    for (path, text) in saved {
+        fs::write(path, text).unwrap();
+    }
+    assert_eq!(account(&mut harness(root, Mode::Probe), &probes), 0);
 }
 
 fn defect(_: &Path, _: &str) -> perturb::Perturbed {
