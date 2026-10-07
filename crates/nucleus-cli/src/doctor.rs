@@ -663,10 +663,13 @@ fn check_tier2_components() -> bool {
             "nucleus-node",
             "test -x /usr/local/bin/nucleus-node".to_string(),
         ),
+        // The secret the node refuses to start without. Not the node API
+        // secret: the node stopped reading that with Move B, and the CLI
+        // reaches the node with its mTLS identity, checked below (#3294).
         (
             "Node secrets",
             format!(
-                "test -s {} && grep -q NUCLEUS_NODE_AUTH_SECRET {}",
+                "test -s {} && grep -q '^NUCLEUS_NODE_PROXY_AUTH_SECRET=' {}",
                 provision::NODE_ENV_PATH,
                 provision::NODE_ENV_PATH
             ),

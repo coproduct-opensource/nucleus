@@ -755,12 +755,36 @@ fn prepare_identity(cfg: &HostConfig) -> Result<(), Refusal> {
     }
     if !cfg.env_file().is_file() {
         write_private(&cfg.env_file(), node_env(&cfg.trust_domain).as_bytes())?;
+    } else {
+        scrub_retired_env(&cfg.env_file())?;
     }
+    Ok(())
+}
+
+/// Take the retired variables (`provision::RETIRED_NODE_ENV_KEYS`) out of an
+/// env file an earlier release wrote, keeping every other byte, and say so.
+/// The file is written once and never regenerated, so without this an
+/// upgraded host would keep its unused node API secret forever (#3294).
+fn scrub_retired_env(path: &Path) -> Result<(), Refusal> {
+    let state = |e: String| Refusal::State(e);
+    let body =
+        std::fs::read(path).map_err(|e| state(format!("reading {}: {e}", path.display())))?;
+    let Some(scrubbed) = crate::provision::without_retired_node_env(&body) else {
+        return Ok(());
+    };
+    crate::provision::atomic_private_file(path, &scrubbed)
+        .map_err(|e| state(format!("rewriting {}: {e:#}", path.display())))?;
+    tracing::warn!(
+        path = %path.display(),
+        removed = %crate::provision::RETIRED_NODE_ENV_KEYS.join(", "),
+        "removed a retired secret from the host's node env file; nucleus-node no longer reads it"
+    );
     Ok(())
 }
 
 /// Per-install node secrets, replacing the fixed development values the
 /// image bakes in. Passed with `--env-file`, so they never appear in argv.
+/// No secret for the node's own API: it is mTLS-only (#3294).
 fn node_env(trust_domain: &str) -> String {
     use rand::RngExt;
     let secret = || {
@@ -769,9 +793,8 @@ fn node_env(trust_domain: &str) -> String {
         hex::encode(b)
     };
     format!(
-        "NUCLEUS_NODE_AUTH_SECRET={}\nNUCLEUS_NODE_PROXY_AUTH_SECRET={}\n\
+        "NUCLEUS_NODE_PROXY_AUTH_SECRET={}\n\
          NUCLEUS_NODE_PROXY_APPROVAL_SECRET={}\nNUCLEUS_IDENTITY_TRUST_DOMAIN={trust_domain}\n",
-        secret(),
         secret(),
         secret()
     )
@@ -1090,6 +1113,46 @@ mod tests {
             write_private(&path, b"again").is_err(),
             "must not overwrite"
         );
+    }
+
+    /// #3294, red on main: the host's env file carried the node API secret the
+    /// node no longer reads.
+    #[test]
+    fn the_host_env_file_carries_no_retired_secret() {
+        let body = node_env("nucleus.local");
+        for key in crate::provision::RETIRED_NODE_ENV_KEYS {
+            assert!(
+                !body.contains(key),
+                "{key} is not read by nucleus-node:\n{body}"
+            );
+        }
+    }
+
+    /// #3294: an env file an earlier release wrote loses the retired line on
+    /// the next `prepare_identity`, keeps every other byte, and stays `0600`.
+    #[test]
+    fn an_upgraded_host_env_file_loses_only_the_retired_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = identity_config(dir.path());
+        let kept = format!(
+            "{}OPERATOR_ADDED=1\r\nlast-line-unterminated",
+            node_env("nucleus.local")
+        );
+        let old = format!("NUCLEUS_NODE_AUTH_SECRET={}\n{kept}", "ab".repeat(32));
+        write_private(&cfg.env_file(), old.as_bytes()).unwrap();
+
+        prepare_identity(&cfg).unwrap();
+        assert_eq!(std::fs::read(cfg.env_file()).unwrap(), kept.as_bytes());
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(cfg.env_file())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+
+        // Clean already: a second run changes nothing.
+        prepare_identity(&cfg).unwrap();
+        assert_eq!(std::fs::read(cfg.env_file()).unwrap(), kept.as_bytes());
     }
 
     fn identity_config(dir: &Path) -> HostConfig {

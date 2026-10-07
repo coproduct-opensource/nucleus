@@ -2,7 +2,6 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
-use nucleus_client::sign_http_headers;
 use nucleus_spec::{
     CredentialsSpec, ImageSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec, RootfsSource,
     VsockSpec,
@@ -20,7 +19,6 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::config::Config;
-use crate::keychain::{SecretKind, SecretStore};
 use crate::profiles;
 
 mod agent_process;
@@ -29,24 +27,18 @@ mod pod_agent;
 mod pod_egress;
 mod pod_session;
 
-/// Resolved configuration from args, config file, and Keychain
+/// Resolved configuration from args and the config file
 pub(crate) struct ResolvedConfig {
     node_url: String,
-    /// mTLS, when the identity `nucleus setup` provisions (Move A step 6) is
-    /// present — the preferred path, and the only one that still works
-    /// against a real node: Move B deleted the node's HMAC tier entirely.
-    /// `None` when that identity hasn't been provisioned, in which case
-    /// `node_auth_secret` is required instead (and will fail against any
-    /// node updated past Move B — kept for a transition window / a node the
-    /// operator has not yet migrated, matching `node.rs`'s own dual mode).
-    node_mtls_client: Option<reqwest::Client>,
-    node_auth_secret: Option<String>,
-    node_actor: String,
+    /// mTLS with the identity `nucleus setup` provisions (or `--identity-dir`):
+    /// the only way to the node, whose HMAC tier Move B deleted. Not optional:
+    /// the shared-secret fallback that made it so went with #3294.
+    node_mtls_client: reqwest::Client,
     kernel_path: String,
     rootfs_path: String,
 }
 
-/// Resolve configuration from multiple sources (args > keychain > config > defaults).
+/// Resolve configuration from multiple sources (args > config > defaults).
 ///
 /// Returns `None` for local mode or deferred Apple host readiness.
 pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<ResolvedConfig>> {
@@ -73,44 +65,18 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         ));
     };
 
-    // mTLS first: the identity `nucleus setup` provisions (Move A step 6),
-    // used automatically when present — see `node.rs`'s
+    // The identity `nucleus setup` provisions (Move A step 6), used
+    // automatically when present — see `node.rs`'s
     // `apply_provisioned_identity_defaults` for the same pattern.
     let node_mtls_client = match &args.identity_dir {
-        Some(dir) => Some(crate::provision::mtls_client_from_identity_dir(dir)?),
-        None => crate::provision::mtls_client_if_provisioned()?,
-    };
-
-    // Node auth secret: args > keychain > (required only if mTLS isn't
-    // available). A node updated past Move B has no HMAC tier to check this
-    // against at all — it exists for a not-yet-migrated node / a transition
-    // window, not as the normal path.
-    let node_auth_secret = if node_mtls_client.is_some() {
-        None
-    } else if let Some(ref secret) = args.node_auth_secret {
-        if !secret.is_empty() {
-            Some(secret.clone())
-        } else {
-            return Err(anyhow!("--node-auth-secret is empty"));
-        }
-    } else if config.auth.use_keychain {
-        SecretStore::get(SecretKind::NodeAuthSecret)?.map(hex::encode)
-    } else {
-        None
-    };
-    if node_mtls_client.is_none() && node_auth_secret.is_none() {
-        return Err(anyhow!(
-            "no way to authenticate to nucleus-node: no mTLS identity provisioned \
-             (run: nucleus setup) and no --node-auth-secret (NUCLEUS_NODE_AUTH_SECRET) \
-             either. Use --local for CI mode."
-        ));
-    }
-
-    // Node actor: args > config
-    let node_actor = if args.node_actor != "nucleus-cli" {
-        args.node_actor.clone()
-    } else {
-        config.node.actor.clone()
+        Some(dir) => crate::provision::mtls_client_from_identity_dir(dir)?,
+        None => crate::provision::mtls_client_if_provisioned()?.ok_or_else(|| {
+            anyhow!(
+                "no way to authenticate to nucleus-node: no mTLS identity provisioned \
+                 (run: nucleus setup, or pass --identity-dir). The node's API is mTLS-only; \
+                 it reads no shared secret. Use --local for CI mode."
+            )
+        })?,
     };
 
     // Kernel path: args > config
@@ -130,8 +96,6 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
     Ok(Some(ResolvedConfig {
         node_url,
         node_mtls_client,
-        node_auth_secret,
-        node_actor,
         kernel_path,
         rootfs_path,
     }))
@@ -301,20 +265,12 @@ pub struct RunArgs {
     pub identity_dir: Option<PathBuf>,
 
     /// Apple host JSON configuration; start/check host and relay the pod proxy
-    #[arg(long, conflicts_with_all = ["local", "hook", "node_url", "identity_dir", "node_auth_secret"])]
+    #[arg(long, conflicts_with_all = ["local", "hook", "node_url", "identity_dir"])]
     pub apple_host_config: Option<PathBuf>,
 
     /// Existing workspace directory inside the guest (does not upload host files)
     #[arg(long, conflicts_with_all = ["local", "hook"], value_parser = absolute_guest_dir)]
     pub guest_work_dir: Option<PathBuf>,
-
-    /// Auth secret for nucleus-node API (HMAC).
-    #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
-    pub node_auth_secret: Option<String>,
-
-    /// Actor name for signed node requests.
-    #[arg(long, env = "NUCLEUS_NODE_ACTOR", default_value = "nucleus-cli")]
-    pub node_actor: String,
 
     /// Firecracker kernel image path.
     #[arg(long, env = "NUCLEUS_FIRECRACKER_KERNEL_PATH")]
@@ -995,13 +951,9 @@ async fn run_in_pod(
     let _host = host;
 
     // Observing the workload is a node API, and the node serves it over mTLS
-    // only (Move B removed its HMAC tier). Refused before a pod exists.
-    let client = resolved.node_mtls_client.as_ref().ok_or_else(|| {
-        anyhow!(
-            "running the agent in a pod needs the node's mTLS identity (run: nucleus setup); \
-             the node no longer accepts the HMAC secret"
-        )
-    })?;
+    // only (Move B removed its HMAC tier); `resolve_config` already refused a
+    // run without the identity, before any pod exists.
+    let client = &resolved.node_mtls_client;
 
     let allowed_tools = build_mcp_allowed_tools(policy);
     // The same guard a host launch needs: the agent is told to use only
@@ -1044,20 +996,14 @@ async fn run_in_pod(
         "Starting the agent inside a microVM pod"
     );
     let start = Instant::now();
-    let pod = create_pod_via_node(
-        &resolved.node_url,
-        &pod_spec,
-        Some(client),
-        None,
-        &resolved.node_actor,
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "creating the pod that runs the agent `{}` (it must be in the guest image)",
-            agent.program()
-        )
-    })?;
+    let pod = create_pod_via_node(&resolved.node_url, &pod_spec, client)
+        .await
+        .with_context(|| {
+            format!(
+                "creating the pod that runs the agent `{}` (it must be in the guest image)",
+                agent.program()
+            )
+        })?;
     // The pod's own deadline plus a margin: the node reaps it at its timeout,
     // and the wait should report that rather than race it.
     let deadline = Duration::from_secs(args.timeout.saturating_add(60));
@@ -1188,78 +1134,36 @@ struct NodeErrorBody {
     error: String,
 }
 
-/// Creates the pod through nucleus-node, over mTLS when `mtls_client` is
-/// `Some` (the preferred, Move-B-compatible path — see `ResolvedConfig`'s
-/// doc comment), else HMAC-signed over plain `ureq` for a node that has not
-/// been migrated past Move B yet.
+/// Creates the pod through nucleus-node over mTLS, the only transport the node
+/// serves since Move B.
 async fn create_pod_via_node(
     node_url: &str,
     spec: &SpecPodSpec,
-    mtls_client: Option<&reqwest::Client>,
-    auth_secret: Option<&str>,
-    actor: &str,
+    client: &reqwest::Client,
 ) -> Result<CreatePodResponse> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
     let body = serde_yaml::to_string(spec)?;
 
-    if let Some(client) = mtls_client {
-        let response = client
-            .post(&url)
-            .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
-            .header("content-type", "application/yaml")
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("node request failed: {e}"))?;
-        let status = response.status();
-        if !status.is_success() {
-            return match response.json::<NodeErrorBody>().await {
-                Ok(body) => Err(anyhow!("node error: {}", body.error)),
-                Err(_) => Err(anyhow!("node error: status {status}")),
-            };
-        }
-        let parsed: CreatePodResponse = response
-            .json()
-            .await
-            .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-        return Ok(parsed);
+    let response = client
+        .post(&url)
+        .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
+        .header("content-type", "application/yaml")
+        .body(body)
+        .send()
+        .await
+        .map_err(|e| anyhow!("node request failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return match response.json::<NodeErrorBody>().await {
+            Ok(body) => Err(anyhow!("node error: {}", body.error)),
+            Err(_) => Err(anyhow!("node error: status {status}")),
+        };
     }
-
-    let auth_secret = auth_secret
-        .ok_or_else(|| anyhow!("neither an mTLS identity nor an auth secret is available"))?;
-    let mut request = ureq::post(&url)
-        .config()
-        .timeout_global(Some(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT))
-        // Without this, ureq turns a 4xx into a transport error and discards the
-        // body, so the `>= 400` branch below never ran and the node's own
-        // sentence ("no such policy profile") arrived as "http status: 400".
-        .http_status_as_error(false)
-        .build()
-        .header("content-type", "application/yaml");
-    let signed = sign_http_headers(auth_secret.as_bytes(), Some(actor), body.as_bytes());
-    for (key, value) in signed.headers {
-        request = request.header(&key, &value);
-    }
-
-    match request.send(body.as_bytes()) {
-        Ok(mut response) => {
-            if response.status().as_u16() >= 400 {
-                let status = response.status();
-                if let Ok(body) = response.body_mut().read_json::<NodeErrorBody>() {
-                    Err(anyhow!("node error: {}", body.error))
-                } else {
-                    Err(anyhow!("node error: status {}", status))
-                }
-            } else {
-                let parsed: CreatePodResponse = response
-                    .body_mut()
-                    .read_json()
-                    .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
-                Ok(parsed)
-            }
-        }
-        Err(err) => Err(anyhow!("node request failed: {err}")),
-    }
+    let parsed: CreatePodResponse = response
+        .json()
+        .await
+        .map_err(|e| anyhow!("failed to decode node response: {e}"))?;
+    Ok(parsed)
 }
 
 /// How a HOST `nucleus-mcp` authenticates to a local TCP tool-proxy. No
@@ -1684,16 +1588,13 @@ mod tests {
             "/var/lib/nucleus/artifacts/rootfs.ext4",
         ])
         .unwrap();
-        let mut config = Config::default();
-        config.auth.use_keychain = true;
+        let config = Config::default();
         assert!(resolve_config(&parsed.args, &config).is_err());
         let ca = nucleus_identity::SelfSignedCa::new("selected-host.nucleus.local").unwrap();
         crate::provision::mint_cli_identity(&ca, "selected-host.nucleus.local", dir.path())
             .await
             .unwrap();
         let resolved = resolve_config(&parsed.args, &config).unwrap().unwrap();
-        assert!(resolved.node_mtls_client.is_some());
-        assert!(resolved.node_auth_secret.is_none());
         assert_eq!(resolved.node_url, "https://127.0.0.1:8080");
         std::fs::remove_file(dir.path().join("cli-key.pem")).unwrap();
         assert!(resolve_config(&parsed.args, &config).is_err());
@@ -2123,20 +2024,12 @@ mod tests {
         let spec: SpecPodSpec =
             serde_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n")
                 .unwrap();
-        let created_pod = create_pod_via_node(
-            &format!("https://{addr}"),
-            &spec,
-            Some(&client),
-            None,
-            "test-actor",
-        )
-        .await
-        .expect("a real mTLS handshake against the SAME CA must succeed");
+        let created_pod = create_pod_via_node(&format!("https://{addr}"), &spec, &client)
+            .await
+            .expect("a real mTLS handshake against the SAME CA must succeed");
         let config = ResolvedConfig {
             node_url: format!("https://{addr}"),
-            node_mtls_client: Some(client),
-            node_auth_secret: None,
-            node_actor: "test-actor".into(),
+            node_mtls_client: client,
             kernel_path: "/kernel".into(),
             rootfs_path: "/rootfs".into(),
         };

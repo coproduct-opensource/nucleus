@@ -101,11 +101,6 @@ pub(super) async fn run(
     pod: Uuid,
     command: &Command,
 ) -> Result<()> {
-    if !matches!(client, HttpClient::Mtls(_)) {
-        bail!(
-            "workload commands require mTLS; run nucleus setup or supply the client identity flags"
-        );
-    }
     let (resource, body) = match command {
         Command::Admission { .. } => ("workload-admission", None),
         Command::Result => ("workload-result", None),

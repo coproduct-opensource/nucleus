@@ -84,7 +84,6 @@
 "node health" = "reach"
 "node logs" = "reach"
 "node pods" = "reach"
-"node sign" = "reach"
 "node effect-approvals list" = "reach"    # authenticated node API, including read-only calls
 "node effect-approvals review" = "reach"
 "node effect-approvals grant" = "reach"

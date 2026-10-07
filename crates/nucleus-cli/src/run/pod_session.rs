@@ -9,36 +9,16 @@ pub(super) async fn cancel(config: &ResolvedConfig, pod: Uuid) -> Result<()> {
         "{}/v1/pods/{pod}/cancel",
         config.node_url.trim_end_matches('/')
     );
-    if let Some(client) = &config.node_mtls_client {
-        let response = client
-            .post(&url)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-            .context("sending pod cancellation")?;
-        let status = response.status();
-        if !status.is_success() {
-            bail!("pod cancellation returned HTTP {status}");
-        }
-        return Ok(());
-    }
-    let secret = config
-        .node_auth_secret
-        .as_deref()
-        .ok_or_else(|| anyhow!("no node credentials for pod cancellation"))?;
-    let signed =
-        nucleus_client::sign_http_headers(secret.as_bytes(), Some(&config.node_actor), b"");
-    let mut request = ureq::post(&url)
-        .config()
-        .timeout_global(Some(std::time::Duration::from_secs(30)))
-        .http_status_as_error(false)
-        .build();
-    for (name, value) in signed.headers {
-        request = request.header(&name, &value);
-    }
-    let response = request.send_empty().context("sending pod cancellation")?;
-    if !response.status().is_success() {
-        bail!("pod cancellation returned HTTP {}", response.status());
+    let response = config
+        .node_mtls_client
+        .post(&url)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await
+        .context("sending pod cancellation")?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("pod cancellation returned HTTP {status}");
     }
     Ok(())
 }

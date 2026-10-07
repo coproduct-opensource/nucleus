@@ -49,11 +49,6 @@ pub(super) async fn run(
     pod: Uuid,
     command: &Command,
 ) -> Result<String> {
-    if !matches!(client, HttpClient::Mtls(_)) {
-        bail!(
-            "host approvals require the operator's mTLS identity; run nucleus setup or supply --tls-cert, --tls-key and --trust-bundle"
-        );
-    }
     let base = reqwest::Url::parse(url).context("invalid node URL")?;
     if base.scheme() != "https"
         || !base.username().is_empty()

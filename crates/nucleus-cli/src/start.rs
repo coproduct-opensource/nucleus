@@ -187,7 +187,7 @@ fn ensure_nucleus_node_available(vm_name: &str) -> Result<()> {
     }
 
     // A node binary with no environment file cannot start: the node requires
-    // three secrets at startup and exits immediately without them. Checking here
+    // its tool-proxy secrets at startup and exits immediately without them. Checking here
     // turns a systemd restart loop into one sentence.
     let env_present = Command::new("limactl")
         .args([
@@ -205,7 +205,7 @@ fn ensure_nucleus_node_available(vm_name: &str) -> Result<()> {
     if !env_present {
         bail!(
             "nucleus-node is installed in '{vm_name}' but {} is missing.\n\
-             The node requires three HMAC secrets at startup and will exit without them.\n\
+             The node requires its tool-proxy secrets at startup and will exit without them.\n\
              Write it with: nucleus setup",
             crate::provision::NODE_ENV_PATH
         );

@@ -11,7 +11,6 @@ pub(super) fn apply_default(args: &mut RunArgs, config: &crate::config::Config) 
         && !args.hook
         && args.node_url.is_none()
         && args.identity_dir.is_none()
-        && args.node_auth_secret.is_none()
     {
         args.apple_host_config = config.node.apple_host_config.clone();
     }
@@ -29,9 +28,7 @@ pub(super) async fn ready(
     let client = crate::provision::mtls_client_from_identity_dir(host.identity_dir())?;
     let resolved = ResolvedConfig {
         node_url: host.node_url(),
-        node_mtls_client: Some(client),
-        node_auth_secret: None,
-        node_actor: args.node_actor.clone(),
+        node_mtls_client: client,
         kernel_path: args
             .kernel_path
             .clone()
@@ -75,7 +72,6 @@ mod tests {
             vec!["--hook"],
             vec!["--node-url", "https://selected.example"],
             vec!["--identity-dir", "/selected"],
-            vec!["--node-auth-secret", "explicit"],
         ] {
             let mut input = vec!["run", "ordinary task"];
             input.extend(extra);
@@ -92,7 +88,6 @@ mod tests {
             vec!["--hook"],
             vec!["--node-url", "https://other:8080"],
             vec!["--identity-dir", "/other"],
-            vec!["--node-auth-secret", "unused"],
         ] {
             let mut args = vec!["run", "ordinary task", "--apple-host-config", "host.json"];
             args.extend(extra);
