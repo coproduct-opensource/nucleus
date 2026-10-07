@@ -30,6 +30,10 @@
 //!    never the endpoint's body, which can echo the scopes asked for (ADR 0004
 //!    forbids revealing those).
 //!
+//! Every assertion also states the node's platform tier and names the
+//! evidence epoch it rests on ([`attestation`], ADR 0012 A3), so a relying
+//! party can refuse a node that is not freshly `attested`.
+//!
 //! **Deciding whether to mint is not this crate's job.** The node mints only
 //! after the policy decision point approved the request, only for an upstream
 //! the pod was admitted to, and only with that upstream's audience. This crate
@@ -81,6 +85,7 @@
 )]
 
 pub mod assertion;
+pub mod attestation;
 pub mod custody;
 pub mod inbound;
 pub mod keyring;
@@ -93,6 +98,12 @@ pub use assertion::{
     DEFAULT_TTL, EcdsaP256Signer, Es256Signature, MAX_TTL, OPERATOR_MAX_TTL, OperatorClaims,
     OperatorSubject, PublicJwk, SIGNING_ALG, SignError, SignableClaims, is_valid_issuer, jwks,
     mint,
+};
+pub use attestation::{
+    ATTESTATION_CLAIMS, ClaimRefusal, ClaimedTier, EPOCH_CLAIM, EVIDENCE_CLAIM, EpochRef,
+    EvidenceRef, HeldEvidence, NO_EVIDENCE, NodeAttestation, RELYING_PARTY_CONDITION, Reappraisal,
+    RelyingPartyCheck, SelfAppraisal, TIER_CLAIM, TIME_CLAIM, VerifiedAttestation,
+    read_attestation_claims, relying_party_condition_for, verify_attestation_claims,
 };
 pub use custody::{
     CustodyKind, FILE_CUSTODY_WAIVER_FLAG, FileCustody, KeyCustody, TpmCustody, TpmEndpoint,

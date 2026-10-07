@@ -7018,6 +7018,8 @@ name = "nucleus-federation"
 version = "1.0.0"
 dependencies = [
  "base64 0.23.1",
+ "cel-interpreter",
+ "hex",
  "jsonwebtoken",
  "nucleus-node-evidence",
  "nucleus-oidc-core",

@@ -1,8 +1,9 @@
 # ADR 0012 — The federation issuer key lives in the TPM, bound to the measured boot
 
 - Status: **accepted** (2026-10-07). Lands with its implementation in one PR. Addendum
-  A2 (2026-10-07, same day): the Ed25519 node keys are sealed at rest, at the end of this
-  record.
+  A2 (2026-10-07, same day): the Ed25519 node keys are sealed at rest. Addendum A3
+  (2026-10-07, same day): every assertion states the node's platform tier. Both are at the
+  end of this record.
 - Tracks: limit-case hardening item A1 ("authority comes from the TPM and the measured
   boot, never from possessing a file"). A2 (the Ed25519 node keys) and A3 (the assertion
   carries the evidence epoch and tier) build on it; see the end of this record.
@@ -12,7 +13,9 @@
 - Applies to: `nucleus-node-evidence` (`tpm_key`, the attester side; `key_attestation`,
   the verifier side), `nucleus-federation` (`custody`, `keyring`), `nucleus-node`
   (`node_evidence`, `keys`), `nucleus-cli` (`federation rotate --tpm`, `issuer --export`),
-  `nucleus-audit` (`verify-node-evidence --jwks --federation-key-attestation`).
+  `nucleus-audit` (`verify-node-evidence --jwks --federation-key-attestation`). A3:
+  `nucleus-federation` (`attestation`), `nucleus-node` (`federated_credential`,
+  `node_evidence`).
 
 ## Context
 
@@ -237,6 +240,8 @@ so a stranger can enumerate every boot state the key could ever sign in.
   not built.
 
 ## How A3 and the Gatehouse minter build on this
+
+(A3 is built: see addendum A3 below.)
 
 - **A3: the assertion carries the epoch and the tier.** An assertion that says "the node
   was in evidence epoch E, appraised Attested" is only as good as the key that signed it. A
@@ -534,6 +539,209 @@ musl from this change, ran against `/dev/tpmrm0`, each start for 25 s:
   node keys.
 - **Node keys in the evidence binding.** The quote binds the executor key only. The
   approval and certificate-root keys could be bound the same way.
+
+## Addendum A3 (2026-10-07): the assertion states the platform
+
+An assertion signed by a TPM-bound key (above) is good evidence of *which* node signed it.
+A relying party that issues credentials also wants to know *what state* that node was in,
+and to refuse a node that is not freshly `Attested`. A3 puts that on every assertion.
+
+### The claims
+
+Four flat string claims, on every assertion (profile §1 and §8):
+
+| claim | value |
+|---|---|
+| `nucleus_att_tier` | `attested`, `contested`, `expired` or `unattested` |
+| `nucleus_att_epoch` | the evidence epoch counter, or `none` |
+| `nucleus_att_time` | that epoch quote's time, Unix seconds, or `none` |
+| `nucleus_evidence_digest` | SHA-256 of that epoch's evidence document, or `none` |
+
+They are strings because provider rules match top-level strings (ADR 0010 §3), and a CEL
+condition converts them with `int()`.
+
+### Where the tier comes from
+
+The **self-appraisal path** is `TpmNode::self_appraise` in `nucleus-node`, which calls
+`nucleus_federation::NodeAttestation::of_current_evidence`. At each mint
+(`PodFederation::exchange`, through `FederatedSource::attestation_now`):
+
+1. It reads the epoch document in force back from the evidence store, by the digest in
+   force. These are the bytes a relying party fetches by the same digest.
+2. It runs `nucleus_node_evidence::appraise` on that document **at the mint time**. The
+   inputs are the operator's reference manifest (`--node-evidence-reference`), the operator's
+   AK pin (`--node-evidence-ak-pin`, with the source from `--node-evidence-anchor
+   operator:<source>`), the binding the node's quotes carry now, and a maximum age of one
+   epoch plus 30 s.
+3. The tier is that `Appraisal`'s, mapped by one exhaustive function (`ClaimedTier::of`, E-1).
+
+Nothing caches the result. `NodeAttestation`'s fields are private: a tier other than
+`unattested` can be built only from an `Appraisal`, and only `appraise` mints one (C-1). The
+platform source is attached to the issuer once, after the attester starts. The attester's
+first quote binds the issuer's JWKS, so the issuer must exist first. An issuer with no source
+attached states `unattested`.
+
+### Could not look: `unattested`, not a refusal to mint
+
+A node with no TPM, a node with no reference, an evidence document that cannot be read, a
+binding that cannot be read, and own evidence that the appraisal refuses all state
+`unattested` (A-2). The node still mints. Nodes without a TPM federate today, and refusing to
+mint would turn an honest platform fact into an outage. `unattested` is a claim a relying
+party can act on. A refusal to mint tells it nothing.
+
+The claims are never omitted. `AssertionClaims::new` takes a `NodeAttestation`, not an
+`Option`, and every field is serialized. An absent claim reads as an error to a rule that
+tests `== 'attested'`, but it reads as a **pass** to a rule that tests `!= 'contested'`. So
+the verifier refuses an assertion that lacks any of the four claims (`ClaimRefusal::Omitted`).
+
+One case is a refusal, not a choice: on a TPM-custody node whose boot state moved, the TPM
+will not sign at all, so nothing is minted. That is ADR 0012's binding doing its job.
+
+### How stale `attested` can be
+
+At the mint time `iat`, the node says `attested` only if the quote is at most `epoch + 30` s
+old. The assertion lives `exp − iat ≤ MAX_TTL`. At any instant a relying party accepts the
+assertion, `now < exp`, so the quote is at most `epoch + 30 + (exp − iat)` old: **630 s**
+with the defaults (300 + 30 + 300), and 3930 s at the 3600 s TTL cap.
+
+A relying party tightens this with `exp − nucleus_att_time ≤ max`. That needs no clock of its
+own beyond the `exp` check it already makes, which matters because workload-identity
+providers' conditions see the token, not the time. `RELYING_PARTY_CONDITION` uses 900. The
+token the relying party then issues has its own lifetime. The bound holds at the exchange.
+
+### The verifier
+
+`nucleus_federation::verify_attestation_claims(claims, RelyingPartyCheck)` runs after the
+caller has verified the signature, `iss`, `aud` and `exp` (for example with
+`ExternalIssuerValidator`). It checks the following:
+
+1. All four claims are present and well formed. `none` is all-or-nothing, and a tier other
+   than `unattested` must name evidence.
+2. The named quote is at most `max_age_secs` old at `now`, and is not more than 60 s in the
+   future.
+3. With `Reappraisal::Evidence`, the document hashes to the digest claim, it is the claimed
+   epoch at the claimed time, and the relying party's own `appraise` at `iat` gives the
+   claimed tier. A claim of `unattested` is never contradicted, because it is the node
+   declining to vouch, which is never false.
+
+`nucleus-audit` does not verify assertions, so it is unchanged. It remains the tool that
+checks a JWKS is `TpmBound` before a relying party registers it.
+
+### What the claim is worth
+
+The claim is signed by the issuer key, so it is worth what that key is worth.
+
+- **With a `TpmBound` key**, the claim means "a node in this measured boot state asserted
+  this". A copied disk cannot sign it, and neither can the same disk booted differently.
+- **With a file key**, anyone holding a copy can sign `attested`. A relying party must
+  register only a JWKS that `verify-node-evidence --jwks --federation-key-attestation`
+  passes.
+- **Not the TPM's word.** The key binds the boot, not the userspace (IMA, PCR 10, is not in
+  the key's policy). A replaced `nucleus-node` on an unchanged boot can sign, and can write
+  `attested` over an old good epoch. It cannot make a fresh quote that hides the replacement.
+  So a relying party that re-appraises the named evidence under an age bound catches the
+  replacement within the bound. A stock provider's CEL condition does not re-appraise.
+
+### Gatehouse's side (interface only)
+
+The Gatehouse forge minter is a relying party that can re-appraise in full. On each exchange
+it can do the following:
+
+- Fetch `nucleus_evidence_digest` from the node's public evidence listener
+  (`GET /v1/evidence/{sha256}`), or from its own cache.
+- Call `verify_attestation_claims` with `Reappraisal::Evidence(HeldEvidence { document,
+  binding, reference, anchors })`. The binding is the node's executor key, pinned at
+  registration or read from `GET /v1/node/keys`, and the SHA-256 of the JWKS it registered.
+- Refuse unless the result is `attested` both as claimed and as re-appraised.
+
+Once per JWKS change, it can also require `appraise_federation_keys` to give `TpmBound` for
+every key. The minter's queueing, caching and policy are Gatehouse's.
+
+### Evidence for A3
+
+The evidence is real: the epoch-4 document the #2706 live run's cloud vTPM produced, with the
+AK pin the provider's API reported.
+
+- **`nucleus-federation/tests/attestation.rs`:**
+  - The node's statement:
+    - An appraised node states `attested`, epoch 4, the quote time, and the digest the run's
+      receipt named.
+    - No TPM, no reference, no pin, a non-document, challenge evidence and evidence bound to
+      another key all state `unattested`.
+    - A diverging reference states `contested`.
+    - Evidence older than `epoch + 30` s states `expired`.
+    - All four claims are present, as strings, for every one of these.
+  - The verifier:
+    - It refuses a stale epoch (901 s against 900) and a quote from the future.
+    - It refuses a tier the relying party's appraisal does not find: attested over a contested
+      reference, attested without a pin, contested over attested evidence, and a forged
+      `attested`.
+    - It refuses other bytes than the named document, and the wrong epoch.
+    - It refuses each omitted claim by name, a half-`none` epoch, and a tier naming nothing.
+    - End to end: a signed assertion passes `ExternalIssuerValidator`, and its claim is then
+      refused as stale.
+  - The relying party's condition:
+    - `RELYING_PARTY_CONDITION`, evaluated by `cel-interpreter` (the CEL implementation
+      portcullis already locks, with JSON numbers as doubles as a provider presents them),
+      admits a fresh `attested` assertion.
+    - It refuses every other tier, an epoch 901 s old at `exp`, a quote time after `iat + 60`,
+      and each claim it reads omitted.
+    - The per-upstream recipe refuses another upstream's assertion.
+- **`nucleus-node`:**
+  - Every mint asks the platform anew: `unattested`/`none` before attach, `attested` from the
+    fixture, then `unattested` from the same source, on consecutive assertions.
+  - The flags are strict: a reference without a TPM, a pin without an operator anchor, and a
+    malformed or unreadable input are each refused. Neither flag is read from the
+    environment.
+  - The docs quote the tested condition and recipe verbatim.
+
+**A-19.** Each probe below injects one defect, the named tests turn red, and the probe is
+restored byte for byte (checked by digest):
+
+| probe | red |
+|---|---|
+| no reference states `attested` | cannot-vouch; CEL condition; tier-mismatch |
+| own evidence refused states `attested` | cannot-vouch |
+| node max age unbounded (an old tier carried forward) | older-than-one-epoch is expired; CEL condition |
+| verifier skips the age check | stale epoch; end to end |
+| verifier accepts any tier over the evidence | tier-mismatch |
+| verifier reads an omitted claim as `none` | omitted claim refused |
+| an empty claim skipped on the wire (`skip_serializing_if`) | never omitted; omitted claim refused; host-observed claims; node per-mint |
+| condition tests `!= 'contested'` instead of `== 'attested'` | CEL condition; per-upstream recipe; docs quote the condition |
+| issuer keeps the first mint's tier | node per-mint |
+
+**Live vTPM run (2026-10-07).**
+
+- **Setup:** one Spot n2 Shielded VM in us-east1-b (Ubuntu 24.04, kernel 7.0, Secure Boot on),
+  created and deleted under the automation identity. It ran
+  `nucleus-federation/examples/attested_assertion`, built x86_64 musl from this change. The
+  example takes the node's steps: an epoch quote bound to the issuer JWKS digest, then
+  `of_current_evidence` against the exact boot reference of the #2706 run and the AK pin the
+  provider's API reported (`d0f0d1c2…b7f2`, equal to the quoted AK). It then mints, evaluates
+  the CEL condition, and runs the verifier with re-appraisal.
+- **Before:**
+  - The TPM key minted `attested`, epoch 1. The condition admitted it, and the verifier
+    re-appraised `attested`.
+  - The file key (waived custody) gave the same result.
+- **After `tpm2_pcrextend 8`:**
+  - The TPM key refused to sign, so nothing was minted.
+  - The file key minted `unattested`, naming epoch 2. The node's own appraisal was refused
+    because the boot event log does not replay to PCR 8. The condition refused the assertion,
+    and so did the verifier, which named the same refusal.
+
+### What A3 does not do
+
+- **No live WIF provider test.** A live test against a real provider would need a new IAM
+  resource, which is an owner decision. The provider recipe is in the runbook (§2a). The
+  condition is tested offline with a CEL implementation, not against the provider's own
+  evaluator. The two differ in error handling: `cel-interpreter` short-circuits `&&` left to
+  right, while CEL proper is commutative over errors. Both refuse every case tested, because
+  a condition must be exactly `true`.
+- **The node's self-appraisal takes operator pins only, not certificate-chain trust roots.**
+  A node whose AK is anchored by a certificate chain states `unattested` until a
+  `--node-evidence-trust-root` flag exists.
+- **The live run used the example, not a node serving a pod.** The node's wiring (attach,
+  per-mint ask) is covered by the `nucleus-node` tests above.
 
 ## References
 

@@ -75,6 +75,10 @@ every assertion.
 | `nucleus_upstream` | string | the operator's name for this upstream | `model-api` |
 | `nucleus_root` | string (SPIFFE ID) | root identity of the pod's delegation-certificate chain | `spiffe://tenant-a.example.com/ns/ci/sa/release` |
 | `nucleus_chain` | string (64 lowercase hex) | SHA-256 fingerprint of the pod's delegation certificate | `9f2b…c41d` |
+| `nucleus_att_tier` | string | the node's appraisal of its own platform at `iat`: `attested`, `contested`, `expired` or `unattested` (§8) | `attested` |
+| `nucleus_att_epoch` | string (decimal, or `none`) | the evidence epoch counter that appraisal used | `4` |
+| `nucleus_att_time` | string (decimal Unix seconds, or `none`) | when that epoch's quote was taken | `1791247232` |
+| `nucleus_evidence_digest` | string (64 lowercase hex, or `none`) | SHA-256 of that epoch's evidence document, the name it is fetched by | `d0689ce4…bcab` |
 
 The `nucleus_*` claims are top-level strings on purpose, so that an upstream's ordinary
 claim-matching rules can reach them. Nucleus does not send `act`, `scope`, or `nbf`.
@@ -497,3 +501,78 @@ non-zero; `code` is `keychain_timeout`, `operator_key_unavailable` or `invalid_r
 the inline JWKS; allowed audience = the `--audience` the helper is configured with; a
 condition requiring `sub` to equal the operator subject exactly; and the principal it maps to
 holds only the permissions the automation needs.
+
+## 8. The attestation claims (v1)
+
+Every assertion of §1 also says what the node's platform is, so a relying party can refuse
+a credential to anything but a freshly attested node. The decision record is
+[ADR 0012, addendum A3](adr/0012-the-federation-key-lives-in-the-tpm.md#addendum-a3-2026-10-07-the-assertion-states-the-platform).
+
+**What the tier is.** At each mint the node appraises the epoch evidence in force
+([ADR 0011](adr/0011-node-evidence-what-booted.md)) against the operator's reference
+manifest and AK anchor, at the mint time, with a maximum age of one epoch plus 30 s. The
+tier is that appraisal's, and nothing caches it. A node with no TPM, with no reference
+configured, or whose own evidence its appraisal refuses states `unattested`. It does not
+refuse to mint: `unattested` is a fact a relying party can act on.
+
+**The four claims are always present.** A node with no evidence sends
+`nucleus_att_tier = "unattested"` and `none` in the other three. An absent claim is not a
+negative, so a relying party **MUST** refuse an assertion that lacks any of them, and a
+rule **MUST** test for the value it wants (`== 'attested'`), never for the absence of a
+bad one (`!= 'contested'`).
+
+**How stale `attested` can be.** The node says `attested` only if the quote was at most
+`epoch + 30` s old at `iat`, and the assertion lives `exp − iat` (300 s by default, at most
+3600). So at any time a relying party accepts the assertion, the quote is at most
+`epoch + 30 + (exp − iat)` seconds old: **630 s** with the defaults. A relying party sets its
+own tighter bound with `exp − nucleus_att_time`, which needs no clock beyond the `exp`
+check it already makes. The token the relying party then issues has its own lifetime; the
+bound holds at the exchange, not for as long as that token lives.
+
+**The condition.** A relying party that evaluates CEL over the presented token admits only
+a fresh `attested` assertion with exactly this expression (it is
+`nucleus_federation::RELYING_PARTY_CONDITION`, and a test evaluates it with a CEL
+implementation):
+
+```text
+assertion.nucleus_att_tier == 'attested' && int(assertion.exp) - int(assertion.nucleus_att_time) <= 900 && int(assertion.nucleus_att_time) <= int(assertion.iat) + 60
+```
+
+Combine it with the §2.2 rule 11 matchers, for example
+`assertion.nucleus_upstream == 'model-api' && <the condition>`. The epoch claims are strings,
+and JSON numbers reach CEL as doubles, so both go through `int()`. An evaluation error (an
+absent claim, `none` where a number is needed) refuses, which is the point.
+
+**What the claim is worth, and what else the relying party checks.** The claim is the
+node's statement, signed by the node's issuer key. It is worth what that key is worth:
+
+1. **Register only a TPM-bound JWKS.** Before registering, or re-registering after a
+   rotation, check the issuer's JWKS with `nucleus-audit verify-node-evidence --jwks
+   <jwks> --federation-key-attestation <statements>` (ADR 0012). It exits 0 only when the
+   platform is `Attested` and every key is `TpmBound`: certified by the quote's AK, and
+   usable only in the measured boot state. A file key can sign `attested` from any
+   machine that holds a copy.
+2. **The tier is not the TPM's.** The TPM key binds the boot (PCRs 0, 2, 4, 7, 8, 9, 14),
+   not the userspace (IMA, PCR 10). A replaced `nucleus-node` on an unchanged boot can
+   still sign, and could write `attested`. What it cannot do is produce a fresh quote that
+   hides the replacement: the IMA log in every later quote shows it. So a relying party
+   that re-appraises the evidence the claim names (below), under an age bound, catches
+   that within the bound.
+3. Exact `iss`, `aud`, `nucleus_upstream` (§2.2), as before.
+
+**Re-appraising the named evidence** (what a minting service that trusts nodes, rather
+than a stock provider, does on every exchange):
+
+1. Fetch the document by `nucleus_evidence_digest` from the node's evidence listener
+   (`GET /v1/evidence/{sha256}`, ADR 0011) or its own cache, and check that it hashes to
+   the digest.
+2. Call `nucleus_federation::verify_attestation_claims` with
+   `Reappraisal::Evidence(HeldEvidence { document, binding, reference, anchors })`. The
+   binding is the node's executor key (pinned at registration, or
+   `GET /v1/node/keys`) and the SHA-256 of the JWKS the relying party registered. The
+   reference and anchors are the relying party's own.
+3. It refuses an omitted or malformed claim, a quote older than `max_age_secs` at `now`
+   or from the future, a document that is not the named epoch, evidence that is not
+   evidence, and a tier the relying party's appraisal at `iat` does not find. `unattested`
+   is never contradicted: it is the node declining to vouch.
+

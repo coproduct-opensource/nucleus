@@ -20,6 +20,8 @@ base64 = { workspace = true }
 # ring's fixed-length ECDSA below, so no generic "sign with any Algorithm"
 # entry point exists in this crate.
 jsonwebtoken = { workspace = true }
+# The evidence digest claim, lowercase hex.
+hex = { workspace = true }
 # The TPM-resident issuer key (ADR 0012): the raw TPM command layer that
 # creates, wraps and signs with it. Pure Rust, no libtss2.
 nucleus-node-evidence = { path = "../nucleus-node-evidence", features = ["attester"] }
@@ -54,3 +56,7 @@ rustls = { workspace = true }
 wiremock = "0.6"
 # Key-directory tests (`keyring`): real files, real permissions, real renames.
 tempfile = { workspace = true }
+# The relying party's attribute condition (`attestation::RELYING_PARTY_CONDITION`)
+# evaluated offline by a CEL implementation, not restated in Rust. The version
+# portcullis already locks.
+cel-interpreter = "0.10"
