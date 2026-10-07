@@ -422,12 +422,13 @@ impl GuestCapability {
             // effect table and refuses a tainted push in the guest.
             GuestCapability::EgressEffectTable => FirstShipped::Release("2.5.0"),
             GuestCapability::TaintedPushHeld => FirstShipped::Release("2.5.0"),
-            // #2696 P3c, after `v2.5.0`: no published guest confines its
-            // children with Landlock, and the pinned 6.1.141 kernel could not.
-            GuestCapability::WorkloadLandlock => FirstShipped::NotYet,
-            // #3266 landed after `v2.5.0` (0f2471d52): the published 2.5.0
-            // tool-proxy labels the advertisement `GitPush`.
-            GuestCapability::PushAdvertisementIsRead => FirstShipped::NotYet,
+            // #3271 (4d2d2f53c, #3266's advertisement-as-read) and #3273
+            // (562b55536, #2696 P3c's Landlock confinement) are ancestors of the
+            // tree pinned as 2.6.0 and not of `v2.5.0` (0f2471d52): the
+            // published 2.5.0 tool-proxy labels the advertisement `GitPush`
+            // and confines no child with Landlock.
+            GuestCapability::WorkloadLandlock => FirstShipped::Release("2.6.0"),
+            GuestCapability::PushAdvertisementIsRead => FirstShipped::Release("2.6.0"),
         }
     }
 
@@ -633,7 +634,12 @@ fn skew_against(
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.5.0` is the first release whose tool-proxy reads an upstream's effect
+/// `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
+/// advertisement as a read (#3266), and confines the workload's and every
+/// command's filesystem with Landlock (#2696 P3c), which the guest kernel
+/// pinned since #3270 supports. The node requires neither, so it still serves
+/// a 2.5.0 guest, and reports that guest's workload filesystem as not
+/// confined. `2.5.0` is the first release whose tool-proxy reads an upstream's effect
 /// table from the pod spec (#3229) and submits a tainted push to the host to
 /// be held for approval (#3255). Neither is required of every pod, so the
 /// node still serves a 2.4.0 guest; only a run declaring an upstream with an
@@ -668,7 +674,7 @@ fn skew_against(
 /// naming a release the pin has not reached.
 ///
 /// `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.5.0";
+pub const GUEST_RELEASE: &str = "2.6.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -839,10 +845,7 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin = [
-            GuestCapability::WorkloadLandlock,
-            GuestCapability::PushAdvertisementIsRead,
-        ];
+        let after_the_pin: [GuestCapability; 0] = [];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -853,10 +856,12 @@ mod tests {
         for cap in after_the_pin {
             assert_eq!(cap.demand(), Demand::Optional, "{cap:?}");
         }
-        // The release before the pin (2.4.0) serves every pod and every
-        // adapter run, and is refused only for an upstream with an effect
-        // table (#3229), by name: no 2.5.0 row is Required, so the floor
-        // stays at 2.4.0.
+        // The release before the pin (2.5.0) serves every use: both 2.6.0
+        // rows (#3271's read advertisement, #3273's Landlock) are Optional.
+        assert_eq!(guest_skew_for("2.5.0", &every_use), Ok(()));
+        // 2.4.0 still serves every pod and every adapter run, and is refused
+        // only for an upstream with an effect table (#3229), by name: no 2.5.0
+        // or 2.6.0 row is Required, so the floor stays at 2.4.0.
         assert_eq!(guest_skew("2.4.0"), Ok(()));
         assert_eq!(guest_skew_for("2.4.0", &[GuestUse::AgentEgress]), Ok(()));
         assert_eq!(
