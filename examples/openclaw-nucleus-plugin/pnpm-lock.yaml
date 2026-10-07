@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  '@modelcontextprotocol/sdk': ^1.31.0
+
 importers:
 
   .:
@@ -117,7 +120,7 @@ packages:
     resolution: {integrity: sha512-uy9gWVTAZXuA/2tld0QJl/QNiGEn4QOmfX4PiRgZQmeFQRQhojpD/Gf41SPnBJmjEnT83a+h4AdU1HHYaYvVDw==}
     engines: {node: '>=20.0.0'}
     peerDependencies:
-      '@modelcontextprotocol/sdk': ^1.25.2
+      '@modelcontextprotocol/sdk': ^1.31.0
     peerDependenciesMeta:
       '@modelcontextprotocol/sdk':
         optional: true
@@ -276,8 +279,8 @@ packages:
       '@opentelemetry/sdk-trace-base':
         optional: true
 
-  '@modelcontextprotocol/sdk@1.30.0':
-    resolution: {integrity: sha512-xKd8OIzlqNzcqcNumGAa6g+PW2kjD5vrpcKOnfldAUPP3j7lnqMPwlTXQm8gF+UwH72z0lqaRbjr9hqGz0eITA==}
+  '@modelcontextprotocol/sdk@1.32.1':
+    resolution: {integrity: sha512-2DdE+SJDtzLEEWzY1ZjY7Q+VcPhcV1KisD3zI4u0XZyktsjHum1mwbMI+JaulUBi2OZk+KJAi2uPXzxichPkdw==}
     engines: {node: '>=18'}
     peerDependencies:
       '@cfworker/json-schema': ^4.1.1
@@ -1840,14 +1843,14 @@ snapshots:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
 
-  '@google/genai@2.18.0(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))':
+  '@google/genai@2.18.0(@modelcontextprotocol/sdk@1.32.1(zod@4.4.3))':
     dependencies:
       google-auth-library: 10.9.1
       p-retry: 4.6.2
       protobufjs: 7.6.6
       ws: 8.21.3
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.30.0(zod@4.4.3)
+      '@modelcontextprotocol/sdk': 1.32.1(zod@4.4.3)
     transitivePeerDependencies:
       - bufferutil
       - supports-color
@@ -1964,7 +1967,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@modelcontextprotocol/sdk@1.30.0(zod@4.4.3)':
+  '@modelcontextprotocol/sdk@1.32.1(zod@4.4.3)':
     dependencies:
       '@hono/node-server': 2.1.1(hono@4.13.7)
       ajv: 8.20.0
@@ -1988,10 +1991,10 @@ snapshots:
 
   '@mozilla/readability@0.6.0': {}
 
-  '@openclaw/ai@2026.9.2(@aws-sdk/credential-provider-node@3.972.10)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@smithy/signature-v4@5.7.3)(ws@8.21.3)(zod@4.4.3)':
+  '@openclaw/ai@2026.9.2(@aws-sdk/credential-provider-node@3.972.10)(@modelcontextprotocol/sdk@1.32.1(zod@4.4.3))(@smithy/signature-v4@5.7.3)(ws@8.21.3)(zod@4.4.3)':
     dependencies:
       '@anthropic-ai/sdk': 0.120.0(zod@4.4.3)
-      '@google/genai': 2.18.0(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
+      '@google/genai': 2.18.0(@modelcontextprotocol/sdk@1.32.1(zod@4.4.3))
       '@mistralai/mistralai': 2.6.4
       openai: 7.5.0(@aws-sdk/credential-provider-node@3.972.10)(@smithy/signature-v4@5.7.3)(ws@8.21.3)(zod@4.4.3)
       partial-json: 0.1.7
@@ -2892,15 +2895,15 @@ snapshots:
       '@clack/core': 1.4.3
       '@clack/prompts': 1.7.0
       '@earendil-works/pi-tui': 0.84.3
-      '@google/genai': 2.18.0(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))
+      '@google/genai': 2.18.0(@modelcontextprotocol/sdk@1.32.1(zod@4.4.3))
       '@grammyjs/runner': 2.0.3(grammy@1.46.0)
       '@grammyjs/transformer-throttler': 1.2.1(grammy@1.46.0)
       '@homebridge/ciao': 1.3.12
       '@lydell/node-pty': 1.2.0-beta.15
       '@mistralai/mistralai': 2.6.4
-      '@modelcontextprotocol/sdk': 1.30.0(zod@4.4.3)
+      '@modelcontextprotocol/sdk': 1.32.1(zod@4.4.3)
       '@mozilla/readability': 0.6.0
-      '@openclaw/ai': 2026.9.2(@aws-sdk/credential-provider-node@3.972.10)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@smithy/signature-v4@5.7.3)(ws@8.21.3)(zod@4.4.3)
+      '@openclaw/ai': 2026.9.2(@aws-sdk/credential-provider-node@3.972.10)(@modelcontextprotocol/sdk@1.32.1(zod@4.4.3))(@smithy/signature-v4@5.7.3)(ws@8.21.3)(zod@4.4.3)
       '@openclaw/fs-safe': 0.8.1
       '@openclaw/proxyline': 0.3.7(undici@8.10.2)
       '@silvia-odwyer/photon-node': 0.3.4
