@@ -1280,7 +1280,7 @@ pub(crate) mod handler_tests {
             container_image: a.container_image.clone(),
             container_mediation: a.container_mediation,
             container_network: a.container_network.clone(),
-            container_proxy_unix: a.container_proxy_unix,
+            container_proxy: a.container_proxy_transport,
             container_pool: None,
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),

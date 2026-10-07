@@ -16,14 +16,14 @@ enforced by the [portcullis](../portcullis) permission lattice inside the pod.
 ## Quick start
 
 ```rust,no_run
-use nucleus_sdk::{Nucleus, Intent, HmacAuth};
+use nucleus_sdk::{Nucleus, Intent};
 
 # async fn example() -> nucleus_sdk::Result<()> {
-// Connect to a running tool-proxy
-let nucleus = Nucleus::builder()
-    .proxy_url("http://127.0.0.1:8080")
-    .auth(HmacAuth::new(b"my-secret", Some("agent")))
-    .build()?;
+// Inside a pod, the runtime names the workload's own door, a Unix socket
+// the tool-proxy admits by the caller's uid: no secret to hold or pass.
+let door = std::env::var("NUCLEUS_TOOL_PROXY_URL")
+    .unwrap_or_else(|_| "unix:///run/nucleus-door/workload.sock".into());
+let nucleus = Nucleus::builder().proxy_url(door).build()?;
 
 // Open a scoped session with uninhabitable-state-safe permissions
 let session = nucleus.intent(Intent::FixIssue).await?;

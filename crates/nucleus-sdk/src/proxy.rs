@@ -5,6 +5,19 @@
 //!
 //! All operations go through the tool-proxy which enforces the permission lattice
 //! at the pod boundary.
+//!
+//! # Two transports
+//!
+//! The URL decides, through `nucleus_client::endpoint::ProxyEndpoint` (the one
+//! parser every client shares):
+//!
+//! * `http(s)://host:port` — a TCP listener, which anyone who can route to it
+//!   can connect to, so requests carry an [`AuthStrategy`] or mTLS.
+//! * `unix:///path/to/socket` — the workload door the runtime names in the
+//!   workload's `NUCLEUS_TOOL_PROXY_URL` (#3122). The proxy reads the caller's
+//!   uid from the kernel, so a request carries no secret, and a client handed
+//!   one is refused at construction: a workload that holds a proxy credential
+//!   was given it by mistake (#2446).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -15,7 +28,13 @@ use serde_json::Value;
 use crate::auth::AuthStrategy;
 use crate::auth::MtlsConfig;
 use crate::error::{Error, from_error_payload};
+use nucleus_client::endpoint::ProxyEndpoint;
 use nucleus_client::wire::{RunRequest, RunResponse};
+
+/// Requests over a Unix socket are addressed to this placeholder: the
+/// connector dials the socket, never this host, and the proxy does not route
+/// on `Host`. The same placeholder `nucleus-mcp`'s door transport uses.
+const UNIX_BASE_URL: &str = "http://localhost";
 
 /// Output from a `/v1/run` command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +117,15 @@ pub struct ProxyClient {
 }
 
 impl ProxyClient {
-    /// Create a new proxy client.
+    /// Create a new proxy client for `base_url`: `http(s)://host:port`, or
+    /// `unix:///path/to/socket` for the workload door.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Config`] when the URL names neither transport, or names a Unix
+    /// socket and `auth` or `mtls` is also given: the socket authenticates the
+    /// caller by its uid, and a credential sent over it would be one the
+    /// caller should not hold.
     pub fn new(
         base_url: &str,
         auth: Option<Box<dyn AuthStrategy>>,
@@ -108,28 +135,48 @@ impl ProxyClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let mut builder = reqwest::Client::builder();
-
-        if let Some(mtls) = mtls {
-            let identity = mtls.reqwest_identity()?;
-            builder = builder.identity(identity);
-
-            if let Some(ca) = mtls.reqwest_ca_cert()? {
-                builder = builder.tls_certs_merge([ca]);
+        let endpoint = ProxyEndpoint::parse(base_url).map_err(|e| Error::Config(e.to_string()))?;
+        let base_url = match endpoint {
+            ProxyEndpoint::Unix { socket } => {
+                if auth.is_some() || mtls.is_some() {
+                    return Err(Error::Config(format!(
+                        "the tool-proxy at `{base_url}` is a Unix socket, which authenticates the \
+                         caller by its uid; this client was also given a credential (an \
+                         AuthStrategy or mTLS), which nothing reaching the proxy this way should \
+                         hold. Pass neither."
+                    )));
+                }
+                builder = unix_socket(builder, socket)?;
+                UNIX_BASE_URL.to_string()
             }
-        }
+            ProxyEndpoint::Http { base } => {
+                if let Some(mtls) = mtls {
+                    let identity = mtls.reqwest_identity()?;
+                    builder = builder.identity(identity);
+
+                    if let Some(ca) = mtls.reqwest_ca_cert()? {
+                        builder = builder.tls_certs_merge([ca]);
+                    }
+                }
+                base
+            }
+        };
 
         let client = builder
             .build()
             .map_err(|e| Error::Config(format!("failed to build HTTP client: {}", e)))?;
 
         Ok(Self {
-            base_url: base_url.trim_end_matches('/').to_string(),
+            base_url,
             client,
             auth: auth.map(Arc::from),
         })
     }
 
     /// Create from an existing reqwest client (for sharing connection pools).
+    ///
+    /// For an `http(s)://` proxy only: a `unix://` one needs the socket
+    /// connector [`ProxyClient::new`] builds into its client.
     pub fn with_client(
         base_url: &str,
         client: reqwest::Client,
@@ -377,6 +424,27 @@ impl ProxyClient {
     }
 }
 
+/// Point every connection `builder` makes at `socket`.
+#[cfg(unix)]
+fn unix_socket(
+    builder: reqwest::ClientBuilder,
+    socket: std::path::PathBuf,
+) -> Result<reqwest::ClientBuilder, Error> {
+    Ok(builder.unix_socket(socket))
+}
+
+/// A Unix-socket proxy is unreachable from a host without Unix sockets.
+#[cfg(not(unix))]
+fn unix_socket(
+    _builder: reqwest::ClientBuilder,
+    socket: std::path::PathBuf,
+) -> Result<reqwest::ClientBuilder, Error> {
+    Err(Error::Config(format!(
+        "the tool-proxy socket {} needs a Unix host",
+        socket.display()
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +459,117 @@ mod tests {
     fn test_proxy_client_no_slash() {
         let client = ProxyClient::new("http://localhost:8080", None, None).unwrap();
         assert_eq!(client.base_url, "http://localhost:8080");
+    }
+
+    /// One request as a stand-in door received it, read off a real Unix socket.
+    #[cfg(unix)]
+    struct Seen {
+        head: String,
+        body: Vec<u8>,
+    }
+
+    /// Serve one request on `listener` with `reply`, reporting what arrived.
+    #[cfg(unix)]
+    fn door_once(
+        listener: std::os::unix::net::UnixListener,
+        reply: String,
+    ) -> std::thread::JoinHandle<Seen> {
+        use std::io::{Read, Write};
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut req = Vec::new();
+            let mut buf = [0u8; 4096];
+            let head_end = loop {
+                let n = stream.read(&mut buf).expect("read request");
+                assert!(n > 0, "connection closed mid-request");
+                req.extend_from_slice(&buf[..n]);
+                if let Some(i) = req.windows(4).position(|w| w == b"\r\n\r\n") {
+                    break i + 4;
+                }
+            };
+            let head = String::from_utf8_lossy(&req[..head_end]).to_ascii_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:").map(str::to_owned))
+                .map_or(0, |v| v.trim().parse().expect("content-length"));
+            while req.len() < head_end + len {
+                let n = stream.read(&mut buf).expect("read body");
+                assert!(n > 0, "connection closed mid-body");
+                req.extend_from_slice(&buf[..n]);
+            }
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}",
+                reply.len()
+            );
+            stream.write_all(response.as_bytes()).expect("write");
+            Seen {
+                head,
+                body: req[head_end..].to_vec(),
+            }
+        })
+    }
+
+    /// #2446 step 1: a workload reaches its proxy through the door URL the
+    /// runtime gives it, over the socket, holding no credential. Red before:
+    /// the client handed `unix://` to reqwest as a URL, which refused the
+    /// scheme, so an SDK caller inside a pod could not reach its proxy at all.
+    /// The reply is built from the SERVER's wire type (ADR 0007 G).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_client_on_the_door_reaches_its_proxy_with_no_credential() {
+        use nucleus_client::wire::{ReadRequest, ReadResponse};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("workload.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        let reply = serde_json::to_string(&ReadResponse {
+            contents: "hello from the door".into(),
+        })
+        .unwrap();
+        let door = door_once(listener, reply);
+
+        let url = ProxyEndpoint::unix(&socket).to_string();
+        let client = ProxyClient::new(&url, None, None).expect("a door client");
+        let contents = client.read("hello.txt").await.expect("read over the door");
+        assert_eq!(contents, "hello from the door");
+
+        let seen = door.join().expect("door thread");
+        assert!(seen.head.starts_with("post /v1/read "), "{}", seen.head);
+        assert!(
+            !seen.head.contains("x-nucleus-signature"),
+            "a door request carries no HMAC: {}",
+            seen.head
+        );
+        let req: ReadRequest = serde_json::from_slice(&seen.body).expect("a wire ReadRequest");
+        assert_eq!(req.path, "hello.txt");
+    }
+
+    /// A credential handed to a door client is refused at construction, not
+    /// carried silently. Red before: `new` accepted any URL with any auth.
+    #[test]
+    fn a_door_client_refuses_a_credential() {
+        let auth = crate::auth::HmacAuth::new(b"test-token-123", Some("agent"));
+        let err = ProxyClient::new(
+            "unix:///run/nucleus-door/workload.sock",
+            Some(Box::new(auth)),
+            None,
+        )
+        .err()
+        .expect("a door client holding an HMAC key is refused");
+        assert!(err.to_string().contains("Unix socket"), "{err}");
+
+        let mtls = MtlsConfig::new("/nonexistent/cert.pem", "/nonexistent/key.pem");
+        assert!(
+            ProxyClient::new("unix:///run/nucleus-door/workload.sock", None, Some(&mtls)).is_err()
+        );
+    }
+
+    /// A URL naming neither transport is refused by the shared parser rather
+    /// than handed to the HTTP stack to fail on first use.
+    #[test]
+    fn a_url_naming_no_transport_is_refused() {
+        for bad in ["localhost:8080", "unix://run/x.sock", "vsock://3:4000", ""] {
+            assert!(ProxyClient::new(bad, None, None).is_err(), "{bad:?}");
+        }
     }
 
     /// Built from what the PROXY serializes, not from a hand-written mock. The

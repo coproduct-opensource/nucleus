@@ -38,24 +38,21 @@ const MAX_PROXY_BODY_BYTES: usize = 10 * 1024 * 1024;
 #[derive(Clone)]
 pub enum ApprovalSigning {
     /// Shared-secret HMAC — pods provisioned with `approval_secret` (the
-    /// env-delivered container paths).
+    /// local driver, and the container driver's deprecated `tcp-hmac`
+    /// transport).
     Hmac(Arc<Vec<u8>>),
-    /// Ed25519 with the node's approval signing key — Firecracker pods, which
-    /// verify against the PUBLIC half (`nucleus.approval_pubkeys`) and hold
-    /// no approval secret at all.
-    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
-    // On other hosts it is genuinely dead, and CI builds release binaries with
-    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
-    // error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Ed25519 with the node's approval signing key — Firecracker pods and
+    /// container pods on the peer-verified socket (#2446), which verify against
+    /// the PUBLIC half (`nucleus.approval_pubkeys`,
+    /// `NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS`) and hold no approval secret.
     Ed25519(Arc<ed25519_dalek::SigningKey>),
 }
 
 /// Where the pod's tool proxy is reached from the host.
 ///
-/// `Tcp` is the env-provisioned container path today: the node's requests
-/// carry an HMAC the container's proxy checks. `Unix` is the host-verified
-/// container transport (#2446): the proxy inside the container listens on a
+/// `Tcp` is the local driver's path and the container driver's deprecated
+/// `tcp-hmac` transport: the node's requests carry an HMAC the proxy checks.
+/// `Unix` is the container driver's default (#2446): the proxy inside the container listens on a
 /// socket in the pod directory the node bind-mounts, and admits the node by
 /// kernel-reported peer credentials (`nucleus-tool-proxy --listen-unix`), so
 /// the HMAC this proxy still attaches is not what authenticates the node
