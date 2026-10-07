@@ -57,8 +57,28 @@ directory, VMM process, cgroup leaf, vsock bridge and signed proxy. A launch tha
 fails at any point stops its VMM and releases all of them before the error is
 returned. The VMM and DNS proxy are spawned kill-on-drop, so a VMM whose handle the
 node drops is killed rather than left running without an owner. This covers drops
-inside a running node only. The node installs no signal handler, so a node stopped
-by a signal runs no destructors and its VMs keep running; stop pods first.
+inside a running node only.
+
+When the node is stopped by a signal:
+
+- **SIGTERM or SIGINT** drains it. The node stops admitting pods (a create gets
+  `503`), waits for launches already admitted to register, then tears every pod
+  down through its normal teardown and writes `pod_drained` to the pod's
+  `lifecycle.log`. The drain has a 30 s deadline, under systemd's default 90 s stop
+  timeout. A drain that cannot confirm every pod stopped names the stragglers and
+  exits non-zero. Whatever stragglers still hold is reclaimed at the next start.
+- **SIGKILL**, or a crash, runs nothing, so the VMMs keep running. At the next
+  start, before serving, the node finds each one through its jail's cgroup
+  (`/sys/fs/cgroup/<exec>/<pod id>`, the jailer's own placement) and its pod's
+  network namespace. It never matches by process name. The node kills each VMM
+  with `cgroup.kill`, waits until membership is empty, then removes the pod's
+  host firewall rules, veth, namespace, cgroup and jail. If a stranded VMM is
+  still alive after the kill, or its membership cannot be read, the node refuses
+  to start and names it.
+
+A parent-death signal does not replace the startup reclaim. The kernel clears
+`PR_SET_PDEATHSIG` when the jailer drops to `--uid`/`--gid`, so a jailed VMM never
+carries one.
 
 With the container driver, startup lists containers on the configured Docker
 daemon and removes this state directory's leftovers before serving requests.

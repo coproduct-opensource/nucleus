@@ -60,7 +60,57 @@ pub(crate) struct Node {
     pub calls: Arc<AtomicUsize>,
     child: Child,
     server: JoinHandle<std::io::Result<()>>,
+    /// Everything needed to start the SAME node again: one state dir, one jail base, one port.
+    launch: Launch,
+    /// Which life of the node this is: 0 for the first, +1 per [`Node::restart`].
+    life: usize,
     _directory: tempfile::TempDir,
+}
+
+/// The node's command line and environment, kept so a restart is the same node in a new life.
+struct Launch {
+    node_bin: PathBuf,
+    extra: Vec<String>,
+    env: Vec<(&'static str, String)>,
+    state: PathBuf,
+    address: std::net::SocketAddr,
+    registry: PathBuf,
+    jail_base: PathBuf,
+}
+
+impl Launch {
+    fn spawn(&self, log_path: &Path) -> Result<Child> {
+        let log = std::fs::File::create(log_path)?;
+        let mut command = Command::new(&self.node_bin);
+        command.env_clear().env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        );
+        for (key, value) in &self.env {
+            command.env(key, value);
+        }
+        Ok(command
+            .arg("--state-dir")
+            .arg(&self.state)
+            .arg("--listen")
+            .arg(self.address.to_string())
+            .arg("--driver")
+            .arg("firecracker")
+            .arg("--firecracker-path")
+            .arg("/usr/local/bin/firecracker")
+            .arg("--jailer-path")
+            .arg("/usr/local/bin/jailer")
+            .arg("--broker-enforcing")
+            .arg("--upstreams")
+            .arg(&self.registry)
+            .arg("--jailer-chroot-base")
+            .arg(&self.jail_base)
+            .args(&self.extra)
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .kill_on_drop(true)
+            .spawn()?)
+    }
 }
 
 impl Drop for Node {
@@ -71,7 +121,7 @@ impl Drop for Node {
 
 impl Node {
     pub fn diagnostics(&self) -> String {
-        let mut text = match std::fs::read_to_string(self._directory.path().join("node.log")) {
+        let mut text = match self.log() {
             Ok(s) => s,
             Err(e) => format!("could not read fixture node log: {e}"),
         };
@@ -105,7 +155,7 @@ impl Node {
 
     /// The fixture node log, as written so far.
     pub fn log(&self) -> std::io::Result<String> {
-        std::fs::read_to_string(self._directory.path().join("node.log"))
+        std::fs::read_to_string(self.log_path())
     }
 
     /// Start `node_bin` (e.g. the installed `/usr/local/bin/nucleus-node`),
@@ -141,44 +191,28 @@ impl Node {
         let reserved = TcpListener::bind("127.0.0.1:0").await?;
         let address = reserved.local_addr()?;
         drop(reserved); // A collision fails node startup rather than selecting another service.
+        let launch = Launch {
+            node_bin: node_bin.to_path_buf(),
+            extra: extra.to_vec(),
+            env: vec![
+                ("RUST_LOG", "info".into()),
+                ("NUCLEUS_RECEIPT_FIXTURE_TOKEN", token),
+                (
+                    "NUCLEUS_NODE_PROXY_AUTH_SECRET",
+                    uuid::Uuid::new_v4().to_string(),
+                ),
+                (
+                    "NUCLEUS_NODE_PROXY_APPROVAL_SECRET",
+                    uuid::Uuid::new_v4().to_string(),
+                ),
+            ],
+            state: state.clone(),
+            address,
+            registry,
+            jail_base: directory.path().join("j"),
+        };
         let log_path = directory.path().join("node.log");
-        let log = std::fs::File::create(&log_path)?;
-        let child = Command::new(node_bin)
-            .env_clear()
-            .env(
-                "PATH",
-                "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            )
-            .env("RUST_LOG", "info")
-            .env("NUCLEUS_RECEIPT_FIXTURE_TOKEN", token)
-            .env(
-                "NUCLEUS_NODE_PROXY_AUTH_SECRET",
-                uuid::Uuid::new_v4().to_string(),
-            )
-            .env(
-                "NUCLEUS_NODE_PROXY_APPROVAL_SECRET",
-                uuid::Uuid::new_v4().to_string(),
-            )
-            .arg("--state-dir")
-            .arg(&state)
-            .arg("--listen")
-            .arg(address.to_string())
-            .arg("--driver")
-            .arg("firecracker")
-            .arg("--firecracker-path")
-            .arg("/usr/local/bin/firecracker")
-            .arg("--jailer-path")
-            .arg("/usr/local/bin/jailer")
-            .arg("--broker-enforcing")
-            .arg("--upstreams")
-            .arg(registry)
-            .arg("--jailer-chroot-base")
-            .arg(directory.path().join("j"))
-            .args(extra)
-            .stdout(log.try_clone()?)
-            .stderr(log)
-            .kill_on_drop(true)
-            .spawn()?;
+        let child = launch.spawn(&log_path)?;
         let server = tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -194,8 +228,17 @@ impl Node {
             calls,
             child,
             server,
+            launch,
+            life: 0,
             _directory: directory,
         };
+        node.ready().await?;
+        Ok(node)
+    }
+
+    /// Wait for `/v1/health`, or fail with the node's log if it exits or never answers.
+    async fn ready(&mut self) -> Result<()> {
+        let node = self;
         let ready = tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 ensure!(
@@ -219,16 +262,58 @@ impl Node {
         .context("fixture node readiness timed out")
         .and_then(|r| r);
         if let Err(e) = ready {
-            let log = std::fs::read_to_string(log_path)?;
+            let log = node.log()?;
             node.stop().await?;
             return Err(e.context(log));
         }
-        Ok(node)
+        Ok(())
     }
 
     pub async fn stop(&mut self) -> Result<()> {
         self.server.abort();
         self.child.kill().await.context("stopping fixture node")?;
         Ok(())
+    }
+
+    /// The jailer's chroot base this node (in every life) places pods under.
+    pub fn jail_base(&self) -> &Path {
+        &self.launch.jail_base
+    }
+
+    /// Send `signal` (a `kill -s` name: `TERM`, `KILL`) to the node and wait for it to exit.
+    pub async fn signal(
+        &mut self,
+        signal: &str,
+        within: Duration,
+    ) -> Result<std::process::ExitStatus> {
+        let pid = self.child.id().context("the node has already exited")?;
+        command(
+            PathBuf::from("/bin/kill"),
+            &["-s".into(), signal.into(), pid.to_string().into()],
+        )
+        .await?;
+        tokio::time::timeout(within, self.child.wait())
+            .await
+            .with_context(|| format!("the node did not exit within {within:?} of SIG{signal}"))?
+            .context("waiting for the node")
+    }
+
+    /// Start the same node again, on the same state directory, jail base and port.
+    pub async fn restart(&mut self) -> Result<()> {
+        ensure!(
+            self.child.try_wait()?.is_some(),
+            "restart needs the previous life to have exited"
+        );
+        self.life += 1;
+        let log_path = self.log_path();
+        self.child = self.launch.spawn(&log_path)?;
+        self.ready().await
+    }
+
+    fn log_path(&self) -> PathBuf {
+        match self.life {
+            0 => self._directory.path().join("node.log"),
+            n => self._directory.path().join(format!("node.{n}.log")),
+        }
     }
 }

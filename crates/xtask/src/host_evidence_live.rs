@@ -3,10 +3,45 @@
 use anyhow::{Context, Result, ensure};
 use std::{path::Path, process::Command};
 
+/// One privileged live integration in the CLI's test binary, and what it proves when it passes.
+#[derive(Clone, Copy)]
+pub enum Live {
+    /// `host-evidence-live`: host authorization and outcome on a real guest transaction.
+    HostEvidence,
+    /// `node-stop-live`: a node stopped by SIGTERM drains its pods, and one stopped by SIGKILL
+    /// has its stranded VMM reclaimed at the next start (#3204).
+    NodeStop,
+}
+
+impl Live {
+    fn test(self) -> &'static str {
+        match self {
+            Live::HostEvidence => "host_evidence_live::real_guest_host_evidence",
+            Live::NodeStop => {
+                "host_evidence_live::node_stop::a_signalled_node_leaves_no_vm_running"
+            }
+        }
+    }
+    fn passed(self) -> &'static str {
+        match self {
+            Live::HostEvidence => {
+                "host-evidence-live: real guest, host authorization/outcome, offline verification and cleanup passed"
+            }
+            Live::NodeStop => {
+                "node-stop-live: SIGTERM drained a real pod and SIGKILL+restart reclaimed one; no VMM, netns, jail, firewall rule or cgroup left"
+            }
+        }
+    }
+}
+
 pub fn run(root: &Path, bins: &Path, sudo: bool) -> Result<()> {
+    run_live(root, bins, sudo, Live::HostEvidence)
+}
+
+pub fn run_live(root: &Path, bins: &Path, sudo: bool, live: Live) -> Result<()> {
     ensure!(
         cfg!(target_os = "linux"),
-        "host-evidence-live requires Linux and KVM"
+        "live integrations require Linux and KVM"
     );
     let bins = bins.canonicalize().context("binary directory")?;
     for name in ["nucleus-node", "nucleus-hostctl", "nucleus-audit"] {
@@ -41,12 +76,7 @@ pub fn run(root: &Path, bins: &Path, sudo: bool) -> Result<()> {
         ))
         .arg(format!("NUCLEUS_HOST_EVIDENCE_NONCE={nonce}"))
         .arg(&test)
-        .args([
-            "host_evidence_live::real_guest_host_evidence",
-            "--ignored",
-            "--exact",
-            "--nocapture",
-        ]);
+        .args([live.test(), "--ignored", "--exact", "--nocapture"]);
     let status = command.status()?;
     ensure!(status.success(), "live host evidence test failed: {status}");
     ensure!(
@@ -54,9 +84,7 @@ pub fn run(root: &Path, bins: &Path, sudo: bool) -> Result<()> {
             == nonce,
         "live test witness does not identify this invocation"
     );
-    println!(
-        "host-evidence-live: real guest, host authorization/outcome, offline verification and cleanup passed"
-    );
+    println!("{}", live.passed());
     Ok(())
 }
 

@@ -4,14 +4,19 @@ use std::{path::Path, sync::Arc, time::Duration};
 use tracing::{error, info};
 use uuid::Uuid;
 
-pub(crate) fn start_pod_reaper(state: NodeState) {
+/// Start the reaper and return its record of released pods, which a shutdown drain shares
+/// (`node_drain::Reaped`). Each pass holds the record's lock, so a drain that takes it waits out
+/// a pass in progress and no pass runs during the drain.
+pub(crate) fn start_pod_reaper(state: NodeState) -> crate::node_drain::Reaped {
+    let reaped = crate::node_drain::Reaped::default();
+    let record = reaped.clone();
     tokio::spawn(async move {
-        let mut reaped = std::collections::HashSet::new();
         loop {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            reap_once(&state, &mut reaped).await;
+            reap_once(&state, &mut *record.lock().await).await;
         }
     });
+    reaped
 }
 
 /// One pass of the pod reaper.

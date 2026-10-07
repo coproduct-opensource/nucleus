@@ -108,8 +108,10 @@ mod federation_ingress;
 mod guest_socket;
 mod host_decide;
 mod host_paths;
+mod jail_reclaim;
 mod launch_resources;
 mod lifecycle;
+mod node_drain;
 mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
@@ -419,6 +421,8 @@ struct Args {
 #[derive(Clone)]
 struct NodeState {
     pods: pod_api::PodRegistry,
+    /// Admission of new launches; closed by a shutdown drain (`node_drain`).
+    intake: node_drain::Intake,
     state_dir: PathBuf,
     host_roots: host_paths::Roots,
     /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
@@ -857,6 +861,7 @@ async fn main() -> Result<(), ApiError> {
     );
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
+        intake: node_drain::Intake::open(),
         state_dir: args.state_dir.clone(),
         host_roots,
         memory,
@@ -946,11 +951,35 @@ async fn main() -> Result<(), ApiError> {
         lockdowns: Arc::default(),
     };
 
+    // From here a SIGTERM/SIGINT is queued for the drain below rather than killing the node.
+    let mut signals = node_drain::Signals::install()?;
+
     // Release what the previous life of this node acquired, BEFORE serving anything: a pod
-    // launched first would own a jail this then deletes. Why startup and not a timer is the
-    // argument on `reclaim_orphaned_jails` itself.
+    // launched first would own a jail this then deletes. Its VMMs first — a node stopped by a
+    // signal leaves them RUNNING (#3204) — then the directories. Why startup and not a timer is
+    // the argument on `reclaim_orphaned_jails` itself; how a stranded VMM is found is on
+    // `jail_reclaim`.
     #[cfg(target_os = "linux")]
     if args.firecracker_jailer {
+        let stranded = jail_reclaim::reclaim_stranded_vms(
+            &args.jailer_chroot_base,
+            &args.firecracker_path,
+            Path::new(jail_reclaim::CGROUP_ROOT),
+            matches!(
+                pod_resources::CgroupVersion::detect(),
+                pod_resources::CgroupVersion::V2
+            ),
+            &jail_reclaim::HostNet,
+        )
+        .await?;
+        jail_reclaim::record(&state.state_dir, &stranded).await;
+        let killed: usize = stranded.iter().map(|r| r.killed).sum();
+        if !stranded.is_empty() {
+            info!(
+                pods = stranded.len(),
+                killed, "reclaimed microVM(s) stranded by a previous node"
+            );
+        }
         let n = firecracker_config::reclaim_orphaned_jails(
             &args.jailer_chroot_base,
             &args.firecracker_path,
@@ -1075,12 +1104,26 @@ async fn main() -> Result<(), ApiError> {
         });
     }
 
-    start_pod_reaper(state.clone());
+    let reaped = start_pod_reaper(state.clone());
 
     federation_ingress::spawn(&state, &args.authority.ingress).await?;
     public_evidence::spawn(&state, &args.node_evidence.public).await?;
-    http_serve::serve(&state, &args.listen, app).await?;
-
+    // Serve until a stop signal, then drain. Leaving the select drops the listener, so no new
+    // connection is accepted; the drain's intake gate is what refuses new pods on connections
+    // already open (`node_drain`).
+    let signal = tokio::select! {
+        served = http_serve::serve(&state, &args.listen, app) => {
+            served?;
+            return Err(ApiError::Driver("the HTTP API stopped serving".into()));
+        }
+        signal = signals.recv() => signal,
+    };
+    let report = node_drain::drain(&state, &reaped, signal, node_drain::DRAIN_DEADLINE).await;
+    let drained = report.verdict()?;
+    info!(
+        pods = drained,
+        "node drained: every pod stopped through its teardown"
+    );
     Ok(())
 }
 

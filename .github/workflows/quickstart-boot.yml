@@ -649,6 +649,14 @@ jobs:
         # Guest-local denials remain covered by the existing checks above.
         run: cargo xtask host-evidence-live --bin-dir target/x86_64-unknown-linux-musl/release --sudo
 
+      - name: A node stopped by a signal leaves no VM running (SIGTERM drains, SIGKILL is reclaimed)
+        if: steps.scope.outputs.relevant == 'true'
+        # #3204. Boots a real pod and SIGTERMs the node: no VMM process, netns, jail, host
+        # firewall rule or jail cgroup may remain, and the drain is in the pod's lifecycle log.
+        # Then boots another, SIGKILLs the node, confirms the VMM really was stranded, restarts
+        # the node, and requires the same nothing-left. All logic is in the Rust test.
+        run: cargo xtask node-stop-live --bin-dir target/x86_64-unknown-linux-musl/release --sudo
+
       - name: Delivery conformance (observed inventory vs the extracted oracle)
         if: steps.scope.outputs.relevant == 'true'
         run: |

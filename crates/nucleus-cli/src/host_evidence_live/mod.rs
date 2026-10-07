@@ -8,6 +8,7 @@ use std::{path::Path, time::Duration};
 use uuid::Uuid;
 
 pub(crate) mod node;
+mod node_stop;
 const CALL_CHARGE: u64 = 1000;
 
 #[derive(Deserialize)]

@@ -54,6 +54,15 @@ enum Command {
         #[arg(long)]
         sudo: bool,
     },
+    /// Stop a node with a real pod by SIGTERM (it must drain) and by SIGKILL (the restart must
+    /// reclaim the stranded VMM), and require nothing left on the host. Linux/KVM only (#3204).
+    NodeStopLive {
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        /// Run the compiled integration as root through sudo.
+        #[arg(long)]
+        sudo: bool,
+    },
     /// Boot a real pod on a fresh node and write a verified evidence bundle:
     /// receipt, logs, artifact, host effects, posture and timings, checked by
     /// the public verifiers (Rust, JS, Python) against each other and against
@@ -586,6 +595,12 @@ fn main() -> Result<()> {
         Command::HostEvidenceLive { bin_dir, sudo } => {
             host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
         }
+        Command::NodeStopLive { bin_dir, sudo } => host_evidence_live::run_live(
+            &repo_root()?,
+            &bin_dir,
+            sudo,
+            host_evidence_live::Live::NodeStop,
+        ),
         Command::LiveBootEvidence(args) => live_boot_evidence::run(&repo_root()?, &args),
         Command::Scripts => scripts(),
         Command::MicrovmHostContext {

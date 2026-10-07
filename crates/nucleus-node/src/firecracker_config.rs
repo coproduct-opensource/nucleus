@@ -437,6 +437,10 @@ pub(crate) fn jail_exec_name(firecracker_path: &std::path::Path) -> String {
 ///
 /// Best-effort per entry, like `cleanup_jail`: a jail that cannot be removed is disk leaked, not
 /// isolation lost, and refusing to start over it would turn a full disk into an outage.
+///
+/// "A pod cannot outlive the node" holds only once `jail_reclaim::reclaim_stranded_vms` has run:
+/// a node stopped by SIGKILL leaves its VMMs RUNNING (#3204), so main kills them, by their jail's
+/// cgroup, before this deletes the directories they were chrooted into.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn reclaim_orphaned_jails(
     chroot_base: &std::path::Path,
