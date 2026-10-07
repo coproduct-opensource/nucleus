@@ -15,5 +15,10 @@
     "@types/node": "^26.4.1",
     "openclaw": "^2026.9.2",
     "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "overrides": {
+      "@modelcontextprotocol/sdk": "^1.31.0"
+    }
   }
 }
