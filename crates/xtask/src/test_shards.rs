@@ -297,16 +297,35 @@ fn closure(by_name: &BTreeMap<&str, &Member>, root: &str) -> BTreeSet<String> {
 /// refused), and the first generation of this file hit it: one exclude per top-level entry of
 /// each crate was 46 excludes and 74 patterns, refused `error[Capacity]` at nucleus 0462daae.
 /// So a crate holding nothing kept below its top level is ONE pattern for every subdirectory,
-/// `dir/*/*/**`, plus its top-level files other than the kept ones. Not `dir/*/**`: `**` matches
-/// zero segments, so that pattern also matches `dir/Cargo.toml`, and an exclude always wins.
+/// `dir/*/*/**`, and its top-level files stay selected (see the body). Not `dir/*/**`: `**`
+/// matches zero segments, so that pattern also matches `dir/Cargo.toml`, and an exclude always
+/// wins.
 fn exclude_crate(dir: &str, files: &[String], keep: &BTreeSet<String>) -> Vec<String> {
     let prefix = format!("{dir}/");
     let kept_below = keep.iter().any(|k| {
         k.strip_prefix(&prefix)
             .is_some_and(|rest| rest.contains('/'))
     });
+    // The crate's own top-level FILES are left in the selection, never excluded one by one
+    // (2026-10-07, gatehouse F-208). Each exclude multiplies the derivation's cost per selected
+    // leaf, and test-libs at 56 patterns crossed the kernel's `MAX_ROWS` (4,199,962 reduction rows
+    // against 4,194,304) when nucleus grew by 22 files, which blocked every plan upload. A
+    // top-level file of an excluded crate (README.md, clippy.toml, Dockerfile, fly.toml, ...) is
+    // nothing test-libs compiles, and keeping it in the scope only means an edit to it re-runs
+    // the shard: wider, never unsound. The stubs this generation writes are all one directory
+    // deeper (`src/...`, `tests/...`), so every one still lands inside an exclude.
+    //
+    // Except Rust sources at the top (`build.rs`): a build script is a target, so it is stubbed,
+    // and a stub must land inside an exclude.
+    let top_level_non_rust = |p: &String| {
+        p.strip_prefix(&prefix)
+            .is_some_and(|rest| !rest.contains('/') && !rest.ends_with(".rs"))
+    };
     if kept_below {
-        return carve(dir, files, keep);
+        return carve(dir, files, keep)
+            .into_iter()
+            .filter(|p| !top_level_non_rust(p))
+            .collect();
     }
     let mut out = vec![format!("{dir}/*/*/**")];
     out.extend(
@@ -314,7 +333,7 @@ fn exclude_crate(dir: &str, files: &[String], keep: &BTreeSet<String>) -> Vec<St
             .iter()
             .filter(|f| {
                 f.strip_prefix(&prefix)
-                    .is_some_and(|rest| !rest.contains('/'))
+                    .is_some_and(|rest| !rest.contains('/') && rest.ends_with(".rs"))
             })
             .filter(|f| !keep.contains(*f))
             .cloned(),
@@ -1578,13 +1597,16 @@ lib-a = ["crates/node/proto/x.proto", "docs/fixture.md"]
     }
 
     #[test]
-    fn a_crate_with_nothing_kept_below_its_top_level_is_one_pattern_and_its_loose_files() {
+    fn a_crate_with_nothing_kept_below_its_top_level_is_one_pattern_plus_its_top_level_rust() {
         let keep: BTreeSet<String> = ["crates/lib-a/Cargo.toml".to_string()].into();
         let mut f = files();
         f.push("crates/lib-a/README.md".into());
+        f.push("crates/lib-a/build.rs".into());
+        // README.md stays selected (one fewer pattern per leaf, gatehouse F-208); build.rs is a
+        // stubbed target, so it is still excluded.
         assert_eq!(
             exclude_crate("crates/lib-a", &f, &keep),
-            vec!["crates/lib-a/*/*/**", "crates/lib-a/README.md"]
+            vec!["crates/lib-a/*/*/**", "crates/lib-a/build.rs"]
         );
         // The one pattern never reaches the manifest: `*/**` would have.
         assert!(!glob_match(
