@@ -1128,6 +1128,92 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
     );
 }
 
+/// #2446 step 1: a node started with no transport flag provisions its container pods with no
+/// shared secret at all. The proxy is reached over the peer-verified socket and approvals are
+/// verified against the node's PUBLIC key, so neither `NUCLEUS_TOOL_PROXY_AUTH_SECRET` nor
+/// `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET` (nor either value under another name) is in the
+/// container. Red before the default flipped: the default transport was TCP, which provisioned
+/// both, and the socket transport still provisioned the approval secret.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn a_default_nodes_container_pod_holds_no_shared_secret() {
+    use crate::container_transport::{self, CONTAINER_PROXY_SOCKET, ContainerProxyTransport};
+    use crate::signed_proxy::ApprovalSigning;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = crate::pod_api::handler_tests::state(&dir);
+    let spec: PodSpec =
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            .expect("minimal spec");
+    assert_eq!(state.container_proxy, ContainerProxyTransport::Unix);
+    let default = container_env(
+        &state,
+        &spec,
+        Uuid::new_v4(),
+        "test-token-123",
+        "",
+        None,
+        None,
+    )
+    .await;
+    let secrets = [
+        state.proxy_auth_secret.as_str(),
+        state.proxy_approval_secret.as_str(),
+    ];
+    let held: Vec<&str> = default
+        .iter()
+        .filter(|e| {
+            e.starts_with("NUCLEUS_TOOL_PROXY_AUTH_SECRET=")
+                || e.starts_with("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET=")
+                || secrets.iter().any(|s| e.contains(s))
+        })
+        .filter_map(|e| e.split('=').next())
+        .collect();
+    assert!(
+        held.is_empty(),
+        "a default container pod holds a node secret under {held:?}"
+    );
+    // Non-vacuity: the environment is the proxy's, and it names the channel that replaced them.
+    assert!(
+        default.contains(&format!(
+            "NUCLEUS_TOOL_PROXY_LISTEN_UNIX={CONTAINER_PROXY_SOCKET}"
+        )),
+        "{default:?}"
+    );
+    assert!(default.contains(&format!(
+        "NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS={}",
+        hex::encode(state.approval_signer.verifying_key().to_bytes())
+    )));
+    assert!(matches!(
+        container_transport::approval_signing(&state),
+        ApprovalSigning::Ed25519(_)
+    ));
+
+    // The opt-out is a choice the operator names, and it still provisions the legacy pair.
+    let mut legacy = state.clone();
+    legacy.container_proxy = ContainerProxyTransport::TcpHmac;
+    let legacy_env = container_env(
+        &legacy,
+        &spec,
+        Uuid::new_v4(),
+        "test-token-123",
+        "",
+        None,
+        None,
+    )
+    .await;
+    for (key, value) in [
+        ("NUCLEUS_TOOL_PROXY_AUTH_SECRET", secrets[0]),
+        ("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secrets[1]),
+    ] {
+        assert!(legacy_env.contains(&format!("{key}={value}")), "{key}");
+    }
+    assert!(matches!(
+        container_transport::approval_signing(&legacy),
+        ApprovalSigning::Hmac(_)
+    ));
+}
+
 /// What a child spawned from `command` actually starts with: this process's environment (a
 /// `Command` inherits it unless told otherwise), with the command's own sets and removals applied.
 #[cfg(feature = "local-driver")]

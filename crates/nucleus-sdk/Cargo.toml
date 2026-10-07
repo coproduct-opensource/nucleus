@@ -46,6 +46,8 @@ identity = ["dep:nucleus-identity"]
 uuid = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tokio-test = { workspace = true }
+# The door test binds a real Unix socket in a temporary directory.
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

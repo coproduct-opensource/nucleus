@@ -313,6 +313,18 @@ pub enum GuestCapability {
     /// runs the denylist alone, which denies less, and its launch receipt
     /// carries no derived classes.
     WorkloadSyscallPolicy,
+    /// The tool-proxy serves its host on a Unix socket whose peers the kernel
+    /// identifies (`--listen-unix`, `NUCLEUS_TOOL_PROXY_LISTEN_UNIX`, #2551),
+    /// and starts with no shared secret there. The container driver's default
+    /// transport (#2446): the node reaches the proxy through the socket in the
+    /// pod directory it bind-mounts, provisions no `NUCLEUS_TOOL_PROXY_AUTH_SECRET`
+    /// and no approval secret, and signs approvals with Ed25519
+    /// ([`GuestCapability::ApprovalByPublicKey`]'s verifier). An older tool-proxy
+    /// image ignores the socket variable, finds no key for the TCP listener it
+    /// binds instead, and refuses to start, so the pod never comes up.
+    /// [`Demand::When`]`(`[`GuestUse::ContainerProxySocket`]`)`: the Firecracker
+    /// guest is reached over vsock and never needs it.
+    HostVerifiedProxySocket,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -327,6 +339,10 @@ pub enum GuestUse {
     /// table (`kind`/`effects`, #3229): the guest must read the table from the
     /// pod spec and label calls by it.
     EffectTableEgress,
+    /// The container driver's tool-proxy image, reached over the peer-verified
+    /// Unix socket with no shared secret (#2446). The image carries the same
+    /// tool-proxy as the release's rootfs, so it is judged by the same table.
+    ContainerProxySocket,
 }
 
 /// Whether the node refuses a guest that lacks a [`GuestCapability`].
@@ -359,7 +375,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 16] = [
+    pub const ALL: [GuestCapability; 17] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -376,6 +392,7 @@ impl GuestCapability {
         GuestCapability::WorkloadLandlock,
         GuestCapability::PushAdvertisementIsRead,
         GuestCapability::WorkloadSyscallPolicy,
+        GuestCapability::HostVerifiedProxySocket,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -410,6 +427,10 @@ impl GuestCapability {
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
             GuestCapability::EgressEffectTable => Demand::When(GuestUse::EffectTableEgress),
+            // Only a container pod reaches its proxy over the socket.
+            GuestCapability::HostVerifiedProxySocket => {
+                Demand::When(GuestUse::ContainerProxySocket)
+            }
         }
     }
 
@@ -455,6 +476,9 @@ impl GuestCapability {
             // #2907 landed after the tree pinned as 2.6.0: no guest it names
             // derives a syscall policy from the pod's lattice.
             GuestCapability::WorkloadSyscallPolicy => FirstShipped::NotYet,
+            // #2551 (bcd2e5232) is an ancestor of `v2.3.0` and not of `v2.2.0`
+            // (8a452030b): the 2.2.0 tool-proxy has no `--listen-unix`.
+            GuestCapability::HostVerifiedProxySocket => FirstShipped::Release("2.3.0"),
         }
     }
 
@@ -550,6 +574,12 @@ impl GuestCapability {
                  under the workload denylist alone, which denies less (the node does not \
                  require it)"
             }
+            GuestCapability::HostVerifiedProxySocket => {
+                "#2551 lets the tool-proxy serve its host on a peer-verified Unix socket with \
+                 no shared secret, the container driver's default transport since #2446; an \
+                 older tool-proxy image ignores NUCLEUS_TOOL_PROXY_LISTEN_UNIX, holds no key \
+                 for the TCP listener it binds instead, and refuses to start"
+            }
         }
     }
 }
@@ -624,6 +654,37 @@ pub fn guest_skew(version: &str) -> Result<(), GuestSkew> {
 /// refusal does.
 pub fn guest_skew_for(version: &str, uses: &[GuestUse]) -> Result<(), GuestSkew> {
     skew_against(version, uses, GuestCapability::first_shipped)
+}
+
+/// Whether the tool-proxy of release `version` carries one `capability`, for a
+/// caller that knows which capability it is about to depend on and nothing
+/// else about the artifact: the container driver, which judges the image it
+/// was given rather than the pinned rootfs. Same table and ordering as
+/// [`guest_skew_for`], so its refusal reads like every other skew refusal.
+///
+/// # Errors
+///
+/// [`GuestSkew::Unorderable`] when `version` cannot be ordered (the caller
+/// could not look, which is not "it has it"); [`GuestSkew::Lacks`] naming
+/// `capability` when the release predates it.
+pub fn capability_skew(version: &str, capability: GuestCapability) -> Result<(), GuestSkew> {
+    let Some(found) = parse_release(version) else {
+        return Err(GuestSkew::Unorderable {
+            release: version.to_string(),
+        });
+    };
+    let has = match capability.first_shipped() {
+        FirstShipped::Release(v) => parse_release(v).is_some_and(|since| found >= since),
+        FirstShipped::NotYet => false,
+    };
+    if has {
+        Ok(())
+    } else {
+        Err(GuestSkew::Lacks {
+            release: version.to_string(),
+            missing: vec![capability],
+        })
+    }
 }
 
 /// [`guest_skew_for`] with the table as a parameter, so the ordering rules can
@@ -911,10 +972,14 @@ mod tests {
     /// Every USE as well, not just the uses every pod makes: a
     /// [`Demand::When`] row left at [`FirstShipped::NotYet`] when the pin moves
     /// to the release that ships it would refuse that use on a guest that
-    /// serves it. `GuestUse` has two variants, so the list is exhaustive.
+    /// serves it. `GuestUse` has three variants, so the list is exhaustive.
     #[test]
     fn the_pinned_release_serves_this_tree() {
-        let every_use = [GuestUse::AgentEgress, GuestUse::EffectTableEgress];
+        let every_use = [
+            GuestUse::AgentEgress,
+            GuestUse::EffectTableEgress,
+            GuestUse::ContainerProxySocket,
+        ];
         assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
         assert_eq!(guest_skew_for(GUEST_RELEASE, &every_use), Ok(()));
         // No row is left unreleased once the pin moves: every capability this
@@ -1037,10 +1102,41 @@ mod tests {
                 GuestCapability::TaintedPushHeld => GuestCapability::WorkloadLandlock,
                 GuestCapability::WorkloadLandlock => GuestCapability::PushAdvertisementIsRead,
                 GuestCapability::PushAdvertisementIsRead => GuestCapability::WorkloadSyscallPolicy,
-                GuestCapability::WorkloadSyscallPolicy => GuestCapability::CaBundle,
+                GuestCapability::WorkloadSyscallPolicy => GuestCapability::HostVerifiedProxySocket,
+                GuestCapability::HostVerifiedProxySocket => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
+    }
+
+    /// #2446: the container driver's default transport needs the tool-proxy's
+    /// peer-verified socket, which 2.2.0 lacks. Judged per capability, so a
+    /// 2.3.0 image is accepted for it although `guest_skew` refuses 2.3.0 as a
+    /// Firecracker guest, and an unorderable label is "could not look", never
+    /// "has it" (ADR 0007 A-1).
+    #[test]
+    fn a_container_proxy_image_is_judged_for_the_socket_alone() {
+        let cap = GuestCapability::HostVerifiedProxySocket;
+        assert_eq!(
+            capability_skew("2.2.0", cap),
+            Err(GuestSkew::Lacks {
+                release: "2.2.0".to_string(),
+                missing: vec![cap],
+            })
+        );
+        let refusal = capability_skew("v2.2.0", cap).unwrap_err().to_string();
+        assert!(refusal.contains("#2551"), "{refusal}");
+        assert!(refusal.contains("first released in v2.3.0"), "{refusal}");
+        assert_eq!(capability_skew("2.3.0", cap), Ok(()));
+        assert!(guest_skew("2.3.0").is_err());
+        assert_eq!(capability_skew(GUEST_RELEASE, cap), Ok(()));
+        assert_eq!(
+            capability_skew("main", cap),
+            Err(GuestSkew::Unorderable {
+                release: "main".to_string()
+            })
+        );
+        assert_eq!(cap.demand(), Demand::When(GuestUse::ContainerProxySocket));
     }
 
     /// 2.0.2 and everything before it ship a rootfs with no CA store, on which

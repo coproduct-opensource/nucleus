@@ -195,6 +195,54 @@ mod tests {
         );
     }
 
+    /// #2446: on the default socket transport, an image whose OCI version label names a
+    /// tool-proxy release without the socket is refused by name BEFORE anything is created, so
+    /// no container, capacity or launch intent is left behind. Red before: the node launched it,
+    /// and its proxy exited with no shared secret behind a bare "exited before announcing".
+    #[tokio::test]
+    async fn an_image_too_old_for_the_socket_is_refused_before_create() {
+        let (_dir, server, mut state, spec, admission) =
+            fixture(204, 536870912, Some("none")).await;
+        server.reset().await;
+        state.container_mediation = crate::container_mediation::ContainerMediation::ToolProxy;
+        Mock::given(method("GET"))
+            .and(path_regex("/images/.+/json$"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Id": "sha256:old",
+                "Config": {"Labels": {
+                    crate::container_transport::IMAGE_VERSION_LABEL: "2.2.0"
+                }}
+            })))
+            .mount(&server)
+            .await;
+        let error = create(&state, spec.clone(), None, None, admission)
+            .await
+            .unwrap_err()
+            .to_string();
+        for needle in [
+            "HostVerifiedProxySocket",
+            "2.2.0",
+            "--container-proxy-transport tcp-hmac",
+        ] {
+            assert!(error.contains(needle), "missing {needle:?} in: {error}");
+        }
+        assert!(
+            !server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|request| request.url.path().ends_with("/containers/create")),
+            "nothing is created for an image that cannot serve the transport"
+        );
+        assert!(state.pods.lock().await.is_empty());
+        drop(state.node_capacity.reserve(&spec).unwrap());
+        assert_eq!(
+            state.container_pool.as_ref().unwrap().available_permits(),
+            1
+        );
+    }
+
     #[tokio::test]
     async fn caller_cancellation_keeps_launch_owned_until_removal() {
         let (_dir, server, state, spec, admission) = fixture(204, 536870912, Some("none")).await;
@@ -248,10 +296,21 @@ mod tests {
         let (_dir, server, mut state, spec, admission) =
             fixture(204, 536870912, Some("none")).await;
         state.container_mediation = crate::container_mediation::ContainerMediation::ToolProxy;
+        // The default transport mints the in-container proxy's identity files (#2446).
+        state.identity_manager = Some(
+            crate::identity::IdentityManager::new("nucleus.local", Duration::from_secs(3600))
+                .unwrap(),
+        );
         let error = create(&state, spec.clone(), None, None, admission)
             .await
             .unwrap_err();
         assert!(error.to_string().contains("exited before announcing"));
+        // The image carries no version label (the mock has no image at all), so the cause the
+        // default transport makes likely is named rather than left as a bare exit (#2446).
+        assert!(
+            error.to_string().contains("HostVerifiedProxySocket"),
+            "{error}"
+        );
         assert!(state.pods.lock().await.is_empty());
         assert!(
             server

@@ -295,9 +295,15 @@ struct Args {
     /// Network mode for containers ("none", "bridge", or a custom network name).
     #[arg(long, env = "NUCLEUS_CONTAINER_NETWORK", default_value = "none")]
     container_network: String,
-    /// Reach container pods' proxies over a peer-verified Unix socket, no shared secret (#2446). Opt-in.
-    #[arg(long, env = "NUCLEUS_CONTAINER_PROXY_UNIX", default_value_t = false)]
-    container_proxy_unix: bool,
+    /// How container pods' proxies are reached (#2446): `unix`, a peer-verified socket with no
+    /// shared secret in the container (default); `tcp-hmac`, the deprecated shared-secret listener.
+    #[arg(
+        long,
+        env = "NUCLEUS_CONTAINER_PROXY_TRANSPORT",
+        value_enum,
+        default_value = "unix"
+    )]
+    container_proxy_transport: container_transport::ContainerProxyTransport,
     /// Max concurrent container pods (0 = unlimited).
     #[arg(long, env = "NUCLEUS_CONTAINER_MAX_PODS", default_value_t = 10)]
     container_max_pods: usize,
@@ -479,15 +485,10 @@ struct NodeState {
     /// pod. See `pod_caller_identity`.
     caller_secret: std::sync::Arc<[u8; 32]>,
     proxy_approval_secret: String,
-    /// Ed25519 key whose signatures Firecracker guests accept on
-    /// `/v1/approve`. The PRIVATE half never leaves the node; guests get the
-    /// public half as `nucleus.approval_pubkeys`. Persisted in `state_dir` so
-    /// pods launched before a node restart can still be approved.
-    // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
-    // On other hosts it is genuinely dead, and CI builds release binaries with
-    // `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
-    // error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    /// Ed25519 key whose signatures Firecracker guests and container pods on the socket
+    /// transport accept on `/v1/approve`. The PRIVATE half never leaves the node; pods get the
+    /// public half (`nucleus.approval_pubkeys`, `NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS`). Persisted
+    /// in `state_dir` so pods launched before a node restart can still be approved.
     approval_signer: std::sync::Arc<ed25519_dalek::SigningKey>,
     proxy_actor: Option<String>,
     /// Operator-configured registry of proof-carrying postures a trusted builder
@@ -535,7 +536,8 @@ struct NodeState {
     container_mediation: container_mediation::ContainerMediation,
     /// Default network mode for containers.
     container_network: String,
-    container_proxy_unix: bool,
+    /// How the node reaches every container pod's tool-proxy (`--container-proxy-transport`).
+    container_proxy: container_transport::ContainerProxyTransport,
     /// Semaphore limiting concurrent container pods.
     container_pool: Option<Arc<Semaphore>>,
     /// Docker client (initialized at startup when container driver is active).
@@ -800,6 +802,7 @@ async fn main() -> Result<(), ApiError> {
 
     // Initialize Docker client if container driver is selected
     let docker = if matches!(args.driver, DriverKind::Container) {
+        args.container_proxy_transport.log_posture();
         let docker = bollard::Docker::connect_with_local_defaults()
             .map_err(|e| ApiError::Driver(format!("failed to connect to Docker: {e}")))?;
         match docker.version().await {
@@ -935,7 +938,7 @@ async fn main() -> Result<(), ApiError> {
         container_image: args.container_image.clone(),
         container_mediation: args.container_mediation,
         container_network: args.container_network.clone(),
-        container_proxy_unix: args.container_proxy_unix,
+        container_proxy: args.container_proxy_transport,
         container_pool,
         docker,
         trust_gate,
@@ -1596,6 +1599,22 @@ async fn spawn_container_pod(
     // Acquire semaphore permit
     let permit = lifecycle::acquire_launch_slot(state.container_pool.as_ref(), deadline).await?;
 
+    // Before anything is written: an image too old for the transport is refused by
+    // name (#2446). An image that cannot be inspected is "cannot tell" (`admit_image`), said so
+    // here; create then reports a missing image itself.
+    if state.container_mediation.runs_tool_proxy() {
+        let labels = match docker.inspect_image(&state.container_image).await {
+            Ok(inspected) => inspected.config.and_then(|c| c.labels),
+            Err(error) => {
+                tracing::info!(image = %state.container_image, %error,
+                    "could not inspect the container image; its tool-proxy release is unknown");
+                None
+            }
+        };
+        let version = container_transport::image_version(labels.as_ref());
+        container_transport::admit_image(state.container_proxy, &state.container_image, version)?;
+    }
+
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
     let announce_path = pod_dir.join("proxy.addr");
@@ -1619,7 +1638,7 @@ async fn spawn_container_pod(
     let mediation = state.container_mediation;
     let proxy_mode = mediation.runs_tool_proxy();
     let mut env = container_env(state, spec, id, &sandbox_token, &spec_yaml, audit, memory).await;
-    if proxy_mode && state.container_proxy_unix {
+    if proxy_mode && state.container_proxy.is_host_verified() {
         pod_identity_files::provision(state, pod_dir, id).await?;
         env.extend(
             pod_identity_files::Files::at(Path::new("/data/pod"))
@@ -1774,15 +1793,16 @@ async fn spawn_container_pod(
         let mut signed_proxy_opt = None;
 
         if proxy_mode {
-            let addr = wait_for_container_announce(&announce_path, docker.as_ref(), &container_id).await?;
+            let addr = wait_for_container_announce(&announce_path, docker.as_ref(), &container_id)
+                .await
+                .map_err(|e| container_transport::unannounced(state.container_proxy, e))?;
             let target = container_transport::target(state, &pod_dir_abs, &addr)?;
+            container_transport::ensure_reachable(&target).await?;
             let proxy = signed_proxy::SignedProxy::start_with_drand(
                 target,
                 Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-                // Env-provisioned container: shared-secret approvals.
-                Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
-                    state.proxy_approval_secret.as_bytes().to_vec(),
-                ))),
+                // Ed25519 on the socket, the shared secret on `tcp-hmac`: what the container verifies.
+                Some(container_transport::approval_signing(state)),
                 state.proxy_actor.clone(),
                 state.drand_config.clone(),
             )

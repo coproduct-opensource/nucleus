@@ -21,11 +21,9 @@ pub(crate) async fn container_env(
         if let Some(grant) = memory {
             env.extend(grant.container_env());
         }
+        // The transport's entries, approval authority included: a public key on the socket,
+        // the shared secret only on the deprecated `tcp-hmac` transport.
         env.extend(container_transport::proxy_env(state));
-        env.push(format!(
-            "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET={}",
-            state.proxy_approval_secret
-        ));
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
         art12_collector::provision_container_env(&mut env);
 
