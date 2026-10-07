@@ -24,6 +24,7 @@ pub mod bond;
 pub mod functor;
 pub mod manifest;
 pub mod pin;
+pub mod rung;
 
 pub use bond::{
     AmountMicro, BOND_BPS_SCALE, BOND_DOMAIN, Bond, BondError, BondStanding, ESCROW_DOMAIN,
@@ -43,9 +44,10 @@ pub use functor::{
 };
 pub use manifest::{
     AccumulationManifest, MANIFEST_DOMAIN, ManifestError, canonical_manifest_bytes,
-    manifest_from_fact, sign_manifest, verify_manifest,
+    manifest_from_fact, sign_manifest, verify_manifest, verify_manifest_rung,
 };
 pub use pin::{
     CHECKPOINT_DOMAIN, LogIdentity, PinnedLog, SignedCheckpoint, TrustRejection, accept_fact,
     canonical_checkpoint_bytes, sign_checkpoint,
 };
+pub use rung::{RUNG_EVIDENCE_DOMAIN, RungError, RungEvidence, VerifiedRung, verify_rung_evidence};

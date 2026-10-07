@@ -24,9 +24,10 @@
 //! over the full lineage DAG + real olog instance digests remains future work,
 //! tracked with the olog Lean `sorry` budget.)
 
-use nucleus_externality::AssuranceRung;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::rung::VerifiedRung;
 
 /// Content-addressed identifier of a witness (the source-category object id).
 /// 32 bytes — a BLAKE3/SHA-256-class digest. P2.2 unifies this with
@@ -76,13 +77,17 @@ pub enum AdmissionVerdict {
 /// A source-category object: an admitted witness plus the attributes it *proved*.
 /// These attributes are the witness's own — `Gov` may carry them through but must
 /// never strengthen them (the no-upgrade invariant).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Deserialize`: the rung is a [`VerifiedRung`], which only a verifier
+/// mints, so a node cannot be read off the wire with a rung already in it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WitnessNode {
     pub digest: WitnessDigest,
     /// The olog spec this witness claims to satisfy.
     pub task_spec_hash: [u8; 32],
-    /// The assurance rung the witness's evidence actually reached.
-    pub rung: AssuranceRung,
+    /// The assurance rung a verifier derived from the witness's evidence —
+    /// minted by [`crate::verify_rung_evidence`], never typed by a caller.
+    pub rung: VerifiedRung,
     /// How well-proven the witness's claim is.
     pub tier: Tier,
     /// The kernel's verdict on this witness.
@@ -93,14 +98,18 @@ pub struct WitnessNode {
 
 /// A target-category object: a categorical **fact** in the olog. The accumulated,
 /// queryable record of one piece of proven work.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Deserialize`, for the same reason as [`WitnessNode`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OlogFact {
     /// The olog spec this fact is an instance of.
     pub task_spec_hash: [u8; 32],
     /// Digest of the olog instance Gov produced (P2.2: the real instance digest).
     pub instance_digest: [u8; 32],
-    /// Carried through from the witness — NEVER upgraded.
-    pub rung: AssuranceRung,
+    /// Carried through from the witness — NEVER upgraded. A [`VerifiedRung`]
+    /// has no public constructor, so a `Gov` outside this crate cannot
+    /// manufacture a stronger one: it can only pass on a rung it was given.
+    pub rung: VerifiedRung,
     /// Carried through from the witness — NEVER upgraded.
     pub tier: Tier,
 }
@@ -216,12 +225,13 @@ impl WitnessSource for FakeWitnessSource {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleus_externality::AssuranceRung;
 
     fn node(rung: AssuranceRung, tier: Tier) -> WitnessNode {
         WitnessNode {
             digest: WitnessDigest([7u8; 32]),
             task_spec_hash: [9u8; 32],
-            rung,
+            rung: VerifiedRung::for_test(rung, [5u8; 32]),
             tier,
             verdict: AdmissionVerdict::Admitted,
             parent: None,
@@ -240,10 +250,11 @@ mod tests {
             AssuranceRung::ZkUpperEnvelope,
         ] {
             for &tier in &[Tier::Proven, Tier::Modeled, Tier::Analogy] {
-                let fact = g.map_witness(&node(rung, tier));
-                assert_eq!(fact.rung, rung, "Gov must carry the rung through");
+                let n = node(rung, tier);
+                let fact = g.map_witness(&n);
+                assert_eq!(fact.rung, n.rung, "Gov must carry the rung through");
                 assert_eq!(fact.tier, tier, "Gov must carry the tier through");
-                assert!(fact.rung <= rung, "Gov must never UPGRADE the rung");
+                assert!(fact.rung.rung() <= rung, "Gov must never UPGRADE the rung");
             }
         }
     }
