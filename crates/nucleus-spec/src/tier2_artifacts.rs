@@ -86,24 +86,32 @@ pub struct Kernel {
 /// rule that holds here; list it with `?list-type=2&prefix=firecracker-ci/`
 /// and read the `.config` beside the image before changing this.
 ///
-/// # Why the upstream URL and not a nucleus mirror
+/// # Why a nucleus release mirror and not the upstream URL
 ///
 /// A dated prefix is CI output, and nothing promises it stays. So every
-/// release from this one on also publishes these exact bytes as a signed
-/// asset (`cargo xtask guest-kernel-mirror`, [`Kernel::mirror_asset_name`]).
-/// The pin cannot NAME that asset yet: it exists only once a tag has built
-/// it, and this pin has to work before then. The digest, not the URL, is the
-/// binding, so moving `url` to the mirror after the next release changes
-/// where the bytes come from and not which bytes are accepted.
+/// release from v2.6.0 on also publishes these exact bytes as a signed asset
+/// (`cargo xtask guest-kernel-mirror`, [`Kernel::mirror_asset_name`]), and the
+/// pin names v2.6.0's mirror. The upstream object it mirrors is
+/// `https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/<arch>/vmlinux-6.1.186`
+/// (#3270 pinned that URL with these digests). The digest, not the URL, is
+/// the binding: the move changed where the bytes come from and not which
+/// bytes are accepted, and the v2.6.0 mirror's sha256 was checked equal to
+/// both digests (and its build provenance to `release.yml` at the tag) before
+/// the URL moved.
+///
+/// A release's mirror job fetches from this URL, so later releases re-mirror
+/// the same bytes from v2.6.0's asset; re-pinning the kernel itself still goes
+/// through the upstream bucket, then a release, then this mirror move.
 pub const KERNEL_AARCH64: Kernel = Kernel {
-    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/aarch64/vmlinux-6.1.186",
+    url: "https://github.com/coproduct-opensource/nucleus/releases/download/v2.6.0/nucleus-guest-kernel-2.6.0-aarch64.vmlinux",
     sha256: "5699d939bd168c1fcc4aa8c217344f00b8cf2b7dffbf973af3d9440ce766a6bd",
 };
 
-/// The guest kernel for x86_64 hosts. Same dated prefix and kernel version as
-/// [`KERNEL_AARCH64`], with the same Landlock configuration.
+/// The guest kernel for x86_64 hosts. The same upstream dated prefix and
+/// kernel version as [`KERNEL_AARCH64`], with the same Landlock
+/// configuration, from the same release mirror.
 pub const KERNEL_X86_64: Kernel = Kernel {
-    url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/x86_64/vmlinux-6.1.186",
+    url: "https://github.com/coproduct-opensource/nucleus/releases/download/v2.6.0/nucleus-guest-kernel-2.6.0-x86_64.vmlinux",
     sha256: "21c1b167482f3c10428b8fd5e08bbeea14258ce74479730712dc11a4f34d2029",
 };
 
@@ -790,24 +798,67 @@ mod tests {
         assert_ne!(KERNEL_AARCH64.sha256, KERNEL_X86_64.sha256);
     }
 
-    /// Each pin fetches its own architecture's image, and both are the same
-    /// kernel build: a re-pin that moves one architecture and forgets the other
-    /// would boot two different kernels (one without Landlock) under one tree.
-    #[test]
-    fn both_kernels_are_the_same_build_for_their_own_architecture() {
-        for (arch, k) in [("aarch64", KERNEL_AARCH64), ("x86_64", KERNEL_X86_64)] {
-            assert!(k.url.contains(&format!("/{arch}/")), "{arch}: {}", k.url);
+    /// The release whose mirror asset `k` names for `arch`, or why it names
+    /// none: the URL must be exactly this repository's
+    /// `releases/download/v<V>/` followed by [`Kernel::mirror_asset_name`] at
+    /// the same `V` and architecture.
+    fn mirror_release_of(k: Kernel, arch: &str) -> Result<String, String> {
+        let prefix = format!("https://github.com/{RELEASE_REPO}/releases/download/v");
+        let rest = k
+            .url
+            .strip_prefix(&prefix)
+            .ok_or_else(|| format!("{arch}: {} is not a release mirror", k.url))?;
+        let (version, asset) = rest
+            .split_once('/')
+            .ok_or_else(|| format!("{arch}: {} has no asset", k.url))?;
+        if asset != Kernel::mirror_asset_name(version, arch) {
+            return Err(format!(
+                "{arch}: {asset} is not {}",
+                Kernel::mirror_asset_name(version, arch)
+            ));
         }
-        let build = |k: Kernel| {
-            let (prefix, file) = k.url.rsplit_once('/').expect("a path");
-            let (prefix, _arch) = prefix.rsplit_once('/').expect("an arch segment");
-            (prefix.to_string(), file.to_string())
-        };
-        assert_eq!(build(KERNEL_AARCH64), build(KERNEL_X86_64));
-        assert_ne!(
-            Kernel::mirror_asset_name("2.6.0", "aarch64"),
-            Kernel::mirror_asset_name("2.6.0", "x86_64")
+        Ok(version.to_string())
+    }
+
+    /// Each pin fetches its own architecture's mirror asset, from one release,
+    /// and that release is no newer than [`GUEST_RELEASE`] (a mirror exists
+    /// only once a tag has built it). A re-pin that moves one architecture and
+    /// forgets the other would boot two different kernels (one without
+    /// Landlock) under one tree; one that names an unpublished release, or
+    /// another architecture's asset, would 404 or fail its own digest.
+    #[test]
+    fn both_kernels_are_one_release_mirror_for_their_own_architecture() {
+        let a = mirror_release_of(KERNEL_AARCH64, "aarch64");
+        let x = mirror_release_of(KERNEL_X86_64, "x86_64");
+        assert_eq!(a, x, "the two kernels name different mirrors");
+        let release = a.expect("the aarch64 kernel names a release mirror");
+        let (mirror, pin) = (parse_release(&release), parse_release(GUEST_RELEASE));
+        assert!(
+            mirror.is_some() && mirror <= pin,
+            "the kernel mirror v{release} is not a release at or before {GUEST_RELEASE}"
         );
+        assert_ne!(
+            Kernel::mirror_asset_name(&release, "aarch64"),
+            Kernel::mirror_asset_name(&release, "x86_64")
+        );
+    }
+
+    /// The mirror check has teeth: the upstream URL, another architecture's
+    /// asset, and a version that disagrees between path and asset name are
+    /// each refused.
+    #[test]
+    fn a_kernel_url_off_the_mirror_is_refused() {
+        let upstream = Kernel {
+            url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260930-0dd90d4c672d-0/aarch64/vmlinux-6.1.186",
+            ..KERNEL_AARCH64
+        };
+        assert!(mirror_release_of(upstream, "aarch64").is_err());
+        assert!(mirror_release_of(KERNEL_X86_64, "aarch64").is_err());
+        let skewed = Kernel {
+            url: "https://github.com/coproduct-opensource/nucleus/releases/download/v2.6.0/nucleus-guest-kernel-2.5.0-aarch64.vmlinux",
+            ..KERNEL_AARCH64
+        };
+        assert!(mirror_release_of(skewed, "aarch64").is_err());
     }
 
     /// A pinned guest layer must be a digest the spec parser accepts, or the
