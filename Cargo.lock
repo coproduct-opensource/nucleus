@@ -14035,6 +14035,7 @@ dependencies = [
  "clap",
  "flate2",
  "hex",
+ "nucleus-action-key",
  "nucleus-node-evidence",
  "nucleus-oci-rootfs",
  "nucleus-spec",

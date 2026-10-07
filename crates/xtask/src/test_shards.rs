@@ -496,6 +496,7 @@ fn step(
 /// What the libs side of a split selects, computed once and shared by every split gate: the
 /// scope, the writes (the stub regions), the runner's stub arguments, and which side needs the
 /// SDK step.
+#[derive(Debug)]
 pub struct Selection {
     pub include: Vec<String>,
     pub excludes: Vec<String>,
@@ -503,6 +504,102 @@ pub struct Selection {
     pub stub_args: Vec<String>,
     pub libs_sdk: bool,
     pub node_sdk: bool,
+    /// Tracked files the node group's builds read at compile time outside their closure
+    /// ([`CompileRead`]). clippy-node's scope must cover each one, as test-node's does.
+    pub node_reads: Vec<String>,
+    /// The same for the libs group: clippy-libs's scope must cover each one.
+    pub libs_reads: Vec<String>,
+}
+
+/// A compile-time read that leaves the reading package's build closure: an `include_str!` or
+/// `include_bytes!` with a literal path, resolved repo-relative, found by
+/// `nucleus_action_key::escapes` (a `proc_macro2` token walk, not a regex: gatehouse F-144/F-152).
+///
+/// A shard's scope is its closure's crates plus what was measured; a read like this is in
+/// neither unless someone measured it, and a pod materialized without it fails to COMPILE
+/// (`couldn't read ...`, exit 101). nucleus#3287 was that: `nucleus-node` reads
+/// `examples/egress-git-remote/upstreams.toml`, clippy-node's scope did not have it, and the
+/// gate went red on a correct change (docs/findings/compile-time-reads-in-scope.md). So the
+/// generator derives these from the source instead of waiting for a measurement.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CompileRead {
+    /// The workspace package whose build (all targets, its dev-dependencies, their normal and
+    /// build closure) evaluates the macro.
+    pub package: String,
+    /// The repo-relative `.rs` file holding the macro call.
+    pub site: String,
+    /// The repo-relative path it reads.
+    pub target: String,
+    /// Whether git tracks the target. An untracked one cannot be in any scope; it must be a
+    /// declared write of an earlier step (the verifier SDK's `pkg/`), or the generation is refused.
+    pub tracked: bool,
+}
+
+/// Every [`CompileRead`] of every member, and the macro sites whose path a token walk cannot
+/// resolve (`concat!(env!(..), ..)`, `OUT_DIR` joins), which are reported, not assumed covered.
+pub fn compile_reads(
+    root: &Path,
+    members: &[Member],
+    files: &[String],
+) -> Result<(Vec<CompileRead>, Vec<String>)> {
+    use nucleus_action_key::{closure::Workspace, escapes};
+    let by_name: BTreeMap<&str, &Member> = members.iter().map(|m| (m.name.as_str(), m)).collect();
+    // The closure is THIS generator's (dev-dependencies at the root only), not the action key's
+    // resolve graph: it is what building one package's targets compiles, which is what a pod
+    // must be able to read.
+    let ws = Workspace {
+        dirs: members
+            .iter()
+            .map(|m| (m.name.clone(), m.dir.clone()))
+            .collect(),
+        closures: members
+            .iter()
+            .map(|m| (m.name.clone(), closure(&by_name, &m.name)))
+            .collect(),
+    };
+    let mut reads = Vec::new();
+    let mut unresolvable = BTreeSet::new();
+    for m in members {
+        let scan = escapes::scan(&ws, root, files, &m.name)
+            .with_context(|| format!("scanning {}'s compile-time reads", m.name))?;
+        for e in scan.escapes {
+            reads.push(CompileRead {
+                package: m.name.clone(),
+                site: e.site,
+                target: e.target,
+                tracked: e.tracked,
+            });
+        }
+        for u in scan.unresolvable {
+            unresolvable.insert(format!("{}!({}) in {}", u.macro_name, u.argument, u.site));
+        }
+    }
+    reads.sort();
+    Ok((reads, unresolvable.into_iter().collect()))
+}
+
+/// Is `path` selected by a scope: matched by an include and by no exclude?
+fn in_scope(path: &str, include: &[String], exclude: &[String]) -> bool {
+    include.iter().any(|i| glob_match(i, path)) && !excluded(path, exclude)
+}
+
+/// Refuse a scope that misses a compile-time read of the group it builds.
+fn reads_covered(
+    gate: &str,
+    reads: &[String],
+    include: &[String],
+    exclude: &[String],
+) -> Result<()> {
+    let missing: Vec<&String> = reads
+        .iter()
+        .filter(|r| !in_scope(r, include, exclude))
+        .collect();
+    ensure!(
+        missing.is_empty(),
+        "{gate}'s scope misses files its build reads at compile time (include_str!/include_bytes!): \
+         {missing:?} -- its pod would fail to compile"
+    );
+    Ok(())
 }
 
 /// The two test gate definitions, as JSON values.
@@ -513,7 +610,7 @@ pub fn generate(
     members: &[Member],
     files: &[String],
 ) -> Result<(Value, Value)> {
-    let (node, libs, _) = generate_with_selection(layout_text, base, members, files)?;
+    let (node, libs, _) = generate_with_selection(layout_text, base, members, files, &[])?;
     Ok((node, libs))
 }
 
@@ -523,6 +620,7 @@ pub fn generate_with_selection(
     base: &Value,
     members: &[Member],
     files: &[String],
+    reads: &[CompileRead],
 ) -> Result<(Value, Value, Selection)> {
     let layout: Layout = toml::from_str(layout_text).context("parsing the shard layout")?;
     let by_name: BTreeMap<&str, &Member> = members.iter().map(|m| (m.name.as_str(), m)).collect();
@@ -555,7 +653,7 @@ pub fn generate_with_selection(
     );
 
     let libs_names: BTreeSet<&str> = libs.iter().map(|m| m.name.as_str()).collect();
-    let fixtures: BTreeSet<String> = layout
+    let mut fixtures: BTreeSet<String> = layout
         .fixtures
         .iter()
         .filter(|(c, _)| libs_names.contains(c.as_str()))
@@ -564,6 +662,54 @@ pub fn generate_with_selection(
     let libs_sdk = libs
         .iter()
         .any(|m| closure(&by_name, &m.name).contains(SDK_CRATE));
+
+    // Compile-time reads. An untracked target is no scope's to hold: it must be what an earlier
+    // step writes, or no pod can compile the reader.
+    let unproduced: Vec<String> = reads
+        .iter()
+        .filter(|r| !r.tracked && !layout.writes.iter().any(|w| glob_match(w, &r.target)))
+        .map(|r| {
+            format!(
+                "{} reads {} (untracked, and no step writes it)",
+                r.site, r.target
+            )
+        })
+        .collect();
+    ensure!(
+        unproduced.is_empty(),
+        "compile-time reads nothing provides: {unproduced:?}"
+    );
+    let group_reads = |in_node: bool| -> Vec<String> {
+        let mut v: Vec<String> = reads
+            .iter()
+            .filter(|r| r.tracked && node.contains(r.package.as_str()) == in_node)
+            .map(|r| r.target.clone())
+            .collect();
+        v.sort();
+        v.dedup();
+        v
+    };
+    let (node_reads_ct, libs_reads) = (group_reads(true), group_reads(false));
+    // A libs read the measured selection does not already hold becomes a fixture: one more
+    // pattern only when nothing covers it, since every pattern costs derivation rows (F-208).
+    let node_dirs: Vec<String> = layout
+        .node
+        .packages
+        .iter()
+        .map(|n| format!("{}/", by_name[n.as_str()].dir))
+        .collect();
+    for r in &libs_reads {
+        let held = layout
+            .global
+            .iter()
+            .chain(fixtures.iter())
+            .chain(layout.sdk_reads.iter().filter(|_| libs_sdk))
+            .any(|p| glob_match(p, r))
+            || (r.starts_with("crates/") && !node_dirs.iter().any(|d| r.starts_with(d.as_str())));
+        if !held {
+            fixtures.insert(r.clone());
+        }
+    }
     let node_sdk = node
         .iter()
         .any(|n| closure(&by_name, n).contains(SDK_CRATE));
@@ -723,12 +869,20 @@ pub fn generate_with_selection(
 
     let runner = layout.runner.first().context("the runner is an argv")?;
     let base_scope = &base["scope"];
-    let node_reads: Vec<String> = base_scope["include"]
+    let mut node_reads: Vec<String> = base_scope["include"]
         .as_array()
         .context("base.json scope has no include")?
         .iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect();
+    let extra: Vec<String> = node_reads_ct
+        .iter()
+        .filter(|r| !in_scope(r, &node_reads, &[]))
+        .cloned()
+        .collect();
+    node_reads.extend(extra);
+    reads_covered("test-node", &node_reads_ct, &node_reads, &[])?;
+    reads_covered("test-libs", &libs_reads, &include, &excludes)?;
 
     let mut node_gate = base.clone();
     node_gate["scope"] = json!({
@@ -783,6 +937,8 @@ pub fn generate_with_selection(
         stub_args,
         libs_sdk,
         node_sdk,
+        node_reads: node_reads_ct,
+        libs_reads,
     };
     Ok((node_gate, libs_gate, selection))
 }
@@ -872,6 +1028,15 @@ pub fn generate_clippy(
         .iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect();
+    // The base's include is the unsplit gate's hand-written list. Add the compile-time reads it
+    // does not cover, one path each (nucleus#3287: examples/egress-git-remote/upstreams.toml).
+    let extra: Vec<String> = sel
+        .node_reads
+        .iter()
+        .filter(|r| !in_scope(r, &node_reads, &[]))
+        .cloned()
+        .collect();
+    node_reads.extend(extra);
     // The base is the unsplit gate's list, written before its passes ran through the runner. The
     // runner is built in the pod, so its directory is an input: take it from the layout's
     // `global`, the one place the other shards get it from.
@@ -886,6 +1051,7 @@ pub fn generate_clippy(
             node_reads.push(g.clone());
         }
     }
+    reads_covered("clippy-node", &sel.node_reads, &node_reads, &[])?;
 
     for d in &c.drop {
         ensure!(
@@ -907,6 +1073,7 @@ pub fn generate_clippy(
         .collect();
     libs_include.extend(c.reads.iter().cloned());
     dedup_keep_order(&mut libs_include);
+    reads_covered("clippy-libs", &sel.libs_reads, &libs_include, &sel.excludes)?;
     let mut libs_steps = Vec::new();
     if sel.libs_sdk {
         libs_steps.push(step(
@@ -1361,7 +1528,8 @@ pub fn run(root: &Path, check: bool, gate: Option<&Path>) -> Result<()> {
     .with_context(|| format!("parsing {BASE}"))?;
     let members = members_from_metadata(&metadata(root)?, root)?;
     let files = tracked(root)?;
-    let (node, libs, sel) = generate_with_selection(&layout, &base, &members, &files)?;
+    let (reads, unresolvable) = compile_reads(root, &members, &files)?;
+    let (node, libs, sel) = generate_with_selection(&layout, &base, &members, &files, &reads)?;
     let clippy = match fs::read_to_string(root.join(CLIPPY_BASE)) {
         Ok(text) => {
             let cbase: Value =
@@ -1428,6 +1596,17 @@ pub fn run(root: &Path, check: bool, gate: Option<&Path>) -> Result<()> {
         if check { "OK" } else { "generated" },
         n_in + n_ex
     );
+    println!(
+        "compile-time reads leaving their closure: {} (node {}, libs {}); unresolvable sites, \
+         NOT shown covered: {}",
+        reads.len(),
+        sel.node_reads.len(),
+        sel.libs_reads.len(),
+        unresolvable.len()
+    );
+    for u in &unresolvable {
+        println!("  unresolvable: {u}");
+    }
     Ok(())
 }
 
@@ -1720,6 +1899,149 @@ lib-a = ["crates/node/proto/x.proto", "docs/fixture.md"]
                 "crates/node/src/**"
             ]
         );
+    }
+
+    fn read(package: &str, target: &str, tracked: bool) -> CompileRead {
+        CompileRead {
+            package: package.into(),
+            site: format!("crates/{package}/src/lib.rs"),
+            target: target.into(),
+            tracked,
+        }
+    }
+
+    const CLIPPY_LAYOUT: &str = r#"
+[clippy]
+command = ["cargo", "clippy", "--all-targets"]
+lints = ["--", "-D", "warnings"]
+replaces = ["Clippy"]
+reads = ["clippy.toml"]
+[clippy.node]
+timeout_s = 1
+measured_ms = 1
+[clippy.libs]
+timeout_s = 1
+measured_ms = 1
+"#;
+
+    fn clippy_base() -> Value {
+        json!({
+            "scope": {"include": ["Cargo.toml", "crates/**", "examples/shared/**"], "exclude": [], "external": [], "git_history": false},
+            "cap": {"fs_read": ["crates/**"], "fs_write": ["target/**"]},
+            "steps": [
+                {"program": "scripts/sdk.sh", "reads": [], "writes": ["target/**"]},
+                {"program": "cargo", "args": ["clippy", "--all-targets", "--", "-D", "warnings"], "reads": [], "writes": ["target/**"]}
+            ],
+            "tools": ["cargo@1"],
+            "timeout_s": 1
+        })
+    }
+
+    /// nucleus#3287: a node crate's `include_str!` of a file outside every scope pattern. Without
+    /// the read the generated clippy-node scope is the base's, which lacks it, and the pod fails
+    /// to compile; with it, the path is added, once, and only where nothing covers it already.
+    #[test]
+    fn a_compile_time_read_outside_the_scope_is_added_to_it() {
+        let members = vec![
+            member("node", &[("bin", "src/main.rs")], &[("lib-a", "normal")]),
+            member("lib-a", &[("lib", "src/lib.rs")], &[]),
+        ];
+        let layout = format!("{LAYOUT_TEXT}{CLIPPY_LAYOUT}");
+        let reads = vec![
+            read("node", "examples/egress/upstreams.toml", true),
+            read("node", "examples/shared/x.toml", true),
+            read("lib-a", "crates/node/proto/y.proto", true),
+            read("lib-a", "docs/other.md", true),
+            read("lib-a", "target/gen.bin", false),
+        ];
+        let (_, libs, sel) =
+            generate_with_selection(&layout, &base(), &members, &files(), &reads).unwrap();
+        let (cnode, clibs) = generate_clippy(&layout, &clippy_base(), &sel, &files())
+            .unwrap()
+            .unwrap();
+        let inc = strs(&cnode["scope"]["include"]);
+        assert_eq!(
+            inc,
+            vec![
+                "Cargo.toml",
+                "crates/**",
+                "examples/shared/**",
+                "examples/egress/upstreams.toml"
+            ],
+            "only the uncovered read is added"
+        );
+        assert_eq!(strs(&cnode["cap"]["fs_read"]), inc);
+        assert_eq!(strs(&cnode["steps"][0]["reads"]), inc);
+        // A libs crate reading inside an excluded node crate keeps that file; one reading
+        // outside crates/ gets an include.
+        for g in [&libs, &clibs] {
+            let (i, e) = (strs(&g["scope"]["include"]), strs(&g["scope"]["exclude"]));
+            for r in ["crates/node/proto/y.proto", "docs/other.md"] {
+                assert!(in_scope(r, &i, &e), "{r} not in {i:?} - {e:?}");
+            }
+        }
+        // Without the reads, the base scope stands and misses the file.
+        let (_, _, bare) =
+            generate_with_selection(&layout, &base(), &members, &files(), &[]).unwrap();
+        let (cnode, _) = generate_clippy(&layout, &clippy_base(), &bare, &files())
+            .unwrap()
+            .unwrap();
+        assert!(!in_scope(
+            "examples/egress/upstreams.toml",
+            &strs(&cnode["scope"]["include"]),
+            &[]
+        ));
+    }
+
+    #[test]
+    fn an_untracked_compile_time_read_no_step_writes_is_refused() {
+        let members = vec![member("node", &[("bin", "src/main.rs")], &[])];
+        let reads = vec![read("node", "sdks/pkg/x.wasm", false)];
+        let err =
+            generate_with_selection(LAYOUT_TEXT, &base(), &members, &files(), &reads).unwrap_err();
+        assert!(err.to_string().contains("sdks/pkg/x.wasm"), "{err}");
+    }
+
+    /// The committed generation, against what the workspace's sources read at compile time
+    /// TODAY. `test-shards --check` decides the same, but only runs when `.gatehouse/**` changes;
+    /// nucleus#3287 added an `include_str!` and touched nothing there. This runs in test-node,
+    /// whose scope is `**`, so a new read outside a shard's scope reds here, in the change that
+    /// adds it, with the file named, instead of as `couldn't read` in a clippy pod.
+    #[test]
+    fn the_committed_shard_scopes_cover_every_compile_time_read() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let members = members_from_metadata(&metadata(root).unwrap(), root).unwrap();
+        let files = tracked(root).unwrap();
+        let (reads, _) = compile_reads(root, &members, &files).unwrap();
+        let layout: Layout =
+            toml::from_str(&fs::read_to_string(root.join(LAYOUT)).unwrap()).unwrap();
+        let node: BTreeSet<&str> = layout.node.packages.iter().map(String::as_str).collect();
+        let gate = |p: &str| -> Value {
+            serde_json::from_str(&fs::read_to_string(root.join(p)).unwrap()).unwrap()
+        };
+        for (path, in_node) in [
+            (NODE_OUT, true),
+            (CLIPPY_NODE_OUT, true),
+            (LIBS_OUT, false),
+            (CLIPPY_LIBS_OUT, false),
+        ] {
+            let g = gate(path);
+            let want: Vec<String> = reads
+                .iter()
+                .filter(|r| r.tracked && node.contains(r.package.as_str()) == in_node)
+                .map(|r| r.target.clone())
+                .collect();
+            reads_covered(
+                path,
+                &want,
+                &strs(&g["scope"]["include"]),
+                &strs(&g["scope"]["exclude"]),
+            )
+            .unwrap();
+        }
     }
 
     /// The committed gate definitions, against the tree: every manifest a step builds with
