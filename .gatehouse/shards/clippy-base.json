@@ -19,8 +19,7 @@
       "sdks/verifier-js/test/**",
       "sdks/verifier-js/tests/**",
       "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**",
-      "examples/egress-git-remote/upstreams.toml"
+      "examples/independent-conformance/**"
     ],
     "exclude": [],
     "external": [],
@@ -65,8 +64,7 @@
       "sdks/verifier-js/test/**",
       "sdks/verifier-js/tests/**",
       "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**",
-      "examples/egress-git-remote/upstreams.toml"
+      "examples/independent-conformance/**"
     ],
     "fs_write": [
       "target/**",
@@ -102,8 +100,7 @@
         "sdks/verifier-js/test/**",
         "sdks/verifier-js/tests/**",
         "sdks/verifier-js/demo-fixtures/**",
-        "examples/independent-conformance/**",
-        "examples/egress-git-remote/upstreams.toml"
+        "examples/independent-conformance/**"
       ],
       "writes": [
         "target/**",
@@ -142,8 +139,7 @@
         "sdks/verifier-js/test/**",
         "sdks/verifier-js/tests/**",
         "sdks/verifier-js/demo-fixtures/**",
-        "examples/independent-conformance/**",
-        "examples/egress-git-remote/upstreams.toml"
+        "examples/independent-conformance/**"
       ],
       "writes": [
         "target/**",
@@ -183,8 +179,7 @@
         "sdks/verifier-js/test/**",
         "sdks/verifier-js/tests/**",
         "sdks/verifier-js/demo-fixtures/**",
-        "examples/independent-conformance/**",
-        "examples/egress-git-remote/upstreams.toml"
+        "examples/independent-conformance/**"
       ],
       "writes": [
         "target/**",
