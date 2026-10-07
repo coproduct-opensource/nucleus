@@ -222,7 +222,7 @@ pub fn run(a: Args) -> Result<i32> {
     let work = workspace().context("building the workspace")?;
     let web = mock_web::MockWeb::start().context("starting the local web server")?;
     model::set_mock_addr(web.addr);
-    let (proxy_url, auth_secret, _keep) = match a.policy {
+    let (proxy_url, _keep) = match a.policy {
         Policy::Grant => {
             let run = crate::agency::spawn_local_under_grant(
                 &a.goal,
@@ -234,7 +234,6 @@ pub fn run(a: Args) -> Result<i32> {
             .context("spawning the tool-proxy")?;
             (
                 run.proxy_url.clone(),
-                run.auth_secret.clone(),
                 Box::new(run) as Box<dyn std::any::Any>,
             )
         }
@@ -253,19 +252,17 @@ pub fn run(a: Args) -> Result<i32> {
             .context("spawning the tool-proxy")?;
             (
                 run.proxy_url.clone(),
-                run.auth_secret.clone(),
                 Box::new(run) as Box<dyn std::any::Any>,
             )
         }
     };
     let url = Arc::new(proxy_url);
-    let secret = Arc::new(auth_secret);
     let fetch = a.policy == Policy::Trifecta;
     let t0 = Instant::now();
 
     let handles: Vec<_> = (0..a.clients)
         .map(|client| {
-            let (url, secret) = (Arc::clone(&url), Arc::clone(&secret));
+            let url = Arc::clone(&url);
             let ops = a.ops;
             let verbose = a.verbose;
             let seed = a.seed.wrapping_add(client as u64);
@@ -278,8 +275,7 @@ pub fn run(a: Args) -> Result<i32> {
                         continue;
                     };
                     let invoke = nanos_since(t0);
-                    let (status, text, _) =
-                        crate::signed_tool_call(&url, &secret, "nucleus-stress", route, body)?;
+                    let (status, text, _) = crate::tool_call(&url, route, body)?;
                     let ret = nanos_since(t0);
                     let out = normalise(&op, status, &text);
                     if verbose {

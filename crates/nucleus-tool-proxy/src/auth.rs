@@ -291,6 +291,17 @@ pub enum AuthError {
     /// signature out early.
     #[error("replay cache is full of live entries; retry after the skew window")]
     ReplayCapacity,
+
+    /// The request authenticated on the shared-secret tier, which carries no
+    /// authority since #2446 step 2: it admits only `/v1/health`, and that
+    /// route is answered before authentication.
+    #[error(
+        "the shared-secret (HMAC) tier carries no authority since #2446: it admits only \
+         /v1/health. Reach this proxy over its peer-verified Unix socket (--listen-unix), \
+         vsock, or mTLS; a node reaching a container over --container-proxy-transport \
+         tcp-hmac needs a tool-proxy image older than SharedSecretTierRetired"
+    )]
+    SharedSecretTierRetired,
 }
 
 /// Verify an HTTP request with standard timestamp-based authentication.
@@ -347,6 +358,22 @@ pub fn verify_http(
         auth_method: AuthMethod::Hmac,
         identity_binding: IdentityBinding::PolicyOnly,
     })
+}
+
+/// What the shared-secret tier ([`AuthTier::Hmac`]) does with a request: refuse
+/// it (#2446 step 2).
+///
+/// The return type is the ceiling. It is an [`AuthError`] and never an
+/// [`AuthContext`], so no request authenticated by the shared secret can reach
+/// a handler with any authority at all. The signature is still checked first,
+/// so a caller learns whether its credential was wrong or merely powerless.
+/// The only route the tier could admit, `/v1/health`, is answered before
+/// authentication and never reaches here. Step 3 deletes the tier.
+pub fn refuse_shared_secret(headers: &HeaderMap, body: &[u8], auth: &AuthConfig) -> AuthError {
+    match verify_http(headers, body, auth) {
+        Ok(_powerless) => AuthError::SharedSecretTierRetired,
+        Err(e) => e,
+    }
 }
 
 /// Verify an HTTP request with optional drand anchoring.
@@ -785,7 +812,10 @@ pub enum AuthTier {
     PodPeer,
     /// The transport already proved the peer is the host.
     HostVsock,
-    /// Shared-secret HMAC. The residual path, for transports that prove nothing.
+    /// Shared-secret HMAC, the residual path for transports that prove nothing.
+    /// Its authority ceiling is ZERO since #2446 step 2: [`refuse_shared_secret`]
+    /// is all it reaches, and the only route it could admit, `/v1/health`, is
+    /// answered before authentication.
     Hmac,
     /// The request came through the workload door from a peer the kernel
     /// reported as running under `uid`, the workload's. It outranks every other
@@ -1301,8 +1331,9 @@ mod auth_tier_precedence_tests {
         );
     }
 
-    /// Without a host-verified transport the HMAC remains — this change removes
-    /// a secret where the transport replaces it, it does not remove auth.
+    /// Without a host-verified transport the HMAC tier is still the one
+    /// SELECTED, and since #2446 step 2 it refuses every request it receives
+    /// (`refuse_shared_secret`): selection is not authority.
     #[test]
     fn other_transports_still_require_the_hmac() {
         assert_eq!(
@@ -1625,6 +1656,25 @@ mod hmac_nonce_and_replay_tests {
             );
         }
         h
+    }
+
+    /// #2446 step 2: the shared-secret tier's ceiling is zero. A request the
+    /// secret signs correctly is refused as powerless, and one it does not sign
+    /// is refused for its credential, so the two stay distinguishable.
+    #[test]
+    fn the_shared_secret_tier_carries_no_authority() {
+        let body = br#"{"path":"notes.txt"}"#;
+        let signed = nucleus_client::sign_http_headers(SECRET, None, body);
+        assert!(matches!(
+            refuse_shared_secret(&headers_from(&signed), body, &auth()),
+            AuthError::SharedSecretTierRetired
+        ));
+        let wrong =
+            nucleus_client::sign_http_headers(b"another-secret-of-enough-length!", None, body);
+        assert!(matches!(
+            refuse_shared_secret(&headers_from(&wrong), body, &auth()),
+            AuthError::InvalidSignature
+        ));
     }
 
     fn auth() -> AuthConfig {

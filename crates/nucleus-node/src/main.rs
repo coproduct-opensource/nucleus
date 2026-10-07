@@ -81,6 +81,8 @@ mod bare_tier_opt_in;
 mod boot_trace;
 #[cfg(feature = "local-driver")]
 use bare_tier_opt_in::{local_driver_opt_in, unsandboxed_proxy_flag};
+#[cfg(feature = "local-driver")]
+mod local_transport;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
 // binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
@@ -1413,13 +1415,9 @@ async fn spawn_local_pod(
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
     let announce_path = pod_dir.join("proxy.addr");
+    let socket = local_transport::socket(pod_dir)?;
 
     let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
-    // Compute spec hash before writing (write consumes the string).
-    let spec_yaml_hash = {
-        use sha2::{Digest, Sha256};
-        hex::encode(Sha256::digest(spec_yaml.as_bytes()))
-    };
     tokio::fs::write(&spec_path, spec_yaml).await?;
 
     if spec.spec.network.is_some() {
@@ -1450,8 +1448,10 @@ async fn spawn_local_pod(
         .args(unsandboxed_proxy_flag(state.local_driver_opt_in))
         .arg("--spec")
         .arg(&spec_path)
-        .arg("--listen")
-        .arg("127.0.0.1:0")
+        // The peer-verified socket, not loopback TCP and a shared secret: that
+        // tier admits only /v1/health (#2446 step 2). See `local_transport`.
+        .arg("--listen-unix")
+        .arg(&socket)
         .arg("--announce-path")
         .arg(&announce_path)
         // The workload door, in the pod's own directory: the guest default
@@ -1459,14 +1459,10 @@ async fn spawn_local_pod(
         // host-side proxy. Bound only when the pod has a workload.
         .arg("--workload-door")
         .arg(std::path::absolute(pod_dir.join("workload.sock"))?);
-    command.env(
-        "NUCLEUS_TOOL_PROXY_AUTH_SECRET",
-        state.proxy_auth_secret.as_str(),
-    );
-    command.env(
-        "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
-        state.proxy_approval_secret.as_str(),
-    );
+    // No shared secret, and none inherited from the node's own environment.
+    command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
+    command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
+    command.envs(local_transport::proxy_env(state));
     let audit_path = pod_dir.join("audit.log");
     command.env(
         "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
@@ -1478,13 +1474,16 @@ async fn spawn_local_pod(
     provision_local_audit_env(&mut command, audit);
     memory_provisioning::local_command(&mut command, memory);
 
-    // Inject sandbox proof token so tool-proxy can verify it's in a managed sandbox.
-    let sandbox_token = nucleus_client::generate_sandbox_token(
-        state.proxy_auth_secret.as_bytes(),
-        &id.to_string(),
-        &spec_yaml_hash,
-    );
-    command.env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token);
+    // The sandbox proof is the pod's node-issued SVID (tier 2). The HMAC'd
+    // sandbox token needs a key this proxy no longer holds. Every local pod gets
+    // the files; an orchestrator pod also authenticates to the node with them.
+    // `main` always builds the identity manager; without one (a unit-test
+    // fixture) the real proxy finds no sandbox proof and refuses to start, which
+    // `local_transport::exited` names below.
+    if state.identity_manager.is_some() {
+        let identity = pod_identity_files::provision(state, pod_dir, id).await?;
+        command.envs(identity.env());
+    }
 
     // Live-path: mint + inject the session capability token scoped to exactly
     // the pod policy's granted operations. The tool-proxy verifies it once at
@@ -1536,8 +1535,7 @@ async fn spawn_local_pod(
         // Node-assigned `ns/pods/sa/<uuid>`: the shape `AuthorizationPolicy`'s
         // pod class authorizes for pod management and nothing else. What the
         // pod may CREATE is decided by its certificate, not by this prefix.
-        let files = pod_identity_files::provision(state, pod_dir, id).await?;
-        command.envs(files.env());
+        // (The SVID files are provisioned above, for every local pod.)
         // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
         command.env("NUCLEUS_POD_ID", id.to_string());
         command.env(
@@ -1554,17 +1552,30 @@ async fn spawn_local_pod(
         .map_err(|e| ApiError::Driver(format!("failed to spawn tool proxy: {e}")))?;
 
     let mut proxy_addr = wait_for_announce(&announce_path, &mut child).await;
+    // A proxy that exited before announcing is named, not handed out as a pod
+    // with no proxy: an older build exits on `--listen-unix`.
+    if proxy_addr.is_none()
+        && let Ok(Some(status)) = child.try_wait()
+    {
+        return Err(local_transport::exited(status, &log_path));
+    }
     let mut signed_proxy = None;
     if let Some(addr) = proxy_addr.as_ref() {
-        let target_addr: SocketAddr = addr
-            .parse()
-            .map_err(|e| ApiError::Driver(format!("invalid tool proxy address {addr}: {e}")))?;
+        let target = match local_transport::target(&socket, addr) {
+            Ok(target) => target,
+            Err(e) => {
+                let _ = child.kill().await;
+                return Err(e);
+            }
+        };
         let proxy = signed_proxy::SignedProxy::start_with_drand(
-            target_addr,
+            target,
+            // Attached to forwarded requests and ignored: the socket admits the
+            // node by its uid, and the shared-secret tier is unreachable there.
             Arc::new(state.proxy_auth_secret.as_bytes().to_vec()),
-            // Env-provisioned pod: it verifies approvals with the shared secret.
-            Some(signed_proxy::ApprovalSigning::Hmac(Arc::new(
-                state.proxy_approval_secret.as_bytes().to_vec(),
+            // Ed25519, verified against the public key `local_transport` provisioned.
+            Some(signed_proxy::ApprovalSigning::Ed25519(Arc::clone(
+                &state.approval_signer,
             ))),
             state.proxy_actor.clone(),
             state.drand_config.clone(),

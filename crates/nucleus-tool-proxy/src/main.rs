@@ -771,7 +771,8 @@ fn enforce_hmac_key_quality(auth_secret: &str, host_verified_transport: bool) {
         if !auth_secret.trim().is_empty() {
             warn!(
                 "an HMAC auth secret was supplied but this server is bound to a host-verified \
-                 vsock listener, where the HMAC tier is unreachable — the secret is unused"
+                 listener, where the HMAC tier is unreachable; it keys only the tier-3 \
+                 sandbox token (#2446 step 3 removes both)"
             );
         }
         return;
@@ -2220,7 +2221,10 @@ async fn auth_middleware(
         // before the stream reached the router. The workload holds no secret;
         // being that uid on that socket is the authentication.
         (auth::AuthTier::WorkloadDoor { uid }, _) => auth::verify_workload_door(uid),
-        (auth::AuthTier::Hmac, _) => auth::verify_http(&parts.headers, &bytes, &state.auth)?,
+        // Zero authority since #2446 step 2: authenticated or not, refused.
+        (auth::AuthTier::Hmac, _) => {
+            return Err(auth::refuse_shared_secret(&parts.headers, &bytes, &state.auth).into());
+        }
     };
 
     // Extract client cert DER for Layer 3 (fused identity fingerprint extraction).

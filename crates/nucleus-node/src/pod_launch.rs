@@ -94,7 +94,7 @@ while [ "$#" -gt 0 ]; do
 done
 echo $$ > "$0.pid"
 sleep 1
-printf '127.0.0.1:9\n' > "$announce"
+printf 'unix:///stand-in/proxy.sock\n' > "$announce"
 exec sleep 30
 "#,
         )
