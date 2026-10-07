@@ -35,6 +35,7 @@ jobs:
     timeout-minutes: 15
     outputs:
       body: ${{ steps.body.outputs.built }}
+      gate: ${{ steps.tok.outputs.present }}
     env:
       # The gatehouse commit whose `gate` checks the plan. Two things must move WITH it,
       # and `cargo xtask gatehouse-pin` now refuses the change if either does not:
@@ -135,14 +136,14 @@ jobs:
           cargo build --locked --manifest-path gatehouse/Cargo.toml -p gate
           gatehouse/target/debug/gate plan check .gatehouse/pipeline.writ
 
-      # The shards' generation is checked above without gatehouse; this is the half that needs it.
-      # A shard whose scope the kernel stops deriving still runs and still goes green, and its
-      # receipts never cross a tree, so sharding would cost an attempt and save nothing. A few new
-      # crates can push test-libs over the derivation caps (its first generation was refused at 74
-      # patterns, gatehouse F-182), and nothing else would say so.
-      - name: Both test shards' scopes derive under the writ kernel
+      # The derivation check runs in its OWN job (`scope-derivation`, below), from this `gate`.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        id: gatebin
         if: steps.tok.outputs.present == 'true'
-        run: cargo run -q -p xtask -- test-shards --check --gate gatehouse/target/debug/gate
+        with:
+          name: gate-bin
+          path: gatehouse/target/debug/gate
+          retention-days: 1
 
       # The committed elaboration is only worth comparing against while it still IS the
       # elaboration. Re-running `gate plan gates` at the pinned ref and refusing any difference is
@@ -183,6 +184,42 @@ jobs:
           name: plan-body
           path: ${{ runner.temp }}/plan-body.json
           retention-days: 7
+
+  # WHETHER EACH SHARD'S SCOPE DERIVES: a check of its own, which the plan upload does not wait on.
+  #
+  # A shard whose scope the kernel stops deriving still runs and still goes green, but its
+  # receipts never cross a tree, so sharding costs an attempt and saves nothing. A few new files
+  # can push a scope over the derivation caps, and nothing else would say so, so this must stay
+  # red when it happens. It must NOT block the upload, though. Until 2026-10-07 it was a step of
+  # plan-check, so when test-libs crossed MAX_ROWS (4,199,962 reduction rows against 4,194,304)
+  # after #3278, plan-check failed and the upload was skipped. Production kept serving the
+  # previous plan while main declared another (gatehouse F-208). A scope that does not derive
+  # costs REUSE, never correctness: the receipts it produces are still verified, only at their
+  # own tree. The mandate's tie-break (a weaker verdict says so on its face) is met by this job
+  # going red. Holding back a plan the kernel admitted would be weaker in the direction that
+  # matters, because it leaves the served plan wrong.
+  scope-derivation:
+    name: Shard scopes derive under the writ kernel (reuse only; does not block the plan)
+    needs: plan-check
+    if: needs.plan-check.outputs.gate == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: gate-bin
+          path: ${{ runner.temp }}/gate-bin
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: false
+          rustflags: ''
+      - name: Both test shards' scopes derive (and the clippy groups')
+        run: |
+          chmod +x "$RUNNER_TEMP/gate-bin/gate"
+          cargo run -q -p xtask -- test-shards --check --gate "$RUNNER_TEMP/gate-bin/gate"
 
   plan-upload:
     name: A push to main sets the plan gatehouse serves
