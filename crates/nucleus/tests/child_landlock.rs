@@ -119,7 +119,16 @@ fn run(exe: &Path, confinement: ChildConfinement, op: &str) -> String {
     ])
     .env(OP_ENV, op)
     .current_dir(Path::new("/"));
-    let _ = confinement.apply(&mut cmd, nucleus::RlimitPolicy::node_ceiling().at_ceiling());
+    // The derived policy that adds nothing: this file is about the ruleset.
+    let nothing = nucleus::portcullis::SeccompPolicy::derive(
+        &nucleus::portcullis::PermissionLattice::permissive(),
+        nucleus::portcullis::NetworkEgress::Declared,
+    );
+    let _ = confinement.apply(
+        &mut cmd,
+        nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
+        nothing,
+    );
     let out = cmd
         .output()
         .unwrap_or_else(|e| panic!("{op}: the confined child did not spawn: {e}"));

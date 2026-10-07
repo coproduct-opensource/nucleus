@@ -295,6 +295,16 @@ pub enum GuestCapability {
     /// it, so an older guest's advertisement labelled `GitPush` is still held
     /// for its own approval, as before. Stricter, never wider.
     PushAdvertisementIsRead,
+    /// The tool-proxy denies every child it spawns (the workload and each
+    /// `/v1/run` command) the syscall classes the pod's lattice derives
+    /// (`portcullis::SeccompPolicy`, #2907): `execve` under `run_bash: never`,
+    /// starting the child itself through one pinned descriptor, and
+    /// `AF_INET`/`AF_INET6` sockets under `web_fetch: never` with no declared
+    /// egress, as `EPERM`, in the same filter as the workload denylist.
+    /// [`Demand::Optional`]: the node does not depend on it; an older guest
+    /// runs the denylist alone, which denies less, and its launch receipt
+    /// carries no derived classes.
+    WorkloadSyscallPolicy,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -341,7 +351,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 15] = [
+    pub const ALL: [GuestCapability; 16] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -357,6 +367,7 @@ impl GuestCapability {
         GuestCapability::TaintedPushHeld,
         GuestCapability::WorkloadLandlock,
         GuestCapability::PushAdvertisementIsRead,
+        GuestCapability::WorkloadSyscallPolicy,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -383,6 +394,10 @@ impl GuestCapability {
             // The node decides a stricter label too: an older guest only asks
             // for one more approval (the advertisement's), never for less.
             GuestCapability::PushAdvertisementIsRead => Demand::Optional,
+            // Reported, not required: an older guest's children run under the
+            // denylist alone, and the node depends on nothing the derived
+            // classes add.
+            GuestCapability::WorkloadSyscallPolicy => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -429,6 +444,9 @@ impl GuestCapability {
             // and confines no child with Landlock.
             GuestCapability::WorkloadLandlock => FirstShipped::Release("2.6.0"),
             GuestCapability::PushAdvertisementIsRead => FirstShipped::Release("2.6.0"),
+            // #2907 landed after the tree pinned as 2.6.0: no guest it names
+            // derives a syscall policy from the pod's lattice.
+            GuestCapability::WorkloadSyscallPolicy => FirstShipped::NotYet,
         }
     }
 
@@ -516,6 +534,13 @@ impl GuestCapability {
                  approval of the pack completes a git push; an older proxy labels the \
                  advertisement a push, which the node decides as asked, so that push needs a \
                  second approval (the node does not require it)"
+            }
+            GuestCapability::WorkloadSyscallPolicy => {
+                "#2907 has the tool-proxy deny the workload and every command the syscall \
+                 classes the pod's lattice derives (exec under run_bash: never, internet \
+                 sockets under web_fetch: never with no egress); an older guest runs them \
+                 under the workload denylist alone, which denies less (the node does not \
+                 require it)"
             }
         }
     }
@@ -845,7 +870,7 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin: [GuestCapability; 0] = [];
+        let after_the_pin = [GuestCapability::WorkloadSyscallPolicy];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -960,7 +985,8 @@ mod tests {
                 GuestCapability::EgressEffectTable => GuestCapability::TaintedPushHeld,
                 GuestCapability::TaintedPushHeld => GuestCapability::WorkloadLandlock,
                 GuestCapability::WorkloadLandlock => GuestCapability::PushAdvertisementIsRead,
-                GuestCapability::PushAdvertisementIsRead => GuestCapability::CaBundle,
+                GuestCapability::PushAdvertisementIsRead => GuestCapability::WorkloadSyscallPolicy,
+                GuestCapability::WorkloadSyscallPolicy => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

@@ -92,12 +92,17 @@ item 3, and is not done here.
   through `write_files`/`edit_files`, and content written to disk is content.
   Pair this with `paths.blocked` and with review of the diff, exactly as you
   would for an untrusted contributor.
-- **It is not in-guest syscall mediation.** A per-pod seccomp-bpf policy derived
-  from the lattice would move the exec surface *inside* the model instead of
-  outside it. Firecracker itself runs under a seccomp filter and `verify --tier2`
-  checks it; the guest workload has no equivalent derived from its own policy.
-  That is #2738 item 4, and it is the item that would let the non-interference
-  claim extend past `exec` rather than stopping at it.
+- **Its in-guest syscall mediation is two classes wide.** Since #2907 the
+  guest derives a seccomp policy from the pod's lattice
+  (`portcullis::SeccompPolicy`) and installs it with the workload denylist:
+  under `run_bash: never` a child cannot `execve` (the runtime starts it
+  through one pinned descriptor), and under `web_fetch: never` with no declared
+  egress it cannot open an `AF_INET`/`AF_INET6` socket. Both answer `EPERM`.
+  That is the start of #2738 item 4, not all of it: `write_files: never`
+  (write-mode `open` outside the scratch), argument-level socket narrowing to
+  the ports a profile names, and a live adversary-probe stage that sees the
+  derived filter bite on real KVM are still open on #2907. Firecracker itself
+  runs under a seccomp filter and `verify --tier2` checks it.
 - **Workload identity rests on arrival order, not on peer authentication.**
   Until #2724 a workload inside the pod could fetch the pod's SVID private key,
   policy certificate, task token, caller token and DLC credentials over vsock.

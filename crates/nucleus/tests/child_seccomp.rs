@@ -16,6 +16,12 @@
 //!
 //! Run it both ways: `cargo test -p nucleus --test child_seccomp`, then the
 //! built binary under `sudo`.
+//!
+//! The pod's DERIVED classes (#2907) are checked the same way: a child under a
+//! policy derived from `run_bash: never` is started (through the exec pin) and
+//! then cannot exec; one derived from `web_fetch: never` with no egress cannot
+//! open an internet socket. Each has a control under the policy that derives
+//! nothing, so the denial is the derived class's and not the host's.
 
 #![cfg(target_os = "linux")]
 
@@ -24,6 +30,9 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use nucleus::portcullis::{
+    CapabilityLattice, CapabilityLevel, NetworkEgress, PermissionLattice, SeccompPolicy,
+};
 use nucleus::{ChildConfinement, ContainmentMode, LandlockWaiver, UnsandboxedOptIn};
 
 const OP_ENV: &str = "NUCLEUS_CHILD_SECCOMP_OP";
@@ -186,6 +195,67 @@ fn run_op(op: &str) -> String {
             Ok(s) => format!("status={s}"),
             Err(e) => format!("errno={}", e.raw_os_error().unwrap_or(-1)),
         },
+        // A raw `execve` in a single-threaded fork, so the answer is the
+        // kernel's and not std's spawn plumbing.
+        "execve" => {
+            // SAFETY: the forked child makes one syscall and `_exit`s.
+            let pid = unsafe { libc::fork() };
+            if pid == 0 {
+                let argv = [
+                    c"/bin/sh".as_ptr(),
+                    c"-c".as_ptr(),
+                    c"exit 0".as_ptr(),
+                    std::ptr::null(),
+                ];
+                let envp = [std::ptr::null::<libc::c_char>()];
+                // SAFETY: NUL-terminated arrays of static C strings.
+                unsafe { libc::execve(c"/bin/sh".as_ptr(), argv.as_ptr(), envp.as_ptr()) };
+                // SAFETY: in the forked child, after a failed exec.
+                unsafe { libc::_exit(errno().clamp(1, 250)) };
+            }
+            if pid < 0 {
+                return rendered(-1);
+            }
+            match reap(pid) {
+                0 => "ok".to_string(),
+                e if e > 0 => format!("errno={e}"),
+                sig => format!("signal={}", -sig),
+            }
+        }
+        // The exec pin's premise: no descriptor at or above RLIMIT_NOFILE can
+        // be made, by `dup2` or `fcntl(F_DUPFD)`.
+        "dup_at_limit" => {
+            let mut rl = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: plain syscalls on an initialized local and fd 0.
+            let (dup2, dupfd) = unsafe {
+                libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut rl);
+                let at = libc::c_int::try_from(rl.rlim_max).unwrap_or(libc::c_int::MAX);
+                let a = libc::dup2(0, at);
+                let a = if a >= 0 { 0 } else { errno() };
+                let b = libc::fcntl(0, libc::F_DUPFD, at);
+                let b = if b >= 0 { 0 } else { errno() };
+                (a, b)
+            };
+            format!("dup2={dup2},dupfd={dupfd}")
+        }
+        "inet" | "inet6" | "unix" => {
+            let family = match op {
+                "inet" => libc::AF_INET,
+                "inet6" => libc::AF_INET6,
+                _ => libc::AF_UNIX,
+            };
+            // SAFETY: plain syscall; the fd is closed below.
+            let fd = unsafe { libc::socket(family, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
+            let r = rendered(libc::c_long::from(fd));
+            if fd >= 0 {
+                // SAFETY: closes the fd opened above.
+                unsafe { libc::close(fd) };
+            }
+            r
+        }
         other => format!("unknown-op={other}"),
     }
 }
@@ -236,9 +306,29 @@ fn child_exe(drops: bool) -> ChildExe {
     }
 }
 
+/// The derived policy that adds nothing to the denylist.
+fn nothing() -> SeccompPolicy {
+    SeccompPolicy::derive(&PermissionLattice::permissive(), NetworkEgress::Declared)
+}
+
+/// A derived policy from the two levels the rule reads, with no egress.
+fn derived(run_bash: CapabilityLevel, web_fetch: CapabilityLevel) -> SeccompPolicy {
+    let caps = CapabilityLattice {
+        run_bash,
+        web_fetch,
+        ..CapabilityLattice::default()
+    };
+    SeccompPolicy::from_capabilities(&caps, NetworkEgress::None)
+}
+
 /// Run `op` in a child confined by `confinement` (`None` = an unconfined
 /// control), and return the child's result line.
 fn run(confinement: Option<ChildConfinement>, op: &str) -> String {
+    run_under(confinement, nothing(), op)
+}
+
+/// [`run`], with the pod's derived classes `policy`.
+fn run_under(confinement: Option<ChildConfinement>, policy: SeccompPolicy, op: &str) -> String {
     let exe = child_exe(confinement.and_then(|c| c.drop_uid()).is_some());
     let mut cmd = Command::new(&exe.path);
     cmd.args([
@@ -251,11 +341,29 @@ fn run(confinement: Option<ChildConfinement>, op: &str) -> String {
     .env(OP_ENV, op)
     .current_dir(Path::new("/"));
     if let Some(c) = confinement {
-        let _ = c.apply(&mut cmd, nucleus::RlimitPolicy::node_ceiling().at_ceiling());
+        let _ = c.apply(
+            &mut cmd,
+            nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
+            policy,
+        );
     }
-    let out = cmd
-        .output()
-        .unwrap_or_else(|e| panic!("{op}: the confined child did not spawn: {e}"));
+    // Under root each test writes its own copy of this binary while other
+    // threads fork; a child forked in that window holds the copy's write
+    // descriptor until it execs, and the exec of the copy is then `ETXTBSY`.
+    // That is the harness racing itself, not the confinement, so retry it.
+    let mut attempt = 0;
+    let out = loop {
+        match cmd.output() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 20 => {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            other => {
+                break other
+                    .unwrap_or_else(|e| panic!("{op}: the confined child did not spawn: {e}"));
+            }
+        }
+    };
     let stdout = String::from_utf8_lossy(&out.stdout);
     stdout
         .lines()
@@ -394,4 +502,88 @@ fn a_confined_child_carries_one_more_filter_and_the_bare_tier_none() {
     )
     .expect("the opted-in bare tier runs");
     assert_eq!(run(Some(bare), "filters"), format!("filters={base}"));
+}
+
+/// #2907, A-19: a child under a policy derived from `run_bash: never` is
+/// STARTED (through the exec pin: the filter is already installed when the
+/// hook execs it) and then cannot exec anything, by `execve` or by std's
+/// spawn. Red with the `Exec` class's rules removed from `derived_rules`:
+/// the child's `execve` succeeds. The control under the policy that derives
+/// nothing execs, so the `EPERM` is the derived class's.
+#[test]
+fn a_child_under_run_bash_never_cannot_exec() {
+    let policy = derived(CapabilityLevel::Never, CapabilityLevel::Always);
+    for (mode, c) in confining() {
+        assert_eq!(run(Some(c), "execve"), "ok", "{mode:?}: control");
+        assert_eq!(
+            run_under(Some(c), policy, "execve"),
+            denied(),
+            "{mode:?}: execve"
+        );
+        assert_eq!(
+            run_under(Some(c), policy, "exec"),
+            denied(),
+            "{mode:?}: std spawn"
+        );
+        // Only exec is taken: fork and an internet socket still work.
+        assert_eq!(run_under(Some(c), policy, "fork"), "ok", "{mode:?}: fork");
+        assert_eq!(run_under(Some(c), policy, "inet"), "ok", "{mode:?}: inet");
+        // The pin's premise, observed: the child cannot make a descriptor at
+        // its limit, so it cannot recreate the pinned number.
+        assert_eq!(
+            run_under(Some(c), policy, "dup_at_limit"),
+            format!("dup2={},dupfd={}", libc::EBADF, libc::EINVAL),
+            "{mode:?}"
+        );
+    }
+}
+
+/// #2907, A-19: a child under a policy derived from `web_fetch: never` with
+/// no declared egress cannot open an `AF_INET` or `AF_INET6` socket, and
+/// keeps `AF_UNIX` (the workload door). Red with the `InetSocket` class's
+/// rules removed: the socket opens. Control: the policy that derives nothing
+/// opens it here, so the host does not already refuse it.
+#[test]
+fn a_child_under_web_fetch_never_without_egress_cannot_open_an_inet_socket() {
+    let policy = derived(CapabilityLevel::Always, CapabilityLevel::Never);
+    for (mode, c) in confining() {
+        assert_eq!(run(Some(c), "inet"), "ok", "{mode:?}: control");
+        assert_eq!(
+            run_under(Some(c), policy, "inet"),
+            denied(),
+            "{mode:?}: inet"
+        );
+        assert_ne!(
+            run_under(Some(c), policy, "inet6"),
+            "ok",
+            "{mode:?}: inet6 (EPERM, or EAFNOSUPPORT on a host without IPv6)"
+        );
+        assert_eq!(run_under(Some(c), policy, "unix"), "ok", "{mode:?}: unix");
+        // Still the union: the denylist's vsock refusal stands.
+        assert_eq!(
+            run_under(Some(c), policy, "vsock"),
+            denied(),
+            "{mode:?}: vsock"
+        );
+        // Exec is not this class's.
+        assert_eq!(run_under(Some(c), policy, "exec"), "ok", "{mode:?}: exec");
+    }
+}
+
+/// Both classes are one filter with the denylist, not a second one stacked
+/// on it.
+#[test]
+fn the_derived_classes_add_no_second_filter() {
+    let base: u32 = run(None, "filters")
+        .strip_prefix("filters=")
+        .and_then(|n| n.parse().ok())
+        .expect("Seccomp_filters is readable (Linux 5.9+)");
+    let policy = derived(CapabilityLevel::Never, CapabilityLevel::Never);
+    for (mode, c) in confining() {
+        assert_eq!(
+            run_under(Some(c), policy, "filters"),
+            format!("filters={}", base + 1),
+            "{mode:?}"
+        );
+    }
 }

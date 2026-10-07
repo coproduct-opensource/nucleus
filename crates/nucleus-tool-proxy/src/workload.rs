@@ -489,6 +489,7 @@ impl WorkloadLaunch {
 pub(crate) fn spawn_admitted(
     plan: AdmittedWorkloadPlan,
     rlimits: nucleus::AppliedRlimits,
+    syscalls: portcullis::SeccompPolicy,
 ) -> std::io::Result<(tokio::process::Child, LaunchReceipt)> {
     let mut cmd = tokio::process::Command::new(&plan.command);
     cmd.args(&plan.args)
@@ -589,8 +590,10 @@ pub(crate) fn spawn_admitted(
         .preflight_filesystem()
         .map_err(std::io::Error::other)?;
     // What the hook does, as only `apply` can say it: the receipt's
-    // `hardening` is this value, not a flag computed beside the spawn.
-    let hardening = confinement.apply(cmd.as_std_mut(), rlimits);
+    // `hardening` is this value, not a flag computed beside the spawn. It
+    // carries the syscall classes the pod's lattice derived (#2907) as the
+    // filter the hook actually installs.
+    let hardening = confinement.apply(cmd.as_std_mut(), rlimits, syscalls);
 
     tracing::info!(
         command = %plan.command,
@@ -771,7 +774,9 @@ pub(crate) struct ReceiptEnvEntry {
 
 impl LaunchReceipt {
     /// 2: the preimage gained `fs=` (#2696 P3c).
-    const SCHEMA_VERSION: u32 = 2;
+    /// 3: the preimage gained `seccomp=`, the installed filter and the pod's
+    /// derived syscall classes (#2907).
+    const SCHEMA_VERSION: u32 = 3;
 
     fn from_admitted(
         plan: &AdmittedWorkloadPlan,
@@ -796,11 +801,17 @@ impl LaunchReceipt {
         let filesystem = FilesystemBoundary::of(plan.confinement.filesystem());
         let argv_len = plan.args.len();
         let hardened = hardening.is_hardened();
+        // Read off `hardening`, the one record of the filter (ADR 0007 G-1):
+        // no hook means no filter, whatever the pod's policy derived.
+        let seccomp = match hardening {
+            nucleus::SpawnHardening::Hardened(h) => h.syscalls().canonical(),
+            nucleus::SpawnHardening::Unhardened(_) => "none".to_string(),
+        };
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
@@ -849,6 +860,44 @@ pub(crate) fn rlimit_policy(spec: &nucleus_spec::PodSpecInner) -> nucleus::Rlimi
         std::time::Duration::from_secs(spec.timeout_seconds),
         spec.resources.as_ref().and_then(|r| r.cpu_cores),
     )
+}
+
+/// Whether the pod declares any network egress (#2907): a host or DNS name
+/// on its network allowlist, or a credentialed upstream (whose guest adapter
+/// gives the workload a loopback origin). The ONE place the spec's fields
+/// become a [`portcullis::NetworkEgress`]. No network section lists nothing,
+/// as the node reads it (`NetworkSpec::nothing_listed`).
+pub(crate) fn network_egress(spec: &nucleus_spec::PodSpecInner) -> portcullis::NetworkEgress {
+    let listed = spec
+        .network
+        .as_ref()
+        .is_some_and(|n| !n.allow.is_empty() || !n.dns_allow.is_empty());
+    if listed || !spec.credentialed_egress.is_empty() {
+        portcullis::NetworkEgress::Declared
+    } else {
+        portcullis::NetworkEgress::None
+    }
+}
+
+/// The syscall classes every child this pod spawns is denied beyond the
+/// workload denylist — the workload and every `/v1/run` command — derived
+/// from its policy and its egress (#2907). The ONE place the spec becomes a
+/// [`portcullis::SeccompPolicy`]; the rule is `SeccompPolicy::derive`'s.
+/// Derived from the normalized lattice, which is the one the executor runs.
+///
+/// # Errors
+/// The spec's policy does not resolve.
+pub(crate) fn seccomp_policy(
+    spec: &nucleus_spec::PodSpecInner,
+) -> Result<portcullis::SeccompPolicy, crate::ApiError> {
+    let lattice = spec
+        .resolve_policy()
+        .map_err(|e| crate::ApiError::Spec(e.to_string()))?
+        .normalize();
+    Ok(portcullis::SeccompPolicy::derive(
+        &lattice,
+        network_egress(spec),
+    ))
 }
 
 /// Start the pod's workload if the spec asks for one.
@@ -911,7 +960,8 @@ pub(crate) fn start_if_configured(
     door.serve(door_app, plan.door_uid());
 
     let rlimits = rlimit_policy(&spec.spec).at_ceiling();
-    let (child, receipt) = spawn_admitted(plan, rlimits).map_err(|e| {
+    let syscalls = seccomp_policy(&spec.spec)?;
+    let (child, receipt) = spawn_admitted(plan, rlimits, syscalls).map_err(|e| {
         crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
     })?;
 
@@ -935,6 +985,14 @@ mod tests {
         nucleus::RlimitPolicy::node_ceiling().at_ceiling()
     }
 
+    /// The derived policy that adds nothing to the denylist.
+    fn nothing_derived() -> portcullis::SeccompPolicy {
+        portcullis::SeccompPolicy::derive(
+            &portcullis::PermissionLattice::permissive(),
+            portcullis::NetworkEgress::Declared,
+        )
+    }
+
     /// #2572: the pod's rlimit ceiling comes from its spec. A declared core
     /// count bounds CPU-seconds by `timeout × cores`; no core count leaves
     /// the node ceiling, never unlimited.
@@ -955,6 +1013,45 @@ mod tests {
             rlimit_policy(&pod("").spec).ceiling(),
             nucleus::RlimitVector::NODE_CEILING
         );
+    }
+
+    /// #2907: the pod's derived syscall classes come from its policy and its
+    /// egress, one decider. `untrusted-model` with nothing listed loses exec
+    /// and the internet socket; listing a host gives the socket back, never
+    /// exec; `codegen` keeps exec; the probe pod's `demo` derives nothing.
+    #[test]
+    fn the_seccomp_policy_is_derived_from_the_pod_spec() {
+        let canonical = |extra: &str| {
+            let spec: nucleus_spec::PodSpec = serde_yaml::from_str(&format!(
+                "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
+                 timeout_seconds: 60\n{extra}"
+            ))
+            .expect("spec parses");
+            seccomp_policy(&spec.spec)
+                .unwrap_or_else(|e| panic!("{extra}: {e}"))
+                .canonical()
+        };
+        let profile = |name: &str| format!("  policy:\n    type: profile\n    name: {name}\n");
+        let untrusted = profile("untrusted-model");
+        assert_eq!(canonical(&untrusted), "exec,inet_socket");
+        assert_eq!(
+            canonical(&format!("{untrusted}  network:\n    allow: []\n")),
+            "exec,inet_socket"
+        );
+        assert_eq!(
+            canonical(&format!(
+                "{untrusted}  network:\n    allow: [\"example.com:443\"]\n"
+            )),
+            "exec"
+        );
+        assert_eq!(
+            canonical(&format!(
+                "{untrusted}  network:\n    dns_allow: [\"example.com\"]\n"
+            )),
+            "exec"
+        );
+        assert_eq!(canonical(&profile("codegen")), "inet_socket");
+        assert_eq!(canonical(&profile("demo")), "none");
     }
 
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {
@@ -1017,7 +1114,7 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
-        let (child, _receipt) = spawn_admitted(plan, node_rlimits()).unwrap();
+        let (child, _receipt) = spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success(), "HOME was not a directory");
         assert_eq!(
@@ -1311,7 +1408,7 @@ mod tests {
         ];
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(mode, opt_in, NO_WAIVER)?;
-        let (child, receipt) = spawn_admitted(plan, node_rlimits()).unwrap();
+        let (child, receipt) = spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
         let out = child.wait_with_output().await.unwrap();
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let mut lines = text.lines();
@@ -1446,7 +1543,7 @@ mod tests {
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .expect("a clean spec must admit");
         let (mut child, receipt) =
-            spawn_admitted(plan, node_rlimits()).expect("sh must be spawnable");
+            spawn_admitted(plan, node_rlimits(), nothing_derived()).expect("sh must be spawnable");
         let status = child.wait().await.expect("child ran");
         assert!(status.success(), "the child must actually run: {status:?}");
         let observed = std::fs::read_to_string(&f_env).expect("the child wrote its environment");
@@ -1819,7 +1916,7 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
-        let (child, receipt) = spawn_admitted(plan, node_rlimits()).unwrap();
+        let (child, receipt) = spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();

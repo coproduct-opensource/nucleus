@@ -181,6 +181,33 @@ fn proof_normalize_monotone() {
     assert!(lhs_norm.leq(&rhs_norm));
 }
 
+/// #2907: the syscall classes a pod's children are denied are monotone in the
+/// lattice. A tighter capability lattice (`a = b ∧ c`, so `a ≤ b`) with less
+/// egress denies at least every class the looser one does, over every
+/// assignment of all thirteen core dimensions.
+#[kani::proof]
+#[kani::solver(cadical)]
+#[kani::unwind(4)]
+fn proof_seccomp_policy_monotone() {
+    use crate::seccomp_policy::{NetworkEgress, SeccompPolicy};
+    let egress = |declared: bool| {
+        if declared {
+            NetworkEgress::Declared
+        } else {
+            NetworkEgress::None
+        }
+    };
+    let b = arbitrary_caps();
+    let c = arbitrary_caps();
+    let a = b.meet(&c);
+    assert!(a.leq(&b));
+    let eb = egress(kani::any());
+    let ea = eb.min(egress(kani::any()));
+    let tight = SeccompPolicy::from_capabilities(&a, ea);
+    let loose = SeccompPolicy::from_capabilities(&b, eb);
+    assert!(tight.at_least_as_tight_as(&loose));
+}
+
 /// Generate an arbitrary `CapabilityLattice` from 12 symbolic `u8` values.
 fn arbitrary_caps() -> CapabilityLattice {
     CapabilityLattice {

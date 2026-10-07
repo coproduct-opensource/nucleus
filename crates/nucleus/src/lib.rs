@@ -80,8 +80,8 @@ pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
 pub use hardening::{
     AppliedRlimits, ChildConfinement, ChildUid, DEFAULT_CHILD_UID, FilesystemConfinement, Hardened,
-    LandlockSupport, LandlockWaiver, MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector, SpawnHardening,
-    SyscallFilter, Unhardened, UnsandboxedOptIn, runtime_uid,
+    InstalledFilter, LandlockSupport, LandlockWaiver, MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector,
+    SpawnHardening, SyscallFilter, Unhardened, UnsandboxedOptIn, runtime_uid,
 };
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};

@@ -47,7 +47,7 @@ permissions:
 # execs the wrapper verbatim and an empty one is "No such file or directory".
 
 jobs:
-  # Fast tier: 9 lightweight harnesses — runs on every PR and push
+  # Fast tier: 10 lightweight harnesses — runs on every PR and push
   # The 3 normalize_* harnesses use build_ordered_permissions() which creates
   # a massive symbolic state space (24 symbolic capabilities + obligations).
   # They require 15+ minutes each and are verified in the nightly full tier.
@@ -103,6 +103,7 @@ jobs:
             --harness proof_ifc_flow_gate_rejects_iff_forbidden
             --harness proof_budget_ledger_conserves
             --harness proof_budget_ledger_release_conserves
+            --harness proof_seccomp_policy_monotone
       - name: Proof count regression gate
         run: |
           # One census, counted by scripts/check-kani-proof-count.sh (#2561): the
