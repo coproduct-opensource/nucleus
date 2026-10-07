@@ -551,6 +551,9 @@ pub const UNCOVERED_CEILING: usize = 3;
 /// subject. Listed so the accounting stays honest -- a gate that is neither probed, nor
 /// uncovered, nor here is UNACCOUNTED -- and so each falsifier's location is on the record.
 pub const SELF_FALSIFIED: &[&str] = &[
+    // Needs a built Lean tier and its toolchain. The self-test compiles a sorry / native_decide /
+    // axiom fixture under the tier's toolchain and requires each flagged (#3302).
+    "xtask lean-axiom-audit      --self-test <tier> beside the `lean-axiom-audit --workflow` step, in that Lean proof job",
     "check-mediation-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)",
     "check-observed-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)",
     "check-rest-pattern-dylint.sh    --self-test in the 'Dylint passes (one pod)' job (dylint-separation.yml)",

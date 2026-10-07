@@ -301,3 +301,38 @@ fn every_probe_family_refuses_absent_ci_wiring_before_touching_the_subject() {
         assert_eq!(fs::read_to_string(root.join("subject")).unwrap(), "green\n");
     }
 }
+
+/// A SELF_FALSIFIED xtask row is a checked claim (#3302): with no workflow running
+/// `lean-axiom-audit --self-test`, the row would exempt a gate whose falsifier is gone, so
+/// accounting fails; restored, it passes.
+#[test]
+fn a_self_falsified_xtask_row_needs_its_self_test_in_ci() {
+    let tree = copy_tree();
+    let root = tree.path();
+    let probes = table::probes();
+    assert_eq!(account(&mut harness(root, Mode::Probe), &probes), 0);
+    let mut saved = Vec::new();
+    for entry in fs::read_dir(root.join(".github/workflows")).unwrap() {
+        let path = entry.unwrap().path();
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        if text.contains("lean-axiom-audit --self-test") {
+            let gone = text.replace(
+                "lean-axiom-audit --self-test",
+                "lean-axiom-audit --self-test-gone",
+            );
+            fs::write(&path, gone).unwrap();
+            saved.push((path, text));
+        }
+    }
+    assert!(
+        !saved.is_empty(),
+        "no workflow runs lean-axiom-audit --self-test"
+    );
+    assert_eq!(account(&mut harness(root, Mode::Probe), &probes), 1);
+    for (path, text) in saved {
+        fs::write(path, text).unwrap();
+    }
+    assert_eq!(account(&mut harness(root, Mode::Probe), &probes), 0);
+}
