@@ -441,6 +441,18 @@ pub fn perturb_kani_divergence_unlisted(_: &Path, t: &str) -> Perturbed {
     ))
 }
 
+/// The issue's own trivial harness (#2585): a registered Kani harness that still calls its
+/// function but no longer ends in `kani::cover!`, so nothing shows its end is reachable. Every
+/// cover line goes, not just the last, or the next one up would be terminal and the probe a
+/// no-op.
+pub fn perturb_proof_obligation_vacuous_harness(_: &Path, t: &str) -> Perturbed {
+    let text = sed_d(t, r"^\s*kani::cover!\(verdict");
+    if text == t {
+        return moved(text, "no `kani::cover!(verdict` line in the argv harness");
+    }
+    ok(text)
+}
+
 pub fn perturb_assurance_required_pin(_: &Path, t: &str) -> Perturbed {
     ok(awk_replace(t, r"^UNREQUIRED_FALSIFIERS=", "UNREQUIRED_FALSIFIERS=255").0)
 }
