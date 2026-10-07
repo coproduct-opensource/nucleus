@@ -19,7 +19,8 @@
       "sdks/verifier-js/test/**",
       "sdks/verifier-js/tests/**",
       "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**"
+      "examples/independent-conformance/**",
+      "tools/test-shard/**"
     ],
     "exclude": [],
     "external": [],
@@ -64,7 +65,8 @@
       "sdks/verifier-js/test/**",
       "sdks/verifier-js/tests/**",
       "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**"
+      "examples/independent-conformance/**",
+      "tools/test-shard/**"
     ],
     "fs_write": [
       "target/**",
@@ -153,7 +155,8 @@
         "sdks/verifier-js/test/**",
         "sdks/verifier-js/tests/**",
         "sdks/verifier-js/demo-fixtures/**",
-        "examples/independent-conformance/**"
+        "examples/independent-conformance/**",
+        "tools/test-shard/**"
       ],
       "writes": [
         "target/**",

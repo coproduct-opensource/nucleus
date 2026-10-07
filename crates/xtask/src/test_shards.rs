@@ -402,6 +402,71 @@ fn glob_match(pat: &str, path: &str) -> bool {
     go(&p, &s)
 }
 
+/// The directories of the cargo manifests a gate's steps name with `--manifest-path`: the runner
+/// (`tools/test-shard/Cargo.toml`) is BUILT inside the pod, so its whole directory is an input.
+fn manifest_dirs(gate: &Value) -> Vec<String> {
+    let mut out: Vec<String> = gate["steps"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["args"].as_array())
+        .flat_map(|a| {
+            a.windows(2)
+                .filter(|w| w[0] == "--manifest-path")
+                .filter_map(|w| w[1].as_str())
+                .map(|p| p.rsplit_once('/').map_or("", |(d, _)| d).to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Refuse a gate that runs a manifest whose tracked files its scope does not hold.
+///
+/// #3278 moved clippy's passes behind `cargo run --manifest-path tools/test-shard/Cargo.toml`;
+/// test-libs and clippy-libs had `tools/test-shard/**` through `global`, but clippy-node's scope is
+/// clippy-base.json's hand-written list, which never named it. Every clippy-node pod failed with
+/// `manifest path tools/test-shard/Cargo.toml does not exist` (exit 101) on every tree, and the
+/// red was reused across trees because the scope, correctly, had not changed.
+pub fn manifests_covered(name: &str, gate: &Value, files: &[String]) -> Result<()> {
+    let strs = |v: &Value| -> Vec<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x.as_str().map(str::to_string))
+            .collect()
+    };
+    let (inc, exc) = (
+        strs(&gate["scope"]["include"]),
+        strs(&gate["scope"]["exclude"]),
+    );
+    let mut missing = Vec::new();
+    for d in manifest_dirs(gate) {
+        let prefix = if d.is_empty() {
+            String::new()
+        } else {
+            format!("{d}/")
+        };
+        let under: Vec<&String> = files.iter().filter(|f| f.starts_with(&prefix)).collect();
+        if under.is_empty() {
+            missing.push(format!("{d}/ (no tracked file)"));
+        }
+        missing.extend(
+            under
+                .into_iter()
+                .filter(|f| !inc.iter().any(|i| glob_match(i, f)) || excluded(f, &exc))
+                .cloned(),
+        );
+    }
+    ensure!(
+        missing.is_empty(),
+        "{name} runs a cargo manifest its scope does not hold, so its pod cannot build it: {missing:?}"
+    );
+    Ok(())
+}
+
 /// Is `path` inside one of `excludes`?
 fn excluded(path: &str, excludes: &[String]) -> bool {
     excludes.iter().any(|e| glob_match(e, path))
@@ -801,12 +866,26 @@ pub fn generate_clippy(
     }
     node_run.extend(c.lints.iter().cloned());
 
-    let node_reads: Vec<String> = cbase["scope"]["include"]
+    let mut node_reads: Vec<String> = cbase["scope"]["include"]
         .as_array()
         .with_context(|| format!("{CLIPPY_BASE} scope has no include"))?
         .iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect();
+    // The base is the unsplit gate's list, written before its passes ran through the runner. The
+    // runner is built in the pod, so its directory is an input: take it from the layout's
+    // `global`, the one place the other shards get it from.
+    for g in &layout.global {
+        let runner_dir = g.strip_suffix("/**").is_some_and(|d| {
+            layout
+                .runner
+                .iter()
+                .any(|a| a.starts_with(&format!("{d}/")))
+        });
+        if runner_dir && !node_reads.contains(g) {
+            node_reads.push(g.clone());
+        }
+    }
 
     for d in &c.drop {
         ensure!(
@@ -910,6 +989,7 @@ pub fn generate_clippy(
     libs_gate["steps"] = json!(libs_steps);
 
     let mut node_gate = cbase.clone();
+    node_gate["scope"]["include"] = json!(node_reads);
     node_gate["cap"]["fs_read"] = json!(node_reads);
     node_gate["cap"]["fs_write"] = json!(layout.writes);
     node_gate["timeout_s"] = json!(c.node.timeout_s);
@@ -1292,7 +1372,11 @@ pub fn run(root: &Path, check: bool, gate: Option<&Path>) -> Result<()> {
     };
     if let Some((cn, cl)) = &clippy {
         clippy_packages_partition(&members, cn, cl)?;
+        manifests_covered("clippy-node", cn, &files)?;
+        manifests_covered("clippy-libs", cl, &files)?;
     }
+    manifests_covered("test-node", &node, &files)?;
+    manifests_covered("test-libs", &libs, &files)?;
     let plan = fs::read_to_string(root.join(PLAN)).with_context(|| format!("reading {PLAN}"))?;
     let plan_want = splice(
         &plan,
@@ -1636,5 +1720,49 @@ lib-a = ["crates/node/proto/x.proto", "docs/fixture.md"]
                 "crates/node/src/**"
             ]
         );
+    }
+
+    /// The committed gate definitions, against the tree: every manifest a step builds with
+    /// `--manifest-path` is in that gate's scope. Red on `2a360ad90`'s clippy-node.json, which
+    /// runs `tools/test-shard/Cargo.toml` with a scope that holds nothing under `tools/`.
+    #[test]
+    fn every_committed_gate_holds_the_manifests_it_runs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        let files = tracked(root).unwrap();
+        let mut seen = 0;
+        for e in fs::read_dir(root.join(".gatehouse/gates")).unwrap() {
+            let p = e.unwrap().path();
+            let g: Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+            if !manifest_dirs(&g).is_empty() {
+                seen += 1;
+            }
+            let name = p.strip_prefix(root).unwrap_or(&p).display().to_string();
+            manifests_covered(&name, &g, &files).unwrap();
+        }
+        // The four shards run the runner; a check that found no manifest checked nothing.
+        assert!(seen >= 4, "only {seen} gate(s) name a --manifest-path");
+    }
+
+    #[test]
+    fn a_gate_running_a_manifest_outside_its_scope_is_refused() {
+        let files: Vec<String> = ["tools/r/Cargo.toml", "tools/r/src/main.rs", "crates/a/x.rs"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let gate = |inc: &[&str], exc: &[&str]| {
+            json!({"scope": {"include": inc, "exclude": exc},
+                   "steps": [{"program": "cargo", "args": ["run", "--manifest-path", "tools/r/Cargo.toml"]}]})
+        };
+        let err = manifests_covered("g", &gate(&["crates/**"], &[]), &files).unwrap_err();
+        assert!(err.to_string().contains("tools/r/src/main.rs"), "{err}");
+        let err = manifests_covered("g", &gate(&["tools/r/Cargo.toml"], &[]), &files).unwrap_err();
+        assert!(err.to_string().contains("tools/r/src/main.rs"), "{err}");
+        let err =
+            manifests_covered("g", &gate(&["tools/**"], &["tools/r/src/**"]), &files).unwrap_err();
+        assert!(err.to_string().contains("main.rs"), "{err}");
+        manifests_covered("g", &gate(&["crates/**", "tools/r/**"], &[]), &files).unwrap();
     }
 }

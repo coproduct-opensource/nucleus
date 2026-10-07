@@ -1087,7 +1087,8 @@
         "sdks/verifier-js/test/**",
         "sdks/verifier-js/tests/**",
         "sdks/verifier-js/demo-fixtures/**",
-        "examples/independent-conformance/**"
+        "examples/independent-conformance/**",
+        "tools/test-shard/**"
       ],
       "fs_write": [
         "target/**",
@@ -1142,7 +1143,8 @@
       "sdks/verifier-js/test/**",
       "sdks/verifier-js/tests/**",
       "sdks/verifier-js/demo-fixtures/**",
-      "examples/independent-conformance/**"
+      "examples/independent-conformance/**",
+      "tools/test-shard/**"
     ],
     "seeds": [
       "main-160a26deb-x86_64-l@sha256:734239e3325efa8762d7f34f663e3285b824da44d5899dfc46d5d47b63e8112a"
@@ -1223,7 +1225,8 @@
           "sdks/verifier-js/test/**",
           "sdks/verifier-js/tests/**",
           "sdks/verifier-js/demo-fixtures/**",
-          "examples/independent-conformance/**"
+          "examples/independent-conformance/**",
+          "tools/test-shard/**"
         ],
         "uid": 0,
         "writes": [
