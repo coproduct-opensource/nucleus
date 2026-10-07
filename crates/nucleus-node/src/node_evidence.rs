@@ -49,6 +49,7 @@ use nucleus_node_evidence::{
 use tracing::{info, warn};
 
 use crate::NodeState;
+use crate::keys::{NODE_KEY_FILE_WAIVER_FLAG, NodeCustody, NodeKeyCustody, NodeKeyFileCustody};
 
 /// Operator flags for node platform evidence.
 #[derive(clap::Args, Debug, Clone)]
@@ -84,33 +85,116 @@ pub(crate) struct NodeEvidenceArgs {
     /// configuration is not a waiver.
     #[arg(long = "allow-federation-key-in-file", action = clap::ArgAction::SetTrue)]
     allow_federation_key_in_file: bool,
+    /// Keep the node's Ed25519 keys (executor, task issuer, approval,
+    /// certificate root) in files although this node has a TPM (A2). Without
+    /// it, a node with `--node-evidence-tpm` seals each key to the TPM under
+    /// the boot PCRs, migrating an existing key file with its public key
+    /// unchanged, so a copied disk holds no usable node key. With it, the keys
+    /// stay files, the waiver is logged at start-up, and the node's key
+    /// custody statement says so. A flag only, never an env var.
+    #[arg(long = "allow-node-keys-in-file", action = clap::ArgAction::SetTrue)]
+    allow_node_keys_in_file: bool,
     /// The anonymous, read-only evidence listener (`public_evidence`).
     #[command(flatten)]
     pub(crate) public: crate::public_evidence::PublicEvidenceArgs,
 }
 
+/// One custody decision from the TPM flag and a waiver: the truth table both
+/// the federation key and the node keys follow, written once (ADR 0007 G-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Decided<'a> {
+    /// A TPM is configured and not waived.
+    Tpm(&'a PathBuf),
+    /// A TPM is configured and the waiver is passed.
+    Waived,
+    /// No TPM is configured.
+    NoTpm,
+}
+
+/// A TPM configured and not waived is TPM custody; there is no default that
+/// picks a file (B-1).
+///
+/// # Errors
+/// The waiver without a TPM: a waiver that waives nothing is a
+/// misconfiguration, not a no-op (B-5).
+fn decide<'a>(
+    tpm: Option<&'a PathBuf>,
+    waived: bool,
+    flag: &str,
+    what: &str,
+) -> Result<Decided<'a>, String> {
+    match (tpm, waived) {
+        (Some(device), false) => Ok(Decided::Tpm(device)),
+        (Some(_), true) => Ok(Decided::Waived),
+        (None, false) => Ok(Decided::NoTpm),
+        (None, true) => Err(format!(
+            "{flag} waives TPM custody of {what}, but no TPM is configured \
+             (--node-evidence-tpm is unset)"
+        )),
+    }
+}
+
 impl NodeEvidenceArgs {
     /// Where the federation issuer key lives, decided from the TPM flag and
-    /// the waiver: the one place that decides it (ADR 0007 G-1). A TPM
-    /// configured and not waived is TPM custody; there is no default that
-    /// picks a file (B-1).
+    /// its waiver (ADR 0012).
     ///
     /// # Errors
-    /// The waiver without a TPM: a waiver that waives nothing is a
-    /// misconfiguration, not a no-op (B-5).
+    /// The waiver without a TPM (B-5).
     pub(crate) fn federation_key_custody(&self) -> Result<KeyCustody, String> {
-        match (&self.node_evidence_tpm, self.allow_federation_key_in_file) {
-            (Some(device), false) => Ok(KeyCustody::Tpm(TpmCustody::new(TpmEndpoint::Device(
-                device.clone(),
-            )))),
-            (Some(_), true) => Ok(KeyCustody::File(FileCustody::Waived)),
-            (None, false) => Ok(KeyCustody::File(FileCustody::NoTpmConfigured)),
-            (None, true) => Err(format!(
-                "{} waives TPM custody of the federation key, but no TPM is configured \
-                 (--node-evidence-tpm is unset)",
-                nucleus_federation::FILE_CUSTODY_WAIVER_FLAG
-            )),
+        Ok(
+            match decide(
+                self.node_evidence_tpm.as_ref(),
+                self.allow_federation_key_in_file,
+                nucleus_federation::FILE_CUSTODY_WAIVER_FLAG,
+                "the federation key",
+            )? {
+                Decided::Tpm(device) => {
+                    KeyCustody::Tpm(TpmCustody::new(TpmEndpoint::Device(device.clone())))
+                }
+                Decided::Waived => KeyCustody::File(FileCustody::Waived),
+                Decided::NoTpm => KeyCustody::File(FileCustody::NoTpmConfigured),
+            },
+        )
+    }
+
+    /// Where the node's Ed25519 role keys are held at rest, decided from the
+    /// TPM flag and its own waiver (A2).
+    ///
+    /// # Errors
+    /// The waiver without a TPM (B-5).
+    pub(crate) fn node_key_custody(&self) -> Result<NodeKeyCustody, String> {
+        Ok(
+            match decide(
+                self.node_evidence_tpm.as_ref(),
+                self.allow_node_keys_in_file,
+                NODE_KEY_FILE_WAIVER_FLAG,
+                "the node keys",
+            )? {
+                Decided::Tpm(device) => NodeKeyCustody::Sealed(TpmEndpoint::Device(device.clone())),
+                Decided::Waived => NodeKeyCustody::File(NodeKeyFileCustody::Waived),
+                Decided::NoTpm => NodeKeyCustody::File(NodeKeyFileCustody::NoTpmConfigured),
+            },
+        )
+    }
+
+    /// Both decisions, as the node's start-up takes them. A waived node-key
+    /// custody is logged here, once.
+    ///
+    /// # Errors
+    /// Either waiver without a TPM (B-5).
+    pub(crate) fn custody(&self) -> Result<NodeCustody, String> {
+        let custody = NodeCustody {
+            federation: self.federation_key_custody()?,
+            node_keys: self.node_key_custody()?,
+        };
+        if custody.node_keys == NodeKeyCustody::File(NodeKeyFileCustody::Waived) {
+            warn!(
+                "{NODE_KEY_FILE_WAIVER_FLAG}: the node's Ed25519 keys are FILES on a node with a \
+                 TPM; a copy of this disk holds the executor, approval, certificate-root and \
+                 task-issuer keys. The node's key custody statement records the waiver"
+            );
         }
+        Ok(custody)
     }
 }
 
@@ -500,6 +584,20 @@ async fn federation_keys(State(state): State<NodeState>) -> Response {
     }
 }
 
+/// `GET /v1/node/key-custody` — how the node's Ed25519 role keys are held at
+/// rest (A2): sealed to the TPM under which boot policy, or a file and why.
+/// The node's statement, as last recorded at start-up.
+async fn key_custody(State(state): State<NodeState>) -> Response {
+    match std::fs::read(
+        state
+            .state_dir
+            .join(crate::keys::NODE_KEY_CUSTODY_STATE_FILE),
+    ) {
+        Ok(bytes) => evidence_response(bytes),
+        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChallengeRequest {
@@ -542,6 +640,7 @@ pub(crate) fn routes() -> axum::Router<NodeState> {
         .route("/v1/node/evidence", get(latest))
         .route("/v1/node/evidence/challenge", post(challenge))
         .route("/v1/node/federation-keys", get(federation_keys))
+        .route("/v1/node/key-custody", get(key_custody))
         .route("/v1/node/evidence/{digest}", get(by_digest))
 }
 
@@ -579,6 +678,7 @@ mod tests {
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             allow_federation_key_in_file: false,
+            allow_node_keys_in_file: false,
             public: Default::default(),
         };
         let dir = tempfile::tempdir().unwrap();
@@ -598,6 +698,7 @@ mod tests {
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             allow_federation_key_in_file: false,
+            allow_node_keys_in_file: false,
             public: Default::default(),
         };
         assert!(NodePlatformSource::start(&args, dir.path(), [1; 32], false).is_err());
@@ -611,6 +712,7 @@ mod tests {
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
             allow_federation_key_in_file: waived,
+            allow_node_keys_in_file: false,
             public: Default::default(),
         };
         assert_eq!(
@@ -647,6 +749,53 @@ mod tests {
         assert_eq!(waiver.get_env(), None);
     }
 
+    /// A2: a node with a TPM seals its Ed25519 keys unless the operator
+    /// passes the node keys' OWN waiver. The federation key's waiver does not
+    /// waive it (the two decisions cost different things), and neither waiver
+    /// is accepted without a TPM.
+    #[test]
+    fn a_tpm_seals_the_node_keys_unless_waived_by_their_own_name() {
+        let args = |tpm: Option<&str>, fed_waived: bool, keys_waived: bool| NodeEvidenceArgs {
+            node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_ak_template: "default-ecc".into(),
+            node_evidence_anchor: "none".into(),
+            node_evidence_epoch_secs: 300,
+            allow_federation_key_in_file: fed_waived,
+            allow_node_keys_in_file: keys_waived,
+            public: Default::default(),
+        };
+        let sealed = NodeKeyCustody::Sealed(TpmEndpoint::Device("/dev/tpmrm0".into()));
+        assert_eq!(
+            args(Some("/dev/tpmrm0"), false, false).node_key_custody(),
+            Ok(sealed.clone())
+        );
+        // The federation waiver leaves the node keys sealed.
+        let c = args(Some("/dev/tpmrm0"), true, false).custody().unwrap();
+        assert_eq!(c.node_keys, sealed);
+        assert_eq!(c.federation, KeyCustody::File(FileCustody::Waived));
+        assert_eq!(
+            args(Some("/dev/tpmrm0"), false, true).node_key_custody(),
+            Ok(NodeKeyCustody::File(NodeKeyFileCustody::Waived))
+        );
+        assert_eq!(
+            args(None, false, false).node_key_custody(),
+            Ok(NodeKeyCustody::File(NodeKeyFileCustody::NoTpmConfigured))
+        );
+        let err = args(None, false, true).custody().unwrap_err();
+        assert!(err.contains(NODE_KEY_FILE_WAIVER_FLAG), "{err}");
+        use clap::CommandFactory as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            a: NodeEvidenceArgs,
+        }
+        let cmd = Cli::command();
+        let waiver = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == NODE_KEY_FILE_WAIVER_FLAG.strip_prefix("--"))
+            .expect("the waiver flag exists, under the name the errors give");
+        assert_eq!(waiver.get_env(), None);
+    }
     #[test]
     fn stored_documents_are_named_only_by_a_digest() {
         assert!(is_digest(&"ab".repeat(32)));

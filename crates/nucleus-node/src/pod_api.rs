@@ -1245,9 +1245,13 @@ pub(crate) mod handler_tests {
             proxy_auth_secret: a.proxy_auth_secret.clone(),
             caller_secret: Arc::new([7u8; 32]),
             proxy_approval_secret: a.proxy_approval_secret.clone(),
-            approval_signer: Arc::new(crate::keys::load_or_create_approval_signing_key(
-                &a.state_dir,
-            )),
+            approval_signer: Arc::new(
+                crate::keys::load_or_create_approval_signing_key(
+                    &a.state_dir,
+                    &crate::pod_authority::NO_TPM.node_keys,
+                )
+                .expect("approval key"),
+            ),
             proxy_actor: None,
             trusted_postures: crate::posture::PostureRegistry::from_operator_str(""),
             audit_sinks: Arc::new(a.audit_sinks.load().expect("audit sinks")),
@@ -1284,7 +1288,11 @@ pub(crate) mod handler_tests {
             container_proxy_unix: a.container_proxy_unix,
             container_pool: None,
             docker: None,
-            trust_gate: crate::trust_gate::TrustGateConfig::from_env(&a.state_dir),
+            trust_gate: crate::trust_gate::TrustGateConfig::from_env(
+                &a.state_dir,
+                &crate::pod_authority::NO_TPM.node_keys,
+            )
+            .expect("trust gate"),
             node_platform: std::sync::Arc::new(
                 crate::node_evidence::NodePlatformSource::Unattested("test node".into()),
             ),

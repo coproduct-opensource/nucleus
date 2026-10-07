@@ -1,6 +1,8 @@
 # ADR 0012 — The federation issuer key lives in the TPM, bound to the measured boot
 
-- Status: **accepted** (2026-10-07). Lands with its implementation in one PR.
+- Status: **accepted** (2026-10-07). Lands with its implementation in one PR. Addendum
+  A2 (2026-10-07, same day): the Ed25519 node keys are sealed at rest, at the end of this
+  record.
 - Tracks: limit-case hardening item A1 ("authority comes from the TPM and the measured
   boot, never from possessing a file"). A2 (the Ed25519 node keys) and A3 (the assertion
   carries the evidence epoch and tier) build on it; see the end of this record.
@@ -226,10 +228,10 @@ so a stranger can enumerate every boot state the key could ever sign in.
 - **The TPM is the root.** A vTPM is the hypervisor's, and its operator can do anything the
   vTPM can. The AK anchor for a cloud vTPM is `OperatorFetched` (ADR 0011). A cleared owner
   hierarchy (`TPM2_Clear`) destroys the key. That is an availability loss, not a compromise.
-- **The Ed25519 node keys** (executor, approval, cert root, task issuer) are still files.
-  Sealing them to the same policy is **A2**, a separate change. The TPMs this runs on do
-  not implement Ed25519, so those keys become sealed blobs that are unsealed into memory,
-  not TPM-resident keys, and the claim A2 can make is correspondingly weaker.
+- **The Ed25519 node keys** (executor, approval, cert root, task issuer) were still files
+  when this decision was taken. **A2** (the addendum below) seals them to the same policy.
+  The TPMs this runs on do not implement Ed25519, so those keys are sealed blobs unsealed
+  into memory, not TPM-resident keys, and the claim A2 makes is correspondingly weaker.
 - **Migration** from a file key to a TPM key is a new key, not a rotation. A mixed-custody
   rotation (stage a TPM `next` while a file `current` signs) would avoid a JWKS gap, and is
   not built.
@@ -312,6 +314,226 @@ so a stranger can enumerate every boot state the key could ever sign in.
   | signer accepts a file key under TPM custody | custody is never crossed |
   | a TPM without the waiver gives file custody | node custody decision |
   | `nucleus-audit` exits 0 with a file key | CLI file-key test |
+
+## Addendum A2 (2026-10-07): the node's Ed25519 keys are sealed at rest
+
+The node holds four Ed25519 keys beside the federation key: the executor key (receipts),
+the approval key (`/v1/approve`), the certificate root (every pod's `LatticeCertificate`)
+and the task issuer (session capability tokens). Until A2 each was a `0400` PKCS#8 file in
+the state directory, so a copied disk carried all four. The TPMs this runs on do not
+implement Ed25519, so these keys cannot be what the federation key is, a key the TPM signs
+with. What the TPM can do is **seal** them.
+
+### What is sealed, and to what
+
+- **Object.** Each 32-byte seed is the sensitive data of a `TPM_ALG_KEYEDHASH` object with
+  a NULL scheme (a sealed data object), created under the same storage primary as the
+  federation key. Attributes: `fixedTPM | fixedParent | noDA`. `userWithAuth` is clear, so
+  `Unseal` (a user-role command) is reachable only through the policy. `adminWithPolicy` is
+  clear. `sensitiveDataOrigin` is clear because the node supplies the data, and `sign`,
+  `decrypt` and `restricted` are clear because the object is data, not a key.
+- **Policy.** The same `PolicyPCR` over the same set, `BOOT_POLICY_PCRS` = {0, 2, 4, 7, 8, 9,
+  14}, computed by the same `policy_pcr_digest` (G-1). Nothing about the set is restated.
+- **On disk:** `<role>_signing_key.sealed.json`, holding `TPM2B_PRIVATE`, `TPM2B_PUBLIC`,
+  the PCR list, the Ed25519 public key, and how the key came to be sealed (`generated` or
+  `migrated_from_file`). There is no key file.
+- **At start-up** the node loads each object, runs `PolicyPCR` in a fresh policy session and
+  `Unseal`s it. The seed is held in a wiping container (`Zeroizing`), and every TPM command
+  and response buffer in the raw layer is wiped on drop. The `SigningKey` built from the seed
+  zeroizes itself on drop (`ed25519-dalek`'s `zeroize` feature).
+
+### Custody
+
+`NodeKeyCustody` is `Sealed(TpmEndpoint) | File(NoTpmConfigured | Waived)`. There is no
+`Default`. The truth table is the federation key's, and it is written once: one function,
+`decide`, serves both custody decisions.
+
+| `--node-evidence-tpm` | `--allow-node-keys-in-file` | node keys |
+|---|---|---|
+| set | absent | **sealed** |
+| set | present | files, `Waived`: logged at start-up and recorded in the custody statement |
+| unset | absent | files, `NoTpmConfigured` |
+| unset | present | **refused** (B-5) |
+
+**Why a waiver of its own, not the federation key's.** The two decisions cost different
+things. Moving the federation key into the TPM makes a new key, and every upstream that
+registered the old one must be told, so an operator may reasonably keep
+`--allow-federation-key-in-file` for a while. Sealing the node keys keeps every public key,
+so it costs nothing. One waiver would make the free protection wait on the expensive one.
+The likely transition state, a federation key still in a file and node keys sealed, needs
+the two to be separate.
+
+The custody is never crossed:
+
+- File custody refuses a directory that holds a sealed key. It does not regenerate over it.
+- Sealed custody does not run on a key file. A TPM that cannot be reached or refuses to seal
+  stops the node with an error that names the waiver.
+
+### Migration keeps the public keys
+
+An existing node has key files. Under sealed custody, each role key is migrated in place:
+
+1. Read the key file.
+2. Seal the same seed.
+3. Write the sealed blob atomically: a temporary file is written and `fsync`ed, renamed, and
+   the directory is `fsync`ed.
+4. Read the blob back from disk and `Unseal` it.
+5. Only if it unseals to the same seed, delete the key file, and `fsync` the directory.
+
+The node logs each migration, and the custody statement records `migrated_from_file`.
+Because the public key is unchanged, every receipt, approval and certificate the key ever
+signed still verifies, and nothing that pinned it needs to change. This is where A2 differs
+from the federation key, whose move into the TPM is a new key.
+
+A crash at any point leaves a usable key:
+
+- **Before the rename:** the key file is intact, and a stale temporary is discarded on the
+  next attempt.
+- **After the rename, before the delete:** both exist. The next start unseals the blob and,
+  if the file holds the same key, deletes it. If the file holds a different key, the node
+  refuses to choose and stops.
+- **When the round trip fails,** the blob just written is removed, the key file stays, and
+  the node stops.
+
+### A changed boot
+
+A sealed key the TPM refuses for its policy (`TPM_RC_POLICY_FAIL`: a kernel, initrd, boot
+loader, command line or Secure Boot change) or its integrity (`TPM_RC_INTEGRITY`: another
+TPM's blob) is moved aside to `<file>.unusable-<time>`, kept, and replaced by a new sealed
+key, with a warning. This is the same availability rule as an unreadable key file, and the
+same rule as the federation key. Unlike a regenerated file key, the old blob is kept:
+booting back into the state it was sealed in and moving it back recovers the old identity.
+Any other TPM failure stops the node and is never a reason to change identity.
+
+The consequence is the federation key's: until `PolicyAuthorize` (above), an upgrade of the
+bound boot chain is four new node keys. Receipts signed before the upgrade still verify
+under the old public keys. Anything that pinned an old key has to be told the new one: an
+executor registration, `--cert-trust-anchors`, or a running pod's approval key. Pods do not
+survive the reboot an upgrade needs anyway.
+
+### What the node states
+
+The node keeps `node-evidence/node-keys.json` (`nucleus-node-key-custody/v1`) and serves it
+at `GET /v1/node/key-custody`. For each role it lists the public key and either
+`tpm_sealed`, with the sealed object's `TPM2B_PUBLIC`, `policy_pcrs`, `policy_digest`,
+`origin` and `sealed_at`, or `file` with the reason. A reader holding a quote of
+`policy_pcrs` can recompute `policy_digest` from the quoted values.
+
+**What it is not, yet.** The statement is the node's own word. The AK does not certify the
+sealed objects, and `nucleus-audit` does not appraise the statement. Even certified, a
+sealed object's Name would prove "this TPM holds a data object under boot policy X". It
+would not prove that the object's contents are the executor key: the `unique` field of a
+sealed object hashes the data with a secret salt, so nothing public links the two. That
+link would be the node's word in any design that seals rather than holds the key. Such a
+design is the follow-up below, and it is a smaller claim than the federation key's
+`TpmBound`.
+
+### What A2 closes, and what it does not
+
+**Closes.** A disk, snapshot, backup or image taken away from the machine carries no usable
+node key:
+
+- The blob loads only under this TPM's owner seed.
+- Even on this TPM, it unseals only in the measured boot state.
+- A migrated node keeps no key file, and the custody statement says which keys were
+  migrated.
+
+**Does not close.** The sealing protects the keys **at rest only**, and that is a weaker
+claim than the federation key's:
+
+- **A running node holds the unsealed keys in RAM.** Root on the running node can read them
+  from the node's memory and copy them anywhere, and they stay valid off the machine
+  indefinitely. The federation key is different: it never leaves the TPM, so root on a
+  running node can only use it as a signing oracle while it keeps the machine.
+- **Root can also unseal the blob directly** while the boot state matches. It needs no
+  password, only the PCRs, and the policy does not name the `nucleus-node` binary: IMA
+  (PCR 10) is not bound. This includes a stolen whole machine, as opposed to its disk,
+  booted normally into its own state. Whoever gets root there gets the keys.
+- **The unseal crosses the TPM interface in the clear.** The policy session is unsalted, so
+  `Unseal`'s response is not parameter-encrypted. On a vTPM that interface belongs to the
+  hypervisor, which holds the TPM anyway. On a discrete TPM it is a bus that an attacker
+  holding the machine could probe during boot.
+- **Wiping is best effort.** The seed lives in a zeroizing container and the TPM buffers are
+  wiped, and `ed25519-dalek` zeroizes the `SigningKey`. The certificate root is also handed
+  to `ring` as an `Ed25519KeyPair`, and the node does not control how long that copy lives.
+  Swap and core dumps are not addressed here.
+
+### Evidence for A2
+
+The swtpm tests start their own swtpm processes and are `#[ignore]`d without one:
+
+- **libtpms (swtpm 0.7.3), `nucleus-node-evidence/tests/sealed_secret_swtpm.rs`:**
+  - A secret round-trips, twice. Its `authPolicy` is `PolicyPCR` over the current boot
+    values, and neither stored part contains it.
+  - After `PCR_Extend(8)`, `Unseal` fails with `TPM_RC_POLICY_FAIL`. PCR 16 changes nothing.
+  - On a second swtpm, `Load` fails with `TPM_RC_INTEGRITY`.
+- **`nucleus-node` `keys::tests`, the swtpm ones:**
+  - A sealed key unseals across a restart and signs, and no byte of the seed is on disk.
+  - After `PCR_Extend(8)` the old blob is set aside and a new key replaces it.
+  - A state directory moved to another TPM yields no key equal to the original.
+  - Migration keeps all four public keys and deletes the files.
+  - A key file outlives a blob that does not verify.
+  - A crash before the rename, or between the rename and the delete, completes with the same
+    key. A different key beside the blob is refused.
+- **Unit tests, which run in CI:**
+  - File custody refuses a sealed key.
+  - A TPM node without the waiver refuses to run on its key file, and leaves it untouched.
+  - The custody decision table, including that the federation waiver does not waive the node
+    keys.
+  - A sealed public area with `userWithAuth`, `adminWithPolicy` or `sign` set, or with
+    `fixedTPM` or `fixedParent` clear, or without a digest policy, is refused.
+
+**A-19.** Each probe below injects one defect, and the named tests turn red. With the
+defect restored the same tests are green, and the tree is clean afterwards.
+
+| probe | red |
+|---|---|
+| the sealed bytes are not the key (first byte dropped) | swtpm round trip; node unseal-and-sign, migration, crash, moved-disk and verify tests |
+| the seal's policy leaves out PCR 8 | extend-stops-the-unseal, at the TPM layer and in the node |
+| a migration leaves the key file behind | moved disk (the original key came back on another TPM); migration; crash |
+| a migration makes a new key | migration keeps the public key; crash; verify |
+| the key file is deleted before sealing | key file outlives a blob that does not verify; TPM node refuses to run on a key file |
+| a blob accepted without unsealing what is on disk | key file outlives a blob that does not verify |
+| an interrupted migration is not finished | crash mid-migration (after the rename) |
+| a stale temporary blocks the retry | crash mid-migration (before the rename) |
+| a TPM without the waiver gives files | both custody decision tables: the federation key's turns red too, because `decide` is shared |
+| a TPM failure falls back to the key file | TPM node refuses to run on a key file; crash; verify |
+| file custody reads past a sealed key | file custody refuses a sealed key |
+| `userWithAuth` accepted in a sealed public area | sealed public area without its policy |
+
+**Live vTPM run** (2026-10-07). One Spot n2 Shielded VM in us-east1-b, Ubuntu 24.04 with
+kernel 7.0, created and deleted under the automation identity. `nucleus-node`, built x86_64
+musl from this change, ran against `/dev/tpmrm0`, each start for 25 s:
+
+1. **Without a TPM:** four `.der` keys. The statement says `file`, "no TPM is configured".
+2. **With `--node-evidence-tpm /dev/tpmrm0`:**
+   - four "migrated … with the SAME public key" log lines;
+   - no `.der` file left, four `.sealed.json` files;
+   - the statement lists the same four public keys, byte for byte, as `tpm_sealed`,
+     `migrated_from_file`, policy PCRs 0, 2, 4, 7, 8, 9, 14.
+   - The `policy_digest` `bc7fa99d…16fc` equals `tpm2_createpolicy --policy-pcr -l
+     sha256:0,2,4,7,8,9,14` (tpm2-tools 5.6) on the same TPM: an independent computation of
+     the policy.
+3. **Restart with the TPM:** the keys unseal, and the public keys are unchanged.
+4. **Restart without the TPM flag:** refused, "the custody is never crossed".
+5. **After `tpm2_pcrextend 8`:** for each key, "cannot be unsealed: it is sealed to another
+   boot state". The node takes that branch only on `TPM_RC_POLICY_FAIL`, so the warning shows
+   the vTPM refused for the policy. Each old blob is kept as `.unusable-<time>`. Four new keys
+   are sealed under a new policy digest, and none of the public keys is unchanged.
+
+### Follow-ups
+
+- **AK certification and appraisal of the sealed objects.** `TPM2_Certify` each sealed
+  object every epoch, as for the federation key. Then teach `nucleus-audit` to appraise the
+  statement against the quote, so a stranger can say "the executor key is sealed under
+  boot policy X". As stated above, the link from the object to the public key would remain
+  the node's word.
+- **A salted session for `Unseal`,** with response parameter encryption, so the seed does
+  not cross a discrete TPM's bus in the clear.
+- **`PolicyAuthorize`,** shared with the federation key, so an approved upgrade keeps the
+  node keys.
+- **Node keys in the evidence binding.** The quote binds the executor key only. The
+  approval and certificate-root keys could be bound the same way.
 
 ## References
 

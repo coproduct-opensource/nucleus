@@ -38,13 +38,17 @@ rsa = { version = "0.9", default-features = false, features = ["std"] }
 # Parsing only: the workspace entry enables `verify` (ring). Signatures over the
 # AK certificate chain are checked here with the RustCrypto crates above.
 x509-parser = { version = "0.18", default-features = false }
+# Attester only: the command layer wipes its buffers, and an unsealed secret
+# (A2, the node's Ed25519 keys) is handed out in a wiping container. Pure Rust;
+# not reached by the verifier, so the wasm build never links it.
+zeroize = { version = "1", optional = true }
 
 [features]
 default = []
 # The Attester role: raw TPM 2.0 commands over /dev/tpmrm0 (or a software
 # TPM's socket in tests). Pure Rust and std-only; off by default so the
 # verifier alone stays free of any I/O.
-attester = []
+attester = ["dep:zeroize"]
 
 [[example]]
 name = "swtpm_attest"

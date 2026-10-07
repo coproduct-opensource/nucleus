@@ -763,19 +763,22 @@ impl PodAuthority {
     /// The `--upstreams` registry is set and does not load. The node refuses to
     /// start rather than run with a ceiling other than the one written. Also a
     /// registry with a `federated` entry and no usable `--federation-issuer`.
-    /// Also approval timing outside its bounds.
+    /// Also approval timing outside its bounds. Also a certificate-root key
+    /// that cannot be unsealed or sealed under `custody.node_keys` (A2).
     pub fn new(
         args: &AuthorityArgs,
         trust_domain: &str,
         state_dir: &Path,
-        federation_key: &nucleus_federation::KeyCustody,
+        custody: &keys::NodeCustody,
     ) -> Result<Self, String> {
         let approval_timing = args.approvals.timing()?;
-        let dalek = keys::load_or_create_cert_root_signing_key(state_dir);
+        let dalek = keys::load_or_create_cert_root_signing_key(state_dir, &custody.node_keys)?;
         // ring's keypair cannot be built from PKCS#8 v2 DER reliably across
-        // encoders; seed + public key is the unambiguous form.
+        // encoders; seed + public key is the unambiguous form. The seed copy
+        // is wiped once ring has it.
+        let seed = nucleus_node_evidence::tpm_key::Zeroizing::new(dalek.to_bytes());
         let root_key = Ed25519KeyPair::from_seed_and_public_key(
-            &dalek.to_bytes(),
+            seed.as_slice(),
             &dalek.verifying_key().to_bytes(),
         )
         .expect("a freshly generated or persisted Ed25519 seed is a valid seed");
@@ -819,7 +822,7 @@ impl PodAuthority {
             args.federation_issuer.as_deref(),
             registry.as_deref(),
             state_dir,
-            federation_key,
+            &custody.federation,
         )?;
         let bindings = match registry.as_deref() {
             Some(reg) => CallerBindings::from_files(reg.callers(), reg, trust_domain)?,
@@ -858,12 +861,13 @@ impl PodAuthority {
     ///
     /// # Errors
     /// As [`Self::new`].
+    #[cfg(test)]
     pub fn from_args(args: &crate::Args) -> Result<Self, String> {
         Self::new(
             &args.authority,
             &args.identity_trust_domain,
             &args.state_dir,
-            &args.node_evidence.federation_key_custody()?,
+            &args.node_evidence.custody()?,
         )
     }
 
@@ -1863,10 +1867,15 @@ fn federation_source(
     Ok(Some(std::sync::Arc::new(source)))
 }
 
-/// The custody every test authority uses: a node with no TPM.
+/// The custody every test authority uses: a node with no TPM, for the
+/// federation key and the node keys alike.
 #[cfg(test)]
-pub(crate) const NO_TPM: nucleus_federation::KeyCustody =
-    nucleus_federation::KeyCustody::File(nucleus_federation::FileCustody::NoTpmConfigured);
+pub(crate) const NO_TPM: keys::NodeCustody = keys::NodeCustody {
+    federation: nucleus_federation::KeyCustody::File(
+        nucleus_federation::FileCustody::NoTpmConfigured,
+    ),
+    node_keys: keys::NodeKeyCustody::File(keys::NodeKeyFileCustody::NoTpmConfigured),
+};
 
 fn ledger_denial(e: impl std::fmt::Display) -> ApiError {
     ApiError::Authority(format!("budget conservation: {e}"))
