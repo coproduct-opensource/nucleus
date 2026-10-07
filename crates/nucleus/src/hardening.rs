@@ -78,7 +78,8 @@
 //! | `MicroVM` (child or workload) | drop | **refused** | denylist |
 //!
 //! "Bare" = no fd closing, no `no_new_privs`, no rlimits. "Restricted" = fds
-//! above 2 close-on-exec, `no_new_privs`, rlimits, no uid change. "Drop" =
+//! above 2 close-on-exec, `no_new_privs`, rlimits ([`AppliedRlimits`], from
+//! the pod's [`RlimitPolicy`], #2572), no uid change. "Drop" =
 //! restricted, and uid/gid changed first. An explicit `workload.uid` is a
 //! request the runtime must honour or refuse; only the unset default may
 //! collapse to the bare tier, because only then did nobody ask for a uid.
@@ -142,10 +143,12 @@ use crate::command::ContainmentMode;
 use crate::error::{NucleusError, Result};
 
 mod landlock;
+mod rlimit;
 #[cfg(target_os = "linux")]
 mod seccomp;
 
 pub use landlock::{LandlockSupport, MIN_LANDLOCK_ABI};
+pub use rlimit::{AppliedRlimits, RlimitPolicy, RlimitVector};
 
 /// The uid a separated child runs as when nothing more specific is
 /// configured: `nobody`. A high, unprivileged, non-root value — the guest
@@ -638,17 +641,45 @@ impl ChildConfinement {
     /// compiled here too, and the hook calls `landlock_restrict_self` after
     /// `no_new_privs` and before the syscall filter. A ruleset that cannot be
     /// compiled or applied fails the spawn the same way.
+    /// The resource limits are `rlimits`, taken by value: only a
+    /// [`RlimitPolicy`] mints them, so the hook sets limits at or below the
+    /// pod's policy and nothing else (#2572). They are converted to plain
+    /// scalars here, before the fork.
+    ///
+    /// Returns what the child will get, for the launch receipt: a
+    /// [`SpawnHardening::Hardened`] only this method can mint, and only when
+    /// it installed the hook.
     ///
     /// For a `tokio::process::Command`, pass `cmd.as_std_mut()`.
-    pub fn apply(&self, cmd: &mut std::process::Command) {
+    pub fn apply(
+        &self,
+        cmd: &mut std::process::Command,
+        rlimits: AppliedRlimits,
+    ) -> SpawnHardening {
         match self.posture {
-            Posture::Unsandboxed => {}
+            Posture::Unsandboxed => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
             Posture::Restricted(filter) => {
-                imp::install(cmd, filter, FilesystemConfinement::NotApplied);
+                Self::restrict(cmd, filter, FilesystemConfinement::NotApplied, rlimits)
             }
             Posture::DropTo(uid, filter, filesystem) => {
                 imp::drop_to(cmd, uid);
-                imp::install(cmd, filter, filesystem);
+                Self::restrict(cmd, filter, filesystem, rlimits)
+            }
+        }
+    }
+
+    /// Install the self-restriction hook and say what it does. The ONE place a
+    /// [`Hardened`] is minted.
+    fn restrict(
+        cmd: &mut std::process::Command,
+        filter: SyscallFilter,
+        filesystem: FilesystemConfinement,
+        rlimits: AppliedRlimits,
+    ) -> SpawnHardening {
+        match imp::install(cmd, filter, filesystem, rlimits) {
+            Hook::Installed => SpawnHardening::Hardened(Hardened { rlimits }),
+            Hook::NoneOnThisPlatform => {
+                SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
             }
         }
     }
@@ -669,6 +700,72 @@ impl ChildConfinement {
             None => Ok(()),
         }
     }
+}
+
+/// What a spawn's confinement hook does to the child, as its launch receipt
+/// states it (#2572).
+///
+/// The hardened case carries a [`Hardened`], which has a private field and is
+/// minted only by [`ChildConfinement::apply`] when it installed the hook, so
+/// the bare tier — or a platform with no hook — cannot claim it. Before this,
+/// the receipt carried a `bool` the caller computed beside the spawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnHardening {
+    /// Inherited fds above 2 close-on-exec, `no_new_privs`, the rlimits,
+    /// and the syscall filter when the posture has one.
+    Hardened(Hardened),
+    /// No hook: the child is a plain process, and why.
+    Unhardened(Unhardened),
+}
+
+impl SpawnHardening {
+    /// Whether the hook was installed.
+    #[must_use]
+    pub fn is_hardened(&self) -> bool {
+        match self {
+            Self::Hardened(_) => true,
+            Self::Unhardened(_) => false,
+        }
+    }
+}
+
+/// The evidence that the confinement hook was installed, and with which
+/// limits. Private field: only [`ChildConfinement::apply`] mints one (ADR
+/// 0007 C-1, C-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Hardened {
+    rlimits: AppliedRlimits,
+}
+
+impl Hardened {
+    /// The limits the hook sets.
+    #[must_use]
+    pub fn rlimits(&self) -> AppliedRlimits {
+        self.rlimits
+    }
+}
+
+/// Why a spawn has no confinement hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Unhardened {
+    /// The declared bare host tier (`ContainmentMode::Unsandboxed` on a
+    /// non-root runtime, explicitly opted in).
+    DeclaredBareTier,
+    /// A posture without a syscall filter on a platform that has no hook
+    /// (a root runtime's `Unsandboxed` child off Linux): the uid drop
+    /// happens, nothing else does.
+    NoHookOnThisPlatform,
+}
+
+/// Whether `imp::install` put a hook on the command. Each platform's `imp`
+/// returns one of the two, so the other is dead there.
+enum Hook {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Installed,
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
+    NoneOnThisPlatform,
 }
 
 /// The runtime's own uid.
@@ -752,13 +849,7 @@ mod imp {
     use super::landlock::Ruleset;
     use super::seccomp::Program;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
-    use super::{FilesystemConfinement, SyscallFilter};
-
-    // Generous-but-bounded: contain abuse without breaking build/test work.
-    const RLIMIT_NPROC_MAX: libc::rlim_t = 512;
-    const RLIMIT_NOFILE_MAX: libc::rlim_t = 4096;
-    const RLIMIT_FSIZE_MAX: libc::rlim_t = 8 * 1024 * 1024 * 1024; // 8 GiB
-    const RLIMIT_CPU_SECS: libc::rlim_t = 3600; // 1 hour of CPU time
+    use super::{AppliedRlimits, FilesystemConfinement, Hook, RlimitVector, SyscallFilter};
 
     // `setrlimit` takes `__rlimit_resource_t` on glibc but plain `c_int` on
     // musl (the guest rootfs).
@@ -766,6 +857,44 @@ mod imp {
     type RlimitResource = libc::__rlimit_resource_t;
     #[cfg(not(target_env = "gnu"))]
     type RlimitResource = libc::c_int;
+
+    /// The limits as the hook sets them: plain scalars, computed in the parent
+    /// so the child neither decides nor allocates.
+    type HookLimits = [(RlimitResource, libc::rlim_t); 4];
+
+    /// The four `setrlimit` calls `applied` asks for. Each `u64` is assigned
+    /// to `rlim_t` without a conversion, which compiles only where `rlim_t` is
+    /// 64 bits (every target the runtime ships); a narrower `rlim_t` would be
+    /// a compile error, never a truncation to `RLIM_INFINITY`.
+    ///
+    /// `RLIMIT_NPROC` counts tasks per REAL UID (per user namespace since
+    /// Linux 5.14), not per process tree. It bounds one workload only because
+    /// the uid is that workload's alone, and that holds on one path:
+    /// * In a microVM guest every child of the tool-proxy (the workload and
+    ///   every `/v1/run` command) drops to `DEFAULT_CHILD_UID`, and the guest
+    ///   kernel runs one pod, so the bound is per pod. The syscall filter
+    ///   refuses new user namespaces, so the child cannot move to a fresh
+    ///   count.
+    /// * On a root host runtime every pod's children drop to the same
+    ///   `DEFAULT_CHILD_UID`, so the 512 tasks are shared across pods and
+    ///   with anything else running as that uid.
+    /// * A `Restricted` child (`HostHardened`, non-root runtime) keeps the
+    ///   runtime's uid, so the count includes every process of that user.
+    fn hook_limits(applied: AppliedRlimits) -> HookLimits {
+        let RlimitVector {
+            nproc,
+            nofile,
+            fsize_bytes,
+            cpu_seconds,
+        } = applied.limits();
+        [
+            (libc::RLIMIT_NPROC, nproc),
+            (libc::RLIMIT_NOFILE, nofile),
+            (libc::RLIMIT_FSIZE, fsize_bytes),
+            (libc::RLIMIT_CPU, cpu_seconds),
+        ]
+        .map(|(resource, max)| (resource as RlimitResource, max))
+    }
 
     /// `CLOSE_RANGE_CLOEXEC` from uapi `linux/close_range.h` (kernel ≥ 5.11).
     /// Local because the `libc` crate's binding varies by target.
@@ -800,7 +929,11 @@ mod imp {
     /// Runs after fork, after std's stdio `dup2`, uid drop and `chdir`, and
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
-    fn harden_child(seccomp: &mut Seccomp, landlock: &mut Landlock) -> io::Result<()> {
+    fn harden_child(
+        seccomp: &mut Seccomp,
+        landlock: &mut Landlock,
+        limits: &HookLimits,
+    ) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
         // scalars or a pointer to a fully-initialized local `rlimit`; none
         // allocates or takes a lock, satisfying the `pre_exec` contract.
@@ -853,17 +986,12 @@ mod imp {
             if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
                 return Err(io::Error::last_os_error());
             }
-            for (resource, max) in [
-                (libc::RLIMIT_NPROC, RLIMIT_NPROC_MAX),
-                (libc::RLIMIT_NOFILE, RLIMIT_NOFILE_MAX),
-                (libc::RLIMIT_FSIZE, RLIMIT_FSIZE_MAX),
-                (libc::RLIMIT_CPU, RLIMIT_CPU_SECS),
-            ] {
+            for &(resource, max) in limits {
                 let rl = libc::rlimit {
                     rlim_cur: max,
                     rlim_max: max,
                 };
-                if libc::setrlimit(resource as RlimitResource, &rl) != 0 {
+                if libc::setrlimit(resource, &rl) != 0 {
                     return Err(io::Error::last_os_error());
                 }
             }
@@ -900,12 +1028,14 @@ mod imp {
     }
 
     /// Install the self-restriction hook, with `filter` and the filesystem
-    /// ruleset compiled here, in the parent.
+    /// ruleset compiled and `rlimits` converted here, in the parent.
     pub(super) fn install(
         cmd: &mut std::process::Command,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
-    ) {
+        rlimits: AppliedRlimits,
+    ) -> Hook {
+        let limits = hook_limits(rlimits);
         let mut landlock = match filesystem {
             FilesystemConfinement::NotApplied | FilesystemConfinement::Waived { .. } => {
                 Landlock::NotRequested
@@ -936,14 +1066,17 @@ mod imp {
                 }
             },
         };
-        super::hook::pre_exec(cmd, move || harden_child(&mut seccomp, &mut landlock));
+        super::hook::pre_exec(cmd, move || {
+            harden_child(&mut seccomp, &mut landlock, &limits)
+        });
+        Hook::Installed
     }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
 mod imp {
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
-    use super::{FilesystemConfinement, SyscallFilter};
+    use super::{AppliedRlimits, FilesystemConfinement, Hook, SyscallFilter};
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
@@ -952,11 +1085,15 @@ mod imp {
     ///
     /// Landlock likewise: the probe answers `Unavailable` off Linux, so a
     /// `Landlock` posture cannot be decided here, and if one were, it refuses.
+    ///
+    /// No limit is set here either, so nothing this returns claims a hook
+    /// (`rlimits` is unused off Linux).
     pub(super) fn install(
         cmd: &mut std::process::Command,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
-    ) {
+        _rlimits: AppliedRlimits,
+    ) -> Hook {
         let landlock_required = match filesystem {
             FilesystemConfinement::Landlock { .. } => true,
             FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => false,
@@ -971,6 +1108,7 @@ mod imp {
                 });
             }
         }
+        Hook::NoneOnThisPlatform
     }
 }
 
@@ -995,7 +1133,7 @@ mod tests {
         )
         .expect("the posture requires a filter");
         let mut cmd = std::process::Command::new("/bin/true");
-        confinement.apply(&mut cmd);
+        let _ = confinement.apply(&mut cmd, RlimitPolicy::node_ceiling().at_ceiling());
         let err = cmd
             .status()
             .expect_err("an unavailable filter must prevent exec");
@@ -1548,5 +1686,47 @@ mod tests {
                 "{mode:?}"
             );
         }
+    }
+
+    /// #2572: only an installed hook claims hardening, and the claim carries
+    /// the limits the hook sets. The declared bare tier cannot claim it, and
+    /// neither can a platform with no hook.
+    #[test]
+    fn only_an_installed_hook_claims_hardening() {
+        let rlimits =
+            RlimitPolicy::for_pod(std::time::Duration::from_secs(60), Some(2)).at_ceiling();
+        let bare = ChildConfinement::decide(
+            ContainmentMode::Unsandboxed,
+            1000,
+            UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
+        )
+        .unwrap();
+        assert_eq!(
+            bare.apply(&mut std::process::Command::new("/bin/true"), rlimits),
+            SpawnHardening::Unhardened(Unhardened::DeclaredBareTier)
+        );
+        let restricted = ChildConfinement::decide(
+            ContainmentMode::HostHardened,
+            1000,
+            UnsandboxedOptIn::Absent,
+            LL,
+            NO,
+        )
+        .unwrap();
+        let got = restricted.apply(&mut std::process::Command::new("/bin/true"), rlimits);
+        #[cfg(target_os = "linux")]
+        match got {
+            SpawnHardening::Hardened(h) => assert_eq!(h.rlimits(), rlimits),
+            SpawnHardening::Unhardened(why) => {
+                panic!("a restricted child was not hardened: {why:?}")
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(
+            got,
+            SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
+        );
     }
 }

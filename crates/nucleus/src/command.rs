@@ -169,6 +169,11 @@ pub struct Executor<'a> {
     /// (#2696 P3c). `Absent` unless declared ([`Self::with_landlock_waiver`]):
     /// a `MicroVM` executor on such a kernel then refuses every spawn.
     landlock_waiver: crate::LandlockWaiver,
+    /// The ceiling on every child's resource limits (#2572). The node ceiling
+    /// unless the pod's own is given ([`Self::with_rlimit_policy`]); a policy
+    /// can only lower it, so the unset case is the loosest a child can get,
+    /// never unlimited.
+    rlimit_policy: crate::RlimitPolicy,
     /// The sealed effects home (B1) that *both* the synchronous and the async
     /// spawns delegate to. Held as the **concrete** `PolicyEnforced<RealEffects>`
     /// (from [`production_effects_concrete`]), not a trait object, for one
@@ -223,8 +228,16 @@ impl<'a> Executor<'a> {
             containment: ContainmentMode::Unconfigured,
             unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
             landlock_waiver: crate::LandlockWaiver::Absent,
+            rlimit_policy: crate::RlimitPolicy::node_ceiling(),
             effects,
         }
+    }
+
+    /// Bound every child's resource limits by the pod's policy (#2572).
+    #[must_use]
+    pub fn with_rlimit_policy(mut self, policy: crate::RlimitPolicy) -> Self {
+        self.rlimit_policy = policy;
+        self
     }
 
     /// Explicitly opt into bare host execution (Tier-1 `nucleus run --local`).
@@ -510,7 +523,12 @@ impl<'a> Executor<'a> {
         confinement
             .preflight_filesystem()
             .map_err(io::Error::other)?;
-        let hook = move |cmd: &mut Command| confinement.apply(cmd);
+        // The limits are the policy's, as evidence, decided before the fork.
+        // The hook's `SpawnHardening` answer has no receipt to go to here.
+        let rlimits = self.rlimit_policy.at_ceiling();
+        let hook = move |cmd: &mut Command| {
+            let _ = confinement.apply(cmd, rlimits);
+        };
         let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = Some(&hook);
 
         // Delegate to the sealed home. `stdin_data` (an `Option<&str>`) becomes
@@ -932,7 +950,10 @@ impl<'a> Executor<'a> {
         let confinement = self.child_confinement()?;
         confinement.preflight_filesystem()?;
         self.hand_over_workspace(confinement);
-        let hook = move |cmd: &mut tokio::process::Command| confinement.apply(cmd.as_std_mut());
+        let rlimits = self.rlimit_policy.at_ceiling();
+        let hook = move |cmd: &mut tokio::process::Command| {
+            let _ = confinement.apply(cmd.as_std_mut(), rlimits);
+        };
         let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> = Some(&hook);
 
         // The execute-on-consume guard, as on the synchronous path: a timed-out

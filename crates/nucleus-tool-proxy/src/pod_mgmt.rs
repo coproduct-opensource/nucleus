@@ -579,7 +579,8 @@ pub(crate) fn build_runtime(
     let mut runtime_spec = nucleus::PodSpec::new(policy, spec.spec.work_dir.clone(), timeout)
         .with_containment(containment)
         .with_unsandboxed_opt_in(opt_in)
-        .with_landlock_waiver(landlock);
+        .with_landlock_waiver(landlock)
+        .with_rlimit_policy(crate::workload::rlimit_policy(&spec.spec));
     if let Some(model) = spec.spec.budget_model.as_ref() {
         runtime_spec.budget_model = map_budget_model(model);
     }
@@ -1468,6 +1469,44 @@ mod containment_tests {
         runtime
             .executor()
             .run("echo hi", token.expect("kernel allows"), authority)
+    }
+
+    /// #2572: the runtime's `/v1/run` children are bounded by the pod's own
+    /// rlimit policy, derived from its spec, not by the node ceiling. Red
+    /// when `build_runtime` does not pass the policy: the executor then
+    /// carries the node ceiling's 3600 CPU-seconds.
+    #[test]
+    fn the_runtime_carries_the_pods_rlimit_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let yaml = r#"
+apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: p
+spec:
+  work_dir: /w
+  timeout_seconds: 7
+  resources:
+    cpu_cores: 1
+  policy:
+    type: profile
+    name: default
+"#;
+        let mut spec: PodSpec = serde_yaml::from_str(yaml).expect("spec parses");
+        spec.spec.work_dir = tmp.path().to_path_buf();
+        let runtime = build_runtime(
+            &spec,
+            nucleus::ContainmentMode::HostHardened,
+            nucleus::UnsandboxedOptIn::Absent,
+            nucleus::LandlockWaiver::Absent,
+        )
+        .expect("runtime builds");
+        assert_eq!(runtime.rlimit_policy().ceiling().cpu_seconds, 7);
+        assert_eq!(
+            runtime.rlimit_policy(),
+            crate::workload::rlimit_policy(&spec.spec),
+            "one derivation for the workload and the executor"
+        );
     }
 
     /// A proxy on a bare host (tier 2/3 proof) under a microVM policy refuses.

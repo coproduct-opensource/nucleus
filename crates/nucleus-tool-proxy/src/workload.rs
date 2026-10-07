@@ -488,6 +488,7 @@ impl WorkloadLaunch {
 )]
 pub(crate) fn spawn_admitted(
     plan: AdmittedWorkloadPlan,
+    rlimits: nucleus::AppliedRlimits,
 ) -> std::io::Result<(tokio::process::Child, LaunchReceipt)> {
     let mut cmd = tokio::process::Command::new(&plan.command);
     cmd.args(&plan.args)
@@ -519,7 +520,8 @@ pub(crate) fn spawn_admitted(
     // the uid/gid drop on the Command, where std applies it before `chdir` and
     // before any `pre_exec` closure, and installs the async-signal-safe hook
     // that marks every inherited fd above 2 close-on-exec (the runc
-    // CVE-2024-21626 lesson) and, once dropped, sets no_new_privs and rlimits.
+    // CVE-2024-21626 lesson) and, once dropped, sets no_new_privs and the
+    // `rlimits` the pod's policy produced (#2572).
     //
     // NOT re-decided here: the plan carries the confinement its admission
     // decided, and this applies exactly that (#3120). A runtime that cannot
@@ -544,7 +546,6 @@ pub(crate) fn spawn_admitted(
         ));
     }
     let drop_uid = confinement.drop_uid();
-    let hardened = confinement.restricts();
     // The default HOME, made before the chown below so the same best-effort
     // treatment covers both. Only when the admitted env still points at it: a
     // spec that chose its own HOME chose its own directory too.
@@ -587,7 +588,9 @@ pub(crate) fn spawn_admitted(
     confinement
         .preflight_filesystem()
         .map_err(std::io::Error::other)?;
-    confinement.apply(cmd.as_std_mut());
+    // What the hook does, as only `apply` can say it: the receipt's
+    // `hardening` is this value, not a flag computed beside the spawn.
+    let hardening = confinement.apply(cmd.as_std_mut(), rlimits);
 
     tracing::info!(
         command = %plan.command,
@@ -595,7 +598,7 @@ pub(crate) fn spawn_admitted(
         "starting pod workload under mediation (admitted)"
     );
     let child = cmd.spawn()?;
-    let receipt = LaunchReceipt::from_admitted(&plan, hardened, child.id());
+    let receipt = LaunchReceipt::from_admitted(&plan, hardening, child.id());
     Ok((child, receipt))
 }
 
@@ -676,11 +679,16 @@ pub(crate) struct LaunchReceipt {
     /// How the workload's filesystem was held, read off the plan's
     /// confinement (#2696 P3c): the Landlock ABI enforced, or the operator's
     /// waiver and what the kernel offered instead. In the hashed preimage, so
-    /// a waived launch cannot share a hash with a confined one.
+    /// a waived launch cannot share a hash with a confined one. The Landlock
+    /// ruleset is installed by the same hook `hardening` reports; it is kept
+    /// here rather than inside `hardening` so the fact is written once.
     pub(crate) filesystem: FilesystemBoundary,
-    /// Whether the async-signal-safe hardening hook (groups dropped, gid set,
-    /// no_new_privs, rlimits) was applied.
-    pub(crate) hardened: bool,
+    /// What the async-signal-safe hardening hook (fds above 2 close-on-exec,
+    /// no_new_privs, the pod's rlimits, the Landlock ruleset `filesystem`
+    /// names, the syscall filter) does to the child, as
+    /// [`nucleus::ChildConfinement::apply`] reported it. The hardened case
+    /// carries the applied limits and only `apply` can mint it (#2572).
+    pub(crate) hardening: nucleus::SpawnHardening,
     pub(crate) argv_len: usize,
     pub(crate) child_pid: Option<u32>,
     /// SHA-256 of the authority-inventory preimage below. The resolved
@@ -765,7 +773,11 @@ impl LaunchReceipt {
     /// 2: the preimage gained `fs=` (#2696 P3c).
     const SCHEMA_VERSION: u32 = 2;
 
-    fn from_admitted(plan: &AdmittedWorkloadPlan, hardened: bool, child_pid: Option<u32>) -> Self {
+    fn from_admitted(
+        plan: &AdmittedWorkloadPlan,
+        hardening: nucleus::SpawnHardening,
+        child_pid: Option<u32>,
+    ) -> Self {
         let env: Vec<ReceiptEnvEntry> = plan
             .classified
             .iter()
@@ -783,6 +795,7 @@ impl LaunchReceipt {
         };
         let filesystem = FilesystemBoundary::of(plan.confinement.filesystem());
         let argv_len = plan.args.len();
+        let hardened = hardening.is_hardened();
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
@@ -811,13 +824,31 @@ impl LaunchReceipt {
             stdio,
             uid_boundary,
             filesystem,
-            hardened,
+            hardening,
             argv_len,
             child_pid,
             hash,
             environment: nucleus_spec::workload_result::EnvironmentIdentity::of(&plan.env),
         }
     }
+}
+
+/// The ceiling on the resource limits of every child this pod spawns — the
+/// workload and every `/v1/run` command — derived from its spec (#2572). The
+/// ONE place the spec's fields become a [`nucleus::RlimitPolicy`] (ADR 0007
+/// G-1); the derivation rule is documented on `RlimitPolicy::for_pod`.
+///
+/// A spec with no `resources.cpu_cores` is the node's default size, which
+/// leaves the CPU limit at the node ceiling: absent never means unlimited.
+///
+/// In a guest this reads the spec the tool-proxy was started with. On an
+/// enforcing guest that is the host's per-pod spec; on a legacy guest it is the
+/// image's template, whose ceiling is still at or below the node's.
+pub(crate) fn rlimit_policy(spec: &nucleus_spec::PodSpecInner) -> nucleus::RlimitPolicy {
+    nucleus::RlimitPolicy::for_pod(
+        std::time::Duration::from_secs(spec.timeout_seconds),
+        spec.resources.as_ref().and_then(|r| r.cpu_cores),
+    )
 }
 
 /// Start the pod's workload if the spec asks for one.
@@ -879,7 +910,8 @@ pub(crate) fn start_if_configured(
 
     door.serve(door_app, plan.door_uid());
 
-    let (child, receipt) = spawn_admitted(plan).map_err(|e| {
+    let rlimits = rlimit_policy(&spec.spec).at_ceiling();
+    let (child, receipt) = spawn_admitted(plan, rlimits).map_err(|e| {
         crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
     })?;
 
@@ -896,6 +928,34 @@ mod tests {
 
     /// A door URL of the form the runtime injects.
     const DOOR: &str = "unix:///run/nucleus-door/workload.sock";
+
+    /// The limits a test workload runs under: the node ceiling, as a pod with
+    /// no `resources` gets.
+    fn node_rlimits() -> nucleus::AppliedRlimits {
+        nucleus::RlimitPolicy::node_ceiling().at_ceiling()
+    }
+
+    /// #2572: the pod's rlimit ceiling comes from its spec. A declared core
+    /// count bounds CPU-seconds by `timeout × cores`; no core count leaves
+    /// the node ceiling, never unlimited.
+    #[test]
+    fn the_rlimit_policy_is_derived_from_the_pod_spec() {
+        let pod = |extra: &str| -> nucleus_spec::PodSpec {
+            serde_yaml::from_str(&format!(
+                "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
+                 timeout_seconds: 60\n{extra}"
+            ))
+            .expect("spec parses")
+        };
+        let cpu = |spec: &nucleus_spec::PodSpec| rlimit_policy(&spec.spec).ceiling().cpu_seconds;
+        assert_eq!(cpu(&pod("  resources:\n    cpu_cores: 2\n")), 120);
+        assert_eq!(cpu(&pod("  resources:\n    memory_mib: 512\n")), 3600);
+        assert_eq!(cpu(&pod("")), 3600);
+        assert_eq!(
+            rlimit_policy(&pod("").spec).ceiling(),
+            nucleus::RlimitVector::NODE_CEILING
+        );
+    }
 
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {
         WorkloadSpec {
@@ -957,7 +1017,7 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
-        let (child, _receipt) = spawn_admitted(plan).unwrap();
+        let (child, _receipt) = spawn_admitted(plan, node_rlimits()).unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success(), "HOME was not a directory");
         assert_eq!(
@@ -1251,7 +1311,7 @@ mod tests {
         ];
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(mode, opt_in, NO_WAIVER)?;
-        let (child, receipt) = spawn_admitted(plan).unwrap();
+        let (child, receipt) = spawn_admitted(plan, node_rlimits()).unwrap();
         let out = child.wait_with_output().await.unwrap();
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let mut lines = text.lines();
@@ -1318,7 +1378,11 @@ mod tests {
             assert_eq!(uid, runtime.to_string());
             assert!(environ_bytes > 0, "a same-uid workload reads the environ");
             assert_eq!(receipt.uid_boundary, UidBoundary::SharedUnsandboxed);
-            assert!(!receipt.hardened);
+            assert_eq!(
+                receipt.hardening,
+                nucleus::SpawnHardening::Unhardened(nucleus::Unhardened::DeclaredBareTier),
+                "the bare tier claims no hardening"
+            );
         }
     }
 
@@ -1381,7 +1445,8 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .expect("a clean spec must admit");
-        let (mut child, receipt) = spawn_admitted(plan).expect("sh must be spawnable");
+        let (mut child, receipt) =
+            spawn_admitted(plan, node_rlimits()).expect("sh must be spawnable");
         let status = child.wait().await.expect("child ran");
         assert!(status.success(), "the child must actually run: {status:?}");
         let observed = std::fs::read_to_string(&f_env).expect("the child wrote its environment");
@@ -1460,7 +1525,7 @@ mod tests {
         // `nucleus::command::tests::a_confined_child_inherits_no_fd_beyond_its_stdio`.
         #[cfg(target_os = "linux")]
         {
-            if receipt.hardened {
+            if receipt.hardening.is_hardened() {
                 let fds = std::fs::read_to_string(&f_fd).unwrap_or_default();
                 let count = fds.split_whitespace().filter(|s| !s.is_empty()).count();
                 // Non-vacuity: stdio must be present, so the count is at least 3.
@@ -1754,7 +1819,7 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
-        let (child, receipt) = spawn_admitted(plan).unwrap();
+        let (child, receipt) = spawn_admitted(plan, node_rlimits()).unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();

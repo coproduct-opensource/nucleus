@@ -251,7 +251,7 @@ fn run(confinement: Option<ChildConfinement>, op: &str) -> String {
     .env(OP_ENV, op)
     .current_dir(Path::new("/"));
     if let Some(c) = confinement {
-        c.apply(&mut cmd);
+        let _ = c.apply(&mut cmd, nucleus::RlimitPolicy::node_ceiling().at_ceiling());
     }
     let out = cmd
         .output()

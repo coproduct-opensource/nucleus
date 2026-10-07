@@ -39,6 +39,11 @@ pub struct PodSpec {
     /// `Absent` by default: a `MicroVM` pod on such a kernel then refuses
     /// every spawn by name. See [`crate::LandlockWaiver`].
     pub landlock_waiver: crate::LandlockWaiver,
+    /// The ceiling on the resource limits of every child this pod's executor
+    /// spawns (#2572). [`crate::RlimitPolicy::node_ceiling`] by default; the
+    /// tool-proxy derives the pod's own from its spec
+    /// ([`crate::RlimitPolicy::for_pod`]), which can only lower it.
+    pub rlimit_policy: crate::RlimitPolicy,
     /// Third-party artifacts this pod pulls (images/packages/models/MCP servers).
     /// Each must carry a verified provenance attestation under [`Self::provenance`]
     /// or the pod refuses to spawn (most-paranoid next-bet #3).
@@ -68,6 +73,7 @@ impl PodSpec {
             containment: ContainmentMode::Unconfigured,
             unsandboxed_opt_in: crate::UnsandboxedOptIn::Absent,
             landlock_waiver: crate::LandlockWaiver::Absent,
+            rlimit_policy: crate::RlimitPolicy::node_ceiling(),
             artifacts: Vec::new(),
             attestations: Vec::new(),
             provenance: nucleus_provenance::ProvenancePolicy::Unconfigured,
@@ -78,6 +84,13 @@ impl PodSpec {
     #[must_use]
     pub fn with_containment(mut self, mode: ContainmentMode) -> Self {
         self.containment = mode;
+        self
+    }
+
+    /// Bound this pod's children's resource limits by `policy` (#2572).
+    #[must_use]
+    pub fn with_rlimit_policy(mut self, policy: crate::RlimitPolicy) -> Self {
+        self.rlimit_policy = policy;
         self
     }
 
@@ -210,6 +223,11 @@ impl PodRuntime {
         &self.budget
     }
 
+    /// The ceiling on this pod's children's resource limits (#2572).
+    pub fn rlimit_policy(&self) -> crate::RlimitPolicy {
+        self.spec.rlimit_policy
+    }
+
     /// The cost model this pod charges executions under.
     pub fn budget_model(&self) -> BudgetModel {
         self.spec.budget_model
@@ -227,7 +245,8 @@ impl PodRuntime {
             .with_budget_model(self.spec.budget_model)
             .with_containment(self.spec.containment)
             .with_unsandboxed_opt_in(self.spec.unsandboxed_opt_in)
-            .with_landlock_waiver(self.spec.landlock_waiver);
+            .with_landlock_waiver(self.spec.landlock_waiver)
+            .with_rlimit_policy(self.spec.rlimit_policy);
 
         if let Some(ref approver) = self.approver {
             executor = executor.with_approver(approver.clone());

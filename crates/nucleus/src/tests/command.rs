@@ -725,6 +725,69 @@ fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
     }
 }
 
+/// #2572: a confined child's resource limits are its pod's policy, not
+/// constants in the hook. A `HostHardened` child (restricted, or dropped
+/// under a root runtime) reads its own `RLIMIT_CPU` from `/proc/self/limits`:
+/// the pod's ceiling when the executor was given one, the node ceiling when
+/// not. Red before #2572: the hook set 3600 whatever the pod said.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_confined_childs_cpu_limit_is_its_pods_policy() {
+    let cpu_limit = |policy: Option<crate::RlimitPolicy>| {
+        let tmp = tempdir().unwrap();
+        let lattice = test_policy();
+        let sandbox = Sandbox::new(&lattice, tmp.path()).unwrap();
+        let mut kernel = Kernel::new(lattice.clone());
+        let budget = AtomicBudget::new(&test_budget());
+        let guard = MonotonicGuard::seconds(10);
+        let mut executor = Executor::new(&lattice, &sandbox, &budget)
+            .with_time_guard(&guard)
+            .with_containment(ContainmentMode::HostHardened);
+        if let Some(policy) = policy {
+            executor = executor.with_rlimit_policy(policy);
+        }
+        let args = vec!["cat".to_string(), "/proc/self/limits".to_string()];
+        let subject = args.join(" ");
+        let dt = run_token(&mut kernel, &subject);
+        let out = executor
+            .run_args(
+                &args,
+                None,
+                None,
+                dt,
+                Authority::new(allowed_bundle(&subject)),
+            )
+            .unwrap_or_else(|e| panic!("spawn refused: {e}"));
+        assert!(out.status.success(), "cat ran");
+        let limits = String::from_utf8_lossy(&out.stdout).into_owned();
+        let line = limits
+            .lines()
+            .find(|l| l.starts_with("Max cpu time"))
+            .unwrap_or_else(|| panic!("no cpu line in:\n{limits}"));
+        line.split_whitespace()
+            .skip(3)
+            .take(2)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    let pod = crate::RlimitPolicy::for_pod(std::time::Duration::from_secs(7), Some(1));
+    assert_eq!(
+        pod.ceiling().cpu_seconds,
+        7,
+        "non-vacuity: the pod's ceiling is below the node's"
+    );
+    assert_eq!(
+        cpu_limit(Some(pod)),
+        ["7", "7"],
+        "soft and hard are the pod's"
+    );
+    assert_eq!(
+        cpu_limit(None),
+        ["3600", "3600"],
+        "no pod policy: the node ceiling, never unlimited"
+    );
+}
+
 /// #2696 P3b through the Executor's own spawn path (the `/v1/run` child):
 /// a `HostHardened` child carries one more seccomp filter than this process,
 /// and the declared bare tier none of ours. The mechanism's behaviour (what
