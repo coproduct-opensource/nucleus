@@ -74,6 +74,32 @@ enum Command {
         #[arg(long)]
         workflow: Option<std::path::PathBuf>,
     },
+    /// Audit the axioms of every declaration in a proven tier's whole first-party import
+    /// closure (#3302): `sorryAx` is never allowed, and nothing outside {propext,
+    /// Classical.choice, Quot.sound} unless `.axiom-audit-exceptions` names it. Tier and
+    /// modules are derived from the workflow's Lean-action build and the lakefile. Exit 0
+    /// clean, 1 an offending declaration, 2 could not look (nothing audited counts as could
+    /// not look).
+    LeanAxiomAudit {
+        /// The workflow whose `leanprover/lean-action` build names the tier.
+        #[arg(
+            long,
+            required_unless_present = "self_test",
+            conflicts_with = "self_test"
+        )]
+        workflow: Option<std::path::PathBuf>,
+        /// Prove the audit can fail: compile a fixture with a `sorry`, a `native_decide` and an
+        /// axiom under this Lake package's toolchain and require each flagged, and clean
+        /// theorems not.
+        #[arg(long, value_name = "LAKE_PACKAGE_DIR")]
+        self_test: Option<std::path::PathBuf>,
+        /// Print the derived audit units and audit nothing.
+        #[arg(long)]
+        plan: bool,
+        /// Concurrent `axiom-audit` processes (default: available CPUs, at most 4).
+        #[arg(long)]
+        jobs: Option<std::num::NonZeroUsize>,
+    },
     /// Replay the proven tier's `.olean` files through the Lean kernel again with
     /// `leanchecker` (#2592): `--fresh` on a Mathlib-free package, from imports on a Mathlib
     /// one. Tier, modules and mode are derived from the workflow's Lean-action build, the
@@ -585,7 +611,9 @@ mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod lean_action_builds;
+mod lean_axiom_audit;
 mod lean_replay;
+mod lean_tier;
 mod life;
 mod line_ratchet;
 mod live_boot_evidence;
@@ -646,6 +674,32 @@ fn main() -> Result<()> {
         } => guest_layer::run(&repo_root()?, arch, &out, builder, prebuilt),
         Command::StressZoo { only } => std::process::exit(stress_zoo::run(only.as_deref())?),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
+        Command::LeanAxiomAudit {
+            workflow,
+            self_test,
+            plan,
+            jobs,
+        } => {
+            let outcome = match (self_test, workflow) {
+                (Some(pkg), _) => lean_axiom_audit::self_test(&pkg),
+                (None, Some(workflow)) => {
+                    let jobs = jobs.map(std::num::NonZeroUsize::get).unwrap_or_else(|| {
+                        std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+                    });
+                    lean_axiom_audit::run(&std::env::current_dir()?, &workflow, plan, jobs)
+                }
+                (None, None) => lean_axiom_audit::Outcome::CouldNotLook(
+                    "neither --workflow nor --self-test".into(),
+                ),
+            };
+            if let lean_axiom_audit::Outcome::CouldNotLook(why) = &outcome {
+                println!("::error::COULD NOT LOOK: {why}");
+            }
+            match outcome.exit_code() {
+                0 => Ok(()),
+                code => std::process::exit(code),
+            }
+        }
         Command::LeanReplay {
             workflow,
             self_test,

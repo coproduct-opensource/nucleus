@@ -19,6 +19,11 @@ hole cannot be smuggled out of quarantine.
 > closed since June without this manifest being updated — #2478.)
 > (2026-06-28: `MatrixBridge` discharged in full — 6 holes → 0 — and promoted
 > research → proven; removed from the allowlist below and added to Tier 1.)
+> (2026-10-07, #3302: `MatrixBridge` moved back out of the proven build, to
+> Tier 2c below. Its own declarations still audit clean, but it imports
+> `RankNullity`, which imports `SemanticIFCDecidable`, and the closure axiom
+> audit found 29 declarations there depending on `sorryAx` or an undisclosed
+> `native_decide`. The proven tier is now defined by closure, not by file.)
 
 ---
 
@@ -27,7 +32,12 @@ hole cannot be smuggled out of quarantine.
 These libraries are discharged by the Lean 4 kernel with no proof holes. They
 are the enforcement / lattice / IFC / algebra core and the Aeneas-bridged
 extracted Rust core. The CI gate builds them and bans `sorry` / `admit` /
-`sorryAx`.
+`sorryAx` — in their own files and in every first-party module they import:
+`cargo xtask lean-axiom-audit` audits the axioms of every declaration in the
+proven build's whole import closure, and names any listed library whose closure
+reaches a hole. The authoritative list is the gate's build list; `cargo xtask
+lean-axiom-audit --plan --workflow .github/workflows/portcullis-core-proven-lean.yml`
+prints it with its closure. The table below is the subject index, not a count.
 
 | Library | Subject |
 |---|---|
@@ -48,7 +58,6 @@ extracted Rust core. The CI gate builds them and bans `sorry` / `admit` /
 | `ConstructiveSecurity` | Maurer constructive-crypto composition (Mathlib-free) |
 | `WasiWorldFunctor`, `WasiIfcBoundary` | capability→WASI lattice homomorphism + boundary-monitor soundness |
 | `BelnapDecisionProofs`, `RepairAlgebraProofs` | Belnap bilattice, repair algebra (newly registered build targets, verified to compile) |
-| `MatrixBridge` | `gaussRankBool` (algorithmic GF(2) Gaussian elimination) ↔ `Matrix.rank`; Gaussian-elimination correctness + GF(2) rank subadditivity (discharged 2026-06-28, `#print axioms` = propext/Classical.choice/Quot.sound) |
 
 **(†) Disclosed TCB note:** `FlowGraphProofs.lean` (lines 130/144/158),
 `CechCohomology.lean`, and the native-decide research libs below use the
@@ -115,6 +124,21 @@ security guarantees.
 `LipschitzEquivariance`, `EntropicCocycle`, `QuantumExtension`,
 `PersistentAlignment`, `AlignmentSampleComplexity`.
 
+### Tier 2c — `sorry`-free file, research-tier closure
+
+These files contain no proof hole and their own declarations audit clean, but
+they **import** a Tier-2 file, so a theorem in them is one `import` away from an
+open conjecture. They are built by `research-lean-build.yml`, not the proven
+gate, and the closure axiom audit keeps them out: listing one in the proven
+build turns the gate red and names it.
+
+| Library | Own declarations | What its closure reaches |
+|---|---|---|
+| `MatrixBridge` | clean (`propext`, `Classical.choice`, `Quot.sound`) | `RankNullity` → `SemanticIFCDecidable`, both with declarations on `sorryAx` (`SemanticIFCDecidable` also on undisclosed `native_decide`) |
+
+To promote one back: close the holes its closure reaches (or cut the import),
+then add it to the proven build list. The audit is the check.
+
 ---
 
 ## Tier 3 — STALE (does NOT currently compile — needs repair)
@@ -144,3 +168,11 @@ the "Tier 2" table only) into an allowlist of files permitted to contain
 in a file **not** on the allowlist fails the build. Adding a new proven file is
 free (it just must stay hole-free); discharging a research hole is free (delete
 the row). The only thing that fails is silent regression.
+
+The allowlist is by **file**, so on its own it would let a proven library import
+an allowlisted file. The closure axiom audit (`cargo xtask lean-axiom-audit`,
+#3302) closes that: it derives the proven build's first-party import closure from
+the workflow and the lakefile, audits every declaration in it, and fails on any
+`sorryAx` or any axiom outside `propext` / `Classical.choice` / `Quot.sound` that
+`.axiom-audit-exceptions` does not name — naming each listed library whose
+closure reaches one.

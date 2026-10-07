@@ -17,6 +17,8 @@ on:
       - "crates/portcullis-core/lean/**"
       - ".github/workflows/portcullis-core-proven-lean.yml"
       - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_axiom_audit/**"
+      - "crates/xtask/src/lean_tier.rs"
       - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
