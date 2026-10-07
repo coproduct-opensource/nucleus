@@ -4,7 +4,6 @@ use std::time::Duration;
 
 use tracing::warn;
 
-use crate::AuditEntry;
 use crate::{ApiError, AppState, now_unix};
 
 /// [`emit_boot_report`] under a deadline, because the audit log anchors every
@@ -56,16 +55,12 @@ async fn emit_boot_report(state: &AppState) -> Result<(), ApiError> {
 
     state
         .audit
-        .log(AuditEntry {
+        .log(nucleus_spec::tool_proxy_audit::AuditEvent {
             timestamp_unix: now_unix(),
             actor,
             event: "boot".to_string(),
             subject: report,
             result: "ok".to_string(),
-            prev_hash: String::new(),
-            hash: String::new(),
-            signature: String::new(),
-            drand_round: None, // Will be filled by AuditLog::log
             spiffe_id: None,
             policy_rule: None,
         })

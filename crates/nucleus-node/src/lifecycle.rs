@@ -18,9 +18,9 @@ pub(crate) fn pod_dir(state_dir: &Path, id: uuid::Uuid) -> std::path::PathBuf {
 /// has at least start/stop entries.
 ///
 /// **Deliberately NOT `audit.log`.** These entries are unsigned and unchained;
-/// `audit.log` is the tool-proxy's HMAC-chained log, and interleaving unsigned
+/// `audit.log` is the tool-proxy's signed, chained log, and interleaving unsigned
 /// lines into it made every local- and container-driver log fail
-/// `nucleus-audit verify` (its `ToolProxyEntry` requires
+/// `nucleus-audit verify` (its `AuditRecord` requires
 /// `prev_hash`/`hash`/`signature`). Keeping the two files separate preserves a
 /// verifiable chain; the lifecycle file is folded into an evidence bundle as
 /// explicitly-unsigned context. The filename lives here, in one place, so the

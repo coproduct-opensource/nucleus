@@ -43,19 +43,33 @@ enum Command {
     HostEffects(verify_host_effects::Command),
     #[command(flatten)]
     Execution(verify_execution::Command),
-    /// Verify a tool-proxy JSONL audit log (HMAC signatures + hash chain).
+    /// Verify a tool-proxy JSONL audit log: Ed25519 signatures under a pinned
+    /// signer and the hash chain (#3293). Legacy shared-secret records verify
+    /// only against a non-empty secret.
     #[command(mut_args = |a| a.hide_env_values(true))]
     Verify {
         /// Audit log path to verify.
         #[arg(long, env = "NUCLEUS_AUDIT_LOG")]
         log: PathBuf,
-        /// Audit log signing secret.
+        /// A key the log may be signed by (64 hex characters): what the proxy
+        /// printed as `NUCLEUS-AUDIT-SIGNER` at boot. Repeat it for a log that a
+        /// restarted proxy continued under a new key.
+        #[arg(long = "signer-pubkey")]
+        signer_pubkeys: Vec<String>,
+        /// The chain head the node-signed pod receipt names (`audit_tail_hash`).
+        /// Every record's signer is inside the chain, so this pins the signers
+        /// without naming them.
+        #[arg(long)]
+        tail_hash: Option<String>,
+        /// Secret for LEGACY records only (written before #3293), which carry a
+        /// shared-secret MAC. An empty secret is refused: it authenticates nothing.
         #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
         secret: Option<String>,
-        /// Read the audit secret from a file.
+        /// Read the legacy secret from a file.
         #[arg(long)]
         secret_file: Option<PathBuf>,
-        /// Fallback to tool-proxy auth secret if audit secret is omitted.
+        /// Legacy fallback: the tool-proxy auth secret, which keyed legacy
+        /// records when no audit secret was set.
         #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET")]
         auth_secret: Option<String>,
     },
@@ -311,34 +325,6 @@ pub enum ScanOutputFormat {
     Sarif,
 }
 
-#[derive(Debug, Deserialize)]
-struct ToolProxyEntry {
-    timestamp_unix: u64,
-    actor: Option<String>,
-    event: String,
-    subject: String,
-    result: String,
-    prev_hash: String,
-    hash: String,
-    signature: String,
-    /// Drand round the writer anchored this entry to, when a drand client is
-    /// configured. **Load-bearing for verification**: the writer folds
-    /// `|drand:{round}` into the signed message
-    /// (`nucleus-tool-proxy/src/main.rs`, `AuditLog::log`), so omitting it here
-    /// made every drand-anchored log fail with "signature mismatch".
-    #[serde(default)]
-    drand_round: Option<u64>,
-    /// Carried by the writer; not part of the signed preimage. Parsed so a log
-    /// containing it does not fail deserialization.
-    #[serde(default)]
-    #[allow(dead_code)]
-    spiffe_id: Option<String>,
-    /// Carried by the writer; not part of the signed preimage.
-    #[serde(default)]
-    #[allow(dead_code)]
-    policy_rule: Option<String>,
-}
-
 /// Signed line from FileAuditBackend.
 #[derive(Debug, Deserialize)]
 struct SignedLine {
@@ -372,6 +358,21 @@ pub enum AuditError {
     TornTail { line: usize, verified: usize },
     #[error("invalid audit log at line {line}: {message}")]
     Invalid { line: usize, message: String },
+    /// A legacy (pre-#3293) record, and no key that could authenticate it.
+    #[error(
+        "line {line} is a legacy shared-secret MAC record (written before #3293) and {why}. \
+         On vsock and Unix-socket pods that MAC was keyed with an EMPTY secret, which anyone \
+         can compute, so it is refused rather than reported as verified"
+    )]
+    LegacyMacUnkeyed { line: usize, why: &'static str },
+    /// A signed record, and nothing the caller trusts that names its signer.
+    #[error(
+        "line {line} is signed, but nothing pins its signer: pass --signer-pubkey (the \
+         NUCLEUS-AUDIT-SIGNER key the proxy printed at boot) or --tail-hash (the pod \
+         receipt's audit_tail_hash). A signature under a key the log names for itself proves \
+         nothing about who wrote it"
+    )]
+    UnpinnedSigner { line: usize },
     #[error("error: {0}")]
     Backend(String),
 }
@@ -384,17 +385,19 @@ fn main() -> Result<(), AuditError> {
         Command::Execution(command) => command.run()?,
         Command::Verify {
             log,
+            signer_pubkeys,
+            tail_hash,
             secret,
             secret_file,
             auth_secret,
         } => {
-            let resolved = resolve_secret(
+            let legacy = verify_tool_proxy::legacy_secret(
                 secret.as_deref(),
                 secret_file.as_deref(),
                 auth_secret.as_deref(),
             )?;
-            let count = verify_tool_proxy_log(&log, resolved.as_bytes())?;
-            println!("ok: verified {} tool-proxy entries", count);
+            let pins = verify_tool_proxy::Pins::parse(&signer_pubkeys, tail_hash, legacy)?;
+            verify_tool_proxy_log(&log, &pins)?.print();
         }
         Command::VerifyChain { log, secret } => {
             let count = verify_portcullis_chain(&log, secret.as_deref())?;
@@ -914,29 +917,6 @@ fn merge_dimension(current: &mut Option<String>, next: &str) {
     }
 }
 
-// --- verify (tool-proxy) ---
-
-fn resolve_secret(
-    secret: Option<&str>,
-    secret_file: Option<&Path>,
-    auth_secret: Option<&str>,
-) -> Result<String, AuditError> {
-    if let Some(s) = secret {
-        return Ok(s.to_string());
-    }
-    if let Some(path) = secret_file {
-        let s = std::fs::read_to_string(path)?.trim().to_string();
-        if s.is_empty() {
-            return Err(AuditError::MissingSecret);
-        }
-        return Ok(s);
-    }
-    if let Some(s) = auth_secret {
-        return Ok(s.to_string());
-    }
-    Err(AuditError::MissingSecret)
-}
-
 // --- verify-chain (portcullis) ---
 
 fn verify_portcullis_chain(path: &Path, secret: Option<&str>) -> Result<usize, AuditError> {
@@ -1029,8 +1009,8 @@ fn print_summary(path: &Path) -> Result<(), AuditError> {
         if line.is_empty() {
             continue;
         }
-        let entry: ToolProxyEntry =
-            serde_json::from_str(line).map_err(|source| AuditError::Json {
+        let entry: nucleus_spec::tool_proxy_audit::AuditRecord = serde_json::from_str(line)
+            .map_err(|source| AuditError::Json {
                 line: idx + 1,
                 source,
             })?;
@@ -2176,189 +2156,6 @@ fn check_zkvm_receipt(
 
 #[cfg(test)]
 mod tests {
-
-    /// Build a tool-proxy audit line exactly as `AuditLog::log` does
-    /// (nucleus-tool-proxy), optionally drand-anchored.
-    /// The mutable parts of a synthetic entry. Grouped into a struct because the
-    /// flat form tripped clippy's 7-argument limit — and because a test helper
-    /// whose call sites are eight positional values is unreadable anyway.
-    struct LineSpec<'a> {
-        ts: u64,
-        event: &'a str,
-        subject: &'a str,
-        prev_hash: &'a str,
-        drand_round: Option<u64>,
-    }
-
-    fn tool_proxy_line(secret: &[u8], spec: LineSpec<'_>) -> (String, String) {
-        let LineSpec {
-            ts,
-            event,
-            subject,
-            prev_hash,
-            drand_round,
-        } = spec;
-        // Fixed across these fixtures; the writer signs them all the same way.
-        let actor = "n";
-        let result = "ok";
-        let drand_part = drand_round
-            .map(|r| format!("|drand:{r}"))
-            .unwrap_or_default();
-        let message = format!("{ts}|{actor}|{event}|{subject}|{result}|{prev_hash}{drand_part}");
-        let signature = sign_message(secret, message.as_bytes());
-        let hash = sha256_hex(&format!("{message}|{signature}"));
-        let mut obj = serde_json::json!({
-            "timestamp_unix": ts,
-            "actor": actor,
-            "event": event,
-            "subject": subject,
-            "result": result,
-            "prev_hash": prev_hash,
-            "hash": hash,
-            "signature": signature,
-        });
-        if let Some(r) = drand_round {
-            obj["drand_round"] = serde_json::json!(r);
-        }
-        (obj.to_string(), hash)
-    }
-
-    /// ★ Regression: a DRAND-ANCHORED log must verify. The writer folds
-    /// `|drand:{round}` into the signed preimage; the verifier used to omit it,
-    /// so every drand-anchored log failed with "signature mismatch" — i.e. the
-    /// verifier rejected authentic evidence. Perturbation-shaped: the same log
-    /// WITHOUT the round must still verify, so this test fails if the fix were
-    /// to unconditionally append the suffix instead of conditionally.
-    #[test]
-    fn verify_tool_proxy_log_accepts_drand_anchored_entries() {
-        let secret = b"art12-regression-secret";
-        let dir = tempfile::tempdir().expect("tempdir");
-
-        // Drand-anchored chain of two entries.
-        let path = dir.path().join("anchored.log");
-        let (l1, h1) = tool_proxy_line(
-            secret,
-            LineSpec {
-                ts: 100,
-                event: "boot",
-                subject: "s1",
-                prev_hash: "",
-                drand_round: Some(42),
-            },
-        );
-        let (l2, _) = tool_proxy_line(
-            secret,
-            LineSpec {
-                ts: 101,
-                event: "call",
-                subject: "s2",
-                prev_hash: &h1,
-                drand_round: Some(43),
-            },
-        );
-        std::fs::write(&path, format!("{l1}\n{l2}\n")).expect("write");
-        assert_eq!(
-            verify_tool_proxy_log(&path, secret).expect("drand-anchored log must verify"),
-            2
-        );
-
-        // Un-anchored chain must still verify (the suffix is conditional).
-        let path2 = dir.path().join("plain.log");
-        let (p1, ph1) = tool_proxy_line(
-            secret,
-            LineSpec {
-                ts: 100,
-                event: "boot",
-                subject: "s1",
-                prev_hash: "",
-                drand_round: None,
-            },
-        );
-        let (p2, _) = tool_proxy_line(
-            secret,
-            LineSpec {
-                ts: 101,
-                event: "call",
-                subject: "s2",
-                prev_hash: &ph1,
-                drand_round: None,
-            },
-        );
-        std::fs::write(&path2, format!("{p1}\n{p2}\n")).expect("write");
-        assert_eq!(
-            verify_tool_proxy_log(&path2, secret).expect("plain log must verify"),
-            2
-        );
-    }
-
-    /// A crash mid-append tears the last entry: the chain before it verifies and the
-    /// tear is named as a torn tail, not as the altered line it would be mid-log.
-    #[test]
-    fn verify_tool_proxy_log_names_a_torn_tail() {
-        let secret = b"art12-regression-secret";
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("torn.log");
-        let spec = |ts, prev_hash| LineSpec {
-            ts,
-            event: "call",
-            subject: "s",
-            prev_hash,
-            drand_round: None,
-        };
-        let (p1, h1) = tool_proxy_line(secret, spec(100, ""));
-        let (p2, _) = tool_proxy_line(secret, spec(101, &h1));
-        let torn = &p2[..p2.len() / 2];
-        std::fs::write(&path, format!("{p1}\n{torn}")).expect("write");
-        let err = verify_tool_proxy_log(&path, secret).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                AuditError::TornTail {
-                    line: 2,
-                    verified: 1
-                }
-            ),
-            "{err}"
-        );
-        std::fs::write(&path, format!("{p1}\n{torn}\n{p2}\n")).expect("write");
-        let err = verify_tool_proxy_log(&path, secret).unwrap_err();
-        assert!(
-            matches!(err, AuditError::NotARecord { line: 2, .. }),
-            "{err}"
-        );
-    }
-
-    /// The verifier must still REJECT a tampered drand-anchored entry — the fix
-    /// must not have been "ignore the round".
-    #[test]
-    fn verify_tool_proxy_log_rejects_tampered_drand_round() {
-        let secret = b"art12-regression-secret";
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.path().join("tampered.log");
-        let (line, _) = tool_proxy_line(
-            secret,
-            LineSpec {
-                ts: 100,
-                event: "boot",
-                subject: "s",
-                prev_hash: "",
-                drand_round: Some(42),
-            },
-        );
-        // Re-anchor the entry to a different round, leaving the signature intact.
-        let tampered = line.replace("\"drand_round\":42", "\"drand_round\":43");
-        assert_ne!(tampered, line, "the round must actually have changed");
-        std::fs::write(&path, format!("{tampered}\n")).expect("write");
-        match verify_tool_proxy_log(&path, secret) {
-            Err(AuditError::Invalid { message, .. }) => {
-                assert!(
-                    message.contains("signature mismatch"),
-                    "expected a signature mismatch, got: {message}"
-                );
-            }
-            other => panic!("tampered drand round must be rejected, got {other:?}"),
-        }
-    }
     use super::*;
 
     fn write_pod_spec(dir: &Path, name: &str, content: &str) -> PathBuf {

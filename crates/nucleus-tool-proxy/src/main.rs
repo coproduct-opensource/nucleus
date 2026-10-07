@@ -1,6 +1,5 @@
 #![allow(clippy::disallowed_types)] // #1216 exempt: pod setup, web client init, spec loading (infrastructure)
 use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -31,6 +30,7 @@ mod art12;
 mod art12_shipper;
 mod art12_sink;
 mod attestation;
+mod audit_log;
 mod auth;
 mod authority_ledger;
 mod authority_round;
@@ -85,6 +85,7 @@ use approval::{
     load_approval_bundle,
 };
 use attestation::AttestationVerifier;
+use audit_log::AuditLog;
 use auth::AuthConfig;
 use nucleus_client::drand::{DrandConfig, DrandFailMode};
 use nucleus_identity::mtls::{ClientCertInfo, MtlsConfig, MtlsConnectInfo, MtlsListener};
@@ -191,7 +192,9 @@ struct Args {
         default_value = "/var/log/nucleus/audit.log"
     )]
     audit_log: PathBuf,
-    /// Optional audit log signing secret (defaults to auth secret if omitted).
+    /// HMAC secret for the Article 12 log and its shipper. It no longer keys
+    /// the audit log at `--audit-log`: that log is signed with an Ed25519 key
+    /// this process generates and holds (`audit_log`, #3293).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
     /// Path for the EU AI Act Article 12 record-keeping log (JSONL, hash-chained).
@@ -1331,7 +1334,7 @@ async fn main() -> Result<(), ApiError> {
     let web_fetch_max_bytes = web_fetch_cfg.max_bytes;
 
     let audit = st
-        .timed("audit_log", build_audit_log(&args, &auth, &dns_allow))
+        .timed("audit_log", audit_log::build_audit_log(&args, &dns_allow))
         .await?;
 
     // Client re-checks every redirect hop against the allowlists (see
@@ -4150,319 +4153,13 @@ pub(crate) fn preset_to_permissions(preset: &str) -> PermissionLattice {
     }
 }
 
-// Pod management handlers live in pod_mgmt.rs
-
-async fn build_audit_log(
-    args: &Args,
-    auth: &AuthConfig,
-    dns_allow: &[String],
-) -> Result<Arc<AuditLog>, ApiError> {
-    let path = args.audit_log.clone();
-
-    // Ensure parent directory exists (e.g., /var/log/nucleus/ or the pod state dir).
-    // Without this, the first write silently fails when the parent is missing.
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| {
-            ApiError::Spec(format!(
-                "failed to create audit log directory {}: {e}",
-                parent.display()
-            ))
-        })?;
-    }
-
-    let secret = if let Some(secret) = args.audit_secret.as_ref() {
-        secret.as_bytes().to_vec()
-    } else {
-        auth.secret().to_vec()
-    };
-
-    let last_hash = load_last_hash(&path).unwrap_or_default();
-
-    // Set up webhook sink if configured
-    let webhook = if let Some(url) = args.audit_webhook.as_ref() {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            // Never follow a redirect for audit records — a 3xx to another host
-            // would leak the audit stream there.
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| ApiError::Spec(format!("failed to build webhook client: {e}")))?;
-        info!("audit webhook configured: {}", url);
-        Some(WebhookSink {
-            url: url.clone(),
-            client,
-        })
-    } else {
-        None
-    };
-
-    let drand_client = drand_setup::build_drand_client(args, dns_allow);
-
-    // Set up S3 sink for deletion-resistant audit storage
-    #[cfg(feature = "remote-audit")]
-    let s3_sink = if let Some(bucket) = args.audit_s3_bucket.as_ref() {
-        let region = args.audit_s3_region.as_deref().unwrap_or("us-east-1");
-        let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
-            .region(aws_config::Region::new(region.to_string()));
-        if let Some(endpoint) = args.audit_s3_endpoint.as_ref() {
-            config_loader = config_loader.endpoint_url(endpoint);
-        }
-        let sdk_config = config_loader.load().await;
-        let s3_client = aws_sdk_s3::Client::new(&sdk_config);
-        let prefix = args
-            .audit_s3_prefix
-            .clone()
-            .unwrap_or_else(|| "audit".to_string());
-        info!(
-            "S3 audit sink configured: bucket={}, prefix={}",
-            bucket, prefix
-        );
-        Some(Arc::new(S3Sink {
-            client: s3_client,
-            bucket: bucket.clone(),
-            prefix,
-        }))
-    } else {
-        None
-    };
-
-    Ok(Arc::new(AuditLog {
-        path,
-        secret,
-        last_hash: Mutex::new(last_hash),
-        append_order: tokio::sync::Mutex::new(()),
-        entry_count: std::sync::atomic::AtomicU64::new(0),
-        webhook,
-        drand_client,
-        #[cfg(feature = "remote-audit")]
-        s3_sink,
-    }))
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct AuditEntry {
-    timestamp_unix: u64,
-    actor: Option<String>,
-    event: String,
-    subject: String,
-    result: String,
-    prev_hash: String,
-    hash: String,
-    signature: String,
-    /// Drand round number for cryptographic time anchoring.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    drand_round: Option<u64>,
-    /// SPIFFE identity of the authenticated requester.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    spiffe_id: Option<String>,
-    /// Policy rule that authorized this operation (if zero-prompt).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    policy_rule: Option<String>,
-}
-
-struct AuditLog {
-    path: PathBuf,
-    secret: Vec<u8>,
-    last_hash: Mutex<String>,
-    /// Serialises extending the chain with writing the entry. See `log`.
-    append_order: tokio::sync::Mutex<()>,
-    entry_count: std::sync::atomic::AtomicU64,
-    webhook: Option<WebhookSink>,
-    /// Optional drand client for cryptographic time anchoring.
-    drand_client: Option<Arc<nucleus_client::drand::DrandClient>>,
-    /// Optional S3-compatible sink for deletion-resistant audit storage.
-    #[cfg(feature = "remote-audit")]
-    s3_sink: Option<Arc<S3Sink>>,
-}
-
-struct WebhookSink {
-    url: String,
-    client: reqwest::Client,
-}
-
-/// S3-compatible append-only audit sink.
-///
-/// Each audit entry is stored as a separate S3 object. The `if_none_match("*")`
-/// precondition prevents overwriting existing entries. Combined with a bucket
-/// policy that denies `s3:DeleteObject`, this provides a deletion-resistant
-/// audit trail that a compromised pod cannot erase.
-#[cfg(feature = "remote-audit")]
-struct S3Sink {
-    client: aws_sdk_s3::Client,
-    bucket: String,
-    prefix: String,
-}
-
-#[cfg(feature = "remote-audit")]
-impl S3Sink {
-    /// Put a single audit line as an S3 object.
-    ///
-    /// Key format: `{prefix}/{timestamp_unix}-{hash_prefix}.jsonl`
-    /// Uses `if_none_match("*")` for append-only semantics: S3 returns 412
-    /// if an object with this key already exists.
-    async fn put_entry(&self, timestamp_unix: u64, hash: &str, line: &str) {
-        let hash_prefix = if hash.len() >= 8 { &hash[..8] } else { hash };
-        let key = format!("{}/{}-{}.jsonl", self.prefix, timestamp_unix, hash_prefix);
-
-        let result = self
-            .client
-            .put_object()
-            .bucket(&self.bucket)
-            .key(&key)
-            .body(line.as_bytes().to_vec().into())
-            .content_type("application/jsonl")
-            .if_none_match("*")
-            .send() // net-infra: audit S3 append (aws_sdk_s3, operator sink — not agent egress)
-            .await;
-
-        if let Err(e) = result {
-            tracing::warn!("failed to write audit entry to S3 (key={key}): {e}");
-        }
-    }
-}
-
-impl AuditLog {
-    async fn log(&self, mut entry: AuditEntry) -> Result<(), ApiError> {
-        // Fetch drand round for cryptographic time anchoring
-        if let Some(ref drand) = self.drand_client {
-            match drand.current_round().await {
-                Ok(round) => {
-                    entry.drand_round = Some(round);
-                }
-                Err(e) => {
-                    tracing::warn!("failed to fetch drand round for audit: {e}");
-                    // Continue without drand anchoring - don't block audit logging
-                }
-            }
-        }
-
-        let actor = entry.actor.clone().unwrap_or_default();
-        // Held from reading the chain's tail until this entry is on disk, so the
-        // file is in the order the chain was extended. The tail used to be read and
-        // advanced under `last_hash` alone, released before the write, so two
-        // concurrent entries could land in the opposite order to the one they were
-        // hashed in — and `nucleus-audit verify` walks the file top to bottom.
-        let _in_chain_order = self.append_order.lock().await;
-        let (prev_hash, hash, signature) = {
-            let last_hash = self.last_hash.lock().unwrap();
-            let prev_hash = last_hash.clone();
-            // Include drand_round in message if available for stronger binding
-            let drand_part = entry
-                .drand_round
-                .map(|r| format!("|drand:{}", r))
-                .unwrap_or_default();
-            let message = format!(
-                "{}|{}|{}|{}|{}|{}{}",
-                entry.timestamp_unix,
-                actor,
-                entry.event,
-                entry.subject,
-                entry.result,
-                prev_hash,
-                drand_part
-            );
-            let signature = auth::sign_message(&self.secret, message.as_bytes());
-            let hash = art12::sha256_hex(&format!("{}|{}", message, signature));
-            (prev_hash, hash, signature)
-        };
-        entry.prev_hash = prev_hash;
-        entry.signature = signature.clone();
-        entry.hash = hash.clone();
-
-        let line = serde_json::to_string(&entry).map_err(|e| ApiError::Spec(e.to_string()))?;
-
-        // One O_APPEND write per entry (see `nucleus_jsonl` for the tearing this
-        // replaced). The tail advances only once the entry is on disk: advancing it
-        // first meant a failed write left the chain naming an entry the file lacks.
-        nucleus_jsonl::append_line_unsynced_async(self.path.clone(), line.clone()).await?;
-        *self.last_hash.lock().unwrap() = hash;
-        self.entry_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        drop(_in_chain_order);
-
-        // Send to webhook if configured
-        if let Some(webhook) = &self.webhook {
-            // Fire and forget - don't block on webhook delivery
-            // In production, you'd want retry logic and a buffer
-            let url = webhook.url.clone();
-            let client = webhook.client.clone();
-            let body = line.clone();
-            let sig = signature;
-
-            tokio::spawn(async move {
-                let result = client
-                    .post(&url)
-                    .header("Content-Type", "application/json")
-                    .header("X-Nucleus-Signature", &sig)
-                    .body(body)
-                    .send() // net-infra: audit webhook (operator-configured URL — not agent egress)
-                    .await;
-
-                if let Err(e) = result {
-                    tracing::warn!("failed to send audit entry to webhook: {e}");
-                }
-            });
-        }
-
-        // Send to S3 if configured (fire-and-forget, like webhook)
-        #[cfg(feature = "remote-audit")]
-        if let Some(s3) = &self.s3_sink {
-            let s3 = Arc::clone(s3);
-            let body = line.clone();
-            let ts = entry.timestamp_unix;
-            let h = entry.hash.clone();
-            tokio::spawn(async move {
-                s3.put_entry(ts, &h, &body).await;
-            });
-        }
-
-        Ok(())
-    }
-
-    /// Get the current tail hash and entry count for the exit report.
-    fn tail_hash_and_count(&self) -> (String, u64) {
-        let hash = self.last_hash.lock().unwrap().clone();
-        let count = self.entry_count.load(std::sync::atomic::Ordering::Relaxed);
-        (hash, count)
-    }
-}
+// Pod management handlers live in pod_mgmt.rs; the audit log in audit_log.rs.
 
 pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "#1216: reads the proxy's own audit hash chain, not agent-directed I/O"
-)]
-fn load_last_hash(path: &Path) -> Option<String> {
-    let file = std::fs::File::open(path).ok()?;
-    let metadata = file.metadata().ok()?;
-    if metadata.len() == 0 {
-        return None;
-    }
-    let read_len = metadata.len().min(8192) as usize;
-    let mut file = file;
-    let start = metadata.len().saturating_sub(read_len as u64);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return None;
-    }
-    let mut buf = vec![0u8; read_len];
-    if file.read_exact(&mut buf).is_err() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&buf);
-    let line = text.lines().rev().find(|line| !line.trim().is_empty())?;
-    let entry: AuditEntry = serde_json::from_str(line).ok()?;
-    if entry.hash.is_empty() {
-        return None;
-    }
-    Some(entry.hash)
 }
 
 #[cfg(test)]

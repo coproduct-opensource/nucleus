@@ -133,7 +133,9 @@ step = 0
 
 [[files]]
 path = "crates/nucleus-audit/src/main.rs"
-ceiling = 2627
+# Lowered 2627 -> 2424 on 2026-10-07 (#3293): the tool-proxy log's verifier and its
+# tests moved to verify_tool_proxy.rs, and its record type to nucleus-spec.
+ceiling = 2424
 target = 2500
 step = 0
 

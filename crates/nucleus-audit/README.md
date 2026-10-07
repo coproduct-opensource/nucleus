@@ -39,7 +39,7 @@ nucleus-audit scan --auto --format sarif                  # SARIF for GitHub
 ## Verify Audit Trails
 
 ```bash
-nucleus-audit verify --log agent.jsonl                    # HMAC + hash chain
+nucleus-audit verify --log agent.jsonl --signer-pubkey <hex>  # Ed25519 + hash chain (or --tail-hash <receipt head>)
 nucleus-audit verify-chain --log portcullis.jsonl          # hash chain only
 nucleus-audit verify-receipts --log receipts.jsonl         # Ed25519 receipt chain
 ```
@@ -101,7 +101,7 @@ nucleus-audit diff-provenance --old v1.json --new v2.json
 | Command | Purpose |
 |---------|---------|
 | `scan` | Static analysis of agent configs (PodSpec, agent settings, MCP) |
-| `verify` | Verify tool-proxy JSONL audit log (HMAC + hash chain) |
+| `verify` | Verify tool-proxy JSONL audit log (Ed25519 under a pinned signer + hash chain; legacy HMAC records only with a non-empty secret) |
 | `verify-chain` | Verify portcullis permission audit log |
 | `verify-receipts` | Verify Ed25519-signed receipt chain |
 | `verify-provenance` | Verify provenance output schema + derivation chains |
