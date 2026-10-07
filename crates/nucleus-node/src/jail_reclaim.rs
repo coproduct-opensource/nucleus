@@ -511,7 +511,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(&refusal, Refusal::Survived { pids, .. } if *pids == vec![pid as i32]),
+            matches!(&refusal, Refusal::Survived { pids, .. } if *pids == vec![i32::try_from(pid).unwrap()]),
             "{refusal:?}"
         );
         assert!(
@@ -530,7 +530,7 @@ mod tests {
             .arg("300")
             .spawn()
             .unwrap();
-        let pid = child.id().unwrap() as i32;
+        let pid = i32::try_from(child.id().unwrap()).unwrap();
         let net = std::sync::Arc::new(Net::default());
         net.members.lock().unwrap().push(pid);
         let kernel = {
