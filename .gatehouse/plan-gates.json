@@ -1088,6 +1088,7 @@
         "sdks/verifier-js/tests/**",
         "sdks/verifier-js/demo-fixtures/**",
         "examples/independent-conformance/**",
+        "examples/egress-git-remote/upstreams.toml",
         "tools/test-shard/**"
       ],
       "fs_write": [
@@ -1144,6 +1145,7 @@
       "sdks/verifier-js/tests/**",
       "sdks/verifier-js/demo-fixtures/**",
       "examples/independent-conformance/**",
+      "examples/egress-git-remote/upstreams.toml",
       "tools/test-shard/**"
     ],
     "seeds": [
@@ -1226,6 +1228,7 @@
           "sdks/verifier-js/tests/**",
           "sdks/verifier-js/demo-fixtures/**",
           "examples/independent-conformance/**",
+          "examples/egress-git-remote/upstreams.toml",
           "tools/test-shard/**"
         ],
         "uid": 0,

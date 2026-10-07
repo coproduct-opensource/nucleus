@@ -58,3 +58,7 @@ flate2 = "1.1"
 # `node-reference-manifest` writes the verifier's own manifest type, so the
 # generator and the appraiser cannot disagree about the schema (ADR 0007 G-1).
 nucleus-node-evidence = { path = "../nucleus-node-evidence" }
+# `test-shards` derives each shard's compile-time reads (include_str!/include_bytes!) with the
+# action key's token walk, so the scope generator and the escapes ratchet cannot disagree about
+# what a crate reads (docs/findings/compile-time-reads-in-scope.md).
+nucleus-action-key = { path = "../nucleus-action-key" }
