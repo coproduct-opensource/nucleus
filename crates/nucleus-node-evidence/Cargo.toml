@@ -50,6 +50,10 @@ attester = []
 name = "swtpm_attest"
 required-features = ["attester"]
 
+[[example]]
+name = "federation_key"
+required-features = ["attester"]
+
 [dev-dependencies]
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
 rcgen = { version = "0.14", features = ["x509-parser"] }

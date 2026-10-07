@@ -20,6 +20,9 @@ base64 = { workspace = true }
 # ring's fixed-length ECDSA below, so no generic "sign with any Algorithm"
 # entry point exists in this crate.
 jsonwebtoken = { workspace = true }
+# The TPM-resident issuer key (ADR 0012): the raw TPM command layer that
+# creates, wraps and signs with it. Pure Rust, no libtss2.
+nucleus-node-evidence = { path = "../nucleus-node-evidence", features = ["attester"] }
 # The JWKS wire shapes (`Jwk`, `Jwks`) are reused from here rather than
 # redeclared, so there is one definition of what a JWK looks like on the wire.
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }

@@ -26,6 +26,13 @@
 //! the tiers. Every result names its [`AkAnchor`], and the anchor is never
 //! reported stronger than the relying party's inputs establish.
 //!
+//! ## Federation key custody
+//!
+//! [`key_attestation`] checks that a node's federation (JWKS) key is
+//! TPM-resident and usable only in the boot state the quote measured: the AK
+//! certifies it (`TPM2_Certify`), and its `authPolicy` is `PolicyPCR` over
+//! the quoted boot PCRs. ADR 0012.
+//!
 //! ## What this does not do
 //!
 //! * It measures the **host** boot and the node's own files. What runs inside
@@ -61,13 +68,18 @@ mod crypto;
 pub mod eventlog;
 pub mod evidence;
 pub mod ima;
+pub mod key_attestation;
 pub mod reference;
 pub mod relying_party;
 pub mod tpm;
+#[cfg(feature = "attester")]
+pub mod tpm_key;
 mod wire;
 
 #[cfg(test)]
 mod appraise_tests;
+#[cfg(test)]
+mod key_attestation_tests;
 
 pub use anchor::{AkAnchor, AkAnchorClaim, AnchorPolicy, OperatorPin, UnanchoredReason};
 pub use appraise::{
@@ -78,6 +90,11 @@ pub use binding::{ExecutorKey, Federation, Freshness, KeyBinding, Nonce, qualify
 pub use crypto::HashAlg;
 pub use evidence::{BootLog, EVIDENCE_PROFILE, ImaLog, NodeEvidence, TpmQuote, evidence_digest};
 pub use ima::{ImaEntry, ImaLogFormat};
+pub use key_attestation::{
+    AttestedKey, BOOT_POLICY_PCRS, CustodyStatement, FederationKeyAttestation,
+    KEY_ATTESTATION_PROFILE, KeyRefusal, KeyResidency, TpmCustodyStatement,
+    appraise_federation_keys,
+};
 pub use reference::{
     CmdlineRule, DigestSet, Expect, ImaReference, ImaScope, REFERENCE_PROFILE, ReferenceManifest,
     ReferenceValues,

@@ -13,9 +13,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use nucleus_ci_verdict::execution::{ExecutionClaim, NodePlatform};
 use nucleus_node_evidence::{
-    AnchorPolicy, Appraisal, AppraisalPolicy, ExecutorKey, Federation, Freshness,
-    FreshnessExpectation, KeyBinding, NodeEvidence, Nonce, OperatorPin, ReferenceManifest, Refusal,
-    Tier, appraise, evidence_digest,
+    AnchorPolicy, Appraisal, AppraisalPolicy, ExecutorKey, Federation, FederationKeyAttestation,
+    Freshness, FreshnessExpectation, KeyBinding, KeyRefusal, NodeEvidence, Nonce, OperatorPin,
+    ReferenceManifest, Refusal, Tier, appraise, appraise_federation_keys, evidence_digest,
 };
 
 /// The relying party's anchors.
@@ -124,6 +124,16 @@ pub(crate) struct Args {
     /// For epoch evidence: the oldest it may be at `--receipt-time`.
     #[arg(long, default_value_t = 900)]
     max_age_secs: u64,
+    /// The issuer's published JWKS. With `--federation-key-attestation`, each
+    /// of its keys is checked to be TPM-resident, certified by this
+    /// evidence's AK, and usable only in the boot state the quote measured
+    /// (ADR 0012).
+    #[arg(long, requires = "federation_key_attestation")]
+    jwks: Option<PathBuf>,
+    /// The node's custody statements for those keys
+    /// (`nucleus-federation-key-attestation/v1`).
+    #[arg(long, requires = "jwks")]
+    federation_key_attestation: Option<PathBuf>,
     #[command(flatten)]
     anchors: AnchorArgs,
 }
@@ -158,25 +168,59 @@ impl Args {
         };
         let anchors = self.anchors.policy()?;
         let now = unix_now()?;
-        let appraisal = appraise(
-            &evidence,
-            &AppraisalPolicy {
-                expected_binding: &binding,
-                freshness,
-                reference: &reference,
-                anchors: &anchors,
-                now,
-            },
-        )
-        .map_err(standalone_refusal)?;
+        let policy = AppraisalPolicy {
+            expected_binding: &binding,
+            freshness,
+            reference: &reference,
+            anchors: &anchors,
+            now,
+        };
+        let (Some(jwks), Some(attestation)) = (&self.jwks, &self.federation_key_attestation) else {
+            let appraisal = appraise(&evidence, &policy).map_err(standalone_refusal)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&appraisal.to_ear(env!("CARGO_PKG_VERSION"), now))?
+            );
+            return match appraisal.tier() {
+                Tier::Attested => Ok(()),
+                other => bail!("node platform is not attested: {}", other.ear_status()),
+            };
+        };
+        let jwks: serde_json::Value = read_json(jwks)?;
+        let attestation: FederationKeyAttestation = read_json(attestation)?;
+        let (appraisal, keys) = appraise_federation_keys(&evidence, &policy, &jwks, &attestation)
+            .map_err(|r| match r {
+            KeyRefusal::Evidence(e) => standalone_refusal(e),
+            other => anyhow!("federation key custody refused: {other}"),
+        })?;
         println!(
             "{}",
-            serde_json::to_string_pretty(&appraisal.to_ear(env!("CARGO_PKG_VERSION"), now))?
+            serde_json::to_string_pretty(&serde_json::json!({
+                "ear": appraisal.to_ear(env!("CARGO_PKG_VERSION"), now),
+                "federation_keys": keys,
+            }))?
         );
-        match appraisal.tier() {
-            Tier::Attested => Ok(()),
-            other => bail!("node platform is not attested: {}", other.ear_status()),
+        // Both halves must pass: a TPM-bound key on a boot nobody vouched for
+        // is bound to nothing a relying party trusts, and an attested boot
+        // whose key is a file proves nothing about the key.
+        if appraisal.tier() != &Tier::Attested {
+            bail!(
+                "node platform is not attested: {}",
+                appraisal.tier().ear_status()
+            );
         }
+        let unbound: Vec<String> = keys
+            .iter()
+            .filter(|k| !k.is_tpm_bound())
+            .map(|k| serde_json::to_string(k).unwrap_or_else(|e| e.to_string()))
+            .collect();
+        if !unbound.is_empty() {
+            bail!(
+                "federation keys not TPM-bound to this boot: {}",
+                unbound.join(", ")
+            );
+        }
+        Ok(())
     }
 }
 

@@ -81,6 +81,7 @@
 )]
 
 pub mod assertion;
+pub mod custody;
 pub mod inbound;
 pub mod keyring;
 pub mod token_client;
@@ -92,6 +93,9 @@ pub use assertion::{
     DEFAULT_TTL, EcdsaP256Signer, Es256Signature, MAX_TTL, OPERATOR_MAX_TTL, OperatorClaims,
     OperatorSubject, PublicJwk, SIGNING_ALG, SignError, SignableClaims, is_valid_issuer, jwks,
     mint,
+};
+pub use custody::{
+    CustodyKind, FILE_CUSTODY_WAIVER_FLAG, FileCustody, KeyCustody, TpmCustody, TpmEndpoint,
 };
 pub use inbound::{
     ConfigError, ExternalIssuerConfig, ExternalIssuerValidator, InboundError, JwksSource,
