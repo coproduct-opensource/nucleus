@@ -3,10 +3,15 @@
 //! # Two transports, two authentication claims
 //!
 //! * **TCP** (`http://host:port`). Anyone who can route to the listener can
-//!   connect, so every request must carry its authentication: either this
-//!   bridge signs it with the proxy's shared secret ([`TcpAuth::Hmac`]), or a
-//!   signing proxy in front of the listener does ([`TcpAuth::SignedUpstream`],
-//!   the node's `SignedProxy` in `nucleus run`'s enforced mode).
+//!   connect, so every request must carry its authentication, and a signing
+//!   proxy in front of the listener adds it ([`TcpAuth::SignedUpstream`], the
+//!   node's `SignedProxy`). The bridge used to sign with the proxy's shared
+//!   secret itself (`TcpAuth::Hmac`); that tier admits only `/v1/health` since
+//!   #2446 step 2, so `--auth-secret` is refused by name rather than sent.
+//! * **A Unix socket** (`unix:///…`): the workload door, or the proxy's own
+//!   peer-verified listener that `nucleus run --local` and `nucleus shell`
+//!   point the host bridge at. Either way the proxy reads the caller's uid
+//!   from the kernel.
 //! * **The workload door** (`unix:///run/nucleus-door/workload.sock`, #2696
 //!   P1). The proxy reads the caller's uid from the kernel and admits only the
 //!   workload's, so there is no secret to send, and the workload is given none.
@@ -39,17 +44,9 @@ use ureq::unversioned::transport::{
     Buffers, ConnectionDetails, Connector, LazyBuffers, NextTimeout, Transport,
 };
 
-/// How requests over TCP are authenticated. There is no unauthenticated arm.
+/// How requests over TCP are authenticated. There is no unauthenticated arm,
+/// and since #2446 step 2 no shared-secret arm.
 pub(crate) enum TcpAuth {
-    /// This bridge signs every request with the proxy's shared secret, and
-    /// approvals with the approval secret (the shared secret when no separate
-    /// one was configured, as before).
-    Hmac {
-        /// Signs tool calls.
-        auth: Vec<u8>,
-        /// Signs `/v1/approve`.
-        approval: Vec<u8>,
-    },
     /// A signing proxy between this bridge and the tool-proxy signs every
     /// request it forwards (the node's `SignedProxy`). Declared explicitly with
     /// `--signed-upstream`; never inferred from a missing secret.
@@ -58,9 +55,7 @@ pub(crate) enum TcpAuth {
 
 impl std::fmt::Debug for TcpAuth {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Never print key material.
         match self {
-            Self::Hmac { .. } => f.write_str("Hmac(<redacted>)"),
             Self::SignedUpstream => f.write_str("SignedUpstream"),
         }
     }
@@ -137,34 +132,25 @@ impl ProxyTransport {
                 Ok(Self::Door { socket })
             }
             ProxyEndpoint::Http { base } => {
-                let auth = match (cfg.auth_secret, cfg.signed_upstream) {
-                    (Some(secret), false) => {
-                        let auth = secret.as_bytes().to_vec();
-                        let approval = cfg
-                            .approval_secret
-                            .map_or_else(|| auth.clone(), |s| s.as_bytes().to_vec());
-                        TcpAuth::Hmac { auth, approval }
-                    }
-                    (None, true) => {
-                        if cfg.approval_secret.is_some() {
-                            bail!(
-                                "--signed-upstream: the signing proxy signs approvals too; \
-                                 this bridge must not also hold an approval secret"
-                            );
-                        }
-                        TcpAuth::SignedUpstream
-                    }
-                    (Some(_), true) => bail!(
-                        "both --auth-secret and --signed-upstream: a TCP request is signed \
-                         either here or by the proxy in front, not both"
-                    ),
-                    (None, false) => bail!(
+                if cfg.auth_secret.is_some() || cfg.approval_secret.is_some() {
+                    bail!(
+                        "--auth-secret / --approval-secret (NUCLEUS_MCP_AUTH_SECRET, \
+                         NUCLEUS_MCP_APPROVAL_SECRET) signed for the tool-proxy's shared-secret \
+                         tier, which admits only /v1/health since #2446. Reach the proxy at \
+                         `{base}` through a signing proxy (--signed-upstream), or over its \
+                         peer-verified socket (a unix:// URL) with no secret"
+                    );
+                }
+                if !cfg.signed_upstream {
+                    bail!(
                         "the tool-proxy at `{base}` is TCP, which needs its requests \
-                         authenticated: pass --auth-secret (NUCLEUS_MCP_AUTH_SECRET), or \
-                         --signed-upstream (NUCLEUS_MCP_SIGNED_UPSTREAM) when a signing proxy \
-                         sits in front of it"
-                    ),
-                };
+                         authenticated: pass --signed-upstream (NUCLEUS_MCP_SIGNED_UPSTREAM) \
+                         when a signing proxy sits in front of it, or reach it over a unix:// \
+                         socket. (--auth-secret is retired: the shared-secret tier admits \
+                         only /v1/health.)"
+                    );
+                }
+                let auth = TcpAuth::SignedUpstream;
                 Ok(Self::Tcp {
                     base_url: base,
                     auth,
@@ -360,42 +346,27 @@ mod tests {
         assert!(err.contains("--signed-upstream"), "{err}");
     }
 
+    /// #2446 step 2: the bridge no longer signs for the shared-secret tier,
+    /// which admits only `/v1/health`. A secret is refused by name, never
+    /// silently dropped (the request would then go unsigned) nor sent. Red
+    /// before: `TcpAuth::Hmac` was built from either secret.
     #[test]
-    fn tcp_with_a_secret_signs_and_approvals_fall_back_to_it() {
-        let t = ProxyTransport::resolve(&TransportConfig {
-            auth_secret: Some("test-token-123"),
-            ..cfg("http://127.0.0.1:8080/")
-        })
-        .unwrap();
-        let ProxyTransport::Tcp {
-            base_url,
-            auth: TcpAuth::Hmac { auth, approval },
-        } = t
-        else {
-            panic!("expected TCP + HMAC");
-        };
-        assert_eq!(base_url, "http://127.0.0.1:8080");
-        assert_eq!(auth, b"test-token-123");
-        assert_eq!(approval, auth, "approval falls back to the shared secret");
-    }
-
-    #[test]
-    fn tcp_with_a_separate_approval_secret_keeps_them_apart() {
-        let t = ProxyTransport::resolve(&TransportConfig {
-            auth_secret: Some("auth-secret-abc"),
-            approval_secret: Some("approval-secret-xyz"),
-            ..cfg("http://127.0.0.1:8080")
-        })
-        .unwrap();
-        let ProxyTransport::Tcp {
-            auth: TcpAuth::Hmac { auth, approval },
-            ..
-        } = t
-        else {
-            panic!("expected TCP + HMAC");
-        };
-        assert_eq!(auth, b"auth-secret-abc");
-        assert_eq!(approval, b"approval-secret-xyz");
+    fn a_shared_secret_is_refused_by_name() {
+        for (auth, approval) in [
+            (Some("test-token-123"), None),
+            (None, Some("test-token-123")),
+            (Some("test-token-123"), Some("test-token-456")),
+        ] {
+            let err = ProxyTransport::resolve(&TransportConfig {
+                auth_secret: auth,
+                approval_secret: approval,
+                ..cfg("http://127.0.0.1:8080")
+            })
+            .expect_err("the shared-secret tier is retired")
+            .to_string();
+            assert!(err.contains("#2446"), "{err}");
+            assert!(err.contains("/v1/health"), "{err}");
+        }
     }
 
     #[test]

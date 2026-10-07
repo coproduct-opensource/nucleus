@@ -699,7 +699,7 @@ async fn run_local(
     warn_unimplemented_caps(policy);
 
     let run_id = Uuid::new_v4();
-    let tmp_dir = std::env::temp_dir().join(format!("nucleus-local-{run_id}"));
+    let tmp_dir = crate::local_proxy::run_dir("nucleus-local", &run_id);
     fs::create_dir_all(&tmp_dir)?;
     let _tmp_guard = TmpDirGuard::new(tmp_dir.clone());
 
@@ -719,9 +719,9 @@ async fn run_local(
     let task_token =
         crate::session_token::mint_local(&run_id.to_string(), policy, args.timeout, authority)?;
 
-    // Generate per-run auth secrets
+    // Keys only the tier-3 sandbox token now; see `crate::local_proxy`.
     let auth_secret = hex::encode(rand::random::<[u8; 32]>());
-    let approval_secret = hex::encode(rand::random::<[u8; 32]>());
+    let transport = crate::local_proxy::LocalProxyTransport::new(&tmp_dir);
 
     // Build minimal PodSpec (no image/vsock)
     let spec_path = tmp_dir.join("pod.yaml");
@@ -758,14 +758,11 @@ async fn run_local(
         .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
         .arg("--spec")
         .arg(&spec_path)
-        .arg("--listen")
-        .arg("127.0.0.1:0")
+        .args(transport.proxy_args())
         .arg("--announce-path")
         .arg(&announce_path)
         .arg("--auth-secret")
         .arg(&auth_secret)
-        .arg("--approval-secret")
-        .arg(&approval_secret)
         .arg("--audit-log")
         .arg(&audit_path)
         .args(pod_cert_args(args))
@@ -779,8 +776,8 @@ async fn run_local(
         .context("failed to spawn nucleus-tool-proxy")?;
 
     // Wait for proxy readiness
-    let proxy_addr = wait_for_proxy_ready(&announce_path, Duration::from_secs(10)).await?;
-    let proxy_url = format!("http://{proxy_addr}");
+    // `unix:///…/p.sock`: the announcement is the URL the bridge dials.
+    let proxy_url = wait_for_proxy_ready(&announce_path, Duration::from_secs(10)).await?;
 
     info!(proxy_url = %proxy_url, "Tool-proxy ready");
 
@@ -793,10 +790,7 @@ async fn run_local(
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth: McpProxyAuth::Hmac {
-                auth_secret: &auth_secret,
-                approval_secret: &approval_secret,
-            },
+            auth: McpProxyAuth::PeerVerifiedSocket,
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: Some(&sandbox_token),
@@ -1166,24 +1160,26 @@ async fn create_pod_via_node(
     Ok(parsed)
 }
 
-/// How a HOST `nucleus-mcp` authenticates to a local TCP tool-proxy. No
-/// unauthenticated arm: the bridge refuses to start against TCP without one.
+/// How a HOST `nucleus-mcp` reaches a local tool-proxy.
+///
+/// One arm since #2446 step 2. The shared-secret arm (`Hmac`) signed for a tier
+/// that now admits only `/v1/health`, and it put the approval secret in the
+/// agent's own bridge, so the agent could sign approvals for itself.
 ///
 /// The `SignedUpstream` arm (a host bridge behind the node's signing proxy)
 /// went with the host agent launch for microVM pods: an agent in a pod reaches
 /// its tools through the guest's own bridge and the workload door.
-pub enum McpProxyAuth<'a> {
-    /// The bridge signs with the proxy's shared secret, and approvals with the
-    /// approval secret.
-    Hmac {
-        auth_secret: &'a str,
-        approval_secret: &'a str,
-    },
+pub enum McpProxyAuth {
+    /// The proxy's peer-verified Unix socket (`--listen-unix`). The bridge holds
+    /// no secret and the proxy admits it by its kernel-reported uid. An
+    /// operation held for approval is refused with its reason, never approved
+    /// by the agent's own process (`nucleus-mcp`'s door transport).
+    PeerVerifiedSocket,
 }
 
 pub struct McpEnvConfig<'a> {
     pub proxy_url: &'a str,
-    pub auth: McpProxyAuth<'a>,
+    pub auth: McpProxyAuth,
     pub spec_path: &'a Path,
     pub kernel_trace: Option<&'a Path>,
     pub sandbox_token: Option<&'a str>,
@@ -1216,18 +1212,10 @@ pub fn write_mcp_config(
         "NUCLEUS_MCP_PROXY_URL".to_string(),
         env_cfg.proxy_url.to_string(),
     );
-    let McpProxyAuth::Hmac {
-        auth_secret,
-        approval_secret,
-    } = env_cfg.auth;
-    env.insert(
-        "NUCLEUS_MCP_AUTH_SECRET".to_string(),
-        auth_secret.to_string(),
-    );
-    env.insert(
-        "NUCLEUS_MCP_APPROVAL_SECRET".to_string(),
-        approval_secret.to_string(),
-    );
+    match env_cfg.auth {
+        // The URL is `unix://…` and the bridge sends no credential.
+        McpProxyAuth::PeerVerifiedSocket => {}
+    }
     env.insert(
         "NUCLEUS_MCP_SPEC".to_string(),
         env_cfg.spec_path.display().to_string(),

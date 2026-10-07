@@ -50,16 +50,6 @@ pub(crate) struct Ctx<'a> {
     seq: Cell<u64>,
     /// Refusals that were deferrals to a person, not denials of authority.
     deferrals: Cell<usize>,
-    /// HMAC secret for request signing.
-    ///
-    /// A pod's proxy behind a node is reached on an already-authenticated
-    /// channel; a proxy this harness spawns itself is not, and refuses an
-    /// unsigned request with `missing auth header`. Worth noting how that
-    /// showed up: every task failed, and the report refused to be quoted
-    /// because a containment check "failed" too — the harness could not tell
-    /// an auth refusal from a policy one, which is exactly what
-    /// `AgencyReport::is_valid` exists to catch.
-    secret: Option<Vec<u8>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -72,13 +62,7 @@ impl<'a> Ctx<'a> {
             approvals: Cell::new(0),
             seq: Cell::new(0),
             deferrals: Cell::new(0),
-            secret: None,
         }
-    }
-
-    fn with_secret(mut self, secret: Option<Vec<u8>>) -> Self {
-        self.secret = secret;
-        self
     }
 
     fn nonce(&self) -> String {
@@ -99,10 +83,7 @@ impl<'a> Ctx<'a> {
         subject: &str,
         body: serde_json::Value,
     ) -> Result<(u16, String)> {
-        let (status, text, _ms) = match &self.secret {
-            Some(secret) => crate::signed_tool_call(self.proxy, secret, self.actor, route, body)?,
-            None => tool_call(self.proxy, route, body)?,
-        };
+        let (status, text, _ms) = tool_call(self.proxy, route, body)?;
         let ok = (200..300).contains(&status);
         let obs = if ok {
             Observation::new(operation, subject)
@@ -520,8 +501,6 @@ pub(crate) fn measure(
 pub(crate) struct GrantRun<'a> {
     /// Where the proxy is listening.
     pub proxy: &'a str,
-    /// HMAC secret, when the proxy this harness spawned requires signing.
-    pub secret: Option<Vec<u8>>,
     /// The approver key, when the harness may act as the person.
     pub key: Option<&'a ed25519_dalek::SigningKey>,
     /// Actor recorded on approvals.
@@ -540,14 +519,13 @@ pub(crate) fn measure_under_grant(
 ) -> Result<AgencyReport> {
     let GrantRun {
         proxy,
-        secret,
         key,
         actor,
         label,
         enforcement,
         commit,
     } = run;
-    let ctx = Ctx::new(proxy, key, actor).with_secret(secret);
+    let ctx = Ctx::new(proxy, key, actor);
 
     println!("\nwork (the numerator)");
     let tasks = run_tasks(&ctx, WORK)?;
@@ -670,8 +648,6 @@ pub(crate) struct LocalGrantRun {
     pub proxy_url: String,
     /// The grant the run is bounded by, and attributed against.
     pub grant: portcullis::task_grant::TaskGrant,
-    /// The per-run HMAC secret the proxy was spawned with.
-    pub auth_secret: Vec<u8>,
     /// Kept alive for the duration: dropping it kills the proxy and removes
     /// the temporary directory.
     _proxy: ProxyChild,
@@ -767,7 +743,6 @@ pub(crate) fn spawn_local_under_grant(
     Ok(LocalGrantRun {
         proxy_url: proxy.proxy_url,
         grant,
-        auth_secret: proxy.auth_secret,
         _proxy: proxy._proxy,
         _tmp: proxy._tmp,
     })
@@ -776,7 +751,6 @@ pub(crate) fn spawn_local_under_grant(
 /// A local proxy and what a client needs to reach it.
 pub(crate) struct LocalProxy {
     pub proxy_url: String,
-    pub auth_secret: Vec<u8>,
     _proxy: ProxyChild,
     _tmp: TempDir,
 }
@@ -801,7 +775,13 @@ pub(crate) struct LocalProxyConfig<'a> {
 
 /// Spawn a `nucleus-tool-proxy` exactly as `nucleus run --local` does.
 pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy> {
-    let tmp = std::env::temp_dir().join(format!("nucleus-{}", cfg.run_id));
+    // Short: the proxy's socket lives here, and a Unix socket path is limited
+    // to about 104 bytes on macOS.
+    let tmp = {
+        use sha2::{Digest, Sha256};
+        let tag = hex::encode(Sha256::digest(cfg.run_id.as_bytes()));
+        std::env::temp_dir().join(format!("np-{}", &tag[..12]))
+    };
     std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
     let tmp_guard = TempDir(tmp.clone());
 
@@ -823,8 +803,12 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
     std::fs::write(&spec_path, serde_yaml::to_string(&spec)?)
         .with_context(|| format!("writing {}", spec_path.display()))?;
 
+    // Keys only the tier-3 sandbox token (#2446 step 3 removes it).
     let auth_secret = hex::encode(rand_bytes32());
-    let approval_secret = hex::encode(rand_bytes32());
+    // The proxy needs an approval authority to start. The PUBLIC half of a key
+    // this harness drops: no approval secret exists for anything to hold.
+    let approver = ed25519_dalek::SigningKey::from_bytes(&rand_bytes32());
+    let socket = tmp.join("p.sock");
     let spec_contents = std::fs::read_to_string(&spec_path)?;
     let spec_hash = {
         use sha2::{Digest, Sha256};
@@ -877,14 +861,16 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
     let child = command
         .arg("--spec")
         .arg(&spec_path)
-        .arg("--listen")
-        .arg("127.0.0.1:0")
+        // The peer-verified socket (#2446 step 2): the shared-secret tier this
+        // harness used to sign for admits only /v1/health.
+        .arg("--listen-unix")
+        .arg(&socket)
         .arg("--announce-path")
         .arg(&announce)
         .arg("--auth-secret")
         .arg(&auth_secret)
-        .arg("--approval-secret")
-        .arg(&approval_secret)
+        .arg("--approval-pubkeys")
+        .arg(hex::encode(approver.verifying_key().to_bytes()))
         // Keep the audit log inside the run's own directory. The default is
         // `/var/log/nucleus`, which a non-root local run cannot create, and the
         // proxy refuses to start without somewhere to record verdicts — as it
@@ -922,8 +908,8 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
     };
 
     Ok(LocalProxy {
-        proxy_url: format!("http://{addr}"),
-        auth_secret: auth_secret.clone().into_bytes(),
+        // `unix:///…/p.sock`: what the proxy announced is the URL to dial.
+        proxy_url: addr,
         _proxy: proxy,
         _tmp: tmp_guard,
     })
@@ -985,8 +971,7 @@ pub(crate) fn measure_recovery(
     let path = format!("agency-recovery-{nonce}.txt");
     let payload = format!("nucleus recovery {nonce}");
     let attempt = |run: &LocalGrantRun| -> Result<(u16, String)> {
-        let ctx = Ctx::new(&run.proxy_url, None, "nucleus-agency")
-            .with_secret(Some(run.auth_secret.clone()));
+        let ctx = Ctx::new(&run.proxy_url, None, "nucleus-agency");
         ctx.call(
             "write",
             Operation::WriteFiles,

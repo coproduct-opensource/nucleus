@@ -316,7 +316,6 @@ fn agency_local(a: AgencyArgs) -> Result<()> {
     let mut report = agency::measure_under_grant(
         agency::GrantRun {
             proxy: &run.proxy_url,
-            secret: Some(run.auth_secret.clone()),
             key: key.as_ref(),
             actor: &a.actor,
             label: &a.label,
@@ -772,87 +771,63 @@ fn mint_admission(ops: &[&str]) -> Result<(String, String)> {
     Ok((issuer, creds.join(",")))
 }
 
-/// POST a tool call to a pod's own tool-proxy. No auth headers: admission is
-/// carried by the pod spec's `dlc_*` labels, established before the pod ran.
-/// Sign a request the way the TOOL-PROXY verifies it: `{ts}.{actor}.{body}`.
+/// POST `body` to `{proxy}{path}` and return the status and the reply text.
 ///
-/// Deliberately not `nucleus_client::sign_http_headers`, and that is a finding
-/// rather than a preference. That helper emits `{ts}.{actor}.{nonce}.{body}`
-/// and sends the nonce in `x-nucleus-nonce`; the tool-proxy's HMAC tier
-/// (`auth::verify_http`, whose own doc comment reads *"Message format:
-/// `{timestamp}.{actor}.{body}`"*) reconstructs the message WITHOUT the nonce,
-/// so a signature from that helper does not verify. The node accepts it — the
-/// pod-creating half of this harness uses it and works — so the two verifiers
-/// disagree, and the client helper matches only one of them.
-///
-/// Worth flagging beyond this harness: `nucleus-mcp`, the shipped bridge
-/// between an agent and the tool-proxy, signs with `sign_http_headers`
-/// (`nucleus-mcp/src/main.rs:360`). Not asserted as broken here — this harness
-/// has not exercised that path end to end — but it is the same producers-
-/// disagree shape as #2406, one layer out, and nothing compares the two.
-fn proxy_signed_headers(secret: &[u8], actor: &str, body: &[u8]) -> Vec<(String, String)> {
-    use hmac::{Hmac, Mac, digest::KeyInit};
-    use sha2::Sha256;
-    // Seconds since the epoch as u64, into the i64 the signing scheme uses. Lossless
-    // until year ~292 billion; the ratcheted cast lints cannot see that and the tree is
-    // at its ceiling with zero headroom, so the exemption is scoped and stated rather
-    // than the ceiling raised. Same site and same treatment as #2765.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let mut message = Vec::with_capacity(body.len() + actor.len() + 24);
-    message.extend_from_slice(ts.to_string().as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(actor.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(body);
-    let mut mac =
-        <Hmac<Sha256> as KeyInit>::new_from_slice(secret).expect("hmac accepts any key size");
-    mac.update(&message);
-    let signature = hex::encode(mac.finalize().into_bytes());
-    vec![
-        ("x-nucleus-timestamp".to_string(), ts.to_string()),
-        ("x-nucleus-signature".to_string(), signature),
-        ("x-nucleus-actor".to_string(), actor.to_string()),
-    ]
-}
-
-/// A tool call on a proxy that requires HMAC-signed requests.
-fn signed_tool_call(
+/// Two transports, chosen by the URL ([`nucleus_client::endpoint::ProxyEndpoint`]):
+/// a pod's proxy behind the node's signing proxy over TCP, and a proxy this
+/// harness spawned on its peer-verified socket (`unix://…`). Neither carries
+/// a credential. This harness used to HMAC-sign its spawned proxies' requests
+/// for the shared-secret tier, which admits only `/v1/health` since #2446
+/// step 2; the socket admits it by its uid instead.
+fn proxy_post(
     proxy: &str,
-    secret: &[u8],
-    actor: &str,
-    route: &str,
-    body: serde_json::Value,
-) -> Result<(u16, String, u128)> {
-    let payload = body.to_string();
-    let t0 = Instant::now();
-    let mut req = agent()
-        .post(format!("{proxy}/v1/{route}"))
-        .header("content-type", "application/json");
-    for (k, v) in proxy_signed_headers(secret, actor, payload.as_bytes()) {
-        req = req.header(k, v);
+    path: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+) -> Result<(u16, String)> {
+    use nucleus_client::endpoint::ProxyEndpoint;
+    match ProxyEndpoint::parse(proxy).map_err(|e| anyhow::anyhow!("{e}"))? {
+        ProxyEndpoint::Unix { socket } => {
+            let client = reqwest::blocking::Client::builder()
+                .unix_socket(socket)
+                .build()
+                .context("building the socket client")?;
+            let mut req = client
+                .post(format!("http://localhost{path}"))
+                .header("content-type", "application/json");
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
+            let resp = req
+                .body(body.to_vec())
+                .send()
+                .map_err(|e| anyhow::anyhow!("tool-proxy did not answer {path}: {e}"))?;
+            let status = resp.status().as_u16();
+            Ok((status, resp.text().unwrap_or_default()))
+        }
+        ProxyEndpoint::Http { base } => {
+            let mut req = agent()
+                .post(format!("{base}{path}"))
+                .header("content-type", "application/json");
+            for (k, v) in headers {
+                req = req.header(k, v);
+            }
+            let mut resp = req
+                .send(body)
+                .map_err(|e| anyhow::anyhow!("tool-proxy did not answer {path}: {e}"))?;
+            let status = resp.status().as_u16();
+            Ok((status, resp.body_mut().read_to_string().unwrap_or_default()))
+        }
     }
-    let mut resp = req
-        .send(payload.as_bytes())
-        .map_err(|e| anyhow::anyhow!("tool-proxy did not answer /v1/{route}: {e}"))?;
-    let status = resp.status().as_u16();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
-    Ok((status, text, t0.elapsed().as_millis()))
 }
 
+/// POST a tool call to a tool-proxy. No auth headers: a pod's admission is
+/// carried by the pod spec's `dlc_*` labels, and a spawned proxy admits this
+/// process by its uid on the socket.
 fn tool_call(proxy: &str, route: &str, body: serde_json::Value) -> Result<(u16, String, u128)> {
     let payload = body.to_string();
     let t0 = Instant::now();
-    let mut resp = agent()
-        .post(format!("{proxy}/v1/{route}"))
-        .header("content-type", "application/json")
-        .send(payload.as_bytes())
-        .map_err(|e| anyhow::anyhow!("tool-proxy did not answer /v1/{route}: {e}"))?;
-    let status = resp.status().as_u16();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    let (status, text) = proxy_post(proxy, &format!("/v1/{route}"), &[], payload.as_bytes())?;
     Ok((status, text, t0.elapsed().as_millis()))
 }
 
@@ -1142,19 +1117,7 @@ fn approve_operation(
     let round = nucleus_client::drand::current_expected_round();
     let signed =
         nucleus_client::sign_approval_headers_ed25519(key, round, Some(actor), body.as_bytes());
-
-    let mut req = agent()
-        .post(format!("{proxy}/v1/approve"))
-        .header("content-type", "application/json");
-    for (k, v) in &signed.headers {
-        req = req.header(k, v);
-    }
-    let mut resp = req
-        .send(body.as_bytes())
-        .map_err(|e| anyhow::anyhow!("approve: {e}"))?;
-    let status = resp.status().as_u16();
-    let text = resp.body_mut().read_to_string().unwrap_or_default();
-    Ok((status, text))
+    proxy_post(proxy, "/v1/approve", &signed.headers, body.as_bytes())
 }
 
 /// The operation string a 403 named as needing approval, if it did.

@@ -166,7 +166,22 @@ pub(crate) fn admit_image(
     version: Option<&str>,
 ) -> Result<(), ApiError> {
     match transport {
-        ContainerProxyTransport::TcpHmac => Ok(()),
+        // The opt-out speaks only the shared-secret tier, which a release with
+        // `SharedSecretTierRetired` answers on `/v1/health` alone (#2446 step 2).
+        // Such an image is refused here, by name; one the table cannot order is
+        // launched, and its proxy names the same refusal on the first call.
+        ContainerProxyTransport::TcpHmac => match version
+            .map(|v| tier2_artifacts::capability_skew(v, GuestCapability::SharedSecretTierRetired))
+        {
+            Some(Ok(())) => Err(ApiError::Driver(format!(
+                "refusing to launch a container pod: image {image} is tool-proxy release {}, \
+                 whose shared-secret tier carries no authority (SharedSecretTierRetired, #2446), \
+                 and --container-proxy-transport tcp-hmac speaks nothing else. Use the default \
+                 transport, --container-proxy-transport unix",
+                version.unwrap_or_default()
+            ))),
+            Some(Err(_)) | None => Ok(()),
+        },
         ContainerProxyTransport::Unix => {
             let Some(version) = version else {
                 return Ok(());
@@ -414,5 +429,29 @@ mod tests {
         }
         let legacy = unannounced(ContainerProxyTransport::TcpHmac, cause()).to_string();
         assert!(!legacy.contains("HostVerifiedProxySocket"), "{legacy}");
+    }
+
+    /// #2446 step 2 keeps the opt-out working for every image that can still
+    /// serve it: no published release has `SharedSecretTierRetired` yet, so
+    /// `tcp-hmac` admits the pinned release, an older one, and an image the
+    /// table cannot order, exactly as before. The release that carries the
+    /// retirement is refused by the arm above once the pin names it.
+    #[test]
+    fn tcp_hmac_still_admits_every_image_that_serves_it() {
+        for version in [
+            Some(tier2_artifacts::GUEST_RELEASE),
+            Some("2.2.0"),
+            Some("main"),
+            None,
+        ] {
+            assert!(
+                admit_image(ContainerProxyTransport::TcpHmac, "img", version).is_ok(),
+                "{version:?}"
+            );
+        }
+        assert_eq!(
+            GuestCapability::SharedSecretTierRetired.first_shipped(),
+            FirstShipped::NotYet
+        );
     }
 }

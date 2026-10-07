@@ -21,7 +21,6 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use nucleus_client::sign_http_headers;
 use nucleus_spec::PodSpec;
 use portcullis::kernel::{Decision, DenyReason, Kernel, Verdict};
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
@@ -48,23 +47,23 @@ struct Args {
     /// runtime sets in a pod's workload env) is used.
     #[arg(long, env = "NUCLEUS_MCP_PROXY_URL")]
     proxy_url: Option<String>,
-    /// Shared secret this bridge signs TCP tool-proxy requests with. A TCP
-    /// proxy needs this or `--signed-upstream`; the workload door takes neither.
+    /// RETIRED (#2446 step 2): the shared secret this bridge used to sign TCP
+    /// requests with. That tier admits only `/v1/health`, so giving one is a
+    /// startup refusal that says so. Kept as a flag only to name that.
     #[arg(long, env = "NUCLEUS_MCP_AUTH_SECRET")]
     auth_secret: Option<String>,
     /// A signing proxy in front of the TCP tool-proxy signs every request (the
     /// node's, in `nucleus run`'s enforced mode), so this bridge sends none.
     #[arg(long, env = "NUCLEUS_MCP_SIGNED_UPSTREAM")]
     signed_upstream: bool,
-    /// Actor identifier used in HMAC signatures.
+    /// Actor this bridge names (`x-nucleus-actor`) for a signing upstream.
     #[arg(long, env = "NUCLEUS_MCP_ACTOR", default_value = "nucleus-mcp")]
     actor: String,
     /// Optional pod spec for filtering visible tools.
     #[arg(long, env = "NUCLEUS_MCP_SPEC")]
     spec: Option<PathBuf>,
-    /// Separate auth secret for the /v1/approve endpoint.
-    /// The tool proxy authenticates approval requests with a different secret
-    /// than regular tool calls, enforcing privilege separation.
+    /// RETIRED with `--auth-secret` (#2446 step 2): a bridge that holds an
+    /// approval secret lets the agent behind it approve its own operations.
     #[arg(long, env = "NUCLEUS_MCP_APPROVAL_SECRET")]
     approval_secret: Option<String>,
     /// Prompt on approval-required operations (uses /dev/tty).
@@ -297,7 +296,7 @@ impl std::error::Error for ProxyError {}
 /// 4xx/5xx into a transport `Err` whose text is `http status: N` and throws the
 /// body away -- and the body is where the proxy says WHY: `sandbox_escape`,
 /// `path_denied`, `approval_required` with the operation to approve. Under the
-/// default, the error-body branch in [`ProxyClient::post_json_with_secret`] was
+/// default, the error-body branch in [`ProxyClient::send`] was
 /// dead code: found 2026-09-29 by a containment test in which every refusal
 /// reached the agent as a bare "http status: 403" or "422", and
 /// [`call_with_approval`], which keys on `kind == "approval_required"`, could
@@ -321,16 +320,6 @@ struct ProxyClient {
     actor: Option<String>,
     /// Session ID for audit correlation across tool calls.
     session_id: String,
-}
-
-/// Which secret, if any, signs one request. Derived from the transport, never
-/// chosen by the caller of [`ProxyClient::post_json`].
-enum Signing<'a> {
-    /// This bridge signs with this key.
-    With(&'a [u8]),
-    /// Nothing is attached: the door admits by uid, or a signing upstream adds
-    /// the signature on the way. Both are properties of the transport.
-    ByTransport,
 }
 
 /// Who decides an operation the proxy says needs approval.
@@ -379,35 +368,22 @@ impl ProxyClient {
         path: &str,
         body: &T,
     ) -> Result<R, ProxyError> {
-        let signing = match &self.transport {
-            ProxyTransport::Tcp {
-                auth: TcpAuth::Hmac { auth, .. },
-                ..
-            } => Signing::With(auth),
-            ProxyTransport::Tcp {
-                auth: TcpAuth::SignedUpstream,
-                ..
-            }
-            | ProxyTransport::Door { .. } => Signing::ByTransport,
-        };
-        self.post_json_with_secret(path, body, signing)
+        // Nothing is attached on either transport (#2446 step 2): the door admits
+        // by uid, and a signing upstream adds its signature on the way.
+        self.send(path, body)
     }
 
-    /// POST to /v1/approve using the approval secret (privilege separation).
+    /// POST to /v1/approve, which only the host-side signing upstream can sign.
     fn post_approve<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
         body: &T,
     ) -> Result<R, ProxyError> {
-        let signing = match &self.transport {
-            ProxyTransport::Tcp {
-                auth: TcpAuth::Hmac { approval, .. },
-                ..
-            } => Signing::With(approval),
+        match &self.transport {
             ProxyTransport::Tcp {
                 auth: TcpAuth::SignedUpstream,
                 ..
-            } => Signing::ByTransport,
+            } => {}
             ProxyTransport::Door { .. } => {
                 return Err(ProxyError {
                     kind: "approval_not_on_door".to_string(),
@@ -417,15 +393,14 @@ impl ProxyClient {
                     operation: None,
                 });
             }
-        };
-        self.post_json_with_secret(path, body, signing)
+        }
+        self.send(path, body)
     }
 
-    fn post_json_with_secret<T: Serialize, R: for<'de> Deserialize<'de>>(
+    fn send<T: Serialize, R: for<'de> Deserialize<'de>>(
         &self,
         path: &str,
         body: &T,
-        signing: Signing<'_>,
     ) -> Result<R, ProxyError> {
         let body_bytes = serde_json::to_vec(body).map_err(|e| ProxyError {
             kind: "client_error".to_string(),
@@ -443,12 +418,10 @@ impl ProxyClient {
             .header("content-type", "application/json")
             // Always include session ID for audit correlation
             .header("x-nucleus-session-id", &self.session_id);
-
-        if let Signing::With(secret) = signing {
-            let signed = sign_http_headers(secret, self.actor.as_deref(), &body_bytes);
-            for (key, value) in signed.headers {
-                request = request.header(&key, &value);
-            }
+        // Named for a signing upstream to sign as (`SignedProxy` reads it when
+        // it has no actor of its own). It proves nothing by itself.
+        if let Some(actor) = self.actor.as_deref() {
+            request = request.header("x-nucleus-actor", actor);
         }
 
         match request.send(&body_bytes) {
@@ -1552,28 +1525,29 @@ mod tests {
         (dir, url, rx)
     }
 
-    fn transport(url: &str, auth_secret: Option<&str>) -> ProxyTransport {
+    fn transport(url: &str, signed_upstream: bool) -> ProxyTransport {
         ProxyTransport::resolve(&TransportConfig {
             proxy_url: Some(url),
             tool_proxy_url: None,
-            auth_secret,
+            auth_secret: None,
             approval_secret: None,
-            signed_upstream: false,
+            signed_upstream,
         })
         .expect("transport")
     }
 
-    /// A TCP client, signing with a test secret: TCP has no unsigned arm.
+    /// A TCP client behind a signing upstream: TCP has no unsigned arm, and no
+    /// shared-secret arm since #2446 step 2.
     fn client(base_url: String) -> ProxyClient {
         ProxyClient::new(
-            transport(&base_url, Some("test-token-123")),
+            transport(&base_url, true),
             None,
             Some("test-session".into()),
         )
     }
 
     fn door_client(url: &str) -> ProxyClient {
-        ProxyClient::new(transport(url, None), None, Some("test-session".into()))
+        ProxyClient::new(transport(url, false), None, Some("test-session".into()))
     }
 
     /// Over the door, a tool call reaches the proxy as plain HTTP on the
@@ -1644,16 +1618,17 @@ mod tests {
         );
     }
 
-    /// TCP still carries its authentication: every request is signed.
+    /// Over TCP the signing upstream signs; this bridge holds no secret and
+    /// attaches no signature of its own (#2446 step 2).
     #[test]
-    fn a_tcp_request_is_signed() {
+    fn a_tcp_request_leaves_the_signature_to_the_upstream() {
         let (base, seen) = one_shot_proxy_capturing("200 OK", r#"{"contents":"x"}"#);
         let _: ReadResponse = client(base)
             .post_json("/v1/read", &ReadRequest { path: "a".into() })
             .expect("answered");
         let req = seen.recv().expect("request").to_ascii_lowercase();
-        assert!(req.contains("x-nucleus-signature: "), "{req}");
-        assert!(req.contains("x-nucleus-timestamp: "), "{req}");
+        assert!(!req.contains("x-nucleus-signature"), "{req}");
+        assert!(req.contains("x-nucleus-session-id: test-session"), "{req}");
     }
 
     /// A refusal reaches the caller with the proxy's own reason. Under ureq's
@@ -1852,7 +1827,7 @@ mod tests {
     #[test]
     fn test_proxy_client_session_id_provided() {
         let client = ProxyClient::new(
-            transport("http://localhost:8080", Some("test-token-123")),
+            transport("http://localhost:8080", true),
             Some("test-actor".to_string()),
             Some("custom-session-123".to_string()),
         );
@@ -1958,7 +1933,7 @@ mod tests {
     #[test]
     fn test_proxy_client_session_id_generated() {
         let client = ProxyClient::new(
-            transport("http://localhost:8080", Some("test-token-123")),
+            transport("http://localhost:8080", true),
             Some("test-actor".to_string()),
             None,
         );

@@ -43,8 +43,6 @@ const IMAGE: &str = "nucleus-spike-microvm-host:dev";
 const HOST: &str = "nucleus-spike-host";
 const VOLUME: &str = "nucleus-spike-srv";
 const NODE: &str = "https://127.0.0.1:8080";
-/// The dev proxy secret baked into the image (`NUCLEUS_NODE_PROXY_AUTH_SECRET`).
-const PROXY_SECRET: &str = "00000000000000000000000000000000000000000000000000000000000000a2";
 
 /// Capabilities added over the runtime default when nothing overrides it —
 /// the set `p2_minimal_capabilities` measured as sufficient.
@@ -1094,8 +1092,9 @@ fn mcp_roundtrip(pod: &Pod) -> Result<String, String> {
             "nucleus-mcp",
             "--proxy-url",
             &pod.proxy,
-            "--auth-secret",
-            PROXY_SECRET,
+            // The node's signing proxy fronts the pod (#2446 step 2: the bridge
+            // holds no shared secret).
+            "--signed-upstream",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

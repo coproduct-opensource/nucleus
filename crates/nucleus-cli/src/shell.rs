@@ -145,7 +145,7 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     let policy = policy.normalize();
 
     let run_id = Uuid::new_v4();
-    let tmp_dir = std::env::temp_dir().join(format!("nucleus-shell-{run_id}"));
+    let tmp_dir = crate::local_proxy::run_dir("nucleus-shell", &run_id);
     fs::create_dir_all(&tmp_dir)?;
 
     // The session task token, from the policy the proxy's spec will carry.
@@ -154,9 +154,9 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     let task_token =
         crate::session_token::mint_local(&run_id.to_string(), &policy, args.timeout, None)?;
 
-    // Generate per-session auth secrets
+    // Keys only the tier-3 sandbox token now; see `crate::local_proxy`.
     let auth_secret = hex::encode(rand::random::<[u8; 32]>());
-    let approval_secret = hex::encode(rand::random::<[u8; 32]>());
+    let transport = crate::local_proxy::LocalProxyTransport::new(&tmp_dir);
 
     // Build PodSpec
     let spec_path = tmp_dir.join("pod.yaml");
@@ -194,14 +194,11 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
         .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
         .arg("--spec")
         .arg(&spec_path)
-        .arg("--listen")
-        .arg("127.0.0.1:0")
+        .args(transport.proxy_args())
         .arg("--announce-path")
         .arg(&announce_path)
         .arg("--auth-secret")
         .arg(&auth_secret)
-        .arg("--approval-secret")
-        .arg(&approval_secret)
         .arg("--audit-log")
         .arg(&audit_path)
         .args(crate::session_token::proxy_args(&task_token))
@@ -214,8 +211,8 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
         .context("failed to spawn nucleus-tool-proxy")?;
 
     // Wait for proxy readiness
-    let proxy_addr = wait_for_proxy_ready(&announce_path, Duration::from_secs(10)).await?;
-    let proxy_url = format!("http://{proxy_addr}");
+    // `unix:///…/p.sock`: the announcement is the URL the bridge dials.
+    let proxy_url = wait_for_proxy_ready(&announce_path, Duration::from_secs(10)).await?;
 
     info!(proxy_url = %proxy_url, "Tool-proxy ready");
 
@@ -228,10 +225,7 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
         &mcp_command_path,
         &McpEnvConfig {
             proxy_url: &proxy_url,
-            auth: McpProxyAuth::Hmac {
-                auth_secret: &auth_secret,
-                approval_secret: &approval_secret,
-            },
+            auth: McpProxyAuth::PeerVerifiedSocket,
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
             sandbox_token: Some(&sandbox_token),

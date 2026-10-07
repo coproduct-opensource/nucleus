@@ -333,6 +333,13 @@ pub enum GuestCapability {
     /// nothing in the log; `nucleus-audit verify` refuses an older guest's
     /// keyless log by name rather than report it verified.
     SignedAuditLog,
+    /// The tool-proxy's shared-secret (HMAC) tier carries no authority: it
+    /// admits only `/v1/health`, which is answered before authentication
+    /// (#2446 step 2). [`Demand::Optional`]: nothing the node does needs the
+    /// tier gone. It is the one thing the deprecated
+    /// `--container-proxy-transport tcp-hmac` cannot work with, so the node
+    /// refuses that transport, by name, for an image whose release has it.
+    SharedSecretTierRetired,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -383,7 +390,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 18] = [
+    pub const ALL: [GuestCapability; 19] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -402,6 +409,7 @@ impl GuestCapability {
         GuestCapability::WorkloadSyscallPolicy,
         GuestCapability::HostVerifiedProxySocket,
         GuestCapability::SignedAuditLog,
+        GuestCapability::SharedSecretTierRetired,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -435,6 +443,9 @@ impl GuestCapability {
             // Read by a verifier, never by the node: an older guest's log is
             // refused by `nucleus-audit verify`, by name, not by the node.
             GuestCapability::SignedAuditLog => Demand::Optional,
+            // The node needs nothing from it; `container_transport::admit_image`
+            // reads it to refuse `tcp-hmac`, not to admit a guest.
+            GuestCapability::SharedSecretTierRetired => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -493,6 +504,8 @@ impl GuestCapability {
             GuestCapability::HostVerifiedProxySocket => FirstShipped::Release("2.3.0"),
             // #3293 landed after the tree pinned as 2.6.0.
             GuestCapability::SignedAuditLog => FirstShipped::NotYet,
+            // #2446 step 2 landed after the tree pinned as 2.6.0.
+            GuestCapability::SharedSecretTierRetired => FirstShipped::NotYet,
         }
     }
 
@@ -599,6 +612,12 @@ impl GuestCapability {
                  and name the key in every record; an older proxy MACs the log with its auth \
                  secret, empty on vsock and on the peer-verified socket, so `nucleus-audit \
                  verify` refuses that log by name (the node does not require it)"
+            }
+            GuestCapability::SharedSecretTierRetired => {
+                "#2446 (step 2) left the tool-proxy's shared-secret tier no authority: it \
+                 admits only /v1/health. An older proxy still serves HMAC-signed requests, \
+                 which is all the deprecated tcp-hmac container transport speaks (the node \
+                 does not require it, and refuses tcp-hmac for an image that has it)"
             }
         }
     }
@@ -1009,6 +1028,7 @@ mod tests {
         let after_the_pin = [
             GuestCapability::WorkloadSyscallPolicy,
             GuestCapability::SignedAuditLog,
+            GuestCapability::SharedSecretTierRetired,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1127,7 +1147,8 @@ mod tests {
                 GuestCapability::PushAdvertisementIsRead => GuestCapability::WorkloadSyscallPolicy,
                 GuestCapability::WorkloadSyscallPolicy => GuestCapability::HostVerifiedProxySocket,
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
-                GuestCapability::SignedAuditLog => GuestCapability::CaBundle,
+                GuestCapability::SignedAuditLog => GuestCapability::SharedSecretTierRetired,
+                GuestCapability::SharedSecretTierRetired => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

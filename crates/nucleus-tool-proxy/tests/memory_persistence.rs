@@ -82,6 +82,10 @@ async fn launch(root: &Path, iteration: usize) -> Proxy {
         .arg("--spec")
         .arg(spec_path)
         .arg("--unsandboxed")
+        // The peer-verified socket (#2446 step 2): the shared-secret tier this
+        // fixture used to sign for admits only /v1/health now.
+        .arg("--listen-unix")
+        .arg(root.join(format!("p{iteration}.sock")))
         .arg("--auth-secret")
         .arg(SECRET)
         .arg("--approval-secret")
@@ -106,8 +110,10 @@ async fn launch(root: &Path, iteration: usize) -> Proxy {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
         if let Ok(address) = std::fs::read_to_string(&announce) {
-            proxy.url = format!("http://{}", address.trim());
-            return proxy;
+            if !address.trim().is_empty() {
+                proxy.url = address.trim().to_string();
+                return proxy;
+            }
         }
         assert!(
             proxy.child.try_wait().unwrap().is_none(),
@@ -125,14 +131,21 @@ async fn launch(root: &Path, iteration: usize) -> Proxy {
 
 async fn post(proxy: &Proxy, route: &str, body: Value) -> Value {
     let bytes = serde_json::to_vec(&body).unwrap();
-    let mut request = reqwest::Client::new()
-        .post(format!("{}{route}", proxy.url))
+    let socket = proxy
+        .url
+        .strip_prefix("unix://")
+        .unwrap_or_else(|| panic!("announced {} rather than a socket", proxy.url));
+    let response = reqwest::Client::builder()
+        .unix_socket(socket)
+        .build()
+        .unwrap()
+        .post(format!("http://localhost{route}"))
         .timeout(Duration::from_secs(10))
-        .header("content-type", "application/json");
-    for (key, value) in nucleus_client::sign_http_headers(SECRET.as_bytes(), None, &bytes).headers {
-        request = request.header(key, value);
-    }
-    let response = request.body(bytes).send().await.unwrap();
+        .header("content-type", "application/json")
+        .body(bytes)
+        .send()
+        .await
+        .unwrap();
     let status = response.status();
     let body = response.text().await.unwrap();
     assert!(status.is_success(), "{route}: {status}: {body}");

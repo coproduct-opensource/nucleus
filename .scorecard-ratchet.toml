@@ -573,9 +573,13 @@ population_floor = 23
 # beside its other decision inputs, an expiring clippy::too_many_arguments
 # waiver (the ruleset itself goes through the `landlock` crate, no `unsafe`).
 # Measured 31/149 = 20.80% (`cargo xtask scorecard`); tighten both pins.
-floor_bp = 2080
+# 2026-10-07 (#2446 step 2): nucleus-perf's hand-rolled HMAC signer for the
+# shared-secret tier is deleted with the tier's last perf caller, and its
+# undischarged cast allow goes with it -- by deletion, not discharge. 31/148 =
+# 20.94%; both pins follow the tree.
+floor_bp = 2094
 floor_set = "measurement"
-population_floor = 149
+population_floor = 148
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

@@ -41,6 +41,7 @@ mod keychain;
 mod lima_boot;
 mod lineage;
 mod lineage_verify;
+mod local_proxy;
 mod lockdown;
 mod manifest;
 mod mediation;

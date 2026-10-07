@@ -25,8 +25,6 @@
 //! Equal lengths across each pair: a size difference is a channel outside the
 //! termination-insensitive stance, so it is excluded rather than tested by accident.
 
-use std::sync::Arc;
-
 use anyhow::{Context, Result};
 
 use super::mock_web::MockWeb;
@@ -117,11 +115,9 @@ fn run_once(a: &Args, high: High, steps: &[Step], variant: usize) -> Result<Obse
         certificate: None,
     })
     .context("spawning the tool-proxy")?;
-    let secret = Arc::new(proxy.auth_secret.clone());
     let base = format!("http://{}", web.addr);
     let call = |route: &str, body: serde_json::Value| -> Result<(u16, String, serde_json::Value)> {
-        let (status, text, _) =
-            crate::signed_tool_call(&proxy.proxy_url, &secret, "nucleus-stress", route, body)?;
+        let (status, text, _) = crate::tool_call(&proxy.proxy_url, route, body)?;
         let v = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
         let code = super::refusal_code(&v).unwrap_or_else(|| "-".into());
         Ok((status, code, v))
