@@ -414,8 +414,9 @@ pub fn from_parts_with_pins(
     })
 }
 
-/// `<context> <- <gate>`, one per line; blanks and `#` comments ignored. A context may contain
-/// spaces (they nearly all do), so the arrow is the separator and not whitespace.
+/// `<context> <- <gate>` (or `<- <gate> + <gate>`), one per line; blanks and `#` comments ignored.
+/// A context may contain spaces (they nearly all do), so the arrow is the separator and not
+/// whitespace.
 fn parse_replacements(
     text: &str,
     gate_defs: &std::collections::BTreeMap<String, (Vec<String>, String)>,
@@ -430,11 +431,31 @@ fn parse_replacements(
             continue;
         };
         let gate = gate.trim().to_string();
-        let (cmd, scripts) = gate_defs.get(&gate).cloned().unwrap_or_default();
+        // `<context> <- a + b`: a context two gates took over TOGETHER (nucleus's Clippy, split
+        // into clippy-node and clippy-libs). Parity is decided against everything the named
+        // gates run, joined as separate commands; one gate that does not exist makes the whole
+        // claim undefined (CI-RP-1), never a partial pass.
+        let parts: Vec<&str> = gate.split('+').map(str::trim).collect();
+        let defs: Vec<Option<&(Vec<String>, String)>> =
+            parts.iter().map(|g| gate_defs.get(*g)).collect();
+        let (cmd, expanded) = if defs.iter().all(Option::is_some) {
+            let mut cmd: Vec<String> = Vec::new();
+            let mut texts: Vec<String> = Vec::new();
+            for (c, scripts) in defs.into_iter().flatten() {
+                if !cmd.is_empty() {
+                    cmd.push("&&".into());
+                }
+                cmd.extend(c.iter().cloned());
+                texts.push(format!("{} {scripts}", c.join(" ")));
+            }
+            (cmd, texts.join(" && "))
+        } else {
+            (Vec::new(), String::new())
+        };
         entries.push(Replacement {
             context: context.trim().to_string(),
             line: i + 1,
-            expanded: format!("{} {scripts}", cmd.join(" ")),
+            expanded,
             cmd,
             gate,
         });
