@@ -13,6 +13,7 @@ pub mod live_boot;
 pub mod microvm_host;
 mod rootfs_source;
 pub mod tier2_artifacts;
+pub mod tool_proxy_audit;
 pub mod vmm_version;
 pub mod workload_admission;
 pub mod workload_egress;

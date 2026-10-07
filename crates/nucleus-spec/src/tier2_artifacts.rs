@@ -325,6 +325,14 @@ pub enum GuestCapability {
     /// [`Demand::When`]`(`[`GuestUse::ContainerProxySocket`]`)`: the Firecracker
     /// guest is reached over vsock and never needs it.
     HostVerifiedProxySocket,
+    /// The tool-proxy signs its audit log with an Ed25519 key it generates and
+    /// holds in memory, names that key in every record and prints it as
+    /// `NUCLEUS-AUDIT-SIGNER` at boot (#3293). An older proxy MACs the log with
+    /// its auth secret, which on vsock and on the peer-verified socket is empty,
+    /// so anyone can recompute it. [`Demand::Optional`]: the node depends on
+    /// nothing in the log; `nucleus-audit verify` refuses an older guest's
+    /// keyless log by name rather than report it verified.
+    SignedAuditLog,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -375,7 +383,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 17] = [
+    pub const ALL: [GuestCapability; 18] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -393,6 +401,7 @@ impl GuestCapability {
         GuestCapability::PushAdvertisementIsRead,
         GuestCapability::WorkloadSyscallPolicy,
         GuestCapability::HostVerifiedProxySocket,
+        GuestCapability::SignedAuditLog,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -423,6 +432,9 @@ impl GuestCapability {
             // denylist alone, and the node depends on nothing the derived
             // classes add.
             GuestCapability::WorkloadSyscallPolicy => Demand::Optional,
+            // Read by a verifier, never by the node: an older guest's log is
+            // refused by `nucleus-audit verify`, by name, not by the node.
+            GuestCapability::SignedAuditLog => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -479,6 +491,8 @@ impl GuestCapability {
             // #2551 (bcd2e5232) is an ancestor of `v2.3.0` and not of `v2.2.0`
             // (8a452030b): the 2.2.0 tool-proxy has no `--listen-unix`.
             GuestCapability::HostVerifiedProxySocket => FirstShipped::Release("2.3.0"),
+            // #3293 landed after the tree pinned as 2.6.0.
+            GuestCapability::SignedAuditLog => FirstShipped::NotYet,
         }
     }
 
@@ -579,6 +593,12 @@ impl GuestCapability {
                  no shared secret, the container driver's default transport since #2446; an \
                  older tool-proxy image ignores NUCLEUS_TOOL_PROXY_LISTEN_UNIX, holds no key \
                  for the TCP listener it binds instead, and refuses to start"
+            }
+            GuestCapability::SignedAuditLog => {
+                "#3293 has the tool-proxy sign its audit log with an Ed25519 key only it holds \
+                 and name the key in every record; an older proxy MACs the log with its auth \
+                 secret, empty on vsock and on the peer-verified socket, so `nucleus-audit \
+                 verify` refuses that log by name (the node does not require it)"
             }
         }
     }
@@ -986,7 +1006,10 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin = [GuestCapability::WorkloadSyscallPolicy];
+        let after_the_pin = [
+            GuestCapability::WorkloadSyscallPolicy,
+            GuestCapability::SignedAuditLog,
+        ];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -1103,7 +1126,8 @@ mod tests {
                 GuestCapability::WorkloadLandlock => GuestCapability::PushAdvertisementIsRead,
                 GuestCapability::PushAdvertisementIsRead => GuestCapability::WorkloadSyscallPolicy,
                 GuestCapability::WorkloadSyscallPolicy => GuestCapability::HostVerifiedProxySocket,
-                GuestCapability::HostVerifiedProxySocket => GuestCapability::CaBundle,
+                GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
+                GuestCapability::SignedAuditLog => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

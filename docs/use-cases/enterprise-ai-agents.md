@@ -82,14 +82,17 @@
     "result": "success",
     "bytes_returned": 4523
   },
-  "signature": "hmac-sha256:e7d4a2f1..."
+  "sig_alg": "ed25519",
+  "signer": "5f1c9a07...",
+  "signature": "e7d4a2f1..."
 }
 ```
 
 Verify log integrity:
 
 ```bash
-nucleus-audit verify /var/log/nucleus/audit.log
+# the pod receipt's audit_tail_hash pins the signer the proxy held in memory
+nucleus-audit verify --log /var/log/nucleus/audit.log --tail-hash "$AUDIT_TAIL_HASH"
 # ✓ 1847 entries verified
 # ✓ Hash chain intact
 # ✓ No gaps detected

@@ -8,7 +8,7 @@
 //!
 //! # Why a second log, and not the existing one
 //!
-//! The tool-proxy already has an HMAC-chained [`AuditLog`](crate::AuditLog), and
+//! The tool-proxy already has a signed, hash-chained [`AuditLog`](crate::AuditLog), and
 //! reusing it was the obvious first idea. It is the wrong home here:
 //!
 //! - Its `log()` is **async**, because it optionally fetches a drand round per
@@ -250,7 +250,7 @@ impl Art12Log {
 /// SHA-256 of a string, hex-encoded.
 ///
 /// Lives here rather than in `main.rs` because this is where the hashing it
-/// serves lives; the boot-report chain in `AuditLog` uses the same helper.
+/// serves lives.
 pub fn sha256_hex(message: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
