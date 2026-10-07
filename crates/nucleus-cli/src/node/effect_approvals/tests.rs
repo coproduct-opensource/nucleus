@@ -57,9 +57,6 @@ async fn fixture_with_review(
     let client = create_client(&NodeArgs {
         apple_host_config: None,
         url: Some(url.clone()),
-        secrets_file: None,
-        auth_secret: None,
-        actor: "operator".into(),
         tls_cert: Some(cert),
         tls_key: Some(key),
         trust_bundle: Some(roots),
@@ -279,23 +276,6 @@ fn grant_requires_a_valid_explicit_digest_and_uuid() {
         .is_ok()
     );
     assert!(Cli::try_parse_from(["nucleus", "effect-approvals", "../escape", "list"]).is_err());
-}
-
-#[tokio::test]
-async fn hmac_client_cannot_settle_host_approvals() {
-    let client = HttpClient::Plain(ureq::Agent::new_with_defaults());
-    assert!(
-        run(
-            &client,
-            "https://127.0.0.1:1",
-            Uuid::new_v4(),
-            &Command::List { wait_secs: None }
-        )
-        .await
-        .unwrap_err()
-        .to_string()
-        .contains("mTLS")
-    );
 }
 
 fn review_fixture() -> ApprovalReview {

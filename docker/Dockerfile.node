@@ -10,7 +10,6 @@
 #
 # Run (container driver with Colima):
 #   docker run -v /var/run/docker.sock:/var/run/docker.sock \
-#     -e NUCLEUS_NODE_AUTH_SECRET=dev-secret \
 #     -e NUCLEUS_NODE_PROXY_AUTH_SECRET=dev-proxy-secret \
 #     -e NUCLEUS_NODE_PROXY_APPROVAL_SECRET=dev-approval-secret \
 #     -e NUCLEUS_CONTAINER_IMAGE=nucleus-tool-proxy:latest \

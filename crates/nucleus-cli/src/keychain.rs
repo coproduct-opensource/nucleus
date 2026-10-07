@@ -23,8 +23,6 @@ const ROTATION_DAYS: i64 = 90;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::enum_variant_names)]
 pub enum SecretKind {
-    /// HMAC secret for nucleus-node API authentication
-    NodeAuthSecret,
     /// HMAC secret for tool-proxy request signing
     ProxyAuthSecret,
     /// HMAC secret for approval token signing
@@ -35,7 +33,6 @@ impl SecretKind {
     /// Keychain account name for this secret type
     pub fn account_name(&self) -> &'static str {
         match self {
-            Self::NodeAuthSecret => "node-auth-secret",
             Self::ProxyAuthSecret => "proxy-auth-secret",
             Self::ApprovalSecret => "approval-secret",
         }
@@ -44,7 +41,6 @@ impl SecretKind {
     /// Human-readable description
     pub fn description(&self) -> &'static str {
         match self {
-            Self::NodeAuthSecret => "nucleus-node API authentication",
             Self::ProxyAuthSecret => "tool-proxy request signing",
             Self::ApprovalSecret => "approval token signing",
         }
@@ -52,13 +48,18 @@ impl SecretKind {
 
     /// All secret kinds
     pub fn all() -> &'static [SecretKind] {
-        &[
-            SecretKind::NodeAuthSecret,
-            SecretKind::ProxyAuthSecret,
-            SecretKind::ApprovalSecret,
-        ]
+        &[SecretKind::ProxyAuthSecret, SecretKind::ApprovalSecret]
     }
 }
+
+/// Accounts earlier releases stored and nothing reads any more.
+///
+/// `node-auth-secret` was the HMAC key for nucleus-node's own HTTP/gRPC API.
+/// Move B made that API mTLS-only, so the node stopped reading it; the CLI and
+/// `doctor` now reach the node with the provisioned client identity alone
+/// (#3294). A static shared secret with no consumer is only something to leak,
+/// so `setup` deletes it rather than leaving it in the Keychain.
+pub const RETIRED_ACCOUNTS: &[&str] = &["node-auth-secret"];
 
 /// Metadata stored alongside secrets for rotation tracking
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,6 +208,36 @@ impl SecretStore {
         Ok(())
     }
 
+    /// Delete a retired account (one of [`RETIRED_ACCOUNTS`]), and its
+    /// rotation metadata. `Ok(true)` when something was there to delete,
+    /// `Ok(false)` when it was already gone; any other failure is an error,
+    /// never "already gone".
+    #[cfg(target_os = "macos")]
+    pub fn delete_retired(account: &str) -> Result<bool> {
+        use security_framework::passwords::delete_generic_password;
+
+        let removed = match delete_generic_password(KEYCHAIN_SERVICE, account) {
+            Ok(()) => true,
+            Err(e) if e.code() == -25300 => false, // errSecItemNotFound
+            Err(e) => return Err(anyhow!("Failed to delete {account} from Keychain: {e}")),
+        };
+        MetadataStore::remove(account)?;
+        Ok(removed)
+    }
+
+    /// Delete a retired account from file-based storage (Linux fallback).
+    #[cfg(not(target_os = "macos"))]
+    pub fn delete_retired(account: &str) -> Result<bool> {
+        let path = Self::secrets_dir()?.join(account);
+        let removed = match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e).with_context(|| format!("removing {}", path.display())),
+        };
+        MetadataStore::remove(account)?;
+        Ok(removed)
+    }
+
     /// Check if a secret exists
     pub fn exists(kind: SecretKind) -> Result<bool> {
         Ok(Self::get(kind)?.is_some())
@@ -215,12 +246,15 @@ impl SecretStore {
     /// Get the file path for a secret (Linux fallback)
     #[cfg(not(target_os = "macos"))]
     fn secret_file_path(kind: SecretKind) -> Result<PathBuf> {
+        Ok(Self::secrets_dir()?.join(kind.account_name()))
+    }
+
+    /// The directory the Linux fallback keeps one file per account in.
+    #[cfg(not(target_os = "macos"))]
+    fn secrets_dir() -> Result<PathBuf> {
         let config_dir =
             dirs::config_dir().ok_or_else(|| anyhow!("Could not determine config directory"))?;
-        Ok(config_dir
-            .join("nucleus")
-            .join("secrets")
-            .join(kind.account_name()))
+        Ok(config_dir.join("nucleus").join("secrets"))
     }
 
     /// Get or create a secret, returning whether it was newly created
@@ -280,6 +314,15 @@ impl MetadataStore {
         let mut all = Self::load()?;
         all.insert(kind.account_name().to_string(), metadata);
         Self::save(&all)
+    }
+
+    /// Drop a retired account's metadata, if any is recorded.
+    fn remove(account: &str) -> Result<()> {
+        let mut all = Self::load()?;
+        if all.remove(account).is_some() {
+            Self::save(&all)?;
+        }
+        Ok(())
     }
 }
 
@@ -344,12 +387,21 @@ mod tests {
         assert!(metadata.days_until_rotation() > 80);
     }
 
+    /// #3294: `setup` creates every account in `SecretKind::all()`, so a
+    /// retired one listed there would be minted again on the next run.
+    #[test]
+    fn setup_creates_no_retired_account() {
+        for kind in SecretKind::all() {
+            assert!(
+                !RETIRED_ACCOUNTS.contains(&kind.account_name()),
+                "{} is retired: nothing reads it, so setup must not create it",
+                kind.account_name()
+            );
+        }
+    }
+
     #[test]
     fn test_secret_kind_names() {
-        assert_eq!(
-            SecretKind::NodeAuthSecret.account_name(),
-            "node-auth-secret"
-        );
         assert_eq!(
             SecretKind::ProxyAuthSecret.account_name(),
             "proxy-auth-secret"

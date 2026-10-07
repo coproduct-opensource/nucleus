@@ -322,7 +322,8 @@ fn node_auth() -> NodeAuth {
     }
 }
 
-/// The dev node secret baked into the image (`NUCLEUS_NODE_AUTH_SECRET`).
+/// The dev node API secret the image once baked in. Only the spike's legacy
+/// HMAC mode uses it; a node past Move B reads no such secret (#3294).
 const NODE_SECRET: &str = "00000000000000000000000000000000000000000000000000000000000000a1";
 
 fn hmac_hex(message: &[u8]) -> String {

@@ -369,9 +369,10 @@ selection also applies to `run --goal` and `run --grant` after their existing
 authorization checks. `run --dry-run` validates the selection without starting
 anything. `node` commands may start the owned host, as with the explicit flag.
 
-Explicit connection flags override this default: `--node-url`, `--identity-dir`
-or `--node-auth-secret` for `run`; `--url`, identity flags or legacy credential
-flags for `node`. Corresponding environment variables count as explicit input.
+Explicit connection flags override this default: `--node-url` or `--identity-dir`
+for `run`; `--url` or the identity flags (`--tls-cert`, `--tls-key`,
+`--trust-bundle`) for `node`. Neither command takes a shared node secret: the
+node's API is mTLS-only. Corresponding environment variables count as explicit input.
 `run --local` and `run --hook` use their selected mode. An explicit
 `--apple-host-config` selects that file instead. A saved host that fails readiness
 returns an error; it does not switch to Lima or another node. `setup` also uses

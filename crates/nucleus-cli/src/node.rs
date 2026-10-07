@@ -8,9 +8,8 @@ mod workload;
 
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
-use nucleus_client::sign_http_headers;
 use std::fs;
-use std::io::{BufRead, BufReader, Write as IoWrite};
+use std::io::Write as IoWrite;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -19,26 +18,18 @@ use std::time::Duration;
 #[command(mut_args = |a| a.hide_env_values(true))]
 pub struct NodeArgs {
     /// Start/check the selected Apple host and use its current URL and mTLS identity
-    #[arg(long, conflicts_with_all = ["url", "secrets_file", "auth_secret", "tls_cert", "tls_key", "trust_bundle"])]
+    #[arg(long, conflicts_with_all = ["url", "tls_cert", "tls_key", "trust_bundle"])]
     pub apple_host_config: Option<PathBuf>,
 
     /// Node URL; defaults to config's node.url, then https://127.0.0.1:8080
     #[arg(long, env = "NUCLEUS_NODE_URL")]
     pub url: Option<String>,
 
-    /// Path to secrets.env file (or use --auth-secret)
-    #[arg(long, env = "NUCLEUS_SECRETS_FILE")]
-    pub secrets_file: Option<PathBuf>,
-
-    /// Auth secret (hex-encoded, overrides secrets_file)
-    #[arg(long, env = "NUCLEUS_NODE_AUTH_SECRET")]
-    pub auth_secret: Option<String>,
-
-    /// Actor identifier for request signing
-    #[arg(long, default_value = "nucleus-cli")]
-    pub actor: String,
-
-    // === mTLS (Move A step 5; mandatory on the node's side since Move B) ===
+    // === mTLS: the only way to the node since Move B ===
+    //
+    // There is no shared-secret alternative: the node stopped reading
+    // `NUCLEUS_NODE_AUTH_SECRET` with Move B, and the CLI stopped offering
+    // `--auth-secret`/`--secrets-file`/`sign` with #3294.
     /// Path to this CLI's client certificate (PEM). Defaults to the identity
     /// `nucleus setup` already provisioned (`~/.config/nucleus/identity/
     /// cli-cert.pem`) when all three of `--tls-cert`/`--tls-key`/
@@ -121,17 +112,6 @@ pub enum NodeCommand {
         #[command(subcommand)]
         command: workload::Command,
     },
-
-    /// Generate a signed request (for debugging)
-    Sign {
-        /// HTTP method
-        #[arg(short, long, default_value = "GET")]
-        method: String,
-
-        /// Request body (for POST/PUT)
-        #[arg(short, long)]
-        body: Option<String>,
-    },
 }
 
 /// Fills in `--tls-cert`/`--tls-key`/`--trust-bundle` from the identity
@@ -184,10 +164,6 @@ pub async fn execute(mut args: NodeArgs, config_path: &str) -> Result<()> {
     apple_host::apply(&mut args).await?;
     apply_provisioned_identity_defaults(&mut args);
     let agent = create_client(&args)?;
-    let auth_secret = match &args.command {
-        NodeCommand::EffectApprovals { .. } | NodeCommand::Workload { .. } => None,
-        _ => resolve_auth(&args)?,
-    };
 
     let url = args.url().to_string();
     match args.command {
@@ -201,137 +177,28 @@ pub async fn execute(mut args: NodeArgs, config_path: &str) -> Result<()> {
             );
             Ok(())
         }
-        NodeCommand::Health => health(&agent, &url, auth_secret.as_deref(), &args.actor).await,
-        NodeCommand::Pods => list_pods(&agent, &url, auth_secret.as_deref(), &args.actor).await,
+        NodeCommand::Health => health(&agent, &url).await,
+        NodeCommand::Pods => list_pods(&agent, &url).await,
         NodeCommand::Create {
             spec_file,
             parent_pod_id,
-        } => {
-            create_pod(
-                &agent,
-                &url,
-                auth_secret.as_deref(),
-                &args.actor,
-                &spec_file,
-                parent_pod_id.as_deref(),
-            )
-            .await
-        }
-        NodeCommand::Cancel { pod_id } => {
-            cancel_pod(&agent, &url, auth_secret.as_deref(), &args.actor, &pod_id).await
-        }
+        } => create_pod(&agent, &url, &spec_file, parent_pod_id.as_deref()).await,
+        NodeCommand::Cancel { pod_id } => cancel_pod(&agent, &url, &pod_id).await,
         NodeCommand::Logs {
             pod_id,
             follow,
             offset,
-        } => {
-            stream_logs(
-                &agent,
-                &url,
-                auth_secret.as_deref(),
-                &args.actor,
-                &pod_id,
-                follow,
-                offset,
-            )
-            .await
-        }
-        NodeCommand::Sign { method, body } => {
-            let secret = auth_secret.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "`sign` produces HMAC-signed headers and needs an auth secret; mTLS mode \
-                     has nothing to sign — present the client certificate instead"
-                )
-            })?;
-            sign_request(&secret, &args.actor, &method, body.as_deref())
-        }
+        } => stream_logs(&agent, &url, &pod_id, follow, offset).await,
     }
 }
 
-/// `Some(secret)` for the HMAC default; `None` when mTLS is configured — the
-/// node's SPIFFE branch (`spiffe_context_for_request`) never consults HMAC
-/// headers, so requiring an auth secret ALSO when presenting a client
-/// certificate would be pure friction. Deliberately checks "any of the three
-/// flags" rather than "all three": a partial set should surface
-/// `load_mtls_config`'s "must all be provided together" error, not silently
-/// fall back to requiring a secret the operator didn't intend to need.
-fn resolve_auth(args: &NodeArgs) -> Result<Option<Vec<u8>>> {
-    if args.tls_cert.is_some() || args.tls_key.is_some() || args.trust_bundle.is_some() {
-        return Ok(None);
-    }
-    load_auth_secret(args).map(Some)
-}
-
-fn load_auth_secret(args: &NodeArgs) -> Result<Vec<u8>> {
-    // Note: nucleus-node uses the hex string directly as bytes (not decoded),
-    // so we return the hex string as ASCII bytes here.
-
-    // 1. Check --auth-secret
-    if let Some(hex_secret) = &args.auth_secret {
-        // Return the hex string as bytes (not decoded)
-        return Ok(hex_secret.as_bytes().to_vec());
-    }
-
-    // 2. Check --secrets-file
-    if let Some(path) = &args.secrets_file {
-        return load_secret_from_file(path, "NUCLEUS_NODE_AUTH_SECRET");
-    }
-
-    // 3. Check default location: /tmp/nucleus-node-state/secrets.env
-    let default_path = PathBuf::from("/tmp/nucleus-node-state/secrets.env");
-    if default_path.exists() {
-        return load_secret_from_file(&default_path, "NUCLEUS_NODE_AUTH_SECRET");
-    }
-
-    // 4. Check Keychain (macOS) - keychain stores raw bytes, so hex-encode them
-    #[cfg(target_os = "macos")]
-    {
-        use crate::keychain::{SecretKind, SecretStore};
-        if let Some(secret) = SecretStore::get(SecretKind::NodeAuthSecret)? {
-            // Keychain stores raw bytes, but server expects hex string as bytes
-            return Ok(hex::encode(&secret).into_bytes());
-        }
-    }
-
-    bail!(
-        "No auth secret found. Provide via:\n\
-         - --auth-secret <hex>\n\
-         - --secrets-file <path>\n\
-         - /tmp/nucleus-node-state/secrets.env\n\
-         - macOS Keychain (via nucleus setup)"
-    )
-}
-
-fn load_secret_from_file(path: &PathBuf, key: &str) -> Result<Vec<u8>> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read secrets from {}", path.display()))?;
-
-    for line in content.lines() {
-        if let Some(value) = line.strip_prefix(&format!("{key}=")) {
-            // Return the hex string as bytes (not decoded) - server uses it as-is
-            return Ok(value.trim().as_bytes().to_vec());
-        }
-    }
-
-    bail!("{key} not found in {}", path.display())
-}
-
-/// Reads `--tls-cert`/`--tls-key`/`--trust-bundle` and returns a
-/// `(client_cert, trust_roots)` pair when mTLS is configured, `None` when
-/// none of the three flags is set (the plaintext default, unchanged).
-///
-/// A PARTIAL set is a hard error, the same discipline node/tool-proxy's own
-/// `--tls-*` flags use: silently falling back to plaintext because one flag
-/// was misspelled would turn a configuration mistake into an invisible
-/// downgrade.
 /// `(client identity PEM bundle, trust bundle PEM)` read from
 /// `--tls-cert`/`--tls-key`/`--trust-bundle`, or `None` when none of the
-/// three is set — the plaintext default, unchanged.
+/// three is set — which [`create_client`] refuses, since the node has no
+/// other way in.
 ///
 /// A PARTIAL set is a hard error, the same discipline node/tool-proxy's own
-/// `--tls-*` flags use: silently falling back to plaintext because one flag
-/// was misspelled would turn a configuration mistake into an invisible
-/// downgrade.
+/// `--tls-*` flags use: one misspelled flag must not read as "none given".
 fn load_mtls_config(args: &NodeArgs) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
     match (&args.tls_cert, &args.tls_key, &args.trust_bundle) {
         (None, None, None) => Ok(None),
@@ -362,7 +229,7 @@ fn load_mtls_config(args: &NodeArgs) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
         }
         _ => bail!(
             "--tls-cert, --tls-key and --trust-bundle must all be provided together for mTLS \
-             (or none, for the plaintext default)"
+             (or none, to use the identity `nucleus setup` provisioned)"
         ),
     }
 }
@@ -370,59 +237,55 @@ fn load_mtls_config(args: &NodeArgs) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
 /// How long an ordinary management request (health, list, cancel) may take.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The two transports this command speaks: plaintext HMAC (ureq, unchanged
-/// from before mTLS support existed) or mTLS (reqwest — see the Cargo.toml
-/// comment on the reqwest dependency for why ureq can't do this).
-enum HttpClient {
-    Plain(ureq::Agent),
-    Mtls(reqwest::Client),
-}
+/// The node's HTTP API over mTLS: the only transport it serves since Move B.
+///
+/// A type rather than an enum with a plaintext arm, so a command that needs
+/// the operator's identity (host approvals, workload collection) cannot be
+/// handed a client without one (#3294 removed the shared-secret arm).
+pub(crate) struct HttpClient(reqwest::Client);
 
-/// Builds the transport `load_mtls_config` selects.
+/// Builds the mTLS client from `--tls-cert`/`--tls-key`/`--trust-bundle`, which
+/// default to the identity `nucleus setup` provisioned. Refused, by name, when
+/// none is configured: there is no shared secret to fall back to.
 fn create_client(args: &NodeArgs) -> Result<HttpClient> {
-    match load_mtls_config(args)? {
-        None => {
-            let config = ureq::Agent::config_builder()
-                .timeout_global(Some(REQUEST_TIMEOUT))
-                .build();
-            Ok(HttpClient::Plain(config.into()))
-        }
-        Some((identity_pem, bundle_pem)) => {
-            // reqwest's `rustls-no-provider` feature needs a provider
-            // installed before building a `Client` — `main.rs` does this at
-            // startup, but defensively (and idempotently: `install_default`
-            // errors if one is already installed, hence `let _ =`) doing it
-            // here too means this function works correctly wherever it's
-            // called from, including tests. Same pattern nucleus-identity's
-            // own `TlsServerConfig`/`TlsClientConfig` builders already use.
-            let _ = rustls::crypto::ring::default_provider().install_default();
+    let Some((identity_pem, bundle_pem)) = load_mtls_config(args)? else {
+        bail!(
+            "no client identity for the node: run `nucleus setup` to provision one, or pass \
+             --tls-cert, --tls-key and --trust-bundle. The node's API is mTLS-only; it reads no \
+             shared secret"
+        );
+    };
+    // reqwest's `rustls-no-provider` feature needs a provider installed
+    // before building a `Client` — `main.rs` does this at startup, but
+    // defensively (and idempotently: `install_default` errors if one is
+    // already installed, hence `let _ =`) doing it here too means this
+    // function works correctly wherever it's called from, including tests.
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
-            // The node's certificate names it by SPIFFE ID, not by hostname,
-            // so hostname verification cannot identify it; `node_tls` checks
-            // the chain against `--trust-bundle` AND that the certificate
-            // names exactly the node — in the trust domain `--tls-cert`
-            // itself belongs to. The same CA signs federated tenants' SVIDs;
-            // those carry `ClientAuth` only (`LeafRole::Foreign`), so the
-            // chain's server-usage check refuses one before the name check.
-            let tls = nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem)
-                .context("failed to build the node TLS configuration from --tls-cert/--tls-key/--trust-bundle")?;
+    // The node's certificate names it by SPIFFE ID, not by hostname, so
+    // hostname verification cannot identify it; `node_tls` checks the chain
+    // against `--trust-bundle` AND that the certificate names exactly the node
+    // — in the trust domain `--tls-cert` itself belongs to. The same CA signs
+    // federated tenants' SVIDs; those carry `ClientAuth` only
+    // (`LeafRole::Foreign`), so the chain's server-usage check refuses one
+    // before the name check.
+    let tls = nucleus_identity::node_tls::node_client_config(&identity_pem, &bundle_pem).context(
+        "failed to build the node TLS configuration from --tls-cert/--tls-key/--trust-bundle",
+    )?;
 
-            let builder = reqwest::Client::builder()
-                .timeout(REQUEST_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .tls_backend_preconfigured(tls);
-
-            Ok(HttpClient::Mtls(
-                builder.build().context("failed to build mTLS client")?,
-            ))
-        }
-    }
+    let client = reqwest::Client::builder()
+        .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .tls_backend_preconfigured(tls)
+        .build()
+        .context("failed to build mTLS client")?;
+    Ok(HttpClient(client))
 }
 
 impl HttpClient {
     /// Sends a request and returns `(status, body)`. Not used for
     /// `stream_logs`, which needs a streaming read rather than a buffered
-    /// body and branches on the backend itself.
+    /// body.
     ///
     /// `within` is required rather than defaulted because the right deadline
     /// is the operation's, not the client's: a pod create waits on a boot the
@@ -436,64 +299,17 @@ impl HttpClient {
         body: &[u8],
         within: Duration,
     ) -> Result<(u16, Vec<u8>)> {
-        match self {
-            HttpClient::Plain(agent) => {
-                // ureq's typestate gives GET and POST builders distinct
-                // types (`WithoutBody` / `WithBody`), so the two must stay
-                // in separate branches rather than a common `let` binding.
-                let result = if method == reqwest::Method::GET {
-                    let mut req = agent.get(url).config().timeout_global(Some(within)).build();
-                    for (key, value) in headers {
-                        req = req.header(key, value);
-                    }
-                    req.call()
-                } else {
-                    let mut req = agent
-                        .post(url)
-                        .config()
-                        .timeout_global(Some(within))
-                        .build();
-                    for (key, value) in headers {
-                        req = req.header(key, value);
-                    }
-                    req.send(body)
-                };
-                match result {
-                    Ok(mut resp) => {
-                        let status = resp.status().as_u16();
-                        let mut buf = Vec::new();
-                        std::io::Read::read_to_end(&mut resp.body_mut().as_reader(), &mut buf)?;
-                        Ok((status, buf))
-                    }
-                    Err(ureq::Error::StatusCode(status)) => Ok((status, Vec::new())),
-                    Err(e) => Err(e.into()),
-                }
-            }
-            HttpClient::Mtls(client) => {
-                let mut req = client.request(method, url).timeout(within);
-                for (key, value) in headers {
-                    req = req.header(key.as_str(), value.as_str());
-                }
-                if !body.is_empty() {
-                    req = req.body(body.to_vec());
-                }
-                let resp = req.send().await?;
-                let status = resp.status().as_u16();
-                let bytes = resp.bytes().await?.to_vec();
-                Ok((status, bytes))
-            }
+        let mut req = self.0.request(method, url).timeout(within);
+        for (key, value) in headers {
+            req = req.header(key.as_str(), value.as_str());
         }
-    }
-}
-
-/// Signs `body` with HMAC when `secret` is present (the HMAC default); no
-/// headers at all when it's `None` (mTLS mode — the client certificate
-/// presented during the TLS handshake is the credential, and the node's
-/// SPIFFE branch never looks at these headers).
-fn maybe_sign(secret: Option<&[u8]>, actor: &str, body: &[u8]) -> Vec<(String, String)> {
-    match secret {
-        Some(secret) => sign_http_headers(secret, Some(actor), body).headers,
-        None => Vec::new(),
+        if !body.is_empty() {
+            req = req.body(body.to_vec());
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        let bytes = resp.bytes().await?.to_vec();
+        Ok((status, bytes))
     }
 }
 
@@ -540,18 +356,11 @@ pub(crate) fn ensure_ok(status: u16, body: &[u8], what: &str) -> Result<()> {
     );
 }
 
-async fn health(client: &HttpClient, url: &str, secret: Option<&[u8]>, actor: &str) -> Result<()> {
+async fn health(client: &HttpClient, url: &str) -> Result<()> {
     let endpoint = format!("{url}/v1/health");
-    let headers = maybe_sign(secret, actor, b"");
 
     let (status, body) = client
-        .send(
-            reqwest::Method::GET,
-            &endpoint,
-            &headers,
-            b"",
-            REQUEST_TIMEOUT,
-        )
+        .send(reqwest::Method::GET, &endpoint, &[], b"", REQUEST_TIMEOUT)
         .await
         .context("Health check failed")?;
     ensure_ok(status, &body, "Health check")?;
@@ -560,23 +369,11 @@ async fn health(client: &HttpClient, url: &str, secret: Option<&[u8]>, actor: &s
     Ok(())
 }
 
-async fn list_pods(
-    client: &HttpClient,
-    url: &str,
-    secret: Option<&[u8]>,
-    actor: &str,
-) -> Result<()> {
+async fn list_pods(client: &HttpClient, url: &str) -> Result<()> {
     let endpoint = format!("{url}/v1/pods");
-    let headers = maybe_sign(secret, actor, b"");
 
     let (status, body) = client
-        .send(
-            reqwest::Method::GET,
-            &endpoint,
-            &headers,
-            b"",
-            REQUEST_TIMEOUT,
-        )
+        .send(reqwest::Method::GET, &endpoint, &[], b"", REQUEST_TIMEOUT)
         .await
         .context("List pods failed")?;
     ensure_ok(status, &body, "List pods")?;
@@ -588,8 +385,6 @@ async fn list_pods(
 async fn create_pod(
     client: &HttpClient,
     url: &str,
-    secret: Option<&[u8]>,
-    actor: &str,
     spec_file: &PathBuf,
     parent_pod_id: Option<&str>,
 ) -> Result<()> {
@@ -605,8 +400,7 @@ async fn create_pod(
 
     let body = serde_json::to_string(&spec)?;
 
-    let mut headers = maybe_sign(secret, actor, body.as_bytes());
-    headers.push(("content-type".to_string(), "application/json".to_string()));
+    let mut headers = vec![("content-type".to_string(), "application/json".to_string())];
     if let Some(parent) = parent_pod_id {
         headers.push(("x-nucleus-parent-pod-id".to_string(), parent.to_string()));
     }
@@ -627,24 +421,11 @@ async fn create_pod(
     Ok(())
 }
 
-async fn cancel_pod(
-    client: &HttpClient,
-    url: &str,
-    secret: Option<&[u8]>,
-    actor: &str,
-    pod_id: &str,
-) -> Result<()> {
+async fn cancel_pod(client: &HttpClient, url: &str, pod_id: &str) -> Result<()> {
     let endpoint = format!("{url}/v1/pods/{pod_id}/cancel");
-    let headers = maybe_sign(secret, actor, b"");
 
     let (status, resp_body) = client
-        .send(
-            reqwest::Method::POST,
-            &endpoint,
-            &headers,
-            b"",
-            REQUEST_TIMEOUT,
-        )
+        .send(reqwest::Method::POST, &endpoint, &[], b"", REQUEST_TIMEOUT)
         .await
         .context("Cancel pod failed")?;
     match status {
@@ -662,111 +443,40 @@ async fn cancel_pod(
 async fn stream_logs(
     client: &HttpClient,
     url: &str,
-    secret: Option<&[u8]>,
-    actor: &str,
     pod_id: &str,
     follow: bool,
     offset: u64,
 ) -> Result<()> {
     let endpoint = format!("{url}/v1/pods/{pod_id}/logs?follow={follow}&offset={offset}");
-    let headers = maybe_sign(secret, actor, b"");
 
-    // Genuinely branches per backend rather than going through
-    // `HttpClient::send`: a `--follow`ed stream can run indefinitely, so it
-    // needs a real streaming read, not a buffered body.
-    match client {
-        HttpClient::Plain(agent) => {
-            let mut req = agent.get(&endpoint);
-            for (key, value) in &headers {
-                req = req.header(key, value);
-            }
-            match req.call() {
-                Ok(response) => {
-                    let reader = BufReader::new(response.into_body().into_reader());
-                    for line in reader.lines() {
-                        match line {
-                            Ok(text) => {
-                                println!("{text}");
-                                std::io::stdout().flush().ok();
-                            }
-                            Err(e) => {
-                                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                                    break;
-                                }
-                                return Err(e.into());
-                            }
-                        }
-                    }
-                    Ok(())
-                }
-                Err(ureq::Error::StatusCode(404)) => bail!("Pod {pod_id} not found"),
-                Err(ureq::Error::StatusCode(status)) => {
-                    bail!("Stream logs failed with status {status}")
-                }
-                Err(e) => bail!("Stream logs failed: {e}"),
-            }
-        }
-        HttpClient::Mtls(reqwest_client) => {
-            let mut req = reqwest_client.get(&endpoint);
-            for (key, value) in &headers {
-                req = req.header(key.as_str(), value.as_str());
-            }
-            let mut resp = req.send().await.context("Stream logs failed")?;
-            match resp.status().as_u16() {
-                404 => bail!("Pod {pod_id} not found"),
-                s if s >= 300 => bail!("Stream logs failed with status {s}"),
-                _ => {}
-            }
-            // Lines are not guaranteed to align with chunk boundaries, so
-            // buffer across chunks and only print complete lines.
-            let mut pending = Vec::new();
-            while let Some(chunk) = resp.chunk().await? {
-                pending.extend_from_slice(&chunk);
-                while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
-                    let line: Vec<u8> = pending.drain(..=pos).collect();
-                    let text = String::from_utf8_lossy(&line[..line.len() - 1]);
-                    println!("{text}");
-                    std::io::stdout().flush().ok();
-                }
-            }
-            if !pending.is_empty() {
-                println!("{}", String::from_utf8_lossy(&pending));
-            }
-            Ok(())
+    // Not through `HttpClient::send`: a `--follow`ed stream can run
+    // indefinitely, so it needs a real streaming read, not a buffered body.
+    let mut resp = client
+        .0
+        .get(&endpoint)
+        .send()
+        .await
+        .context("Stream logs failed")?;
+    match resp.status().as_u16() {
+        404 => bail!("Pod {pod_id} not found"),
+        s if s >= 300 => bail!("Stream logs failed with status {s}"),
+        _ => {}
+    }
+    // Lines are not guaranteed to align with chunk boundaries, so
+    // buffer across chunks and only print complete lines.
+    let mut pending = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        pending.extend_from_slice(&chunk);
+        while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=pos).collect();
+            let text = String::from_utf8_lossy(&line[..line.len() - 1]);
+            println!("{text}");
+            std::io::stdout().flush().ok();
         }
     }
-}
-
-fn sign_request(secret: &[u8], actor: &str, method: &str, body: Option<&str>) -> Result<()> {
-    let body_bytes = body.map(|b| b.as_bytes()).unwrap_or(b"");
-    let signed = sign_http_headers(secret, Some(actor), body_bytes);
-
-    println!("# Signed headers for {} request", method.to_uppercase());
-    println!("# Timestamp: {}", signed.timestamp);
-    println!();
-    for (key, value) in &signed.headers {
-        println!("{key}: {value}");
+    if !pending.is_empty() {
+        println!("{}", String::from_utf8_lossy(&pending));
     }
-
-    if let Some(body_str) = body {
-        println!();
-        println!("# Body:");
-        println!("{body_str}");
-    }
-
-    println!();
-    println!("# Example curl:");
-    let mut curl = format!("curl -X {}", method.to_uppercase());
-    for (key, value) in &signed.headers {
-        curl.push_str(&format!(" \\\n  -H '{key}: {value}'"));
-    }
-    if body.is_some() {
-        curl.push_str(" \\\n  -H 'Content-Type: application/json'");
-        curl.push_str(" \\\n  -d '<body>'");
-    }
-    curl.push_str(" \\\n  <url>");
-    println!("{curl}");
-
     Ok(())
 }
 
@@ -799,39 +509,27 @@ mod tests {
     /// over the client's default on BOTH transports, or passing a longer one for
     /// `create` changes nothing.
     ///
-    /// Driven red: dropping the per-request `timeout_global`/`timeout` in `send`
-    /// fails both halves at the one-second client default.
+    /// Driven red: dropping the per-request `timeout` in `send` fails it at the
+    /// one-second client default.
     #[tokio::test]
     async fn an_operations_deadline_outlasts_the_clients_default() {
         let url = slow_node(Duration::from_millis(1500));
         let short = Duration::from_secs(1);
         let long = Duration::from_secs(10);
 
-        let plain = HttpClient::Plain(
-            ureq::Agent::config_builder()
-                .timeout_global(Some(short))
-                .build()
-                .into(),
-        );
-        let (status, _) = plain
-            .send(reqwest::Method::POST, &url, &[], b"{}", long)
-            .await
-            .expect("the plain transport must honour the operation's deadline");
-        assert_eq!(status, 200);
-
         // `rustls-no-provider`: the client refuses to build without one, whichever
         // test in this binary happens to run first.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let mtls = HttpClient::Mtls(reqwest::Client::builder().timeout(short).build().unwrap());
-        let (status, _) = mtls
+        let client = HttpClient(reqwest::Client::builder().timeout(short).build().unwrap());
+        let (status, _) = client
             .send(reqwest::Method::POST, &url, &[], b"{}", long)
             .await
-            .expect("the mTLS transport must honour the operation's deadline");
+            .expect("the transport must honour the operation's deadline");
         assert_eq!(status, 200);
 
         // Non-vacuity: the server really is slower than the short deadline.
         assert!(
-            plain
+            client
                 .send(reqwest::Method::GET, &url, &[], b"", short)
                 .await
                 .is_err(),
@@ -863,46 +561,12 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_load_secret_from_file() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secrets.env");
-
-        let mut file = fs::File::create(&path).unwrap();
-        writeln!(file, "NUCLEUS_NODE_AUTH_SECRET=deadbeef").unwrap();
-        writeln!(file, "OTHER_SECRET=cafebabe").unwrap();
-
-        // Secret is returned as the hex string bytes (not decoded)
-        let secret = load_secret_from_file(&path, "NUCLEUS_NODE_AUTH_SECRET").unwrap();
-        assert_eq!(secret, b"deadbeef".to_vec());
-
-        let other = load_secret_from_file(&path, "OTHER_SECRET").unwrap();
-        assert_eq!(other, b"cafebabe".to_vec());
-    }
-
-    #[test]
-    fn test_missing_key_in_file() {
-        use std::io::Write;
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("secrets.env");
-
-        let mut file = fs::File::create(&path).unwrap();
-        writeln!(file, "OTHER_KEY=value").unwrap();
-
-        let result = load_secret_from_file(&path, "NUCLEUS_NODE_AUTH_SECRET");
-        assert!(result.is_err());
-    }
-
     // ── mTLS (Move A step 5) ────────────────────────────────────────────────
 
     fn base_args() -> NodeArgs {
         NodeArgs {
             apple_host_config: None,
             url: Some("https://127.0.0.1:0".to_string()),
-            secrets_file: None,
-            auth_secret: None,
-            actor: "test-cli".to_string(),
             tls_cert: None,
             tls_key: None,
             trust_bundle: None,
@@ -970,39 +634,48 @@ mod tests {
         assert!(load_mtls_config(&args).unwrap().is_none());
     }
 
+    /// #3294: with no identity, the CLI says so and stops. It used to fall
+    /// back to an HMAC secret from `--auth-secret`, a secrets file or the
+    /// Keychain, which the node had stopped reading.
     #[test]
-    fn resolve_auth_delegates_to_load_auth_secret_when_mtls_is_not_configured() {
-        // Not "must error": this machine's own macOS Keychain may genuinely
-        // hold a `node-auth-secret` from an earlier `nucleus setup` run (it
-        // does, on the machine this was developed on), and clearing that as
-        // a test side effect would be a much bigger footgun than the
-        // property actually worth asserting here -- that `resolve_auth`
-        // does NOT short-circuit to `None` for the plaintext default, it
-        // defers entirely to `load_auth_secret`. Same explicit secret in
-        // both calls makes the two paths deterministically comparable
-        // regardless of what else is reachable in this environment.
-        let mut args = base_args();
-        args.auth_secret = Some("deadbeef".to_string());
-
-        let via_resolve = resolve_auth(&args).unwrap();
-        let via_load = load_auth_secret(&args).unwrap();
-        assert_eq!(via_resolve, Some(via_load));
+    fn create_client_refuses_without_an_identity() {
+        let Err(error) = create_client(&base_args()) else {
+            panic!("a client with no identity must be refused");
+        };
+        let error = format!("{error:#}");
+        assert!(error.contains("nucleus setup"), "{error}");
+        assert!(error.contains("--tls-cert"), "{error}");
     }
 
+    /// #3294: the shared-secret flags are gone, not ignored. An old script
+    /// passing one fails at parse time instead of reaching the node unsigned.
     #[test]
-    fn resolve_auth_is_none_when_mtls_is_configured_even_without_a_secret() {
-        let mut args = base_args();
-        args.tls_cert = Some(PathBuf::from("/does/not/matter/for/this/check.pem"));
-        args.tls_key = Some(PathBuf::from("/does/not/matter/for/this/check.pem"));
-        args.trust_bundle = Some(PathBuf::from("/does/not/matter/for/this/check.pem"));
-        assert!(matches!(resolve_auth(&args), Ok(None)));
+    fn the_shared_secret_flags_and_sign_are_gone() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: NodeArgs,
+        }
+        for retired in [
+            vec!["node", "--auth-secret", "deadbeef", "health"],
+            vec!["node", "--secrets-file", "/tmp/secrets.env", "health"],
+            vec!["node", "--actor", "someone", "health"],
+            vec!["node", "sign"],
+        ] {
+            assert!(
+                Parse::try_parse_from(retired.iter().copied()).is_err(),
+                "{retired:?} still parses"
+            );
+        }
+        assert!(Parse::try_parse_from(["node", "health"]).is_ok());
     }
 
     /// Each of the three flags alone -- and any two of three -- must be
-    /// refused, not silently treated as "no mTLS" (which would downgrade to
-    /// plaintext-equivalent HMAC-only behavior on what looks like a
-    /// half-completed mTLS setup) or as "mTLS enabled" (which would attempt
-    /// to load files that were never fully specified).
+    /// refused, not silently treated as "no mTLS" (which would hide what
+    /// looks like a half-completed mTLS setup behind a generic "no identity")
+    /// or as "mTLS enabled" (which would attempt to load files that were never
+    /// fully specified).
     #[test]
     fn load_mtls_config_refuses_a_partial_flag_set() {
         let combos: &[(bool, bool, bool)] = &[
@@ -1130,13 +803,7 @@ mod tests {
         args.trust_bundle = Some(bundle_path);
 
         let agent = create_client(&args).unwrap();
-        let secret = resolve_auth(&args).unwrap();
-        assert!(
-            secret.is_none(),
-            "mTLS mode must not require an HMAC secret"
-        );
-
-        health(&agent, args.url(), secret.as_deref(), &args.actor)
+        health(&agent, args.url())
             .await
             .expect("a real mTLS handshake against the SAME CA must succeed");
 
@@ -1228,9 +895,7 @@ mod tests {
         args.trust_bundle = Some(bundle_path);
 
         let agent = create_client(&args).unwrap();
-        let secret = resolve_auth(&args).unwrap();
-
-        let result = health(&agent, args.url(), secret.as_deref(), &args.actor).await;
+        let result = health(&agent, args.url()).await;
         assert!(
             result.is_err(),
             "a server certificate from an unrelated CA must be refused, \
@@ -1304,7 +969,7 @@ mod tests {
         args.trust_bundle = Some(bundle_path);
 
         let agent = create_client(&args).unwrap();
-        let result = health(&agent, args.url(), None, &args.actor).await;
+        let result = health(&agent, args.url()).await;
         assert!(
             result.is_err(),
             "a pod's certificate from the node's own CA must not be taken for the node"

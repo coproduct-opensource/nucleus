@@ -257,6 +257,13 @@ pub async fn execute(args: SetupArgs, config_path: &str) -> Result<()> {
     println!("\nSetting up secrets...");
     setup_secrets(&args)?;
 
+    // An earlier setup wrote the node's retired API secret into node.env.
+    // Nothing reads it any more; take it out even when this run will not
+    // rewrite the file (`--skip-artifacts`), and say so (#3294).
+    if let Some(host) = tier2_host_for(&args, &platform) {
+        provision::scrub_retired_node_env(&host)?;
+    }
+
     // Step 4: Install everything the host needs to actually launch a pod.
     //
     // This step did not exist on macOS. It printed instructions naming a script
@@ -659,6 +666,12 @@ fn setup_secrets(args: &SetupArgs) -> Result<()> {
     #[cfg(target_os = "macos")]
     println!("   `nucleus` needs approving once. Setup waits here until you answer.)");
 
+    for account in keychain::RETIRED_ACCOUNTS {
+        if SecretStore::delete_retired(account)? {
+            println!("  Removed retired secret: {account} (nothing reads it any more)");
+        }
+    }
+
     for kind in SecretKind::all() {
         let exists = SecretStore::exists(*kind)?;
 
@@ -744,8 +757,9 @@ async fn provision_tier2_host(
 
     // The secrets already exist — `setup_secrets` created them a step ago, and
     // on an existing install they predate this run. They were simply never
-    // handed to the node, which is why its unit could not start it.
-    let auth = secret_hex(SecretKind::NodeAuthSecret)?;
+    // handed to the node, which is why its unit could not start it. There is
+    // no node API secret among them: the node's API is mTLS-only (Move B), so
+    // the CLI reaches it with the identity minted below (#3294).
     let proxy = secret_hex(SecretKind::ProxyAuthSecret)?;
     let approval = secret_hex(SecretKind::ApprovalSecret)?;
     // A fresh canary per setup. It is not a stored secret: it exists only so the
@@ -776,19 +790,16 @@ async fn provision_tier2_host(
          fallback to opt out of.)"
     );
 
-    provision::install_node_service(
-        &host,
-        &provision::node_env_body(&auth, &proxy, &approval, &canary),
-    )?;
+    provision::install_node_service(&host, &provision::node_env_body(&proxy, &approval, &canary))?;
 
     Ok(())
 }
 
-/// A stored secret in the encoding the rest of the CLI signs with.
+/// A stored secret hex-encoded, the form the node reads from `node.env`.
 ///
-/// `run.rs` and `node.rs` both use `hex::encode`; the node must be started with
-/// the same string or every signed request fails in a way that reads like clock
-/// skew rather than an encoding mismatch.
+/// Anything else that signs with the same secret must use `hex::encode` too, or
+/// every signed request fails in a way that reads like clock skew rather than
+/// an encoding mismatch.
 fn secret_hex(kind: SecretKind) -> Result<String> {
     let raw = SecretStore::get(kind)?.ok_or_else(|| {
         anyhow!(

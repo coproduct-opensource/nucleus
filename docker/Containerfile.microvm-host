@@ -153,12 +153,12 @@ RUN ["/usr/local/bin/nucleus-hostctl", "input-manifest", "--out", "/usr/share/nu
 # microvm_host tests red on one that does not.
 #
 # SPIKE ONLY: the HMAC secrets below are fixed dev values baked into the image.
-# A real host tier generates them per install (provision.rs does).
+# A real host tier generates them per install (provision.rs does). There is no
+# node API secret: the node's API is mTLS-only and reads none (#3294).
 ENV NUCLEUS_NODE_LISTEN=0.0.0.0:8080 \
     NUCLEUS_NODE_STATE_DIR=/srv/state \
     NUCLEUS_NODE_DRIVER=firecracker \
     NUCLEUS_NODE_BROKER_ENFORCING=true \
-    NUCLEUS_NODE_AUTH_SECRET=00000000000000000000000000000000000000000000000000000000000000a1 \
     NUCLEUS_NODE_PROXY_AUTH_SECRET=00000000000000000000000000000000000000000000000000000000000000a2 \
     NUCLEUS_NODE_PROXY_APPROVAL_SECRET=00000000000000000000000000000000000000000000000000000000000000a3 \
     NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=/srv/state/wapi.sock \

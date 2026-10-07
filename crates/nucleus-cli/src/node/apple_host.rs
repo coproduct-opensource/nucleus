@@ -8,8 +8,6 @@ use crate::microvm_host::settings;
 pub(super) fn apply_default(args: &mut NodeArgs, config: &crate::config::Config) {
     if args.apple_host_config.is_none()
         && args.url.is_none()
-        && args.secrets_file.is_none()
-        && args.auth_secret.is_none()
         && args.tls_cert.is_none()
         && args.tls_key.is_none()
         && args.trust_bundle.is_none()
@@ -59,14 +57,7 @@ mod tests {
             ordinary.args.apple_host_config,
             config.node.apple_host_config
         );
-        for option in [
-            "--url",
-            "--tls-cert",
-            "--tls-key",
-            "--trust-bundle",
-            "--secrets-file",
-            "--auth-secret",
-        ] {
+        for option in ["--url", "--tls-cert", "--tls-key", "--trust-bundle"] {
             let mut selected =
                 Parse::try_parse_from(["node", option, "explicit", "health"]).unwrap();
             apply_default(&mut selected.args, &config);
@@ -97,14 +88,7 @@ mod tests {
             ordinary.args.apple_host_config.unwrap().to_str(),
             Some("host.json")
         );
-        for option in [
-            "--url",
-            "--tls-cert",
-            "--tls-key",
-            "--trust-bundle",
-            "--secrets-file",
-            "--auth-secret",
-        ] {
+        for option in ["--url", "--tls-cert", "--tls-key", "--trust-bundle"] {
             assert!(
                 Parse::try_parse_from([
                     "node",
