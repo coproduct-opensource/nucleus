@@ -1,8 +1,10 @@
 //! Release Firecracker capacity only after observing process exit and cleanup.
+use std::path::Path;
 use std::sync::atomic::Ordering;
 
 use crate::{
-    ApiError, FirecrackerPod, PodState, Stop, egress_link, firecracker_config, net, pod_receipt,
+    ApiError, FirecrackerPod, PodState, Stop, egress_link, firecracker_config, jail_reclaim, net,
+    pod_receipt,
 };
 
 /// Only `stopped` constructs this witness, while holding the process lock.
@@ -87,10 +89,22 @@ impl StoppedVm<'_> {
             group.cleanup().await?;
         }
         placement.take();
-        if let Some(layout) = pod.jail.lock().await.take() {
+        let mut jail = pod.jail.lock().await;
+        // The jailer creates the VMM's cgroup and never removes it, so each jailed pod used to
+        // leave an empty `<cgroup root>/<exec>/<id>` behind. The VMM has exited (this is a
+        // `StoppedVm`); a leaf that will not go keeps the jail held, so teardown is retried.
+        if let Some(dir) = jail.as_ref().and_then(|layout| {
+            jail_reclaim::jailer_cgroup_dir(Path::new(jail_reclaim::CGROUP_ROOT), layout)
+        }) {
+            jail_reclaim::remove_cgroup_leaf(&dir)
+                .await
+                .map_err(ApiError::Io)?;
+        }
+        if let Some(layout) = jail.take() {
             pod_receipt::preserve_exit_report(&layout, &pod.pod_dir);
             firecracker_config::cleanup_jail(&layout);
         }
+        drop(jail);
         // Both the VMM exit and fallible cleanup have completed. The aggregate
         // capacity reservation is released by PodHandle after this returns.
         pod.permit.lock().await.take();

@@ -16,7 +16,12 @@ pub(crate) async fn create(
     let state = state.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        let result = crate::create_pod_internal(&state, spec, parent, raw, admission).await;
+        // The drain's gate (`node_drain::Intake`), held until the pod is registered or the
+        // launch has failed, so a shutdown cannot read the registry while this is in between.
+        let result = match state.intake.admit().await {
+            Ok(_admitted) => crate::create_pod_internal(&state, spec, parent, raw, admission).await,
+            Err(refused) => Err(refused),
+        };
         // If the receiver disappeared before or after send, dropping Delivery
         // schedules cleanup. Accepting it is the only successful handoff.
         let _ = send.send(Delivery {

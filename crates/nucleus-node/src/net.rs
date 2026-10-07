@@ -167,7 +167,7 @@ impl NetworkAllocator {
             .map_err(|_| ApiError::Driver("invalid network pool".to_string()))?;
 
         let short = short_id(pod_id);
-        let host_veth = format!("veth{short}");
+        let host_veth = host_veth_name(pod_id);
         let peer_veth = format!("vpeer{short}");
         let tap_name = format!("tap{short}");
         let bridge = format!("br{short}");
@@ -257,6 +257,23 @@ fn guest_subnet_cidr() -> String {
 
 pub fn netns_name(pod_id: Uuid) -> String {
     format!("nuc-{}", short_id(pod_id))
+}
+
+/// The host end of a pod's veth link. One function, because the allocator names it and the
+/// startup reclaim of a stranded pod (`reclaim_stranded_link`) must find it again.
+fn host_veth_name(pod_id: Uuid) -> String {
+    format!("veth{}", short_id(pod_id))
+}
+
+/// The processes in `name`'s network namespace, or `None` when there is no such namespace.
+pub(crate) async fn netns_pids(name: &str) -> Result<Option<Vec<i32>>, ApiError> {
+    cleanup::netns_pids(name).await
+}
+
+/// Release the host-namespace network a pod of a previous node life left behind: its
+/// host-link rules, host veth and namespace, confirmed by inventory. Its processes must be dead.
+pub(crate) async fn reclaim_stranded_link(pod_id: Uuid) -> Result<(), ApiError> {
+    cleanup::stranded(&netns_name(pod_id), &host_veth_name(pod_id)).await
 }
 
 /// Pure decision describing the network isolation a Firecracker pod requires.
