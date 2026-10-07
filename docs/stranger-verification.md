@@ -14,6 +14,10 @@ You need four things. None of them come from trusting the node:
 | The **reference manifest** | The release's assets | The release workflow's Sigstore signature, logged in public |
 | The **AK pin** | The operator, from the platform's authenticated API | The operator. This is the weakest input; see below |
 
+For worked examples, see [Release-journey evidence](evidence/README.md). It covers one `Attested`
+run on v2.6.0 and two `Unattested` runs on v2.5.0, each with the commands to re-check it
+against the published release assets.
+
 ## 1. Fetch and check the release's reference manifest
 
 Each release from this one on publishes, per architecture:
