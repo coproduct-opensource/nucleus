@@ -47,6 +47,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
+use crate::attestation::{ClaimedTier, NodeAttestation};
+
 /// The one algorithm this crate signs with. Written into every header by
 /// [`mint`]; `ci/alg-pin-check.sh` asserts it is the only signing algorithm
 /// declared in the crate.
@@ -158,6 +160,14 @@ pub struct AssertionClaims {
     nucleus_upstream: String,
     nucleus_root: String,
     nucleus_chain: String,
+    // The platform attestation claims (ADR 0012 A3). Always present: the
+    // constructor takes a `NodeAttestation`, never an `Option`, and none of
+    // these is skipped when serialized. Their names are
+    // `crate::attestation::ATTESTATION_CLAIMS`, which a test holds equal.
+    nucleus_att_tier: ClaimedTier,
+    nucleus_att_epoch: String,
+    nucleus_att_time: String,
+    nucleus_evidence_digest: String,
 }
 
 impl AssertionClaims {
@@ -168,6 +178,11 @@ impl AssertionClaims {
     /// Draws a fresh 128-bit `jti` every call. An assertion is never reused:
     /// a failed exchange re-mints, so a provider's single-use `jti` store
     /// never sees the same value twice from nucleus.
+    ///
+    /// `attestation` is what the node states about its platform: its own
+    /// appraisal of its current evidence, made for this mint
+    /// ([`NodeAttestation::of_current_evidence`]), or `unattested`. Required:
+    /// an assertion without the attestation claims cannot be built.
     pub fn new(
         subject: &AssertionSubject,
         issuer: &str,
@@ -175,6 +190,7 @@ impl AssertionClaims {
         upstream: &str,
         now_unix: u64,
         ttl: Duration,
+        attestation: &NodeAttestation,
     ) -> Result<Self, ClaimsError> {
         if !is_valid_issuer(issuer) {
             return Err(ClaimsError::Issuer);
@@ -185,6 +201,8 @@ impl AssertionClaims {
         if ttl.is_zero() || ttl > MAX_TTL {
             return Err(ClaimsError::Lifetime);
         }
+        let (nucleus_att_tier, nucleus_att_epoch, nucleus_att_time, nucleus_evidence_digest) =
+            attestation.claim_values();
         Ok(Self {
             iss: issuer.to_string(),
             sub: subject.pod_spiffe_id.clone(),
@@ -196,7 +214,16 @@ impl AssertionClaims {
             nucleus_upstream: upstream.to_string(),
             nucleus_root: subject.root_identity.clone(),
             nucleus_chain: subject.cert_fingerprint.clone(),
+            nucleus_att_tier,
+            nucleus_att_epoch,
+            nucleus_att_time,
+            nucleus_evidence_digest,
         })
+    }
+
+    /// `nucleus_att_tier` — the platform tier this assertion states.
+    pub fn attestation_tier(&self) -> ClaimedTier {
+        self.nucleus_att_tier
     }
 
     /// `iss` — recorded on the receipt.

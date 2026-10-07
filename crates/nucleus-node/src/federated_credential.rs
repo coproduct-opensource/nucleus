@@ -83,7 +83,8 @@ use std::time::Duration;
 
 use nucleus_cred_broker::{Credential, CredentialStore};
 use nucleus_federation::{
-    AssertionClaims, AssertionSubject, CurrentSigner, ExchangeError, ExchangedToken, TokenRequest,
+    AssertionClaims, AssertionSubject, CurrentSigner, ExchangeError, ExchangedToken,
+    NodeAttestation, TokenRequest,
 };
 
 use crate::broker::Approved;
@@ -117,6 +118,16 @@ pub fn cache_expiry(now: u64, expires_in: Option<u64>, cert_not_after: u64) -> O
     (expires_at > now).then_some(expires_at)
 }
 
+/// Where each assertion's platform claims come from (ADR 0012 A3).
+///
+/// Asked once per mint, at the mint time: the answer is the node's appraisal
+/// of the evidence in force NOW, never a value kept from an earlier mint.
+/// Implemented by `node_evidence::NodePlatformSource`.
+pub trait PlatformAttestation: Send + Sync {
+    /// What an assertion minted at `now` (Unix seconds) states.
+    fn attestation_now(&self, now: u64) -> NodeAttestation;
+}
+
 /// The node's federation issuer: who signs, under which `iss`, over which
 /// client. One per node, shared by every pod's [`PodCredentials`]; it holds no
 /// token and no per-pod state, so sharing it shares nothing between pods.
@@ -129,6 +140,12 @@ pub struct FederatedSource {
     signer: Arc<dyn CurrentSigner>,
     issuer: String,
     http: reqwest::Client,
+    /// The node's platform, attached once the attester has started (it starts
+    /// after the issuer, because its first quote binds the issuer's JWKS).
+    /// Until then, and on a node that never attaches one, every assertion
+    /// states `unattested`: an absent source is "could not look", never a
+    /// pass (ADR 0007 A-2).
+    platform: std::sync::OnceLock<Arc<dyn PlatformAttestation>>,
 }
 
 impl fmt::Debug for FederatedSource {
@@ -168,12 +185,39 @@ impl FederatedSource {
             signer,
             issuer,
             http,
+            platform: std::sync::OnceLock::new(),
         })
     }
 
     /// The `iss` every assertion carries.
     pub fn issuer(&self) -> &str {
         &self.issuer
+    }
+
+    /// Attach the node's platform, once.
+    ///
+    /// # Errors
+    /// A platform is already attached: a second one would make which source
+    /// an assertion's tier came from depend on start-up order.
+    pub fn attach_platform(&self, platform: Arc<dyn PlatformAttestation>) -> Result<(), String> {
+        self.platform
+            .set(platform)
+            .map_err(|_| "a platform attestation source is already attached".to_string())
+    }
+
+    /// What an assertion minted at `now` states about the platform. Run off
+    /// the async executor: it reads and appraises the evidence in force.
+    async fn attestation_now(&self, now: u64) -> NodeAttestation {
+        let Some(platform) = self.platform.get().map(Arc::clone) else {
+            return NodeAttestation::without_evidence(
+                "no platform attestation source is attached to the federation issuer",
+            );
+        };
+        tokio::task::spawn_blocking(move || platform.attestation_now(now))
+            .await
+            .unwrap_or_else(|e| {
+                NodeAttestation::without_evidence(format!("platform appraisal failed: {e}"))
+            })
     }
 }
 
@@ -307,6 +351,8 @@ impl PodFederation {
             .ok_or(RefillError::AuthorityExpired)?;
         // The assertion does not outlive the authority it speaks for either.
         let ttl = up.assertion_ttl.min(Duration::from_secs(remaining));
+        // The platform as of THIS mint: appraised now, never carried over.
+        let attestation = self.source.attestation_now(now).await;
         let claims = AssertionClaims::new(
             &self.subject.assertion,
             &self.source.issuer,
@@ -314,9 +360,19 @@ impl PodFederation {
             &up.name,
             now,
             ttl,
+            &attestation,
         )
         .map_err(|_| RefillError::Claims)?;
         let jti = claims.jti().to_string();
+        tracing::info!(
+            target: "nucleus_node::federation",
+            pod = self.subject.pod_spiffe_id(),
+            upstream = %up.name,
+            jti = %jti,
+            tier = %attestation.tier(),
+            why = attestation.note(),
+            "assertion platform claims"
+        );
         // The key as of THIS assertion. Only the current key is ever handed
         // out; a staged key is published but never selected here.
         let signer = Arc::clone(&self.source.signer)
@@ -589,6 +645,29 @@ mod tests {
                 prop_assert!(end.is_none_or(|e| e <= now.saturating_add(CACHE_MARGIN_SECS)));
             }
         }
+    }
+
+    /// ADR 0012 A3: the profile quotes the relying party's condition and the
+    /// runbook's provider recipe is the condition for one upstream, verbatim.
+    /// Here rather than in `nucleus-federation`, whose test gate does not read
+    /// `docs/`; that crate evaluates both strings with a CEL implementation.
+    #[test]
+    fn the_docs_quote_the_tested_relying_party_condition() {
+        let doc = |name: &str| {
+            std::fs::read_to_string(format!("{}/../../docs/{name}", env!("CARGO_MANIFEST_DIR")))
+                .expect("the doc exists")
+        };
+        let condition = nucleus_federation::RELYING_PARTY_CONDITION;
+        assert!(
+            doc("federated-upstream-profile.md").contains(condition),
+            "the profile does not quote RELYING_PARTY_CONDITION:\n{condition}"
+        );
+        let recipe = nucleus_federation::relying_party_condition_for("model-api");
+        assert!(
+            doc("federation-issuer-runbook.md")
+                .contains(&format!("--attribute-condition=\"{recipe}\"")),
+            "the runbook's provider recipe is not the tested condition:\n{recipe}"
+        );
     }
 
     #[test]
@@ -1291,6 +1370,116 @@ policy_id = "example-policy-0001"
         assert_eq!(jtis.len(), 4, "a jti was presented twice");
         let compacts: HashSet<&String> = presented.iter().map(|(a, _)| a).collect();
         assert_eq!(compacts.len(), 4, "an assertion was presented twice");
+    }
+
+    /// The live run's epoch-4 evidence and its inputs (#2706), for a platform
+    /// that appraises to `attested` at [`FIXTURE_MINT`].
+    fn fixture(name: &str) -> Vec<u8> {
+        std::fs::read(format!(
+            "{}/../nucleus-node-evidence/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("fixture")
+    }
+    const FIXTURE_MINT: u64 = 1_791_247_262;
+
+    /// A platform that answers `attested` from the fixture the first time it
+    /// is asked and `unattested` every time after: it counts the asks, so a
+    /// tier carried over from an earlier mint shows up as a wrong claim.
+    struct Counting(AtomicUsize);
+
+    impl PlatformAttestation for Counting {
+        fn attestation_now(&self, now: u64) -> NodeAttestation {
+            if self.0.fetch_add(1, Ordering::SeqCst) > 0 {
+                return NodeAttestation::without_evidence("the boot state moved");
+            }
+            let doc: serde_json::Value =
+                serde_json::from_slice(&fixture("live-node-epoch4-evidence.json")).unwrap();
+            let binding = nucleus_node_evidence::KeyBinding {
+                executor_key: nucleus_node_evidence::ExecutorKey::Ed25519(
+                    hex::decode(doc["binding"]["executor_key"]["ed25519"].as_str().unwrap())
+                        .unwrap()
+                        .try_into()
+                        .unwrap(),
+                ),
+                federation: nucleus_node_evidence::Federation::NotFederated,
+            };
+            let reference: nucleus_node_evidence::ReferenceManifest =
+                serde_json::from_slice(&fixture("live-node-reference-exact.json")).unwrap();
+            let anchors = nucleus_node_evidence::AnchorPolicy {
+                trust_roots: vec![],
+                operator_pins: vec![nucleus_node_evidence::OperatorPin {
+                    source: doc["ak_anchor"]["operator_fetched"]["source"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                    ak_spki_sha256:
+                        "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366".into(),
+                }],
+            };
+            NodeAttestation::of_current_evidence(
+                &fixture("live-node-epoch4-evidence.json"),
+                Some(&nucleus_federation::SelfAppraisal {
+                    binding: &binding,
+                    reference: &reference,
+                    anchors: &anchors,
+                    max_age_secs: nucleus_federation::SelfAppraisal::max_age_for_epoch(300),
+                }),
+                i64::try_from(now).unwrap(),
+            )
+        }
+    }
+
+    /// **ADR 0012 A3: every assertion states the platform as of its own
+    /// mint.** Before a platform is attached the claim is `unattested` naming
+    /// nothing; once attached the platform is asked at EVERY mint (the token
+    /// is use-once here, so every call mints), and a platform that stops
+    /// vouching is reflected in the very next assertion. The four claims are
+    /// on every assertion.
+    #[tokio::test]
+    async fn every_assertion_states_the_platform_as_of_its_mint() {
+        let tokens = TokenEndpoint::start(None, Duration::ZERO, &[]).await;
+        let up = Upstream::start(&[]).await;
+        let src = source();
+        let pod = Pod::new(POD_A, &src, registry(&tokens, &up), FIXTURE_MINT + DAY);
+
+        assert!(pod.call("k0", FIXTURE_MINT).await.granted);
+        let platform = Arc::new(Counting(AtomicUsize::new(0)));
+        src.attach_platform(Arc::clone(&platform) as Arc<dyn PlatformAttestation>)
+            .unwrap();
+        assert!(
+            src.attach_platform(Arc::clone(&platform) as Arc<dyn PlatformAttestation>)
+                .is_err(),
+            "a second platform is refused"
+        );
+        assert!(pod.call("k1", FIXTURE_MINT).await.granted);
+        assert!(pod.call("k2", FIXTURE_MINT).await.granted);
+
+        let presented = tokens.assertions().await;
+        assert_eq!(
+            presented.len(),
+            3,
+            "a use-once token: one exchange per call"
+        );
+        assert_eq!(platform.0.load(Ordering::SeqCst), 2, "asked once per mint");
+        let claims: Vec<[&str; 4]> = presented
+            .iter()
+            .map(|(_, c)| {
+                nucleus_federation::ATTESTATION_CLAIMS
+                    .map(|k| c[k].as_str().unwrap_or_else(|| panic!("{k} omitted: {c}")))
+            })
+            .collect();
+        assert_eq!(claims[0], ["unattested", "none", "none", "none"]);
+        assert_eq!(
+            claims[1],
+            [
+                "attested",
+                "4",
+                "1791247232",
+                "d0689ce45219cf0e9e7827e0988c00a0a8545df93f773339734d92f44837bcab"
+            ]
+        );
+        assert_eq!(claims[2], ["unattested", "none", "none", "none"]);
     }
 
     /// **The PDP decides before anything is minted.** A refused request costs

@@ -873,6 +873,17 @@ async fn main() -> Result<(), ApiError> {
         )
         .map_err(ApiError::Driver)?,
     );
+    // Every federation assertion states the platform tier from the node's own
+    // appraisal of the evidence in force at the mint (ADR 0012 A3). Attached
+    // here because the attester's first quote binds the issuer's JWKS, so the
+    // issuer exists first; before this line nothing has minted.
+    if let Some(source) = authority.federation_source() {
+        source
+            .attach_platform(
+                Arc::clone(&node_platform) as Arc<dyn federated_credential::PlatformAttestation>
+            )
+            .map_err(ApiError::Driver)?;
+    }
     let state = NodeState {
         pods: Arc::new(Mutex::new(HashMap::new())),
         intake: node_drain::Intake::open(),

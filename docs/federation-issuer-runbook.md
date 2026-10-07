@@ -6,7 +6,7 @@ credentials are exchanged for (ADR 0010; the wire contract is
 keys and has a rule saying which assertions map to which of its principals. This runbook covers:
 
 1. publishing the issuer (static hosting, or an inline JWKS);
-2. the provider rule to register;
+2. the provider rule to register, and (2a) requiring an attested node;
 3. rotating the signing key without a refused assertion;
 4. what failure looks like.
 
@@ -101,6 +101,70 @@ It prints the matchers: exact `iss`, exact `aud` (the registry entry's
 Every pod on a node signs under the same `iss`. A rule on `iss` alone, or on a `sub` prefix,
 matches **every pod on the node** (THREAT_MODEL T05). Do not match on `sub`: it is a per-pod
 SPIFFE ID. The node's own mint decision is the real gate; the rule is a second one.
+
+## 2a. Requiring an attested node
+
+Every assertion states the node's platform tier and names the evidence epoch it rests on
+(`nucleus_att_tier`, `nucleus_att_epoch`, `nucleus_att_time`, `nucleus_evidence_digest`;
+profile §8, ADR 0012 addendum A3). The tier is the node's own appraisal of the evidence in
+force at each mint, so the node needs the same inputs a relying party would use:
+
+```bash
+nucleus-node … --node-evidence-tpm /dev/tpmrm0 \
+    --node-evidence-anchor operator:<source> \
+    --node-evidence-ak-pin <SHA-256 of the AK SubjectPublicKeyInfo, as fetched from <source>> \
+    --node-evidence-reference /etc/nucleus/node-reference.json
+```
+
+Without `--node-evidence-reference` every assertion says `unattested` (and still names the
+epoch). Without a TPM it says `unattested` and `none`. Both flags are flags only, never
+environment variables.
+
+**Before registering the issuer with a rule on the tier**, check that its keys are in the
+TPM, or the tier claim is worth nothing:
+
+```bash
+nucleus-audit verify-node-evidence --evidence <epoch evidence> --reference <reference> \
+    --executor-ed25519 <executor key> --federation <SHA-256 of the JWKS> \
+    --receipt-time "$(date +%s)" --operator-pin <source>=<pin> \
+    --jwks jwks.json --federation-key-attestation nucleus-federation-key-attestation.json
+```
+
+It must exit 0: `Attested`, and every key `tpm_bound`.
+
+**A workload-identity pool provider that evaluates CEL.** For example, with the `gcloud`
+CLI, a provider that issues a token only for a fresh `attested` assertion from one upstream
+entry (`model-api` here; the condition after the first `&&` is the profile's §8 condition,
+verbatim):
+
+```bash
+gcloud iam workload-identity-pools providers create-oidc nucleus-node-attested \
+    --project=PROJECT_ID --location=global --workload-identity-pool=POOL_ID \
+    --issuer-uri=https://federation.nodes.example.invalid \
+    --allowed-audiences=AUDIENCE_FROM_THE_REGISTRY_ENTRY \
+    --jwk-json-path=jwks.json \
+    --attribute-mapping="google.subject=assertion.sub,attribute.nucleus_upstream=assertion.nucleus_upstream,attribute.nucleus_tenant=assertion.nucleus_tenant,attribute.nucleus_att_tier=assertion.nucleus_att_tier,attribute.nucleus_att_epoch=assertion.nucleus_att_epoch,attribute.nucleus_evidence_digest=assertion.nucleus_evidence_digest" \
+    --attribute-condition="assertion.nucleus_upstream == 'model-api' && assertion.nucleus_att_tier == 'attested' && int(assertion.exp) - int(assertion.nucleus_att_time) <= 900 && int(assertion.nucleus_att_time) <= int(assertion.iat) + 60"
+```
+
+- `--jwk-json-path` registers the JWKS inline (the issuer need not resolve); drop it to use
+  discovery at `--issuer-uri`. After a key rotation, update it with
+  `gcloud iam workload-identity-pools providers update-oidc … --jwk-json-path=…`, after
+  re-running the `verify-node-evidence` check above on the new keys.
+- `900` is the relying party's choice of the oldest quote it accepts at the assertion's
+  `exp`. The node's own bound is `epoch + 30 + (exp − iat)`, 630 s with the defaults, so 900
+  leaves room for one late re-quote. Lower it to tighten; below 630 some honest assertions
+  are refused.
+- The provider refuses a token when the condition is not exactly true, including when it
+  cannot be evaluated, so an omitted claim refuses.
+- The mapped `attribute.nucleus_att_tier` can gate a second time in the IAM binding:
+  `--member="principalSet://iam.googleapis.com/projects/PROJECT_NUMBER/locations/global/workloadIdentityPools/POOL_ID/attribute.nucleus_att_tier/attested"`.
+- The access token the provider issues has its own lifetime (an hour by default). The
+  freshness bound holds at the exchange; the node re-exchanges per its cache rule (ADR 0010
+  §5), presenting a fresh assertion with the tier as of that mint.
+
+A provider that does not evaluate CEL can still match `nucleus_att_tier = attested` as an
+exact-string claim rule; it then has no age bound beyond the node's own 630 s.
 
 ## 3. Rotate the signing key
 

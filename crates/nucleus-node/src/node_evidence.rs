@@ -38,13 +38,14 @@ use nucleus_ci_verdict::execution::NodePlatform;
 use nucleus_federation::custody::KEY_ATTESTATION_STATE_FILE;
 use nucleus_federation::keyring::{Held, KeyDir};
 use nucleus_federation::{FileCustody, KeyCustody, TpmCustody, TpmEndpoint};
+use nucleus_federation::{NodeAttestation, SelfAppraisal};
 use nucleus_node_evidence::attester::{
     AkTemplate, Attester, DeviceTransport, LogSources, Tpm, default_pcrs,
 };
 use nucleus_node_evidence::{
-    AkAnchorClaim, AttestedKey, CustodyStatement, ExecutorKey, Federation,
-    FederationKeyAttestation, Freshness, KEY_ATTESTATION_PROFILE, KeyBinding, Nonce,
-    evidence_digest,
+    AkAnchorClaim, AnchorPolicy, AttestedKey, CustodyStatement, ExecutorKey, Federation,
+    FederationKeyAttestation, Freshness, KEY_ATTESTATION_PROFILE, KeyBinding, Nonce, OperatorPin,
+    ReferenceManifest, evidence_digest,
 };
 use tracing::{info, warn};
 
@@ -76,6 +77,20 @@ pub(crate) struct NodeEvidenceArgs {
     /// Seconds between epoch re-quotes.
     #[arg(long, env = "NUCLEUS_NODE_EVIDENCE_EPOCH_SECS", default_value_t = 300)]
     node_evidence_epoch_secs: u64,
+    /// The reference manifest (`nucleus-node-reference/v1`) this node
+    /// appraises its own evidence against, for the platform tier every
+    /// federation assertion states (ADR 0012 A3). Unset: no appraisal, and
+    /// every assertion states `unattested` while still naming the evidence.
+    /// A flag only, never an env var: it decides what the node may claim.
+    #[arg(long)]
+    node_evidence_reference: Option<PathBuf>,
+    /// SHA-256 (hex) of this node's AK SubjectPublicKeyInfo, as the operator
+    /// fetched it from the source `--node-evidence-anchor operator:<source>`
+    /// names. The node's own appraisal anchors its AK only under this pin, as
+    /// a relying party's would; without it the tier is `unattested`. A flag
+    /// only, never an env var.
+    #[arg(long, requires = "node_evidence_reference")]
+    node_evidence_ak_pin: Option<String>,
     /// Keep the federation issuer key in a file although this node has a TPM
     /// (ADR 0012). Without it, a node with `--node-evidence-tpm` creates its
     /// federation key in the TPM, bound to the boot PCRs, so a copied disk
@@ -226,6 +241,59 @@ fn parse_anchor(s: &str) -> Result<AkAnchorClaim, String> {
     }
 }
 
+/// What the node appraises its own evidence against (ADR 0012 A3): the
+/// operator's reference manifest and AK anchors, read once at start-up.
+pub(crate) struct OwnAppraisal {
+    reference: ReferenceManifest,
+    anchors: AnchorPolicy,
+}
+
+impl OwnAppraisal {
+    /// From the flags. `None` when no reference is configured.
+    ///
+    /// # Errors
+    /// An unreadable or unparsable reference; a pin that is not SHA-256 hex;
+    /// a pin with no `operator:<source>` anchor to name its source (a pin
+    /// that pins nothing is a misconfiguration, B-5).
+    fn from_args(args: &NodeEvidenceArgs, anchor: &AkAnchorClaim) -> Result<Option<Self>, String> {
+        let Some(path) = &args.node_evidence_reference else {
+            return Ok(None);
+        };
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("--node-evidence-reference {}: {e}", path.display()))?;
+        let reference: ReferenceManifest = serde_json::from_slice(&bytes)
+            .map_err(|e| format!("--node-evidence-reference {}: {e}", path.display()))?;
+        let operator_pins = match (&args.node_evidence_ak_pin, anchor) {
+            (None, _) => Vec::new(),
+            (Some(pin), AkAnchorClaim::OperatorFetched { source }) => {
+                if !is_digest(&pin.to_ascii_lowercase()) {
+                    return Err(format!(
+                        "--node-evidence-ak-pin {pin:?}: expected SHA-256 hex of the AK's SubjectPublicKeyInfo"
+                    ));
+                }
+                vec![OperatorPin {
+                    source: source.clone(),
+                    ak_spki_sha256: pin.to_ascii_lowercase(),
+                }]
+            }
+            (Some(_), _) => {
+                return Err(
+                    "--node-evidence-ak-pin needs --node-evidence-anchor operator:<source>: \
+                     a pin names the source the operator fetched the AK from"
+                        .into(),
+                );
+            }
+        };
+        Ok(Some(Self {
+            reference,
+            anchors: AnchorPolicy {
+                trust_roots: Vec::new(),
+                operator_pins,
+            },
+        }))
+    }
+}
+
 /// The epoch in force: the counter and the stored document's digest.
 #[derive(Clone, Debug)]
 struct Epoch {
@@ -246,6 +314,8 @@ pub(crate) struct TpmNode {
     store: PathBuf,
     latest: RwLock<Epoch>,
     epoch_secs: u64,
+    /// What the node appraises its own evidence against, if configured.
+    own_appraisal: Option<OwnAppraisal>,
     /// One challenge quote at a time; a second concurrent one is refused.
     challenge: tokio::sync::Semaphore,
 }
@@ -401,6 +471,49 @@ impl TpmNode {
         }
         std::fs::read(self.store.join(format!("{digest}.json"))).ok()
     }
+
+    /// The node's appraisal of the evidence in force at `now` (ADR 0012 A3):
+    /// the self-appraisal path every federation assertion's tier comes from.
+    /// Re-run for each mint; the epoch document is read back from the store
+    /// by the digest in force, so the tier is of the bytes a relying party
+    /// fetches by the same digest.
+    fn self_appraise(&self, now: u64) -> NodeAttestation {
+        let digest = match self.latest.read() {
+            Ok(e) => e.digest.clone(),
+            Err(_) => return NodeAttestation::without_evidence("epoch state unavailable"),
+        };
+        let Some(document) = self.stored(&digest) else {
+            return NodeAttestation::without_evidence(format!(
+                "the evidence in force ({digest}) cannot be read from the store"
+            ));
+        };
+        let Ok(now) = i64::try_from(now) else {
+            return NodeAttestation::without_evidence("the clock is out of range");
+        };
+        let Some(own) = &self.own_appraisal else {
+            return NodeAttestation::of_current_evidence(&document, None, now);
+        };
+        // The binding the node's quotes carry NOW: a quote taken before the
+        // JWKS changed no longer speaks for the keys, so it is refused and the
+        // tier is `unattested` until the next epoch.
+        let binding = match self.binding() {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, "own evidence not appraised: the binding cannot be read");
+                return NodeAttestation::of_current_evidence(&document, None, now);
+            }
+        };
+        NodeAttestation::of_current_evidence(
+            &document,
+            Some(&SelfAppraisal {
+                binding: &binding,
+                reference: &own.reference,
+                anchors: &own.anchors,
+                max_age_secs: SelfAppraisal::max_age_for_epoch(self.epoch_secs),
+            }),
+            now,
+        )
+    }
 }
 
 impl NodePlatformSource {
@@ -413,12 +526,26 @@ impl NodePlatformSource {
         federated: bool,
     ) -> Result<Self, String> {
         let Some(device) = &args.node_evidence_tpm else {
+            // A reference with no evidence to appraise configures nothing
+            // (B-5); the pin `requires` the reference, so this covers both.
+            if args.node_evidence_reference.is_some() {
+                return Err("--node-evidence-reference needs --node-evidence-tpm: \
+                     there is no evidence to appraise without a TPM attester"
+                    .into());
+            }
             return Ok(Self::Unattested(
                 "no TPM attester configured (--node-evidence-tpm is unset)".into(),
             ));
         };
         let template = parse_template(&args.node_evidence_ak_template)?;
         let anchor = parse_anchor(&args.node_evidence_anchor)?;
+        let own_appraisal = OwnAppraisal::from_args(args, &anchor)?;
+        if federated && own_appraisal.is_none() {
+            warn!(
+                "federation issuer with a TPM but no --node-evidence-reference: every assertion \
+                 states nucleus_att_tier=unattested (it still names the evidence epoch)"
+            );
+        }
         if args.node_evidence_epoch_secs == 0 {
             return Err("--node-evidence-epoch-secs must be positive".into());
         }
@@ -463,6 +590,7 @@ impl NodePlatformSource {
                 digest: String::new(),
             }),
             epoch_secs: args.node_evidence_epoch_secs,
+            own_appraisal,
             challenge: tokio::sync::Semaphore::new(1),
         });
         let first = node.advance_epoch()?;
@@ -523,6 +651,15 @@ impl NodePlatformSource {
                     reason: "epoch state unavailable (lock poisoned)".into(),
                 },
             },
+        }
+    }
+}
+
+impl crate::federated_credential::PlatformAttestation for NodePlatformSource {
+    fn attestation_now(&self, now: u64) -> NodeAttestation {
+        match self {
+            Self::Unattested(reason) => NodeAttestation::without_evidence(reason.clone()),
+            Self::Tpm(node) => node.self_appraise(now),
         }
     }
 }
@@ -677,6 +814,8 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            node_evidence_reference: None,
+            node_evidence_ak_pin: None,
             allow_federation_key_in_file: false,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -697,6 +836,8 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            node_evidence_reference: None,
+            node_evidence_ak_pin: None,
             allow_federation_key_in_file: false,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -711,6 +852,8 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            node_evidence_reference: None,
+            node_evidence_ak_pin: None,
             allow_federation_key_in_file: waived,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -760,6 +903,8 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            node_evidence_reference: None,
+            node_evidence_ak_pin: None,
             allow_federation_key_in_file: fed_waived,
             allow_node_keys_in_file: keys_waived,
             public: Default::default(),
@@ -796,6 +941,115 @@ mod tests {
             .expect("the waiver flag exists, under the name the errors give");
         assert_eq!(waiver.get_env(), None);
     }
+    /// A3: the inputs of the node's own appraisal are strict. A reference with
+    /// no TPM, a pin with no operator anchor, and a pin that is not a digest
+    /// are start-up errors, never an appraisal that silently differs; both
+    /// flags are flags, never read from the environment.
+    #[test]
+    fn own_appraisal_inputs_are_strict() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference = dir.path().join("reference.json");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../nucleus-node-evidence/tests/fixtures/live-node-reference-exact.json"
+            ),
+            &reference,
+        )
+        .unwrap();
+        let args =
+            |tpm: Option<&str>, reference: Option<&PathBuf>, pin: Option<&str>| NodeEvidenceArgs {
+                node_evidence_tpm: tpm.map(PathBuf::from),
+                node_evidence_ak_template: "default-ecc".into(),
+                node_evidence_anchor: "none".into(),
+                node_evidence_epoch_secs: 300,
+                node_evidence_reference: reference.cloned(),
+                node_evidence_ak_pin: pin.map(String::from),
+                allow_federation_key_in_file: false,
+                allow_node_keys_in_file: false,
+                public: Default::default(),
+            };
+        let pin = "BECED81752041938278ACD53C5DF51DF98652F58BB76BDF722E8965D25BD2366";
+        let operator = AkAnchorClaim::OperatorFetched {
+            source: "cloud-api:node-1".into(),
+        };
+
+        let err = NodePlatformSource::start(
+            &args(None, Some(&reference), None),
+            dir.path(),
+            [1; 32],
+            true,
+        )
+        .err()
+        .expect("a reference without a TPM is refused");
+        assert!(err.contains("--node-evidence-tpm"), "{err}");
+
+        let own = OwnAppraisal::from_args(&args(None, Some(&reference), Some(pin)), &operator)
+            .unwrap()
+            .expect("configured");
+        assert_eq!(
+            own.anchors.operator_pins,
+            vec![OperatorPin {
+                source: "cloud-api:node-1".into(),
+                ak_spki_sha256: pin.to_ascii_lowercase(),
+            }]
+        );
+        assert!(own.anchors.trust_roots.is_empty());
+
+        let err = OwnAppraisal::from_args(
+            &args(None, Some(&reference), Some(pin)),
+            &AkAnchorClaim::None,
+        )
+        .err()
+        .expect("a pin with nothing to pin is refused");
+        assert!(err.contains("operator:"), "{err}");
+        assert!(
+            OwnAppraisal::from_args(&args(None, Some(&reference), Some("zz")), &operator).is_err()
+        );
+        assert!(
+            OwnAppraisal::from_args(
+                &args(None, Some(&dir.path().join("absent")), None),
+                &operator
+            )
+            .is_err()
+        );
+        assert!(
+            OwnAppraisal::from_args(&args(None, None, None), &operator)
+                .unwrap()
+                .is_none()
+        );
+
+        use clap::CommandFactory as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            a: NodeEvidenceArgs,
+        }
+        let cmd = Cli::command();
+        for flag in ["node-evidence-reference", "node-evidence-ak-pin"] {
+            let a = cmd
+                .get_arguments()
+                .find(|a| a.get_long() == Some(flag))
+                .expect("the flag exists");
+            assert_eq!(
+                a.get_env(),
+                None,
+                "{flag} must not be read from the environment"
+            );
+        }
+    }
+
+    /// A node with no TPM states `unattested`, naming no evidence, on every
+    /// assertion it mints.
+    #[test]
+    fn no_tpm_states_unattested_on_assertions() {
+        use crate::federated_credential::PlatformAttestation as _;
+        let source = NodePlatformSource::Unattested("no TPM attester configured".into());
+        let att = source.attestation_now(1_791_247_262);
+        assert_eq!(att.tier(), nucleus_federation::ClaimedTier::Unattested);
+        assert_eq!(att.evidence(), &nucleus_federation::EvidenceRef::NoEvidence);
+    }
+
     #[test]
     fn stored_documents_are_named_only_by_a_digest() {
         assert!(is_digest(&"ab".repeat(32)));

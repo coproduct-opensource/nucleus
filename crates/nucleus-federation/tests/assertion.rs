@@ -8,7 +8,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use nucleus_federation::{
     AssertionClaims, AssertionSigner, AssertionSubject, ClaimsError, DEFAULT_TTL, EcdsaP256Signer,
-    MAX_TTL, OPERATOR_MAX_TTL, OperatorClaims, OperatorSubject, SIGNING_ALG, SignError, mint,
+    MAX_TTL, NodeAttestation, OPERATOR_MAX_TTL, OperatorClaims, OperatorSubject, SIGNING_ALG,
+    SignError, mint,
 };
 use ring::signature::{ECDSA_P256_SHA256_FIXED, UnparsedPublicKey};
 
@@ -44,6 +45,7 @@ fn claims(now: u64) -> AssertionClaims {
         "model-upstream",
         now,
         DEFAULT_TTL,
+        &NodeAttestation::without_evidence("no TPM attester in this test"),
     )
     .unwrap()
 }
@@ -140,6 +142,11 @@ fn the_claims_are_the_host_observed_ones() {
     assert_eq!(p["nucleus_root"], "spiffe://tenant.example/root");
     assert_eq!(p["nucleus_chain"], "sha256:abcd");
     assert_eq!(p["jti"], c.jti());
+    // ADR 0012 A3: a node with no evidence says so, in every claim.
+    assert_eq!(p["nucleus_att_tier"], "unattested");
+    assert_eq!(p["nucleus_att_epoch"], "none");
+    assert_eq!(p["nucleus_att_time"], "none");
+    assert_eq!(p["nucleus_evidence_digest"], "none");
     // Flat: every claim is a string or an integer, nothing nested.
     for (k, v) in p.as_object().unwrap() {
         assert!(v.is_string() || v.is_u64(), "{k} is nested");
@@ -148,7 +155,17 @@ fn the_claims_are_the_host_observed_ones() {
 
 #[test]
 fn the_lifetime_is_capped_and_must_be_positive() {
-    let mk = |ttl| AssertionClaims::new(&subject(), "https://iss.example", "aud", "up", 0, ttl);
+    let mk = |ttl| {
+        AssertionClaims::new(
+            &subject(),
+            "https://iss.example",
+            "aud",
+            "up",
+            0,
+            ttl,
+            &NodeAttestation::without_evidence("no TPM attester in this test"),
+        )
+    };
     assert!(mk(MAX_TTL).is_ok());
     assert_eq!(
         mk(MAX_TTL + Duration::from_secs(1)).unwrap_err(),
@@ -161,8 +178,17 @@ fn the_lifetime_is_capped_and_must_be_positive() {
 #[test]
 fn issuer_audience_and_subject_are_checked() {
     let s = subject();
-    let mk =
-        |iss: &str, aud: &str, up: &str| AssertionClaims::new(&s, iss, aud, up, 0, DEFAULT_TTL);
+    let mk = |iss: &str, aud: &str, up: &str| {
+        AssertionClaims::new(
+            &s,
+            iss,
+            aud,
+            up,
+            0,
+            DEFAULT_TTL,
+            &NodeAttestation::without_evidence("no TPM attester in this test"),
+        )
+    };
     assert_eq!(
         mk("http://iss.example", "a", "u").unwrap_err(),
         ClaimsError::Issuer
