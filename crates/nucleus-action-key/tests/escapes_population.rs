@@ -52,8 +52,17 @@ fn every_crate_scans_and_the_escapes_are_the_known_set() {
     // Measured 2026-09-14. This is a ratchet in the same two-direction sense
     // `.line-ratchet.toml` uses: a new escape is a new hole in a key, and
     // closing one should lower this number in the same change.
+    //
+    // 12 -> 13 on 2026-10-06, by the owner's decision: nucleus-node's
+    // `a_malformed_encoding_refuses_the_registry` reads
+    // `examples/egress-git-remote/upstreams.toml` with include_str!, which is
+    // outside nucleus-node's closure. #3254 had deleted that block to stay
+    // under 12, silently dropping the only check that the shipped example
+    // registry loads and encodes as Basic (gatehouse F-195). Keeping the check
+    // was judged worth one more escape; the hole it opens is that nucleus-node's
+    // key does not see an edit to that example file.
     assert!(
-        total_escapes <= 12,
+        total_escapes <= 13,
         "compile-time reads escaping their closure grew to {total_escapes} across {escaping_crates:?}; \
          each one is a key that answers green after its target changed"
     );
