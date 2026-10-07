@@ -40,7 +40,8 @@ root, normal and build edges below). Every literal `include_str!`/`include_bytes
 the closure is then:
 
 * tracked, in a node package: appended to `test-node`'s and `clippy-node`'s includes when no
-  existing pattern covers it (today: `examples/egress-git-remote/upstreams.toml`, the only one);
+  existing pattern covers it (with #3287's reader: `examples/egress-git-remote/upstreams.toml`, the
+  only one);
 * tracked, in a libs package: made a fixture when nothing covers it, so it is kept inside an
   excluded node crate or included outside `crates/` (today: none, all already covered);
 * untracked: refused unless a declared write produces it (today: the verifier SDK's `pkg/`).
@@ -49,7 +50,8 @@ Each generated scope is then checked to cover its group's reads, so a later edit
 generation cannot drop one silently. Reads a token walk cannot resolve (`concat!(env!(..))`,
 `OUT_DIR` joins) are printed, not assumed covered: there are **0** at this tree.
 
-Measured at this tree: 13 escaping (package, site) reads, 4 distinct tracked node targets, 2 libs.
+Measured on `2a360ad90`: 12 escaping (package, site) reads, 3 distinct tracked node targets, 2 libs;
+with #3287's reader, 13 and 4. The escapes ratchet counts the same 13.
 
 ## 4. The derivation cost (gatehouse F-208): one leaf, one pattern
 
