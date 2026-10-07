@@ -1028,6 +1028,15 @@ pub fn generate_clippy(
         .iter()
         .filter_map(|v| v.as_str().map(str::to_string))
         .collect();
+    // The base's include is the unsplit gate's hand-written list. Add the compile-time reads it
+    // does not cover, one path each (nucleus#3287: examples/egress-git-remote/upstreams.toml).
+    let extra: Vec<String> = sel
+        .node_reads
+        .iter()
+        .filter(|r| !in_scope(r, &node_reads, &[]))
+        .cloned()
+        .collect();
+    node_reads.extend(extra);
     // The base is the unsplit gate's list, written before its passes ran through the runner. The
     // runner is built in the pod, so its directory is an input: take it from the layout's
     // `global`, the one place the other shards get it from.
@@ -1042,15 +1051,6 @@ pub fn generate_clippy(
             node_reads.push(g.clone());
         }
     }
-    // The base's include is the unsplit gate's hand-written list. Add the compile-time reads it
-    // does not cover, one path each (nucleus#3287: examples/egress-git-remote/upstreams.toml).
-    let extra: Vec<String> = sel
-        .node_reads
-        .iter()
-        .filter(|r| !in_scope(r, &node_reads, &[]))
-        .cloned()
-        .collect();
-    node_reads.extend(extra);
     reads_covered("clippy-node", &sel.node_reads, &node_reads, &[])?;
 
     for d in &c.drop {

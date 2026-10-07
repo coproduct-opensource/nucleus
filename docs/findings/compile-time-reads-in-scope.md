@@ -3,14 +3,22 @@
 nucleus#3287 restores #3254's test block in `crates/nucleus-node/src/upstreams.rs`, which reads
 the shipped example registry with
 `include_str!("../../../examples/egress-git-remote/upstreams.toml")`. The change was correct and
-`gatehouse/required` went red anyway: `clippy` (later `clippy-node`) failed with exit 101,
-because the gate's scope did not include that file, and a pod materialized from the scope does not
-have it.
+`gatehouse/required` went red anyway: `clippy` (later `clippy-node`) failed with exit 101.
+The gate's scope did not include that file, so a pod materialized from the scope does not have it.
+
+**That was one of two defects, and not the first one the pod hit.** clippy-node also lacked
+`tools/test-shard/**`, the runner its only step builds. That fails every tree, before any lint
+runs, and the red was reused across trees (docs/findings/clippy-split.md, nucleus#3296). The
+reproduction below ran `cargo clippy` directly, skipped the runner, and so saw only this defect.
+**The wrong belief: that a reproduction leaving out the gate's wrapper reproduces the gate.** Both
+defects are real. With #3296's runner fix alone, #3287's tree still fails: running the gate's own
+argv (`-p nucleus-node`) over that scope (1,920 files) gives the same `couldn't read …` error,
+exit 101.
 
 ## 1. Reproduced: the scope, not the change, is what fails
 
 The `clippy-node` scope at #3287 rebased onto `2a360ad90` (1,917 tracked files), materialized into
-an empty directory, then
+an empty directory, then, outside the runner,
 `cargo clippy --offline --all-targets --all-features --locked --no-deps -p nucleus-node -- -D warnings`:
 
 ```
