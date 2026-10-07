@@ -2,7 +2,38 @@
 use anyhow::{Context, Result, bail};
 use serde_yaml::Value;
 
+/// What one `leanprover/lean-action` step builds.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Targets {
+    /// No `build-args`: `lake build` of the package's `@[default_target]`s.
+    Default,
+    /// The named targets, in the order the step lists them.
+    Named(Vec<String>),
+}
+
+/// One `leanprover/lean-action` step that builds: the package it builds in, and what.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LeanBuild {
+    pub directory: String,
+    pub targets: Targets,
+}
+
+/// The `bare`/`named` rows `run` prints, from the typed steps.
 fn builds(workflow: &Value) -> Result<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    for step in steps(workflow)? {
+        match step.targets {
+            Targets::Default => out.push(("bare".into(), step.directory)),
+            Targets::Named(names) => out.extend(names.into_iter().map(|t| ("named".into(), t))),
+        }
+    }
+    Ok(out)
+}
+
+/// Every Lean-action step of `workflow` that builds, read from its literal inputs. A step
+/// whose inputs are not literal is an error, never skipped: a dynamic target list is one
+/// no reader of this function could check.
+pub fn steps(workflow: &Value) -> Result<Vec<LeanBuild>> {
     let mut out = Vec::new();
     let Some(jobs) = workflow["jobs"].as_mapping() else {
         return Ok(out);
@@ -46,18 +77,25 @@ fn builds(workflow: &Value) -> Result<Vec<(String, String)>> {
                     .as_str()
                     .context("Lean build-args must be a literal string")?,
             };
-            if args.trim().is_empty() {
-                out.push(("bare".into(), directory.into()));
-            }
-            for target in args.split_whitespace() {
-                if !target
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '_')
-                {
-                    bail!("unsupported Lean build target: {target}");
+            let targets = if args.trim().is_empty() {
+                Targets::Default
+            } else {
+                let mut names = Vec::new();
+                for target in args.split_whitespace() {
+                    if !target
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        bail!("unsupported Lean build target: {target}");
+                    }
+                    names.push(target.to_string());
                 }
-                out.push(("named".into(), target.into()));
-            }
+                Targets::Named(names)
+            };
+            out.push(LeanBuild {
+                directory: directory.into(),
+                targets,
+            });
         }
     }
     Ok(out)

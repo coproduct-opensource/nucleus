@@ -20,6 +20,8 @@ on:
       - ".github/workflows/ck-policy-aeneas.yml"
       - "crates/ck-policy/src/lib.rs"
       - "crates/ck-types/**"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.

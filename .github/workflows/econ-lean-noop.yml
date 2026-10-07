@@ -18,6 +18,8 @@ on:
       - "crates/nucleus-econ-kernels/tests/golden/**"
       - "scripts/gen-golden-lean.sh"
       - ".github/workflows/econ-lean.yml"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
 
 concurrency:
   # Supersede a PR's older in-flight runs; NEVER cancel anything else.

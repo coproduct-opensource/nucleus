@@ -74,6 +74,31 @@ enum Command {
         #[arg(long)]
         workflow: Option<std::path::PathBuf>,
     },
+    /// Replay the proven tier's `.olean` files through the Lean kernel again with
+    /// `leanchecker` (#2592): `--fresh` on a Mathlib-free package, from imports on a Mathlib
+    /// one. Tier, modules and mode are derived from the workflow's Lean-action build, the
+    /// lakefile and the lake manifest. Exit 0 clean, 1 the kernel rejected a module, 2 could
+    /// not look (nothing replayed counts as could not look).
+    LeanReplay {
+        /// The workflow whose `leanprover/lean-action` build names the tier.
+        #[arg(
+            long,
+            required_unless_present = "self_test",
+            conflicts_with = "self_test"
+        )]
+        workflow: Option<std::path::PathBuf>,
+        /// Prove the replay can fail: forge a kernel-rejected `.olean` (and a sound twin)
+        /// under this Lake package's toolchain, and require rejected / accepted in both modes.
+        #[arg(long, value_name = "LAKE_PACKAGE_DIR")]
+        self_test: Option<std::path::PathBuf>,
+        /// Print the derived plan and replay nothing.
+        #[arg(long)]
+        plan: bool,
+        /// Concurrent `leanchecker` processes (default: available CPUs, at most 4; a Mathlib
+        /// import is held in memory by each).
+        #[arg(long)]
+        jobs: Option<std::num::NonZeroUsize>,
+    },
     /// Every CLI leaf declares the authority band it demands, and the declaration is
     /// total both ways. Checks totality, NOT correctness: see docs/design/command-grammar.md.
     ///
@@ -560,6 +585,7 @@ mod inert_authority;
 mod kani_coverage;
 mod law_mechanisms;
 mod lean_action_builds;
+mod lean_replay;
 mod life;
 mod line_ratchet;
 mod live_boot_evidence;
@@ -620,6 +646,33 @@ fn main() -> Result<()> {
         } => guest_layer::run(&repo_root()?, arch, &out, builder, prebuilt),
         Command::StressZoo { only } => std::process::exit(stress_zoo::run(only.as_deref())?),
         Command::LeanActionBuilds { workflow } => lean_action_builds::run(workflow.as_deref()),
+        Command::LeanReplay {
+            workflow,
+            self_test,
+            plan,
+            jobs,
+        } => {
+            let outcome = match (self_test, workflow) {
+                (Some(pkg), _) => lean_replay::self_test(&pkg),
+                (None, Some(workflow)) => {
+                    let jobs = jobs.map(std::num::NonZeroUsize::get).unwrap_or_else(|| {
+                        std::thread::available_parallelism().map_or(1, |n| n.get().min(4))
+                    });
+                    lean_replay::run(&std::env::current_dir()?, &workflow, plan, jobs)
+                }
+                (None, None) => {
+                    lean_replay::Outcome::CouldNotLook("neither --workflow nor --self-test".into())
+                }
+            };
+            if let lean_replay::Outcome::CouldNotLook(why) = &outcome {
+                println!("::error::COULD NOT LOOK: {why}");
+            }
+            // Mapped here, not inside the run, for the SelfPin arm's reason.
+            match outcome.exit_code() {
+                0 => Ok(()),
+                code => std::process::exit(code),
+            }
+        }
         Command::CheckIsolation => check_isolation(),
         Command::PolicyGate {
             base,

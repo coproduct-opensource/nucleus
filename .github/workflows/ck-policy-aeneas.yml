@@ -32,6 +32,8 @@ on:
       - ".github/workflows/ck-policy-aeneas.yml"
       - "crates/ck-policy/src/lib.rs"
       - "crates/ck-types/**"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
   pull_request:
     paths:
       - "scripts/check-lean-external-state.py"
@@ -42,6 +44,8 @@ on:
       - ".github/workflows/ck-policy-aeneas.yml"
       - "crates/ck-policy/src/lib.rs"
       - "crates/ck-types/**"
+      - "crates/xtask/src/lean_replay/**"
+      - "crates/xtask/src/lean_action_builds.rs"
   merge_group:
   # Weekly canary to catch Charon/Aeneas/Mathlib drift.
   schedule:
@@ -93,7 +97,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           BASE: ${{ github.event.merge_group.base_sha }}
           HEAD: ${{ github.event.merge_group.head_sha }}
-          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$'
+          PATTERN: '^\.github/workflows/ck\-policy\-aeneas\.yml$|^crates/ck\-policy/lean\-aeneas/|^crates/ck\-policy/src/extracted\.rs$|^crates/ck\-policy/src/lib\.rs$|^crates/ck\-policy/tests/policy_aeneas_parity\.rs$|^crates/ck\-types/|^scripts/(check-lean-external-state\.py|lean-axiom-audit\.sh)$|^crates/xtask/src/(lean_replay/|lean_action_builds\.rs$)'
         run: |
           set -euo pipefail
           if [ "$EVENT" != "merge_group" ]; then
@@ -315,6 +319,18 @@ jobs:
       - name: The axiom audit goes red on axiom / admit / native_decide fixtures
         if: steps.scope.outputs.relevant == 'true'
         run: scripts/lean-axiom-audit.sh crates/ck-policy/lean-aeneas --self-test
+      # Second kernel pass (#2592): leanchecker reads back every proven-tier .olean
+      # this job just built and replays its constants through the kernel again —
+      # --fresh (Init included, nothing trusted) on a Mathlib-free tier, from imports
+      # on a Mathlib one. Tier, modules and mode are derived from this workflow's
+      # Lean-action build, the lakefile and the lake manifest; a run that replays
+      # nothing is red, not green.
+      - name: leanchecker replays the proven tier (second kernel pass)
+        if: steps.scope.outputs.relevant == 'true'
+        run: cargo run -q -p xtask -- lean-replay --workflow .github/workflows/ck-policy-aeneas.yml
+      - name: The replay goes red on a forged proof term (and green on its sound twin)
+        if: steps.scope.outputs.relevant == 'true'
+        run: cargo run -q -p xtask -- lean-replay --self-test crates/ck-policy/lean-aeneas
 
       # --- Tier-4 parity: extracted core ↔ production check_monotonicity ---
       - name: Install stable Rust for parity test

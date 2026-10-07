@@ -559,6 +559,9 @@ pub const SELF_FALSIFIED: &[&str] = &[
     "check-adversary-probe.sh     BREACH+INCONCLUSIVE states in the 'adversary-probe-falsifier' job (adversary-probe.yml)",
     "check-clippy-ratchet.sh     ceiling-below-actual in the 'ratchet-falsifier' job (clippy-ratchet.yml)",
     "check-mutants-report.sh     --self-test in the 'mutants' job (coverage-matrix.yml)",
+    // Needs a built Lean tier and its toolchain. The self-test forges a kernel-rejected
+    // `.olean` and its sound twin under each tier's toolchain, in every Lean proof job.
+    "xtask lean-replay           --self-test <tier> beside each `lean-replay --workflow` step, in that Lean proof job",
 ];
 
 /// Subcommands whose ONLY route into CI is a script, with the script named. A row is a claim
