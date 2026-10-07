@@ -95,9 +95,10 @@ fn cgroup_members(dir: &Path) -> std::io::Result<Members> {
     }
 }
 
-/// SIGKILL every member of `dir`: `cgroup.kill` (Linux 5.14+) when the kernel has it, which also
-/// catches a member forked mid-kill; otherwise each listed pid.
-fn kill_cgroup(dir: &Path, pids: &[i32]) -> std::io::Result<()> {
+/// SIGKILL every member of `dir` at once with `cgroup.kill` (Linux 5.14+), which also catches a
+/// member forked mid-kill. A kernel without the file is not an error: every member is also
+/// killed by pid, in [`reclaim_one`].
+fn kill_cgroup(dir: &Path) -> std::io::Result<()> {
     // Open without create: on a kernel without `cgroup.kill` the file is absent, and writing it
     // must not be mistaken for a kill.
     let kill = std::fs::OpenOptions::new()
@@ -106,27 +107,26 @@ fn kill_cgroup(dir: &Path, pids: &[i32]) -> std::io::Result<()> {
         .and_then(|mut file| std::io::Write::write_all(&mut file, b"1"));
     match kill {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            pids.iter().try_for_each(|pid| kill_pid(*pid))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
 }
 
-#[cfg(target_os = "linux")]
-fn kill_pid(pid: i32) -> std::io::Result<()> {
-    use nix::sys::signal::{Signal, kill};
-    match kill(nix::unistd::Pid::from_raw(pid), Signal::SIGKILL) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => Ok(()),
-        Err(errno) => Err(std::io::Error::from(errno)),
+/// SIGKILL one pid with `kill(1)`, as the node runs `ip` and `iptables`, rather than through a
+/// signal binding or an `unsafe` libc call. A pid that is already gone is not an error; whether
+/// the process actually left is decided by the membership re-read, never by this exit code.
+async fn kill_pid(pid: i32) -> std::io::Result<()> {
+    let status = tokio::process::Command::new("kill")
+        .args(["-s", "KILL", "--", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .status()
+        .await?;
+    if status.success() || !Path::new("/proc").join(pid.to_string()).exists() {
+        return Ok(());
     }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn kill_pid(_pid: i32) -> std::io::Result<()> {
-    Err(std::io::Error::other(
-        "killing a stranded VMM requires Linux",
-    ))
+    Err(std::io::Error::other(format!("kill exited {status}")))
 }
 
 /// Remove an EMPTY cgroup leaf. Its last member can take a moment to leave after exiting, so a
@@ -242,10 +242,12 @@ async fn reclaim_one(
         if let Some(dir) = cgroup.as_deref()
             && dir.exists()
         {
-            kill_cgroup(dir, &alive).map_err(|e| unobservable(format!("cgroup.kill: {e}")))?;
+            kill_cgroup(dir).map_err(|e| unobservable(format!("cgroup.kill: {e}")))?;
         }
         for pid in &alive {
-            kill_pid(*pid).map_err(|e| unobservable(format!("kill {pid}: {e}")))?;
+            kill_pid(*pid)
+                .await
+                .map_err(|e| unobservable(format!("kill {pid}: {e}")))?;
         }
         let deadline = tokio::time::Instant::now() + confirm_within;
         loop {
