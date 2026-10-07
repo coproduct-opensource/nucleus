@@ -28,6 +28,29 @@ All are mode `0400`, owned by the state directory's owner. The node and the CLI 
 file with group or other permission bits, a different owner, or a symlink. Rotation also
 refuses a state directory that group or others can write.
 
+**On a node with a TPM (`--node-evidence-tpm`), the key lives in the TPM** (ADR 0012). The
+node creates it there, bound by a `PolicyPCR` to the boot PCRs 0, 2, 4, 7, 8, 9 and 14, and
+the state directory holds only the TPM's wrapping of it:
+`jwt_svid_p256_tpm_key.json`, `.next.json` and `.prev.json`, in the same three roles as
+above. A copy of the disk cannot sign: the blob loads only in this TPM, and signs only while
+the boot state matches. The AK certifies each published key every epoch, and the node keeps
+the statements at `node-evidence/federation-keys.json` (also `GET /v1/node/federation-keys`).
+`issuer --export` copies them beside the JWKS as
+`.well-known/nucleus-federation-key-attestation.json`, and a relying party checks them with
+`nucleus-audit verify-node-evidence --jwks … --federation-key-attestation …`.
+
+- **Stage with the TPM:** `nucleus federation rotate --stage --tpm /dev/tpmrm0`. Promote and
+  retire are renames and need no TPM.
+- **An upgrade changes the key.** A new kernel, initrd, boot loader or command line is a new
+  boot state. At its first start in that state the node finds its key unusable, logs it, and
+  creates a new current key. Upstreams must be told about it, as after any key loss: publish
+  the new JWKS before relying on federation again. Signed policies, which would avoid this,
+  are a follow-up (ADR 0012).
+- **A file key on a node with a TPM** needs `--allow-federation-key-in-file`. The node logs
+  the waiver at start-up, and every custody statement it publishes says "file" and why. There
+  is no conversion between the two layouts. A directory of the wrong custody stops the node:
+  move it aside to start over with a new key.
+
 ## 1. Publish the issuer
 
 Pick one. A provider that supports discovery or a JWKS URL should get one of those: an inline
@@ -142,3 +165,6 @@ order:
 | node will not start: "mode … must be readable by its owner only" | the key file's permissions were widened | `chmod 0400` so the node can start, then assume the key was read: rotate it |
 | rotation refused: "owned by uid …" | the CLI ran as a different user than the node | run it as the node's user |
 | key creation, signing or rotation refused: directory permissions | the state directory is writable by a group or other users | restrict writes to the node's owner before retrying |
+| node will not start: "holds file federation keys but this node is configured for TPM-resident custody" | the node gained `--node-evidence-tpm` over a file key | pass `--allow-federation-key-in-file`, or move the file key aside and publish the new TPM key's JWKS |
+| log: "TPM-resident key … is bound to another boot state; regenerating" | the node booted a different kernel, initrd or command line | publish the new JWKS (`issuer --export`); the old key cannot sign in this boot |
+| `rotate --stage` refused: "holds TPM-resident federation keys" | `--tpm` was not given | pass `--tpm /dev/tpmrm0` |

@@ -934,7 +934,9 @@ ceiling = {{ profile = "read_only" }}
             ingress: FederationArgs::default(),
             approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
         };
-        let authority = Arc::new(PodAuthority::new(&args, NODE_TD, dir.path()).unwrap());
+        let authority = Arc::new(
+            PodAuthority::new(&args, NODE_TD, dir.path(), &crate::pod_authority::NO_TPM).unwrap(),
+        );
         let identity =
             crate::identity::IdentityManager::new(NODE_TD, Duration::from_secs(3600)).unwrap();
         Fixture {

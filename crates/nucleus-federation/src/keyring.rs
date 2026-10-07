@@ -19,6 +19,14 @@
 //! | [`PREV_KEY_FILE`] | promoted away: still published until its last assertion expired | yes | no |
 //! | [`ROTATION_RECORD_FILE`] | when `next` was staged and `prev` was promoted, keyed by `kid` | — | — |
 //!
+//! Those are a FILE-custody directory. A TPM-custody directory
+//! ([`crate::custody`], ADR 0012) holds [`TPM_CURRENT_KEY_FILE`],
+//! [`TPM_NEXT_KEY_FILE`] and [`TPM_PREV_KEY_FILE`] in the same three roles:
+//! each the TPM's wrapping of a key that never leaves it, usable only in the
+//! boot state it was created in. A directory holds one layout or the other,
+//! never both ([`KeyringError::MixedCustody`]); rotation (stage, promote,
+//! retire) is the same state machine over either.
+//!
 //! Every file is written by [`write_atomic`](KeyDir) — a `0400` temporary in
 //! the same directory, fsynced, then renamed over the target — so a reader
 //! sees the old file or the new one, never a torn one. Every key file is read
@@ -80,10 +88,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use nucleus_node_evidence::tpm_key::WrappedKey;
+
 use crate::assertion::{
     AssertionSigner, CurrentSigner, EcdsaP256Signer, MAX_TTL, PublicJwk, SIGNING_ALG, SignError,
     is_valid_issuer, jwks,
 };
+use crate::custody::{self, CustodyKind, KeyCustody};
 
 /// The key the node signs with. The name P3 shipped, unchanged, so a node
 /// that already has a key keeps its `kid`.
@@ -92,6 +103,43 @@ pub const CURRENT_KEY_FILE: &str = "jwt_svid_p256_signing_key.der";
 pub const NEXT_KEY_FILE: &str = "jwt_svid_p256_signing_key.next.der";
 /// The key promoted away from, published until its last assertion expired.
 pub const PREV_KEY_FILE: &str = "jwt_svid_p256_signing_key.prev.der";
+/// A TPM-custody directory's current key: the TPM's wrapping of it.
+pub const TPM_CURRENT_KEY_FILE: &str = "jwt_svid_p256_tpm_key.json";
+/// A TPM-custody directory's staged key.
+pub const TPM_NEXT_KEY_FILE: &str = "jwt_svid_p256_tpm_key.next.json";
+/// A TPM-custody directory's previous key.
+pub const TPM_PREV_KEY_FILE: &str = "jwt_svid_p256_tpm_key.prev.json";
+
+/// The three files of one custody layout.
+#[derive(Debug, Clone, Copy)]
+struct Layout {
+    kind: CustodyKind,
+    current: &'static str,
+    next: &'static str,
+    prev: &'static str,
+}
+
+const FILE_LAYOUT: Layout = Layout {
+    kind: CustodyKind::File,
+    current: CURRENT_KEY_FILE,
+    next: NEXT_KEY_FILE,
+    prev: PREV_KEY_FILE,
+};
+
+const TPM_LAYOUT: Layout = Layout {
+    kind: CustodyKind::Tpm,
+    current: TPM_CURRENT_KEY_FILE,
+    next: TPM_NEXT_KEY_FILE,
+    prev: TPM_PREV_KEY_FILE,
+};
+
+fn layout_of(kind: CustodyKind) -> Layout {
+    match kind {
+        CustodyKind::File => FILE_LAYOUT,
+        CustodyKind::Tpm => TPM_LAYOUT,
+    }
+}
+
 /// When `next` was staged and `prev` promoted, keyed by `kid`.
 pub const ROTATION_RECORD_FILE: &str = "jwt_svid_p256_rotation.json";
 /// Held for the length of one stage/promote/retire.
@@ -195,6 +243,28 @@ pub enum KeyringError {
     /// Key generation failed.
     #[error("key generation failed")]
     Generate,
+    /// The TPM refused, or could not be reached.
+    #[error("TPM: {what}")]
+    Tpm { what: String },
+    /// The directory holds keys of one custody and the caller asked for the
+    /// other.
+    #[error(
+        "{} holds {on_disk} federation keys but this node is configured for {configured} \
+         custody. A file key on a node with a TPM needs {}; moving to TPM custody is a new \
+         key that upstreams must be told about (ADR 0012)",
+        dir.display(), crate::custody::FILE_CUSTODY_WAIVER_FLAG
+    )]
+    CustodyMismatch {
+        dir: PathBuf,
+        on_disk: CustodyKind,
+        configured: CustodyKind,
+    },
+    /// The directory holds both file and TPM key files.
+    #[error(
+        "{} holds both file and TPM-resident federation key files; remove one set",
+        dir.display()
+    )]
+    MixedCustody { dir: PathBuf },
 }
 
 /// The waiting periods a rotation observes. See the module docs for why each
@@ -298,6 +368,49 @@ impl RotationRecord {
     }
 }
 
+/// A key as one of the directory's files holds it.
+pub enum StoredKey {
+    /// A PKCS#8 key, loaded.
+    File(EcdsaP256Signer),
+    /// A TPM-wrapped key and its public JWK.
+    Tpm(WrappedKey, PublicJwk),
+}
+
+impl std::fmt::Debug for StoredKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::File(k) => f.debug_tuple("File").field(k).finish(),
+            Self::Tpm(_, jwk) => f.debug_tuple("Tpm").field(&jwk.kid).finish(),
+        }
+    }
+}
+
+impl StoredKey {
+    /// The key's `kid`.
+    pub fn kid(&self) -> &str {
+        match self {
+            Self::File(k) => k.kid(),
+            Self::Tpm(_, jwk) => &jwk.kid,
+        }
+    }
+
+    /// The public JWK.
+    pub fn public_jwk(&self) -> PublicJwk {
+        match self {
+            Self::File(k) => k.public_jwk(),
+            Self::Tpm(_, jwk) => jwk.clone(),
+        }
+    }
+}
+
+/// How a published key is held, for the custody statement a node publishes.
+pub enum Held {
+    /// TPM-resident: the wrapped key, for the AK to certify.
+    Tpm(WrappedKey),
+    /// A file.
+    File,
+}
+
 /// A staged key and when it was staged.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Staged {
@@ -389,6 +502,17 @@ impl Transition {
 #[derive(Debug, Clone)]
 pub struct KeyDir {
     dir: PathBuf,
+}
+
+/// Every key and the reconciled record, as one step reads them.
+struct Snapshot {
+    layout: Layout,
+    current: StoredKey,
+    next: Option<StoredKey>,
+    prev: Option<StoredKey>,
+    record: RotationRecord,
+    /// Whether reconciliation changed the stored record.
+    changed: bool,
 }
 
 /// Removes the rotation lock when a step ends, however it ends.
@@ -506,36 +630,131 @@ impl KeyDir {
         Ok(Some(bytes))
     }
 
-    /// The key in `name`, checked and parsed.
-    fn load(&self, name: &str) -> Result<Option<EcdsaP256Signer>, KeyringError> {
-        let Some(bytes) = self.read_checked(name)? else {
-            return Ok(None);
+    /// Which layout the directory holds, if any key file is present.
+    ///
+    /// # Errors
+    /// Both layouts are present ([`KeyringError::MixedCustody`]), or a path
+    /// cannot be examined.
+    pub fn custody_on_disk(&self) -> Result<Option<CustodyKind>, KeyringError> {
+        let present = |l: Layout| -> Result<bool, KeyringError> {
+            for name in [l.current, l.next, l.prev] {
+                let path = self.path(name);
+                match fs::symlink_metadata(&path) {
+                    Ok(_) => return Ok(true),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(Self::io(&path, &e)),
+                }
+            }
+            Ok(false)
         };
-        EcdsaP256Signer::from_pkcs8(&bytes)
-            .map(Some)
-            .map_err(|_| KeyringError::Key {
-                path: self.path(name),
+        match (present(FILE_LAYOUT)?, present(TPM_LAYOUT)?) {
+            (true, true) => Err(KeyringError::MixedCustody {
+                dir: self.dir.clone(),
+            }),
+            (true, false) => Ok(Some(CustodyKind::File)),
+            (false, true) => Ok(Some(CustodyKind::Tpm)),
+            (false, false) => Ok(None),
+        }
+    }
+
+    /// The layout on disk; a directory with no key is reported as having no
+    /// current key.
+    fn layout(&self) -> Result<Layout, KeyringError> {
+        self.custody_on_disk()?
+            .map(layout_of)
+            .ok_or_else(|| KeyringError::NoCurrent {
+                path: self.dir.clone(),
             })
     }
 
-    /// The current key, if there is one. For the node's start-up, which
-    /// creates one when this is `None`.
-    ///
-    /// # Errors
-    /// The file exists but fails its checks, or is not a P-256 key
-    /// ([`KeyringError::Key`] — the one the node may choose to replace).
-    pub fn load_current(&self) -> Result<Option<EcdsaP256Signer>, KeyringError> {
-        self.load(CURRENT_KEY_FILE)
+    /// The key in `name` of `layout`, checked and parsed.
+    fn load(&self, layout: Layout, name: &str) -> Result<Option<StoredKey>, KeyringError> {
+        let Some(bytes) = self.read_checked(name)? else {
+            return Ok(None);
+        };
+        let bad = || KeyringError::Key {
+            path: self.path(name),
+        };
+        match layout.kind {
+            CustodyKind::File => EcdsaP256Signer::from_pkcs8(&bytes)
+                .map(|k| Some(StoredKey::File(k)))
+                .map_err(|_| bad()),
+            CustodyKind::Tpm => custody::decode(&bytes)
+                .map(|k| {
+                    let jwk = custody::jwk_of(&k);
+                    Some(StoredKey::Tpm(k, jwk))
+                })
+                .map_err(|_| bad()),
+        }
     }
 
-    /// Generate a key and write it as the current key, atomically, `0400`.
-    /// For a node with no key yet (or an unparseable one). Rotation never
-    /// calls this: it only ever renames a PUBLISHED key into place.
-    pub fn create_current(&self) -> Result<EcdsaP256Signer, KeyringError> {
-        let der = EcdsaP256Signer::generate_pkcs8().map_err(|_| KeyringError::Generate)?;
-        let signer = EcdsaP256Signer::from_pkcs8(&der).map_err(|_| KeyringError::Generate)?;
-        self.write_atomic(CURRENT_KEY_FILE, &der)?;
-        Ok(signer)
+    /// The current key, if there is one, in whichever layout the directory
+    /// holds. For the node's start-up, which creates one when this is `None`.
+    ///
+    /// # Errors
+    /// The file exists but fails its checks, or does not parse
+    /// ([`KeyringError::Key`] — the one the node may choose to replace), or
+    /// the directory mixes layouts.
+    pub fn load_current(&self) -> Result<Option<StoredKey>, KeyringError> {
+        match self.custody_on_disk()? {
+            None => Ok(None),
+            Some(kind) => {
+                let layout = layout_of(kind);
+                self.load(layout, layout.current)
+            }
+        }
+    }
+
+    /// A fresh key in `custody`, as file bytes and as loaded.
+    fn generate(&self, custody: &KeyCustody) -> Result<(Vec<u8>, StoredKey), KeyringError> {
+        match custody {
+            KeyCustody::File(_) => {
+                let der = EcdsaP256Signer::generate_pkcs8().map_err(|_| KeyringError::Generate)?;
+                let k = EcdsaP256Signer::from_pkcs8(&der).map_err(|_| KeyringError::Generate)?;
+                Ok((der.to_vec(), StoredKey::File(k)))
+            }
+            KeyCustody::Tpm(tpm) => {
+                let k = tpm.create().map_err(|what| KeyringError::Tpm { what })?;
+                let bytes = custody::encode(&k).map_err(|what| KeyringError::Tpm { what })?;
+                let jwk = custody::jwk_of(&k);
+                Ok((bytes, StoredKey::Tpm(k, jwk)))
+            }
+        }
+    }
+
+    /// Refuse `custody` on a directory that holds the other layout.
+    fn check_custody(
+        &self,
+        on_disk: CustodyKind,
+        custody: &KeyCustody,
+    ) -> Result<(), KeyringError> {
+        if on_disk == custody.kind() {
+            Ok(())
+        } else {
+            Err(KeyringError::CustodyMismatch {
+                dir: self.dir.clone(),
+                on_disk,
+                configured: custody.kind(),
+            })
+        }
+    }
+
+    /// Generate a key in `custody` and write it as the current key,
+    /// atomically, `0400`. For a node with no key yet, an unparseable one,
+    /// or (TPM custody) one bound to another boot state. Rotation never calls
+    /// this: it only ever renames a PUBLISHED key into place.
+    ///
+    /// # Errors
+    /// The directory holds the other custody's keys; generation or the write
+    /// failed.
+    pub fn create_current(&self, custody: &KeyCustody) -> Result<PublicJwk, KeyringError> {
+        if let Some(kind) = self.custody_on_disk()? {
+            self.check_custody(kind, custody)?;
+        }
+        let (bytes, key) = self.generate(custody)?;
+        let wiped = Zeroizing::new(bytes);
+        self.write_atomic(layout_of(custody.kind()).current, &wiped)?;
+        Ok(key.public_jwk())
     }
 
     /// Write `bytes` to `name`: a `0400` temporary beside it, fsynced, owner
@@ -621,26 +840,15 @@ impl KeyDir {
     }
 
     /// Load every key and the reconciled record.
-    fn snapshot(
-        &self,
-        now: u64,
-    ) -> Result<
-        (
-            EcdsaP256Signer,
-            Option<EcdsaP256Signer>,
-            Option<EcdsaP256Signer>,
-            RotationRecord,
-            bool,
-        ),
-        KeyringError,
-    > {
-        let current = self
-            .load(CURRENT_KEY_FILE)?
-            .ok_or_else(|| KeyringError::NoCurrent {
-                path: self.path(CURRENT_KEY_FILE),
-            })?;
-        let next = self.load(NEXT_KEY_FILE)?;
-        let prev = self.load(PREV_KEY_FILE)?;
+    fn snapshot(&self, now: u64) -> Result<Snapshot, KeyringError> {
+        let layout = self.layout()?;
+        let current =
+            self.load(layout, layout.current)?
+                .ok_or_else(|| KeyringError::NoCurrent {
+                    path: self.path(layout.current),
+                })?;
+        let next = self.load(layout, layout.next)?;
+        let prev = self.load(layout, layout.prev)?;
         let stored = self.read_record()?;
         let record = stored.reconciled(
             current.kid(),
@@ -649,17 +857,24 @@ impl KeyDir {
             now,
         );
         let changed = record != stored;
-        Ok((current, next, prev, record, changed))
+        Ok(Snapshot {
+            layout,
+            current,
+            next,
+            prev,
+            record,
+            changed,
+        })
     }
 
     fn state_of(
-        current: &EcdsaP256Signer,
-        next: Option<&EcdsaP256Signer>,
-        prev: Option<&EcdsaP256Signer>,
+        current: &StoredKey,
+        next: Option<&StoredKey>,
+        prev: Option<&StoredKey>,
         record: &RotationRecord,
     ) -> KeyState {
         // The reconciled record has a stamp exactly for each distinct next/prev.
-        let pair = |key: Option<&EcdsaP256Signer>, stamp: &Option<Stamp>| {
+        let pair = |key: Option<&StoredKey>, stamp: &Option<Stamp>| {
             let key = key?;
             let stamp = stamp.as_ref().filter(|s| s.kid == key.kid())?;
             Some((key.public_jwk(), stamp.at))
@@ -676,7 +891,14 @@ impl KeyDir {
     /// stamped `now` (what the next rotation step would record) but nothing
     /// is written.
     pub fn state(&self, now: u64) -> Result<KeyState, KeyringError> {
-        let (current, next, prev, record, _) = self.snapshot(now)?;
+        let Snapshot {
+            layout: _,
+            current,
+            next,
+            prev,
+            record,
+            changed: _,
+        } = self.snapshot(now)?;
         Ok(Self::state_of(
             &current,
             next.as_ref(),
@@ -685,21 +907,45 @@ impl KeyDir {
         ))
     }
 
+    /// Every published key with how it is held: the input to the custody
+    /// statements a node publishes beside its JWKS (ADR 0012). In
+    /// [`KeyState::published`] order.
+    pub fn published_custody(&self, now: u64) -> Result<Vec<(PublicJwk, Held)>, KeyringError> {
+        let Snapshot {
+            layout: _,
+            current,
+            next,
+            prev,
+            record,
+            changed: _,
+        } = self.snapshot(now)?;
+        let published: Vec<String> =
+            Self::state_of(&current, next.as_ref(), prev.as_ref(), &record)
+                .published()
+                .into_iter()
+                .map(|k| k.kid)
+                .collect();
+        let mut out = Vec::new();
+        for key in [Some(current), next, prev].into_iter().flatten() {
+            if !published.contains(&key.kid().to_string())
+                || out
+                    .iter()
+                    .any(|(j, _): &(PublicJwk, Held)| j.kid == key.kid())
+            {
+                continue;
+            }
+            let jwk = key.public_jwk();
+            out.push(match key {
+                StoredKey::File(_) => (jwk, Held::File),
+                StoredKey::Tpm(k, _) => (jwk, Held::Tpm(k)),
+            });
+        }
+        Ok(out)
+    }
+
     /// Take the lock, check the directory, load and reconcile, and persist the
     /// reconciled record if it changed.
-    fn begin(
-        &self,
-        now: u64,
-    ) -> Result<
-        (
-            Lock,
-            EcdsaP256Signer,
-            Option<EcdsaP256Signer>,
-            Option<EcdsaP256Signer>,
-            RotationRecord,
-        ),
-        KeyringError,
-    > {
+    fn begin(&self, now: u64) -> Result<(Lock, Snapshot), KeyringError> {
         self.check_dir()?;
         let lock_path = self.path(LOCK_FILE);
         let mut opts = OpenOptions::new();
@@ -717,25 +963,41 @@ impl KeyDir {
             Err(e) => return Err(Self::io(&lock_path, &e)),
         }
         let lock = Lock(lock_path);
-        let (current, next, prev, record, changed) = self.snapshot(now)?;
-        if changed {
-            self.write_record(&record)?;
+        let snap = self.snapshot(now)?;
+        if snap.changed {
+            self.write_record(&snap.record)?;
         }
-        Ok((lock, current, next, prev, record))
+        Ok((lock, snap))
     }
 
-    /// Stage a next key if none is staged. Idempotent: with a key already
-    /// staged, nothing changes and its original stamp stands.
-    pub fn stage(&self, now: u64) -> Result<Transition, KeyringError> {
-        let (_lock, current, next, prev, mut record) = self.begin(now)?;
+    /// Stage a next key, generated in `custody`, if none is staged.
+    /// Idempotent: with a key already staged, nothing changes and its
+    /// original stamp stands.
+    ///
+    /// # Errors
+    /// `custody` is not the directory's ([`KeyringError::CustodyMismatch`]):
+    /// a TPM-custody directory stages only TPM keys, so rotation never
+    /// brings a file key into it.
+    pub fn stage(&self, now: u64, custody: &KeyCustody) -> Result<Transition, KeyringError> {
+        let (
+            _lock,
+            Snapshot {
+                layout,
+                current,
+                next,
+                prev,
+                mut record,
+                changed: _,
+            },
+        ) = self.begin(now)?;
+        self.check_custody(layout.kind, custody)?;
         let before = Self::state_of(&current, next.as_ref(), prev.as_ref(), &record).published();
         let next = match next.filter(|n| n.kid() != current.kid()) {
             Some(n) => n,
             None => {
-                let der = EcdsaP256Signer::generate_pkcs8().map_err(|_| KeyringError::Generate)?;
-                let staged =
-                    EcdsaP256Signer::from_pkcs8(&der).map_err(|_| KeyringError::Generate)?;
-                self.write_atomic(NEXT_KEY_FILE, &der)?;
+                let (bytes, staged) = self.generate(custody)?;
+                let wiped = Zeroizing::new(bytes);
+                self.write_atomic(layout.next, &wiped)?;
                 record.next_staged = Some(Stamp {
                     kid: staged.kid().to_string(),
                     at: now,
@@ -766,7 +1028,17 @@ impl KeyDir {
     ///    at the rerun's `now`, which only delays the retire.
     /// 3. record: `prev` promoted at `now`, nothing staged.
     pub fn promote(&self, now: u64, policy: &RotationPolicy) -> Result<Transition, KeyringError> {
-        let (_lock, current, next, prev, mut record) = self.begin(now)?;
+        let (
+            _lock,
+            Snapshot {
+                layout,
+                current,
+                next,
+                prev,
+                mut record,
+                changed: _,
+            },
+        ) = self.begin(now)?;
         let before = Self::state_of(&current, next.as_ref(), prev.as_ref(), &record).published();
         if let Some(p) = prev.as_ref().filter(|p| p.kid() != current.kid()) {
             return Err(KeyringError::PrevStillPublished {
@@ -790,14 +1062,13 @@ impl KeyDir {
             });
         }
         let current_der =
-            self.read_checked(CURRENT_KEY_FILE)?
+            self.read_checked(layout.current)?
                 .ok_or_else(|| KeyringError::NoCurrent {
-                    path: self.path(CURRENT_KEY_FILE),
+                    path: self.path(layout.current),
                 })?;
-        self.write_atomic(PREV_KEY_FILE, &current_der)?;
-        let next_path = self.path(NEXT_KEY_FILE);
-        fs::rename(&next_path, self.path(CURRENT_KEY_FILE))
-            .map_err(|e| Self::io(&next_path, &e))?;
+        self.write_atomic(layout.prev, &current_der)?;
+        let next_path = self.path(layout.next);
+        fs::rename(&next_path, self.path(layout.current)).map_err(|e| Self::io(&next_path, &e))?;
         self.sync_dir();
         record.next_staged = None;
         record.prev_promoted = Some(Stamp {
@@ -817,7 +1088,17 @@ impl KeyDir {
     /// No previous key, or `now` is before its promote stamp plus
     /// [`RotationPolicy::retire_after`].
     pub fn retire(&self, now: u64, policy: &RotationPolicy) -> Result<Transition, KeyringError> {
-        let (_lock, current, next, prev, mut record) = self.begin(now)?;
+        let (
+            _lock,
+            Snapshot {
+                layout,
+                current,
+                next,
+                prev,
+                mut record,
+                changed: _,
+            },
+        ) = self.begin(now)?;
         let before = Self::state_of(&current, next.as_ref(), prev.as_ref(), &record).published();
         let Some(prev) = prev else {
             return Err(KeyringError::NothingToRetire);
@@ -839,7 +1120,7 @@ impl KeyDir {
                 });
             }
         }
-        let prev_path = self.path(PREV_KEY_FILE);
+        let prev_path = self.path(layout.prev);
         fs::remove_file(&prev_path).map_err(|e| Self::io(&prev_path, &e))?;
         self.sync_dir();
         record.prev_promoted = None;
@@ -896,21 +1177,29 @@ pub fn discovery_document(issuer: &str) -> Result<serde_json::Value, KeyringErro
 /// in-place replacement with a restored timestamp must never reuse an old key.
 pub struct KeyDirSigner {
     keys: KeyDir,
+    custody: KeyCustody,
 }
 
 impl std::fmt::Debug for KeyDirSigner {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KeyDirSigner")
             .field("dir", &self.keys.dir)
+            .field("custody", &self.custody.kind())
             .finish_non_exhaustive()
     }
 }
 
 impl KeyDirSigner {
-    /// A signer over `keys`' current key, loaded now so a node with no usable
-    /// key fails at start-up rather than at its first assertion.
-    pub fn open(keys: KeyDir) -> Result<Self, KeyringError> {
-        let source = Self { keys };
+    /// A signer over `keys`' current key in `custody`, loaded now so a node
+    /// with no usable key fails at start-up rather than at its first
+    /// assertion.
+    ///
+    /// # Errors
+    /// No current key, a key that fails its checks, or a directory whose
+    /// custody is not `custody` — a file key is never signed with on a node
+    /// configured for TPM custody, nor a TPM key on one that is not.
+    pub fn open(keys: KeyDir, custody: KeyCustody) -> Result<Self, KeyringError> {
+        let source = Self { keys, custody };
         source.signer()?;
         Ok(source)
     }
@@ -919,28 +1208,44 @@ impl KeyDirSigner {
     ///
     /// # Errors
     /// The current file is gone, or its permissions, ownership or bytes fail
-    /// validation. Never fall back to a previously loaded key.
-    pub fn signer(&self) -> Result<Arc<EcdsaP256Signer>, KeyringError> {
-        self.keys
+    /// validation, or its custody is not the configured one. Never fall back
+    /// to a previously loaded key.
+    pub fn signer(&self) -> Result<Arc<dyn AssertionSigner>, KeyringError> {
+        let current = self
+            .keys
             .load_current()?
-            .map(Arc::new)
             .ok_or_else(|| KeyringError::NoCurrent {
-                path: self.keys.path(CURRENT_KEY_FILE),
-            })
+                path: self.keys.dir.clone(),
+            })?;
+        match (current, &self.custody) {
+            (StoredKey::File(k), KeyCustody::File(_)) => Ok(Arc::new(k)),
+            (StoredKey::Tpm(k, _), KeyCustody::Tpm(tpm)) => Ok(Arc::new(tpm.signer(k))),
+            (StoredKey::File(_), KeyCustody::Tpm(_)) => Err(KeyringError::CustodyMismatch {
+                dir: self.keys.dir.clone(),
+                on_disk: CustodyKind::File,
+                configured: CustodyKind::Tpm,
+            }),
+            (StoredKey::Tpm(..), KeyCustody::File(_)) => Err(KeyringError::CustodyMismatch {
+                dir: self.keys.dir.clone(),
+                on_disk: CustodyKind::Tpm,
+                configured: CustodyKind::File,
+            }),
+        }
     }
 }
 
 impl CurrentSigner for KeyDirSigner {
     fn current(self: Arc<Self>) -> Result<Arc<dyn AssertionSigner>, SignError> {
-        self.signer()
-            .map(|s| s as Arc<dyn AssertionSigner>)
-            .map_err(|_| SignError::Key)
+        self.signer().map_err(|_| SignError::Key)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::custody::FileCustody;
+
+    const FILE: KeyCustody = KeyCustody::File(FileCustody::NoTpmConfigured);
 
     const T0: u64 = 1_790_000_000;
 
@@ -951,7 +1256,7 @@ mod tests {
     fn fresh() -> (tempfile::TempDir, KeyDir) {
         let dir = tempfile::tempdir().expect("tempdir");
         let keys = KeyDir::new(dir.path());
-        keys.create_current().expect("creates");
+        keys.create_current(&FILE).expect("creates");
         (dir, keys)
     }
 
@@ -1009,7 +1314,7 @@ mod tests {
         use base64::Engine as _;
         use sha2::{Digest as _, Sha256};
         let (_d, keys) = fresh();
-        keys.stage(T0).unwrap();
+        keys.stage(T0, &FILE).unwrap();
         let state = keys.state(T0).unwrap();
         let published = state.published();
         assert_eq!(published.len(), 2, "current and next are both published");
@@ -1027,10 +1332,10 @@ mod tests {
     #[test]
     fn stage_publishes_next_without_ever_signing_with_it() {
         let (_d, keys) = fresh();
-        let signer = Arc::new(KeyDirSigner::open(keys.clone()).unwrap());
+        let signer = Arc::new(KeyDirSigner::open(keys.clone(), FILE).unwrap());
         let before = Arc::clone(&signer).current().unwrap().kid().to_string();
 
-        let t = keys.stage(T0).unwrap();
+        let t = keys.stage(T0, &FILE).unwrap();
         let next = t.after.next.clone().expect("staged");
         assert_eq!(t.added(), vec![next.jwk.kid.clone()]);
         assert!(t.removed().is_empty());
@@ -1044,7 +1349,7 @@ mod tests {
         assert_eq!(Arc::clone(&signer).current().unwrap().kid(), before);
 
         // Staging again changes nothing and keeps the original stamp.
-        let again = keys.stage(T0 + 999).unwrap();
+        let again = keys.stage(T0 + 999, &FILE).unwrap();
         assert!(again.added().is_empty() && again.removed().is_empty());
         assert_eq!(again.after.next.unwrap().staged_at, T0);
     }
@@ -1054,14 +1359,14 @@ mod tests {
     #[test]
     fn promote_is_refused_before_the_overlap_and_allowed_after() {
         let (_d, keys) = fresh();
-        let signer = Arc::new(KeyDirSigner::open(keys.clone()).unwrap());
+        let signer = Arc::new(KeyDirSigner::open(keys.clone(), FILE).unwrap());
         let old = Arc::clone(&signer).current().unwrap().kid().to_string();
         assert!(matches!(
             keys.promote(T0, &policy()),
             Err(KeyringError::NotStaged)
         ));
 
-        let staged = keys.stage(T0).unwrap().after.next.unwrap().jwk.kid;
+        let staged = keys.stage(T0, &FILE).unwrap().after.next.unwrap().jwk.kid;
         let overlap = policy().promote_overlap().as_secs();
         match keys.promote(T0 + overlap - 1, &policy()) {
             Err(KeyringError::TooEarly { allowed_at, .. }) => assert_eq!(allowed_at, T0 + overlap),
@@ -1093,12 +1398,12 @@ mod tests {
     fn prev_is_retained_until_retire_and_retire_waits_out_its_window() {
         let (_d, keys) = fresh();
         let old = keys.state(T0).unwrap().current.kid;
-        keys.stage(T0).unwrap();
+        keys.stage(T0, &FILE).unwrap();
         let at = T0 + policy().promote_overlap().as_secs();
         keys.promote(at, &policy()).unwrap();
 
         // A second rotation cannot start promoting while prev is published.
-        keys.stage(at).unwrap();
+        keys.stage(at, &FILE).unwrap();
         assert!(matches!(
             keys.promote(at + 10 * 3600, &policy()),
             Err(KeyringError::PrevStillPublished { .. })
@@ -1128,7 +1433,7 @@ mod tests {
     fn every_file_rotation_writes_is_owner_read_only() {
         use std::os::unix::fs::PermissionsExt as _;
         let (_d, keys) = fresh();
-        keys.stage(T0).unwrap();
+        keys.stage(T0, &FILE).unwrap();
         keys.promote(T0 + policy().promote_overlap().as_secs(), &policy())
             .unwrap();
         for name in [CURRENT_KEY_FILE, PREV_KEY_FILE, ROTATION_RECORD_FILE] {
@@ -1138,7 +1443,7 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o400, "{name} has mode {mode:o}");
         }
-        keys.stage(T0 + 10 * 3600).unwrap();
+        keys.stage(T0 + 10 * 3600, &FILE).unwrap();
         let mode = fs::metadata(keys.dir().join(NEXT_KEY_FILE))
             .unwrap()
             .permissions()
@@ -1159,7 +1464,7 @@ mod tests {
     fn changing_key_bytes_without_changing_the_cache_stamp_cannot_reuse_a_signer() {
         use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
         let (_d, keys) = fresh();
-        let signer = KeyDirSigner::open(keys.clone()).unwrap();
+        let signer = KeyDirSigner::open(keys.clone(), FILE).unwrap();
         let path = keys.dir().join(CURRENT_KEY_FILE);
         let before = fs::metadata(&path).unwrap();
         let original = signer.signer().unwrap();
@@ -1208,7 +1513,7 @@ mod tests {
     fn a_key_readable_by_others_is_refused_everywhere() {
         use std::os::unix::fs::PermissionsExt as _;
         let (_d, keys) = fresh();
-        let signer = Arc::new(KeyDirSigner::open(keys.clone()).unwrap());
+        let signer = Arc::new(KeyDirSigner::open(keys.clone(), FILE).unwrap());
         let path = keys.dir().join(CURRENT_KEY_FILE);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o440)).unwrap();
         assert!(matches!(
@@ -1216,10 +1521,10 @@ mod tests {
             Err(KeyringError::Permissions { .. })
         ));
         assert!(matches!(
-            keys.stage(T0),
+            keys.stage(T0, &FILE),
             Err(KeyringError::Permissions { .. })
         ));
-        assert!(KeyDirSigner::open(keys.clone()).is_err());
+        assert!(KeyDirSigner::open(keys.clone(), FILE).is_err());
         // The running signer fails closed rather than keep signing.
         assert!(Arc::clone(&signer).current().is_err());
     }
@@ -1243,10 +1548,10 @@ mod tests {
     fn a_group_writable_key_directory_refuses_rotation() {
         use std::os::unix::fs::PermissionsExt as _;
         let (_d, keys) = fresh();
-        let signer = KeyDirSigner::open(keys.clone()).unwrap();
+        let signer = KeyDirSigner::open(keys.clone(), FILE).unwrap();
         fs::set_permissions(keys.dir(), fs::Permissions::from_mode(0o770)).unwrap();
         assert!(matches!(
-            keys.stage(T0),
+            keys.stage(T0, &FILE),
             Err(KeyringError::DirPermissions { .. })
         ));
         assert!(matches!(
@@ -1258,7 +1563,7 @@ mod tests {
             Err(KeyringError::DirPermissions { .. })
         ));
         assert!(matches!(
-            keys.create_current(),
+            keys.create_current(&FILE),
             Err(KeyringError::DirPermissions { .. })
         ));
     }
@@ -1269,7 +1574,7 @@ mod tests {
     #[test]
     fn an_unstamped_next_key_restarts_its_overlap() {
         let (_d, keys) = fresh();
-        keys.stage(T0).unwrap();
+        keys.stage(T0, &FILE).unwrap();
         fs::remove_file(keys.dir().join(ROTATION_RECORD_FILE)).unwrap();
         let later = T0 + 10 * 3600;
         match keys.promote(later, &policy()) {
@@ -1307,6 +1612,85 @@ mod tests {
     fn a_held_lock_refuses_a_second_rotation() {
         let (_d, keys) = fresh();
         fs::write(keys.dir().join(LOCK_FILE), b"").unwrap();
-        assert!(matches!(keys.stage(T0), Err(KeyringError::Locked { .. })));
+        assert!(matches!(
+            keys.stage(T0, &FILE),
+            Err(KeyringError::Locked { .. })
+        ));
+    }
+
+    fn unreachable_tpm(dir: &Path) -> KeyCustody {
+        KeyCustody::Tpm(crate::custody::TpmCustody::new(
+            crate::custody::TpmEndpoint::Device(dir.join("no-such-tpm")),
+        ))
+    }
+
+    /// A file directory never takes a TPM key and a TPM-custody node never
+    /// signs with a file key: custody is refused across, never converted
+    /// (ADR 0012). Each refusal happens before any TPM is touched.
+    #[test]
+    fn custody_is_never_crossed() {
+        let (dir, keys) = fresh();
+        let tpm = unreachable_tpm(dir.path());
+        assert_eq!(keys.custody_on_disk().unwrap(), Some(CustodyKind::File));
+        assert!(matches!(
+            keys.stage(T0, &tpm),
+            Err(KeyringError::CustodyMismatch {
+                on_disk: CustodyKind::File,
+                configured: CustodyKind::Tpm,
+                ..
+            })
+        ));
+        assert!(matches!(
+            keys.create_current(&tpm),
+            Err(KeyringError::CustodyMismatch { .. })
+        ));
+        let err = KeyDirSigner::open(keys.clone(), tpm).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains(crate::custody::FILE_CUSTODY_WAIVER_FLAG),
+            "{err}"
+        );
+        // The waiver's custody signs with it.
+        KeyDirSigner::open(keys.clone(), KeyCustody::File(FileCustody::Waived)).unwrap();
+    }
+
+    #[test]
+    fn a_directory_holding_both_layouts_is_refused() {
+        let (_d, keys) = fresh();
+        fs::write(keys.dir().join(TPM_NEXT_KEY_FILE), b"{}").unwrap();
+        assert!(matches!(
+            keys.custody_on_disk(),
+            Err(KeyringError::MixedCustody { .. })
+        ));
+        assert!(matches!(
+            keys.state(T0),
+            Err(KeyringError::MixedCustody { .. })
+        ));
+        assert!(matches!(
+            KeyDirSigner::open(keys.clone(), FILE),
+            Err(KeyringError::MixedCustody { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unreachable_tpm_creates_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = KeyDir::new(dir.path());
+        assert!(matches!(
+            keys.create_current(&unreachable_tpm(dir.path())),
+            Err(KeyringError::Tpm { .. })
+        ));
+        assert_eq!(keys.custody_on_disk().unwrap(), None);
+    }
+
+    #[test]
+    fn a_file_directory_publishes_file_custody() {
+        let (_d, keys) = fresh();
+        keys.stage(T0, &FILE).unwrap();
+        let held = keys.published_custody(T0).unwrap();
+        assert_eq!(held.len(), 2);
+        assert!(held.iter().all(|(_, h)| matches!(h, Held::File)));
+        let kids: Vec<String> = held.into_iter().map(|(j, _)| j.kid).collect();
+        assert_eq!(kids, self::kids(&keys.state(T0).unwrap().published()));
     }
 }

@@ -804,8 +804,13 @@ fn node(dir: &tempfile::TempDir) -> Node {
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
     };
-    let authority =
-        PodAuthority::new(&args, "nucleus.local", &st.state_dir).expect("authority builds");
+    let authority = PodAuthority::new(
+        &args,
+        "nucleus.local",
+        &st.state_dir,
+        &crate::pod_authority::NO_TPM,
+    )
+    .expect("authority builds");
     let operator = authority.root_minter().to_string();
     st.authority = Arc::new(authority);
     st.authz_policy = st.authz_policy.clone().with_operator_identity(&operator);
@@ -1153,8 +1158,13 @@ impl Walk {
     /// in place of the old one. The model does not change: nothing a restart
     /// does may show in any ledger.
     async fn restart(&mut self) -> Result<(), String> {
-        let fresh = PodAuthority::new(&self.node.args, "nucleus.local", &self.node.st.state_dir)
-            .map_err(|e| format!("the authority does not rebuild: {e}"))?;
+        let fresh = PodAuthority::new(
+            &self.node.args,
+            "nucleus.local",
+            &self.node.st.state_dir,
+            &crate::pod_authority::NO_TPM,
+        )
+        .map_err(|e| format!("the authority does not rebuild: {e}"))?;
         fresh.restore_from_disk().await;
         let fresh = Arc::new(fresh);
         self.node.st.authority = Arc::clone(&fresh);

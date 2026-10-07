@@ -571,6 +571,7 @@ mod tests {
                 },
                 "nucleus.local",
                 dir,
+                &crate::pod_authority::NO_TPM,
             )
             .expect("no registry to fail to load")
         }

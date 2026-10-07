@@ -77,6 +77,34 @@ pub enum AttestError {
     Other(String),
 }
 
+impl AttestError {
+    /// The TPM refused a command because a policy session's digest is not
+    /// the object's `authPolicy` (`TPM_RC_POLICY_FAIL`): for a federation key,
+    /// the PCRs are not the values it was bound to.
+    pub fn is_policy_failure(&self) -> bool {
+        self.format_one() == Some(0x01D)
+    }
+
+    /// The TPM refused a blob's integrity (`TPM_RC_INTEGRITY`): it was not
+    /// wrapped by this parent on this TPM.
+    pub fn is_integrity_failure(&self) -> bool {
+        self.format_one() == Some(0x01F)
+    }
+
+    /// A format-one response code's error number, without the handle,
+    /// session or parameter it names.
+    fn format_one(&self) -> Option<u32> {
+        match self {
+            Self::Tpm { code, .. } if code & 0x80 != 0 => Some(code & 0x3F),
+            Self::Tpm { .. }
+            | Self::Io(_)
+            | Self::Malformed(_)
+            | Self::PcrsKeptMoving(_)
+            | Self::Other(_) => None,
+        }
+    }
+}
+
 /// A byte pipe to a TPM: one command in, one response out.
 pub trait Transport {
     /// Send `command`, return the complete response.
@@ -155,27 +183,45 @@ fn tpm2b(out: &mut Vec<u8>, b: &[u8]) -> Result<(), AttestError> {
     Ok(())
 }
 
-fn pcr_selection(out: &mut Vec<u8>, pcrs: &BTreeSet<u8>) {
-    out.extend_from_slice(&1u32.to_be_bytes());
-    out.extend_from_slice(&TPM_ALG_SHA256.to_be_bytes());
-    let mut bits = [0u8; 3];
-    for p in pcrs {
-        if let Some(b) = bits.get_mut(usize::from(p / 8)) {
-            *b |= 1 << (p % 8);
-        }
-    }
-    out.push(3);
-    out.extend_from_slice(&bits);
+/// The selection as the policy check hashes it: one marshaller for the
+/// command and the verifier (ADR 0007 G-1).
+fn pcr_selection(out: &mut Vec<u8>, pcrs: &BTreeSet<u8>) -> Result<(), AttestError> {
+    out.extend_from_slice(&crate::key_attestation::pcr_selection_bytes(pcrs)?);
+    Ok(())
 }
 
-/// An empty-password session on one handle.
-const PASSWORD_SESSION: [u8; 13] = [
-    0, 0, 0, 9, // authorizationSize
-    0x40, 0, 0, 9, // TPM_RS_PW
-    0, 0, // nonce
-    1, // continueSession
-    0, 0, // hmac (empty password)
-];
+/// One authorization in a command's authorization area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Session {
+    /// `TPM_RS_PW` with the empty password.
+    Password,
+    /// A policy session whose policy needs no HMAC (no `PolicyAuthValue` or
+    /// `PolicyPassword`), ended by this command.
+    Policy(u32),
+}
+
+const TPM_RS_PW: u32 = 0x4000_0009;
+
+/// The authorization area: its size, then per session the handle, an empty
+/// nonce, the attributes and an empty HMAC.
+fn authorization_area(sessions: &[Session]) -> Result<Vec<u8>, AttestError> {
+    let mut each = Vec::new();
+    for s in sessions {
+        let (handle, continue_session) = match s {
+            Session::Password => (TPM_RS_PW, 1u8),
+            Session::Policy(h) => (*h, 0u8),
+        };
+        each.extend_from_slice(&handle.to_be_bytes());
+        each.extend_from_slice(&[0, 0]); // nonceCaller
+        each.push(continue_session);
+        each.extend_from_slice(&[0, 0]); // hmac
+    }
+    let size = u32::try_from(each.len())
+        .map_err(|_| AttestError::Other("authorization area too long".into()))?;
+    let mut out = size.to_be_bytes().to_vec();
+    out.extend_from_slice(&each);
+    Ok(out)
+}
 
 /// A TPM, through a transport.
 pub struct Tpm<T: Transport> {
@@ -183,9 +229,9 @@ pub struct Tpm<T: Transport> {
 }
 
 /// One command's response, past the header.
-struct Response {
-    handles: Vec<u32>,
-    params: Vec<u8>,
+pub(crate) struct Response {
+    pub(crate) handles: Vec<u32>,
+    pub(crate) params: Vec<u8>,
 }
 
 impl<T: Transport> Tpm<T> {
@@ -194,11 +240,11 @@ impl<T: Transport> Tpm<T> {
         Self { transport }
     }
 
-    fn command(
+    pub(crate) fn command(
         &mut self,
         code: u32,
         handles: &[u32],
-        authorized: bool,
+        sessions: &[Session],
         response_handles: usize,
         params: &[u8],
     ) -> Result<Response, AttestError> {
@@ -206,14 +252,14 @@ impl<T: Transport> Tpm<T> {
         for h in handles {
             body.extend_from_slice(&h.to_be_bytes());
         }
-        if authorized {
-            body.extend_from_slice(&PASSWORD_SESSION);
+        if !sessions.is_empty() {
+            body.extend_from_slice(&authorization_area(sessions)?);
         }
         body.extend_from_slice(params);
-        let tag = if authorized {
-            TPM_ST_SESSIONS
-        } else {
+        let tag = if sessions.is_empty() {
             TPM_ST_NO_SESSIONS
+        } else {
+            TPM_ST_SESSIONS
         };
         let size = u32::try_from(body.len().saturating_add(10))
             .map_err(|_| AttestError::Other("command too long".into()))?;
@@ -267,7 +313,7 @@ impl<T: Transport> Tpm<T> {
 
     /// Read a whole NV index (owner authorization, empty password).
     pub fn nv_read(&mut self, index: u32) -> Result<Vec<u8>, AttestError> {
-        let public = self.command(CC_NV_READ_PUBLIC, &[index], false, 0, &[])?;
+        let public = self.command(CC_NV_READ_PUBLIC, &[index], &[], 0, &[])?;
         let mut r = Reader::new(&public.params, "TPM2B_NV_PUBLIC");
         let nv_public = r.tpm2b()?;
         let mut p = Reader::new(nv_public, "TPMS_NV_PUBLIC");
@@ -283,7 +329,13 @@ impl<T: Transport> Tpm<T> {
             let mut params = Vec::new();
             params.extend_from_slice(&chunk.to_be_bytes());
             params.extend_from_slice(&offset.to_be_bytes());
-            let resp = self.command(CC_NV_READ, &[TPM_RH_OWNER, index], true, 0, &params)?;
+            let resp = self.command(
+                CC_NV_READ,
+                &[TPM_RH_OWNER, index],
+                &[Session::Password],
+                0,
+                &params,
+            )?;
             let mut r = Reader::new(&resp.params, "TPM2B_MAX_NV_BUFFER");
             let got = r.tpm2b()?;
             if got.is_empty() {
@@ -297,13 +349,31 @@ impl<T: Transport> Tpm<T> {
     /// Create a primary key under the endorsement hierarchy from a
     /// `TPMT_PUBLIC` template. Returns its handle and `TPM2B_PUBLIC`.
     pub fn create_primary(&mut self, template: &[u8]) -> Result<(u32, Vec<u8>), AttestError> {
+        self.create_primary_in(TPM_RH_ENDORSEMENT, template)
+    }
+
+    /// Create a primary key under `hierarchy` (a `TPM_RH_*` handle) from a
+    /// `TPMT_PUBLIC` template. A primary is derived from the hierarchy's seed
+    /// and the template, so the same template gives the same key on the same
+    /// TPM until that seed is changed.
+    pub(crate) fn create_primary_in(
+        &mut self,
+        hierarchy: u32,
+        template: &[u8],
+    ) -> Result<(u32, Vec<u8>), AttestError> {
         let mut params = Vec::new();
         // TPM2B_SENSITIVE_CREATE { userAuth: empty, data: empty }
         params.extend_from_slice(&[0, 4, 0, 0, 0, 0]);
         tpm2b(&mut params, template)?;
         tpm2b(&mut params, &[])?; // outsideInfo
         params.extend_from_slice(&0u32.to_be_bytes()); // creationPCR: none
-        let resp = self.command(CC_CREATE_PRIMARY, &[TPM_RH_ENDORSEMENT], true, 1, &params)?;
+        let resp = self.command(
+            CC_CREATE_PRIMARY,
+            &[hierarchy],
+            &[Session::Password],
+            1,
+            &params,
+        )?;
         let handle = *resp
             .handles
             .first()
@@ -321,8 +391,8 @@ impl<T: Transport> Tpm<T> {
         let mut want = pcrs.clone();
         while !want.is_empty() {
             let mut params = Vec::new();
-            pcr_selection(&mut params, &want);
-            let resp = self.command(CC_PCR_READ, &[], false, 0, &params)?;
+            pcr_selection(&mut params, &want)?;
+            let resp = self.command(CC_PCR_READ, &[], &[], 0, &params)?;
             let mut r = Reader::new(&resp.params, "PCR_Read response");
             let _update_counter = r.be_u32()?;
             let banks = r.be_u32()?;
@@ -374,8 +444,8 @@ impl<T: Transport> Tpm<T> {
         let mut params = Vec::new();
         tpm2b(&mut params, qualifying)?;
         params.extend_from_slice(&TPM_ALG_NULL.to_be_bytes());
-        pcr_selection(&mut params, pcrs);
-        let resp = self.command(CC_QUOTE, &[handle], true, 0, &params)?;
+        pcr_selection(&mut params, pcrs)?;
+        let resp = self.command(CC_QUOTE, &[handle], &[Session::Password], 0, &params)?;
         let mut r = Reader::new(&resp.params, "Quote response");
         let attest = r.tpm2b()?.to_vec();
         let signature = r.bytes(r.remaining())?.to_vec();
@@ -384,7 +454,7 @@ impl<T: Transport> Tpm<T> {
 
     /// Flush a transient object.
     pub fn flush(&mut self, handle: u32) -> Result<(), AttestError> {
-        self.command(CC_FLUSH_CONTEXT, &[], false, 0, &handle.to_be_bytes())
+        self.command(CC_FLUSH_CONTEXT, &[], &[], 0, &handle.to_be_bytes())
             .map(|_| ())
     }
 }
@@ -401,7 +471,7 @@ pub enum AkTemplate {
 }
 
 impl AkTemplate {
-    fn template<T: Transport>(&self, tpm: &mut Tpm<T>) -> Result<Vec<u8>, AttestError> {
+    pub(crate) fn template<T: Transport>(&self, tpm: &mut Tpm<T>) -> Result<Vec<u8>, AttestError> {
         match self {
             Self::NvIndex(i) => tpm.nv_read(*i),
             Self::DefaultEccP256 => {
@@ -472,8 +542,8 @@ pub fn default_pcrs() -> BTreeSet<u8> {
 /// An attester: a TPM, an AK template, the PCRs to quote, the logs, and the
 /// anchor the node claims for its AK.
 pub struct Attester<T: Transport> {
-    tpm: Tpm<T>,
-    template: AkTemplate,
+    pub(crate) tpm: Tpm<T>,
+    pub(crate) template: AkTemplate,
     pcrs: BTreeSet<u8>,
     logs: LogSources,
     anchor: AkAnchorClaim,
@@ -495,6 +565,12 @@ impl<T: Transport> Attester<T> {
             logs,
             anchor,
         }
+    }
+
+    /// The TPM this attester speaks to, for a caller that must share its one
+    /// connection (a software TPM's socket serves one client at a time).
+    pub fn tpm(&mut self) -> &mut Tpm<T> {
+        &mut self.tpm
     }
 
     /// The AK's `TPM2B_PUBLIC`, for an operator to fingerprint and pin.

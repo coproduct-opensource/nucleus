@@ -176,30 +176,57 @@ pub fn load_or_create_cert_root_signing_key(state_dir: &Path) -> SigningKey {
 /// * the file exists with group/other permission bits, a foreign owner, or as
 ///   a symlink. That key may have been read by someone else; the node refuses
 ///   to sign with it rather than regenerate over the evidence.
+///
+/// # Custody (ADR 0012)
+///
+/// `custody` is decided once from the node's flags
+/// (`NodeEvidenceArgs::federation_key_custody`). With a TPM it is created in
+/// the TPM, bound to the boot PCRs, and the state directory holds only the
+/// TPM's wrapping of it. A TPM key bound to ANOTHER boot state (the node was
+/// upgraded, or booted with another command line) can never sign here, so it
+/// is replaced like an unreadable file, with the same warning. A directory of
+/// the other custody is refused, never converted: changing where the key
+/// lives changes the key, and upstreams must be told.
 pub fn load_or_create_jwt_svid_signing_key(
     state_dir: &Path,
+    custody: &nucleus_federation::KeyCustody,
 ) -> Result<nucleus_federation::keyring::KeyDirSigner, String> {
-    use nucleus_federation::keyring::{KeyDir, KeyDirSigner, KeyringError};
+    use nucleus_federation::KeyCustody;
+    use nucleus_federation::keyring::{KeyDir, KeyDirSigner, KeyringError, StoredKey};
     let label = "federation issuer signing key";
     let keys = KeyDir::new(state_dir);
+    let replace = |why: &dyn std::fmt::Display| -> Result<(), String> {
+        warn!(
+            reason = %why,
+            "{label} cannot be used; regenerating — every upstream that registered \
+             the old key (by kid) will refuse this node's assertions until updated"
+        );
+        keys.create_current(custody)
+            .map(|_| ())
+            .map_err(|e| format!("{label}: {e}"))
+    };
 
-    match keys.load_current() {
-        Ok(Some(_)) => debug!(dir = %state_dir.display(), "loaded persisted {label}"),
-        Ok(None) => {
-            keys.create_current().map_err(|e| format!("{label}: {e}"))?;
-            info!(dir = %state_dir.display(), "generated and persisted new {label}");
+    match (keys.load_current(), custody) {
+        (Ok(Some(StoredKey::Tpm(key, jwk))), KeyCustody::Tpm(tpm)) => {
+            if tpm.usable_now(&key).map_err(|e| format!("{label}: {e}"))? {
+                debug!(dir = %state_dir.display(), kid = %jwk.kid, "loaded TPM-resident {label}");
+            } else {
+                replace(&format!(
+                    "the TPM-resident key {} is bound to another boot state",
+                    jwk.kid
+                ))?;
+            }
         }
-        Err(e @ KeyringError::Key { .. }) => {
-            warn!(
-                error = %e,
-                "{label} file is unreadable; regenerating — every upstream that registered \
-                 the old key (by kid) will refuse this node's assertions until updated"
-            );
-            keys.create_current().map_err(|e| format!("{label}: {e}"))?;
+        (Ok(Some(_)), _) => debug!(dir = %state_dir.display(), "loaded persisted {label}"),
+        (Ok(None), _) => {
+            keys.create_current(custody)
+                .map_err(|e| format!("{label}: {e}"))?;
+            info!(dir = %state_dir.display(), custody = %custody.kind(), "generated and persisted new {label}");
         }
-        Err(e) => return Err(format!("{label}: {e}")),
+        (Err(e @ KeyringError::Key { .. }), _) => replace(&e)?,
+        (Err(e), _) => return Err(format!("{label}: {e}")),
     }
-    KeyDirSigner::open(keys).map_err(|e| format!("{label}: {e}"))
+    KeyDirSigner::open(keys, custody.clone()).map_err(|e| format!("{label}: {e}"))
 }
 
 /// Shared implementation for the persisted per-node Ed25519 keys. `filename` is
@@ -335,6 +362,27 @@ mod tests {
         assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
     }
 
+    const NO_TPM: nucleus_federation::KeyCustody =
+        nucleus_federation::KeyCustody::File(nucleus_federation::FileCustody::NoTpmConfigured);
+
+    /// A file key on a node configured for TPM custody is refused, not
+    /// signed with and not silently converted (ADR 0012).
+    #[test]
+    fn a_file_key_on_a_tpm_node_is_refused_without_the_waiver() {
+        let dir = tempfile::tempdir().unwrap();
+        load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap();
+        let tpm = nucleus_federation::KeyCustody::Tpm(nucleus_federation::TpmCustody::new(
+            nucleus_federation::TpmEndpoint::Device(dir.path().join("no-such-tpm")),
+        ));
+        let err = load_or_create_jwt_svid_signing_key(dir.path(), &tpm).unwrap_err();
+        assert!(
+            err.contains(nucleus_federation::FILE_CUSTODY_WAIVER_FLAG),
+            "{err}"
+        );
+        let waived = nucleus_federation::KeyCustody::File(nucleus_federation::FileCustody::Waived);
+        load_or_create_jwt_svid_signing_key(dir.path(), &waived).unwrap();
+    }
+
     /// The kid the node would sign its next assertion with.
     fn signing_kid(signer: nucleus_federation::keyring::KeyDirSigner) -> String {
         use nucleus_federation::CurrentSigner as _;
@@ -351,8 +399,9 @@ mod tests {
     #[test]
     fn the_federation_issuer_key_persists_read_only_with_a_stable_kid() {
         let dir = tempfile::tempdir().unwrap();
-        let first =
-            signing_kid(load_or_create_jwt_svid_signing_key(dir.path()).expect("generates"));
+        let first = signing_kid(
+            load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).expect("generates"),
+        );
         let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
         assert!(path.exists());
         #[cfg(unix)]
@@ -362,12 +411,13 @@ mod tests {
             assert_eq!(mode & 0o777, 0o400, "private key must be mode 0400");
         }
         let restarted =
-            signing_kid(load_or_create_jwt_svid_signing_key(dir.path()).expect("reloads"));
+            signing_kid(load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).expect("reloads"));
         assert_eq!(first, restarted, "the kid changed across a restart");
 
         // And it is its own key, not one of the Ed25519 role keys' files.
         let other = tempfile::tempdir().unwrap();
-        let elsewhere = signing_kid(load_or_create_jwt_svid_signing_key(other.path()).unwrap());
+        let elsewhere =
+            signing_kid(load_or_create_jwt_svid_signing_key(other.path(), &NO_TPM).unwrap());
         assert_ne!(first, elsewhere, "two nodes share a federation key");
     }
 
@@ -379,7 +429,8 @@ mod tests {
         use nucleus_federation::CurrentSigner as _;
         use nucleus_federation::keyring::{KeyDir, RotationPolicy};
         let dir = tempfile::tempdir().unwrap();
-        let node = std::sync::Arc::new(load_or_create_jwt_svid_signing_key(dir.path()).unwrap());
+        let node =
+            std::sync::Arc::new(load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap());
         let old = std::sync::Arc::clone(&node)
             .current()
             .unwrap()
@@ -388,7 +439,14 @@ mod tests {
 
         let operator = KeyDir::new(dir.path());
         let t0 = 1_790_000_000;
-        let staged = operator.stage(t0).unwrap().after.next.unwrap().jwk.kid;
+        let staged = operator
+            .stage(t0, &NO_TPM)
+            .unwrap()
+            .after
+            .next
+            .unwrap()
+            .jwk
+            .kid;
         assert_eq!(std::sync::Arc::clone(&node).current().unwrap().kid(), old);
 
         let policy = RotationPolicy::default();
@@ -407,10 +465,10 @@ mod tests {
     fn a_federation_key_readable_by_others_stops_the_node() {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir().unwrap();
-        load_or_create_jwt_svid_signing_key(dir.path()).unwrap();
+        load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap();
         let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
-        let err = load_or_create_jwt_svid_signing_key(dir.path()).unwrap_err();
+        let err = load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap_err();
         assert!(err.contains("mode"), "{err}");
     }
 

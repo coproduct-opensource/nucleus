@@ -24,8 +24,8 @@ use crate::reference::{
 };
 use crate::tpm::{AkPublic, build};
 
-const SOURCE: &str = "cloud-shielded-identity:project/zone/instance";
-const NOW: i64 = 1_791_000_000;
+pub(crate) const SOURCE: &str = "cloud-shielded-identity:project/zone/instance";
+pub(crate) const NOW: i64 = 1_791_000_000;
 const NODE_BIN: &str = "/opt/nucleus/bin/nucleus-node";
 const CMDLINE: &str = "root=/dev/vda ro ima_policy=nucleus ima_hash=sha256";
 
@@ -35,7 +35,7 @@ fn b64(b: &[u8]) -> String {
 
 /// What the software node boots and runs.
 #[derive(Clone)]
-struct Boot {
+pub(crate) struct Boot {
     shim: [u8; 32],
     kernel: &'static [u8],
     cmdline: &'static str,
@@ -45,7 +45,7 @@ struct Boot {
     late: Vec<(&'static str, [u8; 32])>,
 }
 
-fn honest_boot() -> Boot {
+pub(crate) fn honest_boot() -> Boot {
     Boot {
         shim: [0x51; 32],
         kernel: b"vmlinuz contents",
@@ -56,18 +56,18 @@ fn honest_boot() -> Boot {
     }
 }
 
-fn ak() -> SigningKey {
+pub(crate) fn ak() -> SigningKey {
     SigningKey::from_slice(&[0x42; 32]).unwrap()
 }
 
-fn binding() -> KeyBinding {
+pub(crate) fn binding() -> KeyBinding {
     KeyBinding {
         executor_key: ExecutorKey::Ed25519([0xE0; 32]),
         federation: Federation::NotFederated,
     }
 }
 
-fn nonce(b: u8) -> Nonce {
+pub(crate) fn nonce(b: u8) -> Nonce {
     Nonce::new(vec![b; 32]).unwrap()
 }
 
@@ -78,6 +78,19 @@ fn node(
     bind: &KeyBinding,
     freshness: Freshness,
     claim: AkAnchorClaim,
+) -> NodeEvidence {
+    node_quoting(boot, ak, bind, freshness, claim, &[])
+}
+
+/// [`node`], also quoting `extra` PCRs that no event in the log extends
+/// (as firmware leaves PCR 2 or 14 on a machine with no option ROMs or MOK).
+pub(crate) fn node_quoting(
+    boot: &Boot,
+    ak: &SigningKey,
+    bind: &KeyBinding,
+    freshness: Freshness,
+    claim: AkAnchorClaim,
+    extra: &[(u8, [u8; 32])],
 ) -> NodeEvidence {
     let (log, mut pcrs) = LogBuilder::new()
         .efi_app(boot.shim)
@@ -92,6 +105,7 @@ fn node(
     }
     pcrs.insert(10, pcr10);
     pcrs.insert(0, [0u8; 32]);
+    pcrs.extend(extra.iter().copied());
     for (path, d) in &boot.late {
         let mut scratch = pcr10;
         ima.extend(ima_build::entry(&mut scratch, path, *d));
@@ -139,7 +153,7 @@ fn honest(freshness: Freshness) -> NodeEvidence {
     )
 }
 
-fn reference() -> ReferenceManifest {
+pub(crate) fn reference() -> ReferenceManifest {
     let h = honest_boot();
     let set = |d: String| DigestSet {
         allowed: [d.clone()].into_iter().collect(),
@@ -168,7 +182,7 @@ fn reference() -> ReferenceManifest {
     }
 }
 
-fn pinned() -> AnchorPolicy {
+pub(crate) fn pinned() -> AnchorPolicy {
     let ak_pub = AkPublic::from_tpm2b_public(&build::p256_public(
         ak().verifying_key(),
         build::AK_ATTRIBUTES,
@@ -183,7 +197,7 @@ fn pinned() -> AnchorPolicy {
     }
 }
 
-fn challenge(sent: u8) -> FreshnessExpectation {
+pub(crate) fn challenge(sent: u8) -> FreshnessExpectation {
     FreshnessExpectation::Challenge { sent: nonce(sent) }
 }
 

@@ -1,0 +1,25 @@
+{
+  "profile": "nucleus-federation-key-attestation/v1",
+  "keys": [
+    {
+      "kid": "1rfizPdFn1jY6voXKjLT1ZykE2dO3our9EuarLZcAsE",
+      "custody": {
+        "tpm": {
+          "public": "AHgAIwALAAQEMgAgvH+pnf9Gam6Xf419TQ/Lu3PLViYYmRc2YPKhQpUaFvwAEAAYAAsAAwAQACAgt+eWQ0lotlAmggBXF6fGLzu9F4wV5gyRsecaCoqXnAAgDRleM6oikv/dgHY3+EGr5nhAa1Aag9IyUyQMvIUmO60=",
+          "parent_public": "AFoAIwALAAMEcgAAAAYAgABDABAAAwAQACCrN4L4DP1SQIZ/h/RRkjzL/s95j2uVMNU7wxi+2kSZfQAgJOxC6qlFlwct/r5ze9kwcbQ/QKh7nxRnDBersLL6O7w=",
+          "policy_pcrs": [
+            0,
+            2,
+            4,
+            7,
+            8,
+            9,
+            14
+          ],
+          "certify_attest": "/1RDR4AXACIACy2H4t8p9SNb2++9GGx5a9YSXf4MiuBvZBM7wxo284eaACD+P4uooVSNnSWkKKOXBGXKqxrdkpo94R+q8ND44XNROwAAAAAAANbTAAAABQAAAAABIBYFEQAWKAAAIgAL/MAIhDDmF/iTRxa8F8vxmIwQ7zH3HKphVf9BeDzR00sAIgALiFpx8ODHzQlglPdsOcmL1GxHd4SsJwlRDntJ+vXUDZw=",
+          "certify_signature": "ABgACwAg92U00QiNj47ekhgDNs21l263x0JOIt/QLmjTZbgByeEAIFo37gWrPG+NAGxDOKeNuaSbiiY6yhTZmGhSumRhLHS+"
+        }
+      }
+    }
+  ]
+}

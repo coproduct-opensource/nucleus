@@ -49,7 +49,9 @@ fn authority(dir: &Path) -> Arc<PodAuthority> {
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
     };
-    Arc::new(PodAuthority::new(&args, TD, dir).expect("authority builds"))
+    Arc::new(
+        PodAuthority::new(&args, TD, dir, &crate::pod_authority::NO_TPM).expect("authority builds"),
+    )
 }
 
 fn spec_with(lattice: PermissionLattice) -> nucleus_spec::PodSpec {

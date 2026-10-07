@@ -239,6 +239,12 @@ pub struct RotateArgs {
     /// checked against it.
     #[arg(long, env = "NUCLEUS_NODE_UPSTREAMS", hide_env_values = true)]
     upstreams: Option<PathBuf>,
+    /// With `--stage` on a node whose key is TPM-resident (ADR 0012): the TPM
+    /// device to create the next key in, the node's `--node-evidence-tpm`.
+    /// Required there, refused for a file-custody directory: a rotation
+    /// never changes where the key lives.
+    #[arg(long, value_name = "DEVICE")]
+    tpm: Option<PathBuf>,
 }
 
 impl FederationArgs {
@@ -438,6 +444,27 @@ fn issuer(a: IssuerArgs, now: u64, out: &mut dyn Write, err: &mut dyn Write) -> 
         for k in state.published() {
             writeln!(err, "  published kid {}", k.kid)?;
         }
+        // The node's custody statements for those keys (ADR 0012), when it
+        // has a TPM attester: published beside the JWKS they describe.
+        if let Some(state_dir) = a.state_dir.as_deref() {
+            let source = state_dir.join(nucleus_federation::custody::KEY_ATTESTATION_STATE_FILE);
+            match std::fs::read(&source) {
+                Ok(bytes) => {
+                    let doc: serde_json::Value = serde_json::from_slice(&bytes)
+                        .with_context(|| format!("parse {}", source.display()))?;
+                    let k =
+                        write_public(dir, nucleus_federation::custody::KEY_ATTESTATION_PATH, &doc)?;
+                    writeln!(err, "wrote {}", k.display())?;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => writeln!(
+                    err,
+                    "no key custody statements at {} (the node has no TPM attester): \
+                     relying parties cannot check that these keys are TPM-resident",
+                    source.display()
+                )?,
+                Err(e) => return Err(e).with_context(|| format!("read {}", source.display())),
+            }
+        }
     }
     Ok(())
 }
@@ -560,7 +587,19 @@ fn rotate(a: RotateArgs, now: u64, out: &mut dyn Write, err: &mut dyn Write) -> 
     }
     let keys = KeyDir::new(&a.state_dir);
     let (step, transition) = if a.stage {
-        ("stage", Some(keys.stage(now)?))
+        // The next key is made where the current one lives; `--tpm` names
+        // that TPM, and its absence means this operator has none to offer.
+        let custody = match &a.tpm {
+            Some(device) => {
+                nucleus_federation::KeyCustody::Tpm(nucleus_federation::TpmCustody::new(
+                    nucleus_federation::TpmEndpoint::Device(device.clone()),
+                ))
+            }
+            None => nucleus_federation::KeyCustody::File(
+                nucleus_federation::FileCustody::NoTpmConfigured,
+            ),
+        };
+        ("stage", Some(keys.stage(now, &custody)?))
     } else if a.promote {
         ("promote", Some(keys.promote(now, &policy)?))
     } else if a.retire {
@@ -727,7 +766,11 @@ var = "SEARCH_API_TOKEN"
 
     fn node_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        KeyDir::new(dir.path()).create_current().unwrap();
+        KeyDir::new(dir.path())
+            .create_current(&nucleus_federation::KeyCustody::File(
+                nucleus_federation::FileCustody::NoTpmConfigured,
+            ))
+            .unwrap();
         dir
     }
 

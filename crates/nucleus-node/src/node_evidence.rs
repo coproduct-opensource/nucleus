@@ -17,7 +17,15 @@
 //!
 //! Every quote's qualifying data binds the executor key that signs receipts
 //! and, when the node is a federation issuer, the digest of its JWKS.
+//!
+//! On a federating node with a TPM, the federation key itself lives in the
+//! TPM, bound to the boot PCRs (ADR 0012), and every epoch the AK certifies
+//! each published key (`TPM2_Certify`). The custody statements are stored
+//! beside the evidence (`nucleus_federation::custody::KEY_ATTESTATION_STATE_FILE`,
+//! and content-addressed in the store) and served at
+//! `GET /v1/node/federation-keys`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
@@ -27,11 +35,16 @@ use axum::extract::{Path as UrlPath, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use nucleus_ci_verdict::execution::NodePlatform;
+use nucleus_federation::custody::KEY_ATTESTATION_STATE_FILE;
+use nucleus_federation::keyring::{Held, KeyDir};
+use nucleus_federation::{FileCustody, KeyCustody, TpmCustody, TpmEndpoint};
 use nucleus_node_evidence::attester::{
     AkTemplate, Attester, DeviceTransport, LogSources, Tpm, default_pcrs,
 };
 use nucleus_node_evidence::{
-    AkAnchorClaim, ExecutorKey, Federation, Freshness, KeyBinding, Nonce, evidence_digest,
+    AkAnchorClaim, AttestedKey, CustodyStatement, ExecutorKey, Federation,
+    FederationKeyAttestation, Freshness, KEY_ATTESTATION_PROFILE, KeyBinding, Nonce,
+    evidence_digest,
 };
 use tracing::{info, warn};
 
@@ -62,9 +75,43 @@ pub(crate) struct NodeEvidenceArgs {
     /// Seconds between epoch re-quotes.
     #[arg(long, env = "NUCLEUS_NODE_EVIDENCE_EPOCH_SECS", default_value_t = 300)]
     node_evidence_epoch_secs: u64,
+    /// Keep the federation issuer key in a file although this node has a TPM
+    /// (ADR 0012). Without it, a node with `--node-evidence-tpm` creates its
+    /// federation key in the TPM, bound to the boot PCRs, so a copied disk
+    /// cannot mint this issuer's credentials. With it, the key is a file, the
+    /// waiver is logged at start-up, and every custody statement the node
+    /// publishes says so. A flag only, never an env var: ambient
+    /// configuration is not a waiver.
+    #[arg(long = "allow-federation-key-in-file", action = clap::ArgAction::SetTrue)]
+    allow_federation_key_in_file: bool,
     /// The anonymous, read-only evidence listener (`public_evidence`).
     #[command(flatten)]
     pub(crate) public: crate::public_evidence::PublicEvidenceArgs,
+}
+
+impl NodeEvidenceArgs {
+    /// Where the federation issuer key lives, decided from the TPM flag and
+    /// the waiver: the one place that decides it (ADR 0007 G-1). A TPM
+    /// configured and not waived is TPM custody; there is no default that
+    /// picks a file (B-1).
+    ///
+    /// # Errors
+    /// The waiver without a TPM: a waiver that waives nothing is a
+    /// misconfiguration, not a no-op (B-5).
+    pub(crate) fn federation_key_custody(&self) -> Result<KeyCustody, String> {
+        match (&self.node_evidence_tpm, self.allow_federation_key_in_file) {
+            (Some(device), false) => Ok(KeyCustody::Tpm(TpmCustody::new(TpmEndpoint::Device(
+                device.clone(),
+            )))),
+            (Some(_), true) => Ok(KeyCustody::File(FileCustody::Waived)),
+            (None, false) => Ok(KeyCustody::File(FileCustody::NoTpmConfigured)),
+            (None, true) => Err(format!(
+                "{} waives TPM custody of the federation key, but no TPM is configured \
+                 (--node-evidence-tpm is unset)",
+                nucleus_federation::FILE_CUSTODY_WAIVER_FLAG
+            )),
+        }
+    }
 }
 
 fn parse_template(s: &str) -> Result<AkTemplate, String> {
@@ -106,8 +153,12 @@ struct Epoch {
 pub(crate) struct TpmNode {
     attester: Mutex<Attester<DeviceTransport>>,
     executor_key: [u8; 32],
-    /// The state dir holding the federation keyring, when federation is on.
-    federation_dir: Option<PathBuf>,
+    /// The state dir holding the federation keyring and the key's custody,
+    /// when federation is on.
+    federation: Option<(PathBuf, KeyCustody)>,
+    /// Custody statements already made, by `kid`: a certification of a key
+    /// stays true for the key's life, so each is made once.
+    certified: Mutex<BTreeMap<String, CustodyStatement>>,
     store: PathBuf,
     latest: RwLock<Epoch>,
     epoch_secs: u64,
@@ -145,9 +196,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 impl TpmNode {
     fn binding(&self) -> Result<KeyBinding, String> {
-        let federation = match &self.federation_dir {
+        let federation = match &self.federation {
             None => Federation::NotFederated,
-            Some(dir) => {
+            Some((dir, _)) => {
                 let now = u64::try_from(unix_now()?).map_err(|e| e.to_string())?;
                 let state = nucleus_federation::keyring::KeyDir::new(dir)
                     .state(now)
@@ -194,7 +245,70 @@ impl TpmNode {
             .latest
             .write()
             .map_err(|_| "epoch lock poisoned".to_string())? = epoch.clone();
+        // A custody statement that cannot be made leaves the last one in
+        // place; it describes keys by kid, so it never says something false
+        // about a key it names. A relying party missing a new kid gets
+        // `Unstated`, never a pass.
+        if let Err(e) = self.publish_key_attestation() {
+            warn!(error = %e, "federation key custody statements not refreshed");
+        }
         Ok(epoch)
+    }
+
+    /// Certify every published federation key with the AK, and store the
+    /// statements beside the evidence (ADR 0012). A file key is stated as a
+    /// file, with the reason.
+    fn publish_key_attestation(&self) -> Result<(), String> {
+        let Some((dir, custody)) = &self.federation else {
+            return Ok(());
+        };
+        let now = u64::try_from(unix_now()?).map_err(|e| e.to_string())?;
+        let published = KeyDir::new(dir)
+            .published_custody(now)
+            .map_err(|e| format!("federation keyring: {e}"))?;
+        let mut certified = self
+            .certified
+            .lock()
+            .map_err(|_| "custody cache lock poisoned".to_string())?;
+        let mut keys = Vec::new();
+        for (jwk, held) in published {
+            let custody = match (held, custody) {
+                (Held::Tpm(key), _) => match certified.get(&jwk.kid) {
+                    Some(done) => done.clone(),
+                    None => {
+                        let mut attester = self
+                            .attester
+                            .lock()
+                            .map_err(|_| "TPM attester lock poisoned".to_string())?;
+                        let made = attester
+                            .certify_federation_key(&key)
+                            .map_err(|e| format!("certifying {}: {e}", jwk.kid))?;
+                        certified.insert(jwk.kid.clone(), made.clone());
+                        made
+                    }
+                },
+                (Held::File, KeyCustody::File(why)) => CustodyStatement::File {
+                    reason: why.reason(),
+                },
+                (Held::File, KeyCustody::Tpm(_)) => CustodyStatement::File {
+                    reason: "a file key in a directory this node holds in TPM custody; \
+                             the node refuses to sign with it"
+                        .into(),
+                },
+            };
+            keys.push(AttestedKey {
+                kid: jwk.kid,
+                custody,
+            });
+        }
+        let doc = FederationKeyAttestation {
+            profile: KEY_ATTESTATION_PROFILE.into(),
+            keys,
+        };
+        let bytes = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
+        let digest = hex::encode(evidence_digest(&bytes));
+        write_atomic(&self.store.join(format!("{digest}.json")), &bytes)?;
+        write_atomic(&dir.join(KEY_ATTESTATION_STATE_FILE), &bytes)
     }
 
     fn stored(&self, digest: &str) -> Option<Vec<u8>> {
@@ -226,6 +340,20 @@ impl NodePlatformSource {
         }
         let transport = DeviceTransport::open(device)
             .map_err(|e| format!("--node-evidence-tpm {}: {e}", device.display()))?;
+        let federation = if federated {
+            let custody = args.federation_key_custody()?;
+            if custody == KeyCustody::File(FileCustody::Waived) {
+                warn!(
+                    "{}: the federation issuer key is a FILE on a node with a TPM; a copy \
+                     of this disk can mint this issuer's credentials. Every custody statement \
+                     this node publishes records the waiver",
+                    nucleus_federation::FILE_CUSTODY_WAIVER_FLAG
+                );
+            }
+            Some((state_dir.to_path_buf(), custody))
+        } else {
+            None
+        };
         let store = state_dir.join("node-evidence");
         std::fs::create_dir_all(&store)
             .map_err(|e| format!("creating {}: {e}", store.display()))?;
@@ -243,7 +371,8 @@ impl NodePlatformSource {
                 anchor,
             )),
             executor_key,
-            federation_dir: federated.then(|| state_dir.to_path_buf()),
+            federation,
+            certified: Mutex::new(BTreeMap::new()),
             store,
             latest: RwLock::new(Epoch {
                 counter: previous,
@@ -352,6 +481,25 @@ async fn by_digest(State(state): State<NodeState>, UrlPath(digest): UrlPath<Stri
     }
 }
 
+/// `GET /v1/node/federation-keys` — the custody statements of the published
+/// federation keys (ADR 0012), as last stored.
+async fn federation_keys(State(state): State<NodeState>) -> Response {
+    match state.node_platform.as_ref() {
+        NodePlatformSource::Unattested(reason) => unattested(reason),
+        NodePlatformSource::Tpm(node) => match &node.federation {
+            None => (
+                StatusCode::NOT_FOUND,
+                "this node is not a federation issuer",
+            )
+                .into_response(),
+            Some((dir, _)) => match std::fs::read(dir.join(KEY_ATTESTATION_STATE_FILE)) {
+                Ok(bytes) => evidence_response(bytes),
+                Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+            },
+        },
+    }
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ChallengeRequest {
@@ -393,6 +541,7 @@ pub(crate) fn routes() -> axum::Router<NodeState> {
     axum::Router::new()
         .route("/v1/node/evidence", get(latest))
         .route("/v1/node/evidence/challenge", post(challenge))
+        .route("/v1/node/federation-keys", get(federation_keys))
         .route("/v1/node/evidence/{digest}", get(by_digest))
 }
 
@@ -429,6 +578,7 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            allow_federation_key_in_file: false,
             public: Default::default(),
         };
         let dir = tempfile::tempdir().unwrap();
@@ -447,9 +597,54 @@ mod tests {
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
+            allow_federation_key_in_file: false,
             public: Default::default(),
         };
         assert!(NodePlatformSource::start(&args, dir.path(), [1; 32], false).is_err());
+    }
+
+    #[test]
+    fn a_tpm_holds_the_federation_key_unless_waived_by_name() {
+        let args = |tpm: Option<&str>, waived: bool| NodeEvidenceArgs {
+            node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_ak_template: "default-ecc".into(),
+            node_evidence_anchor: "none".into(),
+            node_evidence_epoch_secs: 300,
+            allow_federation_key_in_file: waived,
+            public: Default::default(),
+        };
+        assert_eq!(
+            args(Some("/dev/tpmrm0"), false).federation_key_custody(),
+            Ok(KeyCustody::Tpm(TpmCustody::new(TpmEndpoint::Device(
+                "/dev/tpmrm0".into()
+            ))))
+        );
+        assert_eq!(
+            args(Some("/dev/tpmrm0"), true).federation_key_custody(),
+            Ok(KeyCustody::File(FileCustody::Waived))
+        );
+        assert_eq!(
+            args(None, false).federation_key_custody(),
+            Ok(KeyCustody::File(FileCustody::NoTpmConfigured))
+        );
+        let err = args(None, true).federation_key_custody().unwrap_err();
+        assert!(
+            err.contains(nucleus_federation::FILE_CUSTODY_WAIVER_FLAG),
+            "{err}"
+        );
+        // The waiver is a flag, never read from the environment.
+        use clap::CommandFactory as _;
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            a: NodeEvidenceArgs,
+        }
+        let cmd = Cli::command();
+        let waiver = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some("allow-federation-key-in-file"))
+            .expect("the waiver flag exists");
+        assert_eq!(waiver.get_env(), None);
     }
 
     #[test]

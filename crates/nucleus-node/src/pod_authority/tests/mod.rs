@@ -22,7 +22,7 @@ fn args() -> AuthorityArgs {
 }
 
 fn authority(dir: &Path, args: AuthorityArgs) -> PodAuthority {
-    PodAuthority::new(&args, TD, dir).expect("authority builds")
+    PodAuthority::new(&args, TD, dir, &crate::pod_authority::NO_TPM).expect("authority builds")
 }
 
 fn spec_with(lattice: PermissionLattice) -> PodSpec {
@@ -893,15 +893,21 @@ fn federated_args(dir: &Path, issuer: Option<&str>) -> AuthorityArgs {
 #[test]
 fn a_federated_registry_without_an_issuer_refuses_to_start() {
     let dir = tempfile::tempdir().unwrap();
-    let err = PodAuthority::new(&federated_args(dir.path(), None), TD, dir.path())
-        .err()
-        .expect("no issuer: refused");
+    let err = PodAuthority::new(
+        &federated_args(dir.path(), None),
+        TD,
+        dir.path(),
+        &crate::pod_authority::NO_TPM,
+    )
+    .err()
+    .expect("no issuer: refused");
     assert!(err.contains("--federation-issuer"), "{err}");
     assert!(
         PodAuthority::new(
             &federated_args(dir.path(), Some("http://federation.example.invalid")),
             TD,
-            dir.path()
+            dir.path(),
+            &crate::pod_authority::NO_TPM,
         )
         .is_err(),
         "a cleartext issuer was accepted"
@@ -912,6 +918,7 @@ fn a_federated_registry_without_an_issuer_refuses_to_start() {
         &federated_args(dir.path(), Some("https://federation.example.invalid")),
         TD,
         dir.path(),
+        &crate::pod_authority::NO_TPM,
     )
     .expect("starts with an issuer");
     assert!(ok.federation_source().is_some());
@@ -931,6 +938,7 @@ async fn the_federation_subject_comes_from_the_issued_certificate() {
         &federated_args(dir.path(), Some("https://federation.example.invalid")),
         TD,
         dir.path(),
+        &crate::pod_authority::NO_TPM,
     )
     .unwrap();
     let pod = Uuid::new_v4();

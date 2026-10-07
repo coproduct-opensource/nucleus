@@ -499,7 +499,7 @@ pub struct PublicJwk {
 }
 
 impl PublicJwk {
-    fn p256(x: String, y: String) -> Self {
+    pub(crate) fn p256(x: String, y: String) -> Self {
         let kid = rfc7638_p256_thumbprint(&x, &y);
         Self {
             kty: "EC",

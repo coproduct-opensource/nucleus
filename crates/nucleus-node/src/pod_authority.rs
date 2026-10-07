@@ -764,7 +764,12 @@ impl PodAuthority {
     /// start rather than run with a ceiling other than the one written. Also a
     /// registry with a `federated` entry and no usable `--federation-issuer`.
     /// Also approval timing outside its bounds.
-    pub fn new(args: &AuthorityArgs, trust_domain: &str, state_dir: &Path) -> Result<Self, String> {
+    pub fn new(
+        args: &AuthorityArgs,
+        trust_domain: &str,
+        state_dir: &Path,
+        federation_key: &nucleus_federation::KeyCustody,
+    ) -> Result<Self, String> {
         let approval_timing = args.approvals.timing()?;
         let dalek = keys::load_or_create_cert_root_signing_key(state_dir);
         // ring's keypair cannot be built from PKCS#8 v2 DER reliably across
@@ -814,6 +819,7 @@ impl PodAuthority {
             args.federation_issuer.as_deref(),
             registry.as_deref(),
             state_dir,
+            federation_key,
         )?;
         let bindings = match registry.as_deref() {
             Some(reg) => CallerBindings::from_files(reg.callers(), reg, trust_domain)?,
@@ -857,6 +863,7 @@ impl PodAuthority {
             &args.authority,
             &args.identity_trust_domain,
             &args.state_dir,
+            &args.node_evidence.federation_key_custody()?,
         )
     }
 
@@ -1828,6 +1835,7 @@ fn federation_source(
     issuer: Option<&str>,
     registry: Option<&UpstreamRegistry>,
     state_dir: &Path,
+    custody: &nucleus_federation::KeyCustody,
 ) -> Result<Option<std::sync::Arc<FederatedSource>>, String> {
     let needed = registry.is_some_and(UpstreamRegistry::has_federated);
     let Some(issuer) = issuer else {
@@ -1843,13 +1851,22 @@ fn federation_source(
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         return Err("--federation-issuer needs a TLS crypto provider installed first".into());
     }
-    let signer = keys::load_or_create_jwt_svid_signing_key(state_dir)?;
+    let signer = keys::load_or_create_jwt_svid_signing_key(state_dir, custody)?;
     let http =
         nucleus_federation::default_client().map_err(|e| format!("federation HTTP client: {e}"))?;
     let source = FederatedSource::new(std::sync::Arc::new(signer), issuer, http)?;
-    tracing::info!(issuer = %source.issuer(), "federation issuer configured");
+    tracing::info!(
+        issuer = %source.issuer(),
+        custody = %custody.kind(),
+        "federation issuer configured"
+    );
     Ok(Some(std::sync::Arc::new(source)))
 }
+
+/// The custody every test authority uses: a node with no TPM.
+#[cfg(test)]
+pub(crate) const NO_TPM: nucleus_federation::KeyCustody =
+    nucleus_federation::KeyCustody::File(nucleus_federation::FileCustody::NoTpmConfigured);
 
 fn ledger_denial(e: impl std::fmt::Display) -> ApiError {
     ApiError::Authority(format!("budget conservation: {e}"))
