@@ -3,25 +3,53 @@
 //!
 //! Each internalised witness emits one manifest binding the full provenance chain
 //! so any third party can re-derive it: who did the work, which spec it claims,
-//! the evidence digest, the kernel verdict, the assurance rung + tier (carried
-//! through, never upgraded), the olog fact, and the reproducibility anchors. Ed25519
-//! signed and append-only-log-friendly — the concrete step toward the
-//! self-proving-system north star. See `docs/rfcs/witness-olog-functor.md`.
+//! the evidence digest, the kernel verdict, the digest of the evidence the
+//! assurance rung is derived from, the tier (carried through, never upgraded),
+//! the olog fact, and the reproducibility anchors. Ed25519 signed and
+//! append-only-log-friendly — the concrete step toward the self-proving-system
+//! north star. See `docs/rfcs/witness-olog-functor.md`.
+//!
+//! # The manifest does not state a rung (#2518)
+//!
+//! v1 carried `assurance_rung` as a signed field, and a reader took it. A
+//! signature makes a rung attributable to the signer; it does not make it
+//! true. v2 carries [`AccumulationManifest::rung_evidence_digest`] instead, and
+//! the rung exists only as the output of [`verify_manifest_rung`], which
+//! re-derives it from the committed evidence. The old forgery — overwrite the
+//! field, re-sign, and every reader sees the top rung — has nothing to write:
+//!
+//! ```compile_fail,E0609
+//! # fn forge(m: &mut nucleus_witness_olog::AccumulationManifest) {
+//! m.assurance_rung = nucleus_externality::AssuranceRung::ZkUpperEnvelope;
+//! # }
+//! ```
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use nucleus_externality::AssuranceRung;
+use nucleus_externality::{EnvelopeVerifier, TeeQuoteVerifier};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::functor::{AdmissionVerdict, OlogFact, Tier, WitnessDigest, WitnessNode};
+use crate::rung::{RungError, RungEvidence, VerifiedRung, verify_rung_evidence};
 
 /// Domain prefix for the manifest's canonical signing bytes. Bumping invalidates
-/// every prior manifest signature (v1 contract).
-pub const MANIFEST_DOMAIN: &[u8] = b"nucleus/witness-olog/manifest/v1\0";
+/// every prior manifest signature.
+///
+/// v2 (#2518): the rung byte is gone and the 32-byte `rung_evidence_digest`
+/// takes its place. No v1 signature verifies under v2, and none should: a v1
+/// signature covers a rung the signer chose.
+pub const MANIFEST_DOMAIN: &[u8] = b"nucleus/witness-olog/manifest/v2\0";
 
 /// One signed accumulation record: witness ↦ olog fact, with full provenance.
+///
+/// `deny_unknown_fields`: a v1 manifest still carrying `assurance_rung` is
+/// REFUSED at deserialization rather than accepted with the field dropped. A
+/// reader that silently dropped it would hand back a record that looks
+/// current but whose signature can never verify; refusing names the problem
+/// at the boundary, and no reader can come to rely on the field being there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AccumulationManifest {
     /// Who did the work.
     pub agent_id: String,
@@ -31,8 +59,10 @@ pub struct AccumulationManifest {
     pub witness_digest: WitnessDigest,
     /// The kernel's admission decision.
     pub admission_verdict: AdmissionVerdict,
-    /// Assurance rung — carried from the witness, NEVER upgraded.
-    pub assurance_rung: AssuranceRung,
+    /// [`RungEvidence::digest`] of the evidence the witness's rung was derived
+    /// from. The manifest COMMITS to evidence; it does not state the rung.
+    /// [`verify_manifest_rung`] re-derives the rung from evidence matching this.
+    pub rung_evidence_digest: [u8; 32],
     /// Honesty tier — carried from the witness, NEVER upgraded.
     pub tier: Tier,
     /// Digest of the olog fact `Gov` produced.
@@ -48,7 +78,7 @@ pub struct AccumulationManifest {
 }
 
 /// Errors constructing / verifying a manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[derive(Debug, Error)]
 pub enum ManifestError {
     #[error("signature did not verify: {0}")]
     SignatureInvalid(String),
@@ -56,9 +86,20 @@ pub enum ManifestError {
     Base64(String),
     #[error("signature is {got} bytes, expected 64")]
     WrongSignatureLength { got: usize },
+    /// The evidence presented is not the evidence the manifest committed to.
+    #[error(
+        "rung evidence digest mismatch: manifest commits to {committed}, evidence is {presented}"
+    )]
+    EvidenceMismatch {
+        committed: String,
+        presented: String,
+    },
+    /// The committed evidence did not verify.
+    #[error("rung evidence: {0}")]
+    Rung(RungError),
 }
 
-fn push_field(out: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn push_field(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
     out.extend_from_slice(bytes);
 }
@@ -76,7 +117,7 @@ pub fn canonical_manifest_bytes(m: &AccumulationManifest) -> Vec<u8> {
         AdmissionVerdict::Admitted => 1,
         AdmissionVerdict::Rejected => 0,
     });
-    out.push(m.assurance_rung.level());
+    push_field(&mut out, &m.rung_evidence_digest);
     out.push(match m.tier {
         Tier::Proven => 2,
         Tier::Modeled => 1,
@@ -90,9 +131,10 @@ pub fn canonical_manifest_bytes(m: &AccumulationManifest) -> Vec<u8> {
 }
 
 /// Build the unsigned manifest from a witness node, the fact `Gov` produced, and
-/// the provenance anchors. The rung + tier come from the FACT (which `Gov`
-/// carried through from the witness) — so the manifest cannot claim more
-/// assurance than the witness proved.
+/// the provenance anchors. The evidence digest comes from the FACT's
+/// [`VerifiedRung`] (which `Gov` carried through from the witness), so the
+/// manifest commits to exactly the evidence that rung was derived from — and
+/// states no rung of its own.
 #[allow(clippy::too_many_arguments)]
 pub fn manifest_from_fact(
     agent_id: impl Into<String>,
@@ -107,7 +149,7 @@ pub fn manifest_from_fact(
         task_spec_hash: fact.task_spec_hash,
         witness_digest: node.digest,
         admission_verdict: node.verdict,
-        assurance_rung: fact.rung,
+        rung_evidence_digest: fact.rung.evidence_digest(),
         tier: fact.tier,
         olog_instance_digest: fact.instance_digest,
         commit_sha: commit_sha.into(),
@@ -141,10 +183,59 @@ pub fn verify_manifest(m: &AccumulationManifest, vk: &VerifyingKey) -> Result<()
         .map_err(|e| ManifestError::SignatureInvalid(e.to_string()))
 }
 
+/// Verify a manifest AND derive the assurance rung of the witness it records.
+///
+/// The rung is computed here, from per-layer verifier results; it is never read
+/// from the manifest. In order:
+///
+/// 1. the manifest's own signature under `manifest_vk`;
+/// 2. `evidence` must be the evidence the manifest committed to
+///    ([`AccumulationManifest::rung_evidence_digest`]);
+/// 3. [`verify_rung_evidence`], with the manifest's `agent_id` as the claim's
+///    expected subject — the agent the manifest credits is the one the oracle
+///    attested about, decided once rather than passed twice.
+///
+/// With `None` for both layer verifiers (fail closed; no implementation ships)
+/// the result is at most `OracleSigned`.
+///
+/// # Errors
+///
+/// The signature errors of [`verify_manifest`],
+/// [`ManifestError::EvidenceMismatch`], or [`ManifestError::Rung`].
+pub fn verify_manifest_rung(
+    m: &AccumulationManifest,
+    manifest_vk: &VerifyingKey,
+    evidence: &RungEvidence,
+    oracle_vk: &VerifyingKey,
+    now_unix_micros: u64,
+    tee_verifier: Option<&dyn TeeQuoteVerifier>,
+    envelope_verifier: Option<&dyn EnvelopeVerifier>,
+) -> Result<VerifiedRung, ManifestError> {
+    verify_manifest(m, manifest_vk)?;
+    let presented = evidence.digest();
+    if presented != m.rung_evidence_digest {
+        return Err(ManifestError::EvidenceMismatch {
+            committed: hex::encode(m.rung_evidence_digest),
+            presented: hex::encode(presented),
+        });
+    }
+    verify_rung_evidence(
+        evidence,
+        oracle_vk,
+        &m.agent_id,
+        now_unix_micros,
+        tee_verifier,
+        envelope_verifier,
+    )
+    .map_err(ManifestError::Rung)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::functor::{Gov, NoUpgradeGov};
+    use crate::rung::tests::{NOW, SUBJECT, fabricated_evidence, oracle_sk};
+    use nucleus_externality::AssuranceRung;
 
     fn signer() -> SigningKey {
         SigningKey::from_bytes(&[3u8; 32])
@@ -154,7 +245,7 @@ mod tests {
         WitnessNode {
             digest: WitnessDigest([42u8; 32]),
             task_spec_hash: [1u8; 32],
-            rung: AssuranceRung::TeeAttested,
+            rung: VerifiedRung::for_test(AssuranceRung::TeeAttested, [7u8; 32]),
             tier: Tier::Modeled,
             verdict: AdmissionVerdict::Admitted,
             parent: None,
@@ -177,24 +268,129 @@ mod tests {
     }
 
     #[test]
-    fn rung_is_bound_into_the_signature() {
-        // Tamper with the rung after signing → signature must fail. This is what
-        // makes "lying about the rung is itself a (failed) signed claim" real.
+    fn evidence_commitment_is_bound_into_the_signature() {
+        // Point the manifest at other evidence after signing → signature fails.
         let mut m = fixture_manifest();
-        m.assurance_rung = AssuranceRung::ZkUpperEnvelope; // forge a stronger rung
+        m.rung_evidence_digest = fabricated_evidence().digest();
         let err = verify_manifest(&m, &signer().verifying_key()).unwrap_err();
         assert!(matches!(err, ManifestError::SignatureInvalid(_)));
     }
 
     #[test]
-    fn manifest_cannot_outrank_its_witness() {
-        // The no-upgrade invariant at the manifest layer: the signed rung equals
-        // the witness's rung (via the fact Gov carried through).
+    fn manifest_commits_to_the_witness_evidence() {
+        // The no-upgrade invariant at the manifest layer: the manifest commits
+        // to the evidence the witness's rung was derived from (via the fact Gov
+        // carried through), and states no rung of its own.
         let node = fixture_node();
         let fact = NoUpgradeGov.map_witness(&node);
         let m = manifest_from_fact("a", &node, &fact, "c", "", "ci");
-        assert_eq!(m.assurance_rung, node.rung);
+        assert_eq!(m.rung_evidence_digest, node.rung.evidence_digest());
         assert_eq!(m.tier, node.tier);
+    }
+
+    /// A manifest whose node was built with the given rung, committing to the
+    /// fabricated evidence, and signed by the accumulator.
+    fn manifest_over_fabricated_evidence(signed_as: AssuranceRung) -> AccumulationManifest {
+        let ev = fabricated_evidence();
+        let mut node = fixture_node();
+        node.rung = VerifiedRung::for_test(signed_as, ev.digest());
+        let fact = NoUpgradeGov.map_witness(&node);
+        sign_manifest(
+            &signer(),
+            manifest_from_fact(SUBJECT, &node, &fact, "abc", "", "ci"),
+        )
+    }
+
+    /// #2518 acceptance, at the manifest: the old forgery was "overwrite
+    /// `assurance_rung` with `ZkUpperEnvelope`, re-sign" — a signer stating its
+    /// own rung. Now the strongest thing a signer controls is which evidence it
+    /// commits to, and fabricated layers in that evidence earn nothing: the
+    /// rung a relying party derives is `OracleSigned` however the accumulator
+    /// labelled the node.
+    #[test]
+    fn a_signer_cannot_state_the_rung_a_reader_derives() {
+        for signed_as in [
+            AssuranceRung::TeeAttested,
+            AssuranceRung::MultiSourceDisputed,
+            AssuranceRung::ZkUpperEnvelope,
+        ] {
+            let m = manifest_over_fabricated_evidence(signed_as);
+            verify_manifest(&m, &signer().verifying_key()).expect("signature is genuine");
+            let derived = verify_manifest_rung(
+                &m,
+                &signer().verifying_key(),
+                &fabricated_evidence(),
+                &oracle_sk().verifying_key(),
+                NOW,
+                None,
+                None,
+            )
+            .expect("the claim's signature is genuine");
+            assert_eq!(derived.rung(), AssuranceRung::OracleSigned);
+        }
+    }
+
+    #[test]
+    fn evidence_the_manifest_did_not_commit_to_is_refused() {
+        let m = manifest_over_fabricated_evidence(AssuranceRung::OracleSigned);
+        let mut other = fabricated_evidence();
+        other.tee = None;
+        assert!(matches!(
+            verify_manifest_rung(
+                &m,
+                &signer().verifying_key(),
+                &other,
+                &oracle_sk().verifying_key(),
+                NOW,
+                None,
+                None
+            ),
+            Err(ManifestError::EvidenceMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn evidence_about_another_agent_is_refused() {
+        // The claim's subject is SUBJECT; a manifest crediting another agent
+        // cannot borrow it.
+        let ev = fabricated_evidence();
+        let mut node = fixture_node();
+        node.rung = VerifiedRung::for_test(AssuranceRung::OracleSigned, ev.digest());
+        let fact = NoUpgradeGov.map_witness(&node);
+        let m = sign_manifest(
+            &signer(),
+            manifest_from_fact(
+                "spiffe://nucleus.local/ns/agents/sa/other",
+                &node,
+                &fact,
+                "c",
+                "",
+                "ci",
+            ),
+        );
+        assert!(matches!(
+            verify_manifest_rung(
+                &m,
+                &signer().verifying_key(),
+                &ev,
+                &oracle_sk().verifying_key(),
+                NOW,
+                None,
+                None
+            ),
+            Err(ManifestError::Rung(RungError::Signature(_)))
+        ));
+    }
+
+    /// Serialization decision: a manifest carrying `assurance_rung` — every v1
+    /// manifest, or a v2 one with the field smuggled back in — is refused, not
+    /// read with the field ignored.
+    #[test]
+    fn a_manifest_carrying_a_rung_is_refused() {
+        let mut v = serde_json::to_value(fixture_manifest()).unwrap();
+        v["assurance_rung"] = serde_json::json!("zk_upper_envelope");
+        let err = serde_json::from_value::<AccumulationManifest>(v).unwrap_err();
+        assert!(err.to_string().contains("assurance_rung"), "{err}");
     }
 
     #[test]

@@ -96,11 +96,19 @@ manifest := {
   task_spec_hash,           // which olog spec it claims to satisfy
   witness_digest,           // the content-addressed evidence (ck-types)
   admission_verdict,        // the kernel's decision
-  assurance_rung, tier,     // how much to trust it (never upgraded)
+  rung_evidence_digest,     // the evidence the rung is DERIVED from (#2518)
+  tier,                     // how well-proven it is (never upgraded)
   olog_instance_digest,     // the fact Gov produced
   commit_sha, axiom_footprint, ci_run_id,  // reproducibility anchors
 }
 ```
+
+The manifest states **no rung**. Until #2518 it carried a signed
+`assurance_rung`, which made a lie attributable to the signer but not
+impossible. Now a relying party calls `verify_manifest_rung` with the committed
+evidence and gets a `VerifiedRung` — a type with no public constructor and no
+`Deserialize` — derived from the per-layer verifier results. With fail-closed
+defaults (no TEE or envelope verifier ships) the ceiling is `oracle_signed`.
 
 Signed (Ed25519, reusing the `BundleSignature` machinery) and **transparency-
 logged** (append-only). This is the concrete step toward the self-proving-system
