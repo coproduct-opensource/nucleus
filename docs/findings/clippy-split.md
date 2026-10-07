@@ -77,3 +77,36 @@ need the comparison above in CI, and it isn't there.
   `crates/**`, `tests/**` and the other Rust roots changes. All of the reuse is on the libs side.
 - `measured_ms` is the unsplit gate's 1,152 s for each group. It's an upper bound until the first
   lane runs measure each group.
+
+## clippy-node could not build its own runner (found 2026-10-07)
+
+**What happened.** From #3278 until this fix, clippy-node failed on every tree it ran on. Its
+step is `cargo run --manifest-path tools/test-shard/Cargo.toml -- cargo clippy …`, but its scope
+was clippy-base.json's hand-written include list. That list predates the runner and never named
+`tools/`. test-libs and clippy-libs get `tools/test-shard/**` from the layout's `global`, and
+test-node's scope is `**`. clippy-node takes neither. Reproduced: materialize clippy-node's scope
+at `2a360ad90` (1,917 files) and run the gate's argv. It fails with
+``error: manifest path `tools/test-shard/Cargo.toml` does not exist``, exit 101.
+
+**Why it stayed hidden.** The scope never changed, so the kernel derived the same hash on every
+tree, and controld correctly REUSED the red verdict. #3291, #3287 and #3295 all showed
+`clippy-node: verified but Failed ... reused from tree …`. Each looked like a defect in that PR.
+#3287 was first diagnosed as its own `include_str!` of a file outside the scope. That defect is
+real (docs/findings/compile-time-reads-in-scope.md, #3295), but it was not the only one. The local
+reproduction ran `cargo clippy` directly, so it skipped the runner and saw only the second defect.
+**The wrong belief: that a reproduction which leaves out the gate's wrapper reproduces the gate.**
+Run the gate's argv as declared.
+
+**Fix.** The generator gives clippy-node the runner's directory from `global`, the same place the
+other shards get it. `manifests_covered` refuses any generated gate whose steps name a
+`--manifest-path` whose tracked files the scope does not hold, and
+`every_committed_gate_holds_the_manifests_it_runs` checks the committed definitions from
+test-node. That test was driven red on `2a360ad90`'s clippy-node.json first: it named
+`tools/test-shard/{Cargo.lock,Cargo.toml,src/main.rs}`. Over the regenerated scope (1,920 files),
+the gate's argv builds the runner and lints. On macOS it exits 0 with `-p nucleus` left out, since
+that crate's landlock code is Linux-only and is dead code on macOS.
+
+**Cost.** clippy-node goes from 19 to 20 patterns and from 3,332,773 to 3,390,534 reduction rows,
+80.8% of the kernel's MAX_ROWS of 2^22, measured with `gate scope witness --check` at gatehouse
+`cb55244` with certificate sizes printed. The other three shard scopes are unchanged, and all
+four derive.
