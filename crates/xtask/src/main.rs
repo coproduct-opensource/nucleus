@@ -54,6 +54,11 @@ enum Command {
         #[arg(long)]
         sudo: bool,
     },
+    /// Boot a real pod on a fresh node and write a verified evidence bundle:
+    /// receipt, logs, artifact, host effects, posture and timings, checked by
+    /// the public verifiers (Rust, JS, Python) against each other and against
+    /// the reference manifest this build would publish. Linux/KVM only.
+    LiveBootEvidence(Box<live_boot_evidence::Args>),
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -548,6 +553,7 @@ mod law_mechanisms;
 mod lean_action_builds;
 mod life;
 mod line_ratchet;
+mod live_boot_evidence;
 mod local_coverage;
 mod mediate;
 mod microvm_host_context;
@@ -580,6 +586,7 @@ fn main() -> Result<()> {
         Command::HostEvidenceLive { bin_dir, sudo } => {
             host_evidence_live::run(&repo_root()?, &bin_dir, sudo)
         }
+        Command::LiveBootEvidence(args) => live_boot_evidence::run(&repo_root()?, &args),
         Command::Scripts => scripts(),
         Command::MicrovmHostContext {
             bin_dir,

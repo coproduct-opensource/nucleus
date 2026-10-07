@@ -157,6 +157,61 @@ fn sdk_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Core (natively testable) of [`verify_receipt`]. The JSON shape is the JS
+/// SDK's `verifyReceipt` verdict, field for field, so one live receipt can be
+/// checked for agreement across Rust, JS and Python.
+///
+/// A copy of `sdks/verifier-js`'s `receipt_verdict` rather than a shared
+/// function: the shared home would be `nucleus-receipt`, and changing that
+/// crate moves the wasm digest `nucleus-verifier-service` pins.
+fn receipt_report(receipt_json: &str, verifying_key_hex: &str) -> Result<String, String> {
+    let receipt: nucleus_receipt::Receipt =
+        serde_json::from_str(receipt_json).map_err(|e| format!("receipt JSON: {e}"))?;
+    let bytes = hex::decode(verifying_key_hex.trim().trim_start_matches("0x"))
+        .map_err(|e| format!("verifying_key_hex: {e}"))?;
+    let key: [u8; 32] = bytes
+        .try_into()
+        .map_err(|b: Vec<u8>| format!("verifying key must be 32 bytes, got {}", b.len()))?;
+    let verdict = match receipt.verify(&key) {
+        Ok(()) => serde_json::json!({
+            "outcome": "verified",
+            "version": receipt.version,
+            "session_id": receipt.session.session_id,
+            "issuer_kid": receipt.session.issuer_kid,
+            "projection_kinds": receipt.projections.iter().map(|p| p.kind()).collect::<Vec<_>>(),
+            "root_hash_hex": receipt.root_hash_hex,
+        }),
+        Err(nucleus_receipt::ReceiptError::RootHashMismatch { expected, actual }) => {
+            serde_json::json!({"outcome": "root_hash_mismatch", "expected": expected, "actual": actual})
+        }
+        Err(nucleus_receipt::ReceiptError::SignatureMismatch(reason)) => {
+            serde_json::json!({"outcome": "signature_mismatch", "reason": reason})
+        }
+        // A structurally unusable key or signature encoding is an input error.
+        Err(other) => return Err(other.to_string()),
+    };
+    serde_json::to_string(&verdict).map_err(|e| e.to_string())
+}
+
+/// Verify a colimit receipt (`nucleus-receipt`: Session + Projection[] signed
+/// Ed25519 over BLAKE3 of the RFC 8785 canonical bytes) against the issuer's
+/// 32-byte verifying key, given as hex. Runs the same `Receipt::verify` as
+/// `nucleus-audit` and the JS SDK's `verifyReceipt`.
+///
+/// Returns the verdict as JSON text: `{"outcome": "verified", "version",
+/// "session_id", "issuer_kid", "projection_kinds", "root_hash_hex"}`,
+/// `{"outcome": "root_hash_mismatch", "expected", "actual"}` (content changed
+/// after signing) or `{"outcome": "signature_mismatch", "reason"}` (wrong key
+/// or forged signature). A cryptographic rejection is a value, not an error.
+///
+/// Raises:
+///     ValueError: the receipt does not parse, or the key is not 32 bytes of hex.
+#[pyfunction]
+#[pyo3(text_signature = "(receipt_json, verifying_key_hex, /)")]
+fn verify_receipt(receipt_json: &str, verifying_key_hex: &str) -> PyResult<String> {
+    receipt_report(receipt_json, verifying_key_hex).map_err(PyValueError::new_err)
+}
+
 /// Core (natively testable) of [`verify_node_evidence`].
 fn node_evidence_report(
     evidence: &[u8],
@@ -202,6 +257,7 @@ fn verify_node_evidence(
 fn nucleus_verifier(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(verify_bundle, m)?)?;
     m.add_function(wrap_pyfunction!(verify_node_evidence, m)?)?;
+    m.add_function(wrap_pyfunction!(verify_receipt, m)?)?;
     m.add_function(wrap_pyfunction!(verify_payout, m)?)?;
     m.add_function(wrap_pyfunction!(verify_signed_payout, m)?)?;
     m.add_function(wrap_pyfunction!(verify_settlement_set, m)?)?;
@@ -566,5 +622,59 @@ mod node_evidence_tests {
         )
         .unwrap_err();
         assert!(err.starts_with("relying party:"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::receipt_report;
+    use ed25519_dalek::SigningKey;
+    use nucleus_receipt::{Projection, Receipt, Session};
+
+    fn signed(key: &SigningKey) -> Receipt {
+        Receipt::sign(
+            Session {
+                session_id: "pod-1".into(),
+                issuer_kid: "node".into(),
+                issued_at_micros: 7,
+                parent_chain: Vec::new(),
+            },
+            vec![Projection::Ci(serde_json::json!({"exit_code": 0}))],
+            key,
+        )
+    }
+
+    fn outcome(receipt: &Receipt, key: &SigningKey) -> serde_json::Value {
+        let report = receipt_report(
+            &serde_json::to_string(receipt).unwrap(),
+            &hex::encode(key.verifying_key().to_bytes()),
+        )
+        .unwrap();
+        serde_json::from_str(&report).unwrap()
+    }
+
+    #[test]
+    fn a_signed_receipt_verifies_and_a_changed_one_is_a_root_hash_mismatch() {
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let receipt = signed(&key);
+        let ok = outcome(&receipt, &key);
+        assert_eq!(ok["outcome"], "verified");
+        assert_eq!(ok["session_id"], "pod-1");
+        assert_eq!(ok["projection_kinds"], serde_json::json!(["ci"]));
+        assert_eq!(ok["root_hash_hex"], receipt.root_hash_hex.as_str());
+        let mut changed = receipt.clone();
+        changed.session.issued_at_micros += 1;
+        assert_eq!(outcome(&changed, &key)["outcome"], "root_hash_mismatch");
+        let other = SigningKey::from_bytes(&[4; 32]);
+        assert_eq!(outcome(&receipt, &other)["outcome"], "signature_mismatch");
+    }
+
+    #[test]
+    fn malformed_input_is_an_error_not_a_verdict() {
+        assert!(receipt_report("{}", &"00".repeat(32)).is_err());
+        let key = SigningKey::from_bytes(&[3; 32]);
+        let receipt = serde_json::to_string(&signed(&key)).unwrap();
+        assert!(receipt_report(&receipt, "00").is_err());
+        assert!(receipt_report(&receipt, "zz").is_err());
     }
 }

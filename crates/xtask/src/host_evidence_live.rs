@@ -16,6 +16,54 @@ pub fn run(root: &Path, bins: &Path, sudo: bool) -> Result<()> {
             bins.join(name).display()
         );
     }
+    let test = cli_test_executable(root)?;
+    let directory = tempfile::tempdir()?;
+    let witness = directory.path().join("verified");
+    // Fresh directory identity is unique to this invocation and independent of
+    // the producer. The marker is written only after verification AND cleanup.
+    let nonce = format!(
+        "host-evidence-{}-{}",
+        std::process::id(),
+        directory.path().display()
+    );
+    let mut command = if sudo {
+        let mut c = Command::new("sudo");
+        c.args(["--", "env"]);
+        c
+    } else {
+        Command::new("env")
+    };
+    command
+        .arg(format!("NUCLEUS_HOST_EVIDENCE_BIN_DIR={}", bins.display()))
+        .arg(format!(
+            "NUCLEUS_HOST_EVIDENCE_WITNESS={}",
+            witness.display()
+        ))
+        .arg(format!("NUCLEUS_HOST_EVIDENCE_NONCE={nonce}"))
+        .arg(&test)
+        .args([
+            "host_evidence_live::real_guest_host_evidence",
+            "--ignored",
+            "--exact",
+            "--nocapture",
+        ]);
+    let status = command.status()?;
+    ensure!(status.success(), "live host evidence test failed: {status}");
+    ensure!(
+        std::fs::read_to_string(&witness).context("live test produced no success witness")?
+            == nonce,
+        "live test witness does not identify this invocation"
+    );
+    println!(
+        "host-evidence-live: real guest, host authorization/outcome, offline verification and cleanup passed"
+    );
+    Ok(())
+}
+
+/// Build the `nucleus` CLI's test executable, which holds the live
+/// integrations (`#[ignore]`d), and return its path. Shared with
+/// `live-boot-evidence`, whose collector lives in the same binary.
+pub(crate) fn cli_test_executable(root: &Path) -> Result<String> {
     let build = Command::new("cargo")
         .current_dir(root)
         .env("CARGO_INCREMENTAL", "0")
@@ -52,45 +100,5 @@ pub fn run(root: &Path, bins: &Path, sudo: bool) -> Result<()> {
     let [test] = executables.as_slice() else {
         anyhow::bail!("expected one CLI test executable, got {executables:?}")
     };
-    let directory = tempfile::tempdir()?;
-    let witness = directory.path().join("verified");
-    // Fresh directory identity is unique to this invocation and independent of
-    // the producer. The marker is written only after verification AND cleanup.
-    let nonce = format!(
-        "host-evidence-{}-{}",
-        std::process::id(),
-        directory.path().display()
-    );
-    let mut command = if sudo {
-        let mut c = Command::new("sudo");
-        c.args(["--", "env"]);
-        c
-    } else {
-        Command::new("env")
-    };
-    command
-        .arg(format!("NUCLEUS_HOST_EVIDENCE_BIN_DIR={}", bins.display()))
-        .arg(format!(
-            "NUCLEUS_HOST_EVIDENCE_WITNESS={}",
-            witness.display()
-        ))
-        .arg(format!("NUCLEUS_HOST_EVIDENCE_NONCE={nonce}"))
-        .arg(test)
-        .args([
-            "host_evidence_live::real_guest_host_evidence",
-            "--ignored",
-            "--exact",
-            "--nocapture",
-        ]);
-    let status = command.status()?;
-    ensure!(status.success(), "live host evidence test failed: {status}");
-    ensure!(
-        std::fs::read_to_string(&witness).context("live test produced no success witness")?
-            == nonce,
-        "live test witness does not identify this invocation"
-    );
-    println!(
-        "host-evidence-live: real guest, host authorization/outcome, offline verification and cleanup passed"
-    );
-    Ok(())
+    Ok(test.clone())
 }

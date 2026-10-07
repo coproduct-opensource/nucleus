@@ -58,6 +58,21 @@ assert report["ok"] is True
 assert report["trust_mode"] in ("out_of_band", "self_check_only")
 ```
 
+### Receipts: was this signed by the key you pinned
+
+`verify_receipt(receipt_json, verifying_key_hex)` runs the same
+`Receipt::verify` as `nucleus-audit` and the JS SDK's `verifyReceipt`, and
+returns the same verdict as JSON text. A cryptographic rejection is a value;
+only malformed input raises `ValueError`.
+
+```python
+v = json.loads(verify_receipt(open("receipt.json").read(), node_key_hex))
+v["outcome"]  # "verified" | "root_hash_mismatch" | "signature_mismatch"
+```
+
+`cargo xtask live-boot-evidence` runs it on every CI live boot beside the Rust and
+JS verifiers, and requires the three to agree.
+
 ### Node evidence: what booted the node that signed a receipt
 
 `verify_node_evidence(evidence_bytes, reference_json, relying_party_json)` runs

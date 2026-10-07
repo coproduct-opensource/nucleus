@@ -7,16 +7,16 @@ use sha2::{Digest, Sha256};
 use std::{path::Path, time::Duration};
 use uuid::Uuid;
 
-mod node;
+pub(crate) mod node;
 const CALL_CHARGE: u64 = 1000;
 
 #[derive(Deserialize)]
-struct Created {
-    id: Uuid,
-    proxy_addr: String,
+pub(crate) struct Created {
+    pub id: Uuid,
+    pub proxy_addr: String,
 }
 
-async fn body(response: reqwest::Response) -> Result<Vec<u8>> {
+pub(crate) async fn body(response: reqwest::Response) -> Result<Vec<u8>> {
     let status = response.status();
     let bytes = response.bytes().await?;
     ensure!(
@@ -27,14 +27,16 @@ async fn body(response: reqwest::Response) -> Result<Vec<u8>> {
     Ok(bytes.to_vec())
 }
 
-async fn transaction(node: &node::Node, bins: &Path, nonce: &str) -> Result<()> {
+/// A pod whose only purpose is one credentialed request to the node's fixture
+/// upstream, so the host signs an authorization and an outcome for it.
+pub(crate) fn effect_pod_spec(upstream: &str) -> serde_json::Value {
     let (issuer, credential) = portcullis::says_admission::mint_credential(&[19; 32], "web_fetch");
     let dlc = nucleus_spec::dlc_admission::DlcProvisioning {
         trusted_keys: hex::encode(issuer),
         issuer: hex::encode(issuer),
         credentials: format!("web_fetch={}", hex::encode(credential.bytes)),
     };
-    let spec = json!({
+    json!({
         "apiVersion":"nucleus/v1", "kind":"Pod",
         "metadata":{"name":"live-host-evidence", "labels":dlc.labels()},
         "spec":{
@@ -42,7 +44,7 @@ async fn transaction(node: &node::Node, bins: &Path, nonce: &str) -> Result<()> 
             "policy":{"type":"inline", "lattice":portcullis::PermissionLattice::permissive()},
             "network":{"allow":[]},
             "credentialed_egress":[{
-                "name":"receipt-fixture", "upstream":node.upstream,
+                "name":"receipt-fixture", "upstream":upstream,
                 "credential_env":"NUCLEUS_RECEIPT_FIXTURE_TOKEN",
                 "header":"authorization", "value_prefix":"Bearer "
             }],
@@ -53,8 +55,12 @@ async fn transaction(node: &node::Node, bins: &Path, nonce: &str) -> Result<()> 
             },
             "vsock":{"guest_cid":3,"port":5005}
         }
-    });
-    // Pin the host key before any guest request; never accept a key from a log.
+    })
+}
+
+/// The node's host key, exported from its own key file. Pinned before any
+/// guest request: a key is never accepted from a log.
+pub(crate) async fn host_key(node: &node::Node, bins: &Path) -> Result<String> {
     let key = node::command(
         bins.join("nucleus-hostctl"),
         &[
@@ -70,6 +76,36 @@ async fn transaction(node: &node::Node, bins: &Path, nonce: &str) -> Result<()> 
         key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit()),
         "invalid host key export"
     );
+    Ok(key)
+}
+
+/// Send `nonce` through the guest's credentialed relay to the node's fixture
+/// upstream, and require the same bytes back.
+pub(crate) async fn relay(proxy_addr: &str, nonce: &str) -> Result<()> {
+    let proxy = if proxy_addr.starts_with("http://") {
+        proxy_addr.to_owned()
+    } else {
+        format!("http://{proxy_addr}")
+    };
+    let response = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()?
+        .post(format!("{proxy}/v1/egress/receipt-fixture/echo"))
+        .header("content-type", "text/plain")
+        .header("x-nucleus-approval-wait-seconds", "0")
+        .body(nonce.to_owned())
+        .send()
+        .await?;
+    ensure!(
+        body(response).await? == nonce.as_bytes(),
+        "guest relay changed fixture output"
+    );
+    Ok(())
+}
+
+async fn transaction(node: &node::Node, bins: &Path, nonce: &str) -> Result<()> {
+    let spec = effect_pod_spec(&node.upstream);
+    let key = host_key(node, bins).await?;
     let created: Created = serde_json::from_slice(
         &body(
             node.client
@@ -109,24 +145,7 @@ async fn inspect(
     key: &str,
     nonce: &str,
 ) -> Result<()> {
-    let proxy = if pod.proxy_addr.starts_with("http://") {
-        pod.proxy_addr.clone()
-    } else {
-        format!("http://{}", pod.proxy_addr)
-    };
-    let response = reqwest::Client::builder()
-        .timeout(Duration::from_secs(60))
-        .build()?
-        .post(format!("{proxy}/v1/egress/receipt-fixture/echo"))
-        .header("content-type", "text/plain")
-        .header("x-nucleus-approval-wait-seconds", "0")
-        .body(nonce.to_owned())
-        .send()
-        .await?;
-    ensure!(
-        body(response).await? == nonce.as_bytes(),
-        "guest relay changed fixture output"
-    );
+    relay(&pod.proxy_addr, nonce).await?;
     ensure!(
         node.calls.load(std::sync::atomic::Ordering::SeqCst) == 1,
         "expected exactly one authenticated fixture request"

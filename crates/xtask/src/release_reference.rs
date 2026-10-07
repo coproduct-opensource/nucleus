@@ -120,6 +120,26 @@ pub struct EmitArgs {
     out: PathBuf,
 }
 
+impl EmitArgs {
+    /// The arguments for an in-process manifest, with the default install
+    /// directory. `out` is unused by [`manifest`].
+    pub(crate) fn new(
+        dist: PathBuf,
+        version: String,
+        arch: Arch,
+        firecracker_tgz: PathBuf,
+    ) -> Self {
+        Self {
+            dist,
+            version,
+            arch,
+            firecracker_tgz,
+            install_dir: DEFAULT_INSTALL_DIR.into(),
+            out: PathBuf::new(),
+        }
+    }
+}
+
 fn firecracker_url(arch: Arch) -> String {
     let (v, a) = (FIRECRACKER_VERSION, arch.name());
     format!(
