@@ -16,8 +16,12 @@ Run it before **every** push, and do not push on a red:
 cargo xtask prepush
 ```
 
-It runs the cheap tree-only gates in parallel: the exemplar ratchet, `cargo audit
---deny warnings`, `xtask scorecard`, and `xtask line-ratchet --strict`. Each gets a
+It runs the tree-only gates in parallel: the exemplar ratchet, `cargo audit
+--deny warnings`, `xtask scorecard`, `xtask line-ratchet --strict`, `fmt`, and (since
+2026-10-06) the tests of every crate the branch can affect, closed under reverse
+dependencies. Tests were the most common red to reach CI, and each one cost a
+~25-minute CI round; a branch that touches one crate now runs that crate's tests
+here, in about the time it takes to compile it. Each gets a
 verdict of `PASS`, `FAIL`, or `COULD NOT RUN`, and it exits non-zero unless every
 gate passes. On 2026-10-02 all four were first seen red in the merge queue, where
 a red ejects the whole group.
