@@ -411,6 +411,7 @@ pub fn from_parts_with_pins(
         gate_scripts,
         image_dependent_pinned: parse_pin_list(image_dependent),
         replacements: parse_replacements(replacements, gate_defs),
+        scope_lists: BTreeMap::new(),
     })
 }
 
@@ -627,7 +628,7 @@ pub fn from_repo(root: &Path) -> Result<Model> {
         }
     }
     gate_scripts.sort();
-    from_parts_with_pins(
+    let mut model = from_parts_with_pins(
         &workflows,
         &ledger,
         &queue,
@@ -637,7 +638,31 @@ pub fn from_repo(root: &Path) -> Result<Model> {
         &image_dependent,
         &read("ci/gatehouse-replacements.txt").unwrap_or_default(),
         &gate_defs(root),
-    )
+    )?;
+    model.scope_lists = scope_lists(root, &model.workflows);
+    Ok(model)
+}
+
+/// Read and parse every scope list a step names in `env.SCOPE_PATHS`, with `ci-scope`'s own
+/// parser. A list that cannot be read is recorded as such, never dropped: CI-I5-SCOPE-LIST
+/// reports it.
+fn scope_lists(
+    root: &Path,
+    workflows: &[crate::model::Workflow],
+) -> BTreeMap<String, Result<ci_scope::ScopeList, String>> {
+    let mut out = BTreeMap::new();
+    let named = workflows
+        .iter()
+        .flat_map(|w| w.jobs.iter())
+        .flat_map(|j| j.steps.iter())
+        .filter_map(|s| s.env.get("SCOPE_PATHS"));
+    for rel in named {
+        let parsed = std::fs::read_to_string(root.join(rel))
+            .map_err(|e| format!("reading {rel}: {e}"))
+            .and_then(|text| ci_scope::ScopeList::parse(&text).map_err(|e| e.to_string()));
+        out.insert(rel.clone(), parsed);
+    }
+    out
 }
 
 #[cfg(test)]

@@ -249,9 +249,12 @@ population_floor = 278
 # a denial of service against every relying party. 36 of 93 = 38.70%.
 # 2026-10-08 (#3106): new crate nucleus-escape-canary, the in-guest confinement
 # evidence for gatehouse gates, denies all seven totality lints. 37 of 94 = 39.36%.
-floor_bp = 3936
+# 2026-10-08 (eval cell M2): new crate ci-scope, the decider every quickstart-boot job runs
+# first, declares all seven from its first commit -- a panic would fail a required context
+# for a reason that names nothing. 38 of 95 = 40.00%.
+floor_bp = 4000
 floor_set = "measurement"
-population_floor = 94
+population_floor = 95
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -583,9 +586,12 @@ population_floor = 23
 # constant and the two NodeState port fields are deleted with the flags that
 # fed them, and their three undischarged dead_code allows go with them -- by
 # deletion, not discharge. 31/146 = 21.23%; both pins follow the tree.
-floor_bp = 2123
+# 2026-10-08 (eval cell M2): ci-scope appends its one `relevant=` line to the runner's
+# GITHUB_OUTPUT, a step-output file and not a record log, under a reasoned #[expect] of the
+# append ban. 32/147 = 21.76%; both pins follow the tree.
+floor_bp = 2176
 floor_set = "measurement"
-population_floor = 146
+population_floor = 147
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

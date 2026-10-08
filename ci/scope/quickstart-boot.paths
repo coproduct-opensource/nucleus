@@ -1,0 +1,40 @@
+# What `.github/workflows/quickstart-boot.yml` reads. The ONE copy of this fact.
+#
+# Every job in that workflow runs `ci-scope` first with this file, on every event: a
+# pull_request or merge_group whose diff touches none of these skips the job's remaining
+# steps; anything else (including a diff that could not be taken) runs them. There is no
+# `paths:` filter and no `-noop` twin, so the required context
+# `a real nucleus pod boots and is enforced (x86_64)` has exactly one producer per event.
+# `cargo xtask ci-spec check` (CI-I5-SCOPE-*) holds this list to the workflow.
+#
+# Syntax: `dir/**` or an exact repo-relative path. Nothing else parses.
+
+# The workflow, its scope list and the decider: a change to any of them must run the job.
+.github/workflows/quickstart-boot.yml
+ci/scope/quickstart-boot.paths
+crates/ci-scope/**
+
+# The host and guest the boot job builds and boots.
+crates/nucleus-cli/**
+crates/nucleus-node/**
+crates/nucleus-spec/**
+crates/nucleus-guest-init/**
+crates/nucleus-tool-proxy/**
+crates/nucleus-microvm-host/**
+crates/nucleus-audit/**
+scripts/firecracker/**
+scripts/cross-build.sh
+scripts/lima/**
+
+# The in-guest probes whose verdicts the boot job reads, and the pod that runs them. A change
+# that weakens only a probe must re-run the boot that reads it.
+crates/nucleus-workload-probe/**
+crates/nucleus-egress-probe/**
+crates/nucleus-adversary-probe/**
+crates/nucleus-delivery-conformance/**
+scripts/check-egress-probe.sh
+examples/openclaw-demo/probe-pod.yaml
+
+# The xtask gates the boot job runs on the live guest.
+crates/xtask/src/host_evidence_live.rs
+crates/xtask/src/live_boot_evidence/**

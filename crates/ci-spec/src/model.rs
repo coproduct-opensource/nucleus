@@ -269,6 +269,11 @@ pub struct Model {
     /// `ci/image-dependent-jobs.txt`. Empty when the file is absent, which makes every such job
     /// read as new — the right answer for a repository that has not pinned it.
     pub image_dependent_pinned: std::collections::BTreeSet<String>,
+    /// Every scope list a step names in `env.SCOPE_PATHS`, keyed by that repo-relative path, as
+    /// `ci-scope` itself parses it: one parser for the decider and the checker (ADR 0007 G-1).
+    /// `Err` carries why it could not be read or parsed. Filled by [`crate::loader::from_repo`];
+    /// a model built from in-memory parts starts empty, which CI-I5-SCOPE-LIST reads as unreadable.
+    pub scope_lists: BTreeMap<String, Result<ci_scope::ScopeList, String>>,
 }
 
 impl Model {

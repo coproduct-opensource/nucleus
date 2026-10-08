@@ -1,0 +1,17 @@
+[package]
+name = "ci-scope"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Decides whether a CI event changes anything a path-scoped job reads -- one decider, one path list, for every event"
+# Dev/CI tooling -- never published.
+publish = false
+
+[lints]
+workspace = true
+
+# No dependencies, on purpose: every pull request builds this before it knows whether the job has
+# anything to do, so its build time is paid by every out-of-scope PR.
+[dependencies]
