@@ -132,6 +132,24 @@ pub const OID_NUCLEUS_TPM_HW_ROOTING_BYTES: &[u8] = &[
 
 pub const OID_NUCLEUS_TPM_HW_ROOTING_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 5];
 
+/// OID for an UNMEASURED launch: the leaf names the tier that launched the
+/// workload and says that tier cannot measure what it launches.
+///
+/// A tier with no launch measurement (container, local process, Apple VZ, the
+/// host tier) used to be issued a plain certificate, indistinguishable from a
+/// launch whose measurement silently failed. It now carries this extension,
+/// whose value is the DER `UTF8String` of the tier's name
+/// (`attestation::UnmeasuredTier::as_str`), so the absence of a check is stated
+/// and a verifier that requires a measured launch refuses it by name.
+///
+/// **INTERNAL / no interop commitment**, like the rest of the 57212 arc.
+pub const OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x06, // .1.6 (attestation.unmeasured_launch)
+];
+
+pub const OID_NUCLEUS_UNMEASURED_LAUNCH_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 6];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +233,25 @@ mod tests {
             OID_NUCLEUS_TPM_RESIDENCY_BYTES,
         ] {
             assert_ne!(OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES, other);
+        }
+    }
+
+    #[test]
+    fn unmeasured_launch_oid_is_its_own_component_of_the_arc() {
+        assert_eq!(
+            &OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES[..8],
+            &OID_NUCLEUS_ATTESTATION_BYTES[..8]
+        );
+        assert_eq!(OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES[8..], [0x01, 0x06]);
+        assert_eq!(OID_NUCLEUS_UNMEASURED_LAUNCH_TUPLE[8], 6);
+        for other in [
+            OID_NUCLEUS_ATTESTATION_BYTES,
+            OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES,
+            OID_NUCLEUS_TPM_RESIDENCY_BYTES,
+            OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES,
+            OID_NUCLEUS_TPM_HW_ROOTING_BYTES,
+        ] {
+            assert_ne!(OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES, other);
         }
     }
 }

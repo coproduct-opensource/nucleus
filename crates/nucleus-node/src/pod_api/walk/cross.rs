@@ -175,8 +175,9 @@ impl Run {
         let p = Uuid::new_v4();
         let identity = manager.pod_identity(p);
         manager.register_pod(p.to_string(), identity.clone()).await;
+        // A served SVID is the certificate of a registered launch (ADR 0016 D5).
         manager
-            .prefetch_certificate(&identity)
+            .issue_unmeasured_certificate(&identity, nucleus_identity::UnmeasuredTier::Local)
             .await
             .expect("certificate");
 

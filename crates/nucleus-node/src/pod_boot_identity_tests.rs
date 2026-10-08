@@ -430,8 +430,9 @@ async fn a_firecracker_guest_is_served_its_id_and_no_caller_token() {
     assert_eq!(value["pod_id"].as_str(), Some(id.to_string().as_str()));
 }
 
-/// A CA that signs only plainly: it takes `CaClient`'s default `sign_attested_csr`,
-/// which drops the launch extension. What an injected CA that never opted in issues.
+/// A CA that never opted in to nucleus extensions: it takes `CaClient`'s default
+/// `sign_attested_csr`, which used to sign a PLAIN certificate in its place and now
+/// refuses (ADR 0016 D5).
 struct PlainOnlyCa(nucleus_identity::SelfSignedCa);
 
 #[async_trait::async_trait]
@@ -495,10 +496,12 @@ async fn an_eval_cell_with_no_workload_identity_is_refused_at_boot() {
         .expect("a standard pod boots without an identity, as before");
 }
 
-/// ADR 0016 D3, wired: a CA that signs only plainly yields an SVID with no
-/// launch. A standard pod keeps that fallback; an eval cell is refused by name.
+/// ADR 0016 D3 and D5, wired: a CA that cannot embed a launch (it takes
+/// `CaClient`'s default) used to sign a PLAIN certificate in its place, and every
+/// pod booted with it. Now nothing is issued: an eval cell is refused under its
+/// own name, and a standard pod is refused too, naming why.
 #[tokio::test]
-async fn an_eval_cell_served_a_plain_svid_is_refused_at_boot() {
+async fn a_ca_that_cannot_attest_refuses_every_pod_at_boot() {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let mut st = state(&dir);
     let plain: std::sync::Arc<dyn nucleus_identity::CaClient> = std::sync::Arc::new(PlainOnlyCa(
@@ -515,12 +518,15 @@ async fn an_eval_cell_served_a_plain_svid_is_refused_at_boot() {
     };
     assert!(refused.contains("launch does not verify"), "{refused}");
     assert!(
-        refused.contains("no parseable launch attestation"),
+        refused.contains("the attested SVID could not be issued"),
         "{refused}"
     );
-    let _ready = prepare_profiled(&st, dir.path(), serde_json::json!({}))
-        .await
-        .expect("a standard pod keeps the plain-SVID fallback");
+    let refused = match prepare_profiled(&st, dir.path(), serde_json::json!({})).await {
+        Ok(_) => panic!("a standard pod booted with a plain SVID"),
+        Err(e) => e.to_string(),
+    };
+    assert!(refused.contains("could not be issued"), "{refused}");
+    assert!(refused.contains("never issued in its place"), "{refused}");
 }
 
 /// Non-vacuous: on a node whose CA attests, the eval cell's launch verifies

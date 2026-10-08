@@ -1282,8 +1282,9 @@ async fn handle_fetch_svid(
     // cache always missed and every guest got a plain SVID.
     let identity = manager.pod_identity(pod_id);
 
-    // Fetch the certificate with the actual certificate data
-    match manager.fetch_certificate(&identity).await {
+    // Only the certificate of this pod's registered launch: never a plain one
+    // minted here for a pod whose launch was not stated (ADR 0016 D5).
+    match manager.fetch_launch_certificate(&identity).await {
         Ok(cert) => {
             #[derive(serde::Serialize)]
             struct SvidResponse {
@@ -1473,6 +1474,18 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
     use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
+    /// Issue `pod`'s launch, as the spawn path does before the bridge starts: a
+    /// served SVID is the certificate of a registered launch (ADR 0016 D5).
+    async fn launched(manager: &IdentityManager, pod: uuid::Uuid) {
+        manager
+            .issue_unmeasured_certificate(
+                &manager.pod_identity(pod),
+                nucleus_identity::UnmeasuredTier::Local,
+            )
+            .await
+            .expect("launch");
+    }
+
     #[tokio::test]
     async fn test_workload_api_vsock_bridge_ping() {
         let temp_dir = tempdir().unwrap();
@@ -1529,9 +1542,11 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let vsock_uds_path = temp_dir.path().join("vsock.sock");
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let pod_id = uuid::Uuid::new_v4();
+        launched(&manager, pod_id).await;
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            uuid::Uuid::new_v4(),
+            pod_id,
             manager,
             PodMaterial::default(),
             None,
@@ -1870,6 +1885,44 @@ mod tests {
         bridge.shutdown().await;
     }
 
+    /// ADR 0016 D5: `FETCH_SVID` for a pod with no registered launch is refused.
+    /// It used to mint a PLAIN certificate on demand, so a pod whose launch was
+    /// never attested (or whose node restarted) was served an SVID that read like
+    /// one nobody asked to check.
+    #[tokio::test]
+    async fn fetch_svid_never_mints_a_plain_certificate() {
+        let temp_dir = tempdir().unwrap();
+        let vsock_uds_path = temp_dir.path().join("vsock.sock");
+        let pod_id = uuid::Uuid::new_v4();
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let bridge = WorkloadApiVsockBridge::start(
+            &vsock_uds_path,
+            pod_id,
+            manager,
+            PodMaterial::default(),
+            None,
+        )
+        .await
+        .unwrap();
+        let stream = tokio::net::UnixStream::connect(bridge.socket_path())
+            .await
+            .unwrap();
+        let (reader, mut writer): (OwnedReadHalf, OwnedWriteHalf) = stream.into_split();
+        let mut reader = tokio::io::BufReader::new(reader);
+        writer.write_all(b"FETCH_SVID\n").await.unwrap();
+        writer.flush().await.unwrap();
+        let mut response = String::new();
+        reader.read_line(&mut response).await.unwrap();
+        assert!(
+            !response.contains("BEGIN CERTIFICATE"),
+            "no certificate for an unregistered launch: {response}"
+        );
+        assert!(
+            response.contains("no registered launch"),
+            "the refusal names why: {response}"
+        );
+    }
+
     #[tokio::test]
     async fn test_fetch_svid_returns_real_certificate() {
         let temp_dir = tempdir().unwrap();
@@ -1877,6 +1930,7 @@ mod tests {
         let pod_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        launched(&manager, pod_id).await;
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
             pod_id,
@@ -1939,6 +1993,8 @@ mod tests {
         let pod2_id = uuid::Uuid::new_v4();
 
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        launched(&manager, pod1_id).await;
+        launched(&manager, pod2_id).await;
 
         // Create bridges for two different pods
         let vsock1_path = temp_dir.path().join("pod1").join("vsock.sock");

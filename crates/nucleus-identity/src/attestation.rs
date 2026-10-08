@@ -806,13 +806,14 @@ impl VerifiedLaunch {
     /// parseable launch attestation.
     pub fn verify(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<Self> {
         match issued_launch(leaf_der, trust_bundle)? {
-            Some(launch) => {
+            IssuedLaunch::Measured(launch) => {
                 let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
                     Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
                 })?;
                 Ok(Self { spiffe_id, launch })
             }
-            None => Err(Error::VerificationFailed(
+            IssuedLaunch::Unmeasured(tier) => Err(Error::VerificationFailed(unmeasured(tier))),
+            IssuedLaunch::Unstated => Err(Error::VerificationFailed(
                 "verified leaf carries no parseable launch attestation".to_string(),
             )),
         }
@@ -832,15 +833,123 @@ impl VerifiedLaunch {
 /// The one decider: the leaf chains to a root in `trust_bundle`, and then its
 /// launch claim, if it carries one. The issuer is checked first and always, so
 /// "carries no attestation" is said only of a leaf a trusted CA signed.
-fn issued_launch(
-    leaf_der: &[u8],
-    trust_bundle: &crate::TrustBundle,
-) -> Result<Option<LaunchAttestation>> {
+fn issued_launch(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<IssuedLaunch> {
     let leaf = crate::certificate::Certificate::from_der(leaf_der.to_vec());
     crate::verify_svid_chain(&leaf, trust_bundle).map_err(|e| {
         Error::VerificationFailed(format!("leaf is not issued by a trusted CA: {e}"))
     })?;
-    Ok(extract_launch_attestation(leaf_der))
+    match (
+        extract_launch_attestation(leaf_der),
+        extract_unmeasured_launch(leaf_der)?,
+    ) {
+        (Some(launch), None) => Ok(IssuedLaunch::Measured(launch)),
+        (None, Some(tier)) => Ok(IssuedLaunch::Unmeasured(tier)),
+        (None, None) => Ok(IssuedLaunch::Unstated),
+        // Two answers to one question is not a launch claim of either kind.
+        (Some(_), Some(tier)) => Err(Error::VerificationFailed(format!(
+            "leaf claims both a measured launch and an unmeasured `{}` launch",
+            tier.as_str()
+        ))),
+    }
+}
+
+/// What a leaf a trusted CA signed says about the launch it identifies.
+enum IssuedLaunch {
+    /// The node's measurement of the kernel, rootfs and config it launched.
+    Measured(LaunchAttestation),
+    /// The tier that launched it cannot measure a launch, and the leaf says so.
+    Unmeasured(UnmeasuredTier),
+    /// Neither: an identity that is not a pod launch (a node, a client).
+    Unstated,
+}
+
+fn unmeasured(tier: UnmeasuredTier) -> String {
+    format!(
+        "the launch is unmeasured: the `{}` tier cannot measure what it launches, and a \
+         measured launch is required",
+        tier.as_str()
+    )
+}
+
+/// A tier that launches workloads without measuring them, named in the leaf
+/// (OID `.1.6`) so the absence of a measurement is stated, never inferred from a
+/// missing extension.
+///
+/// No `Default` (ADR 0007 B-1); every match over it is exhaustive (E-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmeasuredTier {
+    /// A container runtime.
+    Container,
+    /// A process on the node, no VM (`local-driver`).
+    Local,
+    /// Apple Virtualization.framework.
+    AppleVz,
+    /// The host tier: `nucleus run --local`, `nucleus shell`.
+    Host,
+}
+
+impl UnmeasuredTier {
+    /// Every tier, for tests and censuses.
+    pub const ALL: [UnmeasuredTier; 4] = [Self::Container, Self::Local, Self::AppleVz, Self::Host];
+
+    /// The name the extension carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Container => "container",
+            Self::Local => "local",
+            Self::AppleVz => "apple-vz",
+            Self::Host => "host",
+        }
+    }
+
+    fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|t| t.as_str() == name)
+    }
+
+    /// The extension value: the DER `UTF8String` of [`Self::as_str`].
+    ///
+    /// # Errors
+    ///
+    /// A name too long for a short-form DER length (none of today's).
+    pub fn extension_value(self) -> Result<Vec<u8>> {
+        let name = self.as_str().as_bytes();
+        let len = u8::try_from(name.len())
+            .ok()
+            .filter(|l| *l < 0x80)
+            .ok_or_else(|| Error::Internal(format!("tier name `{}` is too long", self.as_str())))?;
+        let mut der = vec![0x0c, len];
+        der.extend_from_slice(name);
+        Ok(der)
+    }
+}
+
+/// The unmeasured-launch tier a leaf names, if it carries the extension.
+///
+/// # Errors
+///
+/// The extension is present but its value is not one known tier: a statement
+/// nobody can read is refused, never read as absent (ADR 0007 A-2).
+pub fn extract_unmeasured_launch(cert_der: &[u8]) -> Result<Option<UnmeasuredTier>> {
+    use x509_parser::prelude::{FromDer, X509Certificate};
+    let Ok((_, cert)) = X509Certificate::from_der(cert_der) else {
+        return Ok(None);
+    };
+    let Some(ext) = cert
+        .extensions()
+        .iter()
+        .find(|e| e.oid.as_bytes() == crate::oid::OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES)
+    else {
+        return Ok(None);
+    };
+    let tier = match ext.value {
+        [0x0c, len, name @ ..] if usize::from(*len) == name.len() => std::str::from_utf8(name)
+            .ok()
+            .and_then(UnmeasuredTier::parse),
+        _ => None,
+    };
+    tier.map(Some).ok_or_else(|| {
+        Error::VerificationFailed("leaf carries an unreadable unmeasured-launch extension".into())
+    })
 }
 
 /// Relying-party verification of an attested SVID served over `FETCH_SVID`.
@@ -880,14 +989,17 @@ pub fn verify_attested_svid(
     let leaf = pem::parse(chain_pem)
         .map_err(|e| Error::VerificationFailed(format!("cert PEM parse failed: {e}")))?;
     match issued_launch(leaf.contents(), trust_bundle)? {
-        Some(att) => {
+        IssuedLaunch::Measured(att) => {
             requirements.verify(&att)?;
             Ok(Some(att))
         }
-        None if require_attestation => Err(Error::VerificationFailed(
+        IssuedLaunch::Unmeasured(tier) if require_attestation => {
+            Err(Error::VerificationFailed(unmeasured(tier)))
+        }
+        IssuedLaunch::Unstated if require_attestation => Err(Error::VerificationFailed(
             "served SVID carries no launch-attestation extension (fail-closed)".to_string(),
         )),
-        None => Ok(None),
+        IssuedLaunch::Unmeasured(_) | IssuedLaunch::Unstated => Ok(None),
     }
 }
 
