@@ -40,6 +40,10 @@ pub struct Collection {
     pub execution_pod: String,
     /// The pod that made one credentialed request, for the host-effect journal.
     pub effect_pod: String,
+    /// The pod that made one permitted and one refused call per workload-door
+    /// route and credentialed upstream, honest traffic only, so every
+    /// operation in the shadow coverage set is compared (ADR 0014 S2).
+    pub coverage_pod: String,
     /// The bundle's files, each a name relative to the bundle directory.
     pub files: Files,
     /// The node binaries as they ran, keyed by the path a release names.
@@ -87,6 +91,12 @@ pub struct Files {
     /// Every pod's shadow disagreement records, concatenated. Written even when
     /// empty, so a bundle that lacks it is one whose record was withheld.
     pub host_decide_disagreements: String,
+    /// The coverage pod's guest console.
+    pub coverage_console: String,
+    /// The coverage pod's calls, each with its route, intent and the HTTP
+    /// status it got ([`CoverageCall`]). Its presence is what says a run had a
+    /// coverage pod, so the reader holds the run to the coverage set.
+    pub coverage_calls: String,
 }
 
 impl Files {
@@ -110,8 +120,36 @@ impl Files {
             host_effect_outcomes: s("host-effect-outcomes.jsonl"),
             effect_console: s("effect-console.log"),
             host_decide_disagreements: s(crate::host_decide_telemetry::DISAGREEMENT_LOG),
+            coverage_console: s("coverage-console.log"),
+            coverage_calls: s(COVERAGE_CALLS_FILE),
         }
     }
+}
+
+/// The coverage pod's call log, by its bundle name.
+pub const COVERAGE_CALLS_FILE: &str = "coverage-calls.json";
+
+/// What a coverage call is meant to get. Recorded beside what it got, so a
+/// call meant to be refused that was allowed is visible, not assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CoverageIntent {
+    /// The pod's policy permits it.
+    Permitted,
+    /// The pod's policy refuses it.
+    Refused,
+}
+
+/// One call the coverage pod made.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CoverageCall {
+    /// The route, as the proxy serves it (`/v1/read`, `/v1/egress/<name>/echo`).
+    pub route: String,
+    /// What the policy is meant to answer.
+    pub intent: CoverageIntent,
+    /// The HTTP status the proxy answered with.
+    pub status: u16,
 }
 
 /// One node binary as it ran.
@@ -176,6 +214,8 @@ pub struct Timings {
     pub workload_exit_ms: u64,
     /// `POST /v1/pods` for the effect pod.
     pub effect_pod_create_ms: u64,
+    /// The coverage pod: from its create request until its last call returned.
+    pub coverage_ms: u64,
     /// The whole collection.
     pub total_ms: u64,
 }
@@ -191,6 +231,7 @@ mod tests {
             nonce: "n".into(),
             execution_pod: "a".into(),
             effect_pod: "b".into(),
+            coverage_pod: "c".into(),
             files: Files::standard(),
             measured: vec![Measured {
                 path: "/usr/local/bin/nucleus-node".into(),
@@ -209,6 +250,7 @@ mod tests {
                 guest_proxy_ready_ms: 3,
                 workload_exit_ms: 4,
                 effect_pod_create_ms: 5,
+                coverage_ms: 7,
                 total_ms: 6,
             },
         };

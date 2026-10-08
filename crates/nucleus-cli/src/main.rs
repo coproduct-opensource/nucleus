@@ -72,6 +72,8 @@ mod trust;
 #[cfg(test)]
 mod host_evidence_live;
 #[cfg(test)]
+mod live_boot_coverage;
+#[cfg(test)]
 mod live_boot_evidence;
 mod twosafety;
 mod twosafety_boot;

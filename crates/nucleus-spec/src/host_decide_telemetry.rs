@@ -28,6 +28,28 @@ pub const TEARDOWN_MESSAGE: &str = "host-decide shadow tally at teardown";
 /// its name in a live-boot bundle.
 pub const DISAGREEMENT_LOG: &str = "host-decide-disagreements.jsonl";
 
+/// The operations every live-boot run must compare at least once (ADR 0014
+/// S2): each operation a workload-door route or a credentialed-egress
+/// submission is decided as, for an upstream with no effect table.
+/// `nucleus-tool-proxy`'s `every_door_route_is_in_the_shadow_coverage_set`
+/// maps each door route onto this set exhaustively, so a new route cannot
+/// land outside it. A push or pull request (an upstream with an effect table)
+/// is not in it yet: no live-boot fixture declares one.
+pub const COVERAGE: [portcullis::Operation; 6] = [
+    portcullis::Operation::ReadFiles,
+    portcullis::Operation::WriteFiles,
+    portcullis::Operation::GlobSearch,
+    portcullis::Operation::GrepSearch,
+    portcullis::Operation::WebFetch,
+    portcullis::Operation::WebSearch,
+];
+
+/// [`COVERAGE`], spelled as the node's teardown pairs spell an operation.
+#[must_use]
+pub fn coverage_names() -> [&'static str; 6] {
+    COVERAGE.map(portcullis::grant_usage::operation_name)
+}
+
 /// What starts the guest's telemetry line on its console.
 pub const CONSOLE_PREFIX: &str = "NUCLEUS-HOST-DECIDE-TELEMETRY";
 
