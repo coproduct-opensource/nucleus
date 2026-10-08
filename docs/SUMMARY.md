@@ -31,6 +31,7 @@
   - [CI Assurance](assurance/ci-assurance.md)
   - [The economic layer boundary](econ-layer-boundary.md)
 - [Decision Records]()
+  - [0014 — The host decides](adr/0014-the-host-decides.md)
   - [0013 — The eval cell](adr/0013-eval-cell.md)
   - [0012 — The federation key lives in the TPM](adr/0012-the-federation-key-lives-in-the-tpm.md)
   - [0011 — Evidence of what booted the node](adr/0011-node-evidence-what-booted.md)
