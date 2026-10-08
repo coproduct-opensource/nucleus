@@ -475,6 +475,9 @@ struct Model {
     locked: BTreeSet<usize>,
     /// A node-wide lockdown is in force.
     locked_all: bool,
+    /// A label lockdown is in force. The walk's selector is empty, which
+    /// matches every pod -- those registered and those being created.
+    locked_label: bool,
     rules: Rules,
 }
 
@@ -497,6 +500,7 @@ impl Model {
                 .collect(),
             locked: BTreeSet::new(),
             locked_all: false,
+            locked_label: false,
             rules,
         }
     }
@@ -510,9 +514,12 @@ impl Model {
         out
     }
 
-    /// Is pod `i` under a lockdown: node-wide, or of it or a pod above it?
+    /// Is pod `i` under a lockdown: node-wide, a label's, or of it or a pod
+    /// above it?
     fn covered(&self, i: usize) -> bool {
-        self.locked_all || self.lineage(i).iter().any(|a| self.locked.contains(a))
+        self.locked_all
+            || self.locked_label
+            || self.lineage(i).iter().any(|a| self.locked.contains(a))
     }
 
     /// Has pod `i`, or a pod above it, stopped?
@@ -548,6 +555,10 @@ impl Model {
     /// Would admission issue `who` a child of `budget` micro-USD, and from
     /// which source, at what depth — upstreams aside?
     fn admits(&self, who: Who, budget: u64) -> Option<(Source, usize)> {
+        if self.locked_label {
+            // Matches the pod being created, whoever creates it.
+            return None;
+        }
         let (source, depth) = match who {
             Who::Stranger => return None,
             Who::Operator => return Some((Source::Root, 1)),
@@ -1321,6 +1332,10 @@ impl Walk {
     }
 
     fn count_refusal(&mut self, who: Who, micro: u64) {
+        if self.model.locked_label && who != Who::Stranger {
+            self.stats.refused_locked += 1;
+            return;
+        }
         let ledger = match who {
             Who::Pod(r) => {
                 let i = self.model.resolve(r);
@@ -1808,9 +1823,11 @@ impl Walk {
         match (scope, target) {
             (Scope::All, _) if restore => {
                 self.model.locked_all = false;
+                self.model.locked_label = false;
                 self.model.locked.clear();
             }
             (Scope::All, _) => self.model.locked_all = true,
+            (Scope::Label, _) => self.model.locked_label = !restore,
             (_, Some(j)) if restore => {
                 self.model.locked.remove(&j);
             }
@@ -1836,7 +1853,7 @@ impl Walk {
         // What each pod's watcher is sent, now and if it connects later.
         for j in 0..self.model.pods.len() {
             let id = self.model.pods[j].id;
-            let sent = crate::lockdown::delivery(&self.node.st, &cmd, Some(id)).await;
+            let sent = crate::lockdown::delivery(&self.node.st, &cmd, id).await;
             let reached = match scope {
                 Scope::All | Scope::Label => true,
                 Scope::Pod(_) => below(j),
@@ -1863,7 +1880,7 @@ impl Walk {
                     ));
                 }
             }
-            let later = crate::lockdown::in_force(&self.node.st, Some(id)).await;
+            let later = crate::lockdown::in_force(&self.node.st, id).await;
             if later.as_ref().is_some_and(|c| !c.active) || later.is_some() != self.model.covered(j)
             {
                 return Err(format!(

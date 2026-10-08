@@ -1276,7 +1276,7 @@ async fn create_pod_internal(
     // ── Authority Gate: proof of caller authority, budget conserved ──
     // The caller's certificate decides what this pod may do; the spec's policy
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
-    lockdown::admits(state, admission.caller_pod).await?;
+    lockdown::admits(state, admission.caller_pod, &spec.metadata.labels).await?;
     // The issued lattice AND the admitted credentialed upstreams replace what the spec requested,
     // inside `admit_pod`, and the plan it returns is the only thing a driver spawns (#2600). The
     // pod's owner is the issued root identity (ADR 0001: its tenant).
@@ -3077,7 +3077,7 @@ impl NodeService for GrpcService {
 
         let (operator, req) = lockdown::attributed(request)?;
         Ok(GrpcResponse::new(
-            lockdown::issue(&self.state, operator, req).await,
+            lockdown::issue(&self.state, operator, req).await?,
         ))
     }
 
@@ -3094,17 +3094,8 @@ impl NodeService for GrpcService {
         )?;
 
         // WHICH pod is watching, resolved as every other handler resolves it (a
-        // pod peer is its own pod). A caller that is merely unresolved still
-        // receives, fail-open. A claim that was presented and failed is
-        // refused: otherwise a bad token would buy the unfiltered stream.
-        let watcher =
-            match pod_api::grpc_caller(&self.state, request.metadata(), request.extensions()) {
-                Ok(scope) => scope.pod(),
-                Err(status) if status.code() == tonic::Code::Unauthenticated => {
-                    return Err(status);
-                }
-                Err(_) => None,
-            };
+        // pod peer is its own pod); a peer that is not a pod is refused.
+        let watcher = lockdown::watcher(&self.state, request.metadata(), request.extensions())?;
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes
