@@ -342,7 +342,7 @@ struct Args {
     identity_workload_api_socket: Option<PathBuf>,
     // There is no flag for a guest-reachable vsock port. Every one is written
     // once, in the host-listener inventory (`nucleus_ifc_kernel::VsockListener`,
-    // docs/architecture/host-listeners.md). `--broker-vsock-port` used to
+    // docs/architecture/mediated-set.md, "Host listeners"). `--broker-vsock-port` used to
     // default to 15013 — the SPIFFE Workload API's port — so the broker unlinked
     // that socket on every broker-enabled pod.
     /// Serve the per-pod credential broker socket.

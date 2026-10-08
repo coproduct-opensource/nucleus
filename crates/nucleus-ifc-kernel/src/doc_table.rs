@@ -2,7 +2,7 @@
 //!
 //! Two closed enums in this crate are pinned to a documented table each
 //! ([`crate::EgressChannel`] to `mediated-set.md`, [`crate::HostListener`] to
-//! `host-listeners.md`). One parser serves both (ADR 0007 F-4), so the two
+//! the host-listener table in the same doc). One parser serves both (ADR 0007 F-4), so the two
 //! parity gates cannot read their tables differently.
 //!
 //! The table is bounded by explicit start/end markers, and a cell is located by

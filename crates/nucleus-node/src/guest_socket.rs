@@ -200,7 +200,7 @@ mod tests {
             vec![("broker_transport.rs".to_string(), 1)],
             "a production UnixListener::bind outside `prepare_socket`: bind a guest-reachable \
              socket through `guest_socket::bind_guest_listener`, which takes a VsockListener \
-             (docs/architecture/host-listeners.md)"
+             (docs/architecture/mediated-set.md, 'Host listeners')"
         );
         assert_eq!(
             count("prepare_socket("),

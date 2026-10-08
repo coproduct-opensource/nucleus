@@ -18,7 +18,7 @@
 //! `match` arm here; the node binds a vsock listener only through a helper that
 //! takes a [`VsockListener`], so a listener that is not a variant cannot be
 //! bound, and two variants cannot share a port (`every_vsock_listener_has_its_own_port`).
-//! The documented table in `docs/architecture/host-listeners.md` must equal the
+//! The host-listener table in `docs/architecture/mediated-set.md` must equal the
 //! enum (`documented_inventory_equals_the_enum`), the same categorical gate
 //! [`crate::EgressChannel`] has for `mediated-set.md`.
 //!
@@ -111,7 +111,7 @@ pub enum Transport {
 }
 
 /// One host-side service a pod's guest can reach. Closed on purpose: adding a
-/// listener means adding a variant here, a row in `host-listeners.md`, and — for
+/// listener means adding a variant here, a row in `mediated-set.md`'s host-listener table, and — for
 /// vsock — binding it through the node's `VsockListener`-typed helper.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HostListener {
@@ -254,13 +254,13 @@ mod tests {
         assert_eq!(keys.len(), HostListener::ALL.len(), "duplicate doc_key");
     }
 
-    /// **THE GATE.** The table in `host-listeners.md` equals the enum: the same
+    /// **THE GATE.** The host-listener table in `mediated-set.md` equals the enum: the same
     /// keys, and for each key the same transport, workload reach and egress
     /// channel. A new listener needs a variant AND a row; moving a port needs the
     /// enum AND the doc.
     #[test]
     fn documented_inventory_equals_the_enum() {
-        let doc = crate::doc_table::read_doc("host-listeners.md");
+        let doc = crate::doc_table::read_doc("mediated-set.md");
         let table = crate::doc_table::DocTable::parse(&doc, "HOST-LISTENERS");
         let enum_keys: BTreeSet<&str> = HostListener::ALL.iter().map(|h| h.doc_key()).collect();
         for column in ["Transport", "Workload", "Egress channel"] {
@@ -268,7 +268,7 @@ mod tests {
             let doc_keys: BTreeSet<&str> = documented.keys().map(String::as_str).collect();
             assert_eq!(
                 doc_keys, enum_keys,
-                "host-listeners.md keys != HostListener variants (add the row or the variant)"
+                "mediated-set.md host-listener keys != HostListener variants (add the row or the variant)"
             );
             for h in HostListener::ALL {
                 assert_eq!(

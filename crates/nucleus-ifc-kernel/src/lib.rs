@@ -52,7 +52,7 @@ mod egress_channel;
 pub use egress_channel::{EgressChannel, MediationStatus};
 
 // The closed inventory of host-side listeners a pod can reach — the one place
-// their ports are written (ADR 0007 G-1), pinned to `host-listeners.md`.
+// their ports are written (ADR 0007 G-1), pinned to `mediated-set.md`'s host-listener table.
 mod host_listener;
 pub use host_listener::{HostListener, Transport, VsockListener, WorkloadReach};
 
