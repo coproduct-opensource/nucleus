@@ -167,7 +167,10 @@ type Registry = HashMap<Uuid, Arc<crate::PodHandle>>;
 async fn watcher_view(
     state: &crate::NodeState,
     pod: Uuid,
-) -> (Vec<Uuid>, Option<std::collections::BTreeMap<String, String>>) {
+) -> (
+    Vec<Uuid>,
+    Option<std::collections::BTreeMap<String, String>>,
+) {
     let pods = state.pods.lock().await;
     let labels = pods.get(&pod).map(|p| p.spec.metadata.labels.clone());
     (lineage_in(&pods, pod), labels)

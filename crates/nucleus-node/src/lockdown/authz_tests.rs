@@ -157,7 +157,15 @@ async fn a_label_lockdown_is_delivered_only_to_the_pods_it_matches() {
         .await
         .expect("operator may lift");
     let lift = heard.try_recv().expect("lift broadcast");
-    assert!(crate::lockdown::delivery(&st, &lift, Some(b)).await.is_none());
-    assert!(crate::lockdown::delivery(&st, &lift, Some(a)).await.is_some());
+    assert!(
+        crate::lockdown::delivery(&st, &lift, Some(b))
+            .await
+            .is_none()
+    );
+    assert!(
+        crate::lockdown::delivery(&st, &lift, Some(a))
+            .await
+            .is_some()
+    );
     cancel_all(&st).await;
 }
