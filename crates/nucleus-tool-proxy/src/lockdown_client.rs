@@ -206,8 +206,9 @@ fn apply_scope(scope: &str, pod_id: Option<&str>) -> bool {
     }
 
     if scope.starts_with("label:") {
-        // We don't have label information in the tool-proxy,
-        // so conservatively assume it applies.
+        // The tool-proxy has no label information. The node evaluates the
+        // selector and sends a label lockdown only to the pods it matches
+        // (`nucleus-node` `lockdown::reaches`), so one that arrives applies.
         return true;
     }
 

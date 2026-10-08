@@ -4,7 +4,7 @@
 //! pod-API `handler_tests` fixture), with the interceptor's `AuthContext` in the
 //! request extensions the way `serve_grpc` places it.
 
-use crate::pod_api::handler_tests::{register, state};
+use crate::pod_api::handler_tests::{register, register_labelled, state};
 use crate::proto;
 use crate::proto::lockdown_request::Scope;
 use crate::proto::node_service_server::NodeService;
@@ -117,5 +117,55 @@ async fn the_operator_issues_and_lifts_a_lockdown() {
             assert_eq!(cmd.active, !restore, "{shape}");
         }
     }
+    cancel_all(&st).await;
+}
+
+/// **The label leak, on the real registry.** The operator issues a label
+/// lockdown that matches pod A's labels and not pod B's. B's watcher is sent
+/// nothing: not the reason, and not the selector naming A's labels. A is sent
+/// the command, and the audit counts only A, the same set the node delivers to.
+#[tokio::test]
+async fn a_label_lockdown_is_delivered_only_to_the_pods_it_matches() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = node(&dir);
+    let a = register_labelled(&st, None, &[("tier", "prod")]).await;
+    let b = register_labelled(&st, None, &[("tier", "dev")]).await;
+    let mut heard = st.lockdown_tx.subscribe();
+    let svc = crate::GrpcService { state: st.clone() };
+    let selector = || Some(Scope::LabelSelector("tier=prod".to_string()));
+
+    let mut issue = request(OPERATOR, selector(), false);
+    issue.get_mut().reason = "pod-a-specific reason".to_string();
+    let resp = svc.lockdown(issue).await.expect("operator may lock down");
+    assert_eq!(resp.into_inner().affected_pods, 1);
+    let cmd = heard.try_recv().expect("the node broadcasts internally");
+
+    let to_b = crate::lockdown::delivery(&st, &cmd, Some(b)).await;
+    assert!(
+        to_b.is_none(),
+        "pod B, which the selector does not match, was sent {to_b:?}"
+    );
+    let to_a = crate::lockdown::delivery(&st, &cmd, Some(a))
+        .await
+        .expect("pod A, which the selector matches, must be sent the lockdown");
+    assert!(to_a.active);
+    assert_eq!(to_a.scope, "label:tier=prod");
+    assert_eq!(to_a.reason, "pod-a-specific reason");
+
+    // The lift follows the same rule.
+    svc.lockdown(request(OPERATOR, selector(), true))
+        .await
+        .expect("operator may lift");
+    let lift = heard.try_recv().expect("lift broadcast");
+    assert!(
+        crate::lockdown::delivery(&st, &lift, Some(b))
+            .await
+            .is_none()
+    );
+    assert!(
+        crate::lockdown::delivery(&st, &lift, Some(a))
+            .await
+            .is_some()
+    );
     cancel_all(&st).await;
 }

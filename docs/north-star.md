@@ -243,7 +243,9 @@ What each status means, and what it deliberately does not:
   fields is mechanized — the rest are not yet in-Lean (five are
   availability/cardinality channels the sentence already excludes); (b) the two
   fields that were excluded *because their code was defective* are now fixed —
-  the `lockdown_tx` broadcast leak (#2203, server-side filter) and the node-wide
+  the `lockdown_tx` broadcast leak (#2203, server-side filter; the remaining
+  `label:` broadcast is closed too, because the node now evaluates the selector
+  per watcher, `lockdown::reaches`, 2026-10-08) and the node-wide
   identity socket handing out an arbitrary cert+key (#2204, retired) both landed —
   so `lockdown_tx` and the identity registry can now **re-enter** the model in a
   later increment (they are unblocked, not yet mechanized); (c) the model↔runtime
