@@ -81,7 +81,8 @@ fn calls() -> Result<Vec<Call>> {
             json!({"url": "https://example.com/coverage"}),
             Permitted,
         ),
-        call("/v1/web_search", json!({"query": "coverage"}), Permitted),
+        // Refused by DLC admission (`DLC_REFUSED`), in the guest and on the host.
+        call("/v1/web_search", json!({"query": "coverage"}), Refused),
         call(
             "/v1/write",
             json!({"path": "coverage-a.txt", "contents": "coverage\n"}),
@@ -133,18 +134,42 @@ fn calls() -> Result<Vec<Call>> {
 pub(crate) fn pod_spec(upstream: &str) -> Value {
     let mut spec = crate::host_evidence_live::effect_pod_spec(upstream);
     spec["metadata"]["name"] = "live-boot-coverage".into();
-    // No DLC admission: the effect pod's labels admit `web_fetch` alone, and
-    // the guest's DLC gate then refuses every other operation as not granted
-    // while the host's kernel, which has no DLC gate, allows it. Run
-    // 37833208274 measured exactly that: six guest-stricter disagreements, one
-    // per operation but `web_fetch`. That is a real host/guest gap (reported
-    // with this step), but it would make every permitted call here a refusal
-    // and say nothing about the lattice the coverage set is meant to exercise.
-    spec["metadata"]["labels"] = json!({});
+    // DLC admission on every coverage operation but one: the guest's DLC gate
+    // and the host's (ADR 0014, host DLC admission) then both admit five
+    // operations, so the lattice still decides them, and both refuse
+    // `web_search`. Before the host read the labels, the guest refused what
+    // the host allowed: run 37833208274 measured six guest-stricter
+    // disagreements, the class §10 bounds at zero.
+    spec["metadata"]["labels"] = json!(dlc().labels());
     let mut lattice = portcullis::PermissionLattice::permissive();
     lattice.paths = portcullis::PathLattice::block_sensitive();
     spec["spec"]["policy"]["lattice"] = serde_json::to_value(&lattice).unwrap_or(Value::Null);
     spec
+}
+
+/// The one coverage operation the pod's DLC credentials leave out.
+pub(crate) const DLC_REFUSED: portcullis::Operation = portcullis::Operation::WebSearch;
+
+/// The coverage pod's DLC provisioning: an issuer-signed credential for every
+/// operation in the coverage set but [`DLC_REFUSED`].
+fn dlc() -> nucleus_spec::dlc_admission::DlcProvisioning {
+    let seed = [29u8; 32];
+    let mut issuer = [0u8; 32];
+    let mut credentials = Vec::new();
+    for op in nucleus_spec::host_decide_telemetry::COVERAGE {
+        if op == DLC_REFUSED {
+            continue;
+        }
+        let name = portcullis::grant_usage::operation_name(op);
+        let (pk, sig) = portcullis::says_admission::mint_credential(&seed, name);
+        issuer = pk;
+        credentials.push(format!("{name}={}", hex::encode(sig.bytes)));
+    }
+    nucleus_spec::dlc_admission::DlcProvisioning {
+        trusted_keys: hex::encode(issuer),
+        issuer: hex::encode(issuer),
+        credentials: credentials.join(","),
+    }
 }
 
 /// Make every call against the pod's proxy and record what each got. A call
@@ -229,6 +254,30 @@ mod tests {
                 .can_access(std::path::Path::new("coverage-a.txt"))
         );
         assert_eq!(spec["spec"]["credentialed_egress"][0]["name"], UPSTREAM);
-        assert_eq!(spec["metadata"]["labels"], json!({}), "no DLC admission");
+    }
+
+    /// The pod provisions DLC admission for every coverage operation but one,
+    /// and the credentials it carries admit exactly those.
+    #[test]
+    fn the_pod_admits_every_coverage_operation_but_one() {
+        use nucleus_spec::dlc_admission::{DlcField, DlcProvisioning};
+        let spec = pod_spec("http://127.0.0.1:1");
+        let labels: std::collections::BTreeMap<String, String> =
+            serde_json::from_value(spec["metadata"]["labels"].clone()).expect("labels");
+        let p = DlcProvisioning::from_labels(&labels).expect("DLC labels");
+        let admission = portcullis::says_admission::DlcAdmission::provision(
+            p.get(DlcField::TrustedKeys),
+            p.get(DlcField::Issuer),
+            p.get(DlcField::Credentials),
+        )
+        .expect("provisioned");
+        for op in nucleus_spec::host_decide_telemetry::COVERAGE {
+            let name = portcullis::grant_usage::operation_name(op);
+            assert_eq!(
+                admission.decide_operation(name).is_admit(),
+                op != DLC_REFUSED,
+                "{name}"
+            );
+        }
     }
 }

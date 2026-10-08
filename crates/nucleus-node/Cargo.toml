@@ -114,7 +114,9 @@ nucleus-decision-protocol = { path = "../nucleus-decision-protocol", features = 
 nucleus-federation = { path = "../nucleus-federation" }
 nucleus-client = { path = "../nucleus-client", features = ["async-drand"] }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
-portcullis = { path = "../portcullis", features = ["serde", "crypto"] }
+# `dlc`: the host's decision service provisions its kernel with the same DLC-D
+# admission the guest's tool-proxy does (ADR 0014, host DLC admission).
+portcullis = { path = "../portcullis", features = ["serde", "crypto", "dlc"] }
 
 uuid = { workspace = true, features = ["serde"] }
 
