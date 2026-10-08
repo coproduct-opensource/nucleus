@@ -157,16 +157,8 @@ async fn a_label_lockdown_is_delivered_only_to_the_pods_it_matches() {
         .await
         .expect("operator may lift");
     let lift = heard.try_recv().expect("lift broadcast");
-    assert!(
-        crate::lockdown::delivery(&st, &lift, b)
-            .await
-            .is_none()
-    );
-    assert!(
-        crate::lockdown::delivery(&st, &lift, a)
-            .await
-            .is_some()
-    );
+    assert!(crate::lockdown::delivery(&st, &lift, b).await.is_none());
+    assert!(crate::lockdown::delivery(&st, &lift, a).await.is_some());
     cancel_all(&st).await;
 }
 
@@ -296,7 +288,11 @@ async fn an_unparseable_scope_is_refused_and_broadcast_to_nobody() {
             Some(tonic::Code::InvalidArgument),
             "{scope:?}"
         );
-        assert_eq!(heard.try_recv().err(), Some(TryRecvError::Empty), "{scope:?}");
+        assert_eq!(
+            heard.try_recv().err(),
+            Some(TryRecvError::Empty),
+            "{scope:?}"
+        );
         assert_eq!(crate::lockdown::in_force(&st, a).await, None, "{scope:?}");
     }
     cancel_all(&st).await;
