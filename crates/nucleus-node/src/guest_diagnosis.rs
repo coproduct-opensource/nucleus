@@ -200,7 +200,7 @@ pub(crate) fn diagnose(console_path: &Path) -> Option<String> {
 pub(crate) async fn wait_for_proxy_health(
     addr: SocketAddr,
     console: &Path,
-    vmm: &mut tokio::process::Child,
+    vmm: &mut crate::vmm_process::VmmProcess,
 ) -> Result<(), ApiError> {
     // An EXPLICIT setting is honoured as-is: an operator who names a number is
     // not asking to have it scaled behind their back.
@@ -289,7 +289,7 @@ impl std::fmt::Display for HealthProbe {
 async fn wait_while_the_vmm_lives(
     addr: SocketAddr,
     budget: Duration,
-    vmm: &mut tokio::process::Child,
+    vmm: &mut crate::vmm_process::VmmProcess,
 ) -> Result<(), ApiError> {
     let started = std::time::Instant::now();
     tokio::select! {
@@ -494,10 +494,12 @@ mod tests {
     async fn a_dead_vmm_ends_the_health_wait_with_the_consoles_reason() {
         let addr = refused_addr().await;
         let f = console("[  0.9] Kernel panic - not syncing: Attempted to kill init!\n");
-        let mut vmm = tokio::process::Command::new("sh")
-            .args(["-c", "exit 7"])
-            .spawn()
-            .expect("spawn a stand-in VMM");
+        let mut vmm = crate::vmm_process::VmmProcess::direct_for_test(
+            tokio::process::Command::new("sh")
+                .args(["-c", "exit 7"])
+                .spawn()
+                .expect("spawn a stand-in VMM"),
+        );
 
         let started = std::time::Instant::now();
         let err = wait_for_proxy_health(addr, f.path(), &mut vmm)
@@ -536,11 +538,13 @@ mod tests {
                     .await;
             }
         });
-        let mut vmm = tokio::process::Command::new("sleep")
-            .arg("30")
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn a stand-in VMM");
+        let mut vmm = crate::vmm_process::VmmProcess::direct_for_test(
+            tokio::process::Command::new("sleep")
+                .arg("30")
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn a stand-in VMM"),
+        );
 
         let f = console("");
         wait_for_proxy_health(addr, f.path(), &mut vmm)
@@ -550,6 +554,49 @@ mod tests {
             matches!(vmm.try_wait(), Ok(None)),
             "the health wait must leave a live VMM running and unreaped"
         );
+    }
+
+    /// #2571: under `--new-pid-ns` the process the node spawned (the jailer) exits as soon as
+    /// the VMM exists. A wait that watched it would declare a live guest dead the moment it
+    /// started. The wait watches the VMM named by the pid file, which is still running.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_jailed_vmm_outliving_its_spawner_leaves_a_healthy_wait_alone() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        tokio::spawn(async move {
+            while let Ok((mut s, _)) = listener.accept().await {
+                let mut buf = [0u8; 512];
+                let _ = s.read(&mut buf).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("firecracker.pid");
+        // The jailer's shape: fork the VMM off, record its pid, exit 0.
+        let mut spawner = tokio::process::Command::new("/bin/sh")
+            .args([
+                "-c",
+                "sleep 30 >/dev/null 2>&1 & printf %s $! > \"$1\"",
+                "sh",
+            ])
+            .arg(&pid_file)
+            .spawn()
+            .expect("spawn a stand-in jailer");
+        assert!(spawner.wait().await.unwrap().success());
+        let pid: u32 = std::fs::read_to_string(&pid_file).unwrap().parse().unwrap();
+        let mut vmm = crate::vmm_process::VmmProcess::adopt_for_test(pid);
+
+        let f = console("");
+        let healthy = wait_for_proxy_health(addr, f.path(), &mut vmm).await;
+        let running = matches!(vmm.try_wait(), Ok(None));
+        vmm.kill().await.unwrap();
+        healthy.expect("a live VMM whose spawner exited is not a dead guest");
+        assert!(running, "the health wait must leave the VMM running");
     }
 }
 

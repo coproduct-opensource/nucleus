@@ -125,7 +125,11 @@ tempfile = { workspace = true }
 libc = "0.2"
 # Namespace-local packet admission; async readiness and close-on-exec ownership.
 netlink-sys = "0.9.0"
-nix = { version = "0.31.3", features = ["sched"] }
+# `vmm_process`: waitid(P_PIDFD) and a zero-timeout poll on the jailed VMM's pidfd.
+nix = { version = "0.31.3", features = ["sched", "process", "signal", "poll"] }
+# `vmm_process`: pidfd_open and pidfd_send_signal as safe calls; neither std nor nix has them.
+# Already in the tree (tempfile, cap-std), so no new crate.
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

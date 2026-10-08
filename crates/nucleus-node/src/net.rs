@@ -35,6 +35,7 @@ use tokio::net::lookup_host;
 use uuid::Uuid;
 
 use crate::ApiError;
+use crate::vmm_process::VmmPid;
 use nucleus_microvm_host::probe::{CheckedCommands, HostCommand};
 
 // The host programs each stage below runs. ONE declaration per stage, read
@@ -838,7 +839,7 @@ pub fn model_chain(chain: &[NetRule]) -> Option<Vec<EgressRule>> {
 #[cfg(target_os = "linux")]
 pub async fn apply_host_policy(
     checked: &CheckedCommands,
-    pid: u32,
+    pid: VmmPid,
     policy: &NetworkSpec,
     dns_entries: Option<&[ResolvedDnsEntry]>,
     dns_server: Option<Ipv4Addr>,
@@ -941,7 +942,7 @@ pub async fn apply_host_policy(
 }
 
 #[cfg(target_os = "linux")]
-pub async fn snapshot_iptables(checked: &CheckedCommands, pid: u32) -> Result<String, ApiError> {
+pub async fn snapshot_iptables(checked: &CheckedCommands, pid: VmmPid) -> Result<String, ApiError> {
     require_tools(checked, SNAPSHOT_TOOLS)?;
     let output = tokio::process::Command::new("nsenter")
         .arg(format!("--net=/proc/{pid}/ns/net"))
@@ -962,7 +963,7 @@ pub async fn snapshot_iptables(checked: &CheckedCommands, pid: u32) -> Result<St
 #[cfg(not(target_os = "linux"))]
 pub async fn apply_host_policy(
     _checked: &CheckedCommands,
-    _pid: u32,
+    _pid: VmmPid,
     _policy: &NetworkSpec,
     _dns_entries: Option<&[ResolvedDnsEntry]>,
     _dns_server: Option<Ipv4Addr>,
@@ -973,7 +974,10 @@ pub async fn apply_host_policy(
 }
 
 #[cfg(not(target_os = "linux"))]
-pub async fn snapshot_iptables(_checked: &CheckedCommands, _pid: u32) -> Result<String, ApiError> {
+pub async fn snapshot_iptables(
+    _checked: &CheckedCommands,
+    _pid: VmmPid,
+) -> Result<String, ApiError> {
     Err(ApiError::Driver(
         "host network policy requires Linux".to_string(),
     ))
@@ -1232,7 +1236,7 @@ fn ensure_bridge_netfilter() -> Result<(), ApiError> {
 }
 
 #[cfg(target_os = "linux")]
-async fn run_nsenter(pid: u32, args: &[&str]) -> Result<(), ApiError> {
+async fn run_nsenter(pid: VmmPid, args: &[&str]) -> Result<(), ApiError> {
     let status = tokio::process::Command::new("nsenter")
         .arg(format!("--net=/proc/{pid}/ns/net"))
         .arg("--")
@@ -1467,7 +1471,12 @@ fn mac_from_id(id: Uuid) -> String {
 }
 
 #[cfg(target_os = "linux")]
-async fn apply_rule(pid: u32, chain: &str, rule: &NetRule, verdict: &str) -> Result<(), ApiError> {
+async fn apply_rule(
+    pid: VmmPid,
+    chain: &str,
+    rule: &NetRule,
+    verdict: &str,
+) -> Result<(), ApiError> {
     let net = rule.net.to_string();
     if let Some(port) = rule.port {
         run_nsenter(

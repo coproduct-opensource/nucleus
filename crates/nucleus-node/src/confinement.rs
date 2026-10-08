@@ -261,7 +261,7 @@ pub(crate) async fn gate(
     pod_dir: &Path,
     spec: &PodSpec,
     pod_id: uuid::Uuid,
-    vmm: &mut tokio::process::Child,
+    vmm: &mut crate::vmm_process::VmmProcess,
 ) -> Result<WorkloadFilesystem, crate::ApiError> {
     // `wait_for_proxy_health` moved into `guest_diagnosis` (#2355), which also
     // enriches a timeout with the guest console's actual cause. Both halves read

@@ -28,7 +28,7 @@ impl Live {
                 "host-evidence-live: real guest, host authorization/outcome, offline verification and cleanup passed"
             }
             Live::NodeStop => {
-                "node-stop-live: SIGTERM drained a real pod and SIGKILL+restart reclaimed one; no VMM, netns, jail, firewall rule or cgroup left"
+                "node-stop-live: each VMM was pid 1 of its own pid namespace; cancel reaped a real pod, SIGTERM drained one and SIGKILL+restart reclaimed one; no VMM, netns, jail, firewall rule or cgroup left"
             }
         }
     }

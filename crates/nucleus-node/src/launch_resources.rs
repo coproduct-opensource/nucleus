@@ -30,10 +30,10 @@
 //!   error and releases in the background (or synchronously, best-effort, with no runtime).
 //!
 //! `#[must_use]` sits on this type and nowhere near it: it is the one-shot handle, and the
-//! witnesses it hands out (`&NetPlan`, `&mut Child`) are borrows, not affine claims.
+//! witnesses it hands out (`&NetPlan`, `&mut VmmProcess`) are borrows, not affine claims.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-use tokio::process::Child;
+use crate::vmm_process::VmmProcess;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::{ApiError, cgroup, firecracker_config, net, signed_proxy, vsock_bridge};
@@ -76,7 +76,7 @@ pub(crate) struct LaunchResources {
     net_plan: Option<net::NetPlan>,
     dns: Option<net::DnsProxyState>,
     jail: Option<firecracker_config::JailLayout>,
-    vmm: Option<Child>,
+    vmm: Option<VmmProcess>,
     cgroup: Option<cgroup::Placement>,
     bridge: Option<vsock_bridge::VsockBridge>,
     proxy: Option<signed_proxy::SignedProxy>,
@@ -90,7 +90,7 @@ pub(crate) struct Committed {
     pub net_plan: Option<net::NetPlan>,
     pub dns: Option<net::DnsProxyState>,
     pub jail: Option<firecracker_config::JailLayout>,
-    pub vmm: Child,
+    pub vmm: VmmProcess,
     pub cgroup: Option<cgroup::Placement>,
     pub bridge: Option<vsock_bridge::VsockBridge>,
     pub proxy: Option<signed_proxy::SignedProxy>,
@@ -141,7 +141,7 @@ impl LaunchResources {
         }
     }
 
-    fn commit(mut self, vmm: Child) -> Committed {
+    fn commit(mut self, vmm: VmmProcess) -> Committed {
         Committed {
             permit: self.permit.take(),
             netns: self.netns.take(),
@@ -168,7 +168,7 @@ impl LaunchResources {
     pub(crate) fn hold_jail(&mut self, jail: firecracker_config::JailLayout) {
         self.jail = Some(jail);
     }
-    pub(crate) fn hold_vmm(&mut self, vmm: Child) {
+    pub(crate) fn hold_vmm(&mut self, vmm: VmmProcess) {
         self.vmm = Some(vmm);
     }
     pub(crate) fn hold_cgroup(&mut self, placement: cgroup::Placement) {
@@ -187,7 +187,7 @@ impl LaunchResources {
     pub(crate) fn dns(&self) -> Option<&net::DnsProxyState> {
         self.dns.as_ref()
     }
-    pub(crate) fn vmm_mut(&mut self) -> Result<&mut Child, ApiError> {
+    pub(crate) fn vmm_mut(&mut self) -> Result<&mut VmmProcess, ApiError> {
         self.vmm
             .as_mut()
             .ok_or_else(|| ApiError::Driver("no VMM has been spawned yet".to_string()))

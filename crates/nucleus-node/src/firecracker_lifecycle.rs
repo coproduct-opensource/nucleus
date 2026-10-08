@@ -15,12 +15,12 @@ struct StoppedVm<'a> {
 }
 
 impl FirecrackerPod {
+    /// Observed through the VMM itself, never the process the node spawned: under the jailer that
+    /// one exits as soon as the VMM exists (#2571, `vmm_process.rs`).
     pub(crate) async fn status(&self) -> PodState {
-        let mut child = self.child.lock().await;
-        match child.try_wait() {
-            Ok(Some(status)) => PodState::Exited {
-                code: status.code(),
-            },
+        let mut vmm = self.vmm.lock().await;
+        match vmm.try_wait() {
+            Ok(Some(exit)) => PodState::Exited { code: exit.code() },
             Ok(None) => PodState::Running,
             Err(err) => PodState::Error {
                 message: err.to_string(),
@@ -29,11 +29,11 @@ impl FirecrackerPod {
     }
 
     async fn stopped(&self, stop: Stop) -> Result<StoppedVm<'_>, ApiError> {
-        let mut child = self.child.lock().await;
+        let mut vmm = self.vmm.lock().await;
         if stop == Stop::Kill {
-            child.kill().await.map_err(ApiError::Io)?;
+            vmm.kill().await.map_err(ApiError::Io)?;
         }
-        match child.try_wait().map_err(ApiError::Io)? {
+        match vmm.try_wait().map_err(ApiError::Io)? {
             Some(_) => Ok(StoppedVm { pod: self }),
             None => Err(ApiError::Driver(
                 "Firecracker process is still running; retaining its resources".into(),
@@ -129,7 +129,9 @@ mod tests {
             direct_cgroup: Mutex::new(None),
             workload_filesystem: crate::net::confinement::WorkloadFilesystem::Unreported,
             pod_dir: path.to_owned(),
-            child: Arc::new(Mutex::new(child)),
+            vmm: Arc::new(Mutex::new(crate::vmm_process::VmmProcess::direct_for_test(
+                child,
+            ))),
             bridge: Mutex::new(None),
             signed_proxy: Mutex::new(None),
             permit: Mutex::new(Some(pool.clone().acquire_owned().await.unwrap())),

@@ -121,7 +121,7 @@ impl PreparedPod {
         pod_dir: &Path,
         spec: &PodSpec,
         id: Uuid,
-        child: &mut tokio::process::Child,
+        child: &mut crate::vmm_process::VmmProcess,
     ) -> Result<net::confinement::WorkloadFilesystem, ApiError> {
         let filesystem = net::confinement::gate(addr, pod_dir, spec, id, child).await?;
         if self.identity.withholding.is_some() {
