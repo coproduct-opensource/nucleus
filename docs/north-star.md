@@ -611,6 +611,14 @@ What each status means, and what it deliberately does not:
   `admit_posture_one_byte_of_drift_reds_the_gate`) — same TCB boundary, now also
   exposed to an *outside* verifier. Note: OID PEN 57212 is an unregistered
   placeholder; register it before any external-interop claim.
+  **Sequence to PROVED: ADR 0016** (`docs/adr/0016-verify-from-the-outside.md`, 2026-10-08):
+  S1 eval-cell admission verifies (node evidence Attested at create; the SVID chains and
+  carries the node's own measurement at boot), S2 one chain-checked public verifier (the
+  CLI path today never checks who signed the leaf), S3 a per-launch TPM quote binding the
+  SVID key and measurement, S4 the handshake verifier on every authority-granting mTLS
+  path, S5 coverage stated, S6 the UDS round trip, S7 launch provenance, S8 a stranger
+  verifies, S9 the extracted decision core proved. `sandbox_proof.rs` is not dead (the
+  tool-proxy calls it at start-up); it is kept as a caller of the one verifier.
 
 The cross-pod leg is the open one, and it is deliberately sequenced audit-first:
 a lookup keyed on something a guest can forge is a far likelier defect than a
