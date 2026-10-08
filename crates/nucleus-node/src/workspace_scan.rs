@@ -13,6 +13,19 @@
 //!   disk is read with `debugfs rdump` into a private directory under the
 //!   node's state, as written: an image whose journal needs recovery is not
 //!   read, because the guest would replay it and see a tree the scan did not.
+//!
+//! # A scan is of the pinned bytes, and only those boot
+//!
+//! An eval cell's disk must carry its digest in the spec (`image.scratch_digest`,
+//! `image.data_digest`); one without is refused by name. The scan copies the disk
+//! into a node-owned file, measures the COPY with the function the boot check
+//! uses (`measure_artifact`), refuses a copy that is not the pinned bytes, and
+//! reads the tree from that copy. So the verdict is about the pinned digest and
+//! nothing else, and the caller's file can change under neither `dumpe2fs` nor
+//! `debugfs`. At boot, `image_identity::verify` holds the disk placed in the jail
+//! to the same pin, so a disk rewritten between create and boot is refused there.
+//! An unpinned disk would leave the boot check nothing to hold it to: that is the
+//! create-to-boot window, and the pin requirement is what closes it.
 //! - **Container**: `work_dir`, bind-mounted read-write at `/workspace`.
 //! - **Local**: `work_dir`, which the workload runs in on this host.
 //!
@@ -37,8 +50,8 @@
 
 use std::path::{Path, PathBuf};
 
-use nucleus_spec::PodSpec;
 use nucleus_spec::isolation_profile::IsolationProfile;
+use nucleus_spec::{ArtifactDigest, PodSpec};
 use portcullis::git_exec::{self, Finding};
 use tracing::warn;
 use uuid::Uuid;
@@ -61,6 +74,17 @@ pub(crate) enum Form {
     Image,
 }
 
+/// What the spec says a source's bytes must hash to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Pin {
+    /// A shared directory: there is no single artifact to pin.
+    NotAnArtifact,
+    /// A disk whose digest field, named here, the spec left empty.
+    Unpinned(&'static str),
+    /// A disk, the digest field that pins it, and the digest.
+    Pinned(&'static str, ArtifactDigest),
+}
+
 /// One host path whose contents enter a pod.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Source {
@@ -68,6 +92,7 @@ pub(crate) struct Source {
     pub(crate) field: &'static str,
     pub(crate) form: Form,
     pub(crate) path: PathBuf,
+    pub(crate) pin: Pin,
 }
 
 /// Every host path whose contents enter a pod of `spec` on `driver`.
@@ -76,6 +101,7 @@ pub(crate) fn sources(spec: &PodSpec, driver: &DriverKind) -> Vec<Source> {
         field: "work_dir",
         form: Form::Directory,
         path: spec.spec.work_dir.clone(),
+        pin: Pin::NotAnArtifact,
     };
     match driver {
         DriverKind::Container => vec![work_dir()],
@@ -87,15 +113,29 @@ pub(crate) fn sources(spec: &PodSpec, driver: &DriverKind) -> Vec<Source> {
                 return Vec::new();
             };
             [
-                ("image.scratch_path", image.scratch_path.as_ref()),
-                ("image.data_path", image.data_path.as_ref()),
+                (
+                    "image.scratch_path",
+                    image.scratch_path.as_ref(),
+                    "image.scratch_digest",
+                    image.scratch_digest.as_ref(),
+                ),
+                (
+                    "image.data_path",
+                    image.data_path.as_ref(),
+                    "image.data_digest",
+                    image.data_digest.as_ref(),
+                ),
             ]
             .into_iter()
-            .filter_map(|(field, path)| {
+            .filter_map(|(field, path, pin_field, digest)| {
                 path.map(|p| Source {
                     field,
                     form: Form::Image,
                     path: p.clone(),
+                    pin: match digest {
+                        Some(d) => Pin::Pinned(pin_field, d.clone()),
+                        None => Pin::Unpinned(pin_field),
+                    },
                 })
             })
             .collect()
@@ -110,6 +150,10 @@ pub(crate) enum Read {
     Scanned(Vec<Finding>),
     /// Could not be scanned to the end, and why.
     CouldNotLook(String),
+    /// A disk the eval cell must pin, with no digest in the field named here.
+    Unpinned(&'static str),
+    /// A disk whose bytes are not the ones its spec pinned: what was measured.
+    NotThePinnedBytes(String),
     /// Not read under this profile (a standard pod's disk image).
     Skipped,
 }
@@ -123,43 +167,122 @@ fn reads(profile: IsolationProfile, form: Form) -> bool {
     }
 }
 
-/// Read one source. Blocking: a directory walk, or a disk copied out and walked.
-fn read(source: &Source, profile: IsolationProfile, staging: &Path) -> Read {
+fn scanned(root: &Path) -> Read {
+    match git_exec::scan(root) {
+        Ok(found) => Read::Scanned(found),
+        Err(e) => Read::CouldNotLook(e.to_string()),
+    }
+}
+
+/// Run blocking `f` off the runtime; a task that did not finish could not look.
+async fn blocking(f: impl FnOnce() -> Read + Send + 'static) -> Read {
+    tokio::task::spawn_blocking(f)
+        .await
+        .unwrap_or_else(|e| Read::CouldNotLook(format!("the scan did not finish: {e}")))
+}
+
+/// Read one source: a directory walk, or a pinned disk copied out, measured and walked.
+async fn read(source: &Source, profile: IsolationProfile, staging: &Path) -> Read {
     if !reads(profile, source.form) {
         return Read::Skipped;
     }
-    let scanned = |root: &Path| match git_exec::scan(root) {
-        Ok(found) => Read::Scanned(found),
-        Err(e) => Read::CouldNotLook(e.to_string()),
-    };
-    match source.form {
-        Form::Directory => scanned(&source.path),
-        Form::Image => {
-            let out = staging.join(source.field);
-            if let Err(e) = std::fs::create_dir_all(&out) {
-                return Read::CouldNotLook(format!("staging {}: {e}", out.display()));
-            }
-            let read = match nucleus_microvm_host::scratch_readback::dump_tree_as_written(
-                &source.path,
-                &out,
-            ) {
-                Ok(()) => scanned(&out),
-                Err(e) => Read::CouldNotLook(e.to_string()),
-            };
-            if let Err(e) = std::fs::remove_dir_all(&out) {
-                warn!(path = %out.display(), error = %e, "workspace scan: staging not removed");
+    match (source.form, &source.pin) {
+        (Form::Directory, _) => {
+            let root = source.path.clone();
+            blocking(move || scanned(&root)).await
+        }
+        // ADR 0013 rule 7: an eval cell's disk is scanned only as the bytes its spec pins,
+        // because only a pin lets the boot check hold the disk to what was scanned.
+        (Form::Image, Pin::Unpinned(pin_field)) => Read::Unpinned(pin_field),
+        (Form::Image, Pin::NotAnArtifact) => Read::CouldNotLook(format!(
+            "{} is a disk with no digest field to pin it",
+            source.field
+        )),
+        (Form::Image, Pin::Pinned(pin_field, pin)) => {
+            let copy = staging.join(format!("{}.img", source.field));
+            let tree = staging.join(source.field);
+            let read = read_pinned_disk(&source.path, pin_field, pin, &copy, &tree).await;
+            for (path, removed) in [
+                (&copy, std::fs::remove_file(&copy)),
+                (&tree, std::fs::remove_dir_all(&tree)),
+            ] {
+                match removed {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        warn!(path = %path.display(), error = %e, "workspace scan: staging not removed")
+                    }
+                }
             }
             read
         }
     }
 }
 
+/// Copy `disk` to the node-owned `copy`, hold the copy to `pin`, and scan the tree in it.
+///
+/// Every later read is of `copy`, a file only the node can write, so the bytes measured are
+/// the bytes `dumpe2fs` and `debugfs` read, whatever happens to `disk` meanwhile.
+async fn read_pinned_disk(
+    disk: &Path,
+    pin_field: &'static str,
+    pin: &ArtifactDigest,
+    copy: &Path,
+    tree: &Path,
+) -> Read {
+    let (from, to) = (disk.to_path_buf(), copy.to_path_buf());
+    let copied = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut source = std::fs::File::open(&from)?;
+        // Not `fs::copy`: that would carry the caller's mode onto the node's copy.
+        let mut dest = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&to)?;
+        std::io::copy(&mut source, &mut dest)?;
+        dest.sync_all()
+    })
+    .await;
+    match copied {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Read::CouldNotLook(format!("copying {}: {e}", disk.display())),
+        Err(e) => return Read::CouldNotLook(format!("copying {}: {e}", disk.display())),
+    }
+    let measured = match nucleus_identity::attestation::measure_artifact(copy).await {
+        Ok(m) => hex::encode(m),
+        Err(e) => return Read::CouldNotLook(format!("measuring {}: {e}", disk.display())),
+    };
+    if measured != pin.hex() {
+        return Read::NotThePinnedBytes(format!(
+            "{} is sha-256:{measured}, but {pin_field} pins {}",
+            disk.display(),
+            pin.as_str()
+        ));
+    }
+    let (copy, tree) = (copy.to_path_buf(), tree.to_path_buf());
+    blocking(move || {
+        if let Err(e) = std::fs::create_dir_all(&tree) {
+            return Read::CouldNotLook(format!("staging {}: {e}", tree.display()));
+        }
+        match nucleus_microvm_host::scratch_readback::dump_tree_as_written(&copy, &tree) {
+            Ok(()) => scanned(&tree),
+            Err(e) => Read::CouldNotLook(e.to_string()),
+        }
+    })
+    .await
+}
+
 /// An eval cell refused for what its workspace carries.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "the eval-cell profile is refused: the workspace carries configuration git would execute \
-     before any approval: {listing}. Remove it (a `.sample` hook is inert and may stay), or \
-     run the pod under the standard profile (ADR 0013)"
+    "the eval-cell profile is refused: what enters the pod is not admissible: {listing}. Remove \
+     any configuration git would execute before an approval (a `.sample` hook is inert and may \
+     stay), pin every disk's digest to the bytes it holds, or run the pod under the standard \
+     profile (ADR 0013)"
 )]
 pub(crate) struct Refused {
     pub(crate) listing: String,
@@ -182,6 +305,15 @@ pub(crate) fn decide(
             Read::CouldNotLook(why) => {
                 items.push(format!("{} could not be scanned ({why})", source.field))
             }
+            Read::Unpinned(pin_field) => items.push(format!(
+                "{} has no {pin_field}: an eval cell's disk is scanned, and boots, only as the \
+                 bytes a digest pins",
+                source.field
+            )),
+            Read::NotThePinnedBytes(what) => items.push(format!(
+                "{} is not the disk its spec pins ({what})",
+                source.field
+            )),
             Read::Skipped => {}
         }
     }
@@ -227,18 +359,11 @@ pub(crate) async fn admit(
         return Ok(());
     }
     let staging = state_dir.join("workspace-scan").join(id.to_string());
-    let read_staging = staging.clone();
-    let reads = tokio::task::spawn_blocking(move || {
-        sources
-            .into_iter()
-            .map(|s| {
-                let r = read(&s, profile, &read_staging);
-                (s, r)
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .map_err(|e| ApiError::Driver(format!("workspace scan did not finish: {e}")))?;
+    let mut reads = Vec::with_capacity(sources.len());
+    for s in sources {
+        let r = read(&s, profile, &staging).await;
+        reads.push((s, r));
+    }
     // Only the per-pod directory; a sibling pod's staging is its own.
     match std::fs::remove_dir_all(&staging) {
         Ok(()) => {}
