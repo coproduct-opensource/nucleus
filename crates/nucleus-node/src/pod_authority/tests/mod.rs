@@ -833,7 +833,12 @@ async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
     greedy.capabilities.git_push = CapabilityLevel::Always;
     let child = Uuid::new_v4();
     let (plan, reservation) = auth
-        .admit_pod(&from_pod(parent), spec_with(greedy), child)
+        .admit_pod(
+            &from_pod(parent),
+            spec_with(greedy),
+            child,
+            crate::host_decide::StartingLabel::Clean,
+        )
         .await
         .unwrap();
     reservation.commit();
@@ -856,7 +861,12 @@ async fn the_admitted_plan_carries_the_issued_authority_not_the_request() {
 
     // A refused admission yields no plan, and reserves nothing.
     let refused = auth
-        .admit_pod(&from_pod(parent), spec_with(lattice(500)), Uuid::new_v4())
+        .admit_pod(
+            &from_pod(parent),
+            spec_with(lattice(500)),
+            Uuid::new_v4(),
+            crate::host_decide::StartingLabel::Clean,
+        )
         .await;
     assert!(matches!(refused, Err(ApiError::Authority(_))));
 }
