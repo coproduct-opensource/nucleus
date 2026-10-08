@@ -9,7 +9,6 @@ use nucleus_spec::{
 use portcullis::{CapabilityLevel, PermissionLattice};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self};
 use std::io::{self, Read, Write};
@@ -719,23 +718,14 @@ async fn run_local(
     let task_token =
         crate::session_token::mint_local(&run_id.to_string(), policy, args.timeout, authority)?;
 
-    // Keys only the tier-3 sandbox token now; see `crate::local_proxy`.
-    let auth_secret = hex::encode(rand::random::<[u8; 32]>());
-    let transport = crate::local_proxy::LocalProxyTransport::new(&tmp_dir);
+    // The socket, the approval key, and the run's identity as sandbox proof;
+    // see `crate::local_proxy`.
+    let transport = crate::local_proxy::LocalProxyTransport::new(&tmp_dir, &run_id)?;
 
     // Build minimal PodSpec (no image/vsock)
     let spec_path = tmp_dir.join("pod.yaml");
     let pod_spec = build_local_pod_spec(args, policy, work_dir)?;
     write_pod_spec(&spec_path, &pod_spec)?;
-
-    // Generate sandbox token (Tier 3 OrchestratorToken)
-    let spec_contents = fs::read_to_string(&spec_path)?;
-    let spec_hash = hex::encode(Sha256::digest(spec_contents.as_bytes()));
-    let sandbox_token = nucleus_client::generate_sandbox_token(
-        auth_secret.as_bytes(),
-        &run_id.to_string(),
-        &spec_hash,
-    );
 
     let announce_path = tmp_dir.join("proxy.addr");
     let audit_path = tmp_dir.join("audit.log");
@@ -754,21 +744,10 @@ async fn run_local(
     crate::host_tier::announce("run --local");
 
     // Spawn tool-proxy as subprocess
-    let mut proxy_child = tokio::process::Command::new(&proxy_bin)
-        .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
-        .arg("--spec")
-        .arg(&spec_path)
-        .args(transport.proxy_args())
-        .arg("--announce-path")
-        .arg(&announce_path)
-        .arg("--auth-secret")
-        .arg(&auth_secret)
-        .arg("--audit-log")
-        .arg(&audit_path)
+    let mut proxy_child = transport
+        .command(&proxy_bin, &spec_path, &announce_path, &audit_path)
         .args(pod_cert_args(args))
         .args(crate::session_token::proxy_args(&task_token))
-        .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
-        .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
@@ -793,7 +772,6 @@ async fn run_local(
             auth: McpProxyAuth::PeerVerifiedSocket,
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
-            sandbox_token: Some(&sandbox_token),
         },
     )?;
 
@@ -1182,7 +1160,6 @@ pub struct McpEnvConfig<'a> {
     pub auth: McpProxyAuth,
     pub spec_path: &'a Path,
     pub kernel_trace: Option<&'a Path>,
-    pub sandbox_token: Option<&'a str>,
 }
 
 pub fn write_mcp_config(
@@ -1226,9 +1203,8 @@ pub fn write_mcp_config(
             trace_path.display().to_string(),
         );
     }
-    if let Some(token) = env_cfg.sandbox_token {
-        env.insert("NUCLEUS_MCP_SANDBOX_TOKEN".to_string(), token.to_string());
-    }
+    // No `NUCLEUS_MCP_SANDBOX_TOKEN`: the bridge never read it, and the tier-3
+    // token it carried is no longer minted (#2446 step 3a).
 
     let server = McpServer {
         server_type: "stdio".to_string(),
@@ -1468,6 +1444,7 @@ fn render_output(output: &std::process::Output, duration: Duration, mode: &str) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn guest_workspace_is_distinct_from_the_host_agent_directory() {

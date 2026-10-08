@@ -44,6 +44,7 @@ pub mod manager;
 pub mod mtls;
 pub mod node_tls;
 pub mod oid;
+pub mod pod_files;
 pub mod session;
 pub mod spiffe_workload_api;
 pub mod tls;

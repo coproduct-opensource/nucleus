@@ -756,7 +756,7 @@ pub(crate) struct LocalProxy {
 }
 
 /// What distinguishes one locally spawned proxy from another. Everything else —
-/// the sandbox token, the session task token scoped to the lattice's granted
+/// the sandbox-proof identity, the session task token scoped to the lattice's granted
 /// operations, the audit log in the run's own directory, the announce handshake —
 /// is the same for every caller, and lives in [`spawn_local_proxy`] once.
 pub(crate) struct LocalProxyConfig<'a> {
@@ -775,6 +775,52 @@ pub(crate) struct LocalProxyConfig<'a> {
 
 /// Spawn a `nucleus-tool-proxy` exactly as `nucleus run --local` does.
 pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy> {
+    let PreparedProxy {
+        mut command,
+        tmp: tmp_guard,
+        announce,
+    } = prepare_local_proxy(cfg)?;
+    let child = command
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .with_context(|| format!("spawning {}", cfg.proxy_bin))?;
+    let proxy = ProxyChild(child);
+
+    // The announce file is the proxy's own readiness signal, so waiting on it
+    // cannot race the bind the way a fixed sleep does.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let addr = loop {
+        if let Ok(s) = std::fs::read_to_string(&announce) {
+            let s = s.trim().to_string();
+            if !s.is_empty() {
+                break s;
+            }
+        }
+        if std::time::Instant::now() > deadline {
+            bail!("the tool-proxy did not announce an address within 20s");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+
+    Ok(LocalProxy {
+        // `unix:///…/p.sock`: what the proxy announced is the URL to dial.
+        proxy_url: addr,
+        _proxy: proxy,
+        _tmp: tmp_guard,
+    })
+}
+
+/// A proxy command ready to spawn, the run directory it reads from, and where
+/// it will announce its address.
+struct PreparedProxy {
+    command: std::process::Command,
+    tmp: TempDir,
+    announce: std::path::PathBuf,
+}
+
+/// Everything [`spawn_local_proxy`] does before it spawns: the run directory,
+/// the spec, the session task token, the run's identity, and the command.
+fn prepare_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<PreparedProxy> {
     // Short: the proxy's socket lives here, and a Unix socket path is limited
     // to about 104 bytes on macOS.
     let tmp = {
@@ -803,19 +849,19 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
     std::fs::write(&spec_path, serde_yaml::to_string(&spec)?)
         .with_context(|| format!("writing {}", spec_path.display()))?;
 
-    // Keys only the tier-3 sandbox token (#2446 step 3 removes it).
-    let auth_secret = hex::encode(rand_bytes32());
     // The proxy needs an approval authority to start. The PUBLIC half of a key
     // this harness drops: no approval secret exists for anything to hold.
     let approver = ed25519_dalek::SigningKey::from_bytes(&rand_bytes32());
     let socket = tmp.join("p.sock");
-    let spec_contents = std::fs::read_to_string(&spec_path)?;
-    let spec_hash = {
-        use sha2::{Digest, Sha256};
-        hex::encode(Sha256::digest(spec_contents.as_bytes()))
-    };
-    let sandbox_token =
-        nucleus_client::generate_sandbox_token(auth_secret.as_bytes(), &cfg.run_id, &spec_hash);
+    // The sandbox proof: an identity minted for this run, exactly as
+    // `nucleus run --local` mints its own (#2446 step 3a). It replaced an
+    // orchestrator token HMAC'd with a secret passed as `--auth-secret`.
+    let identity = nucleus_identity::pod_files::issue_ephemeral(
+        &tmp,
+        &cfg.run_id,
+        std::time::Duration::from_secs(cfg.duration_secs.max(600)),
+    )
+    .context("minting the tool-proxy's sandbox-proof identity")?;
 
     // The session capability token. Without one the proxy's discharge gate has
     // `verified_scope == None`, and `InScopeWithTask` denies EVERY operation
@@ -858,7 +904,7 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
             .arg("--cert-root-pubkey")
             .arg(root_pubkey);
     }
-    let child = command
+    command
         .arg("--spec")
         .arg(&spec_path)
         // The peer-verified socket (#2446 step 2): the shared-secret tier this
@@ -867,8 +913,6 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
         .arg(&socket)
         .arg("--announce-path")
         .arg(&announce)
-        .arg("--auth-secret")
-        .arg(&auth_secret)
         .arg("--approval-pubkeys")
         .arg(hex::encode(approver.verifying_key().to_bytes()))
         // Keep the audit log inside the run's own directory. The default is
@@ -878,40 +922,19 @@ pub(crate) fn spawn_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<LocalProxy
         // system must never quietly allow.
         .arg("--audit-log")
         .arg(tmp.join("audit.log"))
-        .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
+        .envs(identity.env())
         .env("NUCLEUS_TASK_TOKEN", &task_token_json)
         .env("NUCLEUS_TASK_TOKEN_NONCE", hex::encode(nonce))
         .env(
             "NUCLEUS_TASK_TOKEN_ISSUER",
             hex::encode(task_key.verifying_key().to_bytes()),
         )
-        .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .with_context(|| format!("spawning {}", cfg.proxy_bin))?;
-    let proxy = ProxyChild(child);
+        .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false");
 
-    // The announce file is the proxy's own readiness signal, so waiting on it
-    // cannot race the bind the way a fixed sleep does.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    let addr = loop {
-        if let Ok(s) = std::fs::read_to_string(&announce) {
-            let s = s.trim().to_string();
-            if !s.is_empty() {
-                break s;
-            }
-        }
-        if std::time::Instant::now() > deadline {
-            bail!("the tool-proxy did not announce an address within 20s");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
-
-    Ok(LocalProxy {
-        // `unix:///…/p.sock`: what the proxy announced is the URL to dial.
-        proxy_url: addr,
-        _proxy: proxy,
-        _tmp: tmp_guard,
+    Ok(PreparedProxy {
+        command,
+        tmp: tmp_guard,
+        announce,
     })
 }
 
@@ -1073,4 +1096,62 @@ pub(crate) fn write_report(report: &AgencyReport, out: Option<&str>) -> Result<(
         bail!("containment did not hold: this run is not a point on the frontier");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #2446 step 3a: the proxy this harness starts is proven by the run's own
+    /// identity, not by a secret. Red before: the command carried
+    /// `--auth-secret <hex>` and `NUCLEUS_SANDBOX_TOKEN`, an orchestrator token
+    /// HMAC'd with that secret, and no identity.
+    #[test]
+    fn the_harness_proxy_is_proven_by_the_runs_identity_not_a_secret() {
+        let work = std::env::temp_dir();
+        let run_id = format!("identity-test-{}", std::process::id());
+        let prepared = prepare_local_proxy(&LocalProxyConfig {
+            run_id: run_id.clone(),
+            name: "identity-test",
+            proxy_bin: "nucleus-tool-proxy",
+            work_dir: &work,
+            lattice: portcullis::PermissionLattice::restrictive(),
+            network: serde_json::Value::Null,
+            duration_secs: 600,
+            certificate: None,
+        })
+        .unwrap();
+        let args: Vec<String> = prepared
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a.contains("secret")),
+            "no secret on the proxy's argv: {args:?}"
+        );
+        let env: std::collections::BTreeMap<String, String> = prepared
+            .command
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert!(
+            !env.keys()
+                .any(|k| k == "NUCLEUS_SANDBOX_TOKEN" || k.contains("SECRET")),
+            "no tier-3 token or secret in the proxy's env: {env:?}"
+        );
+        let cert = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_CERT"]).unwrap();
+        let key = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_KEY"]).unwrap();
+        let certificate = nucleus_identity::WorkloadCertificate::from_pem(&cert, &key).unwrap();
+        assert_eq!(
+            certificate.identity().to_spiffe_uri(),
+            format!("spiffe://host-tier.nucleus.local/ns/pods/sa/{run_id}")
+        );
+        assert!(std::path::Path::new(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]).is_file());
+    }
 }

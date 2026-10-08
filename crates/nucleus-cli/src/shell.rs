@@ -9,7 +9,6 @@ use clap::Args;
 use nucleus_spec::{CredentialsSpec, PodSpec as SpecPodSpec, PodSpecInner, PolicySpec};
 use portcullis::PermissionLattice;
 use rust_decimal::Decimal;
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -154,23 +153,15 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     let task_token =
         crate::session_token::mint_local(&run_id.to_string(), &policy, args.timeout, None)?;
 
-    // Keys only the tier-3 sandbox token now; see `crate::local_proxy`.
-    let auth_secret = hex::encode(rand::random::<[u8; 32]>());
-    let transport = crate::local_proxy::LocalProxyTransport::new(&tmp_dir);
+    // The socket, the approval key, and the run's identity as sandbox proof;
+    // see `crate::local_proxy`.
+    let transport = crate::local_proxy::LocalProxyTransport::new(&tmp_dir, &run_id)?;
 
     // Build PodSpec
     let spec_path = tmp_dir.join("pod.yaml");
     let pod_spec = build_shell_pod_spec(&args, &policy, &work_dir)?;
     let yaml = serde_yaml::to_string(&pod_spec)?;
     fs::write(&spec_path, &yaml)?;
-
-    // Generate sandbox token
-    let spec_hash = hex::encode(Sha256::digest(yaml.as_bytes()));
-    let sandbox_token = nucleus_client::generate_sandbox_token(
-        auth_secret.as_bytes(),
-        &run_id.to_string(),
-        &spec_hash,
-    );
 
     let announce_path = tmp_dir.join("proxy.addr");
     let audit_path = tmp_dir.join("audit.log");
@@ -190,20 +181,9 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     crate::host_tier::announce("shell");
 
     // Spawn tool-proxy as subprocess
-    let mut proxy_child = tokio::process::Command::new(&proxy_bin)
-        .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
-        .arg("--spec")
-        .arg(&spec_path)
-        .args(transport.proxy_args())
-        .arg("--announce-path")
-        .arg(&announce_path)
-        .arg("--auth-secret")
-        .arg(&auth_secret)
-        .arg("--audit-log")
-        .arg(&audit_path)
+    let mut proxy_child = transport
+        .command(&proxy_bin, &spec_path, &announce_path, &audit_path)
         .args(crate::session_token::proxy_args(&task_token))
-        .env("NUCLEUS_SANDBOX_TOKEN", &sandbox_token)
-        .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -228,7 +208,6 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
             auth: McpProxyAuth::PeerVerifiedSocket,
             spec_path: &spec_path,
             kernel_trace: args.kernel_trace.as_deref(),
-            sandbox_token: Some(&sandbox_token),
         },
     )?;
 

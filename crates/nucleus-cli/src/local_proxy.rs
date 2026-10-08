@@ -14,12 +14,20 @@
 //! No one on this host tier can approve an operation the policy holds for
 //! approval; it is refused with its reason, which the bridge relays.
 //!
-//! What stays: `--auth-secret` keys only the tier-3 sandbox token the proxy
-//! checks at startup. #2446 step 3 deletes both.
+//! The proxy's sandbox proof (#2446 step 3a) is an identity minted for the
+//! run: an SVID naming the run, its key and the root that issued it, written
+//! into the run directory by `nucleus_identity::pod_files`, the declaration
+//! nucleus-node's local driver writes from. The proxy reads it as tier 2. It
+//! replaced tier 3, an orchestrator token HMAC'd with a secret this process
+//! made up and passed as `--auth-secret`, on an argv any local user can read,
+//! for no other purpose than that one check.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
+use anyhow::{Context, Result};
+use nucleus_identity::pod_files::{self, PodIdentityFiles};
 use uuid::Uuid;
 
 /// The socket's name in the run directory.
@@ -33,20 +41,56 @@ pub(crate) fn run_dir(prefix: &str, run_id: &Uuid) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{short}"))
 }
 
-/// The proxy's listener and approval authority for a run in `run_dir`.
+/// How long the run's identity is valid. The proxy checks it once, when it
+/// starts; a day outlasts any run and any `shell --print-config` session.
+const IDENTITY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The proxy's listener, approval authority and sandbox proof for a run in
+/// `run_dir`.
 pub(crate) struct LocalProxyTransport {
     socket: PathBuf,
     approval_pubkey_hex: String,
+    identity: PodIdentityFiles,
 }
 
 impl LocalProxyTransport {
-    pub(crate) fn new(run_dir: &Path) -> Self {
+    /// Mints the run's identity into `run_dir`, which must exist.
+    pub(crate) fn new(run_dir: &Path, run_id: &Uuid) -> Result<Self> {
         // Generated and dropped: only its public half leaves this function.
         let approver = ed25519_dalek::SigningKey::from_bytes(&rand::random::<[u8; 32]>());
-        Self {
+        let identity = pod_files::issue_ephemeral(run_dir, &run_id.to_string(), IDENTITY_TTL)
+            .context("minting the tool-proxy's sandbox-proof identity")?;
+        Ok(Self {
             socket: run_dir.join(SOCKET_FILE),
             approval_pubkey_hex: hex::encode(approver.verifying_key().to_bytes()),
-        }
+            identity,
+        })
+    }
+
+    /// The tool-proxy command both host-tier callers start: the explicit
+    /// host-tier opt-in, the spec, the socket and approval key, the
+    /// announcement and audit paths, and the identity that proves the launch.
+    /// No secret is on it. The caller adds its task token and stdio.
+    pub(crate) fn command(
+        &self,
+        proxy_bin: &Path,
+        spec: &Path,
+        announce: &Path,
+        audit: &Path,
+    ) -> tokio::process::Command {
+        let mut command = tokio::process::Command::new(proxy_bin);
+        command
+            .arg(crate::host_tier::TOOL_PROXY_OPT_IN)
+            .arg("--spec")
+            .arg(spec)
+            .args(self.proxy_args())
+            .arg("--announce-path")
+            .arg(announce)
+            .arg("--audit-log")
+            .arg(audit)
+            .envs(self.identity.env())
+            .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false");
+        command
     }
 
     /// The flags that put the proxy on the socket with no approval secret.
@@ -70,8 +114,9 @@ mod tests {
     /// both secrets.
     #[test]
     fn the_proxy_is_put_on_the_socket_with_no_approval_secret() {
-        let dir = run_dir("nucleus-local", &Uuid::new_v4());
-        let args: Vec<String> = LocalProxyTransport::new(&dir)
+        let dir = tempfile::tempdir().unwrap();
+        let args: Vec<String> = LocalProxyTransport::new(dir.path(), &Uuid::new_v4())
+            .unwrap()
             .proxy_args()
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
@@ -81,6 +126,59 @@ mod tests {
         assert_eq!(args[2], "--approval-pubkeys");
         assert_eq!(args[3].len(), 64, "one Ed25519 public key in hex");
         assert!(!args.iter().any(|a| a.contains("secret") || a == "--listen"));
+    }
+
+    /// #2446 step 3a: the proxy `run --local` and `shell` start is proven by
+    /// the run's own identity, not by a secret. Red before: the command carried
+    /// `--auth-secret <hex>` and `NUCLEUS_SANDBOX_TOKEN`, an orchestrator token
+    /// HMAC'd with that secret, and no identity.
+    #[test]
+    fn the_proxy_is_proven_by_the_runs_identity_not_a_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        let run_id = Uuid::new_v4();
+        let transport = LocalProxyTransport::new(dir.path(), &run_id).unwrap();
+        let command = transport.command(
+            Path::new("nucleus-tool-proxy"),
+            &dir.path().join("pod.yaml"),
+            &dir.path().join("proxy.addr"),
+            &dir.path().join("audit.log"),
+        );
+        let command = command.as_std();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|a| a.contains("secret")),
+            "no secret on the proxy's argv: {args:?}"
+        );
+        let env: std::collections::BTreeMap<String, String> = command
+            .get_envs()
+            .filter_map(|(k, v)| {
+                Some((
+                    k.to_string_lossy().into_owned(),
+                    v?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+        assert!(
+            !env.keys()
+                .any(|k| k == "NUCLEUS_SANDBOX_TOKEN" || k.contains("SECRET")),
+            "no tier-3 token or secret in the proxy's env: {env:?}"
+        );
+        let cert = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_CERT"]).unwrap();
+        let key = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_KEY"]).unwrap();
+        let bundle = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]).unwrap();
+        let certificate = nucleus_identity::WorkloadCertificate::from_pem(&cert, &key).unwrap();
+        assert_eq!(
+            certificate.identity().to_spiffe_uri(),
+            format!("spiffe://host-tier.nucleus.local/ns/pods/sa/{run_id}")
+        );
+        nucleus_identity::verify_svid_chain(
+            certificate.leaf(),
+            &nucleus_identity::TrustBundle::from_pem(&bundle).unwrap(),
+        )
+        .unwrap();
     }
 
     /// The socket path fits macOS's 104-byte limit under a typical temp dir.
