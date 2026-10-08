@@ -341,6 +341,31 @@ impl SelfSignedCa {
         identity: &Identity,
         ttl: Duration,
     ) -> Result<WorkloadCertificate> {
+        self.sign_csr_with_key_now(csr_pem, private_key_pem, identity, ttl)
+    }
+
+    /// Issues a certificate for `identity` from a key pair generated here.
+    ///
+    /// Synchronous: signing with this CA never waits on anything, so a caller
+    /// outside an async runtime (or inside one it may not block) need not
+    /// build one. The key never leaves the returned certificate. The checks
+    /// are [`Self::sign_csr_with_key`]'s, over a CSR made for exactly
+    /// `identity`.
+    pub fn issue(&self, identity: &Identity, ttl: Duration) -> Result<WorkloadCertificate> {
+        let (csr, private_key) = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()?
+            .into_parts();
+        self.sign_csr_with_key_now(&csr, &private_key, identity, ttl)
+    }
+
+    /// The body of [`Self::sign_csr_with_key`]: nothing in it awaits.
+    fn sign_csr_with_key_now(
+        &self,
+        csr_pem: &str,
+        private_key_pem: &str,
+        identity: &Identity,
+        ttl: Duration,
+    ) -> Result<WorkloadCertificate> {
         // Validate the CSR and extract the SPIFFE URI
         let csr_spiffe_uri = self.validate_csr(csr_pem)?;
 

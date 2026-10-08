@@ -625,49 +625,19 @@ fn run() -> Result<(), String> {
         handshake_start.elapsed().as_millis()
     );
 
-    // OPTIONAL. On the Firecracker path the tool-proxy is bound to a vsock
-    // listener that accepts only the host (`pod_mgmt::peer_is_host`), and the
-    // guest kernel — not the caller — sets the peer CID. The HMAC tier is
-    // unreachable there, so requiring a key would put a world-readable secret
-    // on /proc/cmdline for nothing. `enforce_hmac_key_quality` in the proxy
-    // still refuses an empty key on every transport that can reach that tier.
-    let auth_secret =
-        parse_cmdline_secret(&cmdline, "nucleus.auth_secret").or_else(|| read_secret(AUTH_SECRET));
-
-    // Signature-based approvals: the node delivers the Ed25519 PUBLIC half of
-    // its approval signing key as `nucleus.approval_pubkeys`. A verification
-    // key is safe on the world-readable cmdline — reading it grants no
-    // forging power, which is exactly what the approval SECRET below lacked
-    // (HMAC is symmetric, so the workload could read `/proc/cmdline` and sign
-    // its own approvals). When keys are present the proxy accepts ONLY
-    // signatures; the secret is legacy for pods still provisioned with one.
-    let approval_pubkeys = parse_cmdline_secret(&cmdline, "nucleus.approval_pubkeys");
-    if let Some(ref keys) = approval_pubkeys {
-        export!("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys);
-    }
-
-    let approval_secret = parse_cmdline_secret(&cmdline, "nucleus.approval_secret")
-        .or_else(|| read_secret(APPROVAL_SECRET));
-    if approval_pubkeys.is_none() && approval_secret.is_none() {
-        // Fail HERE, near the cause: the tool-proxy would refuse to start
-        // anyway (its approval endpoint would be unauthenticatable), but its
-        // exit is four layers from this missing boot arg.
-        return Err(
-            "missing approval authority (set nucleus.approval_pubkeys or \
-                    nucleus.approval_secret in boot args, or /etc/nucleus/approval.secret)"
-                .to_string(),
+    // The approval authority, and the shared-secret inputs this guest no
+    // longer reads (#2446 step 3a): each one present is named, never exported.
+    let auth_env = proxy_auth_env(&cmdline, read_secret)?;
+    for name in &auth_env.retired {
+        eprintln!(
+            "{name} is retired (#2446): the shared-secret tier carries no authority and \
+             the sandbox proof is the pod's SVID; ignored, not passed to the tool-proxy"
         );
     }
-
-    if let Some(auth_secret) = auth_secret {
-        export!("NUCLEUS_TOOL_PROXY_AUTH_SECRET", auth_secret);
-    }
-    if let Some(approval_secret) = approval_secret {
-        export!("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", approval_secret);
+    for (key, value) in auth_env.exports {
+        export!(key, value);
     }
 
-    // Sandbox token is optional — Tier 3 fallback when SVID doesn't carry
-    // an attestation OID. If absent, tool-proxy uses Tier 1 or Tier 2 proof.
     // DLC-D verified-admission provisioning → the in-VM tool-proxy, over the
     // workload API like the task token (the cmdline lacks the capacity for a
     // credential set, and per-pod material must not bake into snapshot bases).
@@ -687,12 +657,6 @@ fn run() -> Result<(), String> {
             Err(e @ identity::FetchError::Preempted(_)) => return Err(e.to_string()),
             Err(err) => eprintln!("failed to fetch DLC admission provisioning: {err}"),
         }
-    }
-
-    if let Some(sandbox_token) = parse_cmdline_secret(&cmdline, "nucleus.sandbox_token")
-        .or_else(|| read_secret(SANDBOX_TOKEN))
-    {
-        export!("NUCLEUS_SANDBOX_TOKEN", sandbox_token);
     }
 
     // Live-path session capability token (optional). The node injects it on the
@@ -1156,6 +1120,70 @@ fn read_secret(path: &str) -> Option<String> {
     fs::read_to_string(path).ok().map(|s| s.trim().to_string())
 }
 
+/// The shared-secret inputs a guest no longer reads, by boot arg and by the
+/// rootfs file `build-rootfs.sh --legacy-secrets` bakes.
+///
+/// `nucleus.auth_secret` keyed the shared-secret tier, whose authority ceiling
+/// is zero since #2446 step 2, and the tier-3 sandbox token. That token is the
+/// other entry: with no key to verify it against, it proves nothing. No node
+/// built since 2026-08-08 sends either, so no supported pairing does; a
+/// guest that finds one says so by name rather than dropping it silently.
+const RETIRED_SHARED_SECRETS: [(&str, &str); 2] = [
+    ("nucleus.auth_secret", AUTH_SECRET),
+    ("nucleus.sandbox_token", SANDBOX_TOKEN),
+];
+
+/// What guest-init hands the tool-proxy for authentication, decided from the
+/// kernel cmdline and the rootfs (`read`).
+#[derive(Debug)]
+struct ProxyAuthEnv {
+    /// Exported to the tool-proxy, in order.
+    exports: Vec<(&'static str, String)>,
+    /// Retired inputs that were present, by boot-arg name. Never exported.
+    retired: Vec<&'static str>,
+}
+
+fn proxy_auth_env(
+    cmdline: &str,
+    read: impl Fn(&str) -> Option<String>,
+) -> Result<ProxyAuthEnv, String> {
+    let mut exports = Vec::new();
+
+    // Signature-based approvals: the node delivers the Ed25519 PUBLIC half of
+    // its approval signing key as `nucleus.approval_pubkeys`. A verification
+    // key is safe on the world-readable cmdline — reading it grants no
+    // forging power, which is exactly what the approval SECRET below lacked
+    // (HMAC is symmetric, so the workload could read `/proc/cmdline` and sign
+    // its own approvals). When keys are present the proxy accepts ONLY
+    // signatures; the secret is legacy for pods still provisioned with one.
+    let approval_pubkeys = parse_cmdline_secret(cmdline, "nucleus.approval_pubkeys");
+    let approval_secret =
+        parse_cmdline_secret(cmdline, "nucleus.approval_secret").or_else(|| read(APPROVAL_SECRET));
+    if approval_pubkeys.is_none() && approval_secret.is_none() {
+        // Fail HERE, near the cause: the tool-proxy would refuse to start
+        // anyway (its approval endpoint would be unauthenticatable), but its
+        // exit is four layers from this missing boot arg.
+        return Err(
+            "missing approval authority (set nucleus.approval_pubkeys or \
+                    nucleus.approval_secret in boot args, or /etc/nucleus/approval.secret)"
+                .to_string(),
+        );
+    }
+    if let Some(keys) = approval_pubkeys {
+        exports.push(("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", keys));
+    }
+    if let Some(secret) = approval_secret {
+        exports.push(("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET", secret));
+    }
+
+    let retired = RETIRED_SHARED_SECRETS
+        .into_iter()
+        .filter(|(arg, path)| parse_cmdline_secret(cmdline, arg).is_some() || read(path).is_some())
+        .map(|(arg, _)| arg)
+        .collect();
+    Ok(ProxyAuthEnv { exports, retired })
+}
+
 fn resolve_audit_path() -> String {
     if let Some(path) = read_secret(AUDIT_PATH_FILE) {
         return path;
@@ -1597,6 +1625,34 @@ mod tests {
     }
 
     use super::*;
+
+    /// #2446 step 3a: a shared secret or sandbox token reaching the guest, by
+    /// boot arg or baked file, is named and not handed to the tool-proxy. Red
+    /// before: guest-init exported both as `NUCLEUS_TOOL_PROXY_AUTH_SECRET`
+    /// and `NUCLEUS_SANDBOX_TOKEN`.
+    #[test]
+    fn a_retired_shared_secret_is_named_and_not_exported() {
+        let cmdline = "console=ttyS0 nucleus.approval_pubkeys=ab nucleus.auth_secret=s3cret";
+        let baked = |path: &str| (path == SANDBOX_TOKEN).then(|| "sandbox-proof.x".to_string());
+        let env = proxy_auth_env(cmdline, baked).unwrap();
+        assert_eq!(
+            env.retired,
+            vec!["nucleus.auth_secret", "nucleus.sandbox_token"]
+        );
+        assert_eq!(
+            env.exports,
+            vec![("NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS", "ab".to_string())]
+        );
+    }
+
+    /// A guest given neither is quiet about them, and still needs an approval
+    /// authority.
+    #[test]
+    fn a_guest_with_no_retired_input_names_none() {
+        let env = proxy_auth_env("nucleus.approval_pubkeys=ab", |_| None).unwrap();
+        assert!(env.retired.is_empty());
+        assert!(proxy_auth_env("console=ttyS0", |_| None).is_err());
+    }
 
     #[test]
     fn parse_sandbox_token_from_cmdline() {
