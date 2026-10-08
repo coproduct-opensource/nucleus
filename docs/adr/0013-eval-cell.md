@@ -1,8 +1,8 @@
 # ADR 0013 — The eval cell: a pod that holds against a hostile agent with guest root
 
-- Status: **Proposed** (2026-10-07). The owner approves it; until then the profile it
-  defines ships as a contract that refuses, and nothing in this record is claimed as
-  approved.
+- Status: **accepted** (2026-10-08). Proposed 2026-10-07 with milestone M0 (#3332); the
+  owner approved it on 2026-10-08. The incident table below records what answers each
+  class as of acceptance; rows marked NOT YET carry the milestone that owns them.
 - Tracks: milestone M0 of the eval-cell programme. M1–M6 are the milestones the table
   below names for each answer that is not yet in place.
 - Rests on: [ADR 0007](0007-make-the-defect-unwritable.md) (rule ids cited below),
@@ -125,11 +125,11 @@ what an eval cell needs of it.
 | Incident class | The nucleus control that answers it | Status |
 |---|---|---|
 | Evaluation sandbox with live internet | Every pod sits in a host network namespace with a default-deny chain the guest cannot reach, and the node refuses a pod whose guest cannot prove the fence drops traffic (`net::confinement`, egress attestation). An eval cell's allowlist names hosts one by one, never a range, and a network capability with nothing listed is refused (`eval_cell::admit_egress`). | **Answered** at admission (M0). The live probe that pins it under guest root is M2. |
-| Zero-day in a reachable supporting proxy | An eval cell cannot list a range, so a supporting service is reachable only if listed by address. The host-side listeners the guest reaches over vsock (workload API, broker, decision channel) are reachable from guest root and are not yet one inventoried type. | **NOT YET → M1** (`HostListener` inventory and the in-guest probes that reach each one), **M4** (one mediated egress proxy; DNS answered by it). |
+| Zero-day in a reachable supporting proxy | An eval cell cannot list a range, so a supporting service is reachable only if listed by address. The host-side listeners the guest reaches over vsock (workload API, broker, decision channel) are reachable from guest root. They are one inventoried type, `HostListener` in `nucleus-ifc-kernel`, bound only through `guest_socket::bind_guest_listener` and held equal to the table in `docs/architecture/mediated-set.md` (#3331). | **Inventoried** (M1, #3331); **NOT YET → M1** for in-guest probes that reach each listener, **M4** (one mediated egress proxy; DNS answered by it). |
 | Unauthenticated localhost or control API used for self-escalation | The node API is mTLS-only; approvals are Ed25519 signatures by a key the guest never holds; the tool-proxy's shared-secret tier carries no authority (#2446 step 2). But the deciding kernel is in the guest, so guest root can bypass the in-guest decision entirely. | **NOT YET → M3** (the host decides; the guest proxy becomes a thin client). |
 | Repository-borne exec config before approval | `nucleus/src/consume_guard.rs` reverts a shell command's change to an execute-on-consume path, including `.git/config` exec keys. Nothing yet scans the incoming workspace before it is mounted. | **NOT YET → M1** (a pre-mount scan reusing `consume_guard`'s key list; the eval cell copies in no host-side agent config). |
 | Credential theft | Enforcing host-spec delivery withholds every credential value from the guest's spec (`cred_split`), and credentialed egress is performed by the host, so the guest never holds the token; an eval cell is refused on a node without it. The broker capability is still served to the guest once per pod, so under guest root the first fetch can be the agent's. | **Answered** for spec credentials (M0); **NOT YET → M1** for the broker capability (bind it to identity or keep it host-side). |
-| VMM escape | Firecracker under the jailer (chroot, cgroups, a uid that cannot be root), the VMM's seccomp filter verified active and fail-closed, both required of an eval cell; the node's boot measured and quoted by the TPM (ADRs 0011, 0012). | **Answered** at admission (M0); **NOT YET → M1** for the jailer's PID namespace and resource limits (#2571). |
+| VMM escape | Firecracker under the jailer (chroot, cgroups, a uid that cannot be root), the VMM's seccomp filter verified active and fail-closed, both required of an eval cell; the node's boot measured and quoted by the TPM (ADRs 0011, 0012). | **Answered** at admission (M0); the VMM runs as pid 1 of its own PID namespace, is held through a pidfd, and runs under the jailer's file-size and open-file limits (M1, #3329, closes #2571). The guest-side PID namespace for workload children is not yet covered. |
 
 ## Consequences
 
