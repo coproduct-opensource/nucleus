@@ -63,6 +63,21 @@ enum Command {
         #[arg(long)]
         sudo: bool,
     },
+    /// C2 on a real Firecracker boot: pods A (with child C) and sibling B on one node, each
+    /// guest's vsock `POD_LIST` scoped to its own lineage. Linux/KVM only.
+    CrossPodLive {
+        #[arg(long)]
+        bin_dir: std::path::PathBuf,
+        /// The guest kernel to boot.
+        #[arg(long)]
+        kernel: std::path::PathBuf,
+        /// The CI podlist rootfs (`ci-podlist-probe` guest-init, the probe baked in).
+        #[arg(long)]
+        rootfs: std::path::PathBuf,
+        /// Run the compiled integration as root through sudo.
+        #[arg(long)]
+        sudo: bool,
+    },
     /// Boot a real pod on a fresh node and write a verified evidence bundle:
     /// receipt, logs, artifact, host effects, posture and timings, checked by
     /// the public verifiers (Rust, JS, Python) against each other and against
@@ -681,6 +696,17 @@ fn main() -> Result<()> {
             &bin_dir,
             sudo,
             host_evidence_live::Live::NodeStop,
+        ),
+        Command::CrossPodLive {
+            bin_dir,
+            kernel,
+            rootfs,
+            sudo,
+        } => host_evidence_live::run_live(
+            &repo_root()?,
+            &bin_dir,
+            sudo,
+            host_evidence_live::Live::CrossPod { kernel, rootfs },
         ),
         Command::LiveBootEvidence(args) => live_boot_evidence::run(&repo_root()?, &args),
         Command::EscapeLane(args) => escape_lane::run(&repo_root()?, &args),
