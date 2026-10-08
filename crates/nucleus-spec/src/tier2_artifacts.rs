@@ -294,9 +294,10 @@ pub enum GuestCapability {
     /// a child on a kernel below Landlock ABI 2 unless the node waived it
     /// (`guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG`), and prints its verdict
     /// as `guest_layout::WORKLOAD_LANDLOCK_VERDICT` (#2696 P3c).
-    /// [`Demand::Optional`]: the node reports an older guest's workload
-    /// filesystem as unconfined (no verdict) rather than refusing it; a later
-    /// change may make it required once a release carries it.
+    /// [`Demand::When`]`(`[`GuestUse::EvalCell`]`)`: for an ordinary pod the
+    /// node reports an older guest's workload filesystem as unconfined (no
+    /// verdict) rather than refusing it; an eval-cell pod (ADR 0013) requires
+    /// it, without raising the floor for anyone else.
     WorkloadLandlock,
     /// The tool-proxy labels a push's ref advertisement
     /// (`GET …/info/refs?service=git-receive-pack`, no body) a `WebFetch`,
@@ -312,9 +313,10 @@ pub enum GuestCapability {
     /// starting the child itself through one pinned descriptor, and
     /// `AF_INET`/`AF_INET6` sockets under `web_fetch: never` with no declared
     /// egress, as `EPERM`, in the same filter as the workload denylist.
-    /// [`Demand::Optional`]: the node does not depend on it; an older guest
-    /// runs the denylist alone, which denies less, and its launch receipt
-    /// carries no derived classes.
+    /// [`Demand::When`]`(`[`GuestUse::EvalCell`]`)`: an ordinary pod does not
+    /// depend on it, and an older guest runs the denylist alone, which denies
+    /// less, and its launch receipt carries no derived classes; an eval-cell pod
+    /// (ADR 0013) requires it.
     WorkloadSyscallPolicy,
     /// The tool-proxy serves its host on a Unix socket whose peers the kernel
     /// identifies (`--listen-unix`, `NUCLEUS_TOOL_PROXY_LISTEN_UNIX`, #2551),
@@ -361,6 +363,11 @@ pub enum GuestUse {
     /// Unix socket with no shared secret (#2446). The image carries the same
     /// tool-proxy as the release's rootfs, so it is judged by the same table.
     ContainerProxySocket,
+    /// A pod under the eval-cell isolation profile (ADR 0013,
+    /// `isolation_profile::IsolationProfile::EvalCell`): its guest must confine
+    /// every child with Landlock and with the syscall filter derived from its
+    /// lattice. Named by the profile's `guest_uses`, never spelled by a caller.
+    EvalCell,
 }
 
 /// Whether the node refuses a guest that lacks a [`GuestCapability`].
@@ -433,16 +440,17 @@ impl GuestCapability {
             // The host holds the push either way; an older guest only refuses
             // more (a push after its own tainting read), never less.
             GuestCapability::TaintedPushHeld => Demand::Optional,
-            // Reported, not required: an older guest's workload runs without
-            // Landlock, and the node says so instead of refusing the pod.
-            GuestCapability::WorkloadLandlock => Demand::Optional,
+            // Reported, not required, for an ordinary pod: an older guest's
+            // workload runs without Landlock, and the node says so instead of
+            // refusing the pod. Required of an eval cell (ADR 0013).
+            GuestCapability::WorkloadLandlock => Demand::When(GuestUse::EvalCell),
             // The node decides a stricter label too: an older guest only asks
             // for one more approval (the advertisement's), never for less.
             GuestCapability::PushAdvertisementIsRead => Demand::Optional,
-            // Reported, not required: an older guest's children run under the
-            // denylist alone, and the node depends on nothing the derived
-            // classes add.
-            GuestCapability::WorkloadSyscallPolicy => Demand::Optional,
+            // Reported, not required, for an ordinary pod: an older guest's
+            // children run under the denylist alone, and the node depends on
+            // nothing the derived classes add. Required of an eval cell.
+            GuestCapability::WorkloadSyscallPolicy => Demand::When(GuestUse::EvalCell),
             // Read by a verifier, never by the node: an older guest's log is
             // refused by `nucleus-audit verify`, by name, not by the node.
             GuestCapability::SignedAuditLog => Demand::Optional,
@@ -1025,13 +1033,19 @@ mod tests {
     /// Every USE as well, not just the uses every pod makes: a
     /// [`Demand::When`] row left at [`FirstShipped::NotYet`] when the pin moves
     /// to the release that ships it would refuse that use on a guest that
-    /// serves it. `GuestUse` has three variants, so the list is exhaustive.
+    /// serves it. `GuestUse` has four variants, so the list is exhaustive.
     #[test]
     fn the_pinned_release_serves_this_tree() {
+        let every_ordinary_use = [
+            GuestUse::AgentEgress,
+            GuestUse::EffectTableEgress,
+            GuestUse::ContainerProxySocket,
+        ];
         let every_use = [
             GuestUse::AgentEgress,
             GuestUse::EffectTableEgress,
             GuestUse::ContainerProxySocket,
+            GuestUse::EvalCell,
         ];
         assert_eq!(guest_skew(GUEST_RELEASE), Ok(()));
         assert_eq!(guest_skew_for(GUEST_RELEASE, &every_use), Ok(()));
@@ -1050,25 +1064,77 @@ mod tests {
         for cap in after_the_pin {
             assert_eq!(cap.demand(), Demand::Optional, "{cap:?}");
         }
-        // The release before the pin (2.6.0) serves every use: the three 2.7.0
-        // rows (#3285's derived syscall filter, #3305's signed audit log,
-        // #3307's powerless shared-secret tier) are Optional.
-        assert_eq!(guest_skew_for("2.6.0", &every_use), Ok(()));
-        // So does 2.5.0: both 2.6.0 rows (#3271's read advertisement, #3273's
-        // Landlock) are Optional.
-        assert_eq!(guest_skew_for("2.5.0", &every_use), Ok(()));
+        // The release before the pin (2.6.0) serves every use but an eval
+        // cell: of the three 2.7.0 rows (#3285's derived syscall filter,
+        // #3305's signed audit log, #3307's powerless shared-secret tier) only
+        // the first is demanded, and only by an eval cell (ADR 0013).
+        assert_eq!(guest_skew_for("2.6.0", &every_ordinary_use), Ok(()));
+        assert_eq!(
+            guest_skew_for("2.6.0", &every_use),
+            Err(GuestSkew::Lacks {
+                release: "2.6.0".to_string(),
+                missing: vec![GuestCapability::WorkloadSyscallPolicy],
+            })
+        );
+        // So does 2.5.0: of the two 2.6.0 rows (#3271's read advertisement,
+        // #3273's Landlock) only Landlock is demanded, and only by an eval cell.
+        assert_eq!(guest_skew_for("2.5.0", &every_ordinary_use), Ok(()));
         // 2.4.0 still serves every pod and every adapter run, and is refused
         // only for an upstream with an effect table (#3229), by name: no 2.5.0,
         // 2.6.0 or 2.7.0 row is Required, so the floor stays at 2.4.0.
         assert_eq!(guest_skew("2.4.0"), Ok(()));
         assert_eq!(guest_skew_for("2.4.0", &[GuestUse::AgentEgress]), Ok(()));
         assert_eq!(
-            guest_skew_for("2.4.0", &every_use),
+            guest_skew_for("2.4.0", &every_ordinary_use),
             Err(GuestSkew::Lacks {
                 release: "2.4.0".to_string(),
                 missing: vec![GuestCapability::EgressEffectTable],
             })
         );
+    }
+
+    /// ADR 0013: an eval cell requires the guest's workload Landlock and the
+    /// syscall filter derived from its lattice; no other pod does. A release
+    /// without either row is refused for an eval cell, naming the rows it
+    /// lacks, and still serves the standard profile (the non-vacuity half: the
+    /// refusal is the profile's, not a floor raised for everyone).
+    #[test]
+    fn an_eval_cell_requires_landlock_and_the_derived_filter_and_no_other_pod_does() {
+        use crate::isolation_profile::IsolationProfile;
+        let eval = IsolationProfile::EvalCell.guest_uses();
+        let standard = IsolationProfile::Standard.guest_uses();
+        for (release, missing) in [
+            (
+                "2.5.0",
+                vec![
+                    GuestCapability::WorkloadLandlock,
+                    GuestCapability::WorkloadSyscallPolicy,
+                ],
+            ),
+            ("2.6.0", vec![GuestCapability::WorkloadSyscallPolicy]),
+        ] {
+            assert_eq!(
+                guest_skew_for(release, eval),
+                Err(GuestSkew::Lacks {
+                    release: release.to_string(),
+                    missing,
+                }),
+                "{release} lacks a row an eval cell requires"
+            );
+            assert_eq!(
+                guest_skew_for(release, standard),
+                Ok(()),
+                "{release} still serves the standard profile"
+            );
+            assert_eq!(guest_skew(release), Ok(()), "the floor did not move");
+        }
+        assert_eq!(guest_skew_for(GUEST_RELEASE, eval), Ok(()));
+        for cap in [
+            GuestCapability::WorkloadLandlock,
+            GuestCapability::WorkloadSyscallPolicy,
+        ] {
+            assert_eq!(cap.demand(), Demand::When(GuestUse::EvalCell), "{cap:?}");
+        }
     }
 
     /// THE FINDING, as a refusal. A node built from this tree cannot boot the

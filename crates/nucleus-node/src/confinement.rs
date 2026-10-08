@@ -172,8 +172,10 @@ fn absent_problem() -> String {
 /// What a pod's guest reported about its children's filesystem (#2696 P3c),
 /// as the node reports it in the pod's posture.
 ///
-/// Reported, not required: `GuestCapability::WorkloadLandlock` is
-/// `Demand::Optional`, so a guest that predates it is not refused. But it is
+/// Reported, not required, for an ordinary pod: `GuestCapability::WorkloadLandlock`
+/// is demanded only of an eval cell (`Demand::When(GuestUse::EvalCell)`), so a
+/// guest that predates it is not refused, except under that profile
+/// (`eval_cell::require_confined_children`). But it is
 /// not called confined either: no verdict reads as `Unreported`, which the
 /// posture spells as not enforced. "Could not tell" is never "confined"
 /// (ADR 0007 A-1).
@@ -271,7 +273,10 @@ pub(crate) async fn gate(
     attest(pod_dir, spec, &pod_id.to_string())
         .await
         .map_err(crate::ApiError::Driver)?;
-    Ok(report_workload_filesystem(pod_dir, &pod_id.to_string()).await)
+    let filesystem = report_workload_filesystem(pod_dir, &pod_id.to_string()).await;
+    // Reported for every pod; REQUIRED of an eval cell (ADR 0013).
+    crate::eval_cell::require_confined_children(spec, &filesystem)?;
+    Ok(filesystem)
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use crate::profiles;
 
 mod agent_process;
 mod apple_host;
+mod eval_cell;
 mod pod_agent;
 mod pod_egress;
 mod pod_session;
@@ -106,6 +107,7 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
 /// to run the tool-proxy as a local subprocess instead (suitable for CI).
 #[derive(Args, Debug)]
 #[command(mut_args = |a| a.hide_env_values(true))]
+#[command(group = clap::ArgGroup::new("guest_uses").args(["egress", "isolation_profile"]).multiple(true))]
 pub struct RunArgs {
     /// Task prompt (use - for stdin). Not needed with --goal or --grant.
     #[arg(required_unless_present_any = ["goal", "grant"])]
@@ -332,8 +334,15 @@ pub struct RunArgs {
     /// This is the user's assertion about the node's guest, which the CLI
     /// cannot verify: the node does not yet report the release it boots
     /// (#3223).
-    #[arg(long, value_name = "VERSION|local", requires = "egress")]
+    #[arg(long, value_name = "VERSION|local", requires = "guest_uses")]
     pub guest_release: Option<String>,
+
+    /// The isolation profile the pod is held to: `standard`, or `eval-cell`
+    /// (ADR 0013: Firecracker only, egress listed host by host, the guest's
+    /// Landlock and derived syscall filter required). Refused on `--local` and
+    /// `--hook`, and checked against `--guest-release`; the node decides the rest.
+    #[arg(long, value_name = "PROFILE", default_value = "standard", value_parser = eval_cell::parse)]
+    pub isolation_profile: nucleus_spec::isolation_profile::IsolationProfile,
 }
 
 /// Execute the run command
@@ -479,6 +488,7 @@ pub(crate) async fn dispatch(
         } else {
             "run --local"
         };
+        eval_cell::refuse_host_tier(args.isolation_profile, command)?;
         let declared =
             crate::host_tier::HostAgentOptIn::declare(args.unsandboxed, command, &agent, work_dir)?;
         return if args.hook {
@@ -496,6 +506,7 @@ pub(crate) async fn dispatch(
     // And a guest that cannot start the agent the way --egress does (#3075's
     // table, demanded only for this use).
     pod_egress::refuse_guest_skew(&args.egress, args.guest_release.as_deref())?;
+    eval_cell::refuse_guest_skew(args.isolation_profile, args.guest_release.as_deref())?;
     if let Some(path) = &args.apple_host_config {
         let (resolved, host) = apple_host::ready(path, args).await?;
         run_in_pod(
@@ -1085,6 +1096,7 @@ fn build_pod_spec(
         credentials: None,
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
+    eval_cell::label(args.isolation_profile, &mut spec);
     Ok(spec)
 }
 
@@ -1767,6 +1779,67 @@ mod tests {
         // A run with no --egress is untouched by either check on the pin.
         let plain = run("codegen", &[]).await;
         assert!(plain.contains("node config required"), "{plain}");
+    }
+
+    /// ADR 0013: `dispatch` refuses an eval cell on a host tier by the tier's
+    /// name, before the host opt-in is read (a standard run is refused for the
+    /// missing `--unsandboxed` instead, so no test here writes an audit record
+    /// or launches anything), and refuses a guest release without the rows an eval cell
+    /// requires. A standard run reaches the same points it always did, and an
+    /// unknown profile does not parse.
+    #[tokio::test]
+    async fn an_eval_cell_run_is_refused_on_the_host_tiers_and_on_a_short_guest() {
+        let dir = std::env::temp_dir();
+        let policy = PermissionLattice::permissive();
+        for (mode, tier) in [("--local", "run --local"), ("--hook", "run --hook")] {
+            for profile in ["eval-cell", "standard"] {
+                let args = parse(&[
+                    "run",
+                    "--agent",
+                    "a",
+                    mode,
+                    "--isolation-profile",
+                    profile,
+                    "t",
+                ]);
+                let refused = dispatch(&args, None, &policy, &dir, "t").await;
+                let is_tier_refusal = refused
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.to_string().contains(&format!("`{tier}` tier")));
+                assert_eq!(is_tier_refusal, profile == "eval-cell", "{mode} {profile}");
+            }
+        }
+        let pod = |extra: &'static [&'static str]| {
+            let dir = dir.clone();
+            async move {
+                let mut argv = vec!["run", "--agent", "a"];
+                argv.extend_from_slice(extra);
+                argv.push("t");
+                let policy = profiles::resolve("codegen").expect("canonical profile");
+                dispatch(&parse(&argv), None, &policy, &dir, "t")
+                    .await
+                    .expect_err("no node is configured")
+                    .to_string()
+            }
+        };
+        let short = pod(&[
+            "--isolation-profile",
+            "eval-cell",
+            "--guest-release",
+            "2.5.0",
+        ])
+        .await;
+        assert!(short.contains("WorkloadLandlock"), "{short}");
+        let pinned = pod(&["--isolation-profile", "eval-cell"]).await;
+        assert!(pinned.contains("node config required"), "{pinned}");
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Parse {
+            #[command(flatten)]
+            args: RunArgs,
+        }
+        assert!(Parse::try_parse_from(["run", "--isolation-profile", "eval_cell", "t"]).is_err());
     }
 
     /// The flags that only mean something for a host agent are refused for a

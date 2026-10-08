@@ -1302,6 +1302,7 @@ pub(crate) mod handler_tests {
             http_client: http_client(),
             lockdown_tx: tokio::sync::broadcast::channel::<crate::proto::LockdownCommand>(16).0,
             lockdowns: Arc::default(),
+            eval_cells: crate::eval_cell::Admitted::none(),
         }
     }
 

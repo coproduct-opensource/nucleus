@@ -1109,6 +1109,23 @@ fn invalid_dns_entry(entry: &str) -> ApiError {
     ))
 }
 
+/// Whether `net` is exactly one address (`/32`, `/128`). One predicate for the
+/// identity grant and the eval-cell egress rule (ADR 0007 G-1).
+fn is_one_host(net: IpNet) -> bool {
+    net.prefix_len() == net.max_prefix_len()
+}
+
+/// Whether a `network.allow` entry names exactly one host: a bare address or a
+/// `/32`/`/128`, with an optional port (ADR 0013's eval-cell egress rule).
+///
+/// # Errors
+///
+/// The entry does not parse as an allow entry.
+pub(crate) fn names_one_host(entry: &str) -> Result<bool, ApiError> {
+    let (net, _port) = parse_entry(entry)?;
+    Ok(is_one_host(net))
+}
+
 fn parse_entry(entry: &str) -> Result<(IpNet, Option<u16>), ApiError> {
     let (addr_part, port) = split_port(entry)?;
     let net = if addr_part.contains('/') {
@@ -1974,8 +1991,7 @@ pub fn decide_identity_grant(network: Option<&NetworkSpec>) -> IdentityGrant {
                 offending: entry.clone(),
             };
         };
-        let names_one_host = net.prefix_len() == net.max_prefix_len();
-        if reaches_public_internet(net) && !names_one_host {
+        if reaches_public_internet(net) && !is_one_host(net) {
             return IdentityGrant::Denied {
                 offending: entry.clone(),
             };

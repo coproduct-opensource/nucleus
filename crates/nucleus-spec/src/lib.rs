@@ -9,6 +9,7 @@ pub mod guest_layout;
 pub mod host_effect;
 pub mod host_effect_approval;
 pub mod identity;
+pub mod isolation_profile;
 pub mod live_boot;
 pub mod microvm_host;
 mod rootfs_source;

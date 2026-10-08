@@ -26,6 +26,46 @@ subject to the invariant that everything below this section exists to hold:
 The constraint does not compete with the objective; it is what makes raising the
 objective's numerator safe. ℐ may never be raised by weakening `≼`.
 
+### Frontier ledger
+
+One row per thing the objective's sentence commits to, in the same shape as the
+confidentiality ledger below: the clause quoted verbatim from the sentence above, a
+status, evidence handles that resolve in this tree (`path` or `path#symbol`), and the
+gate that would catch the status regressing. Two statuses beyond PROVED, TESTED and
+NOT-YET: **DECIDED** — a decision procedure runs on every change over the real tree,
+with a founding-defect fixture; **RATCHETED** — a number recomputed from the tree on
+every change, pinned in both directions, with a named `_GUARD` partner.
+
+Unlike the confidentiality table, **no gate parses this one yet**: the
+`check-north-star-ledger.sh` second call that parsed it was written on a branch, and new
+gate logic here is Rust, so the parse is a `cargo xtask` subcommand still to be written.
+Until it exists, a status below is a claim this section's authors checked by hand
+against this tree on 2026-10-07, which is why every row whose evidence lives only on
+that branch is held at NOT-YET here rather than at the status it earned there.
+
+| # | Clause (verbatim from the sentence) | Status | Evidence | Falsified by |
+| --- | --- | --- | --- | --- |
+| F1 | "any agent" — a second vendor's model, an open-weight model behind a generic client, and a non-LLM worker each run in-guest, and every published metric is reported per model (`models_covered` grow-only) — tracked in #2699 | NOT-YET | `crates/nucleus-tool-proxy/tests/red_team_harness.rs#LLM_API_URL`, `.github/workflows/red-team-agent.yml` | — |
+| F2 | "any agent" — the agent process holds no ambient host authority in any shipped tier: the boundary is the pod, not one CLI's disallow-list and hook contract — tracked in #2696 | NOT-YET | `crates/nucleus-cli/src/constants.rs#DISALLOWED_BUILTIN_TOOLS`, `crates/nucleus-spec/src/lib.rs#pub struct WorkloadSpec` | — |
+| F3 | "as much useful real-world work" — the default exec tool round-trips over the wire: the MCP face and the proxy compile against one shared request type, and a test pins the advertised tool schema to that type's fields (earned on the branch; the shared type has not landed here) | NOT-YET | `crates/nucleus-mcp/src/main.rs` | — |
+| F4 | "as much useful real-world work" — a delegation matrix (profile × operation × tier) is published and grow-only, each row showing its denied variant refusing by policy — tracked in #2698, #2704 | NOT-YET | `docs/perf/RUBRIC-LEDGER.md`, `crates/nucleus-cli/src/profiles.rs` | — |
+| F5 | "as much useful real-world work" — credentialed effects (git push, pull request, cloud API) are reachable from the agent through the broker with method/path scoping and a receipt — tracked in #2698 | NOT-YET | `crates/nucleus-tool-proxy/src/egress.rs`, `crates/nucleus-spec/src/lib.rs#CredentialedEgressSpec` | — |
+| F6 | "as its principal is willing to authorize" — an approval binds to the action it approves and names the approver that verified it, on every tier — tracked in #2697 | NOT-YET | `crates/nucleus-tool-proxy/src/auth.rs#Verify an approval request signed with an approver's Ed25519 key` | — |
+| F7 | "as its principal is willing to authorize" — the profile's path allowlist is carried as the certificate's scope on every mint path, and one glob-subsumption primitive decides containment for certificate scopes, delegation scopes and the path lattice (earned on the branch; not landed here) | NOT-YET | `crates/portcullis/src/path.rs`, `crates/portcullis/src/certificate.rs#pub fn verify_certificate` | — |
+| F8 | "as its principal is willing to authorize" — revocation reaches every issued offline-verifiable carrier: a revoked prefix fails every descendant — tracked in #2697 | NOT-YET | `crates/portcullis/src/certificate.rs#pub fn verify_certificate` | — |
+| F9 | "as its principal is willing to authorize" — delegated authority only tightens along the chain: the per-hop step of `chain_attenuates` is Aeneas-extracted and its monotonicity is a kernel-checked theorem | PROVED | `crates/portcullis-core/lean/CertChainMonotoneExtracted.lean`, `crates/portcullis-core/src/certchain.rs#chain_attenuates` | `.github/workflows/portcullis-core-proven-lean.yml` |
+| F10 | "structurally incapable of exceeding that authorization" — no consequential sink is reachable from the effect API without discharging an `Authority` (total mediation over the closed sink enum) | PROVED | `crates/portcullis-core/lean/MediationScopeExtracted.lean#no_sink_reachable_without_discharge`, `crates/portcullis-effects/src/runtime.rs` | `scripts/check-mediation.sh` |
+| F11 | "structurally incapable of exceeding that authorization" — the confidentiality sub-ledger (C1–C9, below) carries no NOT-YET row — tracked in #2706 | NOT-YET | `scripts/north-star-ledger-ratchet.txt#NOT_YET`, `docs/cross-pod-view.md`, `crates/nucleus-identity/src/attestation.rs` | — |
+| F12 | "structurally incapable of exceeding that authorization" — the fine-grained decision point (flow graph, taint ceiling, budget, egress allowlist) survives compromise of the guest it polices — tracked in #2702 | NOT-YET | `crates/nucleus-guest-init/src/main.rs`, `crates/nucleus-node/src/host_decide.rs`, `crates/nucleus-node/src/broker_perform.rs` | — |
+| F13 | "structurally incapable of exceeding that authorization" — Tier 1 (`nucleus run --local`) is a principal boundary: distinct uid, no shared secret readable by the agent, Landlock and seccomp on children — tracked in #2696 | NOT-YET | `crates/nucleus/src/hardening.rs` | — |
+| F14 | "continuously expands the frontier" — utility under authorization is measured per canonical profile under that profile's real lattice, higher-is-better, with `_GUARD` partners so it cannot be bought by shrinking the corpus or opening an exfil sink (earned on the branch; the measurement has not landed here) | NOT-YET | `crates/nucleus-flow-replay/corpus/corpus.jsonl`, `scripts/exemplar-baseline.json` | — |
+| F15 | "continuously expands the frontier" — the exemplar scoreboard is a required context and its ratchet refuses an improvement not re-pinned in the same change and a pinned metric that vanished; here it is required and refuses regressions and dropped guards, but an improvement only notices and a vanished metric is not compared | NOT-YET | `ci/required-checks.txt#exemplar metrics ratchet`, `crates/xtask/src/scoreboard.rs#a_dropped_guard_is_a_failure_even_when_the_metric_improves` | — |
+| F16 | "continuously expands the frontier" — the proof counts this document publishes are recomputed from the tree on every change and a mismatch is red | TESTED | `scripts/formal-numbers.sh#expect` | `.github/workflows/formal-numbers.yml` |
+| F17 | "structurally incapable of exceeding that authorization" — an eval cell holds against a hostile agent with root in its guest: zero contract-forbidden effects, shown by a live escape lane of scripted and adaptive attempts ([ADR 0013](adr/0013-eval-cell.md)); the contract and its admission refusals are in place, the escape lane (M2) and the host deciding (M3) are not | NOT-YET | `docs/adr/0013-eval-cell.md`, `crates/nucleus-node/src/eval_cell.rs#pub(crate) fn admit`, `crates/nucleus-spec/src/isolation_profile.rs#EvalCell` | — (the M2 escape lane, once it exists) |
+
+*Clause fragments quote the sentence above. Several rows share a fragment because they
+earn it separately.*
+
 ## Vision
 
 **Nucleus makes "agent jailbreak → silent damage" provably impossible by
