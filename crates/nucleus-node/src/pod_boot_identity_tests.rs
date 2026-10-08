@@ -478,13 +478,10 @@ async fn prepare_profiled(
     prepare_labelled_for_test(st, dir, id, &socket, serde_json::json!({}), None, labels).await
 }
 
-/// ADR 0016 D3, wired: at boot an eval cell is served only a launch that
-/// verifies, and each fallback a standard pod keeps is a refusal for it, by name.
-/// Non-vacuous: the same eval cell on a node whose CA attests is prepared, and a
-/// standard pod is prepared on every node.
+/// ADR 0016 D3, wired: a node that issues no identity boots a standard pod as
+/// before, and refuses an eval cell by name.
 #[tokio::test]
-async fn an_eval_cell_boots_only_with_a_launch_that_verifies() {
-    // No identity manager: the node issues no SVID at all.
+async fn an_eval_cell_with_no_workload_identity_is_refused_at_boot() {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let st = state(&dir);
     let refused = match prepare_profiled(&st, dir.path(), eval_cell_label()).await {
@@ -496,8 +493,12 @@ async fn an_eval_cell_boots_only_with_a_launch_that_verifies() {
     prepare_profiled(&st, dir.path(), serde_json::json!({}))
         .await
         .expect("a standard pod boots without an identity, as before");
+}
 
-    // A CA that signs plainly: the SVID carries no launch.
+/// ADR 0016 D3, wired: a CA that signs only plainly yields an SVID with no
+/// launch. A standard pod keeps that fallback; an eval cell is refused by name.
+#[tokio::test]
+async fn an_eval_cell_served_a_plain_svid_is_refused_at_boot() {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let mut st = state(&dir);
     let plain: std::sync::Arc<dyn nucleus_identity::CaClient> = std::sync::Arc::new(PlainOnlyCa(
@@ -520,8 +521,12 @@ async fn an_eval_cell_boots_only_with_a_launch_that_verifies() {
     prepare_profiled(&st, dir.path(), serde_json::json!({}))
         .await
         .expect("a standard pod keeps the plain-SVID fallback");
+}
 
-    // A CA that attests: the eval cell is prepared.
+/// Non-vacuous: on a node whose CA attests, the eval cell's launch verifies
+/// against the measurement the node took, and it is prepared.
+#[tokio::test]
+async fn an_eval_cell_whose_launch_verifies_is_prepared() {
     let dir = tempfile::tempdir_in("/tmp").unwrap();
     let mut st = state(&dir);
     st.identity_manager = Some(
