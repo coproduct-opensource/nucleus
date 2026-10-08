@@ -11,8 +11,10 @@
   directive assumed: with build concurrency 1 and the whole pool to itself, a
   group whose work fits the pool finishes inside the budget.
 
-  2026-09-09: build concurrency is 4, because the pool is now 38 warm machines
-  and at concurrency 1 most of them idled while a group took 40 to 70 minutes.
+  2026-09-09: build concurrency was raised to 4, because the pool was 38 warm
+  machines and at concurrency 1 most of them idled while a group took 40 to 70
+  minutes — and put back to 1 the same day, measured: one group saturated the
+  pool. 2026-10-08: build concurrency is 2, measured again (ci/merge-queue.toml).
   T7's hypothesis is then read against a group's SHARE of the pool rather than
   the pool (T12), which is sound exactly while each group's work fits its share
   — and the bite carries the numbers for the pool this queue actually has.

@@ -39,7 +39,9 @@
 
   * Time and runners (that is `CiSpec.Capacity`, the next file).
   * Speculative groups (`max_entries_to_build > 1`) — this repository runs
-    at 1, and the pin in ci/merge-queue.toml is what live-parity holds.
+    at 2 since 2026-10-08, and the pin in ci/merge-queue.toml is what
+    live-parity holds. Only the head group can merge, and a red head
+    invalidates the groups built on it; this file does not model that.
 -/
 
 namespace CiSpec

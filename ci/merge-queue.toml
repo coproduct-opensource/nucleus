@@ -24,7 +24,39 @@ check_response_timeout_minutes = 360
 # when the pool has capacity above ONE group's demand — measured, it does not: a single group's
 # fifty required contexts already saturate the pool. Four-way speculation produced one merge in
 # six hours with nothing red. The bite records the measurement.
-max_entries_to_build = 1
+#
+# 2026-10-08, owner decision, re-measured first: 1 -> 2. The 09-09 hypothesis failed because one
+# group saturated the pool. It no longer does. Over the 31 merge groups of 10-07 16:00 to 10-08
+# 15:50 (every group in that window; pool occupancy sampled each minute, 1430 samples, counting
+# pull_request, push and schedule jobs as well as the queue's):
+#
+#   pool (size)             group peak   group work (min)   longest job   busy, all events
+#                           p50 / max    p50 / max          p50 / max     p50 / p95 / max
+#   nucleus-fly-build (24)  10 / 12      79 / 137           24 / 37       3 / 15 / 23
+#   nucleus-fly-gate  (40)  10 / 17      15 / 41             3 / 6        0 /  8 / 17
+#   GitHub-hosted     (20)  13 / 15      35 / 76            12 / 45       1 / 12 / 20
+#   gatehouse x86 lanes (6) 0-9 of 10 gates ran per group, 0-1426 gate-s (7 reused is common);
+#                           gatehouse/required took 0-13 min, the group's last context only in
+#                           the two shortest groups (11 min walls)
+#
+# Neither Fly pool reached its size in a single sampled minute; queue wait p90 was 2.1 min (build)
+# and 2.9 min (gate), which is machine start, not contention. The queue WAS backlogged: 19 of 30
+# groups started under a minute after the previous one finished (21 within four), so throughput
+# was the serial group wall (p50 27 min, max 45) and nothing else. That wall is ONE job: `Live-path
+# gates (one pod)` on fly-build, p50 24 min and max 37, waiting at most 3 min for its runner -- a
+# critical path, not a capacity limit. T12's condition now holds for both Fly pools: each is at
+# least twice one group's peak (12 <= 24/2, 17 <= 40/2), so at c = 2 the head group's share still
+# covers its whole peak, and greedy on the worst group's jobs finishes no later on 12 build
+# runners than on 24 (38 min both). The bite `two_groups_fit_their_shares` carries the numbers.
+#
+# What this does NOT cover: the hosted pool (20 concurrent on the free plan) is the one where two
+# peaks (2 x 15) exceed the pool; its long jobs are not on the critical path, and it touched 20 for
+# three minutes in the window. c = 3 would not fit (12 > 24/3). A stuck head still blocks
+# everything: #3330's 12:39 group sat with gatehouse/required `verifying` for 2.5 hours, and no
+# concurrency changes that. Roll back if merges per hour fall or a group is ejected by timeout.
+# The gatehouse runner launcher's assure/heavy caps (ops/mac-ci/gatehouse-gcp-runners.sh) serve
+# coproduct-private/gatehouse, not this repository: raising them moves none of the numbers here.
+max_entries_to_build = 2
 max_entries_to_merge = 1
 min_entries_to_merge = 1
 min_entries_to_merge_wait_minutes = 0

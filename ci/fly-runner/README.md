@@ -157,9 +157,10 @@ Machines are a fraction of a cent per job. Volumes: 8 × 40 GB + 8 × 20 GB × $
 Compare: the same jobs on hosted runners cost nothing in dollars and everything in hours.
 
 The merge queue's own throughput is bounded by `ci/merge-queue.toml` (`max_entries_to_build
-= 1`, so one merge-group run at a time, ALLGREEN): once a run is 10 minutes instead of 60 to
-180, that is 6 merges an hour. Raising `max_entries_to_build` is a separate, theorem-checked
-change (the capacity hypotheses in `ci/lean/CiSpec/Capacity.lean` and `live-parity`).
+= 2` since 2026-10-08, so two merge-group runs at a time, ALLGREEN, only the head merging): at
+a 27-minute group that is up to about 4 merges an hour while nothing goes red. Changing
+`max_entries_to_build` is a separate, theorem-checked change (the capacity hypotheses in
+`ci/lean/CiSpec/Capacity.lean`, the measurement in `ci/merge-queue.toml`, and `live-parity`).
 
 ## Rollback
 

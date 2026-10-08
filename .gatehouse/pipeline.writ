@@ -81,7 +81,12 @@
 --                   the first contended x86_64 runs are the measurement that replaces them.
 --   queueBudgetMs   21600000 = the 360-minute check timeout in `ci/merge-queue.toml`, which is
 --                   the live ruleset value that `cargo xtask ci-spec live-parity` holds it to.
---   inFlight        2: `max_entries_to_build = 1` plus the pull-request head under test.
+--   inFlight        3: `max_entries_to_build = 2` (since 2026-10-08; it was 1, and this was 2)
+--                   plus the pull-request head under test. With the eleven gates' timeouts
+--                   summing to 14260000 ms, `builderBudget_b` needs 42780000 <= 21600000 *
+--                   builders, so a lane attesting 2 builders still fits, with 420000 ms to spare
+--                   (it was 14680000 at inFlight 2). Nothing decides this against a live lane
+--                   today: `gate plan runnable` is the only caller of `builderBudget_b`.
 --   builders        2. One Mac VM, but TWO gate-worker services on it, each running one gate
 --                   at a time -- observed repeatedly on 2026-09-22 with two gates in flight
 --                   together, and `gatehouse_live_workers` reporting 2. It was declared 1, which
@@ -445,6 +450,6 @@ let pipeline : ci.Pipeline = ([fmt, clippyNode, clippyLibs, testNode, testLibs, 
 -- field existed. The controller's five-hour undecided timeout is SHORTER than `queueBudgetMs`,
 -- so declaring it would make `deadlineFits_b` refuse this plan -- which is a real finding about
 -- the budget and not one this change should paper over by picking a number.
-let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy-node", #b"clippy-libs", #b"test-node", #b"test-libs", #b"ci-spec", #b"text-history", #b"text-sweep", #b"text-narrow", #b"text-north-star"] : Bytes, 21600000, 64, 2, 3, 10240, [#b"Rustfmt", #b"Clippy"] : Bytes, [#b"awk"] : Bytes, 0)
+let policy : ci.Policy = (ceiling, [#b"fmt", #b"clippy-node", #b"clippy-libs", #b"test-node", #b"test-libs", #b"ci-spec", #b"text-history", #b"text-sweep", #b"text-narrow", #b"text-north-star"] : Bytes, 21600000, 64, 3, 3, 10240, [#b"Rustfmt", #b"Clippy"] : Bytes, [#b"awk"] : Bytes, 0)
 
 let admissible : So (ci.admissible_b pipeline policy) = oh
