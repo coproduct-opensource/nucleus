@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nucleus-escape-canary", # In-guest Gatehouse confinement evidence
     "crates/nucleus-perf",  # Dev-only: pod concurrency + start-latency measurement
     "crates/portcullis",  # Policy: quotient lattice types
     "crates/nucleus-policy-kernel", # PCA: reference monitor (decide / governance_monotone)

@@ -247,9 +247,11 @@ population_floor = 278
 # verifier -- it parses TPM structures, event logs and IMA logs a node hands it --
 # declares all seven from its first commit; a panic on crafted evidence would be
 # a denial of service against every relying party. 36 of 93 = 38.70%.
-floor_bp = 3870
+# 2026-10-08 (#3106): new crate nucleus-escape-canary, the in-guest confinement
+# evidence for gatehouse gates, denies all seven totality lints. 37 of 94 = 39.36%.
+floor_bp = 3936
 floor_set = "measurement"
-population_floor = 93
+population_floor = 94
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

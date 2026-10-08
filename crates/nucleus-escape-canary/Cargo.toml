@@ -1,0 +1,20 @@
+[package]
+name = "nucleus-escape-canary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Fail-closed evidence for the Gatehouse guest confinement canary"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+tempfile = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.31", default-features = false, features = ["mount", "fs", "ptrace", "socket", "time", "net"] }
