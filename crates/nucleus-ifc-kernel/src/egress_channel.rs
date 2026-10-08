@@ -292,76 +292,13 @@ mod tests {
 
     // ── The categorical gate: documented inventory ≡ the enum ────────────────
 
-    /// Path to the inventory doc, relative to this crate's manifest dir.
-    fn mediated_set_md() -> String {
-        std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../docs/architecture/mediated-set.md"
-        ))
-        .expect("mediated-set.md must be readable from the crate manifest dir")
-    }
-
-    /// Parse the fenced inventory table into `key -> status token`.
-    ///
-    /// Robust form (per the task's fallback guidance): the table is bounded by
-    /// explicit `<!-- C6-INVENTORY-{START,END} -->` markers, and column values
-    /// are located by their HEADER NAME (`Key`, `Status`), not by fixed
-    /// position — so reordering or inserting a human column cannot silently
-    /// desync the gate. The machine cells are the only backticked tokens in
-    /// their column.
+    /// Parse the fenced inventory table into `key -> status token`, through the
+    /// crate's one table reader (`crate::doc_table`): bounded by the
+    /// `<!-- C6-INVENTORY-{START,END} -->` markers, columns located by header
+    /// name, so reordering or inserting a human column cannot desync the gate.
     fn parse_documented_inventory() -> BTreeMap<String, String> {
-        let doc = mediated_set_md();
-        let start = doc
-            .find("<!-- C6-INVENTORY-START -->")
-            .expect("inventory START marker present in mediated-set.md");
-        let end = doc
-            .find("<!-- C6-INVENTORY-END -->")
-            .expect("inventory END marker present in mediated-set.md");
-        assert!(start < end, "inventory markers out of order");
-        let block = &doc[start..end];
-
-        let rows: Vec<Vec<String>> = block
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.starts_with('|'))
-            // drop the separator row (|---|---|)
-            .filter(|l| !l.trim_start_matches('|').trim_start().starts_with('-'))
-            .map(|l| {
-                l.trim_matches('|')
-                    .split('|')
-                    .map(|c| c.trim().to_string())
-                    .collect()
-            })
-            .collect();
-
-        assert!(rows.len() >= 2, "inventory table must have a header + rows");
-        let header = &rows[0];
-        let col = |name: &str| -> usize {
-            header
-                .iter()
-                .position(|h| h.eq_ignore_ascii_case(name))
-                .unwrap_or_else(|| panic!("inventory header must have a '{name}' column"))
-        };
-        let key_col = col("Key");
-        let status_col = col("Status");
-
-        // Backticked token extractor: `agent_spawn` -> agent_spawn.
-        let untick = |cell: &str| -> String { cell.trim().trim_matches('`').trim().to_string() };
-
-        let mut out = BTreeMap::new();
-        for r in &rows[1..] {
-            let key = untick(&r[key_col]);
-            let status = untick(&r[status_col]);
-            assert!(
-                !key.is_empty(),
-                "inventory row has an empty Key cell: {r:?}"
-            );
-            assert!(
-                out.insert(key.clone(), status).is_none(),
-                "duplicate documented channel key: {key}"
-            );
-        }
-        out
+        let doc = crate::doc_table::read_doc("mediated-set.md");
+        crate::doc_table::DocTable::parse(&doc, "C6-INVENTORY").keyed("Key", "Status")
     }
 
     /// **THE C6 PHASE-0 GATE.** The documented channel set in `mediated-set.md`

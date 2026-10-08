@@ -24,7 +24,6 @@
 use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info};
@@ -311,9 +310,9 @@ fn wire(reply: &Reply) -> String {
     }
 }
 
-/// Default port for the Workload API vsock server.
-#[allow(dead_code)]
-pub const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
+/// The Workload API's vsock port: the host-listener inventory's
+/// `VsockListener::WorkloadApi`, the one place it is written (ADR 0007 G-1).
+pub const DEFAULT_WORKLOAD_API_PORT: u32 = nucleus_ifc_kernel::VsockListener::WorkloadApi.port();
 
 /// Vsock bridge for the Workload API.
 ///
@@ -461,8 +460,10 @@ pub struct PodMaterial {
 /// Deliberately NOT the JSON protocol's port. The two speak different wire
 /// formats on the same kind of socket, and there is no framing that lets a
 /// server tell them apart before committing to one — so they get a port each
-/// rather than a heuristic.
-pub const SPIFFE_WORKLOAD_API_PORT: u32 = 15013;
+/// rather than a heuristic. Derived from the host-listener inventory, whose
+/// `every_vsock_listener_has_its_own_port` keeps it off the broker's port.
+pub const SPIFFE_WORKLOAD_API_PORT: u32 =
+    nucleus_ifc_kernel::VsockListener::SpiffeWorkloadApi.port();
 
 /// How long a bridge shutdown waits for connections to finish the frame they are
 /// serving before aborting them. Bounded because it sits on the pod's teardown path.
@@ -472,25 +473,24 @@ impl WorkloadApiVsockBridge {
     /// Starts the Workload API vsock bridge for a specific pod.
     ///
     /// Creates a Unix socket at `{vsock_uds_path}_{port}` following Firecracker's
-    /// naming convention for guest-to-host connections.
+    /// naming convention for guest-to-host connections. The port is the
+    /// host-listener inventory's (`VsockListener::WorkloadApi`), not a caller's.
     ///
     /// # Arguments
     ///
     /// * `vsock_uds_path` - The base vsock UDS path configured in Firecracker
-    /// * `port` - The port number guests will connect to (e.g., 15012)
     /// * `pod_id` - The unique identifier for the pod this bridge serves
     /// * `identity_manager` - The identity manager for fetching certificates
     ///
     /// # Example
     ///
-    /// If `vsock_uds_path` is `/tmp/pod/vsock.sock` and `port` is 15012,
-    /// the bridge will listen on `/tmp/pod/vsock.sock_15012`.
+    /// If `vsock_uds_path` is `/tmp/pod/vsock.sock`, the bridge listens on
+    /// `/tmp/pod/vsock.sock_15012`.
     ///
     /// Each pod gets its own bridge with a unique SPIFFE identity based on `pod_id`.
     #[allow(dead_code)]
     pub async fn start(
         vsock_uds_path: impl AsRef<Path>,
-        port: u32,
         pod_id: uuid::Uuid,
         identity_manager: IdentityManager,
         material: PodMaterial,
@@ -507,46 +507,21 @@ impl WorkloadApiVsockBridge {
         let material_for_bridge = std::sync::Arc::clone(&material);
         // Cloned before the accept loop takes ownership.
         let identity_manager_for_spiffe = identity_manager.clone();
-        // Firecracker naming convention: {uds_path}_{port}
-        let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.as_ref().display(), port));
-
-        // Remove existing socket if present
-        if socket_path.exists() {
-            tokio::fs::remove_file(&socket_path).await?;
-        }
-
-        // Create parent directory if needed
-        if let Some(parent) = socket_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-
-        let listener = UnixListener::bind(&socket_path)?;
-
-        // Hand the socket to the jailed uid, or the guest cannot reach it.
+        // The inventory's port, bound and handed to the jailed uid in one call.
         //
-        // `prepare_jail` gives the jail user what it creates, and its comment says the
-        // vsock socket is "deliberately absent" because Firecracker creates it.
-        // That is true of `vsock.sock` — and NOT of this one. `vsock.sock_<port>`
-        // is created HERE, by the node, running as root, so it lands
-        // `srwxr-xr-x root root` while Firecracker runs as the jailer uid.
-        // Connecting to a Unix socket requires WRITE permission on it, so
-        // Firecracker's connect() gets EACCES and the guest sees
-        // "Connection reset by peer" from a socket that is demonstrably
-        // listening. Measured on a booted pod, 2026-07-29:
-        //
-        //   srwxr-xr-x 1  123 users  vsock.sock          <- Firecracker made this
-        //   srwxr-xr-x 1 root root   vsock.sock_15012    <- the node made this
-        //
-        // Downstream, the guest fetched no SVID and no task token, all three
-        // sandbox-proof tiers failed, and the tool-proxy exited as PID 1 —
-        // a kernel panic whose visible cause was four layers from the file mode.
-        //
-        // chown, not chmod: only the jailed Firecracker should be able to
-        // connect. Widening the mode would open the workload API — which serves
-        // SVIDs and task tokens — to every user on the host.
-        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
-        #[cfg(not(target_os = "linux"))]
-        let _ = jail_owner;
+        // The handover matters: `vsock.sock_<port>` is created HERE, by the node
+        // running as root, while Firecracker runs as the jailer uid, and
+        // connect() needs write permission. Measured on a booted pod, 2026-07-29,
+        // before the handover existed: the guest saw "Connection reset by peer"
+        // from a listening socket, fetched no SVID and no task token, and the
+        // tool-proxy exited as PID 1 (a kernel panic four layers from the file
+        // mode). chown, not chmod: only the jailed Firecracker should connect.
+        let port = DEFAULT_WORKLOAD_API_PORT;
+        let (listener, socket_path) = crate::guest_socket::bind_guest_listener(
+            vsock_uds_path.as_ref(),
+            nucleus_ifc_kernel::VsockListener::WorkloadApi,
+            jail_owner,
+        )?;
         let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
         let socket_path_clone = socket_path.clone();
@@ -635,7 +610,6 @@ impl WorkloadApiVsockBridge {
         // for a missing convenience.
         let spiffe = match Self::spawn_spiffe_listener(
             vsock_uds_path.as_ref(),
-            SPIFFE_WORKLOAD_API_PORT,
             pod_id,
             &identity_manager_for_spiffe,
             material_for_bridge.served.svid_key_latch(),
@@ -676,7 +650,6 @@ impl WorkloadApiVsockBridge {
     /// heuristic that would be wrong occasionally and confusingly.
     async fn spawn_spiffe_listener(
         vsock_uds_path: &Path,
-        port: u32,
         pod_id: uuid::Uuid,
         identity_manager: &IdentityManager,
         key_served: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -685,21 +658,12 @@ impl WorkloadApiVsockBridge {
         use nucleus_identity::spiffe_workload_api::SpiffeWorkloadApiService;
         use nucleus_proto::spiffe_workload::spiffe_workload_api_server::SpiffeWorkloadApiServer;
 
-        let socket_path = PathBuf::from(format!("{}_{}", vsock_uds_path.display(), port));
-        if socket_path.exists() {
-            tokio::fs::remove_file(&socket_path).await?;
-        }
-        if let Some(parent) = socket_path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let listener = UnixListener::bind(&socket_path)?;
-
-        // Same reason as the JSON socket above: the node creates this as root
-        // while Firecracker runs as the jailer uid, and connect() needs write
-        // permission. See the comment in `start` for what breaks otherwise.
-        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
-        #[cfg(not(target_os = "linux"))]
-        let _ = jail_owner;
+        // Bound and handed to the jailed uid the same way as the JSON socket.
+        let (listener, socket_path) = crate::guest_socket::bind_guest_listener(
+            vsock_uds_path,
+            nucleus_ifc_kernel::VsockListener::SpiffeWorkloadApi,
+            jail_owner,
+        )?;
 
         // The SAME per-pod identity the JSON path serves, from the SAME
         // SecretManager: a guest gets one certificate whichever protocol it
@@ -724,7 +688,7 @@ impl WorkloadApiVsockBridge {
             info!(
                 "SPIFFE Workload API listening on {} (port {}) for pod {}",
                 path_for_log.display(),
-                port,
+                SPIFFE_WORKLOAD_API_PORT,
                 pod_id
             );
             let incoming = tokio_stream::wrappers::UnixListenerStream::new(listener);
@@ -1527,7 +1491,6 @@ mod tests {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             pod_id,
             manager,
             PodMaterial::default(),
@@ -1576,7 +1539,6 @@ mod tests {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             uuid::Uuid::new_v4(),
             manager,
             PodMaterial::default(),
@@ -1684,7 +1646,6 @@ mod tests {
         };
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             uuid::Uuid::new_v4(),
             manager,
             material,
@@ -1775,7 +1736,6 @@ mod tests {
         };
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             uuid::Uuid::new_v4(),
             manager,
             material,
@@ -1828,7 +1788,6 @@ mod tests {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             pod_id,
             manager,
             PodMaterial::default(),
@@ -1871,7 +1830,6 @@ mod tests {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             pod_id,
             manager,
             PodMaterial::default(),
@@ -1911,7 +1869,6 @@ mod tests {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            8080,
             pod_id,
             manager,
             PodMaterial::default(),
@@ -1921,7 +1878,7 @@ mod tests {
         .unwrap();
 
         // Verify Firecracker naming convention: {uds_path}_{port}
-        let expected_path = temp_dir.path().join("pod-123").join("vsock.sock_8080");
+        let expected_path = temp_dir.path().join("pod-123").join("vsock.sock_15012");
         assert_eq!(bridge.socket_path(), expected_path);
 
         bridge.shutdown().await;
@@ -1936,7 +1893,6 @@ mod tests {
         let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
         let bridge = WorkloadApiVsockBridge::start(
             &vsock_uds_path,
-            15012,
             pod_id,
             manager,
             PodMaterial::default(),
@@ -2004,7 +1960,6 @@ mod tests {
 
         let bridge1 = WorkloadApiVsockBridge::start(
             &vsock1_path,
-            15012,
             pod1_id,
             manager.clone(),
             PodMaterial::default(),
@@ -2014,7 +1969,6 @@ mod tests {
         .unwrap();
         let bridge2 = WorkloadApiVsockBridge::start(
             &vsock2_path,
-            15012,
             pod2_id,
             manager.clone(),
             PodMaterial::default(),
@@ -2260,7 +2214,6 @@ mod spiffe_bridge_tests {
         // launch path would call it and the feature would ship dark.
         let _bridge = WorkloadApiVsockBridge::start(
             &base,
-            15012,
             pod_id,
             manager,
             PodMaterial::default(),

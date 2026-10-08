@@ -584,14 +584,14 @@ fn a_denied_grant_withholds_the_workload_api_port() {
     let denied = IdentityGrant::Denied {
         offending: "0.0.0.0/0".to_string(),
     };
-    assert_eq!(workload_api_port_for(true, &denied, 9000), None);
+    assert_eq!(workload_api_port_for(true, &denied), None);
     assert_eq!(
-        workload_api_port_for(true, &IdentityGrant::Granted, 9000),
-        Some(9000)
+        workload_api_port_for(true, &IdentityGrant::Granted),
+        Some(crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT)
     );
     // And identity being off on the node still wins regardless of the grant.
     assert_eq!(
-        workload_api_port_for(false, &IdentityGrant::Granted, 9000),
+        workload_api_port_for(false, &IdentityGrant::Granted),
         None
     );
 }

@@ -953,16 +953,17 @@ impl std::fmt::Debug for DecideListener {
 
 impl DecideListener {
     /// Bind the pod's decision socket (Firecracker's guest-initiated path for
-    /// `port`) and serve it.
+    /// the inventory's `VsockListener::DecisionChannel`) and serve it.
     pub fn start(
         uds_path: &Path,
-        port: u32,
         pod: PodDecide,
         jail_owner: Option<(u32, u32)>,
     ) -> std::io::Result<Self> {
-        let socket_path = crate::broker_transport::broker_socket_path(uds_path, port);
-        let listener = crate::broker_transport::prepare_socket(&socket_path)?;
-        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
+        let (listener, socket_path) = crate::guest_socket::bind_guest_listener(
+            uds_path,
+            nucleus_ifc_kernel::VsockListener::DecisionChannel,
+            jail_owner,
+        )?;
         let tally = Arc::clone(&pod.recorder.tally);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(serve_pod(listener, pod, async {
@@ -1035,7 +1036,6 @@ pub(crate) async fn start_for_pod(
     };
     match DecideListener::start(
         vsock_path,
-        nucleus_decision_protocol::DECISION_VSOCK_PORT,
         decide,
         jail_owner,
     ) {

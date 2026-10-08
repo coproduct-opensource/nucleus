@@ -66,7 +66,7 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
     let ready = prepare_for_test(&st, dir.path(), id, &socket)
         .await
         .unwrap();
-    let api = dir.path().join(format!("vsock_{}", st.identity_vsock_port));
+    let api = dir.path().join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
     let mut stream = tokio::net::UnixStream::connect(&api).await.unwrap();
     stream.write_all(b"FETCH_POD_SPEC\n").await.unwrap();
     let mut response = String::new();
@@ -142,7 +142,7 @@ async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
     assert!(
         matches!(result, Err(crate::ApiError::Driver(ref e)) if e.contains("this node issued the pod no certificate"))
     );
-    let api = dir.path().join(format!("vsock_{}", st.identity_vsock_port));
+    let api = dir.path().join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while api.exists() || manager.get_attestation(&id.to_string()).await.is_some() {
             tokio::task::yield_now().await;
@@ -211,7 +211,7 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
 
 /// Ask a prepared pod's workload API one line, as guest-init does, and return the reply.
 async fn ask(st: &NodeState, dir: &std::path::Path, line: &[u8]) -> String {
-    let api = dir.join(format!("vsock_{}", st.identity_vsock_port));
+    let api = dir.join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
     let mut stream = tokio::net::UnixStream::connect(&api).await.unwrap();
     stream.write_all(line).await.unwrap();
     let mut response = String::new();

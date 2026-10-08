@@ -560,7 +560,7 @@ fn no_identity_outcome_reintroduces_a_cmdline_token() {
                 offending: "0.0.0.0/0".to_string(),
             }
         };
-        let port = net::workload_api_port_for(enabled, &grant, 15012);
+        let port = net::workload_api_port_for(enabled, &grant);
         let args = boot_args_with_identity(port.is_some());
         assert!(
             !args.contains("nucleus.sandbox_token="),

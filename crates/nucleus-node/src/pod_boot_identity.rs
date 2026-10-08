@@ -281,7 +281,6 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 .map_err(|e| ApiError::Driver(format!("guest spec serialization failed: {e}")))?;
         let bridge = workload_api_vsock::WorkloadApiVsockBridge::start(
             vsock_path,
-            state.identity_vsock_port,
             id,
             manager.clone(),
             workload_api_vsock::PodMaterial {
@@ -310,7 +309,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 broker_secret: Some(broker_serve.into_served(id)?),
                 // Served WITH the capability, not separately — the proxy
                 // needs both to reach the broker and neither is useful alone.
-                broker_port: state.broker_vsock_port,
+                broker_port: nucleus_ifc_kernel::VsockListener::CredentialBroker.port(),
                 // Nothing served yet. Every per-pod value above that names or
                 // empowers this pod goes out ONCE, to guest-init, before the
                 // workload exists (#2724) — the SVID key included.

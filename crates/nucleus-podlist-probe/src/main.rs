@@ -76,8 +76,9 @@ use vsock::VsockStream;
 
 /// Host CID for vsock connections (always 2 in Firecracker).
 const VMADDR_CID_HOST: u32 = 2;
-/// Default vsock port for the Workload API (matches `nucleus-guest-init`).
-const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
+/// Default vsock port for the Workload API: the host-listener inventory's
+/// (ADR 0007 G-1).
+const DEFAULT_WORKLOAD_API_PORT: u32 = nucleus_ifc_kernel::VsockListener::WorkloadApi.port();
 /// A bound so a wedged host cannot make the probe hang past its drain window.
 const READ_TIMEOUT_MS: u64 = 2000;
 /// Poll POD_LIST a few times: a child or sibling created around the same instant
