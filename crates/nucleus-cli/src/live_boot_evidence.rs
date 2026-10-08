@@ -388,6 +388,15 @@ async fn collect(
     }
     let run = run?;
     let (effect_pod, effect_pod_create_ms) = effect(node, out, &files, nonce).await?;
+    let pods = node.state.join("pods");
+    copy_console(&pods, effect_pod, &out.join(&files.effect_console))?;
+    // After both pods were cancelled: every comparison either pod's shadow
+    // service made has been appended by now.
+    gather_disagreements(
+        &pods,
+        &[run.pod, effect_pod],
+        &out.join(&files.host_decide_disagreements),
+    )?;
     let jailer = Measured {
         path: JAILER.into(),
         sha256: sha256_file(Path::new(JAILER))?,
@@ -415,6 +424,37 @@ async fn collect(
         serde_json::to_vec_pretty(&collection)?,
     )?;
     Ok(())
+}
+
+/// Copy a pod's guest console into the bundle.
+fn copy_console(pods: &Path, pod: Uuid, to: &Path) -> Result<()> {
+    let console = pods.join(pod.to_string()).join("firecracker.log");
+    std::fs::copy(&console, to).with_context(|| format!("copying {}", console.display()))?;
+    Ok(())
+}
+
+/// Concatenate each pod's disagreement record into one bundle file. A pod with
+/// no disagreement has no record file, which is not an error; the bundle file
+/// is written even when it ends up empty, so its absence from a bundle always
+/// means it was withheld (ADR 0014 S1).
+fn gather_disagreements(pods: &Path, which: &[Uuid], to: &Path) -> Result<()> {
+    let mut all = Vec::new();
+    for pod in which {
+        let record = pods
+            .join(pod.to_string())
+            .join(nucleus_spec::host_decide_telemetry::DISAGREEMENT_LOG);
+        match std::fs::read(&record) {
+            Ok(bytes) => {
+                all.extend_from_slice(&bytes);
+                if !bytes.is_empty() && !bytes.ends_with(b"\n") {
+                    all.push(b'\n');
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e).with_context(|| format!("reading {}", record.display())),
+        }
+    }
+    std::fs::write(to, all).with_context(|| format!("writing {}", to.display()))
 }
 
 fn var(name: &str) -> Result<String> {

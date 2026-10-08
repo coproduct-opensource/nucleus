@@ -81,6 +81,12 @@ pub struct Files {
     pub host_effects: String,
     /// The effect pod's signed outcome journal.
     pub host_effect_outcomes: String,
+    /// The effect pod's guest console (`firecracker.log`): where its shadow
+    /// telemetry is printed.
+    pub effect_console: String,
+    /// Every pod's shadow disagreement records, concatenated. Written even when
+    /// empty, so a bundle that lacks it is one whose record was withheld.
+    pub host_decide_disagreements: String,
 }
 
 impl Files {
@@ -102,6 +108,8 @@ impl Files {
             host_key: s("host-key.hex"),
             host_effects: s("host-effects.jsonl"),
             host_effect_outcomes: s("host-effect-outcomes.jsonl"),
+            effect_console: s("effect-console.log"),
+            host_decide_disagreements: s(crate::host_decide_telemetry::DISAGREEMENT_LOG),
         }
     }
 }

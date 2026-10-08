@@ -463,13 +463,14 @@ async fn host_and_guest_agree_over_the_corpus() {
             }
         }
         drop(guest);
-        let end = listener.shutdown().await;
+        let end = listener.shutdown().await.tally;
         assert_eq!(
             end,
             TallySnapshot {
                 agree: here,
                 disagree: 0,
-                faults: 0
+                faults: 0,
+                unreported: 0
             },
             "{}: the host's tally",
             s.name
@@ -550,15 +551,25 @@ async fn a_divergent_host_policy_is_recorded() {
         Operation::ALL.len()
     );
     drop(guest);
-    let end = listener.shutdown().await;
+    let report = listener.shutdown().await;
     assert_eq!(
-        end,
+        report.tally,
         TallySnapshot {
             agree: agreed,
             disagree: differed.len() as u64,
-            faults: 0
+            faults: 0,
+            unreported: 0
         }
     );
+    // The pairs are the counts' source: one per operation decided, and every
+    // `Decide` answered was timed.
+    let paired: u64 = report.pairs.iter().map(|p| p.count).sum();
+    assert_eq!(paired, agreed + differed.len() as u64);
+    assert_eq!(
+        report.pairs.iter().filter(|p| !p.agrees()).count(),
+        differed.len()
+    );
+    assert_eq!(report.service.count(), paired);
 
     // Every disagreement is kept, naming the operation and both outcomes.
     let kept = tally.disagreements();
@@ -801,7 +812,7 @@ async fn taint_survives_another_channel_and_reconnect() {
         denied
     );
     drop(replacement);
-    let tally = listener.shutdown().await;
+    let tally = listener.shutdown().await.tally;
     assert_eq!(tally.faults, 0);
     assert_eq!(
         tally.disagree, 2,
@@ -1108,7 +1119,7 @@ async fn garbage_is_a_counted_fault_and_the_listener_survives() {
         Agreement::Agree
     );
     drop(g);
-    let end = listener.shutdown().await;
+    let end = listener.shutdown().await.tally;
     assert_eq!((end.agree, end.faults), (1, 1));
 }
 
@@ -1159,4 +1170,50 @@ async fn a_pod_without_a_certificate_gets_no_host_kernel() {
         auth.host_kernel(Uuid::new_v4()).await,
         Err(crate::pod_authority::HostKernelError::NoCertificate)
     ));
+}
+
+/// ADR 0014 S1: a `Decide` the host answered and the guest never reported on
+/// is counted as unreported — whether the guest hung up or the listener was
+/// shut down under it — and is never folded into agreement. Each answered
+/// `Decide` is timed.
+#[tokio::test]
+async fn a_decide_never_reported_is_counted_unreported() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+    let epochs = Arc::new(EpochSource::seeded());
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
+    let subject = Subject::new("src/main.rs").expect("subject");
+    let decide = || GuestFrame::Decide {
+        seq: Seq::FIRST,
+        op: Operation::ReadFiles,
+        subject: subject.clone(),
+        args_digest: args_digest(Operation::ReadFiles, &subject),
+    };
+    // One guest hangs up after its verdict.
+    let mut gone = connect(&listener).await;
+    assert!(matches!(
+        ask(&mut gone, &decide()).await,
+        HostFrame::Verdict { .. }
+    ));
+    drop(gone);
+    // Another is still holding its channel when the pod is torn down.
+    let mut held = connect(&listener).await;
+    assert!(matches!(
+        ask(&mut held, &decide()).await,
+        HostFrame::Verdict { .. }
+    ));
+    let report = listener.shutdown().await;
+    assert_eq!(
+        report.tally,
+        TallySnapshot {
+            agree: 0,
+            disagree: 0,
+            faults: 0,
+            unreported: 2
+        }
+    );
+    assert!(report.pairs.is_empty(), "nothing was compared");
+    assert_eq!(report.service.count(), 2);
+    drop(held);
 }

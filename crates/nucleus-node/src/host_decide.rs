@@ -65,7 +65,7 @@
 pub(crate) mod effects;
 pub(crate) mod evidence;
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -79,6 +79,7 @@ use nucleus_decision_protocol::{
     Agreement, ApprovalId, DecisionId, DenyReason, EncodeError, FrameError, GuestFrame, HostFrame,
     LEN_PREFIX, Outcome, Seq, Subject, Verdict, body_len,
 };
+use nucleus_spec::host_decide_telemetry::{LatencyHistogram, OutcomePair};
 use portcullis::kernel::{Kernel, Verdict as KernelVerdict};
 use portcullis::{ActionTerm, Operation};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -98,7 +99,7 @@ const MAX_CHANNELS_PER_POD: usize = 8;
 const KEPT_DISAGREEMENTS: usize = 64;
 
 /// The file in the pod directory that disagreements are appended to.
-pub(crate) const DISAGREEMENT_LOG: &str = "host-decide-disagreements.jsonl";
+pub(crate) use nucleus_spec::host_decide_telemetry::DISAGREEMENT_LOG;
 
 // ── epochs ──────────────────────────────────────────────────────────────────
 
@@ -213,55 +214,103 @@ fn kernel_detail(v: &KernelVerdict) -> &'static str {
 
 /// One pod's shadow counters, and the disagreements behind them.
 ///
-/// `agree` and `disagree` count compared exchanges; `faults` counts channels the
-/// host closed because the guest broke the protocol. A guest that never reached
-/// the host is counted by the GUEST, as `HostUnavailable` — the host cannot
-/// count what it never received.
+/// Every compared exchange is counted once, by operation and outcome pair;
+/// agreement and disagreement are derived from those pairs, never counted
+/// beside them (ADR 0007 G-1). `faults` counts channels the host closed because
+/// the guest broke the protocol; `unreported` counts `Decide`s the host answered
+/// whose `Shadow` report never came. A guest that never reached the host is
+/// counted by the GUEST, as `HostUnavailable` — the host cannot count what it
+/// never received.
 #[derive(Debug, Default)]
 pub(crate) struct ShadowTally {
-    agree: AtomicU64,
-    disagree: AtomicU64,
+    pairs: std::sync::Mutex<BTreeMap<PairKey, u64>>,
     faults: AtomicU64,
+    unreported: AtomicU64,
+    service: std::sync::Mutex<LatencyHistogram>,
     disagreements: std::sync::Mutex<VecDeque<Comparison>>,
 }
 
-/// A point-in-time read of a [`ShadowTally`].
+/// An operation and the two outcomes it was decided with, as the record
+/// spells them.
+type PairKey = (&'static str, String, String);
+
+/// A point-in-time read of a [`ShadowTally`]'s counts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TallySnapshot {
     pub agree: u64,
     pub disagree: u64,
     pub faults: u64,
+    pub unreported: u64,
+}
+
+/// Everything a pod's shadow service measured, read once at teardown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TeardownReport {
+    pub tally: TallySnapshot,
+    pub pairs: Vec<OutcomePair>,
+    pub service: LatencyHistogram,
+}
+
+fn locked<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    // A counter is still a counter after a panic elsewhere; never lose it.
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl ShadowTally {
     pub fn snapshot(&self) -> TallySnapshot {
+        let (mut agree, mut disagree) = (0u64, 0u64);
+        for ((_, guest, host), n) in locked(&self.pairs).iter() {
+            let slot = if guest == host {
+                &mut agree
+            } else {
+                &mut disagree
+            };
+            *slot = slot.saturating_add(*n);
+        }
         TallySnapshot {
-            agree: self.agree.load(Ordering::SeqCst),
-            disagree: self.disagree.load(Ordering::SeqCst),
+            agree,
+            disagree,
             faults: self.faults.load(Ordering::SeqCst),
+            unreported: self.unreported.load(Ordering::SeqCst),
+        }
+    }
+
+    /// The counts, the pairs behind them and the service times.
+    pub fn report(&self) -> TeardownReport {
+        let pairs = locked(&self.pairs)
+            .iter()
+            .map(|((operation, guest, host), count)| OutcomePair {
+                operation: (*operation).to_string(),
+                guest: guest.clone(),
+                host: host.clone(),
+                count: *count,
+            })
+            .collect();
+        TeardownReport {
+            tally: self.snapshot(),
+            pairs,
+            service: locked(&self.service).clone(),
         }
     }
 
     /// The most recent disagreements, oldest first.
     #[cfg(test)]
     pub fn disagreements(&self) -> Vec<Comparison> {
-        match self.disagreements.lock() {
-            Ok(kept) => kept.iter().cloned().collect(),
-            Err(poisoned) => poisoned.get_ref().iter().cloned().collect(),
-        }
+        locked(&self.disagreements).iter().cloned().collect()
     }
 
     fn count(&self, c: &Comparison) {
+        {
+            let mut pairs = locked(&self.pairs);
+            let slot = pairs
+                .entry((c.operation, c.guest.clone(), c.host.clone()))
+                .or_insert(0);
+            *slot = slot.saturating_add(1);
+        }
         match c.agreement {
-            AgreementCode::Agree => {
-                self.agree.fetch_add(1, Ordering::SeqCst);
-            }
+            AgreementCode::Agree => {}
             AgreementCode::Disagree => {
-                self.disagree.fetch_add(1, Ordering::SeqCst);
-                let mut kept = match self.disagreements.lock() {
-                    Ok(k) => k,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
+                let mut kept = locked(&self.disagreements);
                 if kept.len() >= KEPT_DISAGREEMENTS {
                     kept.pop_front();
                 }
@@ -272,6 +321,14 @@ impl ShadowTally {
 
     fn fault(&self) {
         self.faults.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn unreported(&self) {
+        self.unreported.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn served(&self, elapsed: Duration) {
+        locked(&self.service).record(elapsed);
     }
 }
 
@@ -799,16 +856,38 @@ impl Recorder {
     }
 }
 
+/// A channel being served. Whatever ends the serving — the guest closing, a
+/// fault, or the listener's shutdown dropping the task mid-await — a `Decide`
+/// the host answered and the guest never reported on is counted as
+/// unreported when this is dropped. Counted in `Drop` because a shutdown
+/// cancels the serving future and no code after an `.await` would run.
+struct Served<'a> {
+    channel: Channel,
+    tally: &'a ShadowTally,
+}
+
+impl Drop for Served<'_> {
+    fn drop(&mut self) {
+        if self.channel.pending.is_some() {
+            self.tally.unreported();
+        }
+    }
+}
+
 /// Serve one channel until the guest closes it or breaks the protocol.
 pub(crate) async fn serve_channel<S>(
     stream: S,
-    mut channel: Channel,
+    channel: Channel,
     recorder: &Recorder,
 ) -> Result<(), ChannelError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (mut r, mut w) = tokio::io::split(stream);
+    let mut served = Served {
+        channel,
+        tally: &recorder.tally,
+    };
     loop {
         let frame = match read_frame(&mut r).await {
             Ok(Some(f)) => f,
@@ -818,7 +897,19 @@ where
                 return Err(e);
             }
         };
-        let step = match channel.step(frame) {
+        // Service time is a `Decide`'s: the one exchange an authoritative
+        // guest will wait on (ADR 0014 §8).
+        let decide = matches!(
+            frame,
+            GuestFrame::Decide {
+                seq: _,
+                op: _,
+                subject: _,
+                args_digest: _
+            }
+        );
+        let arrived = std::time::Instant::now();
+        let step = match served.channel.step(frame) {
             Ok(s) => s,
             Err(e) => {
                 recorder.tally.fault();
@@ -830,6 +921,9 @@ where
         }
         if let Err(e) = w.write_all(&step.reply).await {
             return Err(ChannelError::Io(e.kind()));
+        }
+        if decide {
+            recorder.tally.served(arrived.elapsed());
         }
     }
 }
@@ -903,7 +997,13 @@ pub(crate) async fn serve_pod(
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
-            _ = &mut shutdown => return,
+            _ = &mut shutdown => {
+                // Abort every channel AND wait for each to be dropped, so a
+                // `Decide` left unreported is counted before the teardown
+                // report is read.
+                channels.shutdown().await;
+                return;
+            }
             Some(_) = channels.join_next(), if !channels.is_empty() => {}
             accepted = listener.accept() => {
                 let Ok((stream, _)) = accepted else {
@@ -988,8 +1088,8 @@ impl DecideListener {
         Arc::clone(&self.tally)
     }
 
-    /// Stop every channel, unlink the socket, and hand back the final counts.
-    pub async fn shutdown(mut self) -> TallySnapshot {
+    /// Stop every channel, unlink the socket, and hand back what was measured.
+    pub async fn shutdown(mut self) -> TeardownReport {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
@@ -1000,7 +1100,7 @@ impl DecideListener {
             self.task.abort();
         }
         let _ = tokio::fs::remove_file(&self.socket_path).await;
-        self.tally.snapshot()
+        self.tally.report()
     }
 }
 
@@ -1044,6 +1144,39 @@ pub(crate) async fn start_for_pod(
             None
         }
     }
+}
+
+/// Print a pod's teardown report: the counts as numeric fields, the pairs and
+/// service times as JSON in the same line, all read back by
+/// `cargo xtask host-decide-agreement` through
+/// `nucleus_spec::host_decide_telemetry::HostTeardown` (ADR 0014 S1).
+pub(crate) fn log_teardown(pod_dir: &Path, report: TeardownReport) {
+    let TeardownReport {
+        tally:
+            TallySnapshot {
+                agree,
+                disagree,
+                faults,
+                unreported,
+            },
+        pairs,
+        service,
+    } = report;
+    // Plain strings and integers: encoding cannot fail, and if it ever did the
+    // reader refuses the line rather than read it as zero.
+    let pairs = serde_json::to_string(&pairs).unwrap_or_default();
+    let service = serde_json::to_string(&service).unwrap_or_default();
+    tracing::info!(
+        pod_dir = %pod_dir.display(),
+        agree,
+        disagree,
+        faults,
+        unreported,
+        pairs = %pairs,
+        service = %service,
+        "{}",
+        nucleus_spec::host_decide_telemetry::TEARDOWN_MESSAGE
+    );
 }
 
 #[cfg(test)]

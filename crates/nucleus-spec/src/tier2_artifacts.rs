@@ -345,6 +345,15 @@ pub enum GuestCapability {
     /// `--container-proxy-transport tcp-hmac` cannot work with, so the node
     /// refuses that transport, by name, for an image whose release has it.
     SharedSecretTierRetired,
+    /// The tool-proxy prints its shadow telemetry on the guest console
+    /// (`nucleus_spec::host_decide_telemetry::GuestTelemetry`, prefixed
+    /// `NUCLEUS-HOST-DECIDE-TELEMETRY`): its own tally, every
+    /// `HostUnavailable` by kind, and the round trip of each `Decide` it put to
+    /// the host, with p50 and p99 (ADR 0014 S1). [`Demand::Optional`]: the
+    /// node depends on nothing in the line; `cargo xtask host-decide-agreement`
+    /// reads it, and reports a console without one as "guest telemetry
+    /// absent", never as zero.
+    HostDecideTelemetry,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -400,7 +409,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 19] = [
+    pub const ALL: [GuestCapability; 20] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -420,6 +429,7 @@ impl GuestCapability {
         GuestCapability::HostVerifiedProxySocket,
         GuestCapability::SignedAuditLog,
         GuestCapability::SharedSecretTierRetired,
+        GuestCapability::HostDecideTelemetry,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -457,6 +467,8 @@ impl GuestCapability {
             // The node needs nothing from it; `container_transport::admit_image`
             // reads it to refuse `tcp-hmac`, not to admit a guest.
             GuestCapability::SharedSecretTierRetired => Demand::Optional,
+            // Read by `cargo xtask host-decide-agreement`, never by the node.
+            GuestCapability::HostDecideTelemetry => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -522,6 +534,8 @@ impl GuestCapability {
             // authority on the shared-secret tier.
             GuestCapability::SignedAuditLog => FirstShipped::Release("2.7.0"),
             GuestCapability::SharedSecretTierRetired => FirstShipped::Release("2.7.0"),
+            // ADR 0014 S1: in this tree and in no release yet.
+            GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
         }
     }
 
@@ -634,6 +648,12 @@ impl GuestCapability {
                  admits only /v1/health. An older proxy still serves HMAC-signed requests, \
                  which is all the deprecated tcp-hmac container transport speaks (the node \
                  does not require it, and refuses tcp-hmac for an image that has it)"
+            }
+            GuestCapability::HostDecideTelemetry => {
+                "ADR 0014 (S1) has the tool-proxy print its shadow tally, every HostUnavailable \
+                 by kind and its Decide round-trip p50/p99 on the guest console; an older guest \
+                 prints none, so the agreement reader reports its telemetry as absent (the node \
+                 does not require it)"
             }
         }
     }
@@ -1053,7 +1073,7 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin: [GuestCapability; 0] = [];
+        let after_the_pin = [GuestCapability::HostDecideTelemetry];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -1228,7 +1248,8 @@ mod tests {
                 GuestCapability::WorkloadSyscallPolicy => GuestCapability::HostVerifiedProxySocket,
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
                 GuestCapability::SignedAuditLog => GuestCapability::SharedSecretTierRetired,
-                GuestCapability::SharedSecretTierRetired => GuestCapability::CaBundle,
+                GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
+                GuestCapability::HostDecideTelemetry => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
