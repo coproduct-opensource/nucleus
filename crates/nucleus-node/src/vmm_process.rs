@@ -43,6 +43,10 @@ use crate::firecracker_config::JailLayout;
 /// jailer that never exits becomes a named launch failure instead of a launch that never ends.
 pub(crate) const JAILER_HANDOFF: Duration = Duration::from_secs(10);
 
+/// How long a VMM that reads as mid-`execve` ([`mid_exec`]) has to finish it before its jail id is
+/// checked anyway. Loading Firecracker takes milliseconds.
+pub(crate) const EXEC_SETTLE: Duration = Duration::from_secs(2);
+
 /// The VMM's pid in the node's pid namespace. See the module docs for how one is minted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct VmmPid(u32);
@@ -106,6 +110,13 @@ pub(crate) fn carries_jail_id(cmdline: &[u8], jail_id: &str) -> bool {
         .collect::<Vec<_>>()
         .windows(2)
         .any(|w| w[0] == b"--id" && w[1] == jail_id.as_bytes())
+}
+
+/// Whether a `/proc/<pid>/cmdline` read caught the process inside `execve`, after its new mm is
+/// installed and before its argv is recorded, when the kernel reports an empty cmdline. A read
+/// that failed is not this case: it is reported, not retried.
+pub(crate) fn mid_exec(cmdline: &std::io::Result<Vec<u8>>) -> bool {
+    matches!(cmdline, Ok(bytes) if bytes.is_empty())
 }
 
 /// Why a jailed launch has no VMM to supervise. Each case is named, so the error says which
@@ -365,11 +376,23 @@ async fn handoff(
     // process had not exited: what was read belongs to the process the pidfd names, not to a
     // later holder of the same pid.
     let proc_dir = Path::new("/proc").join(pid.get().to_string());
-    let status = std::fs::read_to_string(proc_dir.join("status"));
-    let cmdline = std::fs::read(proc_dir.join("cmdline"));
-    if fd.try_exit_now()? {
-        return Err(Handoff::VmmGone(pid));
-    }
+    // The jailer exits as soon as it has cloned, so its clone may be inside `execve` here. Between
+    // the new image's mm being installed and its argv being recorded, `/proc/<pid>/cmdline` reads
+    // EMPTY: that is "could not look yet", not "looked and it is not this jail" (ADR 0007 A-1).
+    // Re-read until it is not empty, within a bound. An empty read at the bound is still refused.
+    let exec_settles_by = std::time::Instant::now() + EXEC_SETTLE;
+    let (status, cmdline) = loop {
+        let status = std::fs::read_to_string(proc_dir.join("status"));
+        let cmdline = std::fs::read(proc_dir.join("cmdline"));
+        if fd.try_exit_now()? {
+            return Err(Handoff::VmmGone(pid));
+        }
+        if mid_exec(&cmdline) && std::time::Instant::now() < exec_settles_by {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            continue;
+        }
+        break (status, cmdline);
+    };
     let nspid = parse_nspid(&status.map_err(Handoff::Unobservable)?);
     if !nspid.as_deref().is_some_and(is_namespace_init) {
         return Err(Handoff::NotNamespaceInit { pid, nspid });

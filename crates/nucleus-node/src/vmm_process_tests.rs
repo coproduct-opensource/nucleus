@@ -66,6 +66,17 @@ fn the_jail_id_must_be_an_adjacent_argument_pair() {
 }
 
 #[test]
+fn only_an_empty_cmdline_reads_as_mid_exec() {
+    // The kernel reports an empty cmdline inside `execve`: re-read, do not refuse yet.
+    assert!(mid_exec(&Ok(Vec::new())));
+    // An argv, even another jail's, is an answer; a failed read is reported, not retried.
+    assert!(!mid_exec(&Ok(b"/firecracker\0--id\0jail-2".to_vec())));
+    assert!(!mid_exec(&Err(std::io::Error::from(
+        std::io::ErrorKind::NotFound
+    ))));
+}
+
+#[test]
 fn the_pid_file_is_where_the_jailer_writes_it() {
     let layout = JailLayout::new(
         Path::new("/srv/jailer"),
