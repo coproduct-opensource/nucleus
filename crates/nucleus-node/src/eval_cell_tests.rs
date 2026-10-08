@@ -206,6 +206,36 @@ fn an_eval_cell_is_never_served_an_audit_uploader_credential() {
     );
 }
 
+/// ADR 0013 rule 8 (A-19 row 1): an eval cell given a governor key is refused by the key's name,
+/// for each name the guest reads; the same spec as a standard pod passes this decider, and an
+/// eval cell with an unrelated credential is admitted, so the refusal is the key's under this
+/// profile alone.
+#[test]
+fn an_eval_cell_is_never_given_a_governor_key() {
+    let fc = DriverKind::Firecracker;
+    let node = holding(&fc);
+    for key in nucleus_spec::isolation_profile::GOVERNOR_KEY_ENV {
+        let creds = format!(r#","credentials":{{"env":{{"{key}":"aa"}}}}"#);
+        assert_eq!(
+            admit(&eval_cell(&creds), &node, None),
+            Err(EvalCellRefused::GuestHeldGovernorKey { key: key.into() })
+        );
+        let msg = admit(&eval_cell(&creds), &node, None)
+            .expect_err("refused")
+            .to_string();
+        assert!(msg.contains(key) && msg.contains("rule 8"), "{msg}");
+        assert_eq!(
+            admit(&standard(&creds), &node, None),
+            Ok(IsolationProfile::Standard)
+        );
+    }
+    let unrelated = r#","credentials":{"env":{"LLM_API_TOKEN":"test-token-123"}}"#;
+    assert_eq!(
+        admit(&eval_cell(unrelated), &node, None),
+        Ok(IsolationProfile::EvalCell)
+    );
+}
+
 /// Egress is what the cell lists, one host at a time. A range — public or
 /// private — is refused naming the entry; the same entry is admitted for a
 /// standard pod, and a single host is admitted for an eval cell.

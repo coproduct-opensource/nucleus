@@ -11,7 +11,7 @@
   node's own authority).
 - Applies to: `nucleus-spec` (`isolation_profile`, `tier2_artifacts`), `nucleus-node`
   (`eval_cell`, `workspace_scan`, `net`, `net::confinement`, `main.rs`'s create path),
-  `portcullis` (`git_exec`), `nucleus-cli`
+  `portcullis` (`git_exec`), `nucleus-tool-proxy` (`declassify`), `nucleus-cli`
   (`run --isolation-profile`).
 
 ## Context
@@ -132,6 +132,34 @@ The node refuses the pod at create, by name, unless all of the following hold
    stopped, the node copies its disk over the caller's `image.scratch_path`
    (`scratch_export`). The signed receipt carries the digest of what the node exported
    (`scratch_export`), or `not exported: <why>`. A standard pod's disks are still linked.
+8. **The guest holds no governor key, so an eval cell cannot declassify.** The keys that
+   verify a declassification token, or cosign a memory declassification, are the guest
+   tool-proxy's `NUCLEUS_DECLASSIFY_TRUSTED_KEYS` (and its threshold,
+   `NUCLEUS_DECLASSIFY_THRESHOLD`; both declared once as
+   `isolation_profile::GOVERNOR_KEY_ENV`). A key the guest holds is a key guest root
+   holds: it can replace the trusted set and sign its own tokens (ADR 0014 §3). Owner
+   decision 2026-10-08: until the host verifies declassifications, an eval cell's guest
+   receives none. The paths a key could take to a guest, and what closes each:
+   - **node environment inherited by the tool-proxy**: the local tier only, refused by
+     rule 1;
+   - **container environment**: written explicitly by the node, never inherited, and the
+     container tier is refused by rule 1;
+   - **the kernel command line**: built by the node, which writes no governor key, and a
+     spec may add only `quiet`, `loglevel=` and a dotted canary (`nucleus_spec::boot_args`),
+     so no undotted token reaches PID 1's environment;
+   - **the workload API**: no command serves one;
+   - **the spec's `credentials.env`**: refused by the key's name
+     (`EvalCellRefused::GuestHeldGovernorKey`). `spec_posture` already refuses the whole
+     `NUCLEUS_` namespace for every pod; this refusal is the eval-cell rule, kept if that
+     namespace rule ever widens.
+
+   In the guest, the tool-proxy decides once at startup from the profile label
+   (`declassify::GovernorKeys::for_pod`): an eval cell's guest holds no key whatever its
+   environment carries, and the token and memory endpoints refuse every declassification
+   by name before reading a signature. An unknown profile label is read as an eval cell
+   there (B-3). A standard pod with no key already refused every declassification
+   (`Kernel::verify_declassification`, `nucleus_provenance_memory::declassify`), so this
+   rule changes nothing for standard pods.
 
 ADR 0007 B applies throughout: an unknown profile name is refused (B-3); the absent
 label is the standard profile, which is the admission every pod already receives and
