@@ -496,16 +496,21 @@ impl GuestCapability {
             // and confines no child with Landlock.
             GuestCapability::WorkloadLandlock => FirstShipped::Release("2.6.0"),
             GuestCapability::PushAdvertisementIsRead => FirstShipped::Release("2.6.0"),
-            // #2907 landed after the tree pinned as 2.6.0: no guest it names
-            // derives a syscall policy from the pod's lattice.
-            GuestCapability::WorkloadSyscallPolicy => FirstShipped::NotYet,
+            // #3285 (7e25e70a9, #2907 part 1's lattice-derived syscall filter)
+            // is an ancestor of the tree pinned as 2.7.0 and not of `v2.6.0`
+            // (a57fc0ea9): the published 2.6.0 tool-proxy filters its children
+            // with the denylist alone.
+            GuestCapability::WorkloadSyscallPolicy => FirstShipped::Release("2.7.0"),
             // #2551 (bcd2e5232) is an ancestor of `v2.3.0` and not of `v2.2.0`
             // (8a452030b): the 2.2.0 tool-proxy has no `--listen-unix`.
             GuestCapability::HostVerifiedProxySocket => FirstShipped::Release("2.3.0"),
-            // #3293 landed after the tree pinned as 2.6.0.
-            GuestCapability::SignedAuditLog => FirstShipped::NotYet,
-            // #2446 step 2 landed after the tree pinned as 2.6.0.
-            GuestCapability::SharedSecretTierRetired => FirstShipped::NotYet,
+            // #3305 (84b654a22, #3293's signed audit log) and #3307 (a6df67f01,
+            // #2446 step 2's powerless shared-secret tier) are ancestors of the
+            // tree pinned as 2.7.0 and not of `v2.6.0` (a57fc0ea9): the
+            // published 2.6.0 tool-proxy MACs its audit log and still grants
+            // authority on the shared-secret tier.
+            GuestCapability::SignedAuditLog => FirstShipped::Release("2.7.0"),
+            GuestCapability::SharedSecretTierRetired => FirstShipped::Release("2.7.0"),
         }
     }
 
@@ -767,7 +772,13 @@ fn skew_against(
 
 /// The release `setup` installs guest artifacts from.
 ///
-/// `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
+/// `2.7.0` is the first release whose tool-proxy derives each child's syscall
+/// filter from the pod's lattice (#2907, #3285), signs its audit log with a key
+/// the workload cannot reach (#3293), and grants no authority on the
+/// shared-secret tier (#2446 step 2). The node requires none of them, so it
+/// still serves a 2.6.0 guest; only a container pod on the deprecated
+/// `tcp-hmac` transport refuses a 2.7.0 image, because that transport speaks
+/// nothing else. `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
 /// advertisement as a read (#3266), and confines the workload's and every
 /// command's filesystem with Landlock (#2696 P3c), which the guest kernel
 /// pinned since #3270 supports. The node requires neither, so it still serves
@@ -807,7 +818,7 @@ fn skew_against(
 /// naming a release the pin has not reached.
 ///
 /// `parse_release` explains why an RC compares equal to its own version.
-pub const GUEST_RELEASE: &str = "2.6.0";
+pub const GUEST_RELEASE: &str = "2.7.0";
 
 /// Something a Tier 2 host needs, published as a release asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1025,11 +1036,7 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin = [
-            GuestCapability::WorkloadSyscallPolicy,
-            GuestCapability::SignedAuditLog,
-            GuestCapability::SharedSecretTierRetired,
-        ];
+        let after_the_pin: [GuestCapability; 0] = [];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -1040,12 +1047,16 @@ mod tests {
         for cap in after_the_pin {
             assert_eq!(cap.demand(), Demand::Optional, "{cap:?}");
         }
-        // The release before the pin (2.5.0) serves every use: both 2.6.0
-        // rows (#3271's read advertisement, #3273's Landlock) are Optional.
+        // The release before the pin (2.6.0) serves every use: the three 2.7.0
+        // rows (#3285's derived syscall filter, #3305's signed audit log,
+        // #3307's powerless shared-secret tier) are Optional.
+        assert_eq!(guest_skew_for("2.6.0", &every_use), Ok(()));
+        // So does 2.5.0: both 2.6.0 rows (#3271's read advertisement, #3273's
+        // Landlock) are Optional.
         assert_eq!(guest_skew_for("2.5.0", &every_use), Ok(()));
         // 2.4.0 still serves every pod and every adapter run, and is refused
-        // only for an upstream with an effect table (#3229), by name: no 2.5.0
-        // or 2.6.0 row is Required, so the floor stays at 2.4.0.
+        // only for an upstream with an effect table (#3229), by name: no 2.5.0,
+        // 2.6.0 or 2.7.0 row is Required, so the floor stays at 2.4.0.
         assert_eq!(guest_skew("2.4.0"), Ok(()));
         assert_eq!(guest_skew_for("2.4.0", &[GuestUse::AgentEgress]), Ok(()));
         assert_eq!(

@@ -432,18 +432,13 @@ mod tests {
     }
 
     /// #2446 step 2 keeps the opt-out working for every image that can still
-    /// serve it: no published release has `SharedSecretTierRetired` yet, so
-    /// `tcp-hmac` admits the pinned release, an older one, and an image the
-    /// table cannot order, exactly as before. The release that carries the
-    /// retirement is refused by the arm above once the pin names it.
+    /// serve it: `tcp-hmac` admits a release before `SharedSecretTierRetired`
+    /// (2.6.0, 2.2.0) and an image the table cannot order, exactly as before.
+    /// The pinned release is the first to carry the retirement (2.7.0), so its
+    /// image, and an RC of it, is refused by the arm above, by name.
     #[test]
-    fn tcp_hmac_still_admits_every_image_that_serves_it() {
-        for version in [
-            Some(tier2_artifacts::GUEST_RELEASE),
-            Some("2.2.0"),
-            Some("main"),
-            None,
-        ] {
+    fn tcp_hmac_admits_every_image_that_serves_it_and_refuses_the_retired_tier() {
+        for version in [Some("2.6.0"), Some("2.2.0"), Some("main"), None] {
             assert!(
                 admit_image(ContainerProxyTransport::TcpHmac, "img", version).is_ok(),
                 "{version:?}"
@@ -451,7 +446,15 @@ mod tests {
         }
         assert_eq!(
             GuestCapability::SharedSecretTierRetired.first_shipped(),
-            FirstShipped::NotYet
+            FirstShipped::Release(tier2_artifacts::GUEST_RELEASE)
         );
+        for version in [tier2_artifacts::GUEST_RELEASE, "2.7.0-rc.1"] {
+            let err = admit_image(ContainerProxyTransport::TcpHmac, "img", Some(version))
+                .expect_err(version)
+                .to_string();
+            for needle in ["SharedSecretTierRetired", "#2446", version] {
+                assert!(err.contains(needle), "missing {needle:?} in: {err}");
+            }
+        }
     }
 }
