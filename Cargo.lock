@@ -6987,6 +6987,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-escape-canary"
+version = "1.0.0"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "nucleus-eval"
 version = "1.0.0"
 dependencies = [
