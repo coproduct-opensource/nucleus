@@ -10,9 +10,9 @@
 //! # What a row must survive
 //!
 //! Every row:
-//! * its `function` resolves, by a `syn` walk of the crate's module tree from its root, to a
-//!   function that is not itself test-only code — so a rename or deletion fails here, naming
-//!   the row;
+//! * its `function` resolves, by a `syn` walk of the crate's module tree from its roots (the
+//!   library, then each binary), to a function that is not itself test-only code — so a rename
+//!   or deletion fails here, naming the row;
 //! * a `source_hash`, when present, is the SHA-256 of the function's signature and body
 //!   tokens — so a pinned function cannot change without the pin moving in the same diff.
 //!
@@ -35,6 +35,24 @@
 //! * `missing` — no artifact; the row must be `allowlisted` with a `tracking` issue, and no
 //!   other row may cover the same function (an allowlist entry for a covered function is
 //!   stale).
+//!
+//! # The missing ratchet (#2594)
+//!
+//! A registry that refuses vacuous proofs but accepts any number of `missing` rows would let a
+//! gap be registered instead of closed. So the gaps are counted, and the count can only go down:
+//!
+//! * a **gap** is a function with a row carrying `tracking`: still `missing`, or DISCHARGED — an
+//!   artifact row that keeps the `tracking` issue it closed. Discharging a gap therefore turns
+//!   its `missing` row into the proof's row and leaves the gap count where it was;
+//! * the gap count must EQUAL `MISSING_CEILING` in [`RATCHET`]. One more is a new `missing` row
+//!   (red); one fewer is a `missing` row deleted without a proof (red);
+//! * so the ceiling on `missing` rows is `MISSING_CEILING` minus the discharged rows — derived
+//!   from the registry, never restated beside it. A proof PR does not touch the ratchet file;
+//!   the only edit it ever takes is DOWN, in the change that deletes a gap's function outright.
+//!
+//! What it cannot see, because a stored number has no history: a raise of `MISSING_CEILING`
+//! (that is a reviewed one-line diff to a file whose only job is that number), a discharged row
+//! turned back into `missing`, and a `tracking` field planted on a row that never was a gap.
 //!
 //! # What this does not claim
 //!
@@ -59,6 +77,9 @@ use crate::{kani_coverage, lean_action_builds, lean_tier};
 
 /// The registry, at the repository root.
 pub const REGISTRY: &str = "proof-obligations.toml";
+
+/// The stored half of the missing ratchet: `MISSING_CEILING=<n>`.
+pub const RATCHET: &str = "ci/proof-obligations-ratchet.txt";
 
 /// What kind of evidence a row claims.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
@@ -105,7 +126,8 @@ pub struct Row {
     pub source_hash: Option<String>,
     /// `lean-mirror` only: the hand-written Lean constant the theorem is about.
     pub constant: Option<String>,
-    /// `missing` only: the issue that will discharge it.
+    /// On a `missing` row, the issue that will discharge it; on an artifact row, the gap it
+    /// discharged. Kept through the discharge so the gap is still counted (the ratchet).
     pub tracking: Option<String>,
 }
 
@@ -392,9 +414,6 @@ fn check_row(tree: &mut Tree, row: &Row, covered: &BTreeSet<String>) -> Result<V
         (_, Status::Allowlisted, _) => errors.push("only a missing row can be allowlisted".into()),
         (_, Status::Proved, None) => errors.push("an artifact row needs `artifact`".into()),
         (kind, Status::Proved, Some(artifact)) => {
-            if row.tracking.is_some() {
-                errors.push("`tracking` is for missing rows only".into());
-            }
             errors.extend(match kind {
                 Kind::Kani => check_kani(tree, row, artifact)?,
                 Kind::LeanExtracted | Kind::LeanMirror => check_lean(tree, row, artifact)?,
@@ -434,27 +453,112 @@ pub fn violations(root: &Path, text: &str) -> Result<(usize, BTreeMap<Kind, usiz
     Ok((rows.len(), counts, errors))
 }
 
+/// The registry's gaps, as the ratchet counts them.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Gaps {
+    /// `missing` rows.
+    pub missing: usize,
+    /// Functions whose gap was closed: an artifact row keeps `tracking`, no `missing` row left.
+    pub discharged: usize,
+}
+
+/// `MISSING_CEILING` from [`RATCHET`]. Absent or unparsable is an error: a ratchet that could
+/// not be read is not a ratchet that passed (ADR 0007 A-2).
+pub fn missing_ceiling(root: &Path) -> Result<usize> {
+    let text = std::fs::read_to_string(root.join(RATCHET))
+        .with_context(|| format!("{RATCHET} is missing: nothing to ratchet against"))?;
+    parse_ceiling(&text)
+}
+
+fn parse_ceiling(text: &str) -> Result<usize> {
+    let mut values = text
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("MISSING_CEILING="));
+    let value = values
+        .next()
+        .with_context(|| format!("{RATCHET} has no MISSING_CEILING= line"))?;
+    if values.next().is_some() {
+        bail!("{RATCHET} has more than one MISSING_CEILING= line");
+    }
+    value
+        .trim()
+        .parse()
+        .with_context(|| format!("{RATCHET}: MISSING_CEILING={value} is not a count"))
+}
+
+/// The ratchet's verdict on `text` against `ceiling`: the gap count, and why it is red.
+pub fn ratchet(text: &str, ceiling: usize) -> Result<(Gaps, Vec<String>)> {
+    let rows = parse(text)?;
+    let missing: BTreeSet<&str> = rows
+        .values()
+        .filter(|r| r.kind == Kind::Missing)
+        .map(|r| r.function.as_str())
+        .collect();
+    let tracked: BTreeSet<&str> = rows
+        .values()
+        .filter(|r| r.tracking.is_some())
+        .map(|r| r.function.as_str())
+        .collect();
+    let gaps = Gaps {
+        missing: missing.len(),
+        discharged: tracked.difference(&missing).count(),
+    };
+    let count = tracked.len();
+    let mut errors = Vec::new();
+    if count > ceiling {
+        errors.push(format!(
+            "ratchet: {count} proof gaps registered, MISSING_CEILING is {ceiling} ({RATCHET}): \
+             a new `missing` row. The count only goes down: give the function its proof, not an \
+             allowlist entry"
+        ));
+    }
+    if count < ceiling {
+        errors.push(format!(
+            "ratchet: {count} proof gaps registered, MISSING_CEILING is {ceiling} ({RATCHET}): \
+             a gap left the registry without a proof. Discharge a `missing` row by turning it \
+             into the artifact row that proves the function, keeping `tracking`; if the function \
+             itself was deleted, lower MISSING_CEILING in that change and say why"
+        ));
+    }
+    Ok((gaps, errors))
+}
+
+/// Everything `cargo xtask proof-obligations` checks on the tree at `root`: every row, then the
+/// missing ratchet.
+pub fn check(root: &Path) -> Result<(usize, BTreeMap<Kind, usize>, Gaps, Vec<String>)> {
+    let text = std::fs::read_to_string(root.join(REGISTRY))
+        .with_context(|| format!("reading {REGISTRY}"))?;
+    let (total, counts, mut errors) = violations(root, &text)?;
+    let (gaps, ratchet_errors) = ratchet(&text, missing_ceiling(root)?)?;
+    errors.extend(ratchet_errors);
+    Ok((total, counts, gaps, errors))
+}
+
 /// `cargo xtask proof-obligations`.
 pub fn run(root: &Path, derive: bool) -> Result<()> {
     if derive {
         return derive_seed(root);
     }
-    let text = std::fs::read_to_string(root.join(REGISTRY))
-        .with_context(|| format!("reading {REGISTRY}"))?;
-    let (total, counts, errors) = violations(root, &text)?;
+    let (total, counts, gaps, errors) = check(root)?;
     if !errors.is_empty() {
         for e in &errors {
             println!("::error::{e}");
         }
-        bail!("{} of {total} proof obligations fail", errors.len());
+        bail!(
+            "{} proof-obligation violations across {total} rows",
+            errors.len()
+        );
     }
     let by_kind: Vec<String> = counts
         .iter()
         .map(|(k, n)| format!("{} {n}", k.name()))
         .collect();
     println!(
-        "ok: {total} proof obligations hold ({}); static: Kani and Lean still decide whether each artifact verifies",
-        by_kind.join(", ")
+        "ok: {total} proof obligations hold ({}); {} missing, {} discharged; static: Kani and Lean still decide whether each artifact verifies",
+        by_kind.join(", "),
+        gaps.missing,
+        gaps.discharged
     );
     Ok(())
 }

@@ -22,11 +22,16 @@ pub struct FnSite {
 }
 
 /// Every workspace crate, by its Rust name (`portcullis-core` → `portcullis_core`), with the
-/// file its library (or binary) root is.
+/// root files of its library and its binaries, library first.
 ///
 /// The population is the workspace's explicit `members` array, read as TOML — not a
 /// directory walk, which would count whatever happens to be lying in the tree.
-pub fn crate_roots(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
+///
+/// A binary's items are keyed under the package's crate name too: `nucleus-guest-init`'s
+/// `remount_root_ro` lives in `src/main.rs`, and walking only the library would make every
+/// function a binary defines unregistrable — "could not look" reported as "no such function".
+/// A path two roots both define, in different files, is ambiguous ([`Symbols::resolve`]).
+pub fn crate_roots(root: &Path) -> Result<BTreeMap<String, Vec<PathBuf>>> {
     let manifest: toml::Value = toml::from_str(
         &std::fs::read_to_string(root.join("Cargo.toml")).context("reading root Cargo.toml")?,
     )
@@ -47,20 +52,45 @@ pub fn crate_roots(root: &Path) -> Result<BTreeMap<String, PathBuf>> {
             .as_str()
             .with_context(|| format!("{dir}/Cargo.toml: package name is not explicit"))?
             .replace('-', "_");
-        let lib = match crate_manifest.get("lib").and_then(|l| l.get("path")) {
-            Some(p) => Some(
+        let mut roots: Vec<PathBuf> = Vec::new();
+        match crate_manifest.get("lib").and_then(|l| l.get("path")) {
+            Some(p) => roots.push(
                 PathBuf::from(dir).join(
                     p.as_str()
                         .with_context(|| format!("{dir}: [lib] path is not a string"))?,
                 ),
             ),
-            None => ["src/lib.rs", "src/main.rs"]
-                .iter()
-                .map(|f| PathBuf::from(dir).join(f))
-                .find(|f| root.join(f).is_file()),
+            None => {
+                let lib = PathBuf::from(dir).join("src/lib.rs");
+                if root.join(&lib).is_file() {
+                    roots.push(lib);
+                }
+            }
+        }
+        let bins: &[toml::Value] = match crate_manifest.get("bin") {
+            None => &[],
+            Some(b) => b
+                .as_array()
+                .with_context(|| format!("{dir}: [[bin]] is not an array of tables"))?,
         };
-        if let Some(lib) = lib {
-            out.insert(name, lib);
+        for bin in bins {
+            if let Some(p) = bin.get("path") {
+                roots.push(
+                    PathBuf::from(dir).join(
+                        p.as_str()
+                            .with_context(|| format!("{dir}: a [[bin]] path is not a string"))?,
+                    ),
+                );
+            }
+        }
+        let main = PathBuf::from(dir).join("src/main.rs");
+        if root.join(&main).is_file() {
+            roots.push(main);
+        }
+        let mut seen = BTreeSet::new();
+        roots.retain(|r| seen.insert(r.clone()));
+        if !roots.is_empty() {
+            out.insert(name, roots);
         }
     }
     if out.is_empty() {
@@ -238,28 +268,50 @@ impl Walker<'_> {
 }
 
 /// Every function a crate defines, keyed `crate::module::fn` or `crate::module::Type::fn`,
-/// reached by following its module tree from the crate root.
-pub fn crate_symbols(root: &Path, krate: &str, lib: &Path) -> Result<BTreeMap<String, FnSite>> {
-    let mut walker = Walker {
-        root,
-        out: BTreeMap::new(),
-    };
-    let children = lib.parent().context("crate root has no parent")?;
-    walker.file(lib, krate, children, false)?;
-    if walker.out.is_empty() {
-        bail!(
-            "{krate}: the module walk from {} found no function",
-            lib.display()
-        );
+/// reached by following its module tree from each of its roots, and the keys two roots define
+/// in different files (shipping code in both: a test helper of the same path in a binary is not
+/// a second definition of a library function).
+pub fn crate_symbols(
+    root: &Path,
+    krate: &str,
+    roots: &[PathBuf],
+) -> Result<(BTreeMap<String, FnSite>, BTreeSet<String>)> {
+    let mut out: BTreeMap<String, FnSite> = BTreeMap::new();
+    let mut ambiguous = BTreeSet::new();
+    for file in roots {
+        let mut walker = Walker {
+            root,
+            out: BTreeMap::new(),
+        };
+        let children = file.parent().context("crate root has no parent")?;
+        walker.file(file, krate, children, false)?;
+        for (key, site) in walker.out {
+            match out.get(&key) {
+                None => {
+                    out.insert(key, site);
+                }
+                Some(have) if have.file == site.file => {}
+                Some(_) if site.test_only => {}
+                Some(have) if have.test_only => {
+                    out.insert(key, site);
+                }
+                Some(_) => {
+                    ambiguous.insert(key);
+                }
+            }
+        }
     }
-    Ok(walker.out)
+    if out.is_empty() {
+        bail!("{krate}: the module walk from {roots:?} found no function");
+    }
+    Ok((out, ambiguous))
 }
 
 /// Lazily-built symbol tables, one per crate a row names.
 pub struct Symbols<'a> {
     root: &'a Path,
-    crates: BTreeMap<String, PathBuf>,
-    tables: BTreeMap<String, BTreeMap<String, FnSite>>,
+    crates: BTreeMap<String, Vec<PathBuf>>,
+    tables: BTreeMap<String, (BTreeMap<String, FnSite>, BTreeSet<String>)>,
 }
 
 impl<'a> Symbols<'a> {
@@ -271,15 +323,13 @@ impl<'a> Symbols<'a> {
         })
     }
 
-    /// The crate's table. A crate that is not a workspace member is an error, not an empty
-    /// table: "could not look" is not "looked and found nothing" (ADR 0007 A-2).
-    pub fn table(&mut self, krate: &str) -> Result<&BTreeMap<String, FnSite>> {
+    fn built(&mut self, krate: &str) -> Result<&(BTreeMap<String, FnSite>, BTreeSet<String>)> {
         if !self.tables.contains_key(krate) {
-            let lib = self
+            let roots = self
                 .crates
                 .get(krate)
                 .ok_or_else(|| anyhow!("`{krate}` is not a workspace crate"))?;
-            let table = crate_symbols(self.root, krate, lib)?;
+            let table = crate_symbols(self.root, krate, roots)?;
             self.tables.insert(krate.to_string(), table);
         }
         self.tables
@@ -287,14 +337,25 @@ impl<'a> Symbols<'a> {
             .ok_or_else(|| anyhow!("`{krate}`: symbol table missing after build"))
     }
 
-    /// The definition of `function` (`crate::path::to::fn`), if it exists.
+    /// The crate's table. A crate that is not a workspace member is an error, not an empty
+    /// table: "could not look" is not "looked and found nothing" (ADR 0007 A-2).
+    pub fn table(&mut self, krate: &str) -> Result<&BTreeMap<String, FnSite>> {
+        Ok(&self.built(krate)?.0)
+    }
+
+    /// The definition of `function` (`crate::path::to::fn`), if it exists. A path the library
+    /// and a binary both define is an error, not whichever was walked first.
     pub fn resolve(&mut self, function: &str) -> Result<Option<FnSite>> {
         let krate = function
             .split("::")
             .next()
             .filter(|c| !c.is_empty())
             .ok_or_else(|| anyhow!("`{function}` does not start with a crate name"))?;
-        Ok(self.table(krate)?.get(function).cloned())
+        let (table, ambiguous) = self.built(krate)?;
+        if ambiguous.contains(function) {
+            bail!("`{function}` is defined by more than one of the crate's targets");
+        }
+        Ok(table.get(function).cloned())
     }
 }
 

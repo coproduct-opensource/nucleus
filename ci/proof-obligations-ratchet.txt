@@ -1,0 +1,23 @@
+# The missing ratchet (#2594): how many proof gaps `proof-obligations.toml` has accepted.
+# Checked by `cargo xtask proof-obligations`. Shrink-only.
+#
+# A gap is a function with a row that carries `tracking`: a `missing` row (no proof yet), or an
+# artifact row that kept the `tracking` issue it discharged. The lint requires the gap count to
+# EQUAL this number, so:
+#
+#   * a new `missing` row is one gap over it: red. A function without a proof gets one, not an
+#     allowlist entry;
+#   * a `missing` row deleted without a proof is one gap under it: red;
+#   * discharging a gap turns its `missing` row into the proof's row with `tracking` kept, the
+#     count does not move, and this file is NOT edited. The ceiling on `missing` rows is this
+#     number minus the discharged rows, derived from the registry rather than restated here.
+#
+# The one legitimate edit is DOWN, in the change that deletes a gap's function outright, with the
+# reason dated below. Raising it is the edit this file exists to make visible.
+#
+# 2026-10-07, seeded at 25: #2594's list, resolved against main at e977fcee6, one row per
+# function. `run_gate::preflight_*` is the six pub(crate) preflights; `pod_cert::*` is its three
+# pub(crate) decisions; `trust_registry::federation` is its two public entry points. The private
+# helpers they call (`preflight_scoped`, `parse_anchor`) are reached through those rows.
+# `kernel::ifc::ifc_flow_gate` was already proved (its Kani row) and is not a gap.
+MISSING_CEILING=25

@@ -133,6 +133,13 @@ impl Index {
         self.root.join(rel).is_file()
     }
 
+    /// The file module `name` of `src` is: `<name>.rs`, else `<name>/mod.rs`.
+    fn module_file(&self, src: &str, name: &str) -> Option<String> {
+        [format!("{src}/{name}.rs"), format!("{src}/{name}/mod.rs")]
+            .into_iter()
+            .find(|f| self.is_file(f))
+    }
+
     /// Tokens -> the tracked FILES they name.
     ///
     /// A path names that file. A BARE file name names every tracked file with that name: it may
@@ -281,9 +288,12 @@ impl Index {
 
     /// An xtask subcommand: the xtask package closure, plus the paths its module names.
     ///
-    /// The module is `crates/xtask/src/<sub_with_underscores>.rs`, else the longest leading
-    /// part of the name that is one (`scoreboard-ratchet` -> scoreboard.rs), else main.rs. Every
-    /// module it reaches by `crate::m` / `super::m` is scanned too, since that is code it runs.
+    /// The module is `crates/xtask/src/<sub_with_underscores>.rs` (or `<…>/mod.rs`), else the
+    /// longest leading part of the name that is one (`scoreboard-ratchet` -> scoreboard.rs),
+    /// else main.rs. Every module it reaches by `crate::m` / `super::m` is scanned too, since
+    /// that is code it runs, and so is every file of a directory module: its `mod x;` children
+    /// are named by neither path. Reading only `<sub>.rs` made `proof_obligations/`, a directory
+    /// module, fall through to main.rs, so its own registry was never one of its inputs.
     pub fn xtask_inputs(&self, sub: &str) -> BTreeSet<String> {
         if let Some(hit) = self.xtask_cache.borrow().get(sub) {
             return hit.clone();
@@ -294,8 +304,7 @@ impl Index {
         let mut name = sub.replace('-', "_");
         let mut module = None;
         while !name.is_empty() {
-            let cand = format!("{src}/{name}.rs");
-            if self.is_file(&cand) {
+            if let Some(cand) = self.module_file(src, &name) {
                 module = Some(cand);
                 break;
             }
@@ -310,6 +319,22 @@ impl Index {
             if !seen.insert(m.clone()) {
                 continue;
             }
+            if let Some(dir) = m.strip_suffix("/mod.rs") {
+                let prefix = format!("{dir}/");
+                queue.extend(
+                    self.files
+                        .iter()
+                        // Its test modules are not code the gate runs; their fixture
+                        // literals would make inputs of files the gate never reads.
+                        .filter(|f| {
+                            f.starts_with(&prefix)
+                                && f.ends_with(".rs")
+                                && !f.ends_with("/tests.rs")
+                                && !f.ends_with("_tests.rs")
+                        })
+                        .cloned(),
+                );
+            }
             let Ok(text) = fs::read_to_string(self.root.join(&m)) else {
                 continue;
             };
@@ -320,8 +345,7 @@ impl Index {
                 .map(|c| c[2].to_string())
                 .collect();
             for n in mods {
-                let cand = format!("{src}/{n}.rs");
-                if self.is_file(&cand) {
+                if let Some(cand) = self.module_file(src, &n) {
                     queue.push_back(cand);
                 }
             }

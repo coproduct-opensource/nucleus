@@ -170,6 +170,14 @@ pub fn probes() -> Vec<Probe> {
             desc: "a registered Kani harness that no longer ends in kani::cover!",
             perturb: pert!(perturb_proof_obligation_vacuous_harness),
         },
+        // #2594: the missing ratchet. One fewer under the ceiling is, to the gate, exactly one
+        // more `missing` row than the ceiling allows.
+        Probe {
+            family: xtask("proof-obligations"),
+            target: "ci/proof-obligations-ratchet.txt",
+            desc: "one more proof gap than MISSING_CEILING allows",
+            perturb: pert!(perturb_proof_obligation_missing_ceiling),
+        },
         Probe {
             family: xtask("pin-parity"),
             target: "ci/lean/lean-toolchain",
