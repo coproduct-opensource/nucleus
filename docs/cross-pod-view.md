@@ -174,6 +174,18 @@ before per-caller identity. Client-side filtering of a broadcast is the same
 mistake as returning the full pod list and refusing individually — the
 information has already crossed by the time the check runs.
 
+**Fixed, in two steps.**
+- **#2203:** `pod:` scopes are filtered by lineage on the node.
+- **2026-10-08 (`fix/label-lockdown-scoped`):** the node evaluates `label:`
+  selectors against each watcher's own labels, using the same predicate its
+  audit uses. A pod the selector does not match is sent nothing: not the reason
+  and not the selector.
+
+`lockdown::reaches` is the one decider for both. What is still delivered
+without a filter is deliberate and fails open. It covers two cases: a watcher
+the node cannot identify, which a pod never is, and a scope the node cannot
+parse.
+
 ### 2. The bounded pod pool makes the promoted claim FALSE as written
 
 `firecracker_pool` is an `Option<Arc<Semaphore>>`, and spawn does:
@@ -233,7 +245,7 @@ Deliberately **excluded** from `Observation`, each with its reason:
 | wall-clock and completion latency | Pre-existing exclusion; unchanged. |
 | co-tenancy cardinality (own allocation index / IP) | The index is the pod's own IP and allocation is a dense counter, so it is plainly observable. It reveals a COUNT of prior pods and nothing about their contents. See the KILL assessment — this is the exclusion my own operational test misfired on. |
 | ~~the identity registry~~ | **Re-entered (2026-10-08).** It was excluded while defective (#2197, #2198, #2204). Those are now fixed. What a pod is served is now mechanized in `crates/portcullis-core/lean/PodCrossViewIdentity.lean`: local respect over the certificate cache, keyed by the injective `pod_identity`, and over `vm_registry`, which no serving path reads. |
-| lockdown delivery | Finding 1. Re-enters as non-observable once filtering moves server-side; until then, including it would make the theorem false. |
+| lockdown delivery | Finding 1. Filtering is now server-side for both `pod:` (#2203) and `label:` (2026-10-08) scopes, so this field is unblocked. It re-enters when it is mechanized, which is step 3 of the M6 plan in `north-star.md`. |
 
 The last two are the important entries. Excluding a field **because the code is
 currently wrong** is legitimate only if the exclusion is recorded with the defect

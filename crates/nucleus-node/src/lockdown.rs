@@ -85,9 +85,10 @@ pub(crate) fn spawn_filtered_forwarder(
     });
 }
 
-/// The lockdowns in force. Label-selector lockdowns are not held: the proxies
-/// apply those to every pod (see [`reaches`]), and the node does not yet
-/// evaluate them for itself.
+/// The lockdowns in force. Label-selector lockdowns are not held. They are
+/// delivered as they are issued, to the watchers whose labels match (see
+/// [`reaches`]). A watcher that connects afterwards is not told of one, and
+/// admission does not refuse on one.
 #[derive(Debug, Default)]
 pub(crate) struct Active {
     /// Node-wide, with the command that applied it.
@@ -96,20 +97,34 @@ pub(crate) struct Active {
     pods: HashMap<Uuid, LockdownCommand>,
 }
 
-enum Target {
+enum Target<'a> {
     All,
     Pod(Uuid),
+    /// `label:<selector>`: the pods whose OWN labels match, the same set
+    /// [`issue`] audits.
+    Label(&'a str),
     Other,
 }
 
-fn target(scope: &str) -> Target {
+fn target(scope: &str) -> Target<'_> {
     if scope.is_empty() || scope == "all" {
         return Target::All;
+    }
+    if let Some(selector) = scope.strip_prefix("label:") {
+        return Target::Label(selector);
     }
     match scope.strip_prefix("pod:").map(Uuid::parse_str) {
         Some(Ok(id)) => Target::Pod(id),
         _ => Target::Other,
     }
+}
+
+/// What the node knows of a watcher, read from its registry: the pod itself
+/// then each pod above it, and its own labels. `labels` is `None` when the pod
+/// is not in the registry, so no label selector can match it.
+pub(crate) struct Watcher<'a> {
+    pub(crate) lineage: &'a [Uuid],
+    pub(crate) labels: Option<&'a std::collections::BTreeMap<String, String>>,
 }
 
 impl Active {
@@ -125,7 +140,8 @@ impl Active {
             (Target::Pod(id), false) => {
                 self.pods.remove(&id);
             }
-            (Target::Other, _) => {}
+            // Label lockdowns are not held; see `in_force`.
+            (Target::Label(_) | Target::Other, _) => {}
         }
     }
 
@@ -146,6 +162,16 @@ fn held(state: &crate::NodeState) -> std::sync::MutexGuard<'_, Active> {
 }
 
 type Registry = HashMap<Uuid, Arc<crate::PodHandle>>;
+
+/// The watcher's lineage and own labels, read under one lock of the registry.
+async fn watcher_view(
+    state: &crate::NodeState,
+    pod: Uuid,
+) -> (Vec<Uuid>, Option<std::collections::BTreeMap<String, String>>) {
+    let pods = state.pods.lock().await;
+    let labels = pods.get(&pod).map(|p| p.spec.metadata.labels.clone());
+    (lineage_in(&pods, pod), labels)
+}
 
 /// `pod`, then each pod above it in the registry. Bounded by the registry's
 /// size, so a cycle cannot loop.
@@ -183,11 +209,14 @@ pub(crate) async fn delivery(
     let Some(w) = watcher else {
         return Some(cmd.clone()); // unresolved: deliver, see `reaches`
     };
-    let lineage = lineage(state, w).await;
-    let reached = match target(&cmd.scope) {
-        Target::Pod(t) => lineage.contains(&t),
-        _ => reaches(&cmd.scope, Some(w)),
-    };
+    let (lineage, labels) = watcher_view(state, w).await;
+    let reached = reaches(
+        &cmd.scope,
+        Some(&Watcher {
+            lineage: &lineage,
+            labels: labels.as_ref(),
+        }),
+    );
     if !reached || (!cmd.active && held(state).covering(&lineage).is_some()) {
         return None;
     }
@@ -341,48 +370,53 @@ pub(crate) async fn issue(
     }
 }
 
-/// Should a lockdown command scoped `scope` reach a watcher that is `watcher`?
+/// Should a lockdown command scoped `scope` reach `watcher`?
 ///
-/// # The direction of the doubt is deliberately opposite to the rest of this arc
+/// The one decider for who hears a lockdown: [`delivery`] reads the watcher's
+/// lineage and labels from the registry and asks this.
 ///
-/// Everything else here fails CLOSED: when the node cannot establish something,
-/// it withholds. This fails OPEN, and on purpose. Lockdown is a *safety* control
-/// — an operator halting a workload — so the cost of over-delivering is that a
-/// pod learns another pod was locked down, while the cost of under-delivering is
-/// that a pod the operator meant to stop keeps running. Those are not
-/// comparable, and confidentiality does not get to win that trade.
+/// - `all`: everyone.
+/// - `pod:<uuid>`: the pod and every pod below it (its lineage contains the
+///   target).
+/// - `label:<selector>`: exactly the pods whose own labels match. The node
+///   evaluates the selector with the same `matches_label_selector` that
+///   [`issue`] audits with.
 ///
-/// So anything unresolvable is delivered: an unidentified watcher, an
-/// unparseable id, a label selector, an unrecognised scope form. What this
-/// removes is the case that is both resolvable and was leaking —
-/// `pod:<uuid>` reaching pods that are not that uuid.
+/// A label lockdown used to be broadcast to every proxy. A pod the selector did
+/// not match was still sent the operator's free-text reason and the selector
+/// itself, which names another pod's labels. The proxy cannot evaluate a
+/// selector, so it then applied the lockdown to itself. That was a leak and an
+/// over-application in one.
 ///
-/// Label selectors are still broadcast. The node holds the PodSpecs and could
-/// evaluate them properly — which would also fix the proxy applying label
-/// lockdowns it cannot evaluate and so over-applies — but that is a behaviour
-/// change to the lockdown semantics rather than to who hears about them, and it
-/// belongs in its own change.
-pub(crate) fn reaches(scope: &str, watcher: Option<Uuid>) -> bool {
+/// # The direction of the doubt for what the node cannot resolve
+///
+/// Everything else here fails CLOSED. This fails OPEN in two cases, on
+/// purpose:
+/// - an unidentified watcher (`None`). This is never a pod peer, because a pod
+///   peer always resolves.
+/// - a scope the node cannot parse.
+///
+/// Lockdown is a *safety* control. Over-delivering costs a watcher learning
+/// that some pod was locked down. Under-delivering costs a pod the operator
+/// meant to stop that keeps running. A label selector is not in that set: the
+/// node holds every PodSpec, so the selector is resolvable, and it is resolved.
+pub(crate) fn reaches(scope: &str, watcher: Option<&Watcher<'_>>) -> bool {
     let Some(watcher) = watcher else {
         return true;
     };
-    if scope.is_empty() || scope == "all" {
-        return true;
-    }
-    match scope.strip_prefix("pod:") {
-        Some(id) => match Uuid::parse_str(id) {
-            Ok(target) => target == watcher,
-            // Malformed scope: deliver. See above — a lockdown nobody can parse
-            // must not become a lockdown nobody receives.
-            Err(_) => true,
-        },
-        None => true,
+    match target(scope) {
+        Target::All | Target::Other => true,
+        Target::Pod(t) => watcher.lineage.contains(&t),
+        Target::Label(selector) => watcher
+            .labels
+            .is_some_and(|labels| crate::matches_label_selector(labels, selector)),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::reaches as lockdown_reaches;
+    use super::{Watcher, reaches as lockdown_reaches};
+    use std::collections::BTreeMap;
     use uuid::Uuid;
 
     fn a() -> Uuid {
@@ -391,45 +425,98 @@ mod tests {
     fn b() -> Uuid {
         Uuid::parse_str("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb").unwrap()
     }
+    fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
 
     /// **The disclosure this closes.** A lockdown aimed at pod A no longer
     /// reaches pod B, so B's VM never receives A's uuid or the operator's
     /// free-text reason.
     #[test]
     fn a_pod_scoped_lockdown_does_not_reach_other_pods() {
-        assert!(!lockdown_reaches(&format!("pod:{}", a()), Some(b())));
+        let lineage = [b()];
+        let w = Watcher {
+            lineage: &lineage,
+            labels: None,
+        };
+        assert!(!lockdown_reaches(&format!("pod:{}", a()), Some(&w)));
     }
 
     /// And it does still reach its target, or the control would be broken
     /// rather than narrowed.
     #[test]
     fn a_pod_scoped_lockdown_reaches_its_target() {
-        assert!(lockdown_reaches(&format!("pod:{}", a()), Some(a())));
+        let lineage = [a()];
+        let w = Watcher {
+            lineage: &lineage,
+            labels: None,
+        };
+        assert!(lockdown_reaches(&format!("pod:{}", a()), Some(&w)));
+    }
+
+    /// **The label disclosure this closes.** A label lockdown reaches exactly
+    /// the pods whose own labels match it. A pod it does not match is sent
+    /// nothing: not the reason, and not the selector naming another pod's
+    /// labels.
+    #[test]
+    fn a_label_scoped_lockdown_reaches_only_the_pods_it_matches() {
+        let lineage = [b()];
+        let prod = labels(&[("tier", "prod"), ("team", "x")]);
+        let dev = labels(&[("tier", "dev")]);
+        let matched = Watcher {
+            lineage: &lineage,
+            labels: Some(&prod),
+        };
+        let unmatched = Watcher {
+            lineage: &lineage,
+            labels: Some(&dev),
+        };
+        let unregistered = Watcher {
+            lineage: &lineage,
+            labels: None,
+        };
+        assert!(lockdown_reaches("label:tier=prod", Some(&matched)));
+        assert!(lockdown_reaches("label:tier=prod,team=x", Some(&matched)));
+        assert!(!lockdown_reaches("label:tier=prod", Some(&unmatched)));
+        assert!(!lockdown_reaches("label:tier=prod,team=y", Some(&matched)));
+        assert!(!lockdown_reaches("label:tier=prod", Some(&unregistered)));
+        // The empty selector matches every pod, as it does in `issue`.
+        assert!(lockdown_reaches("label:", Some(&unmatched)));
     }
 
     /// A node-wide lockdown reaches everyone. Nothing about scoping may weaken
     /// the operator's blunt instrument.
     #[test]
     fn an_all_scoped_lockdown_reaches_everyone() {
-        assert!(lockdown_reaches("all", Some(b())));
-        assert!(lockdown_reaches("", Some(b())));
+        let lineage = [b()];
+        let w = Watcher {
+            lineage: &lineage,
+            labels: None,
+        };
+        assert!(lockdown_reaches("all", Some(&w)));
+        assert!(lockdown_reaches("", Some(&w)));
     }
 
     /// **The fail-OPEN legs**, stated as tests because they are the deliberate
-    /// exception to this arc's fail-closed rule. Under-delivering a lockdown
-    /// leaves a pod running that an operator meant to stop; over-delivering only
-    /// discloses that some pod was locked down. Those costs are not comparable.
+    /// exception to this arc's fail-closed rule.
     #[test]
     fn anything_unresolvable_is_still_delivered() {
+        let lineage = [b()];
+        let w = Watcher {
+            lineage: &lineage,
+            labels: None,
+        };
         // No proved identity: cannot decide, so deliver.
         assert!(lockdown_reaches(&format!("pod:{}", a()), None));
-        // Label selectors: the node could evaluate these but does not yet.
-        assert!(lockdown_reaches("label:tier=prod", Some(b())));
+        assert!(lockdown_reaches("label:tier=prod", None));
         // Malformed target: a lockdown nobody can parse must not become a
         // lockdown nobody receives.
-        assert!(lockdown_reaches("pod:not-a-uuid", Some(b())));
+        assert!(lockdown_reaches("pod:not-a-uuid", Some(&w)));
         // Unrecognised scope form.
-        assert!(lockdown_reaches("something-new", Some(b())));
+        assert!(lockdown_reaches("something-new", Some(&w)));
     }
 }
 
