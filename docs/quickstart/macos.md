@@ -159,9 +159,7 @@ egress (#3178). So is v2.3.0: its tool-proxy's egress stream opens name no
 method (#3210).
 
 The pinned release is **`2.7.0`**, the first build whose guest meets every
-`GuestCapability`. It is pinned ahead of its tag, so until the tag's assets are
-published `setup` refuses it up front and `--artifacts local` is the way
-through. v2.6.0 still serves every pod; its tool-proxy filters the workload's
+`GuestCapability`. v2.6.0 still serves every pod; its tool-proxy filters the workload's
 syscalls with the denylist alone (#2907), MACs its audit log rather than
 signing it (#3293), and still grants authority on the shared-secret tier
 (#2446). v2.5.0 still serves every pod; its workload runs without Landlock

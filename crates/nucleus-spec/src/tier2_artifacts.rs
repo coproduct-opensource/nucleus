@@ -100,8 +100,11 @@ pub struct Kernel {
 /// the URL moved.
 ///
 /// A release's mirror job fetches from this URL, so later releases re-mirror
-/// the same bytes from v2.6.0's asset; re-pinning the kernel itself still goes
-/// through the upstream bucket, then a release, then this mirror move.
+/// the same bytes from v2.6.0's asset. v2.7.0's mirror is byte-identical to
+/// v2.6.0's for both architectures, and the pin stays on v2.6.0's: a newer
+/// copy of the same bytes changes nothing that is accepted. Re-pinning the
+/// kernel itself still goes through the upstream bucket, then a release, then
+/// this mirror move.
 pub const KERNEL_AARCH64: Kernel = Kernel {
     url: "https://github.com/coproduct-opensource/nucleus/releases/download/v2.6.0/nucleus-guest-kernel-2.6.0-aarch64.vmlinux",
     sha256: "5699d939bd168c1fcc4aa8c217344f00b8cf2b7dffbf973af3d9440ce766a6bd",
