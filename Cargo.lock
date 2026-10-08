@@ -7338,6 +7338,7 @@ dependencies = [
  "reqwest 0.13.5",
  "ring",
  "rust_decimal",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",

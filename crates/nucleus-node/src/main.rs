@@ -111,6 +111,7 @@ mod guest_socket;
 mod host_decide;
 mod host_paths;
 mod jail_reclaim;
+mod jailer_limits;
 mod launch_resources;
 mod lifecycle;
 mod node_drain;
@@ -132,6 +133,7 @@ mod spiffe_walk;
 mod tls_ingress;
 mod trust_gate;
 mod upstreams;
+mod vmm_process;
 mod vsock_bridge;
 
 #[cfg(target_os = "linux")]
@@ -163,6 +165,8 @@ struct Args {
     memory: memory_provisioning::MemoryArgs,
     #[command(flatten)]
     pod_ceilings: pod_resources::PodCeilingArgs,
+    #[command(flatten)]
+    jailer_limits: jailer_limits::JailerLimitArgs,
     #[command(flatten)]
     node_capacity: node_capacity::CapacityArgs,
     #[command(flatten)]
@@ -473,6 +477,8 @@ struct NodeState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_gid: u32,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    jailer_limits: jailer_limits::JailerLimits,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     sealed_rootfs: Option<Arc<sealed_rootfs::SealedRootfs>>,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     network_allocator: Arc<net::NetworkAllocator>,
@@ -629,7 +635,8 @@ struct FirecrackerPod {
     /// The host-owned pod dir: where teardown preserves the exit report and where
     /// the node's record of the pod's mediation key lives (`pod_receipt`).
     pod_dir: PathBuf,
-    child: Arc<Mutex<tokio::process::Child>>,
+    /// The VMM itself, never the jailer that spawned it (#2571, `vmm_process.rs`).
+    vmm: Arc<Mutex<vmm_process::VmmProcess>>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
     permit: Mutex<Option<OwnedSemaphorePermit>>,
@@ -913,6 +920,7 @@ async fn main() -> Result<(), ApiError> {
         jailer_chroot_base: args.jailer_chroot_base.clone(),
         jailer_uid: args.jailer_uid,
         jailer_gid: args.jailer_gid,
+        jailer_limits: args.jailer_limits.limits(),
         sealed_rootfs: sealed_rootfs::from_flags(
             args.seal_pinned_rootfs && args.firecracker_jailer,
             &args.jailer_chroot_base,
@@ -2107,7 +2115,7 @@ async fn spawn_firecracker_pod(
         struct Booted {
             prepared_pod: pod_boot_identity::PreparedPod,
             proxy_addr: String,
-            netns_pid: Option<u32>,
+            netns_pid: Option<vmm_process::VmmPid>,
             netns_baseline: Option<String>,
             config: firecracker_config::FirecrackerConfig,
             workload_filesystem: net::confinement::WorkloadFilesystem,
@@ -2285,12 +2293,15 @@ async fn spawn_firecracker_pod(
                 let netns_path = netns_name
                     .as_ref()
                     .map(|name| format!("/var/run/netns/{name}"));
-                let mut command = if jail_layout.is_some() {
+                let mut launch = if let Some(ref jail) = jail_layout {
                     if state.firecracker_netns && netns_path.is_none() {
                         return Err(ApiError::Driver(
                             "network namespace name missing".to_string(),
                         ));
                     }
+                    // Refused by name here rather than killed by SIGXFSZ mid-run (`jailer_limits.rs`).
+                    let extent = config.vmm_write_extent(jail).map_err(ApiError::Io)?;
+                    state.jailer_limits.admit(extent)?;
                     // `--netns` replaces the `ip netns exec` wrapper: the jailer joins the
                     // namespace itself, pre-exec, so there is no intermediate `ip` process.
                     // The cgroup goes in the same argv and is likewise applied before exec,
@@ -2305,6 +2316,7 @@ async fn spawn_firecracker_pod(
                         gid: state.jailer_gid,
                         netns: netns_path.as_deref(),
                         cgroup: &node_cgroup,
+                        limits: &state.jailer_limits,
                         config_file_in_jail: (!state.firecracker_api_boot)
                             .then_some(firecracker_config::in_jail::CONFIG),
                     };
@@ -2313,7 +2325,9 @@ async fn spawn_firecracker_pod(
                     // `--config-file`, so anything appended after this lands in the VMM's
                     // argv rather than the jailer's.
                     cmd.args(firecracker_config::jailer_args(&plan));
-                    cmd
+                    // `--new-pid-ns`: the jailer exits once the VMM exists, so the VMM is the
+                    // process its pid file names, never this child (#2571).
+                    vmm_process::Launch::jailed(cmd, jail, &state.firecracker_path, &jail_id)
                 } else if state.firecracker_netns {
                     let Some(ref name) = netns_name else {
                         return Err(ApiError::Driver(
@@ -2331,7 +2345,7 @@ async fn spawn_firecracker_pod(
                     // socket path is still shared with every other pod on the host.
                     cmd.arg("--api-sock")
                         .arg(pod_dir.join("firecracker.socket"));
-                    cmd
+                    vmm_process::Launch::Direct(cmd) // `ip netns exec` execs in place
                 } else {
                     let mut cmd = Command::new(&state.firecracker_path);
                     if !state.firecracker_api_boot {
@@ -2354,9 +2368,10 @@ async fn spawn_firecracker_pod(
                     // observed and both cost real time before the cause was understood.
                     cmd.arg("--api-sock")
                         .arg(pod_dir.join("firecracker.socket"));
-                    cmd
+                    vmm_process::Launch::Direct(cmd)
                 };
-                firecracker_config::apply_seccomp_flags(&mut command, spec, jail_layout.is_some())?;
+                let command = launch.command_mut();
+                firecracker_config::apply_seccomp_flags(command, spec, jail_layout.is_some())?;
                 let (broker_serve, broker_verify) = broker_launch::BrokerCapability::mint(id);
                 let prepared_pod = async {
                     let identity = pod_boot_identity::prepare(pod_boot_identity::Inputs {
@@ -2397,11 +2412,9 @@ async fn spawn_firecracker_pod(
                 }
                 .await?;
                 command.stdout(log_stdout).stderr(log_stderr);
-                let spawned = prepared_pod.spawn(&mut command);
-                let child = spawned
-                    .map_err(|err| ApiError::Driver(format!("failed to spawn firecracker: {err}")))?;
-                let pid = child.id();
-                res.hold_vmm(child);
+                let vmm = launch.start(|command| prepared_pod.spawn(command)).await?;
+                let pid = vmm.pid();
+                res.hold_vmm(vmm);
 
                 // API mode builds the machine before anything reads the sandbox, because Firecracker
                 // installs its seccomp filter when the vCPUs start, NOT at exec.
@@ -2431,31 +2444,25 @@ async fn spawn_firecracker_pod(
                 // The previous behavior only logged a warning and continued (fail-open).
                 if !matches!(spec.spec.seccomp, Some(nucleus_spec::SeccompSpec::Disabled)) {
                     // Bounded poll, not a single read: the filter is installed by
-                    // Firecracker after `exec`, and under the jailer this pid is the jailer
-                    // for the whole chroot/privilege-drop sequence before that. A snapshot
+                    // Firecracker after `exec`, and under the jailer this pid is the jailer's
+                    // clone until its privilege drop and `exec`. A snapshot
                     // taken here would see mode 0 and abort a launch that was about to be
                     // correctly confined. Still fail-closed — the deadline decides, not the
                     // absence of an answer.
-                    let verified = match pid {
-                        Some(fc_pid) => match firecracker_config::verify_seccomp_active_within(
-                            fc_pid,
-                            std::time::Duration::from_secs(5),
-                        )
-                        .await
-                        {
+                    let wait = std::time::Duration::from_secs(5);
+                    let verified =
+                        match firecracker_config::verify_seccomp_active_within(pid, wait).await {
                             Ok(()) => {
                                 tracing::info!(
-                                    pid = fc_pid,
+                                    pid = pid.get(),
                                     "seccomp filter verified active on firecracker process"
                                 );
                                 Ok(())
                             }
                             Err(e) => {
-                                Err(format!("seccomp verification failed for pid {fc_pid}: {e}"))
+                                Err(format!("seccomp verification failed for pid {pid}: {e}"))
                             }
-                        },
-                        None => Err("firecracker pid unavailable; cannot verify seccomp".to_string()),
-                    };
+                        };
                     if let Err(reason) = verified {
                         if state.firecracker_seccomp_verify {
                             return Err(ApiError::Driver(format!(
@@ -2472,16 +2479,11 @@ async fn spawn_firecracker_pod(
                 }
 
                 let mut netns_baseline: Option<String> = None;
-                let mut netns_pid: Option<u32> = None;
+                let mut netns_pid: Option<vmm_process::VmmPid> = None;
 
                 if state.firecracker_netns {
                     let default_policy = NetworkSpec::nothing_listed();
                     let policy = spec.spec.network.as_ref().unwrap_or(&default_policy);
-                    let pid = pid.ok_or_else(|| {
-                        ApiError::Driver(
-                            "firecracker process id unavailable for network policy".to_string(),
-                        )
-                    })?;
                     netns_pid = Some(pid);
                     let dns_entries = res.dns().map(|proxy| proxy.entries.as_slice());
                     let dns_server = res
@@ -2520,11 +2522,6 @@ async fn spawn_firecracker_pod(
                         .cgroup
                         .as_ref()
                         .map_or_else(|| cgroup::node_dir(&jail_id), |c| c.path.clone());
-                    let pid = pid.ok_or_else(|| {
-                        ApiError::Driver(
-                            "firecracker process id unavailable for cgroup placement".to_string(),
-                        )
-                    })?;
                     res.hold_cgroup(cgroup::apply_cgroup(pid, &dir, &node_cgroup).await?);
                 }
 
@@ -2580,18 +2577,18 @@ async fn spawn_firecracker_pod(
             net_plan,
             dns: dns_proxy,
             jail,
-            vmm: child,
+            vmm,
             cgroup: direct_cgroup,
             bridge,
             proxy: signed_proxy,
         } = held;
 
-        let child = Arc::new(Mutex::new(child));
+        let vmm = Arc::new(Mutex::new(vmm));
         let drift_stop = Arc::new(AtomicBool::new(false));
         let drift_monitor = if state.firecracker_netns_drift_check {
             if let (Some(pid), Some(baseline)) = (netns_pid, netns_baseline) {
                 let pod_dir = pod_dir.to_path_buf();
-                let child = Arc::clone(&child);
+                let vmm = Arc::clone(&vmm);
                 let stop = Arc::clone(&drift_stop);
                 let interval = state.firecracker_netns_drift_interval;
                 Some(tokio::spawn(async move {
@@ -2607,16 +2604,14 @@ async fn spawn_firecracker_pod(
                                 if snapshot != baseline {
                                     let _ =
                                         tokio::fs::write(&current_path, snapshot.as_bytes()).await;
-                                    let mut child = child.lock().await;
-                                    let _ = child.kill().await;
+                                    let _ = vmm.lock().await.kill().await;
                                     error!("iptables drift detected; pod netns {} terminated", pid);
                                     break;
                                 }
                             }
                             Err(err) => {
                                 let _ = tokio::fs::write(&current_path, format!("{err}")).await;
-                                let mut child = child.lock().await;
-                                let _ = child.kill().await;
+                                let _ = vmm.lock().await.kill().await;
                                 error!(
                                     "iptables drift check failed; pod netns {} terminated: {err}",
                                     pid
@@ -2657,7 +2652,7 @@ async fn spawn_firecracker_pod(
             workload_filesystem,
             pod_dir: pod_dir.to_path_buf(),
             jail: Mutex::new(jail),
-            child,
+            vmm,
             bridge: Mutex::new(bridge),
             signed_proxy: Mutex::new(signed_proxy),
             permit: Mutex::new(permit),

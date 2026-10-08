@@ -166,6 +166,14 @@ impl JailLayout {
     pub fn host_path(&self, in_jail_name: &str) -> std::path::PathBuf {
         self.jail_root.join(in_jail_name.trim_start_matches('/'))
     }
+
+    /// Where the jailer records the VMM's pid: `<exec file name>.pid` in the jail root, next to
+    /// the copy of the exec file it makes (v1.17.0 `save_exec_file_pid`). Under `--new-pid-ns`
+    /// this file is the only place that pid exists (#2571, `vmm_process.rs`).
+    pub fn vmm_pid_file(&self, firecracker_path: &std::path::Path) -> std::path::PathBuf {
+        self.jail_root
+            .join(format!("{}.pid", jail_exec_name(firecracker_path)))
+    }
 }
 
 // Placement and ownership are one decision per artifact role, made in `jail_placement` (#3152).
@@ -545,6 +553,8 @@ pub(crate) struct JailerPlan<'a> {
     /// Limits applied BEFORE exec — the whole reason for the jailer. Node-derived and never
     /// absent: a spec without a `cgroup` used to run with no limit at all (#3130).
     pub cgroup: &'a crate::pod_resources::NodeCgroup,
+    /// `--resource-limit` values from node config, applied before exec like the cgroup (#2571).
+    pub limits: &'a crate::jailer_limits::JailerLimits,
     /// Config path as seen from INSIDE the jail.
     /// The in-jail config file to boot from, or `None` to leave the VMM idle in its API loop.
     ///
@@ -638,6 +648,7 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
         gid,
         netns,
         cgroup,
+        limits,
         config_file_in_jail,
     } = *plan;
     let mut args: Vec<String> = vec![
@@ -671,6 +682,17 @@ pub(crate) fn jailer_args(plan: &JailerPlan<'_>) -> Vec<String> {
         args.push("--cgroup".to_string());
         args.push(format!("{}={}", setting.file, setting.value));
     }
+
+    // `setrlimit` before clone and exec, from node config (`jailer_limits.rs`).
+    for limit in limits.resource_limits() {
+        args.push("--resource-limit".to_string());
+        args.push(limit);
+    }
+
+    // The VMM becomes pid 1 of its own pid namespace, so it cannot see or signal any host process
+    // (#2571). The jailer then exits after recording the VMM's pid in the jail, so the process
+    // the node spawned is NOT the VMM: `vmm_process::Launch::Jailed` takes the pid from that file.
+    args.push("--new-pid-ns".to_string());
 
     // Everything after the separator is Firecracker's own argv.
     args.push("--".to_string());
@@ -754,6 +776,22 @@ impl FirecrackerConfig {
             .iter()
             .map(|n| (n.iface_id.clone(), n.host_dev_name.clone()))
             .collect()
+    }
+
+    /// The furthest file offset this VMM must be able to write, for the jailer's `fsize` limit
+    /// (`jailer_limits.rs`). That is the larger of its biggest writable drive in the jail and its
+    /// memory size, which is the size of a snapshot's memory file. Read-only drives are not
+    /// counted: the limit restricts writes, not reads.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn vmm_write_extent(&self, jail: &JailLayout) -> std::io::Result<u64> {
+        let memory = u64::try_from(self.machine_config.mem_size_mib)
+            .map_err(std::io::Error::other)?
+            .saturating_mul(1024 * 1024);
+        self.drives
+            .iter()
+            .filter(|d| !d.is_read_only)
+            .map(|d| std::fs::metadata(jail.host_path(&d.path_on_host)).map(|m| m.len()))
+            .try_fold(memory, |widest, len| len.map(|len| widest.max(len)))
     }
 
     /// What a snapshot of this machine would have to name, read off the config that booted it.
@@ -1186,11 +1224,11 @@ pub(crate) fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
 /// therefore observes mode 0 and, under a fail-closed caller, aborts a launch that
 /// was about to be perfectly confined.
 ///
-/// The jailer makes this decisive rather than merely likely. Without it the pid is
-/// Firecracker from the first instant; with it the pid is the JAILER, which builds
-/// the cgroup, chroots, drops privileges and only then `exec()`s — and holds mode 0
-/// for all of that. A single read against a jailed launch is close to guaranteed to
-/// see 0, which would mean no pod ever starts.
+/// The jailer makes this decisive rather than merely likely. Under `--new-pid-ns` the pid
+/// is the jailer's clone, read from the jail's pid file (`vmm_process.rs`). The clone drops
+/// privileges and only then `exec()`s, and it reports mode 0 until then. A single read
+/// against a jailed launch is close to guaranteed to see 0, which would mean no pod ever
+/// starts.
 ///
 /// FAIL-CLOSED IS PRESERVED, and that is the point of the bound: this returns Err
 /// if the deadline passes without mode >= 2. Waiting longer is not the same as
@@ -1199,13 +1237,13 @@ pub(crate) fn verify_seccomp_active(_pid: u32) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 #[tracing::instrument(skip_all, fields(boot.stage = "seccomp.wait"))]
 pub(crate) async fn verify_seccomp_active_within(
-    pid: u32,
+    pid: crate::vmm_process::VmmPid,
     timeout: std::time::Duration,
 ) -> Result<(), String> {
     const POLL: std::time::Duration = std::time::Duration::from_millis(20);
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        match verify_seccomp_active(pid) {
+        match verify_seccomp_active(pid.get()) {
             Ok(()) => return Ok(()),
             Err(err) => {
                 if std::time::Instant::now() >= deadline {

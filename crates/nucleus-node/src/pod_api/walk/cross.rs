@@ -225,7 +225,9 @@ impl Run {
             workload_filesystem: crate::net::confinement::WorkloadFilesystem::Unreported,
             pod_dir: dir.path().to_path_buf(),
             jail: Mutex::new(None),
-            child: Arc::new(Mutex::new(child)),
+            vmm: Arc::new(Mutex::new(crate::vmm_process::VmmProcess::direct_for_test(
+                child,
+            ))),
             bridge: Mutex::new(None),
             signed_proxy: Mutex::new(None),
             permit: Mutex::new(None),

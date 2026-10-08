@@ -98,7 +98,7 @@ fn cgroup_members(dir: &Path) -> std::io::Result<Members> {
 /// SIGKILL every member of `dir` at once with `cgroup.kill` (Linux 5.14+), which also catches a
 /// member forked mid-kill. A kernel without the file is not an error: every member is also
 /// killed by pid, in [`reclaim_one`].
-fn kill_cgroup(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn kill_cgroup(dir: &Path) -> std::io::Result<()> {
     // Open without create: on a kernel without `cgroup.kill` the file is absent, and writing it
     // must not be mistaken for a kill.
     let kill = std::fs::OpenOptions::new()

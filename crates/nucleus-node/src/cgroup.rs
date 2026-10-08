@@ -25,7 +25,7 @@ pub fn node_dir(pod_id: &str) -> PathBuf {
 /// jailer. Cgroup v2 only; a v1 host is refused rather than left unlimited.
 #[cfg(target_os = "linux")]
 pub async fn apply_cgroup(
-    pid: u32,
+    pid: crate::vmm_process::VmmPid,
     dir: &Path,
     cgroup: &NodeCgroup,
 ) -> Result<Placement, ApiError> {
@@ -72,7 +72,7 @@ pub async fn apply_cgroup(
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[cfg(not(target_os = "linux"))]
 pub async fn apply_cgroup(
-    _pid: u32,
+    _pid: crate::vmm_process::VmmPid,
     _dir: &std::path::Path,
     _cgroup: &NodeCgroup,
 ) -> Result<Placement, ApiError> {

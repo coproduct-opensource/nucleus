@@ -521,7 +521,7 @@ fn the_workload_api_bridge_starts_before_the_health_check() {
         .find("pod_boot_identity::prepare(")
         .expect("the bridge start site");
     let spawn = src
-        .find("prepared_pod.spawn(&mut command)")
+        .find("launch.start(|command| prepared_pod.spawn(command))")
         .expect("guarded VMM spawn");
     assert!(
         bridge < spawn,
@@ -1219,12 +1219,15 @@ fn a_planted_jail_entry_is_replaced_never_written_through() {
 async fn waiting_for_seccomp_still_fails_closed() {
     // A pid that cannot be verified: /proc/<pid>/status will not be readable.
     // u32::MAX is above any pid_max, so this never races a real process.
-    let err = verify_seccomp_active_within(u32::MAX, std::time::Duration::from_millis(60))
-        .await
-        .expect_err(
-            "a pid whose seccomp filter can never be confirmed must FAIL, not be \
+    let err = verify_seccomp_active_within(
+        crate::vmm_process::VmmPid::for_test(u32::MAX),
+        std::time::Duration::from_millis(60),
+    )
+    .await
+    .expect_err(
+        "a pid whose seccomp filter can never be confirmed must FAIL, not be \
                  waited into success",
-        );
+    );
     assert!(
         err.contains("waited"),
         "the error should say it gave the filter time to appear: {err}"
@@ -1438,6 +1441,7 @@ fn the_cgroup_version_is_declared_whenever_cgroups_are_requested() {
         gid: 100,
         netns: None,
         cgroup: &node_cg(Some(spec)),
+        limits: &crate::jailer_limits::JailerLimits::defaults(),
         config_file_in_jail: Some("/config.json"),
     });
     let vpos = args.iter().position(|a| a == "--cgroup-version").expect(
@@ -1466,6 +1470,7 @@ fn a_spec_without_a_cgroup_still_launches_under_node_limits() {
         gid: 100,
         netns: None,
         cgroup: &node_cg(base_spec().spec.cgroup),
+        limits: &crate::jailer_limits::JailerLimits::defaults(),
         config_file_in_jail: Some("/config.json"),
     });
     let sep = args.iter().position(|a| a == "--").expect("separator");
@@ -1496,6 +1501,7 @@ fn jailer_applies_every_cgroup_limit_before_exec() {
         gid: 1000,
         netns: Some("/var/run/netns/ns-pod-1"),
         cgroup: &node_cg(Some(cg.clone())),
+        limits: &crate::jailer_limits::JailerLimits::defaults(),
         config_file_in_jail: Some("/config.json"),
     });
 
@@ -1531,6 +1537,7 @@ fn jailer_drops_privileges_and_passes_the_netns() {
         gid: 1000,
         netns: Some("/var/run/netns/ns-pod-1"),
         cgroup: &node_cg(None),
+        limits: &crate::jailer_limits::JailerLimits::defaults(),
         config_file_in_jail: Some("/config.json"),
     });
     let pair = |flag: &str| -> Option<String> {
@@ -1563,6 +1570,7 @@ fn firecracker_argv_stays_behind_the_separator() {
         gid: 1000,
         netns: None,
         cgroup: &node_cg(Some(sample_cgroup())),
+        limits: &crate::jailer_limits::JailerLimits::defaults(),
         config_file_in_jail: Some("/config.json"),
     });
     let sep = args
@@ -1579,6 +1587,91 @@ fn firecracker_argv_stays_behind_the_separator() {
         cfg > sep,
         "--config-file must follow the separator: {args:?}"
     );
+}
+
+fn plan_args(limits: &crate::jailer_limits::JailerLimits) -> Vec<String> {
+    jailer_args(&JailerPlan {
+        firecracker_path: "/usr/bin/firecracker",
+        pod_id: "pod-1",
+        chroot_base: "/srv/jail",
+        uid: crate::production_confinement::NonRootUid::new(1000).unwrap(),
+        gid: 1000,
+        netns: Some("/var/run/netns/ns-pod-1"),
+        cgroup: &node_cg(None),
+        limits,
+        config_file_in_jail: None,
+    })
+}
+
+/// #2571: the jailed VMM is pid 1 of a pid namespace of its own, so it can neither see nor
+/// signal a host process. The flag is the JAILER's and takes no value.
+#[test]
+fn the_jailer_puts_the_vmm_in_a_new_pid_namespace() {
+    let args = plan_args(&crate::jailer_limits::JailerLimits::defaults());
+    let sep = args.iter().position(|a| a == "--").expect("separator");
+    let flag = args
+        .iter()
+        .position(|a| a == "--new-pid-ns")
+        .unwrap_or_else(|| panic!("--new-pid-ns missing from the jailer argv: {args:?}"));
+    assert!(flag < sep, "--new-pid-ns is the jailer's flag: {args:?}");
+    assert!(
+        args[flag + 1].starts_with("--"),
+        "--new-pid-ns takes no value: {args:?}"
+    );
+    assert_eq!(args.iter().filter(|a| *a == "--new-pid-ns").count(), 1);
+}
+
+/// #2571: the node's `fsize` and `no-file` limits reach the jailer as `--resource-limit` pairs,
+/// before the separator, so `setrlimit` precedes the VMM.
+#[test]
+fn the_jailer_applies_the_node_resource_limits_before_exec() {
+    let args = plan_args(&crate::jailer_limits::JailerLimits::new(1_048_576, 512));
+    let sep = args.iter().position(|a| a == "--").expect("separator");
+    let limits: Vec<(usize, &str)> = args
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| *a == "--resource-limit")
+        .map(|(i, _)| (i, args[i + 1].as_str()))
+        .collect();
+    assert_eq!(
+        limits.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+        ["fsize=1048576", "no-file=512"],
+        "{args:?}"
+    );
+    assert!(limits.iter().all(|(i, _)| *i < sep), "{args:?}");
+}
+
+/// What the `fsize` limit must leave room for: the widest WRITABLE drive, or the memory size
+/// (a snapshot's memory file), whichever is larger. A read-only drive is only read.
+#[test]
+fn the_write_extent_is_the_widest_writable_drive_or_the_memory() {
+    let dir = tempfile::tempdir().unwrap();
+    let jail = JailLayout {
+        jail_root: dir.path().to_path_buf(),
+    };
+    let sized = |name: &str, len: u64| {
+        std::fs::File::create(dir.path().join(name))
+            .unwrap()
+            .set_len(len)
+            .unwrap();
+    };
+    sized("rootfs.ext4", 100 << 20);
+    sized("scratch.ext4", 10 << 20);
+    let drive = |path: &str, ro: bool| DriveConfig {
+        drive_id: path.to_string(),
+        path_on_host: path.to_string(),
+        is_root_device: false,
+        is_read_only: ro,
+    };
+    let mut cfg = FirecrackerConfig::without_devices();
+    cfg.machine_config.mem_size_mib = 1;
+    cfg.drives = vec![drive(in_jail::ROOTFS, true), drive(in_jail::SCRATCH, false)];
+    assert_eq!(cfg.vmm_write_extent(&jail).unwrap(), 10 << 20);
+    cfg.machine_config.mem_size_mib = 64;
+    assert_eq!(cfg.vmm_write_extent(&jail).unwrap(), 64 << 20);
+    // A writable drive that cannot be measured is an error, never a zero.
+    cfg.drives.push(drive("/missing.ext4", false));
+    assert!(cfg.vmm_write_extent(&jail).is_err());
 }
 
 #[test]
@@ -1747,6 +1840,7 @@ fn jailer_argv_never_enables_the_pci_transport() {
                 gid: 100,
                 netns,
                 cgroup: &cgroup,
+                limits: &crate::jailer_limits::JailerLimits::defaults(),
                 config_file_in_jail: Some(in_jail::CONFIG),
             });
             assert!(

@@ -12,6 +12,7 @@
 //! the host commands need a KVM host and are left to the live evidence.
 use super::*;
 use std::sync::{Arc, Mutex};
+use tokio::process::Child;
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
@@ -192,7 +193,7 @@ impl Case {
             Slot::Vmm => {
                 let child = sleeper();
                 a.pids.push(child.id().unwrap());
-                res.hold_vmm(child);
+                res.hold_vmm(crate::vmm_process::VmmProcess::direct_for_test(child));
             }
             Slot::Cgroup => {
                 let leaf = self
