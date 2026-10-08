@@ -1196,13 +1196,24 @@ mod tests {
             .expect("plain cert")
             .chain_pem();
         assert!(
-            verify_attested_svid(&plain_chain, manager.trust_bundle(), &AttestationRequirements::any(), true).is_err(),
+            verify_attested_svid(
+                &plain_chain,
+                manager.trust_bundle(),
+                &AttestationRequirements::any(),
+                true
+            )
+            .is_err(),
             "absent extension + require_attestation must fail closed"
         );
         assert!(
-            verify_attested_svid(&plain_chain, manager.trust_bundle(), &AttestationRequirements::any(), false)
-                .expect("absent-not-required is ok")
-                .is_none(),
+            verify_attested_svid(
+                &plain_chain,
+                manager.trust_bundle(),
+                &AttestationRequirements::any(),
+                false
+            )
+            .expect("absent-not-required is ok")
+            .is_none(),
             "absent extension without requirement yields no attestation"
         );
     }

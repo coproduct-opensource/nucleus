@@ -1217,12 +1217,17 @@ mod issuer_tests {
         // Non-vacuous: the node-issued leaf verifies against its issuer.
         let ok = verify_attested_svid(&real, ca.trust_bundle(), &exact, true)
             .expect("the node-issued leaf verifies");
-        assert_eq!(ok, Some(att.clone()));
+        exact
+            .verify(&ok.expect("a launch"))
+            .expect("the measurement it carries");
 
         let forged = forged_from(&real, &identity);
         // The forgery really carries the claim: reading the extension alone accepts it.
         let leaf = pem::parse(&forged).unwrap();
-        assert_eq!(extract_launch_attestation(leaf.contents()), Some(att));
+        let lifted = extract_launch_attestation(leaf.contents()).expect("the forgery carries it");
+        exact
+            .verify(&lifted)
+            .expect("the very measurement the node signed");
 
         for require in [true, false] {
             let err = verify_attested_svid(&forged, ca.trust_bundle(), &exact, require)
@@ -1245,7 +1250,9 @@ mod issuer_tests {
         let (real, identity, att) = attested(&ca).await;
         let leaf = pem::parse(&real).unwrap();
         let v = VerifiedLaunch::verify(leaf.contents(), ca.trust_bundle()).unwrap();
-        assert_eq!(v.launch(), &att);
+        AttestationRequirements::exact(*att.kernel_hash(), *att.rootfs_hash(), *att.config_hash())
+            .verify(v.launch())
+            .expect("the measurement it carries");
         assert_eq!(v.spiffe_id(), identity.to_spiffe_uri());
     }
 }
