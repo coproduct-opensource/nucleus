@@ -142,6 +142,35 @@ theorem one_group_of_fortyseven_fits_360 :
     (47 / 1) * 1 ≤ 47 ∧ groupJobs.sum + 46 * 45 ≤ 47 * 360 := by
   decide
 
+/-- The worst merge group of 2026-10-07/08 on the `nucleus-fly-build` pool (pr-3301, the
+    most build-pool work of 31 groups): every job's runtime, whole minutes rounded up. The 38 is
+    `Live-path gates (one pod)`, the queue's critical path. -/
+def buildJobs20261008 : List Nat := [38, 20, 15, 13, 12, 11, 10, 5, 5, 4, 3, 2, 2, 2, 1, 1, 1, 1]
+
+/-- The same group's `nucleus-fly-gate` jobs (the most gate-pool work of the 31). -/
+def gateJobs20261008 : List Nat :=
+  [7, 6, 6, 6, 5, 3, 2] ++ List.replicate 23 1
+
+/-- **Bite of T12 (two groups, 2026-10-08).** The 09-09 refusal of `c > 1` was a measurement,
+    and this is the measurement that replaces it. With the pools this queue has now — 24
+    build runners and 40 gate runners — two groups building at once each get a share (12 and
+    20) at least as large as one group's measured peak (12 and 17), T7's hypothesis holds at
+    that share with the 360-minute budget, and greedy scheduling finishes the worst group no
+    later on its half of each pool than on the whole of it. Halving the head's share costs the
+    head nothing; the second group is the speculation, paid for by runners that idled.
+
+    The hosted pool (20 on the free plan, one group's peak 15) is NOT stated here, because it
+    does not fit: its long jobs are off the critical path, and that is an observation, not a
+    theorem. Nor is `c = 3`: `24 / 3 = 8` is below the build peak of 12. -/
+theorem two_groups_fit_their_shares :
+    (24 / 2) * 2 ≤ 24 ∧ (40 / 2) * 2 ≤ 40 ∧
+    12 ≤ 24 / 2 ∧ 17 ≤ 40 / 2 ∧ ¬ (12 ≤ 24 / 3) ∧
+    buildJobs20261008.sum + 11 * 38 ≤ 12 * 360 ∧
+    gateJobs20261008.sum + 19 * 7 ≤ 20 * 360 ∧
+    makespan (greedy 12 buildJobs20261008) = makespan (greedy 24 buildJobs20261008) ∧
+    makespan (greedy 20 gateJobs20261008) = makespan (greedy 40 gateJobs20261008) := by
+  decide
+
 /-- **Bite of T7 (competing runs).** Pull-request runs already occupying
     the pool are non-zero initial loads: with 50 minutes on each runner the
     same group finishes 50 minutes later. "Cancel every competing run" is
