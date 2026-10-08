@@ -63,7 +63,8 @@ pub use assurance::{
     VerifiedAttestation,
 };
 pub use attestation::{
-    AttestationRequirements, LaunchAttestation, extract_launch_attestation, verify_attested_svid,
+    AttestationRequirements, LaunchAttestation, VerifiedLaunch, extract_launch_attestation,
+    verify_attested_svid,
 };
 pub use ca::{CaClient, SelfSignedCa};
 #[cfg(feature = "spire")]

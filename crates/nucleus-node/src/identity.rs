@@ -1108,7 +1108,7 @@ mod tests {
             *att.config_hash(),
         );
         assert!(
-            verify_attested_svid(&chain, &req, true)
+            verify_attested_svid(&chain, manager.trust_bundle(), &req, true)
                 .expect("verify ok")
                 .is_some(),
             "injected dyn CA must still embed the launch attestation"
@@ -1170,7 +1170,7 @@ mod tests {
         // (i) POSITIVE CONTROL — correct expectation verifies (proves it is not
         //     always-red: teeth (ii)/(iii) below then mean something).
         assert!(
-            verify_attested_svid(&chain, &expected, true)
+            verify_attested_svid(&chain, manager.trust_bundle(), &expected, true)
                 .expect("correct measurement verifies")
                 .is_some(),
             "served SVID must carry the launch attestation"
@@ -1182,7 +1182,7 @@ mod tests {
         let drifted =
             AttestationRequirements::exact(wrong_kernel, *att.rootfs_hash(), *att.config_hash());
         assert!(
-            verify_attested_svid(&chain, &drifted, true).is_err(),
+            verify_attested_svid(&chain, manager.trust_bundle(), &drifted, true).is_err(),
             "one byte of measurement drift must red the verifier"
         );
 
@@ -1196,11 +1196,11 @@ mod tests {
             .expect("plain cert")
             .chain_pem();
         assert!(
-            verify_attested_svid(&plain_chain, &AttestationRequirements::any(), true).is_err(),
+            verify_attested_svid(&plain_chain, manager.trust_bundle(), &AttestationRequirements::any(), true).is_err(),
             "absent extension + require_attestation must fail closed"
         );
         assert!(
-            verify_attested_svid(&plain_chain, &AttestationRequirements::any(), false)
+            verify_attested_svid(&plain_chain, manager.trust_bundle(), &AttestationRequirements::any(), false)
                 .expect("absent-not-required is ok")
                 .is_none(),
             "absent extension without requirement yields no attestation"

@@ -775,13 +775,82 @@ pub fn extract_mediation_key_binding(cert_der: &[u8]) -> Option<[u8; 32]> {
     None
 }
 
+/// A launch claim on a leaf that chains to a trusted CA.
+///
+/// # The defect this type exists to make unwritable
+///
+/// `verify_attested_svid` used to read the launch extension (OID
+/// 1.3.6.1.4.1.57212.1.1) off the leaf and never ask who signed the leaf. A
+/// self-signed certificate carrying that OID, made in a few lines of `rcgen` by
+/// anyone, passed `nucleus verify-attestation`. The tool-proxy had fixed the same
+/// defect for itself on 2026-09-29 with a private `VerifiedLaunch`, so a weak
+/// public check and a strong private one decided the same fact (ADR 0007 G-1).
+/// [`issued_launch`] is now the one decider, and both call it.
+///
+/// The fields are private and [`VerifiedLaunch::verify`] is the only constructor
+/// (C-1, C-2). Both halves are required, in this order: a launch claim on a
+/// certificate the trusted CA did not sign is a forgery, not a weaker form of
+/// the real thing.
+#[derive(Debug)]
+pub struct VerifiedLaunch {
+    spiffe_id: String,
+    launch: LaunchAttestation,
+}
+
+impl VerifiedLaunch {
+    /// Verify `leaf_der` against `trust_bundle`, then read its launch claim.
+    ///
+    /// # Errors
+    ///
+    /// The leaf does not chain to the bundle, names no SPIFFE ID, or carries no
+    /// parseable launch attestation.
+    pub fn verify(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<Self> {
+        match issued_launch(leaf_der, trust_bundle)? {
+            Some(launch) => {
+                let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
+                    Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
+                })?;
+                Ok(Self { spiffe_id, launch })
+            }
+            None => Err(Error::VerificationFailed(
+                "verified leaf carries no parseable launch attestation".to_string(),
+            )),
+        }
+    }
+
+    /// The workload identity the verified leaf names.
+    pub fn spiffe_id(&self) -> &str {
+        &self.spiffe_id
+    }
+
+    /// The launch measurement the verified leaf carries.
+    pub fn launch(&self) -> &LaunchAttestation {
+        &self.launch
+    }
+}
+
+/// The one decider: the leaf chains to a root in `trust_bundle`, and then its
+/// launch claim, if it carries one. The issuer is checked first and always, so
+/// "carries no attestation" is said only of a leaf a trusted CA signed.
+fn issued_launch(
+    leaf_der: &[u8],
+    trust_bundle: &crate::TrustBundle,
+) -> Result<Option<LaunchAttestation>> {
+    let leaf = crate::certificate::Certificate::from_der(leaf_der.to_vec());
+    crate::verify_svid_chain(&leaf, trust_bundle).map_err(|e| {
+        Error::VerificationFailed(format!("leaf is not issued by a trusted CA: {e}"))
+    })?;
+    Ok(extract_launch_attestation(leaf_der))
+}
+
 /// Relying-party verification of an attested SVID served over `FETCH_SVID`.
 ///
 /// This is the *outside* verifier for the North Star C9 leg: given the PEM cert
-/// chain a pod serves and the measurements an operator expects, decide whether to
-/// trust the pod. It parses the leaf certificate, extracts the embedded launch
-/// attestation, and checks it against `requirements`. Two teeth:
+/// chain a pod serves, the trust bundle of the node that issued it, and the
+/// measurements an operator expects, decide whether to trust the pod. Three teeth:
 ///
+/// * **issuer** — the leaf must chain to `trust_bundle`. A leaf no trusted CA
+///   signed is an `Err` whatever it carries, even when no attestation is required.
 /// * **fail-closed on absent** — with `require_attestation` set, a served leaf that
 ///   carries no launch-attestation extension is an `Err`, NOT a vacuous pass.
 ///   (`AttestationRequirements::any().verify` would accept anything; this refuses a
@@ -797,15 +866,20 @@ pub fn extract_mediation_key_binding(cert_der: &[u8]) -> Option<[u8; 32]> {
 /// guarantee is therefore strictly conditional — *IF you trust this node's key,
 /// THEN the pod was launched from an artifact with these measurements.* A
 /// compromised node can sign any measurement. This is first-party **software**
-/// launch attestation, not hardware attestation.
+/// launch attestation, not hardware attestation (ADR 0016 S3 roots it in the TPM).
+///
+/// # Errors
+///
+/// Any tooth above, or a chain that does not parse as PEM.
 pub fn verify_attested_svid(
     chain_pem: &str,
+    trust_bundle: &crate::TrustBundle,
     requirements: &AttestationRequirements,
     require_attestation: bool,
 ) -> Result<Option<LaunchAttestation>> {
     let leaf = pem::parse(chain_pem)
         .map_err(|e| Error::VerificationFailed(format!("cert PEM parse failed: {e}")))?;
-    match extract_launch_attestation(leaf.contents()) {
+    match issued_launch(leaf.contents(), trust_bundle)? {
         Some(att) => {
             requirements.verify(&att)?;
             Ok(Some(att))
@@ -1075,5 +1149,103 @@ mod tests {
 
         pos = 0;
         assert_eq!(decode_length(&long, &mut pos).unwrap(), 500);
+    }
+}
+
+/// The issuer tooth (ADR 0016 S2). A real attested SVID, and a self-signed leaf
+/// carrying the SAME launch extension bytes (OID `.1.1`) lifted off it: the
+/// first verifies against its node's bundle and the forgery is refused, as is
+/// the real one against a bundle that is not its issuer's.
+#[cfg(test)]
+mod issuer_tests {
+    use super::*;
+    use crate::{CaClient, CsrOptions, Identity, SelfSignedCa};
+    use std::time::Duration;
+    use x509_parser::prelude::{FromDer, X509Certificate};
+
+    async fn attested(ca: &SelfSignedCa) -> (String, Identity, LaunchAttestation) {
+        let identity = Identity::for_pod("test.local", "pod-1");
+        let cs = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        let att = LaunchAttestation::from_hashes([7u8; 32], [8u8; 32], [9u8; 32]);
+        let cert = ca
+            .sign_attested_csr(
+                cs.csr(),
+                cs.private_key(),
+                &identity,
+                Duration::from_secs(3600),
+                &att,
+            )
+            .await
+            .unwrap();
+        (cert.chain_pem(), identity, att)
+    }
+
+    /// A self-signed leaf naming the same SPIFFE ID and carrying the launch
+    /// extension's exact bytes, lifted from `real_pem`.
+    fn forged_from(real_pem: &str, identity: &Identity) -> String {
+        let real = pem::parse(real_pem).unwrap();
+        let (_, parsed) = X509Certificate::from_der(real.contents()).unwrap();
+        let ext = parsed
+            .extensions()
+            .iter()
+            .find(|e| e.oid.as_bytes() == crate::oid::OID_NUCLEUS_ATTESTATION_BYTES)
+            .expect("the real leaf carries the launch extension");
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = vec![rcgen::SanType::URI(
+            rcgen::string::Ia5String::try_from(identity.to_spiffe_uri()).unwrap(),
+        )];
+        params.custom_extensions = vec![rcgen::CustomExtension::from_oid_content(
+            crate::oid::OID_NUCLEUS_ATTESTATION_TUPLE,
+            ext.value.to_vec(),
+        )];
+        let key = rcgen::KeyPair::generate().unwrap();
+        params.self_signed(&key).unwrap().pem()
+    }
+
+    #[tokio::test]
+    async fn a_self_signed_leaf_carrying_the_launch_extension_is_refused() {
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let (real, identity, att) = attested(&ca).await;
+        let exact = AttestationRequirements::exact(
+            *att.kernel_hash(),
+            *att.rootfs_hash(),
+            *att.config_hash(),
+        );
+
+        // Non-vacuous: the node-issued leaf verifies against its issuer.
+        let ok = verify_attested_svid(&real, ca.trust_bundle(), &exact, true)
+            .expect("the node-issued leaf verifies");
+        assert_eq!(ok, Some(att.clone()));
+
+        let forged = forged_from(&real, &identity);
+        // The forgery really carries the claim: reading the extension alone accepts it.
+        let leaf = pem::parse(&forged).unwrap();
+        assert_eq!(extract_launch_attestation(leaf.contents()), Some(att));
+
+        for require in [true, false] {
+            let err = verify_attested_svid(&forged, ca.trust_bundle(), &exact, require)
+                .expect_err("a self-signed leaf is not issued by the node's CA");
+            assert!(
+                err.to_string().contains("not issued by a trusted CA"),
+                "{err}"
+            );
+        }
+        assert!(VerifiedLaunch::verify(leaf.contents(), ca.trust_bundle()).is_err());
+
+        // The real leaf against a bundle that is not its issuer's.
+        let stranger = SelfSignedCa::new("test.local").unwrap();
+        assert!(verify_attested_svid(&real, stranger.trust_bundle(), &exact, true).is_err());
+    }
+
+    #[tokio::test]
+    async fn verified_launch_names_the_spiffe_id_and_measurement() {
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let (real, identity, att) = attested(&ca).await;
+        let leaf = pem::parse(&real).unwrap();
+        let v = VerifiedLaunch::verify(leaf.contents(), ca.trust_bundle()).unwrap();
+        assert_eq!(v.launch(), &att);
+        assert_eq!(v.spiffe_id(), identity.to_spiffe_uri());
     }
 }

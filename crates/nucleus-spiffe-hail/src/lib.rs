@@ -171,7 +171,7 @@ pub fn authenticate_hail(
 
     let attestation = if min_assurance > AssuranceLevel::L0Bearer {
         // Require a verifiable software attestation (fail-closed) as the launch base,
-        let attestation = SelfMeasuredBackend
+        let attestation = SelfMeasuredBackend::new(trust_bundle.clone())
             .verify_svid(&hail.svid_chain_pem, &AttestationRequirements::any(), true)
             .map_err(|e| anyhow!("attestation required but not verified: {e}"))?;
         // then raise the level by any TPM residency evidence and enforce the floor.

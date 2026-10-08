@@ -21,7 +21,6 @@
 use std::path::{Path, PathBuf};
 
 use nucleus_identity::TrustBundle;
-use nucleus_identity::certificate::Certificate;
 use tracing::{debug, error, info, warn};
 
 use crate::attestation::AttestationInfo;
@@ -62,22 +61,16 @@ impl VerifiedLaunch {
     /// The only constructor. Both halves are required, in this order: a
     /// launch claim on a certificate the node did not sign is the forgery, not
     /// a weaker form of the real thing.
+    ///
+    /// The check is `nucleus_identity::VerifiedLaunch::verify`, the one decider
+    /// every relying party calls (ADR 0007 G-1, ADR 0016 D1); this only shapes
+    /// its result for the boot log.
     fn verify(leaf_der: &[u8], trust_bundle: &TrustBundle) -> Result<Self, SandboxProofError> {
-        let leaf = Certificate::from_der(leaf_der.to_vec());
-        nucleus_identity::verify_svid_chain(&leaf, trust_bundle)
-            .map_err(SandboxProofError::LaunchUnverified)?;
-        let spiffe_id = nucleus_identity::spiffe_uri_from_svid(leaf_der).map_err(|e| {
-            SandboxProofError::LaunchUnverified(format!("verified leaf has no SPIFFE ID: {e}"))
-        })?;
-        let attestation =
-            nucleus_identity::extract_launch_attestation(leaf_der).ok_or_else(|| {
-                SandboxProofError::LaunchUnverified(
-                    "verified leaf carries no parseable launch attestation".to_string(),
-                )
-            })?;
-        let info = AttestationInfo::from(&attestation);
+        let verified = nucleus_identity::VerifiedLaunch::verify(leaf_der, trust_bundle)
+            .map_err(|e| SandboxProofError::LaunchUnverified(e.to_string()))?;
+        let info = AttestationInfo::from(verified.launch());
         Ok(Self {
-            spiffe_id,
+            spiffe_id: verified.spiffe_id().to_string(),
             kernel_hash: info.kernel_hash,
             rootfs_hash: info.rootfs_hash,
             config_hash: info.config_hash,

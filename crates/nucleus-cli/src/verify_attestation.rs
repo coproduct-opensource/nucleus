@@ -22,7 +22,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use nucleus_identity::{
-    AttestationRequirements, Claim, SelfMeasuredBackend, SvidAttestationBackend,
+    AttestationRequirements, Claim, SelfMeasuredBackend, SvidAttestationBackend, TrustBundle,
 };
 use std::collections::BTreeSet;
 
@@ -31,6 +31,12 @@ pub struct VerifyAttestationArgs {
     /// Path to the served SVID certificate chain (PEM).
     #[arg(long)]
     cert: std::path::PathBuf,
+
+    /// Trust bundle (PEM roots) of the node whose CA issued the SVID. Required: a
+    /// launch claim is worth only the signature over it, and a leaf that does not
+    /// chain to this bundle is refused whatever it carries.
+    #[arg(long = "trust-bundle")]
+    trust_bundle: std::path::PathBuf,
 
     /// Expected kernel measurement (hex SHA-256). Repeatable; any listed value passes.
     #[arg(long = "expect-kernel")]
@@ -64,6 +70,11 @@ pub fn execute(args: VerifyAttestationArgs) -> Result<()> {
     let chain = std::fs::read_to_string(&args.cert)
         .with_context(|| format!("reading cert chain {}", args.cert.display()))?;
 
+    let bundle_pem = std::fs::read_to_string(&args.trust_bundle)
+        .with_context(|| format!("reading trust bundle {}", args.trust_bundle.display()))?;
+    let trust_bundle = TrustBundle::from_pem(&bundle_pem)
+        .with_context(|| format!("parsing trust bundle {}", args.trust_bundle.display()))?;
+
     let mut req = AttestationRequirements::any();
     for h in &args.expect_kernel {
         req = req.allow_kernel(parse_hash(h)?);
@@ -78,7 +89,7 @@ pub fn execute(args: VerifyAttestationArgs) -> Result<()> {
     // Verify through the attestation-backend seam. Today the only root is the
     // node's self-measurement; other roots (TPM DevID, Apple App Attest, cloud IID)
     // will plug in behind the same `SvidAttestationBackend` + normalized result.
-    let backend = SelfMeasuredBackend;
+    let backend = SelfMeasuredBackend::new(trust_bundle);
     match backend.verify_svid(&chain, &req, args.require_attestation) {
         Ok(Some(va)) => {
             let measurement = va.launch().map(|l| l.to_hex_summary()).unwrap_or_default();
@@ -124,8 +135,10 @@ mod tests {
     use std::time::Duration;
 
     /// Mint a real leaf cert via the shipping SelfSignedCa, optionally attested.
-    async fn mint(attested: bool) -> (tempfile::NamedTempFile, LaunchAttestation) {
-        let ca = SelfSignedCa::new("test.local").unwrap();
+    async fn mint(
+        ca: &SelfSignedCa,
+        attested: bool,
+    ) -> (tempfile::NamedTempFile, LaunchAttestation) {
         let identity = Identity::for_pod("test.local", "pod-1");
         let cs = CsrOptions::new(identity.to_spiffe_uri())
             .generate()
@@ -156,14 +169,25 @@ mod tests {
         (f, att)
     }
 
+    /// `ca`'s roots, as the PEM file an operator hands the CLI.
+    fn bundle(ca: &SelfSignedCa) -> tempfile::NamedTempFile {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        for root in ca.trust_bundle().roots() {
+            f.write_all(root.to_pem().as_bytes()).unwrap();
+        }
+        f
+    }
+
     fn args(
         f: &tempfile::NamedTempFile,
+        b: &tempfile::NamedTempFile,
         k: &[u8; 32],
         r: &[u8; 32],
         c: &[u8; 32],
     ) -> VerifyAttestationArgs {
         VerifyAttestationArgs {
             cert: f.path().to_path_buf(),
+            trust_bundle: b.path().to_path_buf(),
             expect_kernel: vec![hex::encode(k)],
             expect_rootfs: vec![hex::encode(r)],
             expect_config: vec![hex::encode(c)],
@@ -175,12 +199,15 @@ mod tests {
     // measurement drift, and fails closed on an absent extension (C9 Inc 1).
     #[tokio::test]
     async fn cli_verifies_attested_and_reds_on_drift_and_absent() {
-        let (f, att) = mint(true).await;
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let b = bundle(&ca);
+        let (f, att) = mint(&ca, true).await;
 
         // Positive control — correct measurement verifies (non-vacuous).
         assert!(
             execute(args(
                 &f,
+                &b,
                 att.kernel_hash(),
                 att.rootfs_hash(),
                 att.config_hash()
@@ -191,18 +218,40 @@ mod tests {
         // Drift — one wrong expected hash reds the CLI verdict.
         let mut wrong = *att.kernel_hash();
         wrong[0] ^= 0x01;
-        assert!(execute(args(&f, &wrong, att.rootfs_hash(), att.config_hash())).is_err());
+        assert!(execute(args(&f, &b, &wrong, att.rootfs_hash(), att.config_hash())).is_err());
 
         // Absent — a plain cert with require_attestation fails closed.
-        let (plain, _) = mint(false).await;
+        let (plain, _) = mint(&ca, false).await;
         assert!(
             execute(args(
                 &plain,
+                &b,
                 att.kernel_hash(),
                 att.rootfs_hash(),
                 att.config_hash()
             ))
             .is_err()
+        );
+    }
+
+    /// The issuer tooth through the CLI (ADR 0016 S2): the same node-issued leaf
+    /// is refused against a bundle that did not issue it.
+    #[tokio::test]
+    async fn cli_refuses_a_leaf_the_named_bundle_did_not_issue() {
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let (f, att) = mint(&ca, true).await;
+        let stranger = bundle(&SelfSignedCa::new("test.local").unwrap());
+        let err = execute(args(
+            &f,
+            &stranger,
+            att.kernel_hash(),
+            att.rootfs_hash(),
+            att.config_hash(),
+        ))
+        .expect_err("a leaf from another CA");
+        assert!(
+            format!("{err:#}").contains("not issued by a trusted CA"),
+            "{err:#}"
         );
     }
 

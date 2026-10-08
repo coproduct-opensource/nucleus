@@ -1439,7 +1439,7 @@ mod tests {
             Some(binding),
             "the binding must be extractable straight from the leaf DER"
         );
-        let va = SelfMeasuredBackend
+        let va = SelfMeasuredBackend::new(ca.trust_bundle().clone())
             .verify_svid(leaf.to_pem(), &AttestationRequirements::any(), true)
             .unwrap()
             .expect("an attested leaf verifies");
@@ -1484,7 +1484,7 @@ mod tests {
             extract_mediation_key_binding(cert.leaf().der()),
             Some(binding)
         );
-        let va = SelfMeasuredBackend
+        let va = SelfMeasuredBackend::new(ca.trust_bundle().clone())
             .verify_svid(cert.leaf().to_pem(), &AttestationRequirements::any(), true)
             .unwrap()
             .expect("attested");
@@ -1516,7 +1516,7 @@ mod tests {
             )
             .unwrap();
 
-        let va = SelfMeasuredBackend
+        let va = SelfMeasuredBackend::new(ca.trust_bundle().clone())
             .verify_svid(chain[0].to_pem(), &AttestationRequirements::any(), true)
             .unwrap()
             .expect("an attested leaf verifies");
