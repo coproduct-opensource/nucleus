@@ -59,9 +59,12 @@ pub(crate) use nucleus_spec::host_decide_telemetry::HostUnavailable;
 
 /// How long the worker waits with nothing to do before it prints its
 /// telemetry, when the telemetry moved since it last printed. A pod is torn
-/// down by killing its VM, so there is no guest shutdown to print at; printing
-/// whenever the shadow traffic goes quiet makes the last line on the console
-/// the final count (ADR 0014 S1).
+/// down by killing its VM, so there is no guest shutdown to print at. The
+/// worker prints as soon as it has drained its queue, and on this interval for
+/// what `submit` counts without it (a full queue, an oversized subject), so the
+/// last line on the console is the final count (ADR 0014 S1). The first live
+/// run printed on the interval alone and lost every pod's final line: the
+/// collector cancels a pod within 250 ms of its last decision.
 const QUIET: Duration = Duration::from_millis(250);
 
 /// What one shadowed decision came to.
@@ -455,7 +458,12 @@ async fn worker(
             }
         };
         match work {
-            Work::Ask(q) => tally.count(put(&mut channels, &dial, &tally, q).await),
+            Work::Ask(q) => {
+                tally.count(put(&mut channels, &dial, &tally, q).await);
+                if rx.is_empty() {
+                    print_if_moved(&tally, &mut printed, &print);
+                }
+            }
             #[cfg(test)]
             Work::Flush(done) => {
                 let _ = done.send(());

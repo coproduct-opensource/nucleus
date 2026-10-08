@@ -443,3 +443,36 @@ async fn the_telemetry_is_printed_when_the_traffic_goes_quiet() {
         1
     );
 }
+
+/// The first live run (37826825753) printed only on the quiet interval, and
+/// every pod was cancelled within it of its last decision, so no console
+/// carried a final count. The line must follow the drained queue at once.
+#[tokio::test]
+async fn the_telemetry_follows_the_last_decision_without_waiting() {
+    let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&lines);
+    let seen = Arc::new(Seen::default());
+    let hd = HostDecide::start_printing(
+        dialer(HostRule::Decide(allow_all), Arc::clone(&seen)),
+        Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
+    );
+    let mut k = permissive_kernel();
+    let g = FlowGraph::new();
+    let v = decide(&mut k, &g, Operation::ReadFiles, "a");
+    let started = std::time::Instant::now();
+    hd.submit(&k, &g, Operation::ReadFiles, "a", &v);
+    // Not `flush`: a queued flush would itself keep the queue from draining.
+    while hd.snapshot().is_some_and(|s| s.agree == 0) {
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(started.elapsed() < QUIET, "the test outlived the interval");
+    let console = lines.lock().unwrap().join("\n");
+    let last = GuestTelemetry::last_on_console(&console)
+        .unwrap()
+        .filter(|t| t.agree() == 1);
+    assert!(
+        last.is_some(),
+        "no final line before the interval: {console}"
+    );
+}
