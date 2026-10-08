@@ -711,6 +711,14 @@ async fn a_mint_in_flight_at_cancel_is_waited_for() {
     for _ in 0..TRIALS {
         let mut run = Run::new(false, false).await;
         run.manager.forget_certificate(&run.identity).await;
+        // Uncached, but still a registered launch (ADR 0016 D5): the frame mints.
+        run.manager
+            .secret_manager()
+            .register_launch(
+                &run.identity,
+                nucleus_identity::Launch::Unmeasured(nucleus_identity::UnmeasuredTier::Local),
+            )
+            .await;
         let (mut r, mut w) = run.open.take().expect("the open connection");
         w.write_all(b"FETCH_SVID\n").await.expect("frame written");
         w.flush().await.expect("frame flushed");

@@ -2250,6 +2250,14 @@ mod spiffe_bridge_tests {
         let manager =
             crate::identity::IdentityManager::new("nucleus.local", Duration::from_secs(3600))
                 .expect("identity manager");
+        // The spawn path issues the launch before the bridge starts (ADR 0016 D5).
+        manager
+            .issue_unmeasured_certificate(
+                &manager.pod_identity(pod_id),
+                nucleus_identity::UnmeasuredTier::Local,
+            )
+            .await
+            .expect("launch");
 
         // Plain `start` — the standard API must come up for EVERY pod, without
         // a caller opting in. If it were a separate constructor, nothing in the

@@ -140,6 +140,23 @@ impl<C: CaClient + 'static> SecretManager<C> {
     /// If a valid certificate is cached, it is returned immediately.
     /// Otherwise, a new certificate is requested from the CA.
     pub async fn fetch_certificate(&self, identity: &Identity) -> Result<Arc<WorkloadCertificate>> {
+        let launch = self.launch_of(identity).await;
+        self.fetch_with(identity, launch).await
+    }
+
+    /// The launch registered for `identity`, read once per issue: the decision
+    /// of how to sign is taken from one read, so a launch forgotten mid-issue
+    /// cannot turn a launch certificate into a plain one.
+    async fn launch_of(&self, identity: &Identity) -> Option<Launch> {
+        self.launches.read().await.get(identity).cloned()
+    }
+
+    /// [`Self::fetch_certificate`] with the launch already read.
+    async fn fetch_with(
+        &self,
+        identity: &Identity,
+        launch: Option<Launch>,
+    ) -> Result<Arc<WorkloadCertificate>> {
         // Fast path: check if we have a valid cached certificate
         {
             let certs = self.certs.read().await;
@@ -167,7 +184,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
         }
 
         // Slow path: need to fetch a new certificate
-        self.fetch_new_certificate(identity).await
+        self.fetch_new_certificate(identity, launch).await
     }
 
     /// Register `launch` for `identity` and issue it a certificate that states
@@ -183,8 +200,14 @@ impl<C: CaClient + 'static> SecretManager<C> {
         identity: &Identity,
         launch: Launch,
     ) -> Result<Arc<WorkloadCertificate>> {
+        self.register_launch(identity, launch.clone()).await;
+        self.fetch_new_certificate(identity, Some(launch)).await
+    }
+
+    /// Register `launch` for `identity` without issuing: the next issue of
+    /// `identity`, whoever asks for it, states this launch.
+    pub async fn register_launch(&self, identity: &Identity, launch: Launch) {
         self.launches.write().await.insert(identity.clone(), launch);
-        self.fetch_new_certificate(identity).await
     }
 
     /// [`Self::fetch_certificate`] for a launched workload: refused unless a
@@ -198,13 +221,13 @@ impl<C: CaClient + 'static> SecretManager<C> {
         &self,
         identity: &Identity,
     ) -> Result<Arc<WorkloadCertificate>> {
-        if !self.launches.read().await.contains_key(identity) {
+        let Some(launch) = self.launch_of(identity).await else {
             return Err(Error::NotSupported(format!(
                 "{identity} has no registered launch: a workload is served only an SVID that \
                  states its launch, never a plain one"
             )));
-        }
-        self.fetch_certificate(identity).await
+        };
+        self.fetch_with(identity, Some(launch)).await
     }
 
     /// Forces a certificate refresh for the given identity.
@@ -212,7 +235,8 @@ impl<C: CaClient + 'static> SecretManager<C> {
         &self,
         identity: &Identity,
     ) -> Result<Arc<WorkloadCertificate>> {
-        self.fetch_new_certificate(identity).await
+        let launch = self.launch_of(identity).await;
+        self.fetch_new_certificate(identity, launch).await
     }
 
     /// Warms the certificate cache with a pre-signed certificate for an identity.
@@ -490,7 +514,11 @@ impl<C: CaClient + 'static> SecretManager<C> {
     }
 
     /// Fetches a new certificate from the CA.
-    async fn fetch_new_certificate(&self, identity: &Identity) -> Result<Arc<WorkloadCertificate>> {
+    async fn fetch_new_certificate(
+        &self,
+        identity: &Identity,
+        launch: Option<Launch>,
+    ) -> Result<Arc<WorkloadCertificate>> {
         // Set up initialization state
         let (tx, rx) = watch::channel(None);
 
@@ -533,7 +561,6 @@ impl<C: CaClient + 'static> SecretManager<C> {
             }
         };
 
-        let launch = self.launches.read().await.get(identity).cloned();
         let (csr, key, ttl) = (cert_sign.csr(), cert_sign.private_key(), self.default_ttl);
         // Exhaustive, no `_` arm (E-2): a launch kind added later does not compile
         // here until it says how it is signed.
@@ -610,7 +637,8 @@ impl<C: CaClient + 'static> SecretManager<C> {
         for identity in identities {
             if self.needs_refresh(&identity).await {
                 debug!("refreshing certificate for {}", identity);
-                match self.fetch_new_certificate(&identity).await {
+                let launch = self.launch_of(&identity).await;
+                match self.fetch_new_certificate(&identity, launch).await {
                     Ok(_) => {
                         info!("refreshed certificate for {}", identity);
                     }
