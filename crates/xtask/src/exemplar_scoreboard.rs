@@ -542,6 +542,35 @@ fn nt(tree: &Tree, test_only: &BTreeSet<String>, pattern: &Regex) -> Vec<String>
     out
 }
 
+/// A file's production code: inline `#[cfg(test)]` items removed
+/// ([`strip_inline_test_items`]) and comment lines dropped (`//`, `///`, `//!`,
+/// and the lines of a `/* … */` block). A trailing comment after code stays with
+/// its line; the needles this feeds are flags and identifiers, which do not hide
+/// there in practice, and over-counting is the safe direction for a census.
+fn production_code(src: &str) -> String {
+    let mut out = String::new();
+    let mut in_block = false;
+    for (_, line) in strip_inline_test_items(src) {
+        let t = line.trim_start();
+        if in_block {
+            if t.contains("*/") {
+                in_block = false;
+            }
+            continue;
+        }
+        if t.starts_with("//") {
+            continue;
+        }
+        if t.starts_with("/*") {
+            in_block = !t.contains("*/");
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 fn count_lines(tree: &Tree, keep: impl Fn(&str) -> bool, pattern: &Regex) -> usize {
     tree.files
         .iter()
@@ -624,13 +653,22 @@ pub fn measure(tree: &Tree) -> Result<Scoreboard> {
         "BUILTIN_TOOLS|--disallowed",
         "Tools"
     ));
+    // A bypass SITE is production code that passes the flag. Measured over the
+    // file's production text only (`production_code`): a doc comment that names
+    // the flag, or a test's expected argument list, is not a site. Counting them
+    // took `bypass_sites` 2 -> 3 when #3200 added a test, with no new site; and
+    // the old baseline's 2 was itself one site plus one doc comment.
     let (mut bypass_sites, mut mediation_drift) = (0usize, 0usize);
     for (path, src) in tree.files.iter().filter(|(p, _)| is_rs(p)) {
-        if path.contains("/examples/") || !bypass.is_match(src) || !lattice.is_match(src) {
+        if path.contains("/examples/") || test_only.contains(path) {
+            continue;
+        }
+        let code = production_code(src);
+        if !bypass.is_match(&code) || !lattice.is_match(&code) {
             continue;
         }
         bypass_sites += 1;
-        if !disallow.is_match(src) {
+        if !disallow.is_match(&code) {
             mediation_drift += 1;
         }
     }
@@ -988,6 +1026,56 @@ mod tests {
         assert_eq!(b.rust_craft.verify_calls_guard, 0);
         assert_eq!(b.rust_craft.unsafe_blocks, 0);
         assert_eq!(b.sandboxing.bypass_sites, 0);
+    }
+
+    // The sandboxing needles, assembled so this file never contains them whole.
+    const FLAG: &str = concat!("--dangerously-skip-", "permissions");
+    const LATTICE: &str = concat!("--allowed", "Tools");
+    const DENY: &str = concat!("--disallowed", "Tools");
+
+    /// A doc comment that NAMES the flag is not a site. This is the shape that
+    /// counted `nucleus-cli/src/constants.rs`: its doc comment names the flag
+    /// and, through `disallowedTools`, the lattice needle too.
+    #[test]
+    fn a_doc_comment_naming_the_flag_is_not_a_bypass_site() {
+        let src = format!(
+            "/// Every launch with `{FLAG}` must also pass `{DENY}`.\n\
+             pub const LIST: &str = \"x\";\n"
+        );
+        let b = board(&[("crates/n/src/constants.rs", &src)]);
+        assert_eq!(b.sandboxing.bypass_sites, 0);
+    }
+
+    /// A test's expected argument list is not a site: the shape that counted
+    /// `nucleus-cli/src/run/pod_agent.rs` after #3200.
+    #[test]
+    fn a_test_expectation_is_not_a_bypass_site() {
+        let src = format!(
+            "pub fn launch() {{}}\n#[cfg(test)]\nmod tests {{\n    \
+             fn expected() -> [&'static str; 2] {{ [\"{LATTICE}\", \"{FLAG}\"] }}\n}}\n"
+        );
+        let b = board(&[("crates/n/src/pod_agent.rs", &src)]);
+        assert_eq!(b.sandboxing.bypass_sites, 0);
+    }
+
+    /// The real thing still counts: production code passing the flag is a site,
+    /// and without the denylist it is mediation drift (the ratcheted metric).
+    #[test]
+    fn a_production_bypass_site_counts_and_drifts_without_the_denylist() {
+        let drift = format!(
+            "pub fn argv() -> Vec<&'static str> {{\n    vec![\"{LATTICE}\", \"x\", \"{FLAG}\"]\n}}\n"
+        );
+        let b = board(&[("crates/n/src/run.rs", &drift)]);
+        assert_eq!(b.sandboxing.bypass_sites, 1);
+        assert_eq!(b.sandboxing.mediation_drift, 1);
+
+        let mediated = format!(
+            "pub fn argv() -> Vec<&'static str> {{\n    \
+             vec![\"{LATTICE}\", \"x\", \"{DENY}\", \"y\", \"{FLAG}\"]\n}}\n"
+        );
+        let b = board(&[("crates/n/src/run.rs", &mediated)]);
+        assert_eq!(b.sandboxing.bypass_sites, 1);
+        assert_eq!(b.sandboxing.mediation_drift, 0);
     }
 
     #[test]

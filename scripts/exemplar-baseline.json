@@ -18,8 +18,8 @@
   },
   "sandboxing": {
     "mediation_drift": 0,
-    "bypass_sites": 2,
-    "disallow_sites": 2,
+    "bypass_sites": 1,
+    "disallow_sites": 1,
     "effect_stubs": 9
   }
 }
