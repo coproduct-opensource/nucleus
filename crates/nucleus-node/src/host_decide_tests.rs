@@ -1217,3 +1217,61 @@ async fn a_decide_never_reported_is_counted_unreported() {
     assert_eq!(report.service.count(), 2);
     drop(held);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn zz_profile_host_decide() {
+    use std::time::Instant;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let pod = admit(&auth, PermissionLattice::codegen()).await;
+    let epochs = Arc::new(EpochSource::seeded());
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
+    let tally = listener.tally();
+    let mut guest = Guest::new(guest_kernel(&auth, pod).await, connect(&listener).await);
+    let ops = [
+        (Operation::ReadFiles, "src/main.rs"),
+        (Operation::WriteFiles, "notes.md"),
+        (Operation::RunBash, "cargo test"),
+        (Operation::GrepSearch, "fn main"),
+        (Operation::GitCommit, "wip"),
+    ];
+    let t = Instant::now();
+    let n = 2000usize;
+    let mut firsts = Vec::new();
+    let mut lasts = Vec::new();
+    for i in 0..n {
+        let (op, s) = ops[i % ops.len()];
+        let t0 = Instant::now();
+        let _ = guest.decide(op, s).await;
+        let e = t0.elapsed().as_micros();
+        if i < 100 { firsts.push(e) } else if i >= n - 100 { lasts.push(e) }
+    }
+    println!("PROFILE listener: {n} exchanges in {:?}; first100 mean {}us last100 mean {}us",
+        t.elapsed(), firsts.iter().sum::<u128>() / 100, lasts.iter().sum::<u128>() / 100);
+    let svc = tally.report().service;
+    println!("PROFILE service p50={:?}us p99={:?}us count={}", svc.percentile_us(500), svc.percentile_us(990), svc.count());
+    drop(guest);
+    let _ = listener.shutdown().await;
+
+    // Phases, direct.
+    let policy = auth.host_policy(pod).await.unwrap();
+    let (mut a, mut l, mut d, mut g) = (0u128, 0u128, 0u128, 0u128);
+    let mut guestk = guest_kernel(&auth, pod).await;
+    let graph = FlowGraph::new();
+    for i in 0..n {
+        let (op, s) = ops[i % ops.len()];
+        let t0 = Instant::now();
+        PodPolicy::available(&policy).unwrap();
+        let t1 = Instant::now();
+        let mut p = policy.lock().unwrap();
+        let t2 = Instant::now();
+        let _ = p.decide(op, s);
+        let t3 = Instant::now();
+        drop(p);
+        let _ = guestk.decide_effect_with_flow(ActionTerm::from_operation(op, s), Some(&graph));
+        let t4 = Instant::now();
+        a += (t1 - t0).as_nanos(); l += (t2 - t1).as_nanos(); d += (t3 - t2).as_nanos(); g += (t4 - t3).as_nanos();
+    }
+    let n = n as u128;
+    println!("PROFILE direct mean ns: available {} lock {} host-decide {} guest-kernel-decide {}", a / n, l / n, d / n, g / n);
+}
