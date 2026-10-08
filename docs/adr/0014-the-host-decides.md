@@ -1,7 +1,12 @@
 # ADR 0014 — The host decides: the guest's kernel may tighten, never grant
 
-- Status: **proposed** (2026-10-08). Design and measurement only: this record moves no
+- Status: **accepted** (2026-10-08). Design and measurement only: this record moves no
   enforcement. The first implementation step is S1 below.
+- Owner decisions on acceptance (2026-10-08), each taken as the strongest of the options
+  considered: the wire is the decision channel and the broker only performs (§6), with
+  decision ids that also expire; an eval cell's starting label is Untrusted whatever its
+  spec claims (§3); an eval-cell requirement is switched on in the PR that adds it, so an
+  eval cell is refused rather than run on the weaker path while a release is pending (§9).
 - Tracks: milestone M3 of the eval-cell programme, issue #2702 (L-1), ledger row **F12**.
 - Rests on: [ADR 0013](0013-eval-cell.md) (the threat model: the agent holds root in its
   guest), [ADR 0007](0007-make-the-defect-unwritable.md) (rule ids cited below),
@@ -115,8 +120,12 @@ host path.
 The host computes the pod's label as the lattice join of:
 
 1. **Everything the host put into the cell at admission:** the scratch and data disks that
-   `workspace_scan` reads before any driver runs, labelled Untrusted unless the spec's
-   provenance says otherwise (D10); the spec; and the declared inputs. Credentials are
+   `workspace_scan` reads before any driver runs, labelled Untrusted (D10); the spec; and
+   the declared inputs. For an **eval cell** the starting label is Untrusted whatever the
+   spec says: a provenance claim is written by the caller, and nothing the caller writes
+   lowers a label. For a standard pod a provenance claim lowers the starting label only
+   when the host verifies it (a digest the node computed over the disk, signed by a key in
+   the node's trust set), never on the spec's word. Credentials are
    withheld from the guest (`cred_split`), so they add nothing to the guest's label.
 2. **Every response the host delivers:** broker replies (already done, `observe_response`),
    streamed replies, and whatever the node hands one pod from another.
@@ -192,6 +201,13 @@ Why this channel and not the broker's:
 The ledger moves from per-channel to per-pod, so a decision id issued on 1028 is
 redeemable on 1027. Epochs stay per channel. Decision-id lookup is per pod.
 
+A decision id is good for one perform, by this pod, of the request whose digest it was
+minted for, **and only until it expires**. The host stamps each id with a deadline (the
+2 s decision deadline of §8 plus the effect's own perform window, never longer than the
+pod's current epoch) and the broker refuses an expired id with its own reason. An id dies
+with its pod, with its epoch, and on revocation. A grant that outlives the moment it was
+decided is a grant the host no longer stands behind, so none does.
+
 **Runner-up:** decide host-performed effects at the broker, where the effect happens, and
 use 1028 only for guest-performed ones. It is simpler and is what the host already does
 for egress. It loses because each effect class would then be decided on a different wire
@@ -249,10 +265,13 @@ stays **2.7.0**. Every guest-side change in M3 is a new `GuestCapability` row. E
 | `HostDecidedPerform` (new) | S5 | `When(EvalCell)`: perform and stream frames carry the host's decision id. |
 | `HostDecides` (new) | S6 | `When(EvalCell)`: the guest enforces `stricter(host, guest)` and denies on `Unreachable`. |
 
-Each row lands as `FirstShipped::NotYet`. **Until a release carries it, no pinned guest can
-serve an eval cell** that requires it. To avoid stranding eval cells between a merge and a
-release, the `When(EvalCell)` demand is switched on in the PR that bumps `GUEST_RELEASE`
-to the release that ships the row, not in the PR that adds the row.
+Each row lands as `FirstShipped::NotYet`, and its `When(EvalCell)` demand is switched on
+**in the same PR that adds the row**. Until a release carries the row, no pinned guest can
+serve an eval cell, so the node refuses every eval cell by name, naming the missing row.
+That is deliberate: the alternative (switching the demand on at the release bump) would
+let an eval cell run on the weaker, guest-decided path between the merge and the release,
+and an eval cell is the one pod that must never run weaker than its record says. The
+release-bump PR then makes eval cells admissible again, on a guest that carries the row.
 
 Eval cells require the new path. Standard pods keep the shadow path and migrate later,
 by raising the floor past the release that carries `HostDecides`. That is an owner
@@ -368,9 +387,8 @@ kernel come after M4, and both are owner decisions about the floor.
 - An eval cell with an untrusted workspace has its outbound effects held from boot (§3).
   That is the cost of not trusting the guest's silence, and it is visible in shadow before
   it is enforced.
-- Between the S5/S6 merges and the next guest release, an eval cell's new requirements
-  are switched on only by the release-bump PR (§9). No eval cell is stranded on a pin that
-  cannot meet them.
+- Between the S5/S6 merges and the next guest release, eval cells are refused by name
+  (§9). Their availability is traded for never running weaker than the record says.
 - The live-boot corpus is thin today (§11). S1 and S2 are what make the flip criterion
   decidable at all. Until they land, the honest statement is "200 of 200 compared decisions
   agreed, over at most two operations".
