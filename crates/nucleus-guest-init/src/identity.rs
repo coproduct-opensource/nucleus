@@ -456,8 +456,11 @@ pub fn fetch_audit_credentials(port: u32) -> Result<Option<AuditCredentials>, Fe
 /// and yields no identity — the guest presents an id only when it also has the
 /// token it was minted with.
 pub struct PodCallerIdentity {
-    /// The per-pod caller token minted by the node.
-    pub token: String,
+    /// The per-pod caller token, when the node minted one. `None` when the
+    /// node serves the field EMPTY. It does that for every Firecracker guest,
+    /// because the token authenticates only at an HTTP listener the guest
+    /// cannot reach.
+    pub token: Option<String>,
     /// The pod's own id (hyphenated UUID). `None` against a legacy node.
     pub pod_id: Option<String>,
 }
@@ -498,6 +501,7 @@ fn parse_caller_identity(response: &str) -> Result<PodCallerIdentity, FetchError
         .and_then(|t| t.as_str())
         .map(str::to_string)
         .ok_or_else(|| "no caller_token in response".to_string())?;
+    let token = (!token.is_empty()).then_some(token);
     let pod_id = v.get("pod_id").and_then(|t| t.as_str()).map(str::to_string);
     Ok(PodCallerIdentity { token, pod_id })
 }
@@ -765,7 +769,7 @@ mod caller_identity_tests {
             r#"{"caller_token":"deadbeef","pod_id":"11111111-1111-4111-8111-111111111111"}"#,
         )
         .expect("valid response");
-        assert_eq!(id.token, "deadbeef");
+        assert_eq!(id.token.as_deref(), Some("deadbeef"));
         assert_eq!(
             id.pod_id.as_deref(),
             Some("11111111-1111-4111-8111-111111111111")
@@ -778,7 +782,7 @@ mod caller_identity_tests {
     #[test]
     fn a_legacy_token_only_response_yields_no_pod_id() {
         let id = parse_caller_identity(r#"{"caller_token":"deadbeef"}"#).expect("valid response");
-        assert_eq!(id.token, "deadbeef");
+        assert_eq!(id.token.as_deref(), Some("deadbeef"));
         assert!(id.pod_id.is_none());
     }
 
@@ -787,6 +791,22 @@ mod caller_identity_tests {
     fn a_response_without_a_token_is_refused() {
         assert!(
             parse_caller_identity(r#"{"pod_id":"11111111-1111-4111-8111-111111111111"}"#).is_err()
+        );
+    }
+
+    /// What every Firecracker guest is served: its id, and an EMPTY token. The
+    /// id is kept and the token is absent, so no `NUCLEUS_POD_CALLER_TOKEN` is
+    /// exported.
+    #[test]
+    fn an_empty_token_is_no_token_and_keeps_the_id() {
+        let id = parse_caller_identity(
+            r#"{"caller_token":"","pod_id":"11111111-1111-4111-8111-111111111111"}"#,
+        )
+        .expect("valid response");
+        assert!(id.token.is_none());
+        assert_eq!(
+            id.pod_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
         );
     }
 }

@@ -43,10 +43,6 @@ fn the_wire_text_of_every_refusal_is_unchanged() {
             r#"{"error":"no task token was minted for this pod"}"#,
         ),
         (
-            Refusal::NotProvisioned(Material::CallerToken),
-            r#"{"error":"no caller token minted for this pod"}"#,
-        ),
-        (
             Refusal::AlreadyServed(OneShot::BrokerSecret),
             r#"{"error":"broker secret already served"}"#,
         ),
@@ -166,8 +162,8 @@ fn the_wire_text_of_every_refusal_is_unchanged() {
             "{o:?} has no pinned wire text"
         );
     }
-    // 8 materials + every one-shot + 14 others: nothing silently skipped.
-    assert_eq!(cases.len(), 8 + OneShot::ALL.len() + 14);
+    // 7 materials + every one-shot + 14 others: nothing silently skipped.
+    assert_eq!(cases.len(), 7 + OneShot::ALL.len() + 14);
 }
 
 /// The ledger's slots are `OneShot::ALL`, one each: spending one never

@@ -290,15 +290,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // fetched after boot is not baked into a snapshot base.
                 task_token,
                 pod_certificate,
-                // This pod's caller identity for the management API, derived
-                // from a NODE-ONLY secret. Deliberately not `auth_secret`:
-                // every proxy already holds that one, so deriving from it
-                // would let any pod compute any other pod's token and the
-                // mechanism would prove nothing.
-                caller_token: Some(pod_caller_identity::derive_token(
-                    state.caller_secret.as_ref(),
-                    id,
-                )),
+                // No caller token: a Firecracker guest cannot reach the HTTP
+                // listener that reads one (see `handle_fetch_pod_caller_token`).
                 // Pod-scoped DLC-D admission provisioning (PodSpec labels).
                 dlc_admission: nucleus_spec::dlc_admission::DlcProvisioning::from_labels(
                     &spec.metadata.labels,

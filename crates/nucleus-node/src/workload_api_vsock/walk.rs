@@ -47,14 +47,12 @@ const BROKER_SECRET: &str = "walk-broker-secret-5d1f0c";
 const AUDIT_SECRET: &str = "walk-audit-secret-7e40d8";
 const TASK_TOKEN: &str = "walk-task-token-31c9a0";
 const POD_CERT: &str = "d2Fsay1wb2QtY2VydC02YjE=";
-const CALLER_TOKEN: &str = "walk-caller-token-e2f415";
 const DLC_CREDENTIALS: &str = "op=walk-dlc-credential-904d";
-const LEAKABLE: [&str; 6] = [
+const LEAKABLE: [&str; 5] = [
     BROKER_SECRET,
     AUDIT_SECRET,
     TASK_TOKEN,
     POD_CERT,
-    CALLER_TOKEN,
     DLC_CREDENTIALS,
 ];
 
@@ -196,7 +194,6 @@ struct Provision {
     dlc_admission: bool,
     pod_certificate: bool,
     task_token: bool,
-    caller_token: bool,
     receipts: bool,
 }
 
@@ -276,8 +273,14 @@ impl Model {
                     OneShot::PodCertificate,
                 ),
                 Cmd::FetchTaskToken => once(p.task_token, Material::TaskToken, OneShot::TaskToken),
+                // The pod id, always held; never a token (the node mints none
+                // for a Firecracker guest). Once only, like every per-pod value.
                 Cmd::FetchPodCallerToken => {
-                    once(p.caller_token, Material::CallerToken, OneShot::CallerToken)
+                    if self.served.contains(&OneShot::CallerToken) {
+                        Expect::Refused(Refusal::AlreadyServed(OneShot::CallerToken))
+                    } else {
+                        Expect::Served
+                    }
                 }
                 Cmd::ShipReceipt => {
                     if p.receipts {
@@ -392,7 +395,6 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
                 token_b64: POD_CERT.to_string(),
                 root_pubkey_hex: "22".repeat(32),
             }),
-        caller_token: p.caller_token.then(|| CALLER_TOKEN.to_string()),
         dlc_admission: p.dlc_admission.then(|| DlcProvisioning {
             trusted_keys: "33".repeat(32),
             issuer: "44".repeat(32),
@@ -415,7 +417,7 @@ fn material_for(p: Provision, receipt_dir: &std::path::Path) -> PodMaterial {
 }
 
 fn provision() -> impl Strategy<Value = Provision> {
-    proptest::collection::vec(any::<bool>(), 9).prop_map(|b| Provision {
+    proptest::collection::vec(any::<bool>(), 8).prop_map(|b| Provision {
         broker_secret: b[0],
         mediation_key: b[1],
 
@@ -424,8 +426,7 @@ fn provision() -> impl Strategy<Value = Provision> {
         dlc_admission: b[4],
         pod_certificate: b[5],
         task_token: b[6],
-        caller_token: b[7],
-        receipts: b[8],
+        receipts: b[7],
     })
 }
 
@@ -574,7 +575,6 @@ fn the_walk_reaches_every_outcome_it_asserts() {
         dlc_admission: true,
         pod_certificate: true,
         task_token: true,
-        caller_token: true,
         receipts: true,
     };
     let mut model = Model::new(everything);
@@ -642,7 +642,6 @@ fn racing_requests_for_a_one_shot_serve_exactly_one() {
             dlc_admission: true,
             pod_certificate: true,
             task_token: true,
-            caller_token: true,
             receipts: false,
         };
         let material = Arc::new(material_for(all, dir.path()));

@@ -92,7 +92,6 @@ pub(crate) enum Material {
     DlcAdmission,
     PodCertificate,
     TaskToken,
-    CallerToken,
 }
 
 /// The values served once per pod: to `nucleus-guest-init`, which asks before
@@ -125,7 +124,8 @@ pub(crate) enum OneShot {
     PodCertificate,
     /// The live-path session capability token, its nonce and issuer.
     TaskToken,
-    /// The caller-identity token for the node's management API.
+    /// The pod's own id, served by `FETCH_POD_CALLER_TOKEN`. The token itself
+    /// is withheld; see `handle_fetch_pod_caller_token`.
     CallerToken,
     /// DLC-D admission provisioning, which carries per-operation credentials.
     DlcAdmission,
@@ -262,7 +262,6 @@ impl std::fmt::Display for Refusal {
                 Material::DlcAdmission => "no dlc admission provisioned for this pod",
                 Material::PodCertificate => "no certificate was issued for this pod",
                 Material::TaskToken => "no task token was minted for this pod",
-                Material::CallerToken => "no caller token minted for this pod",
             }),
             Refusal::AlreadyServed(o) => f.write_str(match o {
                 OneShot::BrokerSecret => "broker secret already served",
@@ -392,12 +391,6 @@ pub struct PodMaterial {
     /// The pod's certificate of authority and the pinned root key
     /// (`pod_authority`). Public material; the holder key stays on the node.
     pub pod_certificate: Option<crate::pod_authority::BootCertificate>,
-    /// This pod's caller-identity token for the node's management API.
-    ///
-    /// Derived host-side from a node-only secret and THIS pod's id, and served
-    /// only down this pod's own socket — so holding it proves which pod's
-    /// authority the caller is exercising. See `pod_caller_identity`.
-    pub caller_token: Option<String>,
     /// DLC-D verified-admission provisioning.
     pub dlc_admission: Option<DlcProvisioning>,
     /// The credential-broker capability, served exactly once.
@@ -952,22 +945,27 @@ fn handle_fetch_dlc_admission(material: Option<&DlcProvisioning>, served: &Serve
     Ok(claimed.release(serde_json::json!(m)).to_string())
 }
 
-/// Serve the caller-identity token for the node's management API ONCE (#2724).
+/// Serve this pod its own id ONCE (#2724). The caller token is never served
+/// to a Firecracker guest.
 ///
-/// Holding it IS exercising this pod's authority at the node (`identify_caller`
-/// checks the `(pod_id, token)` pair), so it is the tool-proxy's, not the
-/// workload's. The id travels with it, from the same socket-bound source.
-fn handle_fetch_pod_caller_token(
-    token: Option<&str>,
-    pod_id: uuid::Uuid,
-    served: &ServedLedger,
-) -> Reply {
-    let Some(t) = token else {
-        return Err(Refusal::NotProvisioned(Material::CallerToken));
-    };
+/// A Firecracker guest has no route to the node's HTTP listener, and that
+/// listener is the only place `identify_caller` reads a `(pod_id, token)`
+/// pair. Its management call is `POD_LIST`, which the socket itself
+/// authenticates. A token here would be a bearer secret for an endpoint the
+/// guest cannot reach, held in the VM with nothing to consume it, so it is not
+/// minted. The local driver, whose pods do reach the HTTP API, still delivers
+/// one by environment.
+///
+/// **Wire compatibility.** Every supported guest-init, from the 2.4.0 floor to
+/// the 2.7.0 pin, exports `NUCLEUS_POD_ID` only when the reply carries a
+/// `caller_token` string. So the field stays, EMPTY. The tool-proxy treats an
+/// empty token as absent (`node_client::caller_identity_from`), and an empty
+/// token verifies as no pod at the node. The id keeps reaching the receipt
+/// shipper and the lockdown client, which need it.
+fn handle_fetch_pod_caller_token(pod_id: uuid::Uuid, served: &ServedLedger) -> Reply {
     let claimed = served.claim(OneShot::CallerToken)?;
     Ok(claimed
-        .release(serde_json::json!({ "caller_token": t, "pod_id": pod_id.to_string() }))
+        .release(serde_json::json!({ "caller_token": "", "pod_id": pod_id.to_string() }))
         .to_string())
 }
 
@@ -1118,16 +1116,10 @@ where
         Ok(WorkloadApiCommand::FetchPodCallerToken) => {
             debug!("workload API FETCH_POD_CALLER_TOKEN for pod {}", pod_id);
             // Served for the pod bound to THIS socket. The request carries no
-            // pod id and could not be believed if it did — so the id is served
-            // ALONGSIDE the token, from the same socket-authenticated source.
-            // Both are needed: `identify_caller` requires the (id, token) pair,
-            // and on Firecracker the guest has no other way to learn its own id
-            // (it is not on the cmdline or in the spec the guest can read).
-            handle_fetch_pod_caller_token(
-                material.caller_token.as_deref(),
-                pod_id,
-                &material.served,
-            )
+            // pod id and could not be believed if it did. On Firecracker the
+            // guest has no other way to learn its own id: it is not on the
+            // cmdline, and it is not in the spec the guest can read.
+            handle_fetch_pod_caller_token(pod_id, &material.served)
         }
         Ok(WorkloadApiCommand::FetchTaskToken) => {
             debug!("workload API FETCH_TASK_TOKEN for pod {}", pod_id);
@@ -1621,7 +1613,8 @@ mod tests {
     async fn every_per_pod_value_is_served_once_across_connections() {
         const TOKEN: &str = "once-task-token-8c1e";
         const CERT: &str = "b25jZS1jZXJ0LTRmMDI=";
-        const CALLER: &str = "once-caller-token-d93a";
+        let pod = uuid::Uuid::new_v4();
+        let pod_id = pod.to_string();
         const DLC: &str = "op=once-dlc-credential-77b0";
         let temp_dir = tempdir().unwrap();
         let vsock_uds_path = temp_dir.path().join("vsock.sock");
@@ -1636,7 +1629,6 @@ mod tests {
                 token_b64: CERT.to_string(),
                 root_pubkey_hex: "22".repeat(32),
             }),
-            caller_token: Some(CALLER.to_string()),
             dlc_admission: Some(DlcProvisioning {
                 trusted_keys: "33".repeat(32),
                 issuer: "44".repeat(32),
@@ -1644,15 +1636,9 @@ mod tests {
             }),
             ..PodMaterial::default()
         };
-        let bridge = WorkloadApiVsockBridge::start(
-            &vsock_uds_path,
-            uuid::Uuid::new_v4(),
-            manager,
-            material,
-            None,
-        )
-        .await
-        .unwrap();
+        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, pod, manager, material, None)
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         async fn ask(socket: &std::path::Path, command: &str) -> String {
@@ -1675,7 +1661,7 @@ mod tests {
             ),
             (
                 "FETCH_POD_CALLER_TOKEN\n",
-                CALLER,
+                pod_id.as_str(),
                 "caller token already served",
             ),
             ("FETCH_DLC_ADMISSION\n", DLC, "dlc admission already served"),

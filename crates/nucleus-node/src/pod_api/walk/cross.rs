@@ -192,7 +192,6 @@ impl Run {
         let material = crate::workload_api_vsock::PodMaterial {
             task_token: None,
             pod_certificate: None,
-            caller_token: Some("test-token-123".into()),
             dlc_admission: None,
             broker_secret: Some("test-broker-secret".into()),
             broker_port: 0,
