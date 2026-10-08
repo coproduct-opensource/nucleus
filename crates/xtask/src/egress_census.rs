@@ -14,37 +14,51 @@
 //!   guest was told) and the probes' lines, for what the guest ATTEMPTED
 //!   directly and what came of it;
 //! * `host-effects.jsonl`: the host's signed authorization journal, for egress
-//!   the HOST performed for the pod.
+//!   the HOST performed for the pod;
+//!
+//! and, since E1 (ADR 0015's first step):
+//!
+//! * `fence-execution.iptables` and `fence-effect.iptables`: each pod's filter
+//!   table with its packet counters, snapshotted before teardown and read by
+//!   [`nucleus_spec::egress_fence::read`]: what the fence dropped by class of
+//!   destination, what it accepted, and the DNS packets the guest sent;
+//! * `effect-console.log`: the credentialed pod's guest console;
+//! * `eval-cell.json` ([`EvalCellRun`]), `eval-cell-spec.json`,
+//!   `eval-cell-console.log` and `fence-eval-cell.iptables`: the honest eval
+//!   cell, or the node's refusal of it.
 //!
 //! # What this refuses to do (ADR 0007 A)
 //!
-//! * A bundle missing any of those three files, or holding a line this cannot
-//!   parse, is `could not read` (A-2) — never a pod that made no egress.
+//! * A bundle missing any of the first three files, or holding a file this
+//!   cannot parse (a counter snapshot of a shape [`egress_fence::read`] does not
+//!   know included), is `could not read` (A-2) — never a pod that made no
+//!   egress.
+//! * An E1 measurement whose file is withheld, an eval cell the node refused,
+//!   or an "eval cell" whose spec is not labelled one, is `could not measure`
+//!   for that run, named with its reason, and never read as zero packets.
 //! * A console with no egress-probe verdict is `probe absent`, and contributes
 //!   no attempts (A-5): the absence of a refusal line is not a refusal.
 //! * A destination the probe reached is `reached`, whatever else the console
 //!   says about it; a refusal is recorded with the kernel's own reason, never
 //!   folded into one "blocked".
-//! * What no artifact records (DNS queries, packets the fence dropped, the
-//!   credentialed pod's own guest) is printed as "could not measure", every
-//!   run, so a reader of the output cannot take silence for zero.
 //!
 //! Usage: download the bundles (`gh run download <run> -n
 //! live-boot-evidence-x86_64 -D <dir>/<run>`), then `cargo xtask egress-census
 //! <dir>/<run>...`. Each directory is one run, labelled by its name. Exit
-//! status: 0 when every bundle was read; 1 when any bundle could not be read;
-//! 2 when no bundle was read at all.
+//! status: 0 when every bundle was read and every measurement made; 2 when no
+//! bundle was read, or any read bundle could not measure something; otherwise
+//! 1 when any bundle could not be read.
 
 use anyhow::{Context, Result, bail};
 use nucleus_spec::PodSpec;
+use nucleus_spec::egress_fence::{self, FenceCounters};
 use nucleus_spec::isolation_profile::IsolationProfile;
+use nucleus_spec::live_boot::{EvalCellRun, Files};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The bundle's file names (`live_boot_evidence`'s `collection.json` `files`).
-const SPEC: &str = "spec.json";
-const CONSOLE: &str = "guest-console.log";
+/// The journal's name, for error messages.
 const HOST_EFFECTS: &str = "host-effects.jsonl";
 
 /// `nucleus-egress-probe`'s lines (`crates/nucleus-egress-probe/src/main.rs`).
@@ -101,6 +115,45 @@ impl Declared {
     }
 }
 
+/// An E1 measurement, or why this run could not make it. Never a zero standing
+/// in for "not recorded" (ADR 0007 A-2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Measure<T> {
+    Measured(T),
+    CouldNotMeasure(String),
+}
+
+impl<T> Measure<T> {
+    fn get(&self) -> Option<&T> {
+        match self {
+            Measure::Measured(t) => Some(t),
+            Measure::CouldNotMeasure(_) => None,
+        }
+    }
+
+    fn why(&self) -> Option<&str> {
+        match self {
+            Measure::Measured(_) => None,
+            Measure::CouldNotMeasure(why) => Some(why),
+        }
+    }
+}
+
+/// What the credentialed pod's guest console says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectGuest {
+    pub resolver: Option<String>,
+    pub probe: Probe,
+}
+
+/// The honest eval cell, admitted and measured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalCell {
+    pub resolver: Option<String>,
+    pub exit_code: Option<i32>,
+    pub fence: FenceCounters,
+}
+
 /// One run's census.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Census {
@@ -113,6 +166,29 @@ pub struct Census {
     /// The adversary probe's exfiltration stage line, verbatim after the tag.
     pub exfil: Option<String>,
     pub host: Vec<HostEgress>,
+    /// The execution pod's fence counters.
+    pub fence_execution: Measure<FenceCounters>,
+    /// The credentialed (effect) pod's fence counters.
+    pub fence_effect: Measure<FenceCounters>,
+    /// The credentialed pod's guest.
+    pub effect_guest: Measure<EffectGuest>,
+    /// The eval cell.
+    pub eval_cell: Measure<EvalCell>,
+}
+
+impl Census {
+    /// Every measurement this run could not make, by name.
+    pub fn could_not_measure(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("execution pod's fence counters", self.fence_execution.why()),
+            ("credentialed pod's fence counters", self.fence_effect.why()),
+            ("credentialed pod's guest", self.effect_guest.why()),
+            ("eval cell", self.eval_cell.why()),
+        ]
+        .into_iter()
+        .filter_map(|(what, why)| why.map(|why| (what, why)))
+        .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -220,10 +296,83 @@ fn read_file(dir: &Path, name: &str) -> Result<String> {
     std::fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))
 }
 
+/// A file an E1 measurement needs: `None` when the bundle does not hold it
+/// (withheld, or from before E1), an error when it is there and cannot be read.
+fn optional_file(dir: &Path, name: &str) -> Result<Option<String>> {
+    let path = dir.join(name);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
+fn withheld(name: &str) -> String {
+    format!("{name} is not in the bundle")
+}
+
+/// A pod's fence counters: withheld is could-not-measure, unparseable is an error.
+fn read_fence(dir: &Path, name: &str) -> Result<Measure<FenceCounters>> {
+    Ok(match optional_file(dir, name)? {
+        None => Measure::CouldNotMeasure(withheld(name)),
+        Some(text) => {
+            Measure::Measured(egress_fence::read(&text).with_context(|| name.to_string())?)
+        }
+    })
+}
+
+fn read_spec(text: &str, name: &str) -> Result<PodSpec> {
+    serde_json::from_str(text).with_context(|| format!("{name} is not a PodSpec"))
+}
+
+/// The eval cell: its outcome, then (when admitted) its spec, console and fence.
+fn read_eval_cell(dir: &Path, files: &Files) -> Result<Measure<EvalCell>> {
+    let Some(text) = optional_file(dir, &files.eval_cell)? else {
+        return Ok(Measure::CouldNotMeasure(withheld(&files.eval_cell)));
+    };
+    let run: EvalCellRun = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not an eval-cell run", files.eval_cell))?;
+    let exit_code = match run {
+        EvalCellRun::Refused { status, reason } => {
+            return Ok(Measure::CouldNotMeasure(format!(
+                "the node refused the eval cell (HTTP {status}): {}",
+                reason.trim()
+            )));
+        }
+        EvalCellRun::Admitted { pod: _, exit_code } => exit_code,
+    };
+    let Some(spec) = optional_file(dir, &files.eval_cell_spec)? else {
+        return Ok(Measure::CouldNotMeasure(withheld(&files.eval_cell_spec)));
+    };
+    let profile = IsolationProfile::of(&read_spec(&spec, &files.eval_cell_spec)?)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    match profile {
+        IsolationProfile::EvalCell => {}
+        IsolationProfile::Standard => {
+            return Ok(Measure::CouldNotMeasure(format!(
+                "{} is labelled {profile}, so the pod it ran is not an eval cell",
+                files.eval_cell_spec
+            )));
+        }
+    }
+    let Some(console) = optional_file(dir, &files.eval_cell_console)? else {
+        return Ok(Measure::CouldNotMeasure(withheld(&files.eval_cell_console)));
+    };
+    let (resolver, _, _) = read_console(&console)?;
+    Ok(match read_fence(dir, &files.fence_eval_cell)? {
+        Measure::CouldNotMeasure(why) => Measure::CouldNotMeasure(why),
+        Measure::Measured(fence) => Measure::Measured(EvalCell {
+            resolver,
+            exit_code,
+            fence,
+        }),
+    })
+}
+
 /// One bundle's census, or why it could not be read.
 pub fn read_bundle(dir: &Path) -> Result<Census> {
-    let spec: PodSpec = serde_json::from_str(&read_file(dir, SPEC)?)
-        .with_context(|| format!("{SPEC} is not a PodSpec"))?;
+    let files = Files::standard();
+    let spec = read_spec(&read_file(dir, &files.spec)?, &files.spec)?;
     let profile = IsolationProfile::of(&spec).map_err(|e| anyhow::anyhow!("{e}"))?;
     let network = spec.spec.network.as_ref();
     let declared = Declared {
@@ -231,8 +380,16 @@ pub fn read_bundle(dir: &Path) -> Result<Census> {
         dns_allow: network.map_or(0, |n| n.dns_allow.len()),
         credentialed: spec.spec.credentialed_egress.len(),
     };
-    let (resolver, probe, exfil) = read_console(&read_file(dir, CONSOLE)?)?;
-    let host = read_host_effects(&read_file(dir, HOST_EFFECTS)?)?;
+    let (resolver, probe, exfil) = read_console(&read_file(dir, &files.guest_console)?)?;
+    let host = read_host_effects(&read_file(dir, &files.host_effects)?)?;
+    let effect_guest = match optional_file(dir, &files.effect_console)? {
+        None => Measure::CouldNotMeasure(withheld(&files.effect_console)),
+        Some(text) => {
+            let (resolver, probe, _) =
+                read_console(&text).with_context(|| files.effect_console.clone())?;
+            Measure::Measured(EffectGuest { resolver, probe })
+        }
+    };
     Ok(Census {
         profile,
         declared,
@@ -240,7 +397,24 @@ pub fn read_bundle(dir: &Path) -> Result<Census> {
         probe,
         exfil,
         host,
+        fence_execution: read_fence(dir, &files.fence_execution)?,
+        fence_effect: read_fence(dir, &files.fence_effect)?,
+        effect_guest,
+        eval_cell: read_eval_cell(dir, &files)?,
     })
+}
+
+/// The exit status: 2 when nothing was read or anything read could not be
+/// measured, else 1 when any bundle could not be read, else 0. "Could not
+/// measure" is never 0 (ADR 0015 E1).
+pub fn status(read: &[(String, Census)], unreadable: &[(String, String)]) -> i32 {
+    if read.is_empty() || read.iter().any(|(_, c)| !c.could_not_measure().is_empty()) {
+        2
+    } else if unreadable.is_empty() {
+        0
+    } else {
+        1
+    }
 }
 
 /// Read every bundle, print the census, and return the exit status.
@@ -257,13 +431,7 @@ pub fn run(bundles: &[PathBuf]) -> Result<i32> {
         }
     }
     print!("{}", render(&read, &unreadable));
-    Ok(if read.is_empty() {
-        2
-    } else if unreadable.is_empty() {
-        0
-    } else {
-        1
-    })
+    Ok(status(&read, &unreadable))
 }
 
 /// The report. A pure function of what was read, so the tests pin it.
@@ -334,19 +502,155 @@ pub fn render(read: &[(String, Census)], unreadable: &[(String, String)]) -> Str
     for (h, n) in &host {
         let _ = writeln!(out, "  {:<10} {:<32} {n}", h.operation, h.origin);
     }
+    render_fences(&mut out, read);
+    render_effect_guest(&mut out, read);
+    render_eval_cells(&mut out, read);
+    let missing: Vec<_> = read
+        .iter()
+        .flat_map(|(label, c)| {
+            c.could_not_measure()
+                .into_iter()
+                .map(move |(what, why)| (label, what, why))
+        })
+        .collect();
+    let _ = writeln!(out, "could not measure: {}", missing.len());
+    for (label, what, why) in missing {
+        let _ = writeln!(out, "  could not measure {label}: {what}: {why}");
+    }
     let _ = writeln!(
         out,
-        "could not measure: DNS queries (no resolver is started without dns_allow, and none logs queries); \
-         packets the fence dropped (the chain has no counters or log target in the bundle); \
-         the credentialed pod's guest (its console is not in the bundle)"
+        "not measured by this reader: latency and throughput of any egress path (ADR 0015 E2)"
     );
-    if !profiles.contains_key(IsolationProfile::EvalCell.name()) {
+    out
+}
+
+/// One line of a fence's counters.
+fn fence_line(f: &FenceCounters) -> String {
+    let FenceCounters {
+        dns,
+        dropped,
+        accepted,
+    } = f;
+    format!(
+        "dropped {} (floor {}, spec deny {}, unlisted {}, into namespace {}); \
+         accepted listed {}, resolver {}, established {}; dns sent udp {}, tcp {}",
+        f.dropped_total(),
+        dropped.floor,
+        dropped.spec_deny,
+        dropped.unlisted,
+        dropped.into_namespace,
+        accepted.listed,
+        accepted.resolver,
+        accepted.established,
+        dns.udp,
+        dns.tcp
+    )
+}
+
+/// The fence counters per pod, summed over the runs that measured them, and
+/// each run's dropped packets.
+fn render_fences(out: &mut String, read: &[(String, Census)]) {
+    use std::fmt::Write as _;
+    let _ = writeln!(
+        out,
+        "fence counters (guest traffic: FORWARD and INPUT; summed over the runs that measured them):"
+    );
+    type Pick = fn(&Census) -> Option<&FenceCounters>;
+    let pods: [(&str, Pick); 3] = [
+        ("execution pod", |c| c.fence_execution.get()),
+        ("credentialed pod", |c| c.fence_effect.get()),
+        ("eval cell", |c| c.eval_cell.get().map(|e| &e.fence)),
+    ];
+    for (name, pick) in pods {
+        let mut sum = FenceCounters::none();
+        let mut runs = 0usize;
+        for f in read.iter().filter_map(|(_, c)| pick(c)) {
+            sum.add(f);
+            runs += 1;
+        }
+        if runs == 0 {
+            let _ = writeln!(out, "  {name:<16} measured in 0 of {} runs", read.len());
+        } else {
+            let _ = writeln!(
+                out,
+                "  {name:<16} measured in {runs} of {} runs: {}",
+                read.len(),
+                fence_line(&sum)
+            );
+        }
+    }
+    let _ = writeln!(
+        out,
+        "dropped packets per run (execution / credentialed / eval cell):"
+    );
+    for (label, c) in read {
+        let cell = |f: Option<&FenceCounters>| {
+            f.map_or_else(
+                || "-".to_string(),
+                |f| f.dropped_total().packets.to_string(),
+            )
+        };
         let _ = writeln!(
             out,
-            "could not measure: eval cells (no bundle's execution pod is one)"
+            "  {label:<24} {} / {} / {}",
+            cell(pods[0].1(c)),
+            cell(pods[1].1(c)),
+            cell(pods[2].1(c))
         );
     }
-    out
+}
+
+fn render_effect_guest(out: &mut String, read: &[(String, Census)]) {
+    use std::fmt::Write as _;
+    let mut resolvers: BTreeMap<String, usize> = BTreeMap::new();
+    let mut probe_ran = 0usize;
+    let mut runs = 0usize;
+    for g in read.iter().filter_map(|(_, c)| c.effect_guest.get()) {
+        runs += 1;
+        *resolvers
+            .entry(
+                g.resolver
+                    .clone()
+                    .unwrap_or_else(|| "(no nucleus.net)".into()),
+            )
+            .or_default() += 1;
+        match g.probe {
+            Probe::Absent => {}
+            Probe::Ran(_) => probe_ran += 1,
+        }
+    }
+    let _ = writeln!(
+        out,
+        "credentialed pod's guest (console read in {runs} of {} runs): resolver {resolvers:?}, egress probe ran in {probe_ran}",
+        read.len()
+    );
+}
+
+fn render_eval_cells(out: &mut String, read: &[(String, Census)]) {
+    use std::fmt::Write as _;
+    let mut exits: BTreeMap<String, usize> = BTreeMap::new();
+    let mut resolvers: BTreeMap<String, usize> = BTreeMap::new();
+    for e in read.iter().filter_map(|(_, c)| c.eval_cell.get()) {
+        *exits
+            .entry(
+                e.exit_code
+                    .map_or_else(|| "no exit code".into(), |c| c.to_string()),
+            )
+            .or_default() += 1;
+        *resolvers
+            .entry(
+                e.resolver
+                    .clone()
+                    .unwrap_or_else(|| "(no nucleus.net)".into()),
+            )
+            .or_default() += 1;
+    }
+    let runs: usize = exits.values().sum();
+    let _ = writeln!(
+        out,
+        "eval cell admitted and measured in {runs} of {} runs: exit codes {exits:?}, resolver {resolvers:?}",
+        read.len()
+    );
 }
 
 #[cfg(test)]
@@ -428,8 +732,184 @@ mod tests {
 
     #[test]
     fn the_report_names_what_it_could_not_measure() {
-        let report = render(&[], &[]);
-        assert!(report.contains("could not measure: DNS queries"));
-        assert!(report.contains("could not measure: eval cells"));
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run-1");
+        bundle(&run_dir);
+        for name in [
+            &files().fence_execution,
+            &files().effect_console,
+            &files().eval_cell,
+        ] {
+            std::fs::remove_file(run_dir.join(name)).unwrap();
+        }
+        let census = read_bundle(&run_dir).unwrap();
+        let report = render(&[("run-1".into(), census)], &[]);
+        assert!(report.contains("could not measure: 3"), "{report}");
+        assert!(
+            report.contains("could not measure run-1: execution pod's fence counters"),
+            "{report}"
+        );
+        assert!(
+            report.contains("could not measure run-1: eval cell"),
+            "{report}"
+        );
+        assert!(report.contains("not measured by this reader: latency"));
+    }
+
+    fn files() -> Files {
+        Files::standard()
+    }
+
+    /// A fence as the node writes it: the probe's two connects and three DNS
+    /// packets dropped as unlisted.
+    const FENCE: &str = "*filter\n:INPUT DROP [0:0]\n:FORWARD DROP [5:300]\n:OUTPUT DROP [0:0]\n\
+        [3:180] -A FORWARD -p udp -m udp --dport 53 -m comment --comment \"nucleus-fence:dns-udp\"\n\
+        [1:60] -A FORWARD -p tcp -m tcp --dport 53 -m comment --comment \"nucleus-fence:dns-tcp\"\n\
+        [0:0] -A FORWARD -d 169.254.0.0/16 -m comment --comment \"nucleus-fence:floor\" -j DROP\n\
+        COMMIT\n";
+
+    fn spec(profile: Option<&str>) -> String {
+        let labels = profile.map_or_else(String::new, |p| {
+            format!(
+                r#","metadata":{{"labels":{{"{}":"{p}"}}}}"#,
+                nucleus_spec::isolation_profile::PROFILE_LABEL
+            )
+        });
+        format!(
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod"{labels},"spec":{{"network":{{"allow":[],"deny":[]}}}}}}"#
+        )
+    }
+
+    /// A whole E1 bundle in `dir`, every measurement present.
+    fn bundle(dir: &Path) {
+        let f = files();
+        std::fs::create_dir_all(dir).unwrap();
+        let console = format!(
+            "{CMDLINE}NUCLEUS_EGRESS_CHECK: denied-connect 1.1.1.1:443 REFUSED (connection timed out) (ok)\nNUCLEUS_EGRESS_PROBE: PASS\n"
+        );
+        let run = EvalCellRun::Admitted {
+            pod: "p".into(),
+            exit_code: Some(0),
+        };
+        for (name, body) in [
+            (&f.spec, spec(None)),
+            (&f.guest_console, console),
+            (&f.host_effects, String::new()),
+            (&f.fence_execution, FENCE.into()),
+            (&f.fence_effect, FENCE.into()),
+            (&f.effect_console, CMDLINE.into()),
+            (&f.eval_cell, serde_json::to_string(&run).unwrap()),
+            (&f.eval_cell_spec, spec(Some("eval-cell"))),
+            (&f.eval_cell_console, CMDLINE.into()),
+            (&f.fence_eval_cell, FENCE.into()),
+        ] {
+            std::fs::write(dir.join(name), body).unwrap();
+        }
+    }
+
+    fn census_of(dir: &Path) -> (Census, i32) {
+        let census = read_bundle(dir).unwrap();
+        let code = run(&[dir.to_path_buf()]).unwrap();
+        (census, code)
+    }
+
+    #[test]
+    fn a_whole_bundle_measures_every_pod_and_exits_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        bundle(dir.path());
+        let (census, code) = census_of(dir.path());
+        assert_eq!(census.could_not_measure(), vec![]);
+        let fence = census.fence_execution.get().unwrap();
+        assert_eq!(fence.dropped.unlisted.packets, 5);
+        assert_eq!(fence.dns.udp.packets, 3);
+        assert_eq!(
+            census
+                .eval_cell
+                .get()
+                .unwrap()
+                .fence
+                .dropped_total()
+                .packets,
+            5
+        );
+        assert_eq!(code, 0);
+    }
+
+    /// ADR 0015 E1's red: a withheld counter file is "could not measure" and
+    /// exit 2, never a fence that dropped nothing.
+    #[test]
+    fn a_withheld_counter_file_is_could_not_measure_never_zero_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        bundle(dir.path());
+        std::fs::remove_file(dir.path().join(&files().fence_execution)).unwrap();
+        let (census, code) = census_of(dir.path());
+        assert_eq!(
+            census.fence_execution,
+            Measure::CouldNotMeasure("fence-execution.iptables is not in the bundle".into())
+        );
+        assert_eq!(code, 2);
+        let report = render(&[("r".into(), census)], &[]);
+        assert!(
+            report
+                .lines()
+                .any(|l| l.trim_start().starts_with("r ") && l.ends_with(" - / 5 / 5")),
+            "the run's execution drops print as -, not 0: {report}"
+        );
+    }
+
+    #[test]
+    fn a_counter_file_of_an_unknown_shape_is_could_not_read() {
+        let dir = tempfile::tempdir().unwrap();
+        bundle(dir.path());
+        let untagged = FENCE.replace(" -m comment --comment \"nucleus-fence:floor\"", "");
+        std::fs::write(dir.path().join(&files().fence_effect), untagged).unwrap();
+        let err = read_bundle(dir.path()).unwrap_err();
+        assert!(format!("{err:#}").contains("no fence tag"), "{err:#}");
+    }
+
+    #[test]
+    fn a_refused_or_mislabelled_eval_cell_is_could_not_measure() {
+        let dir = tempfile::tempdir().unwrap();
+        bundle(dir.path());
+        let refused = EvalCellRun::Refused {
+            status: 400,
+            reason: "the node is not attested".into(),
+        };
+        std::fs::write(
+            dir.path().join(&files().eval_cell),
+            serde_json::to_string(&refused).unwrap(),
+        )
+        .unwrap();
+        let (census, code) = census_of(dir.path());
+        assert_eq!(
+            census.eval_cell,
+            Measure::CouldNotMeasure(
+                "the node refused the eval cell (HTTP 400): the node is not attested".into()
+            )
+        );
+        assert_eq!(code, 2);
+
+        bundle(dir.path());
+        std::fs::write(dir.path().join(&files().eval_cell_spec), spec(None)).unwrap();
+        let (census, code) = census_of(dir.path());
+        assert!(
+            census
+                .eval_cell
+                .why()
+                .is_some_and(|w| w.contains("not an eval cell")),
+            "{:?}",
+            census.eval_cell
+        );
+        assert_eq!(code, 2);
+    }
+
+    #[test]
+    fn a_withheld_credentialed_console_is_could_not_measure() {
+        let dir = tempfile::tempdir().unwrap();
+        bundle(dir.path());
+        std::fs::remove_file(dir.path().join(&files().effect_console)).unwrap();
+        let (census, code) = census_of(dir.path());
+        assert!(census.effect_guest.why().is_some());
+        assert_eq!(code, 2);
     }
 }

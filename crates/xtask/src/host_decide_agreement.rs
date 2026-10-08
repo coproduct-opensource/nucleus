@@ -474,11 +474,13 @@ fn read_disagreements(text: &str) -> Result<Classes> {
 }
 
 /// The consoles a bundle may carry, by their bundle names.
-fn consoles(files: &Files) -> [&str; 3] {
+fn consoles(files: &Files) -> [&str; 4] {
     [
         files.guest_console.as_str(),
         files.effect_console.as_str(),
         files.coverage_console.as_str(),
+        // Since ADR 0015 E1: absent when the node refused the eval cell.
+        files.eval_cell_console.as_str(),
     ]
 }
 
