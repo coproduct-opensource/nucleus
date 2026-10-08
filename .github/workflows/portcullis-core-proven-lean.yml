@@ -219,6 +219,7 @@ jobs:
             UniversalDetection
             PodMachineSpike
             PodCrossView
+            PodCrossViewIdentity
             IdentityOracleMirror
             ConfidentialityOracleMirror
             IntegrityOracleMirror

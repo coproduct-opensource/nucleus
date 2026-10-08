@@ -194,6 +194,11 @@ lean_lib «PodMachineSpike» where
 lean_lib «PodCrossView» where
   roots := #[`PodCrossView]
 
+-- C2: the identity surface (SVID served per pod) — local-respect over the
+-- certificate cache and vm_registry. Imports PodCrossView.
+lean_lib «PodCrossViewIdentity» where
+  roots := #[`PodCrossViewIdentity]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.
