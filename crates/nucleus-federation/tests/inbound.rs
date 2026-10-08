@@ -406,11 +406,12 @@ fn p256_order_minus(s: &[u8]) -> [u8; 32] {
         0x25, 0x51,
     ];
     let mut out = [0u8; 32];
-    let mut borrow = 0i16;
+    let mut borrow = false;
     for i in (0..32).rev() {
-        let d = i16::from(N[i]) - i16::from(s[i]) - borrow;
-        borrow = i16::from(d < 0);
-        out[i] = (d + 256 * borrow) as u8;
+        let (d1, b1) = N[i].overflowing_sub(s[i]);
+        let (d2, b2) = d1.overflowing_sub(u8::from(borrow));
+        out[i] = d2;
+        borrow = b1 || b2;
     }
     out
 }
