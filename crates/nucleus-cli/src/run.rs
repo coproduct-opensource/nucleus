@@ -491,6 +491,7 @@ pub(crate) async fn dispatch(
         eval_cell::refuse_host_tier(args.isolation_profile, command)?;
         let declared =
             crate::host_tier::HostAgentOptIn::declare(args.unsandboxed, command, &agent, work_dir)?;
+        crate::workspace_scan::warn(work_dir, "the agent runs in it on this host");
         return if args.hook {
             run_hook(args, &agent, declared, policy, work_dir, prompt).await
         } else {

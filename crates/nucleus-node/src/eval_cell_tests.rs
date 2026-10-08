@@ -361,7 +361,7 @@ fn the_eval_cell_decider_runs_at_create_before_the_clamp_and_admission() {
         .nth(1)
         .expect("create_pod_internal exists");
     let decide = body
-        .find("eval_cell::admit_on(state, &spec, parent_pod_id, id)?;")
+        .find("let profile = eval_cell::admit_on(state, &spec, parent_pod_id, id)?;")
         .expect("create calls the eval-cell decider and propagates its refusal");
     let clamp = body
         .find("driver::clamp_isolation_to_backend(")

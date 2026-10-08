@@ -101,6 +101,9 @@ mod capability;
 #[cfg(feature = "cedar")]
 pub mod cedar_bridge;
 pub mod egress_budget;
+/// What a repository can make git execute: the one list the consume guard and
+/// the pre-mount workspace scan share (ADR 0013, ADR 0007 G-1).
+pub mod git_exec;
 // Always compiled: the certificate DATA types (LatticeCertificate, SinkScope,
 // VerifiedPermissions, …) and non-crypto logic are ring-free; only the
 // sign/verify/mint/delegate fns inside are `#[cfg(feature = "crypto")]`-gated
