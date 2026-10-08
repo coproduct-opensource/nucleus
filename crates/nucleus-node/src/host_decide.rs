@@ -66,6 +66,9 @@
 
 pub(crate) mod effects;
 pub(crate) mod evidence;
+pub(crate) mod starting_label;
+
+pub(crate) use starting_label::{StartingLabel, Untrusted};
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -469,7 +472,13 @@ impl PodPolicy {
         let budget = crate::pod_authority::budget::SharedBudget::memory(
             portcullis::BudgetLedger::for_parent(&kernel.effective().budget),
         );
-        Self::with_budget(kernel, evidence, budget, effects::ApprovalTiming::HUMAN)
+        Self::with_budget(
+            kernel,
+            evidence,
+            budget,
+            effects::ApprovalTiming::HUMAN,
+            HostTaint::clean(),
+        )
     }
 
     pub(crate) fn with_budget(
@@ -477,11 +486,15 @@ impl PodPolicy {
         evidence: evidence::Evidence,
         budget: crate::pod_authority::budget::SharedBudget,
         approval_timing: effects::ApprovalTiming,
+        // Where the label starts: `StartingLabel::taint`, the join of what the
+        // host put into the cell (ADR 0014 §3). Only `observe_response`, an
+        // `Observe` and a verified declassification move it afterwards.
+        taint: HostTaint,
     ) -> SharedPodPolicy {
         Arc::new(Mutex::new(Self {
             kernel,
             budget,
-            taint: HostTaint::clean(),
+            taint,
             approvals: effects::Approvals::new(approval_timing),
             evidence,
             revoked: tokio::sync::watch::channel(false).0,

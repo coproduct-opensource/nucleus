@@ -137,6 +137,17 @@ that verify a declassification token move from the guest's environment
 (`NUCLEUS_DECLASSIFY_TRUSTED_KEYS`) to the host. A key the guest holds is a key guest root
 holds.
 
+**As built at S3.** `host_decide::StartingLabel::of` is the one decider of the starting
+label. An eval cell starts untrusted. A standard pod starts untrusted when
+`workspace_scan::sources` names any caller content for its driver. The untrusted label is
+the lattice point web content already has. No provenance claim lowers the label: this node
+has no provenance trust set, and a spec has no claim field, so there is nothing to verify.
+Today the host lowers its label in one way only: the operator's action-bound approval of a
+held push (#3255), which is spent once (trust-boundary row P5b). The governor-token path is
+not on the host yet. A token names a node in the guest's graph, which the host's single
+label has no counterpart for, and moving the keys out of the guest changes what a standard
+pod may declassify. Both are open (S3 PR).
+
 The consequence for an eval cell is intended and visible: an eval cell with an untrusted
 workspace has the trifecta guard armed from boot. Its outbound effects that need a trusted
 label are held for approval or declassification from the start, whether or not the guest
@@ -292,9 +303,17 @@ summed before they are judged:
 | Class | Meaning | Tolerated in the window |
 |---|---|---|
 | guest stricter | the host would have allowed what the guest refused | **0**. Enforcing the host's answer would grant more. |
-| host stricter | the host withholds more than the guest enforced | Only when attributed to a listed honest source: initial taint (§3), an approval granted in the guest only, guest-held declassification keys. **0 unattributed.** |
+| host stricter | the host withholds more than the guest enforced | Only when attributed to a listed honest source: host taint (§3: the initial taint, and the pod-wide join, which is never below the guest's per-node graph), an approval granted in the guest only, guest-held declassification keys. **0 unattributed.** |
 | differing reason | both refuse, for different reasons | **0 unattributed**: the signed record would name another cause. |
 | unclassified | a disagreement with no record | **0** |
+
+The reader attributes a host-stricter pair to host taint when the host's refusal is
+`denied:flow_refused`. S2's first live table (run 37835337702) had one such pair: after web
+content, a write the guest held as `approval_required` and the host refused. S3 settled it
+in the host's favour. A write is not an action-bound sink, so no approval declassifies its
+flow. The guest offered an approval only from its exposure gate, which it reached because
+its own graph did not count the write as tainted. Every other host-stricter pair is
+unattributed until a source is listed here, and the reader turns it red.
 
 **The threshold.** The host becomes authoritative for eval cells (step S6) when one
 window, of at least 14 consecutive days and at least 2,000 compared decisions, with at
