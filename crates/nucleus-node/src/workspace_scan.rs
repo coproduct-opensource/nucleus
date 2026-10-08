@@ -310,9 +310,10 @@ pub(crate) fn decide(
                  bytes a digest pins",
                 source.field
             )),
-            Read::NotThePinnedBytes(what) => {
-                items.push(format!("{} is not the disk its spec pins ({what})", source.field))
-            }
+            Read::NotThePinnedBytes(what) => items.push(format!(
+                "{} is not the disk its spec pins ({what})",
+                source.field
+            )),
             Read::Skipped => {}
         }
     }
