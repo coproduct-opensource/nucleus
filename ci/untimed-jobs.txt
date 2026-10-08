@@ -27,6 +27,8 @@
 #   2026-10-02 — exemplar-scoreboard.yml:scoreboard left (timeout-minutes: 15). It became a
 #                required context, so it now runs under merge_group and must fit the queue
 #                budget (CI-I7).
+#   2026-10-08 — quickstart-boot.yml:boot-a-real-pod left (timeout-minutes: 60). It became a
+#                required context for the same reason; measured 11-19 min over 40 runs.
 
 action-smoke-test.yml:dry-run
 action-smoke-test.yml:live-test
@@ -37,7 +39,6 @@ oidc-keyless-prototype.yml:keyless-oidc-e2e
 quickstart-boot.yml:egress-probe-falsifier
 quickstart-boot.yml:pins-resolve
 quickstart-boot.yml:boot-a-real-pod-aarch64
-quickstart-boot.yml:boot-a-real-pod
 release.yml:build
 release.yml:build-musl
 release.yml:build-rootfs

@@ -278,6 +278,9 @@ jobs:
   boot-a-real-pod:
     name: a real nucleus pod boots and is enforced (x86_64)
     runs-on: ubuntu-24.04
+    # A required context: GitHub's 360-minute default equals the queue's whole check budget
+    # (CI-I7). Measured 2026-10-07/08 over 40 runs: 11-19 minutes end to end.
+    timeout-minutes: 60
     permissions:
       contents: read
       # Only for the compile cache's keyless GCP login below. The token is

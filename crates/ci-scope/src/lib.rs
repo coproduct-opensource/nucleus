@@ -251,11 +251,14 @@ impl fmt::Display for Decision {
                 f.write_str("run: the event carried no base/head range; could not look, so running")
             }
             Self::Run(RunBecause::DiffFailed(why)) => {
-                write!(f, "run: the diff failed ({why}); could not look, so running")
+                write!(
+                    f,
+                    "run: the diff failed ({why}); could not look, so running"
+                )
             }
-            Self::Run(RunBecause::EmptyDiff) => {
-                f.write_str("run: the diff listed no file; an empty change is not evidence of scope")
-            }
+            Self::Run(RunBecause::EmptyDiff) => f.write_str(
+                "run: the diff listed no file; an empty change is not evidence of scope",
+            ),
             Self::Run(RunBecause::Touched(file)) => write!(f, "run: in scope -- `{file}` changed"),
             Self::Skip { examined } => write!(
                 f,
@@ -428,7 +431,10 @@ scripts/check-egress-probe.sh
             |_| Err("bad revision".into()),
             &list(),
         );
-        assert_eq!(d, Decision::Run(RunBecause::DiffFailed("bad revision".into())));
+        assert_eq!(
+            d,
+            Decision::Run(RunBecause::DiffFailed("bad revision".into()))
+        );
         assert!(d.relevant());
     }
 
