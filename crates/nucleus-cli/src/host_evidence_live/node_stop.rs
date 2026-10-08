@@ -1,7 +1,9 @@
 //! A node stopped by a signal leaves nothing running (#3204). Live: Linux, KVM, root, a real
 //! Firecracker pod. Invoked by `cargo xtask node-stop-live`; never a mock driver.
 //!
-//! Two lives end two ways:
+//! First, in life 1, a pod is cancelled and must leave nothing, and every VMM seen must be pid 1
+//! of a pid namespace of its own (#2571: `jailer --new-pid-ns`, with the node tracking the VMM
+//! by the pid its jail recorded). Then two lives end two ways:
 //!
 //! - **SIGTERM**: the node drains. Afterwards pod A has no VMM process, no network namespace, no
 //!   jail, no host firewall rule and no jail cgroup, and its lifecycle log records the drain.
@@ -22,7 +24,7 @@ use super::{Created, body, effect_pod_spec, node::Node};
 /// What one pod holds on the host, observed independently of the node.
 #[derive(Debug)]
 struct Remains {
-    /// Processes whose argv carries `--id <pod id>`: the jailer and the VMM it became.
+    /// Processes whose argv carries `--id <pod id>`: the VMM, and the jailer while it runs.
     vmm: Vec<u32>,
     netns: bool,
     jail: bool,
@@ -154,14 +156,79 @@ async fn create(node: &Node) -> Result<Uuid> {
     Ok(created.id)
 }
 
+/// `NSpid` from `/proc/<pid>/status`: the process's pid in each pid namespace, outermost first.
+fn nspid(pid: u32) -> Result<Vec<u32>> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status"))?;
+    let line = status
+        .lines()
+        .find_map(|l| l.strip_prefix("NSpid:"))
+        .context("no NSpid line")?;
+    Ok(line
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<Result<_, _>>()?)
+}
+
+/// #2571: every process carrying the pod's `--id` is its VMM, and it is pid 1 of a pid
+/// namespace of its own. The jailer that spawned it has exited, so it is not among them.
+fn require_own_pid_namespace(pod: &str, remains: &Remains, failures: &mut Vec<String>) {
+    for &pid in &remains.vmm {
+        match nspid(pid) {
+            Ok(chain) if chain.len() >= 2 && chain.last() == Some(&1) => {}
+            Ok(chain) => failures.push(format!(
+                "pod {pod}'s VMM (pid {pid}) is not pid 1 of its own pid namespace: NSpid {chain:?}"
+            )),
+            Err(e) => failures.push(format!(
+                "pod {pod}'s VMM (pid {pid}): NSpid unreadable: {e}"
+            )),
+        }
+    }
+}
+
+/// #2571: a cancelled pod leaves nothing. With the VMM outside the node's pid namespace and no
+/// longer the node's child, the kill and the wait go through the pid the jail recorded.
+async fn cancel_leaves_nothing(
+    node: &Node,
+    failures: &mut Vec<String>,
+    seen: &mut Vec<u32>,
+) -> Result<()> {
+    let c = create(node).await?;
+    let before = Remains::observe(node, c).await?;
+    seen.extend(&before.vmm);
+    before.require_present("pod C before cancel")?;
+    require_own_pid_namespace("C", &before, failures);
+    body(
+        node.client
+            .post(format!("{}/v1/pods/{c}/cancel", node.url))
+            .send()
+            .await?,
+    )
+    .await?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let after = loop {
+        let after = Remains::observe(node, c).await?;
+        if after.leftovers().is_empty() || std::time::Instant::now() >= deadline {
+            break after;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    };
+    seen.extend(&after.vmm);
+    for left in after.leftovers() {
+        failures.push(format!("cancel: pod C left its {left}"));
+    }
+    Ok(())
+}
+
 /// The two lives. Failures are collected rather than returned at the first, so one run reports
 /// every leftover — which is what a red→green table needs.
 async fn scenario(node: &mut Node, failures: &mut Vec<String>, seen: &mut Vec<u32>) -> Result<()> {
-    // Life 1 ends in SIGTERM: the drain.
+    // Life 1: a cancelled pod is reaped whole, then the life ends in SIGTERM: the drain.
+    cancel_leaves_nothing(node, failures, seen).await?;
     let a = create(node).await?;
     let before = Remains::observe(node, a).await?;
     seen.extend(&before.vmm);
     before.require_present("pod A before SIGTERM")?;
+    require_own_pid_namespace("A", &before, failures);
     let status = node.signal("TERM", Duration::from_secs(60)).await?;
     let after = Remains::observe(node, a).await?;
     seen.extend(&after.vmm);
