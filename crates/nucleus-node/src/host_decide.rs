@@ -50,7 +50,9 @@
 //! Listed so a disagreement is read as data, not noise:
 //!
 //! * a human approval grant (`issue_approved_token` moves the guest's exposure);
-//! * DLC admission and declassification keys provisioned into the guest kernel;
+//! * declassification keys provisioned into the guest kernel (DLC admission no
+//!   longer: the host's kernel reads the pod's DLC labels through the same
+//!   `DlcAdmission::provision` the guest's does);
 //! * per-node declassification scopes in the guest's graph (the host's taint is
 //!   one label, so it is never less restrictive than the graph);
 //! * a poisoned guest graph, which the guest reports as the top label but which

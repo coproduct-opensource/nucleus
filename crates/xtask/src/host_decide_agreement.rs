@@ -45,8 +45,10 @@
 //! Usage: download the bundles (`gh run download <run> -n live-boot-evidence-x86_64
 //! -D <dir>/<run>`), then `cargo xtask host-decide-agreement <dir>/<run>...`.
 //! Each directory is one run, labelled by its name. Exit status: 1 when any
-//! bundle could not be read, any disagreement is unclassified, or a run with a
-//! coverage pod compared nothing for an operation in the coverage set;
+//! bundle could not be read, any disagreement is unclassified, any is guest
+//! stricter (ADR 0014 §10 bounds that class at zero: enforcing the host's
+//! answer would grant more), or a run with a coverage pod compared nothing for
+//! an operation in the coverage set;
 //! otherwise 2 when nothing was compared ("could not measure"); otherwise 0.
 
 use anyhow::{Context, Result, bail};
@@ -633,6 +635,7 @@ impl Summary {
     pub fn exit_code(&self) -> i32 {
         if !self.runs_unreadable.is_empty()
             || self.unclassified() > 0
+            || self.classes.guest_stricter > 0
             || !self.coverage_missing.is_empty()
         {
             1
@@ -761,6 +764,12 @@ fn print_summary(s: &Summary) {
     );
     for m in &s.coverage_missing {
         println!("COVERAGE MISSING (no compared decision) {m}");
+    }
+    if s.classes.guest_stricter > 0 {
+        println!(
+            "GUEST STRICTER {}: the host would have allowed what the guest refused (§10 bounds this at 0)",
+            s.classes.guest_stricter
+        );
     }
     for u in &s.runs_unreadable {
         println!("unreadable: {u}");
@@ -1066,6 +1075,37 @@ mod tests {
         );
         assert_eq!(s.unclassified(), 1);
         assert_eq!(s.exit_code(), 1);
+    }
+
+    /// ADR 0014 §10 bounds guest-stricter at zero, so one is red on its own,
+    /// with every disagreement classified. Live run 37833208274's coverage pod
+    /// carried DLC labels the host did not read, and its six read as exit 0.
+    #[test]
+    fn a_guest_stricter_disagreement_is_red() {
+        let judged = |guest: &str, host: &str| {
+            let log = [
+                listening("a"),
+                teardown(
+                    &[
+                        ("read_files", "allowed", "allowed", 5),
+                        ("glob_search", guest, host, 1),
+                    ],
+                    0,
+                    0,
+                ),
+            ]
+            .join("\n");
+            let record = format!(r#"{{"guest":"{guest}","host":"{host}"}}"#);
+            let dir = bundle(&log, Some(&record));
+            Summary::of([("run", &read_bundle(dir.path()))])
+        };
+        let s = judged("denied:not_granted", "allowed");
+        assert_eq!((s.classes.guest_stricter, s.unclassified()), (1, 0));
+        assert_eq!(s.exit_code(), 1);
+
+        let s = judged("allowed", "denied:not_granted");
+        assert_eq!((s.classes.host_stricter, s.unclassified()), (1, 0));
+        assert_eq!(s.exit_code(), 0, "host stricter is not this check's red");
     }
 
     /// ADR 0014 S1's falsifier: a bundle whose tally says `disagree > 0` with
