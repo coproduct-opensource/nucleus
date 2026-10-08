@@ -4,25 +4,37 @@ use anyhow::{Context, Result, ensure};
 use std::{path::Path, process::Command};
 
 /// One privileged live integration in the CLI's test binary, and what it proves when it passes.
-#[derive(Clone, Copy)]
 pub enum Live {
     /// `host-evidence-live`: host authorization and outcome on a real guest transaction.
     HostEvidence,
     /// `node-stop-live`: a node stopped by SIGTERM drains its pods, and one stopped by SIGKILL
     /// has its stranded VMM reclaimed at the next start (#3204).
     NodeStop,
+    /// `cross-pod-live`: C2 on a real Firecracker boot. Two pods on one node each see only their
+    /// own lineage over their own vsock, and the operator sees both (replaces
+    /// `scripts/firecracker/podlist-boot-check.sh`).
+    CrossPod {
+        /// The guest kernel to boot.
+        kernel: std::path::PathBuf,
+        /// The CI podlist rootfs: the lineage probe baked in, guest-init built with
+        /// `ci-podlist-probe`.
+        rootfs: std::path::PathBuf,
+    },
 }
 
 impl Live {
-    fn test(self) -> &'static str {
+    fn test(&self) -> &'static str {
         match self {
             Live::HostEvidence => "host_evidence_live::real_guest_host_evidence",
             Live::NodeStop => {
                 "host_evidence_live::node_stop::a_signalled_node_leaves_no_vm_running"
             }
+            Live::CrossPod { .. } => {
+                "host_evidence_live::cross_pod::two_pods_each_see_only_their_own_lineage"
+            }
         }
     }
-    fn passed(self) -> &'static str {
+    fn passed(&self) -> &'static str {
         match self {
             Live::HostEvidence => {
                 "host-evidence-live: real guest, host authorization/outcome, offline verification and cleanup passed"
@@ -30,6 +42,28 @@ impl Live {
             Live::NodeStop => {
                 "node-stop-live: each VMM was pid 1 of its own pid namespace; cancel reaped a real pod, SIGTERM drained one and SIGKILL+restart reclaimed one; no VMM, netns, jail, firewall rule or cgroup left"
             }
+            Live::CrossPod { .. } => {
+                "cross-pod-live: CONTAINED: on one node, A's vsock POD_LIST served {A, its child C} and B's served {B}; each root was served its own id, and both views are strict subsets of the operator's"
+            }
+        }
+    }
+    /// The binaries this integration runs from `--bin-dir`.
+    fn bins(&self) -> &'static [&'static str] {
+        match self {
+            Live::HostEvidence | Live::NodeStop => {
+                &["nucleus-node", "nucleus-hostctl", "nucleus-audit"]
+            }
+            Live::CrossPod { .. } => &["nucleus-node"],
+        }
+    }
+    /// Inputs passed to the test by environment.
+    fn env(&self) -> Vec<(&'static str, &std::path::Path)> {
+        match self {
+            Live::HostEvidence | Live::NodeStop => Vec::new(),
+            Live::CrossPod { kernel, rootfs } => vec![
+                ("NUCLEUS_CROSS_POD_KERNEL", kernel.as_path()),
+                ("NUCLEUS_CROSS_POD_ROOTFS", rootfs.as_path()),
+            ],
         }
     }
 }
@@ -44,7 +78,10 @@ pub fn run_live(root: &Path, bins: &Path, sudo: bool, live: Live) -> Result<()> 
         "live integrations require Linux and KVM"
     );
     let bins = bins.canonicalize().context("binary directory")?;
-    for name in ["nucleus-node", "nucleus-hostctl", "nucleus-audit"] {
+    for (key, path) in live.env() {
+        ensure!(path.is_file(), "{key}: missing {}", path.display());
+    }
+    for name in live.bins() {
         ensure!(
             bins.join(name).is_file(),
             "missing {}",
@@ -74,7 +111,12 @@ pub fn run_live(root: &Path, bins: &Path, sudo: bool, live: Live) -> Result<()> 
             "NUCLEUS_HOST_EVIDENCE_WITNESS={}",
             witness.display()
         ))
-        .arg(format!("NUCLEUS_HOST_EVIDENCE_NONCE={nonce}"))
+        .arg(format!("NUCLEUS_HOST_EVIDENCE_NONCE={nonce}"));
+    for (key, path) in live.env() {
+        let path = path.canonicalize().with_context(|| key.to_string())?;
+        command.arg(format!("{key}={}", path.display()));
+    }
+    command
         .arg(&test)
         .args([live.test(), "--ignored", "--exact", "--nocapture"]);
     let status = command.status()?;
