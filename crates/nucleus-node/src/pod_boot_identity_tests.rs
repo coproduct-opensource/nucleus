@@ -87,7 +87,10 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
     let ready = prepare_for_test(&st, dir.path(), id, &socket)
         .await
         .unwrap();
-    let api = dir.path().join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
+    let api = dir.path().join(format!(
+        "vsock_{}",
+        crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT
+    ));
     let mut stream = tokio::net::UnixStream::connect(&api).await.unwrap();
     stream.write_all(b"FETCH_POD_SPEC\n").await.unwrap();
     let mut response = String::new();
@@ -163,7 +166,10 @@ async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
     assert!(
         matches!(result, Err(crate::ApiError::Driver(ref e)) if e.contains("this node issued the pod no certificate"))
     );
-    let api = dir.path().join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
+    let api = dir.path().join(format!(
+        "vsock_{}",
+        crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT
+    ));
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         while api.exists() || manager.get_attestation(&id.to_string()).await.is_some() {
             tokio::task::yield_now().await;
@@ -232,7 +238,10 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
 
 /// Ask a prepared pod's workload API one line, as guest-init does, and return the reply.
 async fn ask(dir: &std::path::Path, line: &[u8]) -> String {
-    let api = dir.join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
+    let api = dir.join(format!(
+        "vsock_{}",
+        crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT
+    ));
     let mut stream = tokio::net::UnixStream::connect(&api).await.unwrap();
     stream.write_all(line).await.unwrap();
     let mut response = String::new();
@@ -466,16 +475,7 @@ async fn prepare_profiled(
 ) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
     let id = uuid::Uuid::new_v4();
     let socket = dir.join(format!("vsock-{id}"));
-    prepare_labelled_for_test(
-        st,
-        dir,
-        id,
-        &socket,
-        serde_json::json!({}),
-        None,
-        labels,
-    )
-    .await
+    prepare_labelled_for_test(st, dir, id, &socket, serde_json::json!({}), None, labels).await
 }
 
 /// ADR 0016 D3, wired: at boot an eval cell is served only a launch that
@@ -513,7 +513,10 @@ async fn an_eval_cell_boots_only_with_a_launch_that_verifies() {
         Err(e) => e.to_string(),
     };
     assert!(refused.contains("launch does not verify"), "{refused}");
-    assert!(refused.contains("no parseable launch attestation"), "{refused}");
+    assert!(
+        refused.contains("no parseable launch attestation"),
+        "{refused}"
+    );
     prepare_profiled(&st, dir.path(), serde_json::json!({}))
         .await
         .expect("a standard pod keeps the plain-SVID fallback");

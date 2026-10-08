@@ -155,7 +155,13 @@ fn an_eval_cell_is_refused_on_a_node_whose_evidence_is_not_attested() {
         };
         let refused = admit(&eval_cell(""), &node, None).expect_err("not attested");
         assert!(
-            matches!(refused, EvalCellRefused::NodeNotAttested { tier: "unattested", .. }),
+            matches!(
+                refused,
+                EvalCellRefused::NodeNotAttested {
+                    tier: "unattested",
+                    ..
+                }
+            ),
             "{refused:?}"
         );
         assert!(refused.to_string().contains(note), "{refused}");

@@ -356,15 +356,22 @@ pub(crate) fn require_verified_launch(
         } => {
             let verified = nucleus_identity::VerifiedLaunch::verify(leaf_der, trust_bundle)
                 .map_err(|e| EvalCellRefused::LaunchUnverified(e.to_string()))?;
-            if verified.launch() == measured {
-                Ok(())
-            } else {
-                Err(EvalCellRefused::LaunchUnverified(format!(
-                    "the SVID carries {}, but the node measured {}",
+            // The three measurements, compared by the relying party's own rule. Not `==`
+            // on the whole value: the certificate keeps the time to the second, the
+            // measurement to the nanosecond, so equality would refuse every launch.
+            nucleus_identity::AttestationRequirements::exact(
+                *measured.kernel_hash(),
+                *measured.rootfs_hash(),
+                *measured.config_hash(),
+            )
+            .verify(verified.launch())
+            .map_err(|e| {
+                EvalCellRefused::LaunchUnverified(format!(
+                    "the SVID carries {}, but the node measured {}: {e}",
                     verified.launch().to_hex_summary(),
                     measured.to_hex_summary()
-                )))
-            }
+                ))
+            })
         }
     }
 }
