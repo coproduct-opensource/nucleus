@@ -67,6 +67,14 @@ pub(crate) enum ArtifactRole {
     /// A caller-supplied `image.scratch_path`: the caller's own disk, which the guest writes and
     /// the caller harvests afterwards (`nucleus-hostctl harvest`).
     CallerScratch,
+    /// An eval cell's `image.scratch_path` (ADR 0013 rule 7). The guest boots a copy the node
+    /// owns, never the caller's inode, so nothing the caller does to its file after the boot
+    /// check reaches the guest. The guest's writes come back only through the node's export at
+    /// pod exit (`scratch_export`).
+    EvalCellScratch,
+    /// An eval cell's `image.data_path`: copied, root-owned and read-only, never linked, for the
+    /// same reason.
+    EvalCellData,
 }
 
 impl ArtifactRole {
@@ -77,7 +85,8 @@ impl ArtifactRole {
             ArtifactRole::Rootfs => in_jail::ROOTFS,
             ArtifactRole::Data => in_jail::DATA,
             ArtifactRole::SeccompFilter => in_jail::SECCOMP,
-            ArtifactRole::CallerScratch => in_jail::SCRATCH,
+            ArtifactRole::CallerScratch | ArtifactRole::EvalCellScratch => in_jail::SCRATCH,
+            ArtifactRole::EvalCellData => in_jail::DATA,
         }
     }
 
@@ -93,6 +102,8 @@ impl ArtifactRole {
             | ArtifactRole::SeccompFilter => Placement::SharedReadOnly,
             // `lower_drives` gives scratch `is_read_only: false` unconditionally.
             ArtifactRole::CallerScratch => Placement::GuestWritesThrough,
+            ArtifactRole::EvalCellScratch => Placement::NodeCopyGuestWrites,
+            ArtifactRole::EvalCellData => Placement::NodeCopyReadOnly,
         }
     }
 
@@ -101,9 +112,9 @@ impl ArtifactRole {
         match self {
             ArtifactRole::Kernel => "image.kernel_path",
             ArtifactRole::Rootfs => "image.rootfs_path",
-            ArtifactRole::Data => "image.data_path",
+            ArtifactRole::Data | ArtifactRole::EvalCellData => "image.data_path",
             ArtifactRole::SeccompFilter => "seccomp.filter_path",
-            ArtifactRole::CallerScratch => "image.scratch_path",
+            ArtifactRole::CallerScratch | ArtifactRole::EvalCellScratch => "image.scratch_path",
         }
     }
 }
@@ -126,6 +137,12 @@ pub(crate) enum Placement {
     /// ALREADY be able to read and write it: the node will not chown it, because the link is the
     /// caller's own inode.
     GuestWritesThrough,
+    /// A new inode born in the jail, filled with a copy of the host file and given to the jail
+    /// user. The guest writes it; the host file never sees those writes, and nothing written to
+    /// the host file after the copy reaches the guest.
+    NodeCopyGuestWrites,
+    /// A new root-owned `0444` inode filled with a copy of the host file. Never a link.
+    NodeCopyReadOnly,
 }
 
 /// One host file that must exist inside the jail before Firecracker execs.
@@ -303,6 +320,9 @@ pub(crate) fn admit(
         Placement::SharedReadOnly => Ok(()),
         Placement::GuestWritesThrough if access.read && access.modify => Ok(()),
         Placement::GuestWritesThrough => Err(Refusal::JailCannotWrite(found())),
+        // The node reads the source and the jail user only ever sees the node's copy, so the
+        // source's owner and mode grant the jail user nothing.
+        Placement::NodeCopyGuestWrites | Placement::NodeCopyReadOnly => Ok(()),
     }
 }
 
@@ -367,18 +387,44 @@ fn clear_stale(path: &Path) -> Result<(), String> {
 /// Bring one host file into the jail as its role's [`Placement`] says. Never changes the owner or
 /// mode of `resource.host_source`, which a hard link shares.
 ///
-/// Hard link first, always: it is cheap, it shares no page cache the file did not already share,
-/// and it keeps the guest's writes visible at the caller's path exactly as the non-jailed path
-/// does.
+/// For a linked placement, hard link first: it is cheap, it shares no page cache the file did not
+/// already share, and it keeps the guest's writes visible at the caller's path exactly as the
+/// non-jailed path does. An eval cell's disks are never linked (ADR 0013 rule 7).
 pub(crate) fn place(resource: &JailResource, dest: &Path, who: JailUser) -> Result<(), String> {
     let placement = resource.placement();
     admit(&resource.host_source, resource.role.field(), placement, who)
         .map_err(|r| r.to_string())?;
     clear_stale(dest)?;
+    let copy_failed = |e: std::io::Error| {
+        format!(
+            "cannot copy {} into the jail at {}: {e}",
+            resource.host_source.display(),
+            dest.display()
+        )
+    };
+    match placement {
+        Placement::NodeCopyGuestWrites => {
+            let born = BornInJail::create(dest)?;
+            let mut from = File::open(&resource.host_source).map_err(copy_failed)?;
+            std::io::copy(&mut from, &mut born.file())
+                .and_then(|_| born.file().sync_all())
+                .map_err(copy_failed)?;
+            born.give_to_jail(who)
+        }
+        Placement::NodeCopyReadOnly => {
+            copy_read_only(&resource.host_source, dest).map_err(copy_failed)
+        }
+        Placement::SharedReadOnly => link_or_copy(resource, dest, false),
+        Placement::GuestWritesThrough => link_or_copy(resource, dest, true),
+    }
+}
+
+/// Hard link `resource` to `dest`; across devices, a read-only copy unless the guest writes it.
+fn link_or_copy(resource: &JailResource, dest: &Path, guest_writes: bool) -> Result<(), String> {
     match std::fs::hard_link(&resource.host_source, dest) {
         Ok(()) => Ok(()),
-        Err(err) => match placement {
-            Placement::GuestWritesThrough => Err(format!(
+        Err(err) => match guest_writes {
+            true => Err(format!(
                 "cannot hard-link {} into the jail at {}: {err}. This resource is \
                  WRITABLE by the guest, so falling back to a copy would silently \
                  discard the guest's writes instead of landing them at the source \
@@ -388,15 +434,13 @@ pub(crate) fn place(resource: &JailResource, dest: &Path, who: JailUser) -> Resu
                 resource.host_source.display(),
                 dest.display()
             )),
-            Placement::SharedReadOnly => {
-                copy_read_only(&resource.host_source, dest).map_err(|copy_err| {
-                    format!(
-                        "cannot bring {} into the jail: hard link failed ({err}) and \
+            false => copy_read_only(&resource.host_source, dest).map_err(|copy_err| {
+                format!(
+                    "cannot bring {} into the jail: hard link failed ({err}) and \
                          copy failed ({copy_err})",
-                        resource.host_source.display()
-                    )
-                })
-            }
+                    resource.host_source.display()
+                )
+            }),
         },
     }
 }
