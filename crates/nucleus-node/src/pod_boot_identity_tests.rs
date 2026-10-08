@@ -363,3 +363,39 @@ async fn unavailable_workload_api_refuses_before_vmm_spawn() {
         "{error}"
     );
 }
+
+/// A Firecracker guest is served its own id and NO caller token. The token
+/// authenticates only at the node's HTTP listener, which a Firecracker guest
+/// cannot reach, so in the VM it would be an unconsumed bearer secret. Red on
+/// main before this change, which served `derive_token(caller_secret, id)` here.
+///
+/// The reply keeps an empty `caller_token` string because every supported
+/// guest-init (2.4.0 to 2.7.0) exports `NUCLEUS_POD_ID` only alongside one. So
+/// this also pins that the id still arrives, and that it is this pod's.
+#[tokio::test]
+async fn a_firecracker_guest_is_served_its_id_and_no_caller_token() {
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let mut st = state(&dir);
+    st.identity_manager = Some(
+        crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
+            .unwrap(),
+    );
+    let id = uuid::Uuid::new_v4();
+    let socket = dir.path().join("vsock");
+    let _ready = prepare_for_test(&st, dir.path(), id, &socket)
+        .await
+        .unwrap();
+    let reply = ask(dir.path(), b"FETCH_POD_CALLER_TOKEN\n").await;
+    let value: serde_json::Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(
+        value["caller_token"].as_str(),
+        Some(""),
+        "a Firecracker guest was served a caller token: {reply}"
+    );
+    let derived = crate::pod_caller_identity::derive_token(st.caller_secret.as_ref(), id);
+    assert!(
+        !reply.contains(&derived),
+        "the derived caller token reached the guest: {reply}"
+    );
+    assert_eq!(value["pod_id"].as_str(), Some(id.to_string().as_str()));
+}

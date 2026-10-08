@@ -30,17 +30,14 @@
 //! that pod. That is the property the API needs: not "who are you" in the
 //! abstract, but "which pod's authority are you exercising".
 //!
-//! # How a pod gets its token — and why that channel and no other
+//! # Which pods get a token (2026-10-08)
 //!
-//! Over the per-pod workload-API vsock socket, which the host creates per VM.
-//! The pod does not name itself; the socket does. That is the same reasoning
-//! `WorkloadApiCommand::FetchTaskToken` records for riding this channel: it
-//! already serves per-pod artifacts over a per-pod socket, so a new artifact is
-//! a variant rather than a protocol inside a protocol.
-//!
-//! Deliberately NOT delivered in the pod's environment: an env var is only as
-//! trustworthy as everything that can write the environment, and this is the
-//! value that decides whose pods you may manage.
+//! Only local-driver pods, by environment. Their tool-proxy reaches the node's
+//! HTTP listener, which is where the pair is checked. A Firecracker guest has
+//! no route to that listener. Its management call, `POD_LIST`, is
+//! authenticated by the per-pod vsock socket it arrives on, so the guest is
+//! served its id and no token (`handle_fetch_pod_caller_token`). A token in the
+//! VM would have been a bearer secret that nothing consumed.
 //!
 //! # What this module does NOT do
 //!
@@ -59,11 +56,11 @@ const DOMAIN: &[u8] = b"nucleus-pod-caller-v1\0";
 ///
 /// Hex-encoded HMAC-SHA256. Returned as a `String` because it crosses a wire.
 #[must_use]
-// Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
-// On other hosts it is genuinely dead, and CI builds release binaries with
-// `RUSTFLAGS=-D warnings` (setup-rust-toolchain's default), so the warning is an
-// error that fails the macOS release job. Same pattern as `boot_trace`/`cgroup`.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+// Only the local driver mints one, because its pods reach the node's HTTP
+// listener. A Firecracker guest cannot, so it is never minted a token
+// (`workload_api_vsock::handle_fetch_pod_caller_token`). A build without the
+// local driver therefore has no way to mint one at all.
+#[cfg(any(feature = "local-driver", test))]
 pub(crate) fn derive_token(node_secret: &[u8], pod_id: Uuid) -> String {
     // Built through the crate's own signer so derivation and verification are
     // the same computation by construction, not by two authors agreeing.

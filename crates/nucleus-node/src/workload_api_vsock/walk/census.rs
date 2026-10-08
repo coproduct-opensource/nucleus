@@ -245,7 +245,6 @@ const FULL: Provision = Provision {
     dlc_admission: true,
     pod_certificate: true,
     task_token: true,
-    caller_token: true,
     receipts: true,
 };
 
@@ -258,7 +257,6 @@ const EMPTY: Provision = Provision {
     dlc_admission: false,
     pod_certificate: false,
     task_token: false,
-    caller_token: false,
     receipts: false,
 };
 

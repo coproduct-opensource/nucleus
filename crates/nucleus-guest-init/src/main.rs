@@ -552,8 +552,12 @@ fn run() -> Result<(), String> {
             identity::fetch_pod_caller_token(port)
         }) {
             Ok(id) => {
-                eprintln!("fetched pod caller token over vsock");
-                export!("NUCLEUS_POD_CALLER_TOKEN", id.token);
+                // A Firecracker node serves no token (only the id): the token
+                // authenticates at an HTTP listener this guest cannot reach.
+                if let Some(token) = id.token {
+                    eprintln!("fetched pod caller token over vsock");
+                    export!("NUCLEUS_POD_CALLER_TOKEN", token);
+                }
                 // The node verifies the (pod_id, token) PAIR; set the id only when
                 // the same socket served it, so a token is never presented without
                 // the id it was minted with. A legacy node serves no id, leaving
