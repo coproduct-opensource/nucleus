@@ -24,6 +24,11 @@
 //! `include.path`, …) are compared, and only entries the command ADDED are
 //! stripped; every other edit stays.
 //!
+//! Which keys are exec-bearing, which files are git configs and which are
+//! hooks is [`portcullis::git_exec`]'s to say, not this module's: the
+//! pre-mount workspace scan reads the same list (ADR 0013, ADR 0007 G-1), so a
+//! key added there is guarded here and scanned there at once.
+//!
 //! # What this does not catch
 //!
 //! A process the command leaves running in the background can write after the
@@ -37,6 +42,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cap_std::fs::Dir;
+use portcullis::git_exec::{self, is_git_config};
 use sha2::{Digest, Sha256};
 
 use crate::{NucleusError, Result};
@@ -97,14 +103,6 @@ pub struct Snapshot {
     git_configs: BTreeMap<String, BTreeSet<String>>,
 }
 
-/// Is `rel` a git config file (`config` or `config.worktree` under a `.git`)?
-fn is_git_config(rel: &str) -> bool {
-    let lower = rel.to_ascii_lowercase();
-    let (dir, name) = lower.rsplit_once('/').unwrap_or(("", lower.as_str()));
-    matches!(name, "config" | "config.worktree")
-        && (dir == ".git" || dir.ends_with("/.git") || dir.contains(".git/"))
-}
-
 #[cfg(unix)]
 fn mode_of(meta: &cap_std::fs::Metadata) -> u32 {
     use cap_std::fs::PermissionsExt;
@@ -146,15 +144,13 @@ fn watched(root: &Dir) -> Result<Vec<String>> {
             let kind = entry.file_type().map_err(NucleusError::Io)?;
             if kind.is_dir() {
                 let n = name.to_string_lossy();
-                let in_git = rel_str.contains(".git/");
                 let prune = n == "node_modules"
                     || (dir.as_os_str().is_empty() && n == "target")
-                    || (in_git && matches!(n.as_ref(), "objects" | "lfs" | "logs"));
+                    || git_exec::is_git_data_dir(&rel_str);
                 if !prune {
                     stack.push(rel);
                 }
-            } else if portcullis::executes_on_consume(&rel_str).is_some() || is_git_config(&rel_str)
-            {
+            } else if rule_for(&rel_str).is_some() {
                 out.push(rel_str);
             }
         }
@@ -168,103 +164,20 @@ fn watched(root: &Dir) -> Result<Vec<String>> {
 /// Every key here makes git run a command it names: on a fetch, a diff, a
 /// checkout, a status, or a credential prompt.
 pub fn exec_entries(text: &str) -> BTreeSet<String> {
-    config_lines(text)
+    git_exec::config_entries(text)
         .into_iter()
-        .filter_map(|l| l.exec.then_some(l.entry))
+        .filter_map(|l| l.exec.map(|_| l.entry))
         .collect()
 }
 
-struct ConfigLine {
-    /// Line indices this entry spans (a value may continue with `\`).
-    lines: std::ops::Range<usize>,
-    entry: String,
-    exec: bool,
-}
-
-fn exec_bearing(section: &str, sub: Option<&str>, key: &str) -> bool {
-    matches!(
-        (section, sub, key),
-        (
-            "core",
-            None,
-            "fsmonitor" | "hookspath" | "sshcommand" | "editor" | "pager" | "askpass" | "gitproxy",
-        ) | ("sequence", None, "editor")
-            | ("alias", _, _)
-            | ("pager", _, _)
-            | ("filter", Some(_), "clean" | "smudge" | "process")
-            | ("diff", Some(_), "textconv" | "command")
-            | ("diff", None, "external")
-            | ("merge", Some(_), "driver")
-            | (
-                "difftool" | "mergetool" | "browser",
-                Some(_),
-                "cmd" | "path"
-            )
-            | ("web", None, "browser")
-            | ("credential", _, "helper")
-            | ("gpg", _, "program")
-            | ("include", None, "path")
-            | ("includeif", Some(_), "path")
-            | ("uploadpack", None, "packobjectshook")
-            | ("remote", Some(_), "uploadpack" | "receivepack")
-            | ("protocol", Some(_), "allow")
-    )
-}
-
-fn config_lines(text: &str) -> Vec<ConfigLine> {
-    let lines: Vec<&str> = text.lines().collect();
-    let mut out = Vec::new();
-    let (mut section, mut sub) = (String::new(), None::<String>);
-    let mut i = 0;
-    while i < lines.len() {
-        let start = i;
-        let line = lines[i].trim();
-        i += 1;
-        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix('[') {
-            let head = rest.split(']').next().unwrap_or("").trim();
-            match head.split_once(char::is_whitespace) {
-                Some((s, q)) => {
-                    section = s.to_ascii_lowercase();
-                    sub = Some(q.trim().trim_matches('"').to_string());
-                }
-                None => match head.split_once('.') {
-                    // Legacy `[section.sub]`.
-                    Some((s, q)) => {
-                        section = s.to_ascii_lowercase();
-                        sub = Some(q.to_string());
-                    }
-                    None => {
-                        section = head.to_ascii_lowercase();
-                        sub = None;
-                    }
-                },
-            }
-            continue;
-        }
-        let mut value_end = lines[start];
-        while value_end.trim_end().ends_with('\\') && i < lines.len() {
-            value_end = lines[i];
-            i += 1;
-        }
-        let (key, value) = line
-            .split_once('=')
-            .map_or((line, ""), |(k, v)| (k.trim(), v.trim()));
-        let key = key.to_ascii_lowercase();
-        let exec = exec_bearing(&section, sub.as_deref(), &key);
-        let name = match &sub {
-            Some(q) => format!("{section}.{q}.{key}"),
-            None => format!("{section}.{key}"),
-        };
-        out.push(ConfigLine {
-            lines: start..i,
-            entry: format!("{name}={value}"),
-            exec,
-        });
-    }
-    out
+/// Why `rel` is watched: the [`portcullis::EXECUTE_ON_CONSUME`] glob it
+/// matches, a git hook (a submodule's, under `.git/modules/`, which no glob
+/// names), or a git config, compared by its exec-bearing keys. `None`: not
+/// watched.
+fn rule_for(rel: &str) -> Option<&'static str> {
+    portcullis::executes_on_consume(rel)
+        .or_else(|| git_exec::is_git_hook(rel).then_some("git hook"))
+        .or_else(|| is_git_config(rel).then_some("git config"))
 }
 
 /// `text` without the exec-bearing entries `keep` does not contain.
@@ -272,8 +185,8 @@ fn strip_new_exec(text: &str, keep: &BTreeSet<String>) -> (String, Vec<String>) 
     let lines: Vec<&str> = text.lines().collect();
     let mut drop = vec![false; lines.len()];
     let mut stripped = Vec::new();
-    for l in config_lines(text) {
-        if l.exec && !keep.contains(&l.entry) {
+    for l in git_exec::config_entries(text) {
+        if l.exec.is_some() && !keep.contains(&l.entry) {
             for i in l.lines.clone() {
                 drop[i] = true;
             }
@@ -336,7 +249,7 @@ impl Snapshot {
                 });
                 continue;
             }
-            let rule = portcullis::executes_on_consume(rel).unwrap_or("git config");
+            let rule = rule_for(rel).unwrap_or("git config");
             let current = read_content(root, rel, &meta, &mut kept)?;
             match self.files.get(rel) {
                 Some(before) if same(before, &current) => {}
@@ -360,7 +273,7 @@ impl Snapshot {
         }
         for (rel, before) in &self.files {
             if !now_set.contains(rel) {
-                let rule = portcullis::executes_on_consume(rel).unwrap_or("git config");
+                let rule = rule_for(rel).unwrap_or("git config");
                 let action = restore(root, rel, before)?;
                 out.push(Reverted {
                     path: rel.clone(),
@@ -578,6 +491,44 @@ mod tests {
             Action::StrippedEntries(e) => assert_eq!(e.len(), 2, "{e:?}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn every_key_of_the_shared_list_is_stripped_when_a_command_adds_it() {
+        // Keys the guard did not know before the list moved to
+        // `portcullis::git_exec`; reading the shared list is what guards them.
+        for added in [
+            "[core]\n\talternateRefsCommand = ./x.sh\n",
+            "[interactive]\n\tdiffFilter = ./x.sh\n",
+            "[hook \"x\"]\n\tcommand = ./x.sh\n",
+            "[submodule \"s\"]\n\tupdate = !./x.sh\n",
+        ] {
+            let (_t, d) = root();
+            d.create_dir_all(".git").unwrap();
+            d.write(".git/config", "[core]\n\tbare = false\n").unwrap();
+            let snap = Snapshot::take(&d).unwrap();
+            d.write(".git/config", format!("[core]\n\tbare = false\n{added}"))
+                .unwrap();
+            let r = snap.revert_changes(&d).unwrap();
+            assert_eq!(r.len(), 1, "{added}: {r:?}");
+            assert!(
+                !d.read_to_string(".git/config").unwrap().contains("x.sh"),
+                "{added}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_submodule_hook_is_removed() {
+        let (_t, d) = root();
+        d.create_dir_all(".git/modules/lib/hooks").unwrap();
+        let snap = Snapshot::take(&d).unwrap();
+        d.write(".git/modules/lib/hooks/post-checkout", "evil")
+            .unwrap();
+        let r = snap.revert_changes(&d).unwrap();
+        assert_eq!(r.len(), 1, "{r:?}");
+        assert_eq!(r[0].rule, "git hook");
+        assert!(!d.exists(".git/modules/lib/hooks/post-checkout"));
     }
 
     #[test]

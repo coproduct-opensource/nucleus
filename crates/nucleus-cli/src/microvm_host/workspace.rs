@@ -47,6 +47,7 @@ pub(super) fn seed(cli: &ContainerCli, args: SeedArgs) -> Result<Value> {
         .canonicalize()
         .context("resolving workspace directory")?;
     ensure!(source.is_dir(), "workspace source must be a directory");
+    crate::workspace_scan::warn(&source, "it is about to become a pod's scratch disk");
     let source = source
         .to_str()
         .ok_or_else(|| anyhow!("workspace path must be UTF-8"))?;

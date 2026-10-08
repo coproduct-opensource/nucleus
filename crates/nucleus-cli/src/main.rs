@@ -78,6 +78,7 @@ mod twosafety_boot;
 mod verify;
 mod verify_attestation;
 mod workload_verification;
+mod workspace_scan;
 
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]

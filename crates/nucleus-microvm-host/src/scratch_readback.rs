@@ -195,6 +195,66 @@ pub fn dump_tree(image: &Path, out: &Path) -> Result<(), ReadbackError> {
     Ok(())
 }
 
+/// Copy the filesystem in `image` into the directory `out` WITHOUT touching
+/// the image: the read an admission check makes of a disk a caller supplied.
+///
+/// [`dump_tree`] replays the journal in place, which rewrites the caller's
+/// file (and so its digest). Here the image is read as written, and an image
+/// whose journal still needs recovery is refused instead: the guest kernel
+/// replays that journal at mount, so it would see a tree this read does not.
+/// "Could not look" is an error, never an empty tree (ADR 0007 A-2).
+///
+/// # Errors
+///
+/// `ToolMissing` without `dumpe2fs`/`debugfs`; `Failed` for a journal that
+/// needs recovery, an unreadable superblock, or any `rdump` complaint.
+pub fn dump_tree_as_written(image: &Path, out: &Path) -> Result<(), ReadbackError> {
+    let head = std::process::Command::new("dumpe2fs")
+        .arg("-h")
+        .arg(image)
+        .output()
+        .map_err(|e| ReadbackError::ToolMissing(format!("dumpe2fs: {e}")))?;
+    if !head.status.success() {
+        return Err(ReadbackError::Failed(format!(
+            "dumpe2fs -h {}: {}",
+            image.display(),
+            String::from_utf8_lossy(&head.stderr).trim()
+        )));
+    }
+    match needs_recovery(&String::from_utf8_lossy(&head.stdout)) {
+        Ok(false) => {}
+        Ok(true) => {
+            return Err(ReadbackError::Failed(format!(
+                "{} has a journal that needs recovery, so the guest would mount a tree this \
+                 read cannot see; replay it first (e2fsck -E journal_only) and pin the digest of \
+                 the result",
+                image.display()
+            )));
+        }
+        Err(why) => return Err(ReadbackError::Failed(why)),
+    }
+    let run = std::process::Command::new("debugfs")
+        .args(["-R", &format!("rdump / {}", out.display())])
+        .arg(image)
+        .output()
+        .map_err(|e| ReadbackError::ToolMissing(e.to_string()))?;
+    rdump_verdict(&String::from_utf8_lossy(&run.stderr)).map_err(ReadbackError::Failed)
+}
+
+/// Whether a `dumpe2fs -h` header says the journal needs recovery. Pure.
+///
+/// # Errors
+///
+/// The header has no `Filesystem features:` line: not a header this code can
+/// judge, so not "no recovery needed".
+pub fn needs_recovery(header: &str) -> Result<bool, String> {
+    header
+        .lines()
+        .find_map(|l| l.strip_prefix("Filesystem features:"))
+        .map(|features| features.split_whitespace().any(|f| f == "needs_recovery"))
+        .ok_or_else(|| "dumpe2fs -h printed no `Filesystem features:` line".to_string())
+}
+
 /// Judge `debugfs rdump`'s stderr. Pure.
 ///
 /// The banner and "changing ownership" warnings are benign: an unprivileged
@@ -235,6 +295,16 @@ fn tempfile_dir() -> std::io::Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_journal_needing_recovery_is_read_from_the_features_line_and_a_header_without_one_is_an_error()
+     {
+        let clean = "Filesystem volume name:   <none>\nFilesystem features:      has_journal ext_attr extent\n";
+        assert_eq!(needs_recovery(clean), Ok(false));
+        let dirty = "Filesystem features:      has_journal ext_attr needs_recovery extent\n";
+        assert_eq!(needs_recovery(dirty), Ok(true));
+        assert!(needs_recovery("garbage\n").is_err());
+    }
 
     fn have_e2fsprogs() -> bool {
         std::process::Command::new("debugfs")

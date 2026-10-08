@@ -125,6 +125,9 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
             &work_dir,
         )?)
     };
+    if declared.is_some() {
+        crate::workspace_scan::warn(&work_dir, "the agent runs in it on this host");
+    }
 
     // Build permission lattice
     let policy = if let Some(ref config_path) = args.config {

@@ -136,6 +136,7 @@ mod trust_gate;
 mod upstreams;
 mod vmm_process;
 mod vsock_bridge;
+mod workspace_scan;
 
 #[cfg(target_os = "linux")]
 use nucleus_microvm_host::probe as host_requirements;
@@ -1246,7 +1247,10 @@ async fn create_pod_internal(
         .request(&spec, &state.driver, state.container_mediation)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
-    eval_cell::admit_on(state, &spec, parent_pod_id, id)?; // ADR 0013, refused by name
+    let profile = eval_cell::admit_on(state, &spec, parent_pod_id, id)?; // ADR 0013, by name
+    // What the workspace carries for git to execute, read before any driver mounts it: an eval
+    // cell is refused by name, a standard pod is recorded (ADR 0013).
+    workspace_scan::admit(&state.state_dir, &state.driver, &mut spec, profile, id).await?;
     let created_at = now_unix();
     let execution_deadline = lifecycle::execution_deadline(&spec)?;
 
