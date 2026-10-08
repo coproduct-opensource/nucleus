@@ -213,11 +213,24 @@ pub(crate) fn jail_resources(
     // `JailResource` for it would try to hard-link the file onto itself. Only a
     // caller-supplied `scratch_path` names a file that lives elsewhere on the
     // host and has to be placed.
+    //
+    // An eval cell's caller disks are COPIED into node-owned inodes, never linked (ADR 0013
+    // rule 7): the guest boots the bytes `image_identity::verify` checks after placement and
+    // nothing else, and its writes return only through the node's export at pod exit. A profile
+    // label that does not parse was refused at admission; were one to reach here it gets the
+    // eval cell's copies, never the weaker links (B-3).
+    use nucleus_spec::isolation_profile::IsolationProfile;
+    let (scratch_role, data_role) = match IsolationProfile::of(spec) {
+        Ok(IsolationProfile::Standard) => (ArtifactRole::CallerScratch, ArtifactRole::Data),
+        Ok(IsolationProfile::EvalCell) | Err(_) => {
+            (ArtifactRole::EvalCellScratch, ArtifactRole::EvalCellData)
+        }
+    };
     if let Some(ref scratch) = image.scratch_path {
         if !scratch_is_node_provisioned {
             resources.push(JailResource {
                 host_source: scratch.clone(),
-                role: ArtifactRole::CallerScratch,
+                role: scratch_role,
             });
         }
     }
@@ -225,7 +238,7 @@ pub(crate) fn jail_resources(
     if let Some(ref data) = image.data_path {
         resources.push(JailResource {
             host_source: data.clone(),
-            role: ArtifactRole::Data,
+            role: data_role,
         });
     }
 

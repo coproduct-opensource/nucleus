@@ -54,6 +54,10 @@ pub(crate) struct Receipt {
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cost_usd: f64,
+    /// An eval cell's scratch export (`scratch_export`, ADR 0013 rule 7): the `sha-256:<hex>`
+    /// of the disk the node copied back to the caller at exit, or `not exported: <why>`. Empty
+    /// only when no export was owed. Node-measured, not guest-reported.
+    pub scratch_export: String,
     /// The node's signature over [`Receipt::preimage`], and the key that made
     /// it. Empty when this node could not sign — never a receipt that looks
     /// signed and is not.
@@ -92,6 +96,7 @@ impl Receipt {
             output_tokens,
             cache_read_tokens,
             cost_usd,
+            scratch_export,
             signature: _,
             signer_pubkey: _,
         } = self;
@@ -120,6 +125,7 @@ impl Receipt {
         // `to_bits` rather than `to_string`: a float's decimal rendering is a
         // formatting decision, and this is a digest preimage.
         absorb("cost_usd", &cost_usd.to_bits().to_be_bytes());
+        absorb("scratch_export", scratch_export.as_bytes());
         out
     }
 }
@@ -172,14 +178,19 @@ pub(crate) async fn build(
         return Err(ReceiptError::NotExited);
     };
 
-    let claim = match &handle.driver_state {
+    let (claim, scratch_export) = match &handle.driver_state {
         crate::DriverState::Firecracker(pod) => {
             let json = firecracker_report_json(pod).await?;
-            parse_guest_report(&json)?
+            (
+                parse_guest_report(&json)?,
+                crate::scratch_export::recorded(&handle.spec, &pod.pod_dir),
+            )
         }
         #[cfg(feature = "local-driver")]
-        crate::DriverState::Local(_) => shared_directory_report(handle).await?,
-        crate::DriverState::Container(_) => shared_directory_report(handle).await?,
+        crate::DriverState::Local(_) => (shared_directory_report(handle).await?, String::new()),
+        crate::DriverState::Container(_) => {
+            (shared_directory_report(handle).await?, String::new())
+        }
     };
 
     let provenance = claim.provenance();
@@ -231,6 +242,7 @@ pub(crate) async fn build(
         output_tokens: report.output_tokens,
         cache_read_tokens: report.cache_read_tokens,
         cost_usd: report.cost_usd,
+        scratch_export,
         // Filled below: the preimage is over the OTHER fields, so the
         // receipt has to exist before it can be signed.
         signature: String::new(),
@@ -335,6 +347,7 @@ impl From<Receipt> for crate::proto::ExecutionReceipt {
             output_tokens: r.output_tokens,
             cache_read_tokens: r.cache_read_tokens,
             cost_usd: r.cost_usd,
+            scratch_export: r.scratch_export,
             signature: r.signature,
             signer_pubkey: r.signer_pubkey,
         }
@@ -462,6 +475,7 @@ mod tests {
             output_tokens: 20,
             cache_read_tokens: 5,
             cost_usd: 0.5,
+            scratch_export: String::new(),
             signature: String::new(),
             signer_pubkey: String::new(),
         }
@@ -500,6 +514,7 @@ mod tests {
             "output_tokens",
             "cache_read_tokens",
             "cost_usd",
+            "scratch_export",
             "signature",
             "signer_pubkey",
         ]
@@ -900,6 +915,7 @@ mod signature_tests {
             output_tokens: 20,
             cache_read_tokens: 30,
             cost_usd: 0.5,
+            scratch_export: String::new(),
             signature: String::new(),
             signer_pubkey: String::new(),
         }
@@ -1014,6 +1030,13 @@ mod signature_tests {
                 "cost_usd",
                 Receipt {
                     cost_usd: 0.6,
+                    ..sample()
+                },
+            ),
+            (
+                "scratch_export",
+                Receipt {
+                    scratch_export: "sha-256:00".into(),
                     ..sample()
                 },
             ),

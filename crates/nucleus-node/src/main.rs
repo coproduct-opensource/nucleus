@@ -66,6 +66,7 @@ mod pod_view;
 mod production_confinement;
 mod public_evidence;
 mod rootfs_source;
+mod scratch_export;
 mod sealed_rootfs;
 mod spec_posture;
 mod spend_receipt_collector;
@@ -628,6 +629,9 @@ struct FirecrackerPod {
     /// The host-owned pod dir: where teardown preserves the exit report and where
     /// the node's record of the pod's mediation key lives (`pod_receipt`).
     pod_dir: PathBuf,
+    /// An eval cell's caller scratch path, which teardown exports the node's disk to
+    /// (`scratch_export`, ADR 0013 rule 7). `None` for a standard pod.
+    scratch_export: Option<PathBuf>,
     /// The VMM itself, never the jailer that spawned it (#2571, `vmm_process.rs`).
     vmm: Arc<Mutex<vmm_process::VmmProcess>>,
     bridge: Mutex<Option<vsock_bridge::VsockBridge>>,
@@ -2646,6 +2650,7 @@ async fn spawn_firecracker_pod(
             direct_cgroup: Mutex::new(direct_cgroup),
             workload_filesystem,
             pod_dir: pod_dir.to_path_buf(),
+            scratch_export: scratch_export::target(spec),
             jail: Mutex::new(jail),
             vmm,
             bridge: Mutex::new(bridge),

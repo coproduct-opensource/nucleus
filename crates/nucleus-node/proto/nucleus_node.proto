@@ -143,6 +143,10 @@ message ExecutionReceipt {
   // "guest_reported" is not independent host measurement; an absent value in
   // older receipts is unspecified, never implicitly host-observed.
   string report_provenance = 18;
+  // An eval cell's scratch export (ADR 0013 rule 7): "sha-256:<hex>" of the
+  // node-owned disk copied back to the caller's scratch path at exit, or
+  // "not exported: <why>". Empty only when no export was owed. Node-measured.
+  string scratch_export = 19;
 }
 
 message GetReceiptRequest {
