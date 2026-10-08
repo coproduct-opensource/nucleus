@@ -722,11 +722,13 @@ pub fn resolve_http_caller(
     ctx: &AuthContext,
     headers: &axum::http::HeaderMap,
 ) -> Result<CallerScope, crate::ApiError> {
+    // A presented claim that fails is a 401 here, not a fallback to the peer's
+    // own scope (`CallerTokenRefused`).
     let token_pod =
-        crate::pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), headers);
+        crate::pod_caller_identity::identify_from_headers(state.caller_secret.as_ref(), headers)?;
     Ok(state
         .authz_policy
-        .caller_scope(token_pod.ok(), &ctx.spiffe_id)?)
+        .caller_scope(token_pod, &ctx.spiffe_id)?)
 }
 
 /// Check authorization for a gRPC operation.

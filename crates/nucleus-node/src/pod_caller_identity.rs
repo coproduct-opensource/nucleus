@@ -90,15 +90,17 @@ pub(crate) enum CallerError {
 /// Establish which pod is calling, from a claimed id and its token.
 ///
 /// Returns `Err(Absent)` when nothing was presented and `Err(Invalid)` when what
-/// was presented does not verify — kept distinct because they mean different
-/// things to a caller and to an operator reading logs.
+/// was presented does not verify. Half a pair (an id with no token, or a token
+/// with no id) is Invalid: something was claimed.
 pub(crate) fn identify_caller(
     node_secret: &[u8],
     claimed_pod_id: Option<&str>,
     presented_token: Option<&str>,
 ) -> Result<Uuid, CallerError> {
-    let (Some(id), Some(token)) = (claimed_pod_id, presented_token) else {
-        return Err(CallerError::Absent);
+    let (id, token) = match (claimed_pod_id, presented_token) {
+        (None, None) => return Err(CallerError::Absent),
+        (Some(id), Some(token)) => (id, token),
+        _ => return Err(CallerError::Invalid),
     };
     // An unparseable id is Invalid, not Absent: something WAS claimed.
     let pod_id = Uuid::parse_str(id).map_err(|_| CallerError::Invalid)?;
@@ -116,34 +118,55 @@ pub(crate) fn identify_caller(
     }
 }
 
-/// Identify the calling pod from an HTTP request's headers.
+/// A pod identity was presented and does not verify. The request is refused:
+/// 401 over HTTP, `UNAUTHENTICATED` over gRPC.
 ///
-/// Lives here rather than inline in the auth middleware so the whole mechanism —
-/// derivation, verification, and the header names it reads — is one module that
-/// can be read in a single sitting.
-///
-/// Additive, and deliberately not yet an authorization input: an unidentified
-/// caller is accepted exactly as before (operators and older proxies present
-/// nothing), so this cannot change a verdict. What it DOES change is that a
-/// caller CLAIMING to be a pod and failing to prove it becomes visible instead
-/// of indistinguishable from every other request.
+/// It used to be dropped. The caller then fell back to its peer's own scope: a
+/// pod peer to the pod its SVID names, an operator to node-wide. That was never
+/// an escalation, but "claimed and failed" is not "absent" (ADR 0007 A-1). A
+/// caller presenting another pod's token, a token from a previous node process,
+/// or half a pair learns that it was refused rather than silently being served
+/// as someone else. Every transport takes its answer from
+/// [`presented_identity`], so none of them can `.ok()` the refusal away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "caller token refused: a pod id and caller token were presented and do not verify \
+     for this node (send both or neither)"
+)]
+pub(crate) struct CallerTokenRefused;
+
+/// The one decider both transports use: `Ok(Some(pod))` when a pair proves a
+/// pod, `Ok(None)` when nothing was presented, and `Err` when a claim was
+/// presented and failed.
+fn presented_identity(
+    node_secret: &[u8],
+    id: Option<&str>,
+    token: Option<&str>,
+) -> Result<Option<Uuid>, CallerTokenRefused> {
+    let caller = identify_caller(node_secret, id, token);
+    report_identification(&caller);
+    match caller {
+        Ok(pod) => Ok(Some(pod)),
+        Err(CallerError::Absent) => Ok(None),
+        Err(CallerError::Invalid) => Err(CallerTokenRefused),
+    }
+}
+
 /// Identify the calling pod from gRPC request metadata.
 ///
 /// The same two headers as the HTTP surface, read off `MetadataMap` instead of
-/// `HeaderMap`. Sharing `identify_caller` rather than re-deriving means the two
-/// transports cannot disagree about who a caller is.
+/// `HeaderMap`. Sharing [`presented_identity`] rather than re-deriving means the
+/// two transports cannot disagree about who a caller is.
 pub(crate) fn identify_from_metadata(
     node_secret: &[u8],
     md: &tonic::metadata::MetadataMap,
-) -> Result<Uuid, CallerError> {
+) -> Result<Option<Uuid>, CallerTokenRefused> {
     let get = |name: &str| md.get(name).and_then(|v| v.to_str().ok());
-    let caller = identify_caller(
+    presented_identity(
         node_secret,
         get(nucleus_client::HEADER_POD_ID),
         get(nucleus_client::HEADER_POD_TOKEN),
-    );
-    report_identification(&caller);
-    caller
+    )
 }
 
 /// Log what the identification concluded. Shared so the two transports report
@@ -159,20 +182,19 @@ fn report_identification(caller: &Result<Uuid, CallerError>) {
     }
 }
 
+/// Identify the calling pod from an HTTP request's headers. It lives here,
+/// rather than inline in the auth middleware, so the whole mechanism is one
+/// module.
 pub(crate) fn identify_from_headers(
     node_secret: &[u8],
     headers: &axum::http::HeaderMap,
-) -> Result<Uuid, CallerError> {
+) -> Result<Option<Uuid>, CallerTokenRefused> {
     let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
-    let caller = identify_caller(
+    presented_identity(
         node_secret,
         header(nucleus_client::HEADER_POD_ID),
         header(nucleus_client::HEADER_POD_TOKEN),
-    );
-    // Not refused — refusing would change behaviour for a caller that is
-    // currently accepted — but a failed claim is the one case worth seeing.
-    report_identification(&caller);
-    caller
+    )
 }
 
 #[cfg(test)]
@@ -241,9 +263,15 @@ mod tests {
             identify_caller(SECRET, None, None),
             Err(CallerError::Absent)
         );
+        // Half a claim is a claim: an id without its token, or a token without
+        // its id, is Invalid and refused, never quietly read as "absent".
         assert_eq!(
             identify_caller(SECRET, Some(&pod_a().to_string()), None),
-            Err(CallerError::Absent)
+            Err(CallerError::Invalid)
+        );
+        assert_eq!(
+            identify_caller(SECRET, None, Some("deadbeef")),
+            Err(CallerError::Invalid)
         );
         assert_eq!(
             identify_caller(SECRET, Some("not-a-uuid"), Some("whatever")),

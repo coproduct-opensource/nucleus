@@ -3094,10 +3094,17 @@ impl NodeService for GrpcService {
         )?;
 
         // WHICH pod is watching, resolved as every other handler resolves it (a
-        // pod peer is its own pod); anything unresolved still receives, fail-open.
-        let watcher = pod_api::grpc_caller(&self.state, request.metadata(), request.extensions())
-            .ok()
-            .and_then(|scope| scope.pod());
+        // pod peer is its own pod). A caller that is merely unresolved still
+        // receives, fail-open. A claim that was presented and failed is
+        // refused: otherwise a bad token would buy the unfiltered stream.
+        let watcher =
+            match pod_api::grpc_caller(&self.state, request.metadata(), request.extensions()) {
+                Ok(scope) => scope.pod(),
+                Err(status) if status.code() == tonic::Code::Unauthenticated => {
+                    return Err(status);
+                }
+                Err(_) => None,
+            };
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes
