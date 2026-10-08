@@ -171,6 +171,17 @@ evidence" (A-2). In shadow it shows up as a host-stricter disagreement, classifi
   allocations already come from the node's ledger (`pod_authority.rs:1122`). The parent
   guest's own charge (`pod_mgmt.rs:337`) stays as a tighten-only pre-check.
 
+**As built at S4.** When the host's kernel answers a guest call with `ApprovalRequired`, the
+host holds it as an ordinary pod approval, keyed by the call's `args_digest`, in the same
+`effects::Approvals` table and operator API that host-performed effects use. A guest
+`Redeem` of the pending call's approval spends a grant it finds. One grant releases one
+call, so a reconnect does not reset the grant (trust-boundary row P7). When the guest's
+own grant releases a call, the guest's shadow client sends that `Redeem`
+(`GuestCapability::HostApprovalRedeem`, `Optional`: before S6 nothing is enforced from
+it). The guest kernel's budget is **not** reset from the host's projection yet. That needs
+a field on the `Verdict` frame, which is a wire change, and it stays open. The host's own
+verdict already reflects the pod's host budget (`PodPolicy::decide_effect`).
+
 ### 5. Receipts, host-signed only (P10)
 
 The host's evidence journal (`host_decide/evidence.rs`, a key that is never in

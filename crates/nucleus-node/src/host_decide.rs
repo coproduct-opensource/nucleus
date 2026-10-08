@@ -591,7 +591,7 @@ impl Channel {
         )
     }
 
-    fn with_policy(pod: Uuid, policy: SharedPodPolicy, epoch: u64) -> Self {
+    pub(crate) fn with_policy(pod: Uuid, policy: SharedPodPolicy, epoch: u64) -> Self {
         Self {
             pod,
             gate: SeqGate::new(),
@@ -647,27 +647,7 @@ impl Channel {
                     compared: None,
                 })
             }
-            GuestFrame::Redeem { seq, approval_id } => {
-                // No host approver exists in shadow mode, and every approval is
-                // retired at its `Shadow` report, so this is `ApprovalUnknown`
-                // in practice. The other arms answer what the ledger says.
-                let verdict = match self.ledger.redeem(approval_id) {
-                    Ok(Redemption::Granted(decision_id)) => Verdict::Allowed { decision_id },
-                    Ok(Redemption::Refused) => Verdict::Denied {
-                        reason: DenyReason::ApprovalRefused,
-                    },
-                    Ok(Redemption::Pending(approval_id)) => {
-                        Verdict::ApprovalRequired { approval_id }
-                    }
-                    Err(_) => Verdict::Denied {
-                        reason: DenyReason::ApprovalUnknown,
-                    },
-                };
-                Ok(Step {
-                    reply: HostFrame::Verdict { seq, verdict }.encode()?,
-                    compared: None,
-                })
-            }
+            GuestFrame::Redeem { seq, approval_id } => self.redeem(seq, approval_id),
             GuestFrame::Shadow {
                 seq,
                 decided,
@@ -706,6 +686,9 @@ impl Channel {
         drop(token);
         let host = outcome_of(&decision.verdict);
         let host_detail = kernel_detail(&decision.verdict);
+        if host == Outcome::ApprovalRequired {
+            self.hold_for_operator(op, &subject, digest)?;
+        }
         let verdict = match host {
             Outcome::Allowed => Verdict::Allowed {
                 decision_id: self.ledger.allow(digest)?,
@@ -746,6 +729,134 @@ impl Channel {
             host_detail,
             right,
         });
+        Ok(Step {
+            reply,
+            compared: None,
+        })
+    }
+
+    /// Hold a guest-performed call the host's kernel answered with
+    /// `ApprovalRequired` as a pod approval the operator decides on the host
+    /// (ADR 0014 §4, S4). The pod's approvals, not this channel's ledger: a
+    /// reconnect does not reset them. Not being able to hold it (the pod's
+    /// approval table is full) leaves the call unredeemable, which refuses it.
+    fn hold_for_operator(
+        &mut self,
+        op: Operation,
+        subject: &Subject,
+        digest: nucleus_decision_protocol::ArgsDigest,
+    ) -> Result<(), ChannelError> {
+        let mut policy = self
+            .policy
+            .lock()
+            .map_err(|_| ChannelError::PolicyUnavailable)?;
+        policy.ensure_live()?;
+        if let Err(e) = policy
+            .approvals
+            .hold_guest_call(digest, op, subject.as_str(), unix_now())
+        {
+            tracing::warn!(pod = %self.pod, ?op, error = %e, "a guest call needing approval could not be held for the operator");
+        }
+        Ok(())
+    }
+
+    /// A guest redeems the approval its pending `Decide` was answered with
+    /// (ADR 0014 §4, S4). The operator's decision is read from the POD's
+    /// approvals, keyed by the call's digest, and a grant is spent by the one
+    /// redemption that finds it. Only the pending call's own approval is
+    /// redeemable: an id from before a reconnect is another epoch's, and one
+    /// already redeemed or retired is gone from the ledger, so each answers
+    /// `ApprovalUnknown`. A spent grant cannot release the same call again,
+    /// on this channel or the next.
+    fn redeem(&mut self, seq: Seq, approval_id: ApprovalId) -> Result<Step, ChannelError> {
+        let digest = match &self.pending {
+            Some(Pending {
+                op,
+                subject,
+                right: Right::Approval(held),
+                ..
+            }) if held.epoch() == approval_id.epoch() && held.number() == approval_id.number() => {
+                args_digest(*op, subject)
+            }
+            _ => {
+                let reply = HostFrame::Verdict {
+                    seq,
+                    verdict: Verdict::Denied {
+                        reason: DenyReason::ApprovalUnknown,
+                    },
+                };
+                return Ok(Step {
+                    reply: reply.encode()?,
+                    compared: None,
+                });
+            }
+        };
+        let found = {
+            let mut policy = self
+                .policy
+                .lock()
+                .map_err(|_| ChannelError::PolicyUnavailable)?;
+            policy.ensure_live()?;
+            policy.approvals.redeem_guest_call(digest, unix_now())
+        };
+        let number = approval_id.number();
+        let verdict = match found {
+            effects::GuestRedemption::Granted => {
+                self.ledger.grant(number)?;
+                match self.ledger.redeem(approval_id)? {
+                    Redemption::Granted(decision_id) => Verdict::Allowed { decision_id },
+                    Redemption::Refused | Redemption::Pending(_) => {
+                        return Err(ChannelError::ApprovalUnsettled);
+                    }
+                }
+            }
+            effects::GuestRedemption::Pending => Verdict::ApprovalRequired { approval_id },
+            effects::GuestRedemption::Refused => {
+                self.ledger.refuse(number)?;
+                match self.ledger.redeem(approval_id)? {
+                    Redemption::Refused => Verdict::Denied {
+                        reason: DenyReason::ApprovalRefused,
+                    },
+                    Redemption::Granted(_) | Redemption::Pending(_) => {
+                        return Err(ChannelError::ApprovalUnsettled);
+                    }
+                }
+            }
+            effects::GuestRedemption::Unknown => Verdict::Denied {
+                reason: DenyReason::ApprovalUnknown,
+            },
+        };
+        let frame = HostFrame::Verdict { seq, verdict };
+        let reply = frame.encode()?;
+        // The ledger retired the approval if it was settled; what the pending
+        // `Decide` now holds is the decision a grant released (retired at the
+        // guest's `Shadow`, as every allowed decision is) or nothing.
+        let settled = match frame {
+            HostFrame::Verdict {
+                seq: _,
+                verdict: Verdict::Allowed { decision_id },
+            } => Some(Right::Decision(decision_id)),
+            HostFrame::Verdict {
+                seq: _,
+                verdict:
+                    Verdict::Denied {
+                        reason: DenyReason::ApprovalRefused,
+                    },
+            } => Some(Right::Nothing),
+            HostFrame::Verdict {
+                seq: _,
+                verdict:
+                    Verdict::Denied { reason: _ } | Verdict::ApprovalRequired { approval_id: _ },
+            }
+            | HostFrame::Observed { seq: _ }
+            | HostFrame::Compared {
+                seq: _,
+                agreement: _,
+            } => None,
+        };
+        if let (Some(right), Some(p)) = (settled, self.pending.as_mut()) {
+            p.right = right;
+        }
         Ok(Step {
             reply,
             compared: None,
@@ -810,6 +921,15 @@ impl Channel {
             }
         }
     }
+}
+
+/// Seconds since the epoch, for the pod's approval clock. A clock before the
+/// epoch reads as 0, which expires nothing early and grants nothing.
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_secs())
+        .unwrap_or(0)
 }
 
 // ── serving ─────────────────────────────────────────────────────────────────

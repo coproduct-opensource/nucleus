@@ -445,6 +445,11 @@ impl CallCharge {
     pub(crate) fn free() -> Self {
         Self(0)
     }
+    /// What an approval held for a guest-performed call shows the operator
+    /// (ADR 0014 S4): nothing, because the host dispatches nothing for it.
+    pub(crate) fn guest_call() -> Self {
+        Self(0)
+    }
 }
 
 impl RegistryEntry {
