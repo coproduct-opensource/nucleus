@@ -490,7 +490,7 @@ async fn an_eval_cell_with_no_workload_identity_is_refused_at_boot() {
     };
     assert!(refused.contains("launch does not verify"), "{refused}");
     assert!(refused.contains("no workload identity"), "{refused}");
-    prepare_profiled(&st, dir.path(), serde_json::json!({}))
+    let _ready = prepare_profiled(&st, dir.path(), serde_json::json!({}))
         .await
         .expect("a standard pod boots without an identity, as before");
 }
@@ -518,7 +518,7 @@ async fn an_eval_cell_served_a_plain_svid_is_refused_at_boot() {
         refused.contains("no parseable launch attestation"),
         "{refused}"
     );
-    prepare_profiled(&st, dir.path(), serde_json::json!({}))
+    let _ready = prepare_profiled(&st, dir.path(), serde_json::json!({}))
         .await
         .expect("a standard pod keeps the plain-SVID fallback");
 }
@@ -533,7 +533,7 @@ async fn an_eval_cell_whose_launch_verifies_is_prepared() {
         crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
             .unwrap(),
     );
-    prepare_profiled(&st, dir.path(), eval_cell_label())
+    let _ready = prepare_profiled(&st, dir.path(), eval_cell_label())
         .await
         .expect("an eval cell whose launch verifies boots");
 }
