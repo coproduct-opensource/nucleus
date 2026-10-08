@@ -426,7 +426,10 @@ async fn a_caller_token_that_does_not_verify_is_refused_not_fallen_back() {
         (operator, claim_headers(a, "deadbeef")),
         (b_svid.as_str(), {
             let mut md = tonic::metadata::MetadataMap::new();
-            md.insert(nucleus_client::HEADER_POD_ID, a.to_string().parse().unwrap());
+            md.insert(
+                nucleus_client::HEADER_POD_ID,
+                a.to_string().parse().unwrap(),
+            );
             md
         }),
     ];
