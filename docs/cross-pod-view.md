@@ -232,7 +232,7 @@ Deliberately **excluded** from `Observation`, each with its reason:
 | pool occupancy / permit availability | Finding 2. Excluded by the widened claim, not by pretending it is unobservable. |
 | wall-clock and completion latency | Pre-existing exclusion; unchanged. |
 | co-tenancy cardinality (own allocation index / IP) | The index is the pod's own IP and allocation is a dense counter, so it is plainly observable. It reveals a COUNT of prior pods and nothing about their contents. See the KILL assessment — this is the exclusion my own operational test misfired on. |
-| the identity registry | Currently defective (#2197, #2198). Modelling it as sound would prove a property the system does not have. It re-enters once retired or fixed. |
+| ~~the identity registry~~ | **Re-entered (2026-10-08).** It was excluded while defective (#2197, #2198, #2204). Those are now fixed. What a pod is served is now mechanized in `crates/portcullis-core/lean/PodCrossViewIdentity.lean`: local respect over the certificate cache, keyed by the injective `pod_identity`, and over `vm_registry`, which no serving path reads. |
 | lockdown delivery | Finding 1. Re-enters as non-observable once filtering moves server-side; until then, including it would make the theorem false. |
 
 The last two are the important entries. Excluding a field **because the code is
