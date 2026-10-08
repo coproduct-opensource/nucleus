@@ -110,3 +110,16 @@ lane holds no seeds.
 This flight validates the canary on one lane and one kernel. It does not
 replace the production check after the plan upload: the first production
 `text-north-star` receipt must show the same 19 refusals.
+
+## The plan production serves (2026-10-08)
+
+Main's push of #3106 set plan `4650b95e…`, not the flight's `d71f62c2…`: main
+had also taken #3330 (the seeded gates' new seeds) and #3339 (`inFlight` 3).
+Neither touches `text-north-star`. Its definition
+(`.gatehouse/gates/text-north-star.json`) and the shared environment are
+byte-identical to the second flight's, so the flight exercised the gate
+definition production now serves. The plan hash differs only through other
+gates and the policy. Before the upload, every production lane already ran
+gatehouse#260's controller (`81dc382c…`). Its 25 gate pods from the
+rollout had no network interface, and the #3106 merge group's ten required
+gates held on it, verified at NodeAttested.
