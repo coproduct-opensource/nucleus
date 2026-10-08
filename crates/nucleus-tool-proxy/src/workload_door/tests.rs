@@ -628,3 +628,36 @@ fn the_requirement_over_each_evidence() {
     let open = AttestationVerifier::new(AttestationConfig::default());
     assert_eq!(open.admit(&TransportEvidence::None, &headers), Ok(()));
 }
+
+/// ADR 0014 S2: every door route is decided as an operation in the live-boot
+/// shadow coverage set, so the coverage pod's calls reach every operation a
+/// workload can ask about. Exhaustive with no `_` arm: a new route does not
+/// compile here until it is mapped, and an operation outside the set reds.
+/// The handlers' own `http_kernel_decide` calls name these operations (the
+/// memory routes decide as a file read and write).
+#[test]
+fn every_door_route_is_in_the_shadow_coverage_set() {
+    use nucleus_ifc_kernel::Operation;
+    use nucleus_spec::host_decide_telemetry::COVERAGE;
+    let mut reached = std::collections::BTreeSet::new();
+    for route in DoorRoute::ALL {
+        let decided_as = match route {
+            DoorRoute::Read | DoorRoute::MemoryRecall => Operation::ReadFiles,
+            DoorRoute::Write | DoorRoute::MemoryWrite => Operation::WriteFiles,
+            DoorRoute::WebFetch | DoorRoute::Egress => Operation::WebFetch,
+            DoorRoute::Glob => Operation::GlobSearch,
+            DoorRoute::Grep => Operation::GrepSearch,
+            DoorRoute::WebSearch => Operation::WebSearch,
+        };
+        assert!(
+            COVERAGE.contains(&decided_as),
+            "{route:?} decides {decided_as:?}"
+        );
+        reached.insert(decided_as);
+    }
+    assert_eq!(
+        reached.len(),
+        COVERAGE.len(),
+        "the coverage set names an operation no door route decides"
+    );
+}

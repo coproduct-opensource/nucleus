@@ -22,7 +22,12 @@
 //! * each pod's guest console, on which a guest from S1 on prints its own
 //!   telemetry (`HostDecideTelemetry`): its tally, every `HostUnavailable` by
 //!   kind, and the round trip of each `Decide`. A console without that line is
-//!   "guest telemetry absent" (guests 2.4.0–2.7.0), never zero.
+//!   "guest telemetry absent" (guests 2.4.0–2.7.0), never zero;
+//! * from ADR 0014 S2 on, the coverage pod's call log. A run that carries it is
+//!   held to the coverage set (`host_decide_telemetry::COVERAGE`): every
+//!   operation in it must have at least one compared decision in that run, and
+//!   one that has none is named. A run without the log predates S2 and is
+//!   reported as "coverage not run", not as covered.
 //!
 //! # What this refuses to do (ADR 0007 A)
 //!
@@ -40,13 +45,14 @@
 //! Usage: download the bundles (`gh run download <run> -n live-boot-evidence-x86_64
 //! -D <dir>/<run>`), then `cargo xtask host-decide-agreement <dir>/<run>...`.
 //! Each directory is one run, labelled by its name. Exit status: 1 when any
-//! bundle could not be read or any disagreement is unclassified; otherwise 2
-//! when nothing was compared ("could not measure"); otherwise 0.
+//! bundle could not be read, any disagreement is unclassified, or a run with a
+//! coverage pod compared nothing for an operation in the coverage set;
+//! otherwise 2 when nothing was compared ("could not measure"); otherwise 0.
 
 use anyhow::{Context, Result, bail};
 use nucleus_spec::host_decide_telemetry::{
     GuestTelemetry, HostTeardown, LatencyHistogram, OutcomePair, TEARDOWN_MESSAGE,
-    UnavailableByKind,
+    UnavailableByKind, coverage_names,
 };
 use nucleus_spec::live_boot::Files;
 use serde::Deserialize;
@@ -289,6 +295,30 @@ impl GuestSide {
     }
 }
 
+/// Whether a run was held to the coverage set, and what it lacked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Coverage {
+    /// The bundle has no coverage pod: it predates S2.
+    NotRun,
+    /// The run had a coverage pod. `missing` lists each operation in the set
+    /// with no compared decision in this run; empty means covered.
+    Checked { missing: Vec<String> },
+}
+
+impl Coverage {
+    fn of(ran: bool, host: &HostDetail) -> Self {
+        if !ran {
+            return Coverage::NotRun;
+        }
+        let missing = coverage_names()
+            .into_iter()
+            .filter(|op| host.operations.get(*op).is_none_or(|c| c.compared() == 0))
+            .map(str::to_string)
+            .collect();
+        Coverage::Checked { missing }
+    }
+}
+
 /// What one bundle says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reading {
@@ -306,6 +336,8 @@ pub enum Reading {
         host: HostDetail,
         /// The guests' consoles.
         guest: GuestSide,
+        /// Whether the run was held to the coverage set.
+        coverage: Coverage,
     },
     /// The node opened no decision channel: nothing was shadowed. What the
     /// guests' consoles say is still read: a guest that could not reach the
@@ -440,8 +472,12 @@ fn read_disagreements(text: &str) -> Result<Classes> {
 }
 
 /// The consoles a bundle may carry, by their bundle names.
-fn consoles(files: &Files) -> [&str; 2] {
-    [files.guest_console.as_str(), files.effect_console.as_str()]
+fn consoles(files: &Files) -> [&str; 3] {
+    [
+        files.guest_console.as_str(),
+        files.effect_console.as_str(),
+        files.coverage_console.as_str(),
+    ]
 }
 
 /// Read every console the bundle carries. A console the bundle does not carry
@@ -495,6 +531,12 @@ pub fn read_bundle(dir: &Path) -> Reading {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Classes::default(),
         Err(e) => return Reading::CouldNotRead(format!("{record}: {e}")),
     };
+    let ran = match std::fs::metadata(dir.join(&files.coverage_calls)) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Reading::CouldNotRead(format!("{}: {e}", files.coverage_calls)),
+    };
+    let coverage = Coverage::of(ran, &host);
     Reading::Measured {
         listening,
         reported,
@@ -502,6 +544,7 @@ pub fn read_bundle(dir: &Path) -> Reading {
         classes,
         host,
         guest,
+        coverage,
     }
 }
 
@@ -517,6 +560,10 @@ pub struct Summary {
     pub classes: Classes,
     pub host: HostDetail,
     pub guest: GuestSide,
+    /// Runs held to the coverage set.
+    pub coverage_checked: u64,
+    /// `run: operation` for every operation a checked run never compared.
+    pub coverage_missing: Vec<String>,
 }
 
 impl Summary {
@@ -531,7 +578,16 @@ impl Summary {
                     classes,
                     host,
                     guest,
+                    coverage,
                 } => {
+                    match coverage {
+                        Coverage::NotRun => {}
+                        Coverage::Checked { missing } => {
+                            s.coverage_checked += 1;
+                            s.coverage_missing
+                                .extend(missing.iter().map(|op| format!("{label}: {op}")));
+                        }
+                    }
                     s.runs_measured += 1;
                     s.listening += listening;
                     s.reported += reported;
@@ -575,7 +631,10 @@ impl Summary {
     /// disagreement is red: the flip criterion bounds it at zero, and a
     /// disagreement nobody can attribute is one nobody can judge.
     pub fn exit_code(&self) -> i32 {
-        if !self.runs_unreadable.is_empty() || self.unclassified() > 0 {
+        if !self.runs_unreadable.is_empty()
+            || self.unclassified() > 0
+            || !self.coverage_missing.is_empty()
+        {
             1
         } else if self.compared() == 0 {
             2
@@ -694,6 +753,15 @@ fn print_summary(s: &Summary) {
             }
         }
     }
+    println!(
+        "coverage: {} of {} measured runs had a coverage pod (the others predate S2: coverage not run); set: {}",
+        s.coverage_checked,
+        s.runs_measured,
+        coverage_names().join(", ")
+    );
+    for m in &s.coverage_missing {
+        println!("COVERAGE MISSING (no compared decision) {m}");
+    }
     for u in &s.runs_unreadable {
         println!("unreadable: {u}");
     }
@@ -722,6 +790,7 @@ pub fn run(dirs: &[PathBuf]) -> Result<i32> {
                 classes: _,
                 host,
                 guest,
+                coverage: _,
             } => println!(
                 "{label}: pods {listening} (reported {reported}), agree {}, disagree {}, faults {}, unreported {}, guest telemetry on {} of {} consoles",
                 tally.agree,
@@ -841,6 +910,7 @@ mod tests {
             classes,
             host,
             guest,
+            coverage,
         } = &r
         else {
             panic!("{r:?}")
@@ -858,6 +928,7 @@ mod tests {
         assert_eq!(host.pods_without_detail, 2);
         assert!(host.operations.is_empty());
         assert_eq!(guest.consoles, 0);
+        assert_eq!(*coverage, Coverage::NotRun);
     }
 
     /// S1: a node's per-operation pairs, unreported Decides and service time
@@ -1097,5 +1168,57 @@ mod tests {
             read_bundle(garbled.path()),
             Reading::CouldNotRead(_)
         ));
+    }
+
+    fn every_operation(skip: &str) -> Vec<(&'static str, &'static str, &'static str, u64)> {
+        coverage_names()
+            .into_iter()
+            .filter(|op| *op != skip)
+            .flat_map(|op| {
+                [
+                    (op, "allowed", "allowed", 1),
+                    (op, "denied:not_granted", "denied:not_granted", 1),
+                ]
+            })
+            .collect()
+    }
+
+    /// ADR 0014 S2: a run with a coverage pod must compare every operation in
+    /// the set at least once. One the traffic never reached reds, by name; a
+    /// run without a coverage pod is "not run", not covered and not red.
+    #[test]
+    fn coverage_names_the_operation_a_run_never_compared() {
+        let covered = bundle(
+            &[listening("a"), teardown(&every_operation(""), 0, 0)].join("\n"),
+            Some(""),
+        );
+        std::fs::write(covered.path().join(&files().coverage_calls), "[]").unwrap();
+        let s = Summary::of([("run", &read_bundle(covered.path()))]);
+        assert_eq!((s.coverage_checked, s.coverage_missing.len()), (1, 0));
+        assert_eq!(s.exit_code(), 0);
+
+        let no_glob = bundle(
+            &[
+                listening("a"),
+                teardown(&every_operation("glob_search"), 0, 0),
+            ]
+            .join("\n"),
+            Some(""),
+        );
+        std::fs::write(no_glob.path().join(&files().coverage_calls), "[]").unwrap();
+        let s = Summary::of([("run", &read_bundle(no_glob.path()))]);
+        assert_eq!(s.coverage_missing, vec!["run: glob_search".to_string()]);
+        assert_eq!(s.exit_code(), 1);
+
+        let before_s2 = bundle(
+            &[
+                listening("a"),
+                teardown(&every_operation("glob_search"), 0, 0),
+            ]
+            .join("\n"),
+            Some(""),
+        );
+        let s = Summary::of([("run", &read_bundle(before_s2.path()))]);
+        assert_eq!((s.coverage_checked, s.exit_code()), (0, 0));
     }
 }

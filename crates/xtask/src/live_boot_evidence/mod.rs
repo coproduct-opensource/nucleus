@@ -353,12 +353,13 @@ fn print_summary(s: &Summary) {
     }
     if let Some(t) = &s.timings {
         println!(
-            "  timings (ms): node ready {}, pod create {}, guest proxy ready {}, workload exit {}, effect pod create {}, total {}",
+            "  timings (ms): node ready {}, pod create {}, guest proxy ready {}, workload exit {}, effect pod create {}, coverage pod {}, total {}",
             t.node_ready_ms,
             t.pod_create_ms,
             t.guest_proxy_ready_ms,
             t.workload_exit_ms,
             t.effect_pod_create_ms,
+            t.coverage_ms,
             t.total_ms
         );
     }

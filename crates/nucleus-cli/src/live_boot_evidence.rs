@@ -390,11 +390,13 @@ async fn collect(
     let (effect_pod, effect_pod_create_ms) = effect(node, out, &files, nonce).await?;
     let pods = node.state.join("pods");
     copy_console(&pods, effect_pod, &out.join(&files.effect_console))?;
-    // After both pods were cancelled: every comparison either pod's shadow
-    // service made has been appended by now.
+    let (coverage_pod, coverage_ms) = coverage(node, out, &files).await?;
+    copy_console(&pods, coverage_pod, &out.join(&files.coverage_console))?;
+    // After every pod was cancelled: every comparison any pod's shadow service
+    // made has been appended by now.
     gather_disagreements(
         &pods,
-        &[run.pod, effect_pod],
+        &[run.pod, effect_pod, coverage_pod],
         &out.join(&files.host_decide_disagreements),
     )?;
     let jailer = Measured {
@@ -407,6 +409,7 @@ async fn collect(
         nonce: nonce.into(),
         execution_pod: run.pod.to_string(),
         effect_pod: effect_pod.to_string(),
+        coverage_pod: coverage_pod.to_string(),
         files,
         measured: vec![node_bin, run.firecracker, jailer],
         node_evidence: run.node_evidence,
@@ -416,6 +419,7 @@ async fn collect(
             guest_proxy_ready_ms: run.ready_ms,
             workload_exit_ms: run.exit_ms,
             effect_pod_create_ms,
+            coverage_ms,
             total_ms: millis(started),
         },
     };
@@ -424,6 +428,25 @@ async fn collect(
         serde_json::to_vec_pretty(&collection)?,
     )?;
     Ok(())
+}
+
+/// The operation-coverage pod (ADR 0014 S2): its calls, then a pause longer
+/// than the guest's quiet interval so its telemetry line reaches the console
+/// before the VM is killed.
+async fn coverage(node: &Node, out: &Path, files: &Files) -> Result<(Uuid, u64)> {
+    let started = Instant::now();
+    let (created, _) = create(node, &crate::live_boot_coverage::pod_spec(&node.upstream)).await?;
+    let pod = created.id;
+    then_cancel(node, pod, async {
+        let calls = crate::live_boot_coverage::drive(&created.proxy_addr).await?;
+        std::fs::write(
+            out.join(&files.coverage_calls),
+            serde_json::to_vec_pretty(&calls)?,
+        )?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        Ok((pod, millis(started)))
+    })
+    .await
 }
 
 /// Copy a pod's guest console into the bundle.
