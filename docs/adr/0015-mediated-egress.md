@@ -1,7 +1,8 @@
 # ADR 0015 — Mediated egress: every byte that leaves an eval cell is a request the host decided
 
-- Status: **proposed** (2026-10-08). Design and measurement only: this record moves no
-  enforcement. The first implementation step is E1 below.
+- Status: **accepted** (2026-10-08). Design and measurement only: this record moves no
+  enforcement. The first implementation step is E1 below. The owner accepted all four
+  decisions below, each the strongest option considered.
 - Tracks: milestone M4 of the eval-cell programme; issue #2698 (Q-3, its network half) and
   the second half of #2702 (L-1). ADR 0014 §12 leaves mediated-set rows 5, 6 and 10 to
   this record.
@@ -409,7 +410,7 @@ the one decider either way, and S5 adds the id.
 - Standard pods keep the netns fence and `dnsmasq` until the owner moves the floor. Rows
   5, 6 and 10 stay `backstopped-only` for them, and the inventory says so per profile.
 
-## Owner decisions this record asks for
+## Owner decisions (all accepted 2026-10-08)
 
 1. §1: no NIC for eval cells (runner-up: NIC with the netns admitting only the proxy).
 2. §2: eval-cell egress only to operator-registered upstreams, with `network.allow`,
