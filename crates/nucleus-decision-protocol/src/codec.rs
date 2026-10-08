@@ -388,6 +388,8 @@ pub(crate) const fn deny_wire(r: DenyReason) -> u8 {
         DenyReason::ApprovalRefused => 3,
         DenyReason::ApprovalExpired => 4,
         DenyReason::ApprovalUnknown => 5,
+        DenyReason::NotRegistered => 6,
+        DenyReason::RouteRefused => 7,
     }
 }
 

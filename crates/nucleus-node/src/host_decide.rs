@@ -201,6 +201,8 @@ fn deny_code(r: DenyReason) -> &'static str {
         DenyReason::ApprovalRefused => "approval_refused",
         DenyReason::ApprovalExpired => "approval_expired",
         DenyReason::ApprovalUnknown => "approval_unknown",
+        DenyReason::NotRegistered => "not_registered",
+        DenyReason::RouteRefused => "route_refused",
     }
 }
 
