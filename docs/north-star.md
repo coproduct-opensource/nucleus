@@ -275,6 +275,152 @@ What each status means, and what it deliberately does not:
   to end — the substrate, first surface, filter parity, request-path isolation,
   live-node lineage, and running-node scoped exclusion are in; the Firecracker
   two-pod boot is not.
+
+  **M6 plan for C2, re-verified on main at `827394f5a` (2026-10-08).** Three of
+  the statements above have gone stale. Each is corrected here first, because the
+  plan rests on them.
+  - *The real-vsock boot exists.* `podlist-probe.yml` boots A, a child C and a
+    sibling B under Firecracker with a jailer (#2604,
+    `scripts/firecracker/podlist-boot-check.sh`). It is green on main. A's
+    `POD_LIST` over A's own vsock returns {A, C} and never B, and that is a strict
+    subset of the operator view. It does not check **B's** view, it does not
+    check that the identities are distinct, and the client in the guest is CI-only
+    instrumentation (`ci-podlist-probe`).
+  - *The census is out of date.* `NodeState` has **56** fields, not 38. Four have
+    gone (`auth`, `broker_vsock_port`, `github_oidc`, `identity_vsock_port`) and
+    **22 are unclassified**: `approval_signer audit_minter audit_sinks authority
+    container_mediation container_proxy decision_epochs egress_stream_limits
+    eval_cells firecracker_api_boot host_roots intake jailer_limits
+    local_driver_opt_in lockdowns memory node_capacity node_platform pod_ceilings
+    sealed_rootfs staging_budget workload_landlock`. So "8 shared-mutable" is no
+    longer a derived number. At least `lockdowns`, `node_capacity`,
+    `decision_epochs`, `staging_budget`, `memory` and `authority` are
+    pod-written.
+  - *Lockdown is only partly fixed.* `lockdown::delivery` filters `pod:` scopes
+    by lineage, but a `label:` scope still reaches **every** watcher, carrying the
+    operator's free-text reason and selector. An unresolved watcher receives
+    everything. Today that is only a non-pod peer, because a pod peer always
+    resolves.
+  - *There is no caller token on the Firecracker path.* guest-init fetches it over
+    vsock and exports it. Its only consumer is the tool-proxy's HTTP
+    `NodeClient`, and a Firecracker guest has no route to the node's HTTP
+    listener. The Firecracker route is `POD_LIST`, which is authenticated by the
+    socket it arrives on (`PodListView` binds the pod at construction and has no
+    setter). The token also never leaves the guest, so a host-side check cannot
+    present B's token for A.
+
+    On HTTP, a pair that is presented and fails to verify is **dropped**, not
+    refused (`token_pod.ok()` in `auth.rs`), and the caller falls back to its
+    peer's own scope. That is not an escalation: a pod peer falls back to its own
+    SVID's pod, and an operator was already node-wide.
+
+  Each step below names its definition of done (**DoD**) and its A-19 falsifier
+  (**red**), which must be driven red on the real defect and then green.
+  1. **The census becomes a compile error.**
+     - Add an exhaustive destructure `let NodeState { … } = s;` with no `..`
+       (E-1, the E0027 mechanism) in a `#[test]` beside one
+       `Surface::{Structural, Secret, SharedMutable, Excluded(reason)}` entry per
+       field (F-1: the classification is not restated anywhere else). Size: S,
+       one file.
+     - **DoD:** all 56 fields are classified, and `docs/cross-pod-view.md` cites
+       the test instead of a hand list.
+     - **Red:** adding a field to `NodeState` fails to compile, and deleting one
+       entry from the classification fails the test.
+  2. **Classify the 22 new fields** in the revelation form the KILL assessment
+     prescribes: what B's action reveals to A, not what shape the counter has.
+     - Expected classes:
+       - availability: `node_capacity`, `staging_budget`, `memory`
+       - cardinality: `decision_epochs`, which reveals a node-wide count of
+         decision channels
+       - lineage-keyed and needing a model: `authority`, `eval_cells`,
+         `lockdowns`
+     - Size: S–M, a reading pass.
+     - **DoD:** no field is left without a stated revelation.
+     - **Red:** a field whose projection varies with another pod's *contents*
+       fires the KILL condition, and C2 stays NOT-YET until it is fixed.
+  3. **Mechanize the remaining fields**, one Mathlib-free file each, beside
+     `PodCrossView.lean`. Each file reuses `ownedBy` and carries its own
+     coarse-relation-fails witness.
+     - **Identity (S, ~100 lines).** No production path reads `vm_registry` any
+       more. It is written at register/teardown and read only by
+       `rebuild_registry_from_disk` and by tests. What a pod is served is
+       `identity_for(bridge.pod_id)` from the certificate cache, keyed by an
+       injective `pod_identity`.
+       - Model: `served A σ = cache σ (ident A)`.
+       - Theorems: local-respect (B's register, release or fetch leaves A's
+         served value unchanged) and output-consistency.
+       - **Red:** the #2197 shape, serving an arbitrary registered entry, breaks
+         local-respect.
+     - **Lockdown (M, ~200 lines).** Model `delivery` over the scopes
+       `All | Pod t | Label s` plus the held set.
+       - Theorem: delivery to A is determined by A's lineage and the operator's
+         command, and creating or cancelling a pod outside A's lineage leaves it
+         unchanged.
+       - The `Label` broadcast is stated as an explicit exclusion: operator
+         content reaches every pod. The **strongest** fix is to evaluate the
+         selector node-side. `issue` already computes `affected` with
+         `matches_label_selector`. **Owner decision:** it changes the lockdown
+         semantics, because proxies over-apply label lockdowns today.
+       - **Red:** the pre-#2203 broadcast `delivery` breaks local-respect.
+     - **Availability, cardinality and contention fields (S):** the pools,
+       `node_capacity`, `staging_budget`, `memory`, `network_allocator`,
+       `decision_epochs`, `docker` and `http_client`. List them in Lean as an
+       `Excluded` enumeration that step 1's census must equal.
+       - **Red:** a census field that is in neither list.
+     - **DoD for every file:** `lake build` passes with no `sorry` and a clean
+       axiom profile, and the file is listed in `portcullis-core-proven-lean.yml`.
+  4. **Link the model to the runtime by extraction, not by parity.**
+     `caller_may_manage_matches_the_podview_lineage_filter` restates `ownedBy` in
+     Rust. That leaves two copies (G-1), and a drift becomes a test failure
+     rather than an impossibility.
+     - **Strongest feasible link:**
+       - Move the pod arm of `caller_may_manage`, and later `lockdown::delivery`
+         and identity serving, into pure functions in
+         `nucleus-ifc-kernel/src/extracted/pod_view.rs`, over an abstract id.
+       - Extract them Charon→Aeneas into their own `generated-pod-view/`
+         directory. The extractions cannot import each other (the
+         IFC/CapQuantale/Channel lesson).
+       - Prove the `PodCrossView` theorems over the generated `Funs.lean`.
+       - Call those functions from `nucleus-node` and delete the Rust
+         restatement.
+     - Size: M. It needs the scoped Aeneas workflow, which is already a required
+       check.
+     - **Runner-up:** keep the parity test. It is weaker because it has two
+       deciders.
+     - **DoD:** the extraction is drift-clean, the theorem names the extracted
+       function, and `nucleus-node` holds no second copy of the predicate.
+     - **Red:** with `|| pod == caller` dropped, or with the filter replaced by
+       `true` in the Rust source, the regenerated Lean fails the non-triviality
+       or local-respect proof.
+  5. **The live boot: both pods, both views, distinct identities.**
+     - Port `podlist-boot-check.sh` to Rust: a `host_evidence_live` test behind a
+       `cargo xtask` subcommand. This follows the mandate, because the script has
+       to change anyway.
+     - Assert, on one node:
+       - A sees ⊇ {A, C} and never B;
+       - B's own probe sees exactly {B};
+       - the pod id each guest was served over its socket is its own;
+       - both views are strict subsets of the operator view.
+     - Report the result as a verdict line in the escape lane, which is #3338
+       once that merges.
+     - Size: M.
+     - **DoD:** green on the KVM runner, naming the commit.
+     - **Red:** a node built with `scope_to_caller` returning every item fails
+       the A and B assertions, and restoring it turns them green.
+     - **Not in scope, and why:** "B's token presented for A is refused" cannot be
+       an honest ordinary call on this tier, because no ordinary component
+       presents the token and the host never holds it. On this tier the refusal
+       is a type: the socket-bound `PodListView`.
+     - **Owner decision, strongest option:**
+       - Stop serving the caller token to Firecracker guests, where it is an
+         unused bearer secret. The socket authenticates, and #2446 is removing
+         the HMAC tier anyway.
+       - On HTTP, refuse a pair that is presented and fails to verify with a 401,
+         instead of dropping it (A-1: "claimed and failed" is not "absent").
+       - Cost: a misconfigured orchestrator fails loudly instead of degrading.
+  6. **VM-level guest isolation** stays with `net-guest-isolation-check.sh` and
+     the escape lane (M1–M3), not with C2. C2 promotes when steps 1–5 are green
+     and the owner signs off.
 - **C3 (PROVED)** — the two-run noninterference theorem over the reference pod
   machine, whose step relation calls the extracted delivery oracle. Scope is
   honest: a coarse monitor LTS with an opaque workload, labelled Phase 0.
