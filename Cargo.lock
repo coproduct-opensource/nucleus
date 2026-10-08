@@ -2065,10 +2065,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ci-scope"
+version = "1.0.0"
+
+[[package]]
 name = "ci-spec"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "ci-scope",
  "proptest",
  "regex",
  "serde",

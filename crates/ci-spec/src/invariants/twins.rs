@@ -154,9 +154,9 @@ pub fn check(m: &Model) -> Vec<Finding> {
         }
         if noop.triggers.merge_group {
             // Critical only when a REQUIRED context would get the vacuous
-            // green; a non-required twin that covers the queue on purpose
-            // (quickstart-boot, whose real job needs KVM the queue lacks)
-            // is reported, not failed.
+            // green; a non-required twin is reported, not failed.
+            // (quickstart-boot's twin was the case this once excused; it no
+            // longer exists -- that workflow decides scope with `ci-scope`.)
             let required = noop_jobs.iter().any(|j| m.is_required(j));
             out.push(finding(
                 "CI-I1-NOOP-MG",

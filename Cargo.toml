@@ -77,6 +77,7 @@ members = [
     "crates/nucleus-trust-registry",     # "Let's Encrypt for agents": PR-rooted, OIDC-attested, transparency-logged SPIFFE federation enrollment
     "crates/xtask",                      # Rust-native dev/CI task runner (cargo xtask <cmd>); migrating scripts/*.sh
     "crates/ci-spec",                 # CI configuration as a typed model + the merge-queue invariants as decision procedures
+    "crates/ci-scope",                # One decider for "does this event touch what a path-scoped job reads" (no deps)
     "crates/nucleus-action-key",      # CI: the key a gate receipt is stored under, or a refusal naming what is undeclared
     "crates/nucleus-receipt-store",  # CI: receipts filed under the action key they are about
     "crates/nucleus-ci-verdict",  # CI: the typed body for Projection::Ci

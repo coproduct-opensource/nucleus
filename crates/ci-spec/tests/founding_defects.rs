@@ -393,6 +393,113 @@ fn i5_widened_paths_not_in_pattern_is_red() {
     assert_clean(&r);
 }
 
+// ── I5 decided scope (`env.SCOPE_PATHS`) ──────────────────────────────────
+
+/// The quickstart-boot shape after the twin was removed: no pull_request filter, one producer,
+/// and a first step that hands every event to `ci-scope`.
+fn decided_wf(on_pr: &str, run_line: &str) -> String {
+    format!(
+        "name: boot\non:\n  pull_request:\n{on_pr}  merge_group:\n\
+         concurrency:\n  group: boot-${{{{ github.head_ref || github.ref }}}}\n  cancel-in-progress: ${{{{ github.event_name == 'pull_request' }}}}\n\
+         jobs:\n  boot:\n    name: Boot\n    runs-on: ubuntu-latest\n    timeout-minutes: 30\n    steps:\n\
+         \x20     - name: Is this change in scope?\n        id: relevance\n        env:\n          SCOPE_PATHS: ci/scope/boot.paths\n          EVENT: ${{{{ github.event_name }}}}\n        run: {run_line}\n\
+         \x20     - name: Boot\n        if: steps.relevance.outputs.relevant == 'true'\n        run: echo boot\n"
+    )
+}
+
+const GOOD_LIST: &str = ".github/workflows/boot.yml\nci/scope/boot.paths\ncrates/nucleus-node/**\n";
+const DECIDER: &str = "cargo run -q --locked -p ci-scope";
+
+fn run_decided(wf: &str, list: Option<Result<&str, &str>>) -> ci_spec::Report {
+    let wfs = vec![
+        (".github/workflows/boot.yml".to_string(), wf.to_string()),
+        (
+            ".github/workflows/filler.yml".to_string(),
+            FILLER.to_string(),
+        ),
+    ];
+    let ledger = "# PINNED = 3\nBoot\nRustfmt\nClippy\n";
+    let inline = format!("# UNCOVERED_CEILING = 50\n{FILLER_GATES}");
+    let mut m = from_parts(&wfs, ledger, QUEUE, &inline, "", vec![]).expect("model");
+    if let Some(list) = list {
+        let parsed = match list {
+            Ok(text) => ci_scope::ScopeList::parse(text).map_err(|e| e.to_string()),
+            Err(why) => Err(why.to_string()),
+        };
+        m.scope_lists.insert("ci/scope/boot.paths".into(), parsed);
+    }
+    check(&m)
+}
+
+#[test]
+fn i5_decided_scope_with_no_filter_and_a_self_covering_list_is_clean() {
+    assert_clean(&run_decided(&decided_wf("", DECIDER), Some(Ok(GOOD_LIST))));
+}
+
+/// The founding defect, restated in this shape: keep the pull_request `paths:` filter beside the
+/// decider and a PR outside it reports nothing -- which is what the `-noop` twin was added for,
+/// and the twin is what fires twice on a straddling PR (#3329).
+#[test]
+fn i5_decided_scope_beside_a_pull_request_filter_is_red() {
+    let r = run_decided(
+        &decided_wf("    paths:\n      - \"crates/nucleus-node/**\"\n", DECIDER),
+        Some(Ok(GOOD_LIST)),
+    );
+    assert!(
+        rules(&r).contains(&"CI-I5-SCOPE-FILTER"),
+        "got {:?}",
+        rules(&r)
+    );
+}
+
+#[test]
+fn i5_a_scope_list_that_does_not_cover_itself_or_the_workflow_is_red() {
+    let r = run_decided(
+        &decided_wf("", DECIDER),
+        Some(Ok("crates/nucleus-node/**\n")),
+    );
+    let fired: Vec<_> = r
+        .findings
+        .iter()
+        .filter(|f| f.rule == "CI-I5-SCOPE-SELF")
+        .collect();
+    assert_eq!(
+        fired.len(),
+        2,
+        "workflow AND list must each be named: {fired:#?}"
+    );
+}
+
+#[test]
+fn i5_an_unreadable_or_unparseable_scope_list_is_red_not_skipped() {
+    for list in [
+        None,
+        Some(Err("reading ci/scope/boot.paths: not found")),
+        Some(Ok("# nothing\n")),
+        Some(Ok("crates/*/src/**\n")),
+    ] {
+        let r = run_decided(&decided_wf("", DECIDER), list);
+        assert!(
+            rules(&r).contains(&"CI-I5-SCOPE-LIST"),
+            "{list:?}: got {:?}",
+            rules(&r)
+        );
+    }
+}
+
+#[test]
+fn i5_a_scope_list_no_step_decides_from_is_red() {
+    let r = run_decided(
+        &decided_wf("", "echo relevant=true >> \"$GITHUB_OUTPUT\""),
+        Some(Ok(GOOD_LIST)),
+    );
+    assert!(
+        rules(&r).contains(&"CI-I5-SCOPE-RUN"),
+        "got {:?}",
+        rules(&r)
+    );
+}
+
 // ── I6 gate integrity ─────────────────────────────────────────────────────
 
 fn gate_wf(step: &str) -> String {

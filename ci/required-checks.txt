@@ -81,7 +81,17 @@
 #                as its `paths-ignore`, verbatim (CI-I1), and `ready_for_review` (it skips drafts).
 #   podlist   -- nothing: it already had `merge_group:`, a scope step (CI-I5) and an exact-name
 #                noop twin, podlist-probe-noop.yml. It was simply never added here.
-# PINNED = 41
+# 2026-10-08, 41 -> 42: `a real nucleus pod boots and is enforced (x86_64)` becomes required (eval
+# cell M2, ADR 0013: the escape lane is the live boot, and an advisory boot is one nobody is held
+# to). It could not join as it stood. Its pull-request producer was a path-filtered real job plus
+# quickstart-boot-noop.yml, and a PR touching one boot path and one other file fires BOTH: #3329
+# (nucleus-node + Cargo.lock) carried a 17-minute boot and a 2-second no-op success under this one
+# name. So the twin is deleted, the workflow runs unfiltered, and every job's first step asks
+# `ci-scope` (crates/ci-scope, ci/scope/quickstart-boot.paths) whether the event touched what it
+# reads -- one producer on pull_request, merge_group and push alike, skipped only on an observed,
+# non-empty, out-of-scope diff. ci-spec's CI-I5-SCOPE-* rules hold that shape. Branch protection
+# gains the context after merge (owner toggle); `live-parity` reports the gap until then.
+# PINNED = 42
 
 # --- the gatehouse App ---
 gatehouse/required @app 4853870
@@ -133,3 +143,6 @@ Kani
 Kani (constitutional kernel)
 Dylint passes (one pod)
 the C2 podlist probe is served a lineage-scoped listing on a real guest (x86_64)
+
+# --- scope-decided (one unfiltered producer; `ci-scope` decides per event) --
+a real nucleus pod boots and is enforced (x86_64)
