@@ -465,6 +465,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// How often did the host's shadow decision agree with the one the guest
+    /// enforced? Reads downloaded `live-boot-evidence` bundles (one directory
+    /// per run) and reports compared decisions, the agreement rate and the
+    /// disagreement classes; an unreadable bundle is never a clean one
+    /// (ADR 0014, #2702 M3).
+    HostDecideAgreement {
+        /// Bundle directories, one per run; each must hold `node.log`.
+        #[arg(required = true)]
+        bundles: Vec<std::path::PathBuf>,
+    },
     /// How often does a merge-queue entry EJECT, and on what? The number that
     /// decides a batch size: batching multiplies the cost of a red, so a queue
     /// that does not know its ejection rate can only guess at one. Counts only
@@ -615,6 +625,7 @@ mod gatehouse_pin;
 mod gates_can_fail;
 mod guest_kernel_mirror;
 mod guest_layer;
+mod host_decide_agreement;
 mod host_evidence_live;
 mod inert_authority;
 mod kani_coverage;
@@ -746,6 +757,10 @@ fn main() -> Result<()> {
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
         Command::CiEjections { limit, json } => ci_ejections::ci_ejections(limit, json),
+        Command::HostDecideAgreement { bundles } => match host_decide_agreement::run(&bundles)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::SelfPin => match self_pin::check(&std::env::current_dir()?)? {
             // 2 is "could not look", which is never a pass. Mapped here rather than
             // exited from inside the check, so a unit test calling it survives.
