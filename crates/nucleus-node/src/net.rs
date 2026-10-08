@@ -2011,13 +2011,10 @@ pub fn decide_identity_grant(network: Option<&NetworkSpec>) -> IdentityGrant {
 /// to serve. A guest that guessed the port could still reach the listener. The
 /// defence-in-depth version refuses at the serving side too, keyed on the pod's
 /// grant; that is not implemented.
-pub fn workload_api_port_for(
-    identity_enabled: bool,
-    grant: &IdentityGrant,
-    port: u32,
-) -> Option<u32> {
+pub fn workload_api_port_for(identity_enabled: bool, grant: &IdentityGrant) -> Option<u32> {
     if identity_enabled && grant.is_granted() {
-        Some(port)
+        // The inventory's port: the one the bridge binds (`guest_socket`).
+        Some(nucleus_ifc_kernel::VsockListener::WorkloadApi.port())
     } else {
         None
     }
@@ -2081,7 +2078,12 @@ pub fn dnsmasq_config(gateway: Ipv4Addr, entries: &[ResolvedDnsEntry]) -> String
     config.push_str("no-hosts\n");
     config.push_str("bind-interfaces\n");
     config.push_str(&format!("listen-address={gateway}\n"));
-    config.push_str("port=53\n");
+    // The inventory's port (`HostListener::PodDns`), so this config and the
+    // in-guest probe that queries it cannot disagree.
+    config.push_str(&format!(
+        "port={}\n",
+        nucleus_ifc_kernel::HostListener::POD_DNS_PORT
+    ));
     for entry in entries {
         for ip in &entry.ips {
             config.push_str(&format!("address=/{}/{}\n", entry.host, ip));

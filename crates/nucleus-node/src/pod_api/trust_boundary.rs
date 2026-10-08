@@ -746,8 +746,10 @@ impl Host for Node {
 
         // The broker, as `BrokerListener::start` assembles it, but with the
         // recording caller in place of a network client.
-        let listener = crate::broker_transport::prepare_socket(
-            &crate::broker_transport::broker_socket_path(&vsock, st.broker_vsock_port),
+        let (listener, _) = crate::guest_socket::bind_guest_listener(
+            &vsock,
+            nucleus_ifc_kernel::VsockListener::CredentialBroker,
+            None,
         )
         .map_err(|e| e.to_string())?;
         let mut store = nucleus_cred_broker::CredentialStore::new();
@@ -794,7 +796,10 @@ impl Host for Node {
             },
         ));
 
-        let api = PathBuf::from(format!("{}_{}", vsock.display(), st.identity_vsock_port));
+        let api = crate::guest_socket::listener_path(
+            &vsock,
+            nucleus_ifc_kernel::VsockListener::WorkloadApi,
+        );
         // The capability is fetched first, as `nucleus-guest-init` does, and the
         // broker is found where the host SAID it is, not where this test bound it.
         let broker = match ask(&api, "FETCH_BROKER_SECRET").await {
@@ -803,10 +808,11 @@ impl Host for Node {
                 .and_then(|v| {
                     let secret = v.get("secret")?.as_str()?.as_bytes().to_vec();
                     let port = u32::try_from(v.get("port")?.as_u64()?).ok()?;
-                    Some((
-                        crate::broker_transport::broker_socket_path(&vsock, port),
-                        secret,
-                    ))
+                    // Firecracker's routing of the port the host SERVED, not
+                    // the inventory's: this is the guest's view.
+                    let mut path = vsock.as_os_str().to_os_string();
+                    path.push(format!("_{port}"));
+                    Some((PathBuf::from(path), secret))
                 })
                 .ok_or(format!("the broker capability reply was not one: {reply}")),
             Err(e) => Err(format!("FETCH_BROKER_SECRET: {e}")),

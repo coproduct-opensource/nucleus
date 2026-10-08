@@ -1263,14 +1263,12 @@ pub(crate) mod handler_tests {
             audit_minter: None,
             drand_config: None,
             identity_manager: None,
-            identity_vsock_port: a.identity_workload_api_vsock_port,
             broker_listen: a.broker_listen,
             broker_enforcing: crate::broker_rollout::resolve_host_spec_enforcement(
                 &a.driver,
                 a.broker_enforcing,
             )
             .expect("the fixture's driver resolves"),
-            broker_vsock_port: a.broker_vsock_port,
             workload_landlock: nucleus::LandlockWaiver::Absent,
             staging_budget: crate::broker_stream::staging_budget::Budget::new(
                 crate::broker_stream::staging_budget::DEFAULT_BYTES,

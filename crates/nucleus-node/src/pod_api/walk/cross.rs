@@ -206,7 +206,6 @@ impl Run {
         };
         let bridge = crate::workload_api_vsock::WorkloadApiVsockBridge::start(
             dir.path().join("vsock.sock"),
-            15012,
             p,
             manager.clone(),
             material,

@@ -41,6 +41,8 @@ const KERNEL_FILES: &[&str] = &[
     "src/ifc_lattice.rs",
     "src/ifc_ops.rs",
     "src/egress_channel.rs",
+    "src/host_listener.rs",
+    "src/doc_table.rs",
     "src/flow.rs",
     "src/ifc_api.rs",
     "src/effect.rs",
@@ -64,6 +66,10 @@ const KERNEL_MODULES: &[&str] = &[
     "ifc_lattice",
     "ifc_ops",
     "egress_channel",
+    // The host-listener inventory, and the test-only doc-table reader it and
+    // `egress_channel` share.
+    "host_listener",
+    "doc_table",
     "flow",
     "ifc_api",
     "effect",
@@ -79,6 +85,11 @@ const KERNEL_MODULES: &[&str] = &[
 /// `crate::IFCLabel` / `crate::Operation` / `crate::CapabilityLevel` etc. are
 /// allowed.
 const KERNEL_ROOT_PRIMITIVES: &[&str] = &[
+    // egress_channel.rs (C6 inventory), named by host_listener.rs
+    "EgressChannel",
+    "MediationStatus",
+    // host_listener.rs, named in doc_table.rs's docs
+    "HostListener",
     // capability_level.rs (M3)
     "CapabilityLevel",
     // ifc_lattice.rs (M1)

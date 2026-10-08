@@ -482,7 +482,6 @@ pub(crate) async fn start_broker_for_pod(
 
     match crate::broker_transport::BrokerListener::start(
         vsock_path,
-        state.broker_vsock_port,
         crate::broker_transport::PodBrokerConfig {
             host_policy: state
                 .authority

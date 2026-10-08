@@ -341,13 +341,11 @@ struct Args {
     /// Unix socket path for the Workload API server.
     #[arg(long, env = "NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET")]
     identity_workload_api_socket: Option<PathBuf>,
-    /// Vsock port for guest-to-host Workload API connections.
-    #[arg(
-        long,
-        env = "NUCLEUS_IDENTITY_WORKLOAD_API_VSOCK_PORT",
-        default_value_t = 15012
-    )]
-    identity_workload_api_vsock_port: u32,
+    // There is no flag for a guest-reachable vsock port. Every one is written
+    // once, in the host-listener inventory (`nucleus_ifc_kernel::VsockListener`,
+    // docs/architecture/mediated-set.md, "Host listeners"). `--broker-vsock-port` used to
+    // default to 15013 — the SPIFFE Workload API's port — so the broker unlinked
+    // that socket on every broker-enabled pod.
     /// Serve the per-pod credential broker socket.
     ///
     /// Off by default; listen mode preserves legacy credential delivery.
@@ -366,9 +364,6 @@ struct Args {
         action = clap::ArgAction::Set
     )]
     broker_enforcing: Option<bool>,
-    /// Vsock port the guest uses to reach the credential broker.
-    #[arg(long, env = "NUCLEUS_NODE_BROKER_VSOCK_PORT", default_value_t = 15013)]
-    broker_vsock_port: u32,
     /// Waive Landlock for pods whose guest kernel cannot enforce it (#2696
     /// P3c). Without it, a guest whose kernel lacks Landlock ABI 2 refuses to
     /// start its workload and every `/v1/run` command (fail closed). With it,
@@ -509,9 +504,6 @@ struct NodeState {
     /// Identity manager for SPIFFE certificates (experimental, not yet wired to Firecracker).
     #[allow(dead_code)]
     identity_manager: Option<identity::IdentityManager>,
-    /// Vsock port for guest-to-host Workload API connections.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    identity_vsock_port: u32,
     /// Whether pods should be served a credential broker socket.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_listen: bool,
@@ -519,9 +511,6 @@ struct NodeState {
     /// it. Resolved once at startup from the driver and the operator's request.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     broker_enforcing: broker_rollout::HostSpecEnforcement,
-    /// Vsock port the guest uses to reach the credential broker.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    broker_vsock_port: u32,
     /// The operator's Landlock waiver for guests whose kernel lacks it,
     /// carried to each guest as `guest_layout::WORKLOAD_LANDLOCK_WAIVED_ARG`.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -948,10 +937,8 @@ async fn main() -> Result<(), ApiError> {
         audit_minter: args.audit_sinks.minter().map_err(ApiError::Driver)?,
         drand_config,
         identity_manager,
-        identity_vsock_port: args.identity_workload_api_vsock_port,
         broker_listen: args.broker_listen,
         broker_enforcing: host_spec_enforcement,
-        broker_vsock_port: args.broker_vsock_port,
         workload_landlock: if args.allow_workload_without_landlock {
             nucleus::LandlockWaiver::Explicit
         } else {
@@ -2189,7 +2176,6 @@ async fn spawn_firecracker_pod(
                 let workload_api_port = net::workload_api_port_for(
                     state.identity_manager.is_some(),
                     &identity_grant,
-                    state.identity_vsock_port,
                 );
                 // #2789: give the pod a writable `/work`. Decided before the config that
                 // declares the drive, so a disk that cannot be made means no drive

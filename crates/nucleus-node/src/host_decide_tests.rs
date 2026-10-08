@@ -20,8 +20,8 @@ use chrono::Utc;
 use nucleus_decision_protocol::host::LedgerError;
 use nucleus_decision_protocol::kernel::{args_digest, outcome_of, taint_report};
 use nucleus_decision_protocol::{
-    Agreement, DECISION_VSOCK_PORT, DecisionId, DenyReason, GuestFrame, HostFrame, LEN_PREFIX,
-    LabelRaise, Outcome, Seq, Subject, Verdict, body_len,
+    Agreement, DecisionId, DenyReason, GuestFrame, HostFrame, LEN_PREFIX, LabelRaise, Outcome, Seq,
+    Subject, Verdict, body_len,
 };
 use portcullis::certificate::{DEFAULT_MAX_CHAIN_DEPTH, verify_certificate};
 use portcullis::flow_graph::FlowGraph;
@@ -108,7 +108,6 @@ async fn listen(
 ) -> DecideListener {
     DecideListener::start(
         &dir.join("v.sock"),
-        DECISION_VSOCK_PORT,
         PodDecide::new(
             pod,
             Arc::clone(auth),

@@ -51,6 +51,16 @@ pub use ifc_ops::*;
 mod egress_channel;
 pub use egress_channel::{EgressChannel, MediationStatus};
 
+// The closed inventory of host-side listeners a pod can reach — the one place
+// their ports are written (ADR 0007 G-1), pinned to `mediated-set.md`'s host-listener table.
+mod host_listener;
+pub use host_listener::{HostListener, Transport, VsockListener, WorkloadReach};
+
+// Test support: the one reader of a fenced Markdown inventory table, shared by
+// the two parity gates above (ADR 0007 F-4).
+#[cfg(test)]
+mod doc_table;
+
 // The capability product lattice + the exposure detector / pure decision —
 // the rest of the Aeneas-verified surface (MVK M3 whole-core).
 mod capability_lattice;

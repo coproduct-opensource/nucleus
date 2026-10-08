@@ -27,6 +27,8 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 hex = { workspace = true }
 nucleus-spec = { path = "../nucleus-spec" }
+# The host-listener inventory: the workload API's port, written once (ADR 0007 G-1).
+nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The blocking netlink socket (MIT, pure Rust; already in the lockfile via

@@ -9,9 +9,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use vsock::VsockStream;
 
-/// Default vsock port for the Workload API.
+/// Default vsock port for the Workload API: the host-listener inventory's
+/// (ADR 0007 G-1).
 #[allow(dead_code)]
-pub const DEFAULT_WORKLOAD_API_PORT: u32 = 15012;
+pub const DEFAULT_WORKLOAD_API_PORT: u32 = nucleus_ifc_kernel::VsockListener::WorkloadApi.port();
 
 /// Host CID for vsock connections (always 2 in Firecracker).
 const VMADDR_CID_HOST: u32 = 2;

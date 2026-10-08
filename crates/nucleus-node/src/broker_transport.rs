@@ -9,8 +9,9 @@
 //!
 //! Getting that path wrong does not fail loudly: the guest simply cannot reach
 //! the broker, and every credential request quietly falls back to whatever the
-//! old path was. [`broker_socket_path`] exists so the derivation is written once
-//! and tested, rather than formatted inline at a call site.
+//! old path was. `crate::guest_socket::listener_path` writes the derivation
+//! once, from the host-listener inventory's port for
+//! `VsockListener::CredentialBroker`, rather than formatted inline at a call site.
 //!
 //! # Why the reader is bounded separately from the parser
 //!
@@ -36,31 +37,8 @@
 #![cfg_attr(all(not(test), not(target_os = "linux")), allow(dead_code))]
 
 use std::io::BufRead;
-use std::path::{Path, PathBuf};
 
 use crate::envelope_frame::MAX_FRAME_BYTES;
-
-/// The vsock port the guest connects to for credential brokering.
-///
-/// Distinct from the tool-proxy's control-plane port: that one is
-/// host-initiated and carries host→guest requests, this one is guest-initiated
-/// and carries envelopes the other way. Sharing a port would mix a trusted
-/// direction with an untrusted one on the same listener.
-// Dead on BOTH platforms: the port reaches the launch path as
-// `state.broker_vsock_port`, a configured value, so the constant is the
-// documented default rather than the thing that is read.
-#[allow(dead_code)]
-pub const BROKER_VSOCK_PORT: u32 = 1027;
-
-/// Where the host must listen for guest-initiated broker connections.
-///
-/// Firecracker appends `_{port}` to the configured `uds_path` for
-/// guest-initiated connections; see the vsock documentation.
-pub fn broker_socket_path(uds_path: &Path, port: u32) -> PathBuf {
-    let mut s = uds_path.as_os_str().to_os_string();
-    s.push(format!("_{port}"));
-    PathBuf::from(s)
-}
 
 /// Why a frame could not be read.
 #[derive(Debug, PartialEq, Eq)]
@@ -119,33 +97,10 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
-    /// The guest-initiated path is `{uds_path}_{port}`, not `uds_path`. Getting
-    /// this wrong makes the broker silently unreachable.
-    #[test]
-    fn the_guest_initiated_socket_has_the_port_suffix() {
-        let base = Path::new("/srv/jailer/pod-1/root/vsock.sock");
-        let p = broker_socket_path(base, BROKER_VSOCK_PORT);
-        assert_eq!(
-            p,
-            PathBuf::from("/srv/jailer/pod-1/root/vsock.sock_1027"),
-            "Firecracker appends _PORT for guest-initiated connections"
-        );
-        assert_ne!(
-            p,
-            base.to_path_buf(),
-            "it must NOT be the host-initiated path"
-        );
-    }
-
-    /// The broker port must not collide with the control-plane port, or an
-    /// untrusted guest-initiated direction shares a listener with a trusted
-    /// host-initiated one.
-    #[test]
-    fn the_broker_port_is_distinct_from_the_control_plane() {
-        // The tool-proxy's control plane is configured per-pod via the spec;
-        // 1024 is the conventional default in this repo's fixtures.
-        assert_ne!(BROKER_VSOCK_PORT, 1024);
-    }
+    // The `{uds_path}_{port}` derivation and the broker's port are tested where
+    // they now live: `guest_socket::every_listener_has_its_own_path` and the
+    // host-listener inventory's `every_vsock_listener_has_its_own_port`. The
+    // test that stood here asserted a constant that nothing read.
 
     #[test]
     fn a_terminated_frame_reads_back_without_its_newline() {
@@ -1423,7 +1378,6 @@ impl BrokerListener {
     /// [`serve_broker`].
     pub fn start(
         uds_path: &std::path::Path,
-        port: u32,
         pod: PodBrokerConfig,
         jail_owner: Option<(u32, u32)>,
     ) -> io::Result<Self> {
@@ -1438,14 +1392,15 @@ impl BrokerListener {
             stream_limits,
             staging_budget,
         } = pod;
-        let socket_path = broker_socket_path(uds_path, port);
-        let listener = prepare_socket(&socket_path)?;
-        // Without this the node binds, logs "started credential broker at …",
-        // passes every launch check, and no jailed guest can ever connect: the
-        // socket lands root-owned and `connect()` needs write permission on it.
-        // The workload API socket in this same directory has always done this;
-        // this one did not. See `guest_socket` for the post-mortem.
-        crate::guest_socket::give_socket_to_jail(&socket_path, jail_owner)?;
+        // The port is the inventory's, and the helper hands the socket to the
+        // jailed uid. Without that handover the node binds, logs "started
+        // credential broker at …", passes every launch check, and no jailed
+        // guest can ever connect. See `guest_socket` for the post-mortem.
+        let (listener, socket_path) = crate::guest_socket::bind_guest_listener(
+            uds_path,
+            nucleus_ifc_kernel::VsockListener::CredentialBroker,
+            jail_owner,
+        )?;
         let (tx, rx) = tokio::sync::oneshot::channel();
         // One client for the pod's lifetime, so connections to the upstream are
         // pooled rather than rebuilt per request. Its TLS trust is the HOST's,
@@ -1647,7 +1602,6 @@ mod listener_lifecycle_tests {
 
         let first = BrokerListener::start(
             &uds,
-            9999,
             PodBrokerConfig {
                 host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/dead"),
@@ -1681,7 +1635,6 @@ mod listener_lifecycle_tests {
         // the previous listener.
         let second = BrokerListener::start(
             &uds,
-            9999,
             PodBrokerConfig {
                 host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/alive"),
@@ -1723,7 +1676,6 @@ mod listener_lifecycle_tests {
         let uds = dir.path().join("vsock.sock");
         let listener = BrokerListener::start(
             &uds,
-            9998,
             PodBrokerConfig {
                 host_policy: crate::host_decide::test_policy(PermissionLattice::permissive()),
                 identity: PodIdentity::observed_by_host("spiffe://nucleus/pod/abc"),

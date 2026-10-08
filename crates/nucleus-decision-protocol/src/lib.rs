@@ -104,12 +104,12 @@ pub use frame::{
 
 /// The vsock port the guest dials for its decision channel (P8).
 ///
-/// Declared here, beside the wire it carries, so the node that listens and the
-/// proxy that dials read one number (ADR 0007 G-1). Guest-initiated, like the
-/// credential broker's 1027 and unlike the tool-proxy's host-initiated control
-/// port; distinct from both so a trusted direction and an untrusted one never
-/// share a listener.
-pub const DECISION_VSOCK_PORT: u32 = 1028;
+/// Derived from the host-listener inventory, so the node that listens, the
+/// proxy that dials and every other host listener read one table (ADR 0007
+/// G-1), and `every_vsock_listener_has_its_own_port` keeps it distinct from the
+/// broker's and the workload API's. Guest-initiated, unlike the tool-proxy's
+/// host-initiated control port.
+pub const DECISION_VSOCK_PORT: u32 = nucleus_ifc_kernel::VsockListener::DecisionChannel.port();
 
 #[cfg(feature = "kernel")]
 pub mod kernel;
