@@ -147,6 +147,7 @@ mod tests {
             workload_api_bridge: Mutex::new(None),
             broker: Mutex::new(None),
             decide: Mutex::new(None),
+            egress_proxy: Mutex::new(None),
             jail: Mutex::new(None),
             snapshot: None,
         };

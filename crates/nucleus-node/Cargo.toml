@@ -107,6 +107,11 @@ nucleus-cred-protocol = { path = "../nucleus-cred-protocol", features = ["io"] }
 # same crate. `kernel` brings the verdict mapping and taint pairing both ends
 # compute, so the host's shadow verdicts are compared like for like (P8).
 nucleus-decision-protocol = { path = "../nucleus-decision-protocol", features = ["kernel"] }
+# The egress proxy's request summary and posture readers (ADR 0015 E2): the node
+# parses the subject the proxy sends with the proxy's own parser, and reads the
+# proxy's /proc status with the proxy's own reader, so neither fact is written
+# twice (ADR 0007 G-1). The proxy's serve loop runs in the node only in tests.
+nucleus-egress-proxy = { path = "../nucleus-egress-proxy" }
 # Keyless upstream credentials (ADR 0010): the ES256 assertion, the signer
 # trait and the token client. The node decides WHEN to mint
 # (`federated_credential.rs`); this crate only makes the assertion honest about

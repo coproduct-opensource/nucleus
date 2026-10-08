@@ -802,7 +802,9 @@ impl Channel {
 // ── serving ─────────────────────────────────────────────────────────────────
 
 /// Read one guest frame. `Ok(None)` is the guest closing between frames.
-async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> Result<Option<GuestFrame>, ChannelError> {
+pub(crate) async fn read_frame<R: AsyncRead + Unpin>(
+    r: &mut R,
+) -> Result<Option<GuestFrame>, ChannelError> {
     let mut prefix = [0u8; LEN_PREFIX];
     match r.read_exact(&mut prefix).await {
         Ok(_) => {}

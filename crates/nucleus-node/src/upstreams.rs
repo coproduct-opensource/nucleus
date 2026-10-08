@@ -194,6 +194,13 @@ struct RegistryFile {
     /// statement of what this node offers in both directions.
     #[serde(default)]
     caller: Vec<crate::federation_ingress::CallerFile>,
+    /// Plain upstreams an eval cell's egress proxy may reach (ADR 0015 §2):
+    /// an origin with the methods and paths it admits, and no credential.
+    /// Their own table rather than `[[upstream]]` entries with an optional
+    /// credential, because an `Option` there would make `None` mean "no
+    /// credential" on the type the broker injects from (ADR 0007 B-2).
+    #[serde(default)]
+    egress: Vec<crate::egress_proxy::EgressFile>,
 }
 
 #[derive(Deserialize)]
@@ -435,6 +442,11 @@ impl HeaderPolicy {
 pub(crate) struct CallCharge(u64);
 
 impl CallCharge {
+    /// The operator's tariff as written in the registry. The only way to
+    /// hold one outside this module: a registry loader that read a price.
+    pub(crate) fn operator(micro_usd: u64) -> Self {
+        Self(micro_usd)
+    }
     pub(crate) fn micro_usd(self) -> u64 {
         self.0
     }
@@ -558,6 +570,8 @@ pub(crate) struct UpstreamRegistry {
     /// The file's `[[caller]]` tables, as written. Validated (against this
     /// registry) by `federation_ingress::CallerBindings::from_files`.
     callers: Vec<crate::federation_ingress::CallerFile>,
+    /// The `[[egress]]` routes, validated.
+    egress: Arc<crate::egress_proxy::EgressRoutes>,
 }
 
 impl UpstreamRegistry {
@@ -649,11 +663,18 @@ impl UpstreamRegistry {
             });
         }
         let specs = entries.iter().map(|e| e.spec.clone()).collect();
+        let egress = crate::egress_proxy::EgressRoutes::from_files(file.egress)?;
         Ok(Self {
             entries,
             specs,
             callers: file.caller,
+            egress: Arc::new(egress),
         })
+    }
+
+    /// The `[[egress]]` routes an eval cell's proxy is decided against.
+    pub fn egress(&self) -> &Arc<crate::egress_proxy::EgressRoutes> {
+        &self.egress
     }
 
     /// The `[[caller]]` tables of this file, unvalidated.

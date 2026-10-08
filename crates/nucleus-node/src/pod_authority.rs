@@ -1398,6 +1398,14 @@ impl PodAuthority {
     /// The one runtime policy history owned by this admitted pod. Both broker
     /// and decision listeners obtain it here; connection/listener replacement
     /// cannot mint a fresh history. Certificate restore alone is insufficient.
+    /// The registry's `[[egress]]` routes, or none without a registry.
+    pub(crate) fn egress_routes(&self) -> std::sync::Arc<crate::egress_proxy::EgressRoutes> {
+        match &self.registry {
+            Some(registry) => std::sync::Arc::clone(registry.egress()),
+            None => std::sync::Arc::new(crate::egress_proxy::EgressRoutes::none()),
+        }
+    }
+
     pub async fn host_policy(
         &self,
         pod_id: Uuid,
