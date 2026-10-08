@@ -224,19 +224,59 @@ fn judge(
     failures
 }
 
-async fn scenario(node: &Node, kernel: &Path, rootfs: &Path) -> Result<Vec<String>> {
-    // One writable copy per pod, beside the jail base: the jailer hard-links a
-    // drive into the jail, which needs the same filesystem.
-    let copy = |name: &str| -> Result<PathBuf> {
-        let dir = node.state.parent().context("state dir has a parent")?;
-        let to = dir.join(format!("rootfs-{name}.ext4"));
-        std::fs::copy(rootfs, &to).with_context(|| format!("copying {}", rootfs.display()))?;
-        Ok(to)
-    };
-    let a = create(node, &spec("orch-a", kernel, &copy("a")?), None).await?;
+/// The node's artifacts root for this run: the kernel, and one rootfs copy per
+/// pod. A pod may name an image only inside `--artifacts-root`. The directory
+/// lives in `/var/tmp`, on the same filesystem as the fixture's jail base,
+/// because the jailer hard-links each drive into its jail.
+struct Artifacts {
+    _dir: tempfile::TempDir,
+    kernel: PathBuf,
+    root: PathBuf,
+}
+
+impl Artifacts {
+    fn stage(kernel: &Path, rootfs: &Path) -> Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("xp")
+            .tempdir_in("/var/tmp")?;
+        let root = dir.path().to_path_buf();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755))?;
+        let place = |from: &Path, name: &str| -> Result<PathBuf> {
+            let to = root.join(name);
+            std::fs::copy(from, &to).with_context(|| format!("copying {}", from.display()))?;
+            std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o644))?;
+            Ok(to)
+        };
+        let kernel = place(kernel, "vmlinux")?;
+        for pod in ["a", "b", "c"] {
+            place(rootfs, &format!("rootfs-{pod}.ext4"))?;
+        }
+        Ok(Self {
+            _dir: dir,
+            kernel,
+            root,
+        })
+    }
+    fn rootfs(&self, pod: &str) -> PathBuf {
+        self.root.join(format!("rootfs-{pod}.ext4"))
+    }
+}
+
+async fn scenario(node: &Node, artifacts: &Artifacts) -> Result<Vec<String>> {
+    let kernel = artifacts.kernel.as_path();
+    let a = create(node, &spec("orch-a", kernel, &artifacts.rootfs("a")), None).await?;
     let (c, b) = tokio::try_join!(
-        async { create(node, &spec("child-c", kernel, &copy("c")?), Some(a)).await },
-        async { create(node, &spec("sibling-b", kernel, &copy("b")?), None).await },
+        create(
+            node,
+            &spec("child-c", kernel, &artifacts.rootfs("c")),
+            Some(a)
+        ),
+        create(
+            node,
+            &spec("sibling-b", kernel, &artifacts.rootfs("b")),
+            None
+        ),
     )?;
     println!("cross-pod-live: A={a} C={c} (child of A) B={b} (sibling)");
     let operator = operator_view(node).await?;
@@ -271,8 +311,15 @@ async fn two_pods_each_see_only_their_own_lineage() -> Result<()> {
     let rootfs = var("NUCLEUS_CROSS_POD_ROOTFS")?;
     let nonce = std::env::var("NUCLEUS_HOST_EVIDENCE_NONCE")?;
     ensure!(!nonce.is_empty(), "missing nonce");
-    let mut node = Node::start(&bins, &nonce).await?;
-    let result = scenario(&node, &kernel, &rootfs).await;
+    let artifacts = Artifacts::stage(&kernel, &rootfs)?;
+    let root = artifacts.root.to_string_lossy().into_owned();
+    let mut node = Node::start_with(
+        &bins.join("nucleus-node"),
+        &nonce,
+        &["--artifacts-root".to_string(), root],
+    )
+    .await?;
+    let result = scenario(&node, &artifacts).await;
     let diagnostics = node.diagnostics();
     let _ = node.stop().await;
     let failures = result.with_context(|| diagnostics.clone())?;
