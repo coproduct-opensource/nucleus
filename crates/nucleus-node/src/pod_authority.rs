@@ -126,7 +126,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Duration, Utc};
-use nucleus_spec::dlc_admission::{DlcField, DlcProvisioning};
 use nucleus_spec::{CredentialedEgressSpec, PodSpec};
 use portcullis::certificate::{
     DEFAULT_MAX_CHAIN_DEPTH, LatticeCertificate, SinkScope, verify_certificate,
@@ -542,10 +541,6 @@ struct PodCert {
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
     upstreams: Vec<CredentialedEgressSpec>,
-    /// The DLC admission its spec's labels provision, read at admission so the
-    /// host's kernel carries the same gate the guest's does (ADR 0014, host DLC
-    /// admission). `None` ⇔ the labels ask for none.
-    dlc: Option<DlcProvisioning>,
 }
 
 /// One verifier for both fresh guest-equivalent kernels and shared host state.
@@ -555,22 +550,10 @@ fn verified_host_kernel(
 ) -> Result<portcullis::kernel::Kernel, HostKernelError> {
     let verified = verify_certificate(&entry.cert, root, Utc::now(), DEFAULT_MAX_CHAIN_DEPTH)
         .map_err(|e| HostKernelError::DoesNotVerify(e.to_string()))?;
-    let mut kernel =
-        portcullis::kernel::Kernel::from_certificate(verified, entry.cert.fingerprint());
-    // The guest provisions its kernels from the same fields, through the same
-    // reading (`DlcAdmission::provision`, G-1). Without this the host allowed
-    // what the guest's DLC gate refused: guest-stricter, which ADR 0014 §10
-    // bounds at zero because enforcing the host would grant more.
-    if let Some(admission) = entry.dlc.as_ref().and_then(|p| {
-        portcullis::says_admission::DlcAdmission::provision(
-            p.get(DlcField::TrustedKeys),
-            p.get(DlcField::Issuer),
-            p.get(DlcField::Credentials),
-        )
-    }) {
-        kernel.set_dlc_admission(admission);
-    }
-    Ok(kernel)
+    Ok(portcullis::kernel::Kernel::from_certificate(
+        verified,
+        entry.cert.fingerprint(),
+    ))
 }
 
 /// An external caller chain's ledger, and its retired children as for a pod.
@@ -605,12 +588,6 @@ struct PersistedAuthority {
     /// before ledgers were persisted, which recorded none.
     #[serde(default)]
     ledger: LedgerRecord,
-    /// The DLC admission the pod's labels provisioned. Absent from files
-    /// written before the host read it; a pod restored from one has no policy
-    /// history either (`UnavailableAfterRestart`), so no host kernel decides
-    /// for it.
-    #[serde(default)]
-    dlc: Option<DlcProvisioning>,
 }
 
 /// The part of a ledger a restart cannot re-derive from live children.
@@ -1322,7 +1299,6 @@ impl PodAuthority {
             holder_pkcs8: child_pkcs8.as_ref().to_vec(),
             parent,
             upstreams: upstreams.clone(),
-            dlc: DlcProvisioning::from_labels(&spec.metadata.labels),
         };
         // A child that would not survive a restart would be missing from its
         // parent's ledger after one, so it is not issued. Nor is a charge to a
@@ -1740,7 +1716,6 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
         holder_pkcs8,
         parent: persisted.parent,
         upstreams: persisted.upstreams,
-        dlc: persisted.dlc,
     })
 }
 
@@ -1792,7 +1767,6 @@ async fn persist_pod(state_dir: &Path, pod_id: Uuid, entry: &PodCert) -> std::io
         holder_pkcs8_b64: base64_encode(&entry.holder_pkcs8),
         parent: entry.parent,
         upstreams: entry.upstreams.clone(),
-        dlc: entry.dlc.clone(),
         ledger: LedgerRecord::of(
             &entry.ledger.snapshot().map_err(std::io::Error::other)?,
             &entry.retired,
