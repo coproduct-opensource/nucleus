@@ -105,6 +105,7 @@ mod effect_footprint;
 mod egress_link;
 mod egress_meter;
 mod envelope_frame;
+mod eval_cell;
 mod federated_credential;
 mod federation_ingress;
 mod guest_socket;
@@ -565,6 +566,8 @@ struct NodeState {
     lockdown_tx: tokio::sync::broadcast::Sender<proto::LockdownCommand>,
     /// The lockdowns in force (`lockdown::Active`).
     lockdowns: Arc<std::sync::Mutex<lockdown::Active>>,
+    /// The eval cells admitted by this process (ADR 0013), for their children.
+    eval_cells: eval_cell::Admitted,
 }
 
 #[derive(Debug)]
@@ -977,6 +980,7 @@ async fn main() -> Result<(), ApiError> {
             .unwrap_or_default(),
         lockdown_tx: tokio::sync::broadcast::channel::<proto::LockdownCommand>(16).0,
         lockdowns: Arc::default(),
+        eval_cells: crate::eval_cell::Admitted::none(),
     };
 
     // From here a SIGTERM/SIGINT is queued for the drain below rather than killing the node.
@@ -1247,6 +1251,7 @@ async fn create_pod_internal(
         .request(&spec, &state.driver, state.container_mediation)?;
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
+    eval_cell::admit_on(state, &spec, parent_pod_id, id)?; // ADR 0013, refused by name
     let created_at = now_unix();
     let execution_deadline = lifecycle::execution_deadline(&spec)?;
 

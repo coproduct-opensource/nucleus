@@ -1,0 +1,363 @@
+//! Admission for the eval-cell isolation profile (ADR 0013).
+//!
+//! An eval cell runs an agent that is assumed hostile and assumed to hold root
+//! inside its guest. Everything the guest enforces is therefore defence in
+//! depth; what the cell may rely on is the host's: Firecracker under the jailer,
+//! the VMM's own seccomp filter verified active, the netns default-deny fence,
+//! and credentials the guest never receives. This module refuses, at create and
+//! by name, every pod that asks for the eval-cell profile on a node or with a
+//! spec that cannot hold those.
+//!
+//! The profile only adds requirements. [`admit`] returns before checking
+//! anything for a standard pod, so a standard pod is admitted exactly as it was
+//! before this module existed.
+//!
+//! [`admit`] is the one decider for the profile at create, and
+//! [`require_confined_children`] the one at boot, where the guest's Landlock
+//! verdict first exists.
+
+use nucleus_spec::PodSpec;
+use nucleus_spec::isolation_profile::{IsolationProfile, UnknownProfile};
+use portcullis::CapabilityLevel;
+use uuid::Uuid;
+
+use crate::ApiError;
+use crate::broker_rollout::HostSpecEnforcement;
+use crate::driver::{DriverKind, isolation_backend};
+
+/// What this node is configured to enforce, as far as an eval cell depends on it.
+///
+/// A snapshot of [`crate::NodeState`] so the decision is a pure function and is
+/// tested without a node (`NodePosture::of` is the only production constructor).
+pub(crate) struct NodePosture<'a> {
+    pub(crate) driver: &'a DriverKind,
+    /// `--firecracker-seccomp-verify`: the VMM's seccomp filter is confirmed active.
+    pub(crate) seccomp_verify: bool,
+    /// `--firecracker-jailer`: the VMM is launched under the jailer.
+    pub(crate) jailer: bool,
+    /// `--allow-workload-without-landlock`.
+    pub(crate) landlock: nucleus::LandlockWaiver,
+    /// Enforcing credential delivery (`cred_split`): the guest runs the admitted
+    /// spec with every credential value withheld.
+    pub(crate) host_spec: HostSpecEnforcement,
+}
+
+impl<'a> NodePosture<'a> {
+    pub(crate) fn of(state: &'a crate::NodeState) -> Self {
+        Self {
+            driver: &state.driver,
+            seccomp_verify: state.firecracker_seccomp_verify,
+            jailer: state.firecracker_jailer,
+            landlock: state.workload_landlock,
+            host_spec: state.broker_enforcing,
+        }
+    }
+}
+
+/// Why an eval-cell pod was refused. Every variant names what to change.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum EvalCellRefused {
+    /// The profile label names no profile this build knows.
+    #[error(transparent)]
+    UnknownProfile(#[from] UnknownProfile),
+    /// The node's isolation tier is not Firecracker.
+    #[error(
+        "the eval-cell profile is refused on the `{tier}` tier: {why}. An eval cell runs only on \
+         a Firecracker node (ADR 0013)"
+    )]
+    Tier {
+        /// The backend name (`portcullis::enforcement::BackendCapability::name`).
+        tier: &'static str,
+        why: &'static str,
+    },
+    /// The node does not verify the VMM's seccomp filter.
+    #[error(
+        "the eval-cell profile is refused: this node runs with --firecracker-seccomp-verify=false, \
+         so a VMM whose seccomp filter is not active would still be launched (ADR 0013)"
+    )]
+    SeccompVerifyOff,
+    /// The node launches the VMM without the jailer.
+    #[error(
+        "the eval-cell profile is refused: this node runs with --firecracker-jailer=false, so the \
+         VMM is not chrooted, cgroup-placed and privilege-dropped before exec (ADR 0013)"
+    )]
+    JailerOff,
+    /// The operator waived the guest's workload Landlock.
+    #[error(
+        "the eval-cell profile is refused: this node runs with --allow-workload-without-landlock, \
+         and an eval cell requires its guest to confine every child with Landlock (ADR 0013)"
+    )]
+    LandlockWaived,
+    /// Credentials would be delivered into the guest.
+    #[error(
+        "the eval-cell profile is refused: this node does not enforce host-spec credential \
+         delivery, so credential values would be written into a guest whose root is assumed \
+         hostile. Run the node with broker enforcement on (ADR 0013)"
+    )]
+    CredentialDelivery,
+    /// The spec asks for a VMM seccomp filter other than the default.
+    #[error(
+        "the eval-cell profile is refused: seccomp `{mode}` is not the default VMM filter. An eval \
+         cell runs the VMM under the default filter, whatever this build's driver features \
+         (ADR 0013)"
+    )]
+    SpecSeccomp { mode: &'static str },
+    /// A `network.allow` entry that does not name exactly one host.
+    #[error(
+        "the eval-cell profile is refused: network.allow `{entry}` does not name exactly one \
+         host. An eval cell reaches only destinations listed one by one (a bare address, /32 or \
+         /128), private ranges included: a reachable range is how an agent finds a supporting \
+         service it was never meant to reach (ADR 0013)"
+    )]
+    UnlistedRange { entry: String },
+    /// The policy grants a network capability while the spec lists no destination.
+    #[error(
+        "the eval-cell profile is refused: the policy grants {capability} but the spec lists no \
+         destination (network.allow, network.dns_allow or credentialed_egress). An eval cell's \
+         egress is what it lists; name the hosts, or use a policy with {capability}: never \
+         (ADR 0013)"
+    )]
+    UnlistedEgress { capability: &'static str },
+    /// The policy could not be resolved, so its network capabilities could not be read.
+    #[error("the eval-cell profile is refused: the policy does not resolve ({0})")]
+    Policy(String),
+    /// A child of an eval-cell pod that does not ask for the eval-cell profile.
+    #[error(
+        "the pod is refused: its parent {parent} is an eval cell, and a pod an eval cell creates \
+         is an eval cell too. Label the child isolation.coproduct.one/profile: eval-cell \
+         (ADR 0013)"
+    )]
+    ShedByChild { parent: Uuid },
+}
+
+impl From<EvalCellRefused> for ApiError {
+    fn from(e: EvalCellRefused) -> Self {
+        ApiError::InvalidSpec(e.to_string())
+    }
+}
+
+/// The refusal for a tier that is not Firecracker, or `None` for Firecracker.
+///
+/// Exhaustive over [`DriverKind`] with no `_` arm (ADR 0007 B-3, E-2): a new
+/// driver does not compile until someone decides whether it may host an eval
+/// cell. The tier is named by [`isolation_backend`], the same name the isolation
+/// clamp writes into the pod's labels (G-1).
+fn refuse_tier(driver: &DriverKind) -> Option<EvalCellRefused> {
+    let why = match driver {
+        DriverKind::Firecracker => return None,
+        DriverKind::Container => {
+            "a container shares the host kernel, so guest root is one kernel bug from host root"
+        }
+        DriverKind::AppleVz => {
+            "its isolation has not been reviewed for a hostile guest, and the host has no egress \
+             allowlist or VMM seccomp to verify"
+        }
+        #[cfg(feature = "local-driver")]
+        DriverKind::Local => "there is no VM: the agent runs on the host as a process",
+    };
+    Some(EvalCellRefused::Tier {
+        tier: isolation_backend(driver).name,
+        why,
+    })
+}
+
+/// Admit `spec` under its isolation profile on a node with `node`'s posture, as
+/// a child of a pod under `parent` (when it has one).
+///
+/// # Errors
+///
+/// [`EvalCellRefused`] naming the first requirement the pod or node fails.
+pub(crate) fn admit(
+    spec: &PodSpec,
+    node: &NodePosture<'_>,
+    parent: Option<(Uuid, IsolationProfile)>,
+) -> Result<IsolationProfile, EvalCellRefused> {
+    let profile = IsolationProfile::of(spec)?;
+    // The profile a parent holds binds its children: a child may ask for more,
+    // never shed it by omitting the label (the absent-label case of ADR 0007 B).
+    // Exhaustive over both profiles, no `_` arm (E-2).
+    if let Some((parent, parent_profile)) = parent {
+        match (parent_profile, profile) {
+            (IsolationProfile::EvalCell, IsolationProfile::Standard) => {
+                return Err(EvalCellRefused::ShedByChild { parent });
+            }
+            (IsolationProfile::EvalCell, IsolationProfile::EvalCell)
+            | (IsolationProfile::Standard, IsolationProfile::Standard)
+            | (IsolationProfile::Standard, IsolationProfile::EvalCell) => {}
+        }
+    }
+    match profile {
+        IsolationProfile::Standard => Ok(profile),
+        IsolationProfile::EvalCell => {
+            admit_eval_cell(spec, node)?;
+            Ok(profile)
+        }
+    }
+}
+
+fn admit_eval_cell(spec: &PodSpec, node: &NodePosture<'_>) -> Result<(), EvalCellRefused> {
+    // The tier first: on any other tier nothing below means what it says.
+    if let Some(refused) = refuse_tier(node.driver) {
+        return Err(refused);
+    }
+    // Destructured whole, so a new field of the node's posture is a compile error
+    // here until someone says what an eval cell needs of it (ADR 0007 E-1).
+    let NodePosture {
+        driver: _,
+        seccomp_verify,
+        jailer,
+        landlock,
+        host_spec,
+    } = node;
+    if !seccomp_verify {
+        return Err(EvalCellRefused::SeccompVerifyOff);
+    }
+    if !jailer {
+        return Err(EvalCellRefused::JailerOff);
+    }
+    match landlock {
+        nucleus::LandlockWaiver::Absent => {}
+        nucleus::LandlockWaiver::Explicit => return Err(EvalCellRefused::LandlockWaived),
+    }
+    if !host_spec.is_required() {
+        return Err(EvalCellRefused::CredentialDelivery);
+    }
+    match &spec.spec.seccomp {
+        None | Some(nucleus_spec::SeccompSpec::Default) => {}
+        Some(nucleus_spec::SeccompSpec::Disabled) => {
+            return Err(EvalCellRefused::SpecSeccomp { mode: "disabled" });
+        }
+        Some(nucleus_spec::SeccompSpec::Custom { .. }) => {
+            return Err(EvalCellRefused::SpecSeccomp { mode: "custom" });
+        }
+    }
+    admit_egress(spec)
+}
+
+/// An eval cell's egress is exactly what it lists, host by host.
+fn admit_egress(spec: &PodSpec) -> Result<(), EvalCellRefused> {
+    let network = spec.spec.network.as_ref();
+    for entry in network.map_or(&[][..], |n| n.allow.as_slice()) {
+        // An entry that does not parse is refused here too, not skipped: an
+        // entry nobody can read is not one anybody listed (ADR 0007 A-2).
+        match crate::net::names_one_host(entry) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => {
+                return Err(EvalCellRefused::UnlistedRange {
+                    entry: entry.clone(),
+                });
+            }
+        }
+    }
+    let listed = network.is_some_and(|n| !n.allow.is_empty() || !n.dns_allow.is_empty())
+        || !spec.spec.credentialed_egress.is_empty();
+    if listed {
+        return Ok(());
+    }
+    let lattice = spec
+        .spec
+        .resolve_policy()
+        .map_err(|e| EvalCellRefused::Policy(e.to_string()))?;
+    let caps = &lattice.capabilities;
+    for (capability, level) in [
+        ("web_fetch", caps.web_fetch),
+        ("web_search", caps.web_search),
+    ] {
+        match level {
+            CapabilityLevel::Never => {}
+            CapabilityLevel::LowRisk | CapabilityLevel::Always => {
+                return Err(EvalCellRefused::UnlistedEgress { capability });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The eval cells this node has admitted, recorded at admission (before the
+/// guest boots), so a child's parent profile is read from what the node itself
+/// decided and never from a spec, and so a guest that asks for a child before
+/// its own pod is registered is still known to be an eval cell.
+///
+/// A pod is recorded for the node process's lifetime and never removed: an id
+/// left behind by a pod that failed to boot or exited only makes its (impossible)
+/// children stricter. Pod tokens do not outlive the process (`caller_secret` is
+/// fresh per process), so a parent from a previous process cannot call here.
+///
+/// No `Default` (ADR 0007 B-1): the one constructor is [`Admitted::none`], named
+/// for what it holds, called once per node process.
+#[derive(Debug, Clone)]
+pub(crate) struct Admitted(std::sync::Arc<std::sync::Mutex<std::collections::HashSet<Uuid>>>);
+
+impl Admitted {
+    /// A node process that has admitted no eval cell yet.
+    pub(crate) fn none() -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(
+            std::collections::HashSet::new(),
+        )))
+    }
+
+    fn record(&self, id: Uuid) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id);
+    }
+
+    /// The profile the node admitted `id` under. Absence is standard: every
+    /// eval cell is recorded before its guest exists to ask for a child.
+    fn profile_of(&self, id: Uuid) -> IsolationProfile {
+        if self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&id)
+        {
+            IsolationProfile::EvalCell
+        } else {
+            IsolationProfile::Standard
+        }
+    }
+}
+
+/// [`admit`] against the live node: its posture, and the profile the node
+/// itself admitted the parent under. An admitted eval cell is recorded as `id`.
+pub(crate) fn admit_on(
+    state: &crate::NodeState,
+    spec: &PodSpec,
+    parent: Option<Uuid>,
+    id: Uuid,
+) -> Result<IsolationProfile, ApiError> {
+    let parent = parent.map(|p| (p, state.eval_cells.profile_of(p)));
+    let profile = admit(spec, &NodePosture::of(state), parent)?;
+    match profile {
+        IsolationProfile::Standard => {}
+        IsolationProfile::EvalCell => state.eval_cells.record(id),
+    }
+    Ok(profile)
+}
+
+/// At boot: an eval cell's guest must report its children confined by Landlock.
+///
+/// The release table already requires a guest that carries Landlock for an eval
+/// cell (`tier2_artifacts::GuestUse::EvalCell`), but the node does not know which
+/// release a Firecracker rootfs came from. The verdict on the console is what the
+/// node can see, so a guest that is silent, refused or waived fails the boot.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn require_confined_children(
+    spec: &PodSpec,
+    filesystem: &crate::net::confinement::WorkloadFilesystem,
+) -> Result<(), ApiError> {
+    match IsolationProfile::of(spec).map_err(EvalCellRefused::from)? {
+        IsolationProfile::Standard => Ok(()),
+        IsolationProfile::EvalCell if filesystem.enforced() => Ok(()),
+        IsolationProfile::EvalCell => Err(ApiError::Driver(format!(
+            "the eval-cell pod was not started: its guest must confine every child with \
+             Landlock, and it reported {} (ADR 0013)",
+            filesystem.posture()
+        ))),
+    }
+}
+
+#[cfg(test)]
+#[path = "eval_cell_tests.rs"]
+mod tests;
