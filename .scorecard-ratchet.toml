@@ -577,9 +577,13 @@ population_floor = 23
 # shared-secret tier is deleted with the tier's last perf caller, and its
 # undischarged cast allow goes with it -- by deletion, not discharge. 31/148 =
 # 20.94%; both pins follow the tree.
-floor_bp = 2094
+# 2026-10-08 (broker/SPIFFE vsock collision): the dead BROKER_VSOCK_PORT
+# constant and the two NodeState port fields are deleted with the flags that
+# fed them, and their three undischarged dead_code allows go with them -- by
+# deletion, not discharge. 31/146 = 21.23%; both pins follow the tree.
+floor_bp = 2123
 floor_set = "measurement"
-population_floor = 148
+population_floor = 146
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

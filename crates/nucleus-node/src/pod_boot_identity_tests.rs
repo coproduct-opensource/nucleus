@@ -210,7 +210,7 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
 }
 
 /// Ask a prepared pod's workload API one line, as guest-init does, and return the reply.
-async fn ask(st: &NodeState, dir: &std::path::Path, line: &[u8]) -> String {
+async fn ask(dir: &std::path::Path, line: &[u8]) -> String {
     let api = dir.join(format!("vsock_{}", crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT));
     let mut stream = tokio::net::UnixStream::connect(&api).await.unwrap();
     stream.write_all(line).await.unwrap();
@@ -255,7 +255,7 @@ async fn enforced_host_spec_withholds_values_but_preserves_the_workload() {
         )
         .await
         .unwrap();
-        let response = ask(&st, dir.path(), b"FETCH_POD_SPEC\n").await;
+        let response = ask(dir.path(), b"FETCH_POD_SPEC\n").await;
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         let served: nucleus_spec::PodSpec =
             serde_yaml::from_str(value["spec"].as_str().expect("spec served")).unwrap();
@@ -311,7 +311,7 @@ async fn the_ambient_key_is_never_served_to_a_guest() {
         )
         .await
         .unwrap();
-        let reply = ask(&st, dir.path(), b"FETCH_AUDIT_CREDENTIALS\n").await;
+        let reply = ask(dir.path(), b"FETCH_AUDIT_CREDENTIALS\n").await;
         assert!(
             !crate::audit_sink::ambient_fixture::leaks(&reply),
             "the node's ambient key was served to the guest (minted: {minted})"
