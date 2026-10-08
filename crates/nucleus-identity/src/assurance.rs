@@ -318,10 +318,21 @@ pub trait SvidAttestationBackend: Send + Sync {
 /// [`Claim::UnmodifiedArtifact`], conditional on trusting the node's key, and
 /// explicitly does not prove a hardware-rooted key, a stable device identity,
 /// measured boot, or continuous liveness.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SelfMeasuredBackend;
+///
+/// It holds the trust bundle of the node whose CA signs the SVIDs it verifies: a
+/// launch claim is worth only the signature over it, so there is no constructor
+/// without one, and no `Default` (ADR 0007 B-1).
+#[derive(Debug, Clone)]
+pub struct SelfMeasuredBackend {
+    trust_bundle: crate::TrustBundle,
+}
 
 impl SelfMeasuredBackend {
+    /// A backend that accepts only SVIDs chaining to `trust_bundle`.
+    pub fn new(trust_bundle: crate::TrustBundle) -> Self {
+        Self { trust_bundle }
+    }
+
     /// The claims a self-measured software attestation can / cannot establish.
     fn claim_profile() -> (BTreeSet<Claim>, BTreeSet<Claim>) {
         let proves = BTreeSet::from([Claim::UnmodifiedArtifact]);
@@ -351,7 +362,12 @@ impl SvidAttestationBackend for SelfMeasuredBackend {
         requirements: &AttestationRequirements,
         require_attestation: bool,
     ) -> Result<Option<VerifiedAttestation>> {
-        match verify_attested_svid(chain_pem, requirements, require_attestation)? {
+        match verify_attested_svid(
+            chain_pem,
+            &self.trust_bundle,
+            requirements,
+            require_attestation,
+        )? {
             Some(launch) => {
                 let (proves, not_proven) = Self::claim_profile();
                 // Self-measurement attests the launched artifact, not a key — but
@@ -384,8 +400,7 @@ mod tests {
     use crate::{CaClient, CsrOptions, Identity, SelfSignedCa};
     use std::time::Duration;
 
-    async fn mint_chain(attested: bool) -> (String, LaunchAttestation) {
-        let ca = SelfSignedCa::new("test.local").unwrap();
+    async fn mint_chain(ca: &SelfSignedCa, attested: bool) -> (String, LaunchAttestation) {
         let identity = Identity::for_pod("test.local", "pod-1");
         let cs = CsrOptions::new(identity.to_spiffe_uri())
             .generate()
@@ -423,8 +438,9 @@ mod tests {
 
     #[tokio::test]
     async fn self_measured_backend_normalizes_and_carries_not_proven() {
-        let backend = SelfMeasuredBackend;
-        let (chain, att) = mint_chain(true).await;
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let backend = SelfMeasuredBackend::new(ca.trust_bundle().clone());
+        let (chain, att) = mint_chain(&ca, true).await;
         let req = AttestationRequirements::exact(
             *att.kernel_hash(),
             *att.rootfs_hash(),
@@ -451,8 +467,9 @@ mod tests {
 
     #[tokio::test]
     async fn self_measured_backend_reds_on_drift_and_fails_closed_on_absent() {
-        let backend = SelfMeasuredBackend;
-        let (chain, att) = mint_chain(true).await;
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let backend = SelfMeasuredBackend::new(ca.trust_bundle().clone());
+        let (chain, att) = mint_chain(&ca, true).await;
 
         // Drift: one wrong expected hash → Err.
         let mut wrong = *att.kernel_hash();
@@ -461,7 +478,7 @@ mod tests {
         assert!(backend.verify_svid(&chain, &drifted, true).is_err());
 
         // Absent + require → Err (fail-closed); absent + !require → Ok(None).
-        let (plain, _) = mint_chain(false).await;
+        let (plain, _) = mint_chain(&ca, false).await;
         assert!(
             backend
                 .verify_svid(&plain, &AttestationRequirements::any(), true)
