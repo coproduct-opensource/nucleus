@@ -561,8 +561,7 @@ jobs:
           # present (a probe that died after stage 1 is missing later stages and
           # must not read as contained).
           state=/var/lib/nucleus/state
-          # A-19 PROBE (to be reverted): the expectation is INVERTED -- demand a BREACH line.
-          sudo grep -rq "NUCLEUS_ADVERSARY: BREACH" "$state" || {
+          sudo grep -rq "NUCLEUS_ADVERSARY: CONTAINED" "$state" || {
             echo "::error::in-guest adversary probe did not report CONTAINED (did it run? was it contained?)"
             echo "--- adversary markers across all pod logs (empty ⇒ the probe never ran) ---"
             sudo grep -rhaE 'NUCLEUS_ADVERSARY' "$state" | head -40 || true
