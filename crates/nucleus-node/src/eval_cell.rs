@@ -16,6 +16,7 @@
 //! [`require_confined_children`] the one at boot, where the guest's Landlock
 //! verdict first exists.
 
+use nucleus_federation::ClaimedTier;
 use nucleus_spec::PodSpec;
 use nucleus_spec::isolation_profile::{IsolationProfile, UnknownProfile};
 use portcullis::CapabilityLevel;
@@ -24,6 +25,7 @@ use uuid::Uuid;
 use crate::ApiError;
 use crate::broker_rollout::HostSpecEnforcement;
 use crate::driver::{DriverKind, isolation_backend};
+use crate::federated_credential::PlatformAttestation;
 
 /// What this node is configured to enforce, as far as an eval cell depends on it.
 ///
@@ -40,6 +42,11 @@ pub(crate) struct NodePosture<'a> {
     /// Enforcing credential delivery (`cred_split`): the guest runs the admitted
     /// spec with every credential value withheld.
     pub(crate) host_spec: HostSpecEnforcement,
+    /// The node's platform evidence: asked, at admission, for its appraisal now.
+    /// The same decider every federation assertion's tier comes from (ADR 0012
+    /// A3), so the node never states one tier to a relying party and admits on
+    /// another (ADR 0007 G-1).
+    pub(crate) platform: &'a dyn PlatformAttestation,
 }
 
 impl<'a> NodePosture<'a> {
@@ -50,6 +57,7 @@ impl<'a> NodePosture<'a> {
             jailer: state.firecracker_jailer,
             landlock: state.workload_landlock,
             host_spec: state.broker_enforcing,
+            platform: state.node_platform.as_ref(),
         }
     }
 }
@@ -136,6 +144,21 @@ pub(crate) enum EvalCellRefused {
          (ADR 0013)"
     )]
     ShedByChild { parent: Uuid },
+    /// The node's own evidence does not appraise Attested (ADR 0016 D3).
+    #[error(
+        "the eval-cell profile is refused: this node's platform evidence appraises `{tier}` \
+         ({note}), and an eval cell runs only on a node whose current TPM evidence appraises \
+         attested against the operator's reference (--node-evidence-tpm, \
+         --node-evidence-reference, an anchored AK) (ADR 0016)"
+    )]
+    NodeNotAttested { tier: &'static str, note: String },
+    /// The SVID the node would serve the cell does not verify (ADR 0016 D3).
+    #[error(
+        "the eval-cell pod was not started: its launch does not verify ({0}). An eval cell is \
+         served only an SVID that chains to this node's CA and carries the measurement the node \
+         took of its kernel, rootfs and config (ADR 0016)"
+    )]
+    LaunchUnverified(String),
 }
 
 impl From<EvalCellRefused> for ApiError {
@@ -216,7 +239,9 @@ fn admit_eval_cell(spec: &PodSpec, node: &NodePosture<'_>) -> Result<(), EvalCel
         jailer,
         landlock,
         host_spec,
+        platform,
     } = node;
+    require_attested(*platform)?;
     if !seccomp_verify {
         return Err(EvalCellRefused::SeccompVerifyOff);
     }
@@ -252,6 +277,96 @@ fn admit_eval_cell(spec: &PodSpec, node: &NodePosture<'_>) -> Result<(), EvalCel
         }
     }
     admit_egress(spec)
+}
+
+/// The node's current evidence appraises Attested, now (ADR 0016 D3).
+///
+/// Only `Attested` admits. Exhaustive, no `_` arm (E-2): a tier added to the
+/// verifier does not compile here until someone says whether it admits a cell.
+/// The appraisal reads the evidence in force from the store, so this runs only
+/// for an eval cell, never on a standard pod's create.
+fn require_attested(platform: &dyn PlatformAttestation) -> Result<(), EvalCellRefused> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let attestation = platform.attestation_now(now);
+    match attestation.tier() {
+        ClaimedTier::Attested => Ok(()),
+        tier @ (ClaimedTier::Contested | ClaimedTier::Expired | ClaimedTier::Unattested) => {
+            Err(EvalCellRefused::NodeNotAttested {
+                tier: tier.as_str(),
+                note: attestation.note().to_string(),
+            })
+        }
+    }
+}
+
+/// What the node holds of a pod's launch identity just before it serves it.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) enum LaunchIdentity<'a> {
+    /// The node issues this pod no workload identity.
+    NoIdentity,
+    /// Measuring the pod's kernel, rootfs and config failed.
+    NotMeasured(String),
+    /// Issuing the attested SVID failed.
+    NotIssued(String),
+    /// The SVID the node will serve, the measurement it took, and its CA's roots.
+    Issued {
+        measured: &'a nucleus_identity::LaunchAttestation,
+        leaf_der: &'a [u8],
+        trust_bundle: &'a nucleus_identity::TrustBundle,
+    },
+}
+
+/// At boot, before the VMM starts: an eval cell is served only an SVID that
+/// verifies (ADR 0016 D3). A standard pod is not checked, and keeps today's
+/// fallback to a plain SVID.
+///
+/// The check is `nucleus_identity::VerifiedLaunch::verify`, the one decider every
+/// relying party calls (G-1): the leaf chains to the node's CA, and carries a
+/// launch claim. Then the claim must be exactly the measurement the node took:
+/// a cached certificate from another launch is not this one.
+///
+/// # Errors
+///
+/// [`EvalCellRefused::LaunchUnverified`], naming the failure.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn require_verified_launch(
+    profile: IsolationProfile,
+    launch: LaunchIdentity<'_>,
+) -> Result<(), EvalCellRefused> {
+    match profile {
+        IsolationProfile::Standard => return Ok(()),
+        IsolationProfile::EvalCell => {}
+    }
+    match launch {
+        LaunchIdentity::NoIdentity => Err(EvalCellRefused::LaunchUnverified(
+            "this node issues the pod no workload identity".into(),
+        )),
+        LaunchIdentity::NotMeasured(e) => Err(EvalCellRefused::LaunchUnverified(format!(
+            "the launch could not be measured: {e}"
+        ))),
+        LaunchIdentity::NotIssued(e) => Err(EvalCellRefused::LaunchUnverified(format!(
+            "the attested SVID could not be issued: {e}"
+        ))),
+        LaunchIdentity::Issued {
+            measured,
+            leaf_der,
+            trust_bundle,
+        } => {
+            let verified = nucleus_identity::VerifiedLaunch::verify(leaf_der, trust_bundle)
+                .map_err(|e| EvalCellRefused::LaunchUnverified(e.to_string()))?;
+            if verified.launch() == measured {
+                Ok(())
+            } else {
+                Err(EvalCellRefused::LaunchUnverified(format!(
+                    "the SVID carries {}, but the node measured {}",
+                    verified.launch().to_hex_summary(),
+                    measured.to_hex_summary()
+                )))
+            }
+        }
+    }
 }
 
 /// An eval cell's egress is exactly what it lists, host by host.

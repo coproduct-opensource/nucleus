@@ -132,6 +132,8 @@ nix = { version = "0.31.3", features = ["sched", "process", "signal", "poll"] }
 rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 
 [dev-dependencies]
+# A CA that signs only plainly, for the eval-cell launch gate's tests (ADR 0016).
+async-trait = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 # Decodes the node's own federated assertions in `federated_credential` tests.
 # Only a dev-dependency since the single-vendor inbound route (its one

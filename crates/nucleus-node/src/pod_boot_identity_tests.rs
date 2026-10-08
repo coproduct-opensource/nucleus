@@ -18,6 +18,27 @@ async fn prepare_pod_for_test(
     pod_spec: serde_json::Value,
     audit_creds: Option<crate::workload_api_vsock::AuditCredentials>,
 ) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
+    prepare_labelled_for_test(
+        st,
+        dir,
+        id,
+        socket,
+        pod_spec,
+        audit_creds,
+        serde_json::json!({}),
+    )
+    .await
+}
+
+async fn prepare_labelled_for_test(
+    st: &NodeState,
+    dir: &std::path::Path,
+    id: uuid::Uuid,
+    socket: &std::path::Path,
+    pod_spec: serde_json::Value,
+    audit_creds: Option<crate::workload_api_vsock::AuditCredentials>,
+    labels: serde_json::Value,
+) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
     let kernel = dir.join("kernel");
     let rootfs = dir.join("rootfs");
     std::fs::write(&kernel, b"test kernel").unwrap();
@@ -28,7 +49,7 @@ async fn prepare_pod_for_test(
     .unwrap();
     let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
-        "metadata": {"name": "host-spec-before-vmm"}, "spec": pod_spec,
+        "metadata": {"name": "host-spec-before-vmm", "labels": labels}, "spec": pod_spec,
     }))
     .unwrap();
     let (serve, _verify) = crate::broker_launch::BrokerCapability::mint(id);
@@ -398,4 +419,113 @@ async fn a_firecracker_guest_is_served_its_id_and_no_caller_token() {
         "the derived caller token reached the guest: {reply}"
     );
     assert_eq!(value["pod_id"].as_str(), Some(id.to_string().as_str()));
+}
+
+/// A CA that signs only plainly: it takes `CaClient`'s default `sign_attested_csr`,
+/// which drops the launch extension. What an injected CA that never opted in issues.
+struct PlainOnlyCa(nucleus_identity::SelfSignedCa);
+
+#[async_trait::async_trait]
+impl nucleus_identity::CaClient for PlainOnlyCa {
+    async fn sign_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &nucleus_identity::Identity,
+        ttl: std::time::Duration,
+    ) -> nucleus_identity::Result<nucleus_identity::WorkloadCertificate> {
+        self.0.sign_csr(csr, private_key, identity, ttl).await
+    }
+
+    async fn sign_csr_only(
+        &self,
+        csr: &str,
+        identity: &nucleus_identity::Identity,
+        ttl: std::time::Duration,
+    ) -> nucleus_identity::Result<String> {
+        self.0.sign_csr_only(csr, identity, ttl).await
+    }
+
+    fn trust_bundle(&self) -> &nucleus_identity::TrustBundle {
+        self.0.trust_bundle()
+    }
+
+    fn trust_domain(&self) -> &str {
+        self.0.trust_domain()
+    }
+}
+
+fn eval_cell_label() -> serde_json::Value {
+    serde_json::json!({ (nucleus_spec::isolation_profile::PROFILE_LABEL): "eval-cell" })
+}
+
+async fn prepare_profiled(
+    st: &NodeState,
+    dir: &std::path::Path,
+    labels: serde_json::Value,
+) -> Result<pod_boot_identity::PreparedIdentity, crate::ApiError> {
+    let id = uuid::Uuid::new_v4();
+    let socket = dir.join(format!("vsock-{id}"));
+    prepare_labelled_for_test(
+        st,
+        dir,
+        id,
+        &socket,
+        serde_json::json!({}),
+        None,
+        labels,
+    )
+    .await
+}
+
+/// ADR 0016 D3, wired: at boot an eval cell is served only a launch that
+/// verifies, and each fallback a standard pod keeps is a refusal for it, by name.
+/// Non-vacuous: the same eval cell on a node whose CA attests is prepared, and a
+/// standard pod is prepared on every node.
+#[tokio::test]
+async fn an_eval_cell_boots_only_with_a_launch_that_verifies() {
+    // No identity manager: the node issues no SVID at all.
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let st = state(&dir);
+    let refused = match prepare_profiled(&st, dir.path(), eval_cell_label()).await {
+        Ok(_) => panic!("an eval cell booted with no workload identity"),
+        Err(e) => e.to_string(),
+    };
+    assert!(refused.contains("launch does not verify"), "{refused}");
+    assert!(refused.contains("no workload identity"), "{refused}");
+    prepare_profiled(&st, dir.path(), serde_json::json!({}))
+        .await
+        .expect("a standard pod boots without an identity, as before");
+
+    // A CA that signs plainly: the SVID carries no launch.
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let mut st = state(&dir);
+    let plain: std::sync::Arc<dyn nucleus_identity::CaClient> = std::sync::Arc::new(PlainOnlyCa(
+        nucleus_identity::SelfSignedCa::new("test.local").unwrap(),
+    ));
+    st.identity_manager = Some(crate::identity::IdentityManager::with_ca(
+        "test.local",
+        std::time::Duration::from_secs(3600),
+        plain,
+    ));
+    let refused = match prepare_profiled(&st, dir.path(), eval_cell_label()).await {
+        Ok(_) => panic!("an eval cell booted with a plain SVID"),
+        Err(e) => e.to_string(),
+    };
+    assert!(refused.contains("launch does not verify"), "{refused}");
+    assert!(refused.contains("no parseable launch attestation"), "{refused}");
+    prepare_profiled(&st, dir.path(), serde_json::json!({}))
+        .await
+        .expect("a standard pod keeps the plain-SVID fallback");
+
+    // A CA that attests: the eval cell is prepared.
+    let dir = tempfile::tempdir_in("/tmp").unwrap();
+    let mut st = state(&dir);
+    st.identity_manager = Some(
+        crate::identity::IdentityManager::new("test.local", std::time::Duration::from_secs(3600))
+            .unwrap(),
+    );
+    prepare_profiled(&st, dir.path(), eval_cell_label())
+        .await
+        .expect("an eval cell whose launch verifies boots");
 }
