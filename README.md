@@ -174,9 +174,7 @@ nucleus setup --install-deps   # installs Lima if missing, provisions the VM,
                                # POD and asserts what the guest did
 ```
 
-Guest artifacts come from the pinned release **v2.7.0** (pinned ahead of its tag:
-until its assets are published, `setup` says so up front and
-`--artifacts local` is the way through).
+Guest artifacts come from the pinned release **v2.7.0**.
 `tier2_artifacts::GuestCapability` lists what the node and CLI require of a guest
 and which release first shipped each, and `setup` refuses a release that lacks
 one rather than installing a pod that cannot boot. v2.3.0 is refused: its
