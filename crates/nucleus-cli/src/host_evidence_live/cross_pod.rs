@@ -266,18 +266,9 @@ impl Artifacts {
 async fn scenario(node: &Node, artifacts: &Artifacts) -> Result<Vec<String>> {
     let kernel = artifacts.kernel.as_path();
     let a = create(node, &spec("orch-a", kernel, &artifacts.rootfs("a")), None).await?;
-    let (c, b) = tokio::try_join!(
-        create(
-            node,
-            &spec("child-c", kernel, &artifacts.rootfs("c")),
-            Some(a)
-        ),
-        create(
-            node,
-            &spec("sibling-b", kernel, &artifacts.rootfs("b")),
-            None
-        ),
-    )?;
+    let spec_c = spec("child-c", kernel, &artifacts.rootfs("c"));
+    let spec_b = spec("sibling-b", kernel, &artifacts.rootfs("b"));
+    let (c, b) = tokio::try_join!(create(node, &spec_c, Some(a)), create(node, &spec_b, None),)?;
     println!("cross-pod-live: A={a} C={c} (child of A) B={b} (sibling)");
     let operator = operator_view(node).await?;
     let view_a = view("A", wait_reported(node, a, Duration::from_secs(180)).await?)?;
