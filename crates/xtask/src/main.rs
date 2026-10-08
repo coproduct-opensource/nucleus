@@ -520,8 +520,11 @@ enum Command {
     /// What network egress do live-boot pods make today, and through which
     /// path? Reads downloaded `live-boot-evidence` bundles (one directory per
     /// run) and reports declared egress, the guest's direct connects and their
-    /// refusals, and host-performed egress; what no artifact records is printed
-    /// as "could not measure" (ADR 0015, #2698 M4).
+    /// refusals, host-performed egress, each pod's fence counters (what the
+    /// default-deny dropped, by destination class, and the DNS the guest sent),
+    /// the credentialed pod's guest and the eval cell. A measurement a bundle
+    /// does not hold is printed as "could not measure" and exits 2 (ADR 0015
+    /// E1, #2698 M4).
     EgressCensus {
         /// Bundle directories, one per run; each must hold `spec.json`,
         /// `guest-console.log` and `host-effects.jsonl`.

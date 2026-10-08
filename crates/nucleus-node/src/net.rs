@@ -30,6 +30,7 @@ mod cleanup;
 use ipnet::IpNet;
 use nucleus_ifc_kernel::extracted::egress::Rule as EgressRule;
 use nucleus_spec::NetworkSpec;
+use nucleus_spec::egress_fence::FenceRule;
 use tokio::io::AsyncWriteExt;
 use tokio::net::lookup_host;
 use uuid::Uuid;
@@ -372,6 +373,9 @@ pub struct NetRule {
     pub net: IpNet,
     /// Destination port, or any port when `None`.
     pub port: Option<u16>,
+    /// What the rule is, written on it as its fence tag so a snapshot's
+    /// counters can be read by class (ADR 0015 E1). Never changes a verdict.
+    pub tag: FenceRule,
 }
 
 #[derive(Clone, Debug)]
@@ -783,6 +787,7 @@ pub fn egress_chain(
                         kind: RuleKind::Allow,
                         net: IpNet::from(IpAddr::V4(*ip)),
                         port: entry.port,
+                        tag: FenceRule::Allow,
                     });
                 }
             }
@@ -796,6 +801,7 @@ pub fn egress_chain(
         kind: RuleKind::Deny,
         net: IpNet::V4(*net),
         port: None,
+        tag: FenceRule::Floor,
     });
     let mut chain: Vec<NetRule> =
         Vec::with_capacity(NODE_DENY_FLOOR.len() + parsed.len() + resolved.len());
@@ -856,70 +862,66 @@ pub async fn apply_host_policy(
     run_nsenter(pid, &["iptables", "-w", "-P", "OUTPUT", "DROP"]).await?;
     run_nsenter(pid, &["iptables", "-w", "-P", "FORWARD", "DROP"]).await?;
 
+    // Every rule below carries its fence tag (`-m comment`, which matches every
+    // packet), so a snapshot's counters read by class (ADR 0015 E1). The two DNS
+    // counting rules come first and have no target: they count what the guest
+    // sends to port 53, whatever the verdict after them, and fall through.
+    for hook in ["FORWARD", "INPUT"] {
+        for (proto, tag) in [("udp", FenceRule::DnsUdp), ("tcp", FenceRule::DnsTcp)] {
+            run_nsenter(
+                pid,
+                &tagged(
+                    tag,
+                    &["iptables", "-w", "-A", hook, "-p", proto, "--dport", "53"],
+                ),
+            )
+            .await?;
+        }
+    }
     run_nsenter(
         pid,
-        &["iptables", "-w", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
+        &tagged(
+            FenceRule::Loopback,
+            &["iptables", "-w", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
+        ),
     )
     .await?;
     run_nsenter(
         pid,
-        &["iptables", "-w", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
+        &tagged(
+            FenceRule::Loopback,
+            &["iptables", "-w", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
+        ),
     )
     .await?;
-    run_nsenter(
-        pid,
-        &[
-            "iptables",
-            "-w",
-            "-A",
-            "OUTPUT",
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-    )
-    .await?;
-    run_nsenter(
-        pid,
-        &[
-            "iptables",
-            "-w",
-            "-A",
-            "INPUT",
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-    )
-    .await?;
-    run_nsenter(
-        pid,
-        &[
-            "iptables",
-            "-w",
-            "-A",
-            "FORWARD",
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ],
-    )
-    .await?;
+    for hook in ["OUTPUT", "INPUT", "FORWARD"] {
+        run_nsenter(
+            pid,
+            &tagged(
+                FenceRule::Established,
+                &[
+                    "iptables",
+                    "-w",
+                    "-A",
+                    hook,
+                    "-m",
+                    "conntrack",
+                    "--ctstate",
+                    "ESTABLISHED,RELATED",
+                    "-j",
+                    "ACCEPT",
+                ],
+            ),
+        )
+        .await?;
+    }
 
     if let Some(server) = dns_server {
         let rule = NetRule {
             kind: RuleKind::Allow,
             net: IpNet::from(IpAddr::V4(server)),
             port: Some(53),
+            tag: FenceRule::Resolver,
         };
         apply_rule(pid, "INPUT", &rule, "ACCEPT").await?;
     }
@@ -1037,6 +1039,7 @@ fn parse_rules(policy: &NetworkSpec) -> Result<Vec<NetRule>, ApiError> {
             kind: RuleKind::Deny,
             net,
             port,
+            tag: FenceRule::SpecDeny,
         });
     }
     for entry in &policy.allow {
@@ -1045,6 +1048,7 @@ fn parse_rules(policy: &NetworkSpec) -> Result<Vec<NetRule>, ApiError> {
             kind: RuleKind::Allow,
             net,
             port,
+            tag: FenceRule::Allow,
         });
     }
     Ok(rules)
@@ -1479,54 +1483,89 @@ async fn apply_rule(
 ) -> Result<(), ApiError> {
     let net = rule.net.to_string();
     if let Some(port) = rule.port {
-        run_nsenter(
-            pid,
-            &[
-                "iptables",
-                "-w",
-                "-A",
-                chain,
-                "-p",
-                "tcp",
-                "-d",
-                &net,
-                "--dport",
-                &port.to_string(),
-                "-j",
-                verdict,
-            ],
-        )
-        .await?;
-        run_nsenter(
-            pid,
-            &[
-                "iptables",
-                "-w",
-                "-A",
-                chain,
-                "-p",
-                "udp",
-                "-d",
-                &net,
-                "--dport",
-                &port.to_string(),
-                "-j",
-                verdict,
-            ],
-        )
-        .await?;
+        let port = port.to_string();
+        for proto in ["tcp", "udp"] {
+            run_nsenter(
+                pid,
+                &tagged(
+                    rule.tag,
+                    &[
+                        "iptables", "-w", "-A", chain, "-p", proto, "-d", &net, "--dport", &port,
+                        "-j", verdict,
+                    ],
+                ),
+            )
+            .await?;
+        }
     } else {
         run_nsenter(
             pid,
-            &["iptables", "-w", "-A", chain, "-d", &net, "-j", verdict],
+            &tagged(
+                rule.tag,
+                &["iptables", "-w", "-A", chain, "-d", &net, "-j", verdict],
+            ),
         )
         .await?;
     }
     Ok(())
 }
 
+/// `rule` with its fence tag inserted before the target (`-j`), or appended
+/// when it has none. The tag is a `-m comment` match, which matches every
+/// packet, so it never changes what the rule decides.
+fn tagged<'a>(tag: FenceRule, rule: &[&'a str]) -> Vec<&'a str> {
+    let at = rule.iter().position(|a| *a == "-j").unwrap_or(rule.len());
+    let mut out = rule[..at].to_vec();
+    out.extend(["-m", "comment", "--comment", tag.tag()]);
+    out.extend_from_slice(&rule[at..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// The tag goes before the target, so iptables reads it as a match, and a
+    /// counting rule with no target gets it at the end.
+    #[test]
+    fn a_fence_tag_is_a_match_before_the_target() {
+        use nucleus_spec::egress_fence::FenceRule;
+        assert_eq!(
+            super::tagged(
+                FenceRule::Floor,
+                &["iptables", "-A", "FORWARD", "-d", "x", "-j", "DROP"]
+            ),
+            [
+                "iptables",
+                "-A",
+                "FORWARD",
+                "-d",
+                "x",
+                "-m",
+                "comment",
+                "--comment",
+                "nucleus-fence:floor",
+                "-j",
+                "DROP"
+            ]
+        );
+        assert_eq!(
+            super::tagged(
+                FenceRule::DnsUdp,
+                &["iptables", "-A", "INPUT", "--dport", "53"]
+            ),
+            [
+                "iptables",
+                "-A",
+                "INPUT",
+                "--dport",
+                "53",
+                "-m",
+                "comment",
+                "--comment",
+                "nucleus-fence:dns-udp"
+            ]
+        );
+    }
 
     // ── argv for ip(8) is a datatype, not a string (#2380) ────────────────────
 
