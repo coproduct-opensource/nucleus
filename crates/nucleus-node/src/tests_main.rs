@@ -590,10 +590,7 @@ fn a_denied_grant_withholds_the_workload_api_port() {
         Some(crate::workload_api_vsock::DEFAULT_WORKLOAD_API_PORT)
     );
     // And identity being off on the node still wins regardless of the grant.
-    assert_eq!(
-        workload_api_port_for(false, &IdentityGrant::Granted),
-        None
-    );
+    assert_eq!(workload_api_port_for(false, &IdentityGrant::Granted), None);
 }
 
 /// The serving-side half of the gate: a denied pod is never registered, so

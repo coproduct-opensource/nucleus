@@ -88,6 +88,8 @@ const KERNEL_ROOT_PRIMITIVES: &[&str] = &[
     // egress_channel.rs (C6 inventory), named by host_listener.rs
     "EgressChannel",
     "MediationStatus",
+    // host_listener.rs, named in doc_table.rs's docs
+    "HostListener",
     // capability_level.rs (M3)
     "CapabilityLevel",
     // ifc_lattice.rs (M1)

@@ -211,7 +211,10 @@ mod tests {
     #[test]
     fn vsock_all_is_dense_and_ordered() {
         for (i, v) in VsockListener::ALL.iter().enumerate() {
-            assert_eq!(*v as usize, i, "VsockListener::ALL[{i}] = {v:?} out of order");
+            assert_eq!(
+                *v as usize, i,
+                "VsockListener::ALL[{i}] = {v:?} out of order"
+            );
         }
     }
 

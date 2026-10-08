@@ -224,7 +224,10 @@ mod tests {
             .collect();
         assert_eq!(paths.len(), VsockListener::ALL.len());
         assert!(paths.contains(Path::new("/srv/jailer/pod-1/root/vsock.sock_1027")));
-        assert!(!paths.contains(base), "never the host-initiated path itself");
+        assert!(
+            !paths.contains(base),
+            "never the host-initiated path itself"
+        );
     }
 
     /// **The defect, without a boot.** Every listener bound into ONE pod

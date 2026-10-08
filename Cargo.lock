@@ -7093,6 +7093,7 @@ dependencies = [
  "libc",
  "netlink-sys 0.9.0",
  "nix",
+ "nucleus-ifc-kernel",
  "nucleus-spec",
  "serde",
  "serde_json",
@@ -7556,6 +7557,7 @@ dependencies = [
 name = "nucleus-podlist-probe"
 version = "1.0.0"
 dependencies = [
+ "nucleus-ifc-kernel",
  "serde_json",
  "vsock",
 ]

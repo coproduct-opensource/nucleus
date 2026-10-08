@@ -2212,15 +2212,10 @@ mod spiffe_bridge_tests {
         // Plain `start` — the standard API must come up for EVERY pod, without
         // a caller opting in. If it were a separate constructor, nothing in the
         // launch path would call it and the feature would ship dark.
-        let _bridge = WorkloadApiVsockBridge::start(
-            &base,
-            pod_id,
-            manager,
-            PodMaterial::default(),
-            None,
-        )
-        .await
-        .expect("bridge starts");
+        let _bridge =
+            WorkloadApiVsockBridge::start(&base, pod_id, manager, PodMaterial::default(), None)
+                .await
+                .expect("bridge starts");
 
         let sock = PathBuf::from(format!("{}_{}", base.display(), SPIFFE_WORKLOAD_API_PORT));
         for _ in 0..100 {

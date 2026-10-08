@@ -1034,11 +1034,7 @@ pub(crate) async fn start_for_pod(
             return None;
         }
     };
-    match DecideListener::start(
-        vsock_path,
-        decide,
-        jail_owner,
-    ) {
+    match DecideListener::start(vsock_path, decide, jail_owner) {
         Ok(l) => {
             tracing::info!(pod = %pod, socket = %l.socket_path().display(), "host-decide shadow listening");
             Some(l)
