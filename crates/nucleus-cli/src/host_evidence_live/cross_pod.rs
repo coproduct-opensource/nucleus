@@ -53,7 +53,7 @@ fn reported(log: &str) -> Option<Reported> {
     let last = log
         .lines()
         .filter(|l| l.contains(PASS) || l.contains(FAIL))
-        .last()?;
+        .next_back()?;
     if let Some((_, ids)) = last.split_once(PASS) {
         let ids = ids
             .trim()
@@ -91,12 +91,19 @@ async fn create(node: &Node, spec: &serde_json::Value, parent: Option<Uuid>) -> 
     if let Some(parent) = parent {
         request = request.header("x-nucleus-parent-pod-id", parent.to_string());
     }
-    let created: super::Created = serde_json::from_slice(&super::body(request.send().await?).await?)?;
+    let created: super::Created =
+        serde_json::from_slice(&super::body(request.send().await?).await?)?;
     Ok(created.id)
 }
 
 async fn operator_view(node: &Node) -> Result<BTreeSet<Uuid>> {
-    let bytes = super::body(node.client.get(format!("{}/v1/pods", node.url)).send().await?).await?;
+    let bytes = super::body(
+        node.client
+            .get(format!("{}/v1/pods", node.url))
+            .send()
+            .await?,
+    )
+    .await?;
     let value: serde_json::Value = serde_json::from_slice(&bytes)?;
     let pods = value
         .as_array()
@@ -135,7 +142,8 @@ async fn wait_reported(node: &Node, pod: Uuid, within: Duration) -> Result<Repor
         console_logs(&node.state, pod, &mut logs);
         console_logs(node.jail_base(), pod, &mut logs);
         for log in &logs {
-            let text = String::from_utf8_lossy(&std::fs::read(log).unwrap_or_default()).into_owned();
+            let text =
+                String::from_utf8_lossy(&std::fs::read(log).unwrap_or_default()).into_owned();
             if let Some(r) = reported(&text) {
                 return Ok(r);
             }
@@ -153,9 +161,9 @@ async fn wait_reported(node: &Node, pod: Uuid, within: Duration) -> Result<Repor
 fn view(name: &str, r: Reported) -> Result<BTreeSet<Uuid>> {
     match r {
         Reported::Ids(ids) => Ok(ids),
-        Reported::Failed(why) => bail!(
-            "{name}'s probe did not settle on a scoped listing over its vsock: {why}"
-        ),
+        Reported::Failed(why) => {
+            bail!("{name}'s probe did not settle on a scoped listing over its vsock: {why}")
+        }
     }
 }
 
@@ -173,14 +181,38 @@ fn judge(
         }
     };
     need(operator.contains(&a), "the operator view is missing A");
-    need(operator.contains(&b), "the operator view is missing B, so B's exclusion would mean nothing");
-    need(operator.contains(&c), "the operator view is missing C, so C's inclusion would mean nothing");
-    need(view_a.contains(&a), "A is not in its own view: A's socket was not served A's id");
-    need(view_a.contains(&c), "A's child C is not in A's view: the filter is self-only, not lineage");
-    need(!view_a.contains(&b), "sibling B IS in A's view: cross-pod isolation failed over vsock");
-    need(view_b.contains(&b), "B is not in its own view: B's socket was not served B's id");
-    need(!view_b.contains(&a), "A IS in B's view: cross-pod isolation failed over vsock");
-    need(!view_b.contains(&c), "A's child C IS in B's view: cross-pod isolation failed over vsock");
+    need(
+        operator.contains(&b),
+        "the operator view is missing B, so B's exclusion would mean nothing",
+    );
+    need(
+        operator.contains(&c),
+        "the operator view is missing C, so C's inclusion would mean nothing",
+    );
+    need(
+        view_a.contains(&a),
+        "A is not in its own view: A's socket was not served A's id",
+    );
+    need(
+        view_a.contains(&c),
+        "A's child C is not in A's view: the filter is self-only, not lineage",
+    );
+    need(
+        !view_a.contains(&b),
+        "sibling B IS in A's view: cross-pod isolation failed over vsock",
+    );
+    need(
+        view_b.contains(&b),
+        "B is not in its own view: B's socket was not served B's id",
+    );
+    need(
+        !view_b.contains(&a),
+        "A IS in B's view: cross-pod isolation failed over vsock",
+    );
+    need(
+        !view_b.contains(&c),
+        "A's child C IS in B's view: cross-pod isolation failed over vsock",
+    );
     need(
         view_a.is_subset(operator) && view_a != operator,
         "A's view is not a strict subset of the operator's: no scoping occurred",
@@ -228,7 +260,11 @@ async fn scenario(node: &Node, kernel: &Path, rootfs: &Path) -> Result<Vec<Strin
 #[ignore = "requires a Linux KVM host and the CI podlist rootfs; run cargo xtask cross-pod-live"]
 async fn two_pods_each_see_only_their_own_lineage() -> Result<()> {
     ensure!(cfg!(target_os = "linux"), "cross-pod-live requires Linux");
-    let var = |k: &str| std::env::var_os(k).map(PathBuf::from).with_context(|| format!("missing {k}"));
+    let var = |k: &str| {
+        std::env::var_os(k)
+            .map(PathBuf::from)
+            .with_context(|| format!("missing {k}"))
+    };
     let bins = var("NUCLEUS_HOST_EVIDENCE_BIN_DIR")?;
     let witness = var("NUCLEUS_HOST_EVIDENCE_WITNESS")?;
     let kernel = var("NUCLEUS_CROSS_POD_KERNEL")?;
@@ -281,7 +317,11 @@ mod judge_tests {
         let (a, b, c) = ids();
         let op: BTreeSet<_> = [a, b, c].into();
         let failures = judge((a, b, c), &op, &op, &op);
-        assert!(failures.iter().any(|f| f.contains("sibling B IS in A's view")));
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("sibling B IS in A's view"))
+        );
         assert!(failures.iter().any(|f| f.contains("A IS in B's view")));
         assert!(failures.iter().any(|f| f.contains("strict subset")));
     }
@@ -295,7 +335,11 @@ mod judge_tests {
         let self_only = judge((a, b, c), &[a].into(), &[b].into(), &op);
         assert!(self_only.iter().any(|f| f.contains("self-only")));
         let one_id = judge((a, b, c), &[a, c].into(), &[a, c].into(), &op);
-        assert!(one_id.iter().any(|f| f.contains("B is not in its own view")));
+        assert!(
+            one_id
+                .iter()
+                .any(|f| f.contains("B is not in its own view"))
+        );
     }
 
     /// The sentinel parser takes the last report and refuses a FAIL.
