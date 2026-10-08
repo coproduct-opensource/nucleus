@@ -58,7 +58,9 @@ pub(crate) async fn export(disk: &Path, to: &Path) -> Result<String, String> {
         let mut out = std::fs::OpenOptions::new().write(true).open(&dest)?;
         let opened = out.metadata()?;
         if (opened.dev(), opened.ino()) != (named.dev(), named.ino()) {
-            return Err(std::io::Error::other("the path changed while it was opened"));
+            return Err(std::io::Error::other(
+                "the path changed while it was opened",
+            ));
         }
         out.set_len(0)?;
         std::io::copy(&mut source, &mut out)?;
@@ -91,9 +93,8 @@ pub(crate) async fn export_and_record(disk: &Path, to: &Path, pod_dir: &Path) {
 pub(crate) fn recorded(spec: &PodSpec, pod_dir: &Path) -> String {
     match target(spec) {
         None => String::new(),
-        Some(_) => std::fs::read_to_string(pod_dir.join(RECORD)).unwrap_or_else(|e| {
-            format!("not exported: no export recorded at teardown ({e})")
-        }),
+        Some(_) => std::fs::read_to_string(pod_dir.join(RECORD))
+            .unwrap_or_else(|e| format!("not exported: no export recorded at teardown ({e})")),
     }
 }
 

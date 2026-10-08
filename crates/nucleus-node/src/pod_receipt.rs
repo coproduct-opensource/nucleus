@@ -188,9 +188,7 @@ pub(crate) async fn build(
         }
         #[cfg(feature = "local-driver")]
         crate::DriverState::Local(_) => (shared_directory_report(handle).await?, String::new()),
-        crate::DriverState::Container(_) => {
-            (shared_directory_report(handle).await?, String::new())
-        }
+        crate::DriverState::Container(_) => (shared_directory_report(handle).await?, String::new()),
     };
 
     let provenance = claim.provenance();

@@ -21,7 +21,11 @@ fn only_an_eval_cells_caller_scratch_is_owed_an_export() {
     let p = Path::new("/srv/caller/scratch.ext4");
     assert_eq!(target(&spec(true, Some(p))), Some(p.to_path_buf()));
     assert_eq!(target(&spec(false, Some(p))), None, "a standard pod links");
-    assert_eq!(target(&spec(true, None)), None, "a node-made disk is not the caller's");
+    assert_eq!(
+        target(&spec(true, None)),
+        None,
+        "a node-made disk is not the caller's"
+    );
 }
 
 #[tokio::test]
@@ -31,8 +35,11 @@ async fn the_guests_disk_reaches_the_callers_file_and_the_receipt_names_its_dige
     let disk = tmp.path().join("in-jail-scratch");
     std::fs::write(&disk, b"what the guest wrote, longer than before").expect("disk");
     let caller = tmp.path().join("caller.ext4");
-    std::fs::write(&caller, b"what the caller seeded, and then some trailing bytes")
-        .expect("caller");
+    std::fs::write(
+        &caller,
+        b"what the caller seeded, and then some trailing bytes",
+    )
+    .expect("caller");
     let inode = std::fs::metadata(&caller).expect("meta").ino();
     let pod_dir = tmp.path().join("pod");
     std::fs::create_dir(&pod_dir).expect("pod dir");
@@ -49,12 +56,23 @@ async fn the_guests_disk_reaches_the_callers_file_and_the_receipt_names_its_dige
         std::fs::read(&disk).expect("disk"),
         "the caller's file holds exactly the guest's disk, with no trailing bytes left"
     );
-    assert_eq!(std::fs::metadata(&caller).expect("meta").ino(), inode, "the caller's inode");
+    assert_eq!(
+        std::fs::metadata(&caller).expect("meta").ino(),
+        inode,
+        "the caller's inode"
+    );
     let digest = nucleus_identity::attestation::measure_artifact(&caller)
         .await
         .expect("measure");
-    assert_eq!(recorded(&s, &pod_dir), format!("sha-256:{}", hex::encode(digest)));
-    assert_eq!(recorded(&spec(false, Some(&caller)), &pod_dir), "", "nothing owed");
+    assert_eq!(
+        recorded(&s, &pod_dir),
+        format!("sha-256:{}", hex::encode(digest))
+    );
+    assert_eq!(
+        recorded(&spec(false, Some(&caller)), &pod_dir),
+        "",
+        "nothing owed"
+    );
 }
 
 #[tokio::test]
@@ -67,8 +85,13 @@ async fn the_export_never_writes_through_a_symlink_or_creates_a_file() {
     let link = tmp.path().join("caller.ext4");
     std::os::unix::fs::symlink(&elsewhere, &link).expect("symlink");
 
-    export(&disk, &link).await.expect_err("a symlink is refused");
-    assert_eq!(std::fs::read(&elsewhere).expect("read"), b"not the caller's disk");
+    export(&disk, &link)
+        .await
+        .expect_err("a symlink is refused");
+    assert_eq!(
+        std::fs::read(&elsewhere).expect("read"),
+        b"not the caller's disk"
+    );
     export(&disk, &tmp.path().join("absent"))
         .await
         .expect_err("a missing file is not created");

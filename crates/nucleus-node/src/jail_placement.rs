@@ -434,15 +434,13 @@ fn link_or_copy(resource: &JailResource, dest: &Path, guest_writes: bool) -> Res
                 resource.host_source.display(),
                 dest.display()
             )),
-            false => {
-                copy_read_only(&resource.host_source, dest).map_err(|copy_err| {
-                    format!(
-                        "cannot bring {} into the jail: hard link failed ({err}) and \
+            false => copy_read_only(&resource.host_source, dest).map_err(|copy_err| {
+                format!(
+                    "cannot bring {} into the jail: hard link failed ({err}) and \
                          copy failed ({copy_err})",
-                        resource.host_source.display()
-                    )
-                })
-            }
+                    resource.host_source.display()
+                )
+            }),
         },
     }
 }
