@@ -68,6 +68,11 @@ enum Command {
     /// the public verifiers (Rust, JS, Python) against each other and against
     /// the reference manifest this build would publish. Linux/KVM only.
     LiveBootEvidence(Box<live_boot_evidence::Args>),
+    /// Read the in-guest probes' verdicts from a live boot's guest logs and write one
+    /// `escape-lane.json`: every stage CONTAINED, BREACH or INCONCLUSIVE, with the commit, guest
+    /// release and node build. Fails unless at least one stage ran and every stage is CONTAINED
+    /// (eval cell M2, ADR 0013).
+    EscapeLane(Box<escape_lane::Args>),
     /// Emit explicit Lean-action targets for the library coverage gate.
     LeanActionBuilds {
         /// Limit output to one workflow, for its per-theorem audit.
@@ -607,6 +612,7 @@ mod command_grammar;
 mod convergence;
 mod coverage_floor;
 mod econ_boundary;
+mod escape_lane;
 mod exemplar_scoreboard;
 mod fly_pools;
 mod gate_budget;
@@ -666,6 +672,7 @@ fn main() -> Result<()> {
             host_evidence_live::Live::NodeStop,
         ),
         Command::LiveBootEvidence(args) => live_boot_evidence::run(&repo_root()?, &args),
+        Command::EscapeLane(args) => escape_lane::run(&repo_root()?, &args),
         Command::Scripts => scripts(),
         Command::MicrovmHostContext {
             bin_dir,
