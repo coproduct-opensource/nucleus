@@ -6,46 +6,55 @@
 //! host authoritative once that comparison clears a measured threshold, so the
 //! number has to come from somewhere other than a hand `grep`. This reads it from
 //! what live boots already leave behind: each `live-boot-evidence` bundle
-//! (`quickstart-boot.yml`, artifact `live-boot-evidence-x86_64`) carries the
-//! node's JSON log, in which the node prints, per pod:
+//! (`quickstart-boot.yml`, artifact `live-boot-evidence-x86_64`) carries
 //!
-//! * `host-decide shadow listening` when the pod's decision channel opens, and
-//! * `host-decide shadow tally at teardown` with the pod's counts, when it closes.
-//!
-//! A bundle may also carry the pod's `host-decide-disagreements.jsonl`; when it
-//! does, each disagreement is classified (host stricter, guest stricter, or both
-//! refusing for different reasons). No bundle carries it today, so a disagreement
-//! without its record is counted as **unclassified**, never as a class.
+//! * the node's JSON log, in which the node prints, per pod,
+//!   `host-decide shadow listening` when the pod's decision channel opens, and
+//!   [`TEARDOWN_MESSAGE`] with the pod's counts when it closes. A node from
+//!   ADR 0014 S1 on prints the counts as numeric fields, with the comparisons by
+//!   operation and outcome pair, the `Decide`s never reported on, and the
+//!   host's service time; an older node printed one `TallySnapshot` string,
+//!   which is still read, and whose missing detail is reported as missing;
+//! * the pods' `host-decide-disagreements.jsonl`, concatenated, from which each
+//!   disagreement is classified (host stricter, guest stricter, or both refusing
+//!   for different reasons). A disagreement without its record is
+//!   **unclassified**, never assigned a class;
+//! * each pod's guest console, on which a guest from S1 on prints its own
+//!   telemetry (`HostDecideTelemetry`): its tally, every `HostUnavailable` by
+//!   kind, and the round trip of each `Decide`. A console without that line is
+//!   "guest telemetry absent" (guests 2.4.0–2.7.0), never zero.
 //!
 //! # What this refuses to do (ADR 0007 A)
 //!
-//! * A bundle whose log cannot be read, or carries a tally this cannot parse, is
-//!   `could not read` (A-2) — never a run with zero disagreements.
+//! * A bundle whose log cannot be read, or carries a teardown line this cannot
+//!   parse, or whose pairs and counts disagree, is `could not read` (A-2) —
+//!   never a run with zero disagreements. So is a console whose telemetry line
+//!   does not parse.
 //! * A bundle with no decision channel at all is `no shadow`, and contributes
 //!   nothing to the rate (A-5: absence is a third value).
 //! * A pod whose channel opened but whose tally never printed is `unreported`,
 //!   not an agreement.
 //! * With no compared decision anywhere, the rate is "could not measure", never
-//!   100 %.
+//!   100 %. A node whose shadow listener never started reads this way.
 //!
 //! Usage: download the bundles (`gh run download <run> -n live-boot-evidence-x86_64
 //! -D <dir>/<run>`), then `cargo xtask host-decide-agreement <dir>/<run>...`.
-//! Each directory is one run, labelled by its name. Exit status: 0 when every
-//! bundle was read and at least one decision was compared; 1 when any bundle
-//! could not be read; 2 when nothing was compared.
+//! Each directory is one run, labelled by its name. Exit status: 1 when any
+//! bundle could not be read or any disagreement is unclassified; otherwise 2
+//! when nothing was compared ("could not measure"); otherwise 0.
 
 use anyhow::{Context, Result, bail};
+use nucleus_spec::host_decide_telemetry::{
+    GuestTelemetry, HostTeardown, LatencyHistogram, OutcomePair, TEARDOWN_MESSAGE,
+    UnavailableByKind,
+};
+use nucleus_spec::live_boot::Files;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The node log inside a bundle (`live_boot_evidence`'s name for it).
-const NODE_LOG: &str = "node.log";
-/// The node's per-pod disagreement record (`host_decide::DISAGREEMENT_LOG`).
-const DISAGREEMENT_LOG: &str = "host-decide-disagreements.jsonl";
 /// The node's message when a pod's decision channel opens.
 const LISTENING: &str = "host-decide shadow listening";
-/// The node's message carrying a pod's final counts.
-const TEARDOWN: &str = "host-decide shadow tally at teardown";
 
 /// One pod's final counts, as the node printed them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -58,7 +67,7 @@ pub struct Tally {
 }
 
 impl Tally {
-    /// Parse the node's `TallySnapshot { agree: N, disagree: N, faults: N }`.
+    /// Parse an older node's `TallySnapshot { agree: N, disagree: N, faults: N }`.
     ///
     /// Exactly that shape: a missing, extra or reordered field is an error, so
     /// a node that changes the spelling makes this fail rather than read zeros
@@ -181,6 +190,105 @@ impl Classes {
     }
 }
 
+/// The comparisons on one operation, by the pair of outcomes they ended in.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OperationCounts {
+    /// `(guest, host)` → decisions.
+    pub pairs: BTreeMap<(String, String), u64>,
+}
+
+impl OperationCounts {
+    /// Decisions compared on this operation.
+    pub fn compared(&self) -> u64 {
+        self.pairs.values().sum()
+    }
+
+    /// Of those, the ones the two kernels agreed on.
+    pub fn agree(&self) -> u64 {
+        self.pairs
+            .iter()
+            .filter(|((guest, host), _)| guest == host)
+            .map(|(_, n)| n)
+            .sum()
+    }
+}
+
+/// What the host said beyond its three counts. Only a node from ADR 0014 S1 on
+/// says it; a pod whose node did not is counted in `pods_without_detail`, so
+/// "not reported" never reads as zero.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HostDetail {
+    /// Pods whose teardown line carried no detail (an older node).
+    pub pods_without_detail: u64,
+    /// `Decide`s answered and never reported on, from the pods with detail.
+    pub unreported: u64,
+    /// Comparisons by operation, from the pods with detail.
+    pub operations: BTreeMap<String, OperationCounts>,
+    /// The host's service time per `Decide`, from the pods with detail.
+    pub service: LatencyHistogram,
+}
+
+impl HostDetail {
+    fn pairs(&mut self, pairs: &[OutcomePair]) {
+        for p in pairs {
+            *self
+                .operations
+                .entry(p.operation.clone())
+                .or_default()
+                .pairs
+                .entry((p.guest.clone(), p.host.clone()))
+                .or_insert(0) += p.count;
+        }
+    }
+
+    fn add(&mut self, other: &HostDetail) {
+        self.pods_without_detail += other.pods_without_detail;
+        self.unreported += other.unreported;
+        for (op, counts) in &other.operations {
+            let mine = self.operations.entry(op.clone()).or_default();
+            for (pair, n) in &counts.pairs {
+                *mine.pairs.entry(pair.clone()).or_insert(0) += n;
+            }
+        }
+        self.service.merge(&other.service);
+    }
+}
+
+/// What the guests' consoles said. A console without a telemetry line is
+/// counted as absent, not as a guest that compared nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GuestSide {
+    /// Consoles in the bundle.
+    pub consoles: u64,
+    /// Of those, the ones with no telemetry line (a guest before S1).
+    pub absent: u64,
+    /// The guests' own counts of what the host compared.
+    pub agree: u64,
+    pub disagree: u64,
+    /// Decisions the guests could not put to the host, by why.
+    pub unavailable: UnavailableByKind,
+    /// The guests' `Decide` round trips.
+    pub round_trip: LatencyHistogram,
+}
+
+impl GuestSide {
+    fn telemetry(&mut self, t: &GuestTelemetry) {
+        self.agree += t.agree();
+        self.disagree += t.disagree();
+        self.unavailable.add(t.unavailable());
+        self.round_trip.merge(t.round_trip());
+    }
+
+    fn add(&mut self, other: &GuestSide) {
+        self.consoles += other.consoles;
+        self.absent += other.absent;
+        self.agree += other.agree;
+        self.disagree += other.disagree;
+        self.unavailable.add(&other.unavailable);
+        self.round_trip.merge(&other.round_trip);
+    }
+}
+
 /// What one bundle says.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reading {
@@ -194,9 +302,15 @@ pub enum Reading {
         tally: Tally,
         /// Disagreements classified from the record file.
         classes: Classes,
+        /// The host's detail, where its node printed it.
+        host: HostDetail,
+        /// The guests' consoles.
+        guest: GuestSide,
     },
-    /// The node opened no decision channel: nothing was shadowed.
-    NoShadow,
+    /// The node opened no decision channel: nothing was shadowed. What the
+    /// guests' consoles say is still read: a guest that could not reach the
+    /// host counts `connect` there.
+    NoShadow { guest: GuestSide },
     /// The bundle could not be read; nothing about it is known.
     CouldNotRead(String),
 }
@@ -209,7 +323,14 @@ struct LogLine {
 #[derive(Deserialize)]
 struct LogFields {
     message: Option<String>,
+    /// An older node's `TallySnapshot` string.
     tally: Option<String>,
+    agree: Option<u64>,
+    disagree: Option<u64>,
+    faults: Option<u64>,
+    unreported: Option<u64>,
+    pairs: Option<String>,
+    service: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -218,12 +339,64 @@ struct DisagreementRecord {
     host: String,
 }
 
+/// One teardown line's counts and, from a node that printed it, its detail.
+fn teardown(fields: LogFields) -> Result<(Tally, HostDetail)> {
+    let LogFields {
+        message: _,
+        tally,
+        agree,
+        disagree,
+        faults,
+        unreported,
+        pairs,
+        service,
+    } = fields;
+    match (tally, pairs) {
+        (None, Some(pairs)) => {
+            let need = |name: &str, v: Option<u64>| v.with_context(|| format!("no `{name}`"));
+            let t = HostTeardown::from_fields(
+                need("agree", agree)?,
+                need("disagree", disagree)?,
+                need("faults", faults)?,
+                need("unreported", unreported)?,
+                &pairs,
+                service.as_deref().context("no `service`")?,
+            )
+            .map_err(anyhow::Error::msg)?;
+            let mut detail = HostDetail {
+                unreported: t.unreported,
+                service: t.service.clone(),
+                ..HostDetail::default()
+            };
+            detail.pairs(&t.pairs);
+            Ok((
+                Tally {
+                    agree: t.agree,
+                    disagree: t.disagree,
+                    faults: t.faults,
+                },
+                detail,
+            ))
+        }
+        (Some(legacy), None) => Ok((
+            Tally::parse(&legacy)?,
+            HostDetail {
+                pods_without_detail: 1,
+                ..HostDetail::default()
+            },
+        )),
+        (Some(_), Some(_)) => bail!("a teardown with both a tally string and pairs"),
+        (None, None) => bail!("teardown without a tally"),
+    }
+}
+
 /// Read one node log. Only lines that start with `{` are the node's; anything
 /// else on its stderr (an `iptables` complaint) is not, and is skipped. A `{`
 /// line that is not JSON, or that names a host-decide message without the
 /// fields it must carry, fails the whole read.
-fn read_log(text: &str) -> Result<(u64, u64, Tally)> {
+fn read_log(text: &str) -> Result<(u64, u64, Tally, HostDetail)> {
     let (mut listening, mut reported, mut tally) = (0u64, 0u64, Tally::default());
+    let mut detail = HostDetail::default();
     for (n, line) in text.lines().enumerate() {
         if !line.starts_with('{') {
             if line.contains("host-decide") {
@@ -238,17 +411,16 @@ fn read_log(text: &str) -> Result<(u64, u64, Tally)> {
         };
         match fields.message.as_deref() {
             Some(LISTENING) => listening += 1,
-            Some(TEARDOWN) => {
-                let raw = fields
-                    .tally
-                    .with_context(|| format!("line {}: teardown without a tally", n + 1))?;
-                tally.add(Tally::parse(&raw).with_context(|| format!("line {}", n + 1))?);
+            Some(TEARDOWN_MESSAGE) => {
+                let (t, d) = teardown(fields).with_context(|| format!("line {}", n + 1))?;
+                tally.add(t);
+                detail.add(&d);
                 reported += 1;
             }
             Some(_) | None => {}
         }
     }
-    Ok((listening, reported, tally))
+    Ok((listening, reported, tally, detail))
 }
 
 fn read_disagreements(text: &str) -> Result<Classes> {
@@ -267,32 +439,69 @@ fn read_disagreements(text: &str) -> Result<Classes> {
     Ok(classes)
 }
 
+/// The consoles a bundle may carry, by their bundle names.
+fn consoles(files: &Files) -> [&str; 2] {
+    [files.guest_console.as_str(), files.effect_console.as_str()]
+}
+
+/// Read every console the bundle carries. A console the bundle does not carry
+/// is not counted at all (an older collector copied only one).
+fn read_consoles(dir: &Path, files: &Files) -> Result<GuestSide> {
+    let mut side = GuestSide::default();
+    for name in consoles(files) {
+        let bytes = match std::fs::read(dir.join(name)) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| name.to_string()),
+        };
+        side.consoles += 1;
+        match GuestTelemetry::last_on_console(&String::from_utf8_lossy(&bytes))
+            .map_err(anyhow::Error::msg)
+            .with_context(|| name.to_string())?
+        {
+            Some(t) => side.telemetry(&t),
+            None => side.absent += 1,
+        }
+    }
+    Ok(side)
+}
+
 /// Read one bundle directory.
 pub fn read_bundle(dir: &Path) -> Reading {
-    let log = match std::fs::read_to_string(dir.join(NODE_LOG)) {
+    let files = Files::standard();
+    let log = match std::fs::read_to_string(dir.join(&files.node_log)) {
         Ok(t) => t,
-        Err(e) => return Reading::CouldNotRead(format!("{NODE_LOG}: {e}")),
+        Err(e) => return Reading::CouldNotRead(format!("{}: {e}", files.node_log)),
     };
-    let (listening, reported, tally) = match read_log(&log) {
+    let (listening, reported, tally, host) = match read_log(&log) {
         Ok(r) => r,
-        Err(e) => return Reading::CouldNotRead(format!("{NODE_LOG}: {e:#}")),
+        Err(e) => return Reading::CouldNotRead(format!("{}: {e:#}", files.node_log)),
+    };
+    let guest = match read_consoles(dir, &files) {
+        Ok(g) => g,
+        Err(e) => return Reading::CouldNotRead(format!("{e:#}")),
     };
     if listening == 0 && reported == 0 {
-        return Reading::NoShadow;
+        return Reading::NoShadow { guest };
     }
-    let classes = match std::fs::read_to_string(dir.join(DISAGREEMENT_LOG)) {
+    let record = &files.host_decide_disagreements;
+    let classes = match std::fs::read_to_string(dir.join(record)) {
         Ok(t) => match read_disagreements(&t) {
             Ok(c) => c,
-            Err(e) => return Reading::CouldNotRead(format!("{DISAGREEMENT_LOG}: {e:#}")),
+            Err(e) => return Reading::CouldNotRead(format!("{record}: {e:#}")),
         },
+        // No record: every disagreement the tally names stays unclassified,
+        // which the exit status reds.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Classes::default(),
-        Err(e) => return Reading::CouldNotRead(format!("{DISAGREEMENT_LOG}: {e}")),
+        Err(e) => return Reading::CouldNotRead(format!("{record}: {e}")),
     };
     Reading::Measured {
         listening,
         reported,
         tally,
         classes,
+        host,
+        guest,
     }
 }
 
@@ -306,6 +515,8 @@ pub struct Summary {
     pub reported: u64,
     pub tally: Tally,
     pub classes: Classes,
+    pub host: HostDetail,
+    pub guest: GuestSide,
 }
 
 impl Summary {
@@ -318,14 +529,21 @@ impl Summary {
                     reported,
                     tally,
                     classes,
+                    host,
+                    guest,
                 } => {
                     s.runs_measured += 1;
                     s.listening += listening;
                     s.reported += reported;
                     s.tally.add(*tally);
                     s.classes.add(*classes);
+                    s.host.add(host);
+                    s.guest.add(guest);
                 }
-                Reading::NoShadow => s.runs_no_shadow += 1,
+                Reading::NoShadow { guest } => {
+                    s.runs_no_shadow += 1;
+                    s.guest.add(guest);
+                }
                 Reading::CouldNotRead(why) => s.runs_unreadable.push(format!("{label}: {why}")),
             }
         }
@@ -353,15 +571,131 @@ impl Summary {
             .flatten()
     }
 
-    /// The exit status `run` reports. See the module docs.
+    /// The exit status `run` reports. See the module docs. An unclassified
+    /// disagreement is red: the flip criterion bounds it at zero, and a
+    /// disagreement nobody can attribute is one nobody can judge.
     pub fn exit_code(&self) -> i32 {
-        if !self.runs_unreadable.is_empty() {
+        if !self.runs_unreadable.is_empty() || self.unclassified() > 0 {
             1
         } else if self.compared() == 0 {
             2
         } else {
             0
         }
+    }
+}
+
+fn latency(h: &LatencyHistogram) -> String {
+    match (h.percentile_us(500), h.percentile_us(990)) {
+        (Some(p50), Some(p99)) => format!("p50 ≤ {p50} µs, p99 ≤ {p99} µs over {}", h.count()),
+        _ => "no measurement".to_string(),
+    }
+}
+
+fn print_summary(s: &Summary) {
+    println!();
+    println!(
+        "runs: {} measured, {} with no shadow channel, {} unreadable",
+        s.runs_measured,
+        s.runs_no_shadow,
+        s.runs_unreadable.len()
+    );
+    println!(
+        "pods: {} listening, {} reported, {} unreported",
+        s.listening,
+        s.reported,
+        s.listening.saturating_sub(s.reported)
+    );
+    println!(
+        "decisions compared: {} (agree {}, disagree {})",
+        s.compared(),
+        s.tally.agree,
+        s.tally.disagree,
+    );
+    match s.rate_basis_points() {
+        Some(bp) => println!(
+            "agreement: {}/{} = {}.{:02}% (rounded down)",
+            s.tally.agree,
+            s.compared(),
+            bp / 100,
+            bp % 100
+        ),
+        None => println!("agreement: could not measure (no decision was compared)"),
+    }
+    println!(
+        "disagreements: host stricter {}, guest stricter {}, differing reason {}, unclassified (no record) {}",
+        s.classes.host_stricter,
+        s.classes.guest_stricter,
+        s.classes.differing_reason,
+        s.unclassified()
+    );
+    let without = s.host.pods_without_detail;
+    let detail_note = if without == 0 {
+        String::new()
+    } else {
+        format!(" ({without} pods' nodes predate S1 and reported neither)")
+    };
+    println!(
+        "not compared, host side: faults {}, Decides never reported {}{detail_note}",
+        s.tally.faults, s.host.unreported
+    );
+    if s.guest.consoles == s.guest.absent {
+        println!(
+            "not compared, guest side: guest telemetry absent ({} consoles, none printed it)",
+            s.guest.consoles
+        );
+    } else {
+        let kinds: Vec<String> = s
+            .guest
+            .unavailable
+            .by_kind()
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(k, n)| format!("{k} {n}"))
+            .collect();
+        println!(
+            "not compared, guest side: {} [{}] from {} of {} consoles; guest telemetry absent on {}",
+            s.guest.unavailable.total(),
+            if kinds.is_empty() {
+                "none".to_string()
+            } else {
+                kinds.join(", ")
+            },
+            s.guest.consoles - s.guest.absent,
+            s.guest.consoles,
+            s.guest.absent
+        );
+        println!(
+            "guest's own count: agree {}, disagree {}",
+            s.guest.agree, s.guest.disagree
+        );
+    }
+    println!("host service time per Decide: {}", latency(&s.host.service));
+    println!(
+        "guest round trip per Decide: {}",
+        if s.guest.consoles == s.guest.absent {
+            "guest telemetry absent".to_string()
+        } else {
+            latency(&s.guest.round_trip)
+        }
+    );
+    if s.host.operations.is_empty() {
+        println!("per operation: not reported{detail_note}");
+    } else {
+        println!("per operation (guest outcome -> host outcome: decisions):");
+        for (op, counts) in &s.host.operations {
+            println!(
+                "  {op}: compared {}, agree {}",
+                counts.compared(),
+                counts.agree()
+            );
+            for ((guest, host), n) in &counts.pairs {
+                println!("    {guest} -> {host}: {n}");
+            }
+        }
+    }
+    for u in &s.runs_unreadable {
+        println!("unreadable: {u}");
     }
 }
 
@@ -386,64 +720,41 @@ pub fn run(dirs: &[PathBuf]) -> Result<i32> {
                 reported,
                 tally,
                 classes: _,
+                host,
+                guest,
             } => println!(
-                "{label}: pods {listening} (reported {reported}), agree {}, disagree {}, not compared (faults) {}",
-                tally.agree, tally.disagree, tally.faults
+                "{label}: pods {listening} (reported {reported}), agree {}, disagree {}, faults {}, unreported {}, guest telemetry on {} of {} consoles",
+                tally.agree,
+                tally.disagree,
+                tally.faults,
+                if host.pods_without_detail > 0 {
+                    "not reported".to_string()
+                } else {
+                    host.unreported.to_string()
+                },
+                guest.consoles - guest.absent,
+                guest.consoles
             ),
-            Reading::NoShadow => println!("{label}: no shadow channel"),
+            Reading::NoShadow { guest } => println!(
+                "{label}: no shadow channel (could not measure); guest-side not compared {}",
+                guest.unavailable.total()
+            ),
             Reading::CouldNotRead(why) => println!("{label}: COULD NOT READ — {why}"),
         }
     }
     let s = Summary::of(readings.iter().map(|(l, r)| (l.as_str(), r)));
-    println!();
-    println!(
-        "runs: {} measured, {} with no shadow channel, {} unreadable",
-        s.runs_measured,
-        s.runs_no_shadow,
-        s.runs_unreadable.len()
-    );
-    println!(
-        "pods: {} listening, {} reported, {} unreported",
-        s.listening,
-        s.reported,
-        s.listening.saturating_sub(s.reported)
-    );
-    println!(
-        "decisions compared: {} (agree {}, disagree {}); not compared (host faults): {}",
-        s.compared(),
-        s.tally.agree,
-        s.tally.disagree,
-        s.tally.faults
-    );
-    match s.rate_basis_points() {
-        Some(bp) => println!(
-            "agreement: {}/{} = {}.{:02}% (rounded down)",
-            s.tally.agree,
-            s.compared(),
-            bp / 100,
-            bp % 100
-        ),
-        None => println!("agreement: could not measure (no decision was compared)"),
-    }
-    println!(
-        "disagreements: host stricter {}, guest stricter {}, differing reason {}, unclassified (no record) {}",
-        s.classes.host_stricter,
-        s.classes.guest_stricter,
-        s.classes.differing_reason,
-        s.unclassified()
-    );
-    println!(
-        "not visible here: decisions the guest could not put to the host (its HostUnavailable count is in the guest's /v1/health only)"
-    );
-    for u in &s.runs_unreadable {
-        println!("unreadable: {u}");
-    }
+    print_summary(&s);
     Ok(s.exit_code())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleus_spec::host_decide_telemetry::HostUnavailable;
+
+    fn files() -> Files {
+        Files::standard()
+    }
 
     fn listening(pod: &str) -> String {
         format!(
@@ -451,54 +762,137 @@ mod tests {
         )
     }
 
-    fn teardown(agree: u64, disagree: u64, faults: u64) -> String {
+    /// An older node's teardown line (run 37806146438's shape).
+    fn legacy_teardown(agree: u64, disagree: u64, faults: u64) -> String {
         format!(
-            r#"{{"timestamp":"t","level":"INFO","fields":{{"message":"{TEARDOWN}","pod_dir":"/p","tally":"TallySnapshot {{ agree: {agree}, disagree: {disagree}, faults: {faults} }}"}},"target":"nucleus_node::pod_boot_identity"}}"#
+            r#"{{"timestamp":"t","level":"INFO","fields":{{"message":"{TEARDOWN_MESSAGE}","pod_dir":"/p","tally":"TallySnapshot {{ agree: {agree}, disagree: {disagree}, faults: {faults} }}"}},"target":"nucleus_node::pod_boot_identity"}}"#
         )
+    }
+
+    /// A node from S1 on: numeric counts, pairs and service time as JSON text.
+    fn teardown(pairs: &[(&str, &str, &str, u64)], faults: u64, unreported: u64) -> String {
+        let (mut agree, mut disagree) = (0, 0);
+        let pairs: Vec<OutcomePair> = pairs
+            .iter()
+            .map(|(op, g, h, n)| {
+                if g == h {
+                    agree += n;
+                } else {
+                    disagree += n;
+                }
+                OutcomePair {
+                    operation: (*op).into(),
+                    guest: (*g).into(),
+                    host: (*h).into(),
+                    count: *n,
+                }
+            })
+            .collect();
+        let mut service = LatencyHistogram::default();
+        for _ in 0..agree + disagree + unreported {
+            service.record(std::time::Duration::from_micros(120));
+        }
+        let line = serde_json::json!({
+            "timestamp": "t", "level": "INFO", "target": "nucleus_node::host_decide",
+            "fields": {
+                "message": TEARDOWN_MESSAGE, "pod_dir": "/p",
+                "agree": agree, "disagree": disagree, "faults": faults,
+                "unreported": unreported,
+                "pairs": serde_json::to_string(&pairs).unwrap(),
+                "service": serde_json::to_string(&service).unwrap(),
+            }
+        });
+        line.to_string()
     }
 
     fn bundle(log: &str, disagreements: Option<&str>) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::write(dir.path().join(NODE_LOG), log).expect("write log");
+        std::fs::write(dir.path().join(&files().node_log), log).expect("write log");
         if let Some(d) = disagreements {
-            std::fs::write(dir.path().join(DISAGREEMENT_LOG), d).expect("write record");
+            std::fs::write(dir.path().join(&files().host_decide_disagreements), d)
+                .expect("write record");
         }
         dir
     }
 
-    /// The shape a real bundle carries (run 37806146438): two pods, one
-    /// compared, one faulted at teardown, stderr noise between.
+    fn console(dir: &Path, name: &str, text: &str) {
+        std::fs::write(dir.join(name), text).expect("write console");
+    }
+
+    /// The shape an older bundle carries (run 37806146438): two pods, one
+    /// compared, one faulted at teardown, stderr noise between. Its missing
+    /// detail is reported as missing, not as zero.
     #[test]
-    fn a_real_shaped_log_is_counted() {
+    fn a_legacy_log_is_counted_and_its_missing_detail_is_named() {
         let log = [
             listening("a"),
             "iptables: Bad rule (does a matching rule exist in that chain?).".into(),
-            teardown(1, 0, 0),
+            legacy_teardown(1, 0, 0),
             listening("b"),
-            teardown(0, 0, 1),
+            legacy_teardown(0, 0, 1),
         ]
         .join("\n");
         let dir = bundle(&log, None);
+        let r = read_bundle(dir.path());
+        let Reading::Measured {
+            listening,
+            reported,
+            tally,
+            classes,
+            host,
+            guest,
+        } = &r
+        else {
+            panic!("{r:?}")
+        };
+        assert_eq!((*listening, *reported), (2, 2));
         assert_eq!(
-            read_bundle(dir.path()),
-            Reading::Measured {
-                listening: 2,
-                reported: 2,
-                tally: Tally {
-                    agree: 1,
-                    disagree: 0,
-                    faults: 1
-                },
-                classes: Classes::default(),
+            *tally,
+            Tally {
+                agree: 1,
+                disagree: 0,
+                faults: 1
             }
         );
+        assert_eq!(*classes, Classes::default());
+        assert_eq!(host.pods_without_detail, 2);
+        assert!(host.operations.is_empty());
+        assert_eq!(guest.consoles, 0);
+    }
+
+    /// S1: a node's per-operation pairs, unreported Decides and service time
+    /// are read, and the counts derive from the pairs.
+    #[test]
+    fn an_s1_teardown_is_read_by_operation() {
+        let log = [
+            listening("a"),
+            teardown(
+                &[
+                    ("read_files", "allowed", "allowed", 3),
+                    ("read_files", "denied:not_granted", "denied:not_granted", 1),
+                    ("web_fetch", "allowed", "allowed", 1),
+                ],
+                0,
+                1,
+            ),
+        ]
+        .join("\n");
+        let dir = bundle(&log, Some(""));
+        let s = Summary::of([("run", &read_bundle(dir.path()))]);
+        assert_eq!(s.compared(), 5);
+        assert_eq!(s.host.pods_without_detail, 0);
+        assert_eq!(s.host.unreported, 1);
+        assert_eq!(s.host.operations["read_files"].compared(), 4);
+        assert_eq!(s.host.operations["web_fetch"].agree(), 1);
+        assert_eq!(s.host.service.count(), 6);
+        assert_eq!(s.exit_code(), 0);
     }
 
     /// A-2: a tally this cannot parse makes the bundle unreadable. Reading it
     /// as zeros would turn a node that changed its spelling into a clean run.
     #[test]
     fn an_unparsable_tally_is_could_not_read_not_zero() {
-        let bad = teardown(1, 0, 0).replace("agree: 1", "agree: one");
+        let bad = legacy_teardown(1, 0, 0).replace("agree: 1", "agree: one");
         let dir = bundle(&[listening("a"), bad].join("\n"), None);
         assert!(matches!(read_bundle(dir.path()), Reading::CouldNotRead(_)));
         for shape in [
@@ -508,6 +902,19 @@ mod tests {
             "Tally { agree: 1, disagree: 0, faults: 0 }",
         ] {
             assert!(Tally::parse(shape).is_err(), "{shape}");
+        }
+        // An S1 line whose pairs and counts disagree, or that lacks a field.
+        let good = teardown(&[("read_files", "allowed", "allowed", 2)], 0, 0);
+        for bad in [
+            good.replace("\"agree\":2", "\"agree\":3"),
+            good.replace(",\"unreported\":0", ""),
+            good.replace("\"service\":", "\"servic\":"),
+        ] {
+            let dir = bundle(&[listening("a"), bad.clone()].join("\n"), None);
+            assert!(
+                matches!(read_bundle(dir.path()), Reading::CouldNotRead(_)),
+                "{bad}"
+            );
         }
     }
 
@@ -519,17 +926,29 @@ mod tests {
     }
 
     /// A-5: a run that never opened a channel contributes nothing, and a corpus
-    /// of them has no rate.
+    /// of them has no rate. This is what a node built with its shadow listener
+    /// disabled leaves (ADR 0014 S1's falsifier): no listening line, no
+    /// teardown, and a guest that counted every decision as `connect`.
     #[test]
     fn no_comparison_is_could_not_measure_not_full_agreement() {
-        let dir = bundle(&teardown(0, 0, 0).replace(TEARDOWN, "unrelated"), None);
+        let dir = bundle(
+            &legacy_teardown(0, 0, 0).replace(TEARDOWN_MESSAGE, "unrelated"),
+            None,
+        );
+        let mut unreachable = UnavailableByKind::default();
+        for _ in 0..3 {
+            unreachable.count(HostUnavailable::Connect);
+        }
+        let t = GuestTelemetry::new(0, 0, unreachable, LatencyHistogram::default());
+        console(dir.path(), &files().guest_console, &t.console_line());
         let r = read_bundle(dir.path());
-        assert_eq!(r, Reading::NoShadow);
+        assert!(matches!(r, Reading::NoShadow { .. }), "{r:?}");
         let s = Summary::of([("run", &r)]);
         assert_eq!(s.rate_basis_points(), None);
+        assert_eq!(s.guest.unavailable.connect, 3);
         assert_eq!(s.exit_code(), 2);
         // Faults alone compare nothing either.
-        let dir = bundle(&[listening("a"), teardown(0, 0, 1)].join("\n"), None);
+        let dir = bundle(&[listening("a"), legacy_teardown(0, 0, 1)].join("\n"), None);
         let r = read_bundle(dir.path());
         let s = Summary::of([("run", &r)]);
         assert_eq!(s.rate_basis_points(), None);
@@ -541,7 +960,7 @@ mod tests {
     #[test]
     fn an_unreported_pod_is_counted_apart() {
         let dir = bundle(
-            &[listening("a"), listening("b"), teardown(3, 0, 0)].join("\n"),
+            &[listening("a"), listening("b"), legacy_teardown(3, 0, 0)].join("\n"),
             None,
         );
         let r = read_bundle(dir.path());
@@ -551,7 +970,7 @@ mod tests {
     }
 
     /// Disagreements are classified from the record; one without a record is
-    /// unclassified rather than assigned a class.
+    /// unclassified rather than assigned a class, and reds the corpus.
     #[test]
     fn disagreements_are_classified_or_left_unclassified() {
         let records = [
@@ -561,7 +980,7 @@ mod tests {
         ]
         .join("\n");
         let dir = bundle(
-            &[listening("a"), teardown(10, 4, 0)].join("\n"),
+            &[listening("a"), legacy_teardown(10, 4, 0)].join("\n"),
             Some(&records),
         );
         let r = read_bundle(dir.path());
@@ -575,6 +994,35 @@ mod tests {
             }
         );
         assert_eq!(s.unclassified(), 1);
+        assert_eq!(s.exit_code(), 1);
+    }
+
+    /// ADR 0014 S1's falsifier: a bundle whose tally says `disagree > 0` with
+    /// its record file withheld is red; with the record restored it is green.
+    #[test]
+    fn a_withheld_record_reds_and_the_restored_record_greens() {
+        let log = [
+            listening("a"),
+            teardown(
+                &[
+                    ("read_files", "allowed", "allowed", 5),
+                    ("write_files", "allowed", "denied:flow_refused", 1),
+                ],
+                0,
+                0,
+            ),
+        ]
+        .join("\n");
+        let withheld = bundle(&log, None);
+        let s = Summary::of([("run", &read_bundle(withheld.path()))]);
+        assert_eq!(s.unclassified(), 1);
+        assert_eq!(s.exit_code(), 1, "a disagreement nobody can attribute");
+        let restored = bundle(
+            &log,
+            Some(r#"{"guest":"allowed","host":"denied:flow_refused"}"#),
+        );
+        let s = Summary::of([("run", &read_bundle(restored.path()))]);
+        assert_eq!(s.classes.host_stricter, 1);
         assert_eq!(s.exit_code(), 0);
     }
 
@@ -587,7 +1035,10 @@ mod tests {
             r#"{"guest":"allowed","host":"refused"}"#,
             r#"{"guest":"allowed","host":"denied:"}"#,
         ] {
-            let dir = bundle(&[listening("a"), teardown(0, 1, 0)].join("\n"), Some(bad));
+            let dir = bundle(
+                &[listening("a"), legacy_teardown(0, 1, 0)].join("\n"),
+                Some(bad),
+            );
             assert!(
                 matches!(read_bundle(dir.path()), Reading::CouldNotRead(_)),
                 "{bad}"
@@ -598,11 +1049,53 @@ mod tests {
     /// One unreadable bundle reds the whole corpus, whatever the others say.
     #[test]
     fn one_unreadable_bundle_reds_the_corpus() {
-        let good = bundle(&[listening("a"), teardown(5, 0, 0)].join("\n"), None);
+        let good = bundle(&[listening("a"), legacy_teardown(5, 0, 0)].join("\n"), None);
         let missing = tempfile::tempdir().expect("tempdir");
         let (g, m) = (read_bundle(good.path()), read_bundle(missing.path()));
         let s = Summary::of([("good", &g), ("missing", &m)]);
         assert_eq!(s.rate_basis_points(), Some(10_000));
         assert_eq!(s.exit_code(), 1);
+    }
+
+    /// A console without a telemetry line (a 2.4.0–2.7.0 guest) is "absent",
+    /// counted apart from a guest that printed zeros; a printed line is summed
+    /// with the others; a line that does not parse makes the bundle unreadable.
+    #[test]
+    fn guest_telemetry_is_read_absent_is_not_zero() {
+        let log = [listening("a"), legacy_teardown(2, 0, 0)].join("\n");
+        let dir = bundle(&log, None);
+        console(dir.path(), &files().guest_console, "[ 0.1] booted\n");
+        let mut kinds = UnavailableByKind::default();
+        kinds.count(HostUnavailable::Timeout);
+        let mut rt = LatencyHistogram::default();
+        rt.record(std::time::Duration::from_micros(400));
+        rt.record(std::time::Duration::from_micros(400));
+        let t = GuestTelemetry::new(2, 0, kinds, rt);
+        console(
+            dir.path(),
+            &files().effect_console,
+            &format!("[ 0.1] booted\n[ 0.9] {}\n", t.console_line()),
+        );
+        let s = Summary::of([("run", &read_bundle(dir.path()))]);
+        assert_eq!((s.guest.consoles, s.guest.absent), (2, 1));
+        assert_eq!((s.guest.agree, s.guest.unavailable.timeout), (2, 1));
+        assert_eq!(s.guest.round_trip.count(), 2);
+
+        let none = bundle(&log, None);
+        console(none.path(), &files().guest_console, "[ 0.1] booted\n");
+        let s = Summary::of([("run", &read_bundle(none.path()))]);
+        assert_eq!((s.guest.consoles, s.guest.absent), (1, 1));
+        assert_eq!(s.guest.round_trip.count(), 0);
+
+        let garbled = bundle(&log, None);
+        console(
+            garbled.path(),
+            &files().guest_console,
+            "NUCLEUS-HOST-DECIDE-TELEMETRY {\"agree\":1}\n",
+        );
+        assert!(matches!(
+            read_bundle(garbled.path()),
+            Reading::CouldNotRead(_)
+        ));
     }
 }

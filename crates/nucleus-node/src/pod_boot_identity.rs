@@ -370,8 +370,7 @@ impl FirecrackerPod {
         }
 
         if let Some(listener) = self.decide.lock().await.take() {
-            let tally = listener.shutdown().await;
-            tracing::info!(pod_dir = %self.pod_dir.display(), ?tally, "host-decide shadow tally at teardown");
+            crate::host_decide::log_teardown(&self.pod_dir, listener.shutdown().await);
         }
 
         // A let-chain (edition 2024) rather than a tuple of Options: it says the

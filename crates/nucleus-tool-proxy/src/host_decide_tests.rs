@@ -8,6 +8,7 @@
 //! that nothing it does can hold up the decision it shadows.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use nucleus::portcullis::{CapabilityLevel, PermissionLattice};
 use nucleus_decision_protocol::host::DecisionLedger;
@@ -374,4 +375,71 @@ async fn an_oversized_subject_is_unavailable_never_a_comparison_of_its_prefix() 
     assert_eq!((s.agree, s.disagree, s.unavailable), (0, 0, 1));
     assert_eq!(s.last_unavailable, Some(HostUnavailable::SubjectTooLong));
     assert!(seen.frames.lock().unwrap().is_empty());
+}
+
+/// ADR 0014 S1 (`HostDecideTelemetry`): once the shadow traffic goes quiet the
+/// worker prints one console line with its tally, every `HostUnavailable` by
+/// kind, and the `Decide` round trips with their p50/p99, and the reader's own
+/// parser reads it back. It prints again only when something moved, so the
+/// last line on a console is the final count.
+#[tokio::test]
+async fn the_telemetry_is_printed_when_the_traffic_goes_quiet() {
+    let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = Arc::clone(&lines);
+    let seen = Arc::new(Seen::default());
+    let hd = HostDecide::start_printing(
+        dialer(HostRule::Decide(no_commands), Arc::clone(&seen)),
+        Arc::new(move |line: &str| sink.lock().unwrap().push(line.to_string())),
+    );
+    // The first quiet moment prints the zero state: a guest that carries the
+    // client says so even before it decides anything.
+    tokio::time::sleep(QUIET * 2).await;
+    let console = lines.lock().unwrap().join("\n");
+    let zero = GuestTelemetry::last_on_console(&console)
+        .unwrap()
+        .expect("a zero line");
+    assert_eq!((zero.agree(), zero.round_trip().count()), (0, 0));
+
+    let mut k = permissive_kernel();
+    let g = FlowGraph::new();
+    for (op, subject) in [
+        (Operation::ReadFiles, "src/main.rs"),
+        (Operation::RunBash, "cargo test"),
+    ] {
+        let v = decide(&mut k, &g, op, subject);
+        hd.submit(&k, &g, op, subject, &v);
+    }
+    hd.submit(
+        &k,
+        &g,
+        Operation::ReadFiles,
+        &"x".repeat(nucleus_decision_protocol::MAX_SUBJECT_LEN + 1),
+        &KernelVerdict::Allow,
+    );
+    hd.flush().await;
+    tokio::time::sleep(QUIET * 2).await;
+    let printed = lines.lock().unwrap().len();
+    tokio::time::sleep(QUIET * 4).await;
+    assert_eq!(
+        lines.lock().unwrap().len(),
+        printed,
+        "nothing moved, so nothing more is printed"
+    );
+    let console = lines.lock().unwrap().join("\n");
+    let last = GuestTelemetry::last_on_console(&console)
+        .unwrap()
+        .expect("a line");
+    assert_eq!((last.agree(), last.disagree()), (1, 1));
+    assert_eq!(last.unavailable().subject_too_long, 1);
+    assert_eq!(last.unavailable().total(), 1);
+    assert_eq!(
+        last.round_trip().count(),
+        2,
+        "each compared Decide is timed"
+    );
+    assert!(console.contains("round_trip_p99_us"), "{console}");
+    assert_eq!(
+        hd.health_json()["unavailable_by_kind"]["subject_too_long"],
+        1
+    );
 }

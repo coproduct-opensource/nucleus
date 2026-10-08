@@ -29,7 +29,6 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use nucleus::portcullis::Operation;
@@ -40,6 +39,7 @@ use nucleus_decision_protocol::{
     Agreement, GuestFrame, HostFrame, LEN_PREFIX, LabelRaise, Outcome, Seq, Subject, Verdict,
     body_len,
 };
+use nucleus_spec::host_decide_telemetry::{GuestTelemetry, LatencyHistogram, UnavailableByKind};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use uuid::Uuid;
 
@@ -53,27 +53,16 @@ const DEADLINE: Duration = Duration::from_secs(2);
 /// The most kernel sessions with an open channel at once.
 const MAX_SESSIONS: usize = 16;
 
-/// Why a decision's shadow never reached a comparison. Typed, so a host that
-/// cannot be dialled reads differently from one that answered nonsense.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HostUnavailable {
-    /// The channel could not be opened.
-    Connect,
-    /// The host did not answer within [`DEADLINE`].
-    Timeout,
-    /// The channel failed mid-exchange.
-    Io,
-    /// The host answered with a frame that is not the answer to the question.
-    Protocol,
-    /// The worker's queue was full; the question was dropped.
-    Backlog,
-    /// More kernel sessions than [`MAX_SESSIONS`] asked at once.
-    TooManySessions,
-    /// The worker is gone.
-    Stopped,
-    /// The exact subject does not fit the protocol; comparing a prefix would be misleading.
-    SubjectTooLong,
-}
+/// Why a decision's shadow never reached a comparison: one type, shared with
+/// the telemetry the reader parses (ADR 0007 G-1).
+pub(crate) use nucleus_spec::host_decide_telemetry::HostUnavailable;
+
+/// How long the worker waits with nothing to do before it prints its
+/// telemetry, when the telemetry moved since it last printed. A pod is torn
+/// down by killing its VM, so there is no guest shutdown to print at; printing
+/// whenever the shadow traffic goes quiet makes the last line on the console
+/// the final count (ADR 0014 S1).
+const QUIET: Duration = Duration::from_millis(250);
 
 /// What one shadowed decision came to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,10 +78,16 @@ pub(crate) enum Shadowed {
 /// This proxy's shadow counters.
 #[derive(Debug, Default)]
 pub(crate) struct GuestTally {
-    agree: AtomicU64,
-    disagree: AtomicU64,
-    unavailable: AtomicU64,
-    last_unavailable: std::sync::Mutex<Option<HostUnavailable>>,
+    counts: std::sync::Mutex<Counts>,
+}
+
+#[derive(Debug, Default)]
+struct Counts {
+    agree: u64,
+    disagree: u64,
+    unavailable: UnavailableByKind,
+    last_unavailable: Option<HostUnavailable>,
+    round_trip: LatencyHistogram,
 }
 
 /// A point-in-time read of a [`GuestTally`].
@@ -105,30 +100,44 @@ pub(crate) struct GuestSnapshot {
 }
 
 impl GuestTally {
+    fn counts(&self) -> std::sync::MutexGuard<'_, Counts> {
+        // A counter is still a counter after a panic elsewhere; never lose it.
+        self.counts
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn count(&self, s: Shadowed) {
+        let mut c = self.counts();
         match s {
-            Shadowed::Agreed => {
-                self.agree.fetch_add(1, Ordering::SeqCst);
-            }
-            Shadowed::Disagreed => {
-                self.disagree.fetch_add(1, Ordering::SeqCst);
-            }
+            Shadowed::Agreed => c.agree = c.agree.saturating_add(1),
+            Shadowed::Disagreed => c.disagree = c.disagree.saturating_add(1),
             Shadowed::Unavailable(why) => {
-                self.unavailable.fetch_add(1, Ordering::SeqCst);
-                if let Ok(mut last) = self.last_unavailable.lock() {
-                    *last = Some(why);
-                }
+                c.unavailable.count(why);
+                c.last_unavailable = Some(why);
             }
         }
     }
 
+    /// One `Decide` round trip the guest waited for.
+    fn waited(&self, round_trip: Duration) {
+        self.counts().round_trip.record(round_trip);
+    }
+
     pub(crate) fn snapshot(&self) -> GuestSnapshot {
+        let c = self.counts();
         GuestSnapshot {
-            agree: self.agree.load(Ordering::SeqCst),
-            disagree: self.disagree.load(Ordering::SeqCst),
-            unavailable: self.unavailable.load(Ordering::SeqCst),
-            last_unavailable: self.last_unavailable.lock().ok().and_then(|g| *g),
+            agree: c.agree,
+            disagree: c.disagree,
+            unavailable: c.unavailable.total(),
+            last_unavailable: c.last_unavailable,
         }
+    }
+
+    /// What the console line carries.
+    pub(crate) fn telemetry(&self) -> GuestTelemetry {
+        let c = self.counts();
+        GuestTelemetry::new(c.agree, c.disagree, c.unavailable, c.round_trip.clone())
     }
 }
 
@@ -141,6 +150,10 @@ type Dialled = Pin<Box<dyn Future<Output = std::io::Result<Box<dyn Duplex>>> + S
 /// How the worker opens a channel. The vsock dialer in production; a test's
 /// in-memory host otherwise.
 pub(crate) type Dialer = Arc<dyn Fn() -> Dialled + Send + Sync>;
+
+/// Where the worker prints its telemetry line. The guest console in
+/// production; a test's buffer otherwise.
+pub(crate) type Printer = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// One decision, as the worker will put it to the host.
 #[derive(Debug)]
@@ -193,11 +206,17 @@ impl HostDecide {
         }
     }
 
-    /// Start the worker. Needs a Tokio runtime.
+    /// Start the worker, printing its telemetry on the guest console. Needs a
+    /// Tokio runtime.
     pub(crate) fn start(dial: Dialer) -> Self {
+        Self::start_printing(dial, Arc::new(|line: &str| crate::console_line(line)))
+    }
+
+    /// Start the worker, printing its telemetry with `print`.
+    pub(crate) fn start_printing(dial: Dialer, print: Printer) -> Self {
         let (queue, rx) = tokio::sync::mpsc::channel(QUEUE);
         let tally = Arc::new(GuestTally::default());
-        tokio::spawn(worker(rx, dial, Arc::clone(&tally)));
+        tokio::spawn(worker(rx, dial, Arc::clone(&tally), print));
         HostDecide::On { queue, tally }
     }
 
@@ -244,6 +263,7 @@ impl HostDecide {
     }
 
     /// The counters, or `None` when shadowing is off.
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Option<GuestSnapshot> {
         match self {
             HostDecide::Off => None,
@@ -254,15 +274,26 @@ impl HostDecide {
     /// For `/v1/health`: counts only, never operations or subjects — the
     /// endpoint is reachable from inside the sandbox.
     pub(crate) fn health_json(&self) -> serde_json::Value {
-        match self.snapshot() {
-            None => serde_json::json!({ "mode": "off" }),
-            Some(s) => serde_json::json!({
-                "mode": "shadow",
-                "agree": s.agree,
-                "disagree": s.disagree,
-                "unavailable": s.unavailable,
-                "last_unavailable": s.last_unavailable.map(|u| format!("{u:?}")),
-            }),
+        match self {
+            HostDecide::Off => serde_json::json!({ "mode": "off" }),
+            HostDecide::On { tally, .. } => {
+                let s = tally.snapshot();
+                let by_kind: serde_json::Map<String, serde_json::Value> = tally
+                    .telemetry()
+                    .unavailable()
+                    .by_kind()
+                    .into_iter()
+                    .map(|(kind, n)| (kind.to_string(), n.into()))
+                    .collect();
+                serde_json::json!({
+                    "mode": "shadow",
+                    "agree": s.agree,
+                    "disagree": s.disagree,
+                    "unavailable": s.unavailable,
+                    "unavailable_by_kind": by_kind,
+                    "last_unavailable": s.last_unavailable.map(|u| format!("{u:?}")),
+                })
+            }
         }
     }
 
@@ -341,8 +372,10 @@ impl Channel {
             .map_err(|_| HostUnavailable::Timeout)?
     }
 
-    /// Observe (if the taint moved), Decide, Shadow.
-    async fn shadow(&mut self, q: Question) -> Result<Agreement, HostUnavailable> {
+    /// Observe (if the taint moved), Decide, Shadow. Hands back the host's
+    /// agreement and how long the `Decide` exchange took: the round trip an
+    /// authoritative guest would wait on (ADR 0014 §8).
+    async fn shadow(&mut self, q: Question) -> Result<(Agreement, Duration), HostUnavailable> {
         let Question {
             session: _,
             op,
@@ -365,6 +398,7 @@ impl Channel {
         }
         let decided = self.seq()?;
         let digest = args_digest(op, &subject);
+        let asked = std::time::Instant::now();
         let verdict = match self
             .ask(GuestFrame::Decide {
                 seq: decided,
@@ -377,6 +411,7 @@ impl Channel {
             HostFrame::Verdict { seq, verdict } if seq == decided => verdict,
             _ => return Err(HostUnavailable::Protocol),
         };
+        let round_trip = asked.elapsed();
         // Shadow mode: the host's ids are not acted on. Dropped on purpose; the
         // host retires them when it reads the report below.
         match verdict {
@@ -393,17 +428,34 @@ impl Channel {
             })
             .await?
         {
-            HostFrame::Compared { seq: s, agreement } if s == seq => Ok(agreement),
+            HostFrame::Compared { seq: s, agreement } if s == seq => Ok((agreement, round_trip)),
             _ => Err(HostUnavailable::Protocol),
         }
     }
 }
 
-async fn worker(mut rx: tokio::sync::mpsc::Receiver<Work>, dial: Dialer, tally: Arc<GuestTally>) {
+async fn worker(
+    mut rx: tokio::sync::mpsc::Receiver<Work>,
+    dial: Dialer,
+    tally: Arc<GuestTally>,
+    print: Printer,
+) {
     let mut channels: HashMap<Uuid, Channel> = HashMap::new();
-    while let Some(work) = rx.recv().await {
+    let mut printed: Option<GuestTelemetry> = None;
+    loop {
+        let work = match tokio::time::timeout(QUIET, rx.recv()).await {
+            Ok(Some(work)) => work,
+            Ok(None) => {
+                print_if_moved(&tally, &mut printed, &print);
+                return;
+            }
+            Err(_quiet) => {
+                print_if_moved(&tally, &mut printed, &print);
+                continue;
+            }
+        };
         match work {
-            Work::Ask(q) => tally.count(put(&mut channels, &dial, q).await),
+            Work::Ask(q) => tally.count(put(&mut channels, &dial, &tally, q).await),
             #[cfg(test)]
             Work::Flush(done) => {
                 let _ = done.send(());
@@ -412,9 +464,25 @@ async fn worker(mut rx: tokio::sync::mpsc::Receiver<Work>, dial: Dialer, tally: 
     }
 }
 
+/// Print the telemetry when it differs from the last line printed. The first
+/// quiet moment prints even an all-zero line, so a guest that carries this
+/// client is told apart from one that does not (ADR 0007 A-5).
+fn print_if_moved(tally: &GuestTally, printed: &mut Option<GuestTelemetry>, print: &Printer) {
+    let now = tally.telemetry();
+    if printed.as_ref() != Some(&now) {
+        print(&now.console_line());
+        *printed = Some(now);
+    }
+}
+
 /// Put one question to the host on its session's channel, opening the channel
 /// if there is none.
-async fn put(channels: &mut HashMap<Uuid, Channel>, dial: &Dialer, q: Question) -> Shadowed {
+async fn put(
+    channels: &mut HashMap<Uuid, Channel>,
+    dial: &Dialer,
+    tally: &GuestTally,
+    q: Question,
+) -> Shadowed {
     let session = q.session;
     let opened = match channels.remove(&session) {
         Some(ch) => Ok(ch),
@@ -432,7 +500,8 @@ async fn put(channels: &mut HashMap<Uuid, Channel>, dial: &Dialer, q: Question) 
     let shadowed = match opened {
         Err(why) => Shadowed::Unavailable(why),
         Ok(mut ch) => match ch.shadow(q).await {
-            Ok(agreement) => {
+            Ok((agreement, round_trip)) => {
+                tally.waited(round_trip);
                 channels.insert(session, ch);
                 match agreement {
                     Agreement::Agree => Shadowed::Agreed,
