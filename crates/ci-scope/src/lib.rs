@@ -27,6 +27,21 @@
 //!
 //! Running is the safe direction: the job then decides on its own evidence.
 
+// ADR 0007 totality: a decider that panics would fail the job for a reason that names nothing.
+// Denied for the shipped build only -- `assert!` is a panic, and tests are made of it.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::fmt;
 
 /// One entry of a scope list, in the subset of GitHub path-filter syntax this repository uses.

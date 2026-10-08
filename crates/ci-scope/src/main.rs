@@ -11,6 +11,21 @@
 //! Exit 0 with a decision, or exit 2 when the step itself is misconfigured (no list, a list
 //! that does not parse, no output file). Misconfiguration fails the job — red, never skipped.
 
+// ADR 0007 totality: a decider that panics would fail the job for a reason that names nothing.
+// Denied for the shipped build only -- `assert!` is a panic, and tests are made of it.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use std::io::Write as _;
 use std::process::{Command, ExitCode};
 
@@ -52,11 +67,17 @@ fn run() -> Result<Decision, String> {
     let range = Range::new(var("BASE").as_deref(), var("HEAD").as_deref());
     let decision = decide(&event, range.as_ref(), changed_files, &scope);
 
+    // One line, one write: the runner's own `key=value` step-output file, not a record log, and
+    // nothing else writes it while this step runs.
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "GITHUB_OUTPUT is the runner's step-output file, appended once per step"
+    )]
     let mut f = std::fs::OpenOptions::new()
         .append(true)
         .open(&output)
         .map_err(|e| format!("opening GITHUB_OUTPUT `{output}`: {e}"))?;
-    writeln!(f, "relevant={}", decision.relevant())
+    f.write_all(format!("relevant={}\n", decision.relevant()).as_bytes())
         .map_err(|e| format!("writing GITHUB_OUTPUT `{output}`: {e}"))?;
     Ok(decision)
 }
