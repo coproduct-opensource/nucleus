@@ -176,6 +176,36 @@ fn an_eval_cell_runs_the_vmm_under_the_default_seccomp_filter_only() {
     assert_eq!(admit(&pod, &node, None), Ok(IsolationProfile::EvalCell));
 }
 
+/// The audit uploader's credential is the one bearer credential the workload API
+/// serves a guest (`FETCH_AUDIT_CREDENTIALS`), and guest root holds whatever the
+/// guest is served. An eval cell naming an audit sink is refused by the sink's
+/// name; the same spec as a standard pod is admitted, and an eval cell without a
+/// sink is admitted, so the refusal is the sink's under this profile alone.
+#[test]
+fn an_eval_cell_is_never_served_an_audit_uploader_credential() {
+    let fc = DriverKind::Firecracker;
+    let node = holding(&fc);
+    let sink = r#","audit_sink":{"sink":"trail","prefix":"run-7"}"#;
+    assert_eq!(
+        admit(&eval_cell(sink), &node, None),
+        Err(EvalCellRefused::GuestHeldAuditCredential {
+            sink: "trail".into()
+        })
+    );
+    let msg = admit(&eval_cell(sink), &node, None)
+        .expect_err("refused")
+        .to_string();
+    assert!(msg.contains("audit_sink.sink `trail`"), "{msg}");
+    assert_eq!(
+        admit(&standard(sink), &node, None),
+        Ok(IsolationProfile::Standard)
+    );
+    assert_eq!(
+        admit(&eval_cell(""), &node, None),
+        Ok(IsolationProfile::EvalCell)
+    );
+}
+
 /// Egress is what the cell lists, one host at a time. A range — public or
 /// private — is refused naming the entry; the same entry is admitted for a
 /// standard pod, and a single host is admitted for an eval cell.

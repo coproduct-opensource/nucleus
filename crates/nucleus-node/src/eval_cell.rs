@@ -118,6 +118,14 @@ pub(crate) enum EvalCellRefused {
          (ADR 0013)"
     )]
     UnlistedEgress { capability: &'static str },
+    /// The spec names an audit sink, whose uploader credential the guest would hold.
+    #[error(
+        "the eval-cell profile is refused: audit_sink.sink `{sink}` is shipped by the tool-proxy \
+         in the guest, so the cloud credential it writes with would be served to a guest whose \
+         root is assumed hostile, and it signs from anywhere until it expires. An eval cell's \
+         receipts reach the host over SHIP_RECEIPT instead; remove audit_sink (ADR 0013)"
+    )]
+    GuestHeldAuditCredential { sink: String },
     /// The policy could not be resolved, so its network capabilities could not be read.
     #[error("the eval-cell profile is refused: the policy does not resolve ({0})")]
     Policy(String),
@@ -221,6 +229,18 @@ fn admit_eval_cell(spec: &PodSpec, node: &NodePosture<'_>) -> Result<(), EvalCel
     }
     if !host_spec.is_required() {
         return Err(EvalCellRefused::CredentialDelivery);
+    }
+    // The one third-party credential the workload API serves a guest: the audit uploader's cloud
+    // key (`FETCH_AUDIT_CREDENTIALS`). Served once, it is still served, and guest root holds what
+    // the guest holds. The rest of what that API serves is public, or the pod's own identity, or
+    // a capability spent only at this pod's host-side broker, which decides and holds the
+    // credential (ADR 0013's credential-theft row lists each). Refused here, in the one decider,
+    // before anything is minted (ADR 0007 G-1), rather than withheld at the socket after the
+    // pod has booted expecting it.
+    if let Some(audit) = &spec.spec.audit_sink {
+        return Err(EvalCellRefused::GuestHeldAuditCredential {
+            sink: audit.sink.clone(),
+        });
     }
     match &spec.spec.seccomp {
         None | Some(nucleus_spec::SeccompSpec::Default) => {}
