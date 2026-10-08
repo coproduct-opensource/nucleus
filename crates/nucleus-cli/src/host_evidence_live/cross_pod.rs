@@ -50,10 +50,7 @@ enum Reported {
 
 /// Parse the last probe sentinel from a pod's console log.
 fn reported(log: &str) -> Option<Reported> {
-    let last = log
-        .lines()
-        .filter(|l| l.contains(PASS) || l.contains(FAIL))
-        .next_back()?;
+    let last = log.lines().rfind(|l| l.contains(PASS) || l.contains(FAIL))?;
     if let Some((_, ids)) = last.split_once(PASS) {
         let ids = ids
             .trim()
