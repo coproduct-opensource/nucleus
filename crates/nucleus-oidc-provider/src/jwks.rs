@@ -1,7 +1,8 @@
 //! `GET /jwks.json` — RFC 7517 verify-set publication.
 //!
 //! Conformance:
-//! - Body shape per RFC 7517 §5; OKP key entries per RFC 8037 §2.
+//! - Body shape per RFC 7517 §5; OKP key entries per RFC 8037 §2, EC
+//!   (P-256) entries per RFC 7518 §6.2 — whichever the key store signs with.
 //! - `Content-Type: application/jwk-set+json` per RFC 7517 §8.5.1.
 //! - `Cache-Control: public, max-age=300, must-revalidate` matches
 //!   the 5-minute polling cadence major IdPs (Auth0, Confluent Cloud)
@@ -28,11 +29,11 @@ use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::error::OidcApiError;
-use crate::keystore::VerifyKey;
+use crate::keystore::{PublicKey, SigningAlg, VerifyKey};
 
-/// One key in a JWK Set per RFC 7517 + RFC 8037.
+/// One Ed25519 key in a JWK Set per RFC 7517 + RFC 8037.
 #[derive(Debug, Serialize)]
-struct JwkEntry {
+struct OkpJwk {
     kty: &'static str,
     crv: &'static str,
     kid: String,
@@ -42,20 +43,31 @@ struct JwkEntry {
     use_: &'static str,
 }
 
+/// One entry of the set: an OKP key, or a P-256 key exactly as the keyring
+/// computed it (`kty`, `crv`, `x`, `y`, `kid`, `alg`, `use`).
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum JwkEntry {
+    Okp(OkpJwk),
+    Ec(nucleus_federation::PublicJwk),
+}
+
 #[derive(Debug, Serialize)]
 struct JwkSet {
     keys: Vec<JwkEntry>,
 }
 
 fn verify_key_to_jwk(vk: &VerifyKey) -> JwkEntry {
-    let x = URL_SAFE_NO_PAD.encode(vk.verifying_key.as_bytes());
-    JwkEntry {
-        kty: "OKP",
-        crv: "Ed25519",
-        kid: vk.kid.clone(),
-        x,
-        alg: "EdDSA",
-        use_: "sig",
+    match &vk.public {
+        PublicKey::Ed25519(key) => JwkEntry::Okp(OkpJwk {
+            kty: "OKP",
+            crv: "Ed25519",
+            kid: vk.kid.clone(),
+            x: URL_SAFE_NO_PAD.encode(key.as_bytes()),
+            alg: SigningAlg::EdDsa.jose_name(),
+            use_: "sig",
+        }),
+        PublicKey::P256(jwk) => JwkEntry::Ec(jwk.clone()),
     }
 }
 
@@ -169,6 +181,7 @@ mod tests {
             .unwrap(),
         );
         crate::app::build_app(AppState {
+            outside_issuers: std::sync::Arc::new(crate::outside::OutsideIssuers::empty()),
             keystore: store,
             issuer_url: Arc::from(issuer_url.as_str()),
             issuer,

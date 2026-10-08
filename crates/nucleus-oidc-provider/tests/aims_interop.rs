@@ -86,6 +86,7 @@ fn kat2_minted_access_token_carries_typ_at_jwt() {
             act: None,
             kind: None,
             effects: None,
+            not_after: u64::MAX,
         })
         .unwrap();
 

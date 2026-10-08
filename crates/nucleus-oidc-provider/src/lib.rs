@@ -41,6 +41,7 @@
 //! | `token` | `/oauth/token` (RFC 8693 token-exchange) |
 //! | `error` | `OidcApiError` → RFC 6749 / 8693 error responses |
 //! | `federation` | trusted-issuer registry + dispatch |
+//! | `outside` | outside issuers' tokens, exchanged as one configured SPIFFE ID |
 //! | `keystore` | `JwtKeyStore` trait + backends (task #33) |
 //! | `spire` | SPIRE Workload API bundle client (task #45) |
 
@@ -51,6 +52,7 @@ pub mod federation;
 pub mod issuer;
 pub mod jwks;
 pub mod keystore;
+pub mod outside;
 pub mod routes;
 pub mod spire;
 pub mod token;
@@ -64,8 +66,10 @@ pub use app::{AppState, build_app};
 pub use error::OidcApiError;
 pub use federation::{
     Decision, DenyReason, FederationError, FederationRegistry, FederationRule, FederationRules,
+    OutsideIssuerBinding, OutsideJwks,
 };
 pub use issuer::{
     AccessTokenClaims, BoundaryKind, BoundarySvidRequest, DelegatedActor, JwtIssuer,
     JwtIssuerError, MintRequest, MintedBoundarySvid,
 };
+pub use outside::OutsideIssuers;
