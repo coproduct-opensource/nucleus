@@ -26,9 +26,20 @@ fn every_crate_scans_and_the_escapes_are_the_known_set() {
     let mut untracked_targets: Vec<String> = Vec::new();
     let mut detail: Vec<String> = Vec::new();
 
+    // One lexer for every crate, as `cargo xtask test-shards` holds one, and each answer held to
+    // a fresh scan's: the cache is keyed by file, and this is the whole workspace's evidence that
+    // nothing closure-dependent leaked into it.
+    let mut lexer = escapes::Lexer::new(root);
     for name in ws.closures.keys() {
-        let scan = escapes::scan(&ws, root, &tracked, name)
+        let scan = lexer
+            .scan(&ws, &tracked, name)
             .unwrap_or_else(|e| panic!("scanning {name}: {e:#}"));
+        let fresh = escapes::scan(&ws, root, &tracked, name)
+            .unwrap_or_else(|e| panic!("scanning {name} afresh: {e:#}"));
+        assert_eq!(
+            scan, fresh,
+            "{name}: a shared lexer answered differently from a fresh scan"
+        );
         if !scan.escapes.is_empty() {
             escaping_crates.push(name.clone());
             total_escapes += scan.escapes.len();
