@@ -588,6 +588,25 @@ jobs:
           done
           echo "in-guest adversary: CONTAINED present, BREACH absent, control live, all stages attempted"
 
+      # ONE verdict for the escape lane (eval cell M2, ADR 0013). The three checks above read
+      # each probe's sentinel separately; this reads the same guest logs and writes
+      # escape-lane.json -- every probe stage CONTAINED, BREACH or INCONCLUSIVE, with the commit,
+      # guest release and node build. It passes only with >= 1 stage, 0 BREACH and 0
+      # INCONCLUSIVE, and no guest log is a failure. It runs even when a check above failed, so a
+      # red boot still publishes what it measured; its own failure fails the job.
+      - name: Escape lane verdict (every probe stage CONTAINED)
+        if: ${{ !cancelled() && steps.relevance.outputs.relevant == 'true' }}
+        run: cargo xtask escape-lane --sudo --out escape-lane.json
+
+      - name: Upload the escape lane verdict
+        if: ${{ !cancelled() && steps.relevance.outputs.relevant == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: escape-lane-x86_64
+          path: escape-lane.json
+          retention-days: 30
+          if-no-files-found: error
+
       - name: Load bridge filtering for the host-evidence pod network
         if: steps.relevance.outputs.relevant == 'true'
         run: sudo modprobe br_netfilter

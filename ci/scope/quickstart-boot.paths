@@ -38,3 +38,4 @@ examples/openclaw-demo/probe-pod.yaml
 # The xtask gates the boot job runs on the live guest.
 crates/xtask/src/host_evidence_live.rs
 crates/xtask/src/live_boot_evidence/**
+crates/xtask/src/escape_lane.rs
