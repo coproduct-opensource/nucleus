@@ -642,7 +642,7 @@ fn racing_requests_for_a_one_shot_serve_exactly_one() {
             dlc_admission: true,
             pod_certificate: true,
             task_token: true,
-                receipts: false,
+            receipts: false,
         };
         let material = Arc::new(material_for(all, dir.path()));
         let manager =

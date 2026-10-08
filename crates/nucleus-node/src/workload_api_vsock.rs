@@ -1636,15 +1636,9 @@ mod tests {
             }),
             ..PodMaterial::default()
         };
-        let bridge = WorkloadApiVsockBridge::start(
-            &vsock_uds_path,
-            pod,
-            manager,
-            material,
-            None,
-        )
-        .await
-        .unwrap();
+        let bridge = WorkloadApiVsockBridge::start(&vsock_uds_path, pod, manager, material, None)
+            .await
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         async fn ask(socket: &std::path::Path, command: &str) -> String {
