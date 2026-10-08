@@ -378,7 +378,8 @@ pub(crate) fn grpc_caller(
         .get::<crate::auth::AuthContext>()
         .ok_or_else(|| tonic::Status::unauthenticated("no authenticated peer"))?;
     let token_pod =
-        crate::pod_caller_identity::identify_from_metadata(state.caller_secret.as_ref(), md).ok();
+        crate::pod_caller_identity::identify_from_metadata(state.caller_secret.as_ref(), md)
+            .map_err(|refused| tonic::Status::unauthenticated(refused.to_string()))?;
     state
         .authz_policy
         .caller_scope(token_pod, &ctx.spiffe_id)

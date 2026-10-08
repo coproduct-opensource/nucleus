@@ -392,3 +392,98 @@ async fn a_lockdown_without_a_verified_peer_is_refused() {
     assert!(r.is_err(), "no peer, no lockdown");
     assert!(broadcast.try_recv().is_err(), "and nothing was broadcast");
 }
+
+/// Headers carrying pod `claimed`'s id with `token`, as a caller presenting it.
+fn claim_headers(claimed: Uuid, token: &str) -> tonic::metadata::MetadataMap {
+    let mut md = tonic::metadata::MetadataMap::new();
+    md.insert(
+        nucleus_client::HEADER_POD_ID,
+        claimed.to_string().parse().unwrap(),
+    );
+    md.insert(nucleus_client::HEADER_POD_TOKEN, token.parse().unwrap());
+    md
+}
+
+/// **A bad caller token is refused by name, never served as the peer's own
+/// scope.** Pod B presents B's genuine token for pod A. An operator presents a
+/// garbage token. A pod presents half a pair. Every case is 401 over HTTP and
+/// `UNAUTHENTICATED` over gRPC. On
+/// main before this change, each fell back to the peer's own scope: B listed
+/// B's lineage, and the operator listed everything.
+#[tokio::test]
+async fn a_caller_token_that_does_not_verify_is_refused_not_fallen_back() {
+    use axum::response::IntoResponse;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let a = register(&st, None).await;
+    let b = register(&st, None).await;
+    let b_token = crate::pod_caller_identity::derive_token(st.caller_secret.as_ref(), b);
+    let operator = "spiffe://nucleus.local/ns/default/sa/orchestrator";
+    let b_svid = pod_svid(b);
+
+    let cases: Vec<(&str, tonic::metadata::MetadataMap)> = vec![
+        (b_svid.as_str(), claim_headers(a, &b_token)),
+        (operator, claim_headers(a, "deadbeef")),
+        (b_svid.as_str(), {
+            let mut md = tonic::metadata::MetadataMap::new();
+            md.insert(
+                nucleus_client::HEADER_POD_ID,
+                a.to_string().parse().unwrap(),
+            );
+            md
+        }),
+    ];
+    for (peer, md) in cases {
+        // gRPC: the listing.
+        let mut r = req(proto::Empty {}, Some(peer), None);
+        *r.metadata_mut() = md.clone();
+        let got = svc(&st).list_pods(r).await;
+        let status = got.err().unwrap_or_else(|| {
+            panic!("peer {peer} with a bad claim was served a listing (fallback)")
+        });
+        assert_eq!(status.code(), tonic::Code::Unauthenticated, "{peer}");
+        assert!(
+            status.message().contains("caller token refused"),
+            "{peer}: the refusal must name its reason: {}",
+            status.message()
+        );
+
+        // HTTP: the same headers through the middleware's resolver, rendered.
+        let headers = md.clone().into_headers();
+        let ctx = crate::auth::AuthContext::from_spiffe(peer.to_string());
+        let err = crate::auth::resolve_http_caller(&st, &ctx, &headers)
+            .expect_err("a bad claim over HTTP must be refused");
+        assert!(
+            matches!(err, crate::ApiError::CallerToken(_)),
+            "{peer}: {err:?}"
+        );
+        assert_eq!(
+            err.into_response().status(),
+            axum::http::StatusCode::UNAUTHORIZED
+        );
+    }
+    cancel_all(&st).await;
+}
+
+/// The positive control: B's own genuine pair still identifies B, and no pair
+/// at all still resolves to the peer's own scope. The refusal is for a failed
+/// claim, not for every claim.
+#[tokio::test]
+async fn a_genuine_pair_and_no_pair_still_resolve() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let st = state(&dir);
+    let b = register(&st, None).await;
+    let b_token = crate::pod_caller_identity::derive_token(st.caller_secret.as_ref(), b);
+    let ctx = crate::auth::AuthContext::from_spiffe(pod_svid(b));
+    let genuine = claim_headers(b, &b_token).into_headers();
+    assert_eq!(
+        crate::auth::resolve_http_caller(&st, &ctx, &genuine).expect("genuine pair"),
+        crate::auth::CallerScope::Pod(b)
+    );
+    let none = axum::http::HeaderMap::new();
+    assert_eq!(
+        crate::auth::resolve_http_caller(&st, &ctx, &none).expect("no pair"),
+        crate::auth::CallerScope::Pod(b)
+    );
+    cancel_all(&st).await;
+}
