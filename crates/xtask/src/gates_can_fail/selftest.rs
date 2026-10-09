@@ -46,16 +46,7 @@ pub fn run(root: &Path, idx: &Index) -> bool {
     };
 
     let gates: BTreeSet<&str> = table::probed_shell_gates();
-    let subs: BTreeSet<&str> = probes
-        .iter()
-        .filter_map(|p| match p.family {
-            Family::Script { .. } => None,
-            Family::Xtask { sub }
-            | Family::XtaskFlagged { sub, .. }
-            | Family::XtaskPartial { sub, .. }
-            | Family::XtaskGenerated { sub, .. } => Some(sub),
-        })
-        .collect();
+    let subs: BTreeSet<&str> = probes.iter().filter_map(|p| p.family.xtask_sub()).collect();
     if gates.len() < 10 || subs.len() < 5 {
         println!(
             "  FAIL  self-test: read too few probes from the table; the fixtures would be vacuous"

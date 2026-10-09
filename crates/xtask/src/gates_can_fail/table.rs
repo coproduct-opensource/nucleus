@@ -36,6 +36,31 @@ pub enum Family {
         ci_flags: &'static str,
         generated: &'static [Generated],
     },
+    /// `xtask scorecard`, probed bare like [`Family::Xtask`], with ONE family of its card as the
+    /// subject: the perturbation injects an undischarged site of that family's shape, and the red
+    /// must carry that family's own `Fell` line (`scorecard::fell_marker`). Exit status alone
+    /// cannot tell "this family fell" from "some other family's census bailed".
+    ///
+    /// Every family on the card needs one of these, and a family pinned at 0% is a named failure
+    /// rather than a vacuous probe: nothing undischarged can lower a zero floor.
+    Scorecard { family: &'static str },
+}
+
+/// The subcommand `xtask scorecard` probes run.
+pub const SCORECARD_SUB: &str = "scorecard";
+
+impl Family {
+    /// The `cargo xtask` subcommand this family runs, or `None` for a shell gate.
+    pub fn xtask_sub(&self) -> Option<&'static str> {
+        match self {
+            Family::Script { .. } => None,
+            Family::Xtask { sub }
+            | Family::XtaskFlagged { sub, .. }
+            | Family::XtaskPartial { sub, .. }
+            | Family::XtaskGenerated { sub, .. } => Some(sub),
+            Family::Scorecard { .. } => Some(SCORECARD_SUB),
+        }
+    }
 }
 
 /// One generated input: the name CI uses, a temp-file name for the probe's copy, and the
@@ -121,40 +146,51 @@ pub fn probes() -> Vec<Probe> {
             desc: "one more witness accepted and dropped",
             perturb: pert!(perturb_bound_dropped_witness),
         },
-        // A floor with slack under it has already stopped gating (ADR 0007 I-1). Deliberately
-        // NOT a dropped witness: that reds through `bound`'s INERT_TOTAL cross-check, an error
-        // rather than the scorecard's own decision procedure.
+        // THE SCORECARD: one injected undischarged site per family, each required to red with
+        // that family's own fall. NOT headroom: the probe that added discharged sites until the
+        // `bound` pin went slack was vacuous the day `bound` reached 100% (#3361), the terminal
+        // state where the pin is an exact invariant and nothing can rise above it.
         Probe {
-            family: xtask("scorecard"),
-            target: "crates/nucleus-tool-proxy/src/run_gate.rs",
-            desc: "a family's pin gone slack under it",
-            perturb: pert!(perturb_scorecard_slack),
+            family: Family::Scorecard { family: "bound" },
+            target: p::SCORECARD_BOUND_TARGET,
+            desc: "a witness accepted, dropped, and recorded as debt",
+            perturb: pert!(perturb_scorecard_bound_undischarged),
         },
         Probe {
-            family: xtask("scorecard"),
+            family: Family::Scorecard { family: "alg" },
             target: "crates/nucleus-tool-proxy/src/pod_mgmt.rs",
             desc: "a law the tree declares and nothing discharges",
             perturb: pert!(perturb_scorecard_undischarged_law),
         },
         Probe {
-            family: xtask("scorecard"),
+            family: Family::Scorecard { family: "tot" },
             target: "crates/nucleus-pca/src/lib.rs",
             desc: "a crate's totality declaration losing one of its seven lints",
             perturb: pert!(perturb_scorecard_partial_totality),
         },
-        // `life` is pinned at a MEASURED zero; the slack check turns the first discharge into a
-        // red demanding the pin be raised.
         Probe {
-            family: xtask("scorecard"),
+            family: Family::Scorecard { family: "life" },
             target: "crates/nucleus-node/src/broker_launch.rs",
-            desc: "the first affine right to gain a validity interval",
-            perturb: pert!(perturb_scorecard_first_expiry),
+            desc: "an affine right with no validity interval",
+            perturb: pert!(perturb_scorecard_life_undischarged),
         },
         Probe {
-            family: xtask("scorecard"),
+            family: Family::Scorecard { family: "typed" },
+            target: "crates/nucleus-ifc-kernel/src/flow.rs",
+            desc: "a kind of data the flow graph tracks and no type lifts",
+            perturb: pert!(perturb_scorecard_typed_undischarged),
+        },
+        Probe {
+            family: Family::Scorecard { family: "suppress" },
             target: "crates/nucleus-tool-proxy/src/art12.rs",
             desc: "a waiver that expires downgraded to one that never does",
             perturb: pert!(perturb_scorecard_forever_waiver),
+        },
+        Probe {
+            family: Family::Scorecard { family: "mediate" },
+            target: "crates/nucleus-tool-proxy/src/main.rs",
+            desc: "an agent-reachable route whose handler decides nothing",
+            perturb: pert!(perturb_scorecard_mediate_undischarged),
         },
         Probe {
             family: xtask("assurance-required"),

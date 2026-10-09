@@ -507,13 +507,25 @@ impl std::fmt::Display for Finding {
                 family,
                 found_bp,
                 floor_bp,
-            } => write!(
-                f,
-                "{family} fell to {} against a floor of {}: an obligation the tree declares \
-                 stopped being discharged.",
-                pct(*found_bp),
-                pct(*floor_bp)
-            ),
+            } => {
+                write!(
+                    f,
+                    "{} {} against a floor of {}: an obligation the tree declares stopped being \
+                     discharged.",
+                    fell_marker(family),
+                    pct(*found_bp),
+                    pct(*floor_bp)
+                )?;
+                if *floor_bp == TERMINAL_BP {
+                    write!(
+                        f,
+                        " {family} is pinned at 100%, the terminal state: the floor is an exact \
+                         invariant that every site is discharged, so any undischarged site is \
+                         this red."
+                    )?;
+                }
+                Ok(())
+            }
             Self::Shrank {
                 family,
                 found,
@@ -559,6 +571,23 @@ impl std::fmt::Display for Finding {
             ),
         }
     }
+}
+
+/// A family whose every declared site is discharged.
+///
+/// 100% is a terminal state, not an edge of the range: `floor_bp = 10000` admits exactly one
+/// ratio, so the pin is an exact invariant ("every site is discharged") rather than a floor with
+/// room under it. The `Slack` check can never fire there -- nothing is above 100% -- so a
+/// falsifier that relies on headroom (adding discharged sites until the pin goes slack) is
+/// vacuous at this value. The perturbation that reds a family at ANY nonzero floor is an
+/// injected undischarged site, and `gates-can-fail` uses one for every family on the card.
+pub const TERMINAL_BP: u32 = 10_000;
+
+/// How a [`Finding::Fell`] line for `family` begins, so a harness can tell that the gate went
+/// red for THIS family's fall rather than for anything else it checks. Derived here, beside the
+/// `Display` that prints it, never restated (ADR 0007 F).
+pub fn fell_marker(family: &str) -> String {
+    format!("{family} fell to")
 }
 
 /// Compare the measured card against the ratchet. Pure and total.
@@ -1387,6 +1416,48 @@ population_floor = 250
             m.contains("alg") && m.contains("39.28%") && m.contains("39.56%"),
             "{m}"
         );
+    }
+
+    #[test]
+    fn a_fall_from_the_terminal_state_says_the_pin_is_exact() {
+        let m = Finding::Fell {
+            family: "bound".into(),
+            found_bp: 9_949,
+            floor_bp: TERMINAL_BP,
+        }
+        .to_string();
+        assert!(m.starts_with(&fell_marker("bound")), "{m}");
+        assert!(m.contains("terminal state"), "{m}");
+        let below = Finding::Fell {
+            family: "bound".into(),
+            found_bp: 9_900,
+            floor_bp: 9_950,
+        }
+        .to_string();
+        assert!(below.starts_with(&fell_marker("bound")), "{below}");
+        assert!(!below.contains("terminal state"), "{below}");
+    }
+
+    /// At 100% the pin admits one ratio: one undischarged site is a fall at any population,
+    /// because integer basis points truncate 9999.x down.
+    #[test]
+    fn at_the_terminal_state_one_undischarged_site_is_a_fall() {
+        let pins = BTreeMap::from([(
+            "bound".to_string(),
+            Pin {
+                floor_bp: TERMINAL_BP,
+                population_floor: 198,
+                measured_zero: false,
+                provenance: FloorProvenance::Measurement,
+            },
+        )]);
+        assert!(decide(&pins, &[("bound".to_string(), c(198, 198))]).is_empty());
+        for population in [199, 10_000, 1_000_000] {
+            assert!(matches!(
+                decide(&pins, &[("bound".to_string(), c(population, population - 1))]).as_slice(),
+                [Finding::Fell { .. }]
+            ));
+        }
     }
 
     #[test]

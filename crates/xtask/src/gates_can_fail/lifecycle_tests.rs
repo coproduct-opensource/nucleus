@@ -121,6 +121,7 @@ fn defect(_: &Path, _: &str) -> perturb::Perturbed {
     perturb::Perturbed {
         text: "red\n".into(),
         complaint: None,
+        also: Vec::new(),
     }
 }
 
@@ -128,6 +129,7 @@ fn noop(_: &Path, text: &str) -> perturb::Perturbed {
     perturb::Perturbed {
         text: text.into(),
         complaint: None,
+        also: Vec::new(),
     }
 }
 
@@ -292,6 +294,7 @@ fn every_probe_family_refuses_absent_ci_wiring_before_touching_the_subject() {
             ci_flags: "--input generated",
             generated: &[],
         },
+        Family::Scorecard { family: "bound" },
     ] {
         let mut probe = fixture_probe(defect);
         probe.family = family;

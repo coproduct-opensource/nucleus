@@ -24,6 +24,9 @@ pub const SOURCE: &str = include_str!("perturb.rs");
 pub struct Perturbed {
     pub text: String,
     pub complaint: Option<String>,
+    /// Further files the same defect edits, as `(repo-relative path, new text)`. Empty for all
+    /// but the defects that are two edits at once; the harness restores each with the target.
+    pub also: Vec<(&'static str, String)>,
 }
 
 pub type PerturbFn = fn(&Path, &str) -> Perturbed;
@@ -33,6 +36,7 @@ fn ok(text: String) -> Perturbed {
     Perturbed {
         text,
         complaint: None,
+        also: Vec::new(),
     }
 }
 
@@ -40,6 +44,7 @@ fn moved(text: String, why: &str) -> Perturbed {
     Perturbed {
         text,
         complaint: Some(why.to_string()),
+        also: Vec::new(),
     }
 }
 
@@ -712,54 +717,107 @@ pub fn perturb_bound_dropped_witness(_: &Path, t: &str) -> Perturbed {
     ))
 }
 
-/// The perturbation SCALES WITH THE FAMILY: k witnesses take d/p to (d+k)/(p+k), and crossing
-/// one basis point needs k >= ((F+1)p - 10000d) / (9999-F). F and p are read from the pin in
-/// `.scorecard-ratchet.toml`, and d is what a tight pin implies, ceil(F*p/10000).
-pub fn perturb_scorecard_slack(root: &Path, t: &str) -> Perturbed {
-    let pin = fs::read_to_string(root.join(".scorecard-ratchet.toml")).unwrap_or_default();
-    let k = slack_witnesses(&pin);
-    let mut out = t.to_string();
-    for i in 0..k {
-        out.push_str(&format!(
-            "fn _gate_of_gates_scorecard_{i}(authority: {WITNESS}) {{}}\n"
-        ));
+// ── The scorecard: one injected undischarged site per family ─────────────────────────────────
+//
+// Every family on the card is probed the same way: one site of THAT family's shape, left
+// undischarged, and the gate must red with that family's own `Fell` line. It works at any
+// nonzero floor and, unlike headroom-based slack, at 100% -- the terminal state, where the pin
+// is an exact invariant and an injected discharged site changes nothing (#3361).
+
+/// Where the `bound` injection's dropped witness is written; its manifest row names this file.
+pub const SCORECARD_BOUND_TARGET: &str = "crates/nucleus-tool-proxy/src/run_gate.rs";
+
+/// The inert-authority manifest, which records every dropped witness.
+const INERT_MANIFEST: &str = "scripts/inert-authority-manifest.txt";
+
+/// `bound`: a witness accepted and DROPPED, and recorded in the manifest as class-`D` debt with
+/// `INERT_TOTAL` raised -- exactly what the census's own error tells an author to do. Both edits
+/// or neither: the site alone reds through the census's `INERT_TOTAL` cross-check, an error
+/// rather than the scorecard's decision, which is why this is the one two-file injection.
+pub fn perturb_scorecard_bound_undischarged(root: &Path, t: &str) -> Perturbed {
+    let site = append(
+        t,
+        &[&format!(
+            "fn _gate_of_gates_undischarged(_authority: {WITNESS}) {{}}"
+        )],
+    );
+    let manifest = match fs::read_to_string(root.join(INERT_MANIFEST)) {
+        Ok(m) => m,
+        Err(e) => return moved(site, &format!("{INERT_MANIFEST} could not be read: {e}")),
+    };
+    match record_debt(&manifest, SCORECARD_BOUND_TARGET) {
+        Some(m) => Perturbed {
+            text: site,
+            complaint: None,
+            also: vec![(INERT_MANIFEST, m)],
+        },
+        None => moved(
+            site,
+            &format!(
+                "{INERT_MANIFEST} has no `INERT_TOTAL=<n>` line to raise;\n         this \
+                 perturbation no longer applies and must be updated."
+            ),
+        ),
     }
-    ok(out)
 }
 
-/// awk's `a[2] + 0` for the integers this file pins: the leading digits after `=`, or 0.
-fn awk_number(s: &str) -> i64 {
-    let s = s.trim_start();
-    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-    s[..end].parse().unwrap_or(0)
+/// The manifest with one class-`D` row for `file` and `INERT_TOTAL` one higher, or `None` when
+/// there is no pin to raise.
+fn record_debt(manifest: &str, file: &str) -> Option<String> {
+    let mut out = String::with_capacity(manifest.len() + 128);
+    let mut raised = false;
+    for line in manifest.split_inclusive('\n') {
+        let pinned = line
+            .trim()
+            .strip_prefix("INERT_TOTAL=")
+            .and_then(|n| n.trim().parse::<usize>().ok());
+        match pinned {
+            Some(n) if !raised => {
+                out.push_str(&format!(
+                    "D | {file} | <free> | 1 | gate-of-gates: one witness accepted and dropped\n"
+                ));
+                out.push_str(&format!("INERT_TOTAL={}\n", n.saturating_add(1)));
+                raised = true;
+            }
+            _ => out.push_str(line),
+        }
+    }
+    raised.then_some(out)
 }
 
-fn slack_witnesses(pin: &str) -> i64 {
-    let (mut f, mut p) = (0_i64, 0_i64);
-    let mut in_bound = false;
-    for line in pin.lines() {
-        if line.starts_with("[family.bound]") {
-            in_bound = true;
-            continue;
-        }
-        if line.starts_with('[') {
-            in_bound = false;
-        }
-        if in_bound && line.starts_with("floor_bp") {
-            f = awk_number(line.split('=').nth(1).unwrap_or(""));
-        }
-        if in_bound && line.starts_with("population_floor") {
-            p = awk_number(line.split('=').nth(1).unwrap_or(""));
-        }
-    }
-    if f <= 0 || p <= 0 || f >= 9999 {
-        return 1;
-    }
-    let d = (f * p + 9999) / 10000;
-    let need = (f + 1) * p - 10000 * d;
-    let den = 9999 - f;
-    let k = if need <= 0 { 1 } else { (need + den - 1) / den };
-    k.max(1)
+/// `life`: one more affine right -- `#[must_use]`, not `Clone` -- carrying no validity interval.
+pub fn perturb_scorecard_life_undischarged(_: &Path, t: &str) -> Perturbed {
+    ok(append(
+        t,
+        &[
+            concat!("#[must", "_use]"),
+            "pub struct GateOfGatesUnboundedRight {",
+            "    pub act: u8,",
+            "}",
+        ],
+    ))
+}
+
+/// `typed`: one more kind of data the flow graph tracks, with no `LIFTED_TO_TYPES` row.
+pub fn perturb_scorecard_typed_undischarged(_: &Path, t: &str) -> Perturbed {
+    ok(sed_s(
+        t,
+        r"^pub enum NodeKind \{$",
+        "pub enum NodeKind {\n    GateOfGatesUnlifted,",
+    ))
+}
+
+/// `mediate`: one more agent-reachable route whose handler decides nothing.
+pub fn perturb_scorecard_mediate_undischarged(_: &Path, t: &str) -> Perturbed {
+    ok(append(
+        t,
+        &[
+            "fn _gate_of_gates_router(r: Router) -> Router {",
+            "    r.route(\"/v1/gate-of-gates-unmediated\", post(_gate_of_gates_unmediated))",
+            "}",
+            "async fn _gate_of_gates_unmediated() {}",
+        ],
+    ))
 }
 
 pub fn perturb_scorecard_undischarged_law(_: &Path, t: &str) -> Perturbed {
@@ -778,14 +836,6 @@ pub fn perturb_scorecard_partial_totality(_: &Path, t: &str) -> Perturbed {
 
 pub fn perturb_scorecard_forever_waiver(_: &Path, t: &str) -> Perturbed {
     ok(sed_s(t, r"^    #\[expect\($", concat!("    #[al", "low(")))
-}
-
-pub fn perturb_scorecard_first_expiry(_: &Path, t: &str) -> Perturbed {
-    ok(sed_s(
-        t,
-        r"^pub struct ServeToken \{$",
-        concat!("pub struct Serve", "Token {\n    expires_at: u64,"),
-    ))
 }
 
 pub fn perturb_econ_boundary_reach(_: &Path, t: &str) -> Perturbed {
@@ -821,15 +871,43 @@ mod tests {
         );
     }
 
+    /// The `bound` injection's manifest edit is one class-`D` row and a pin one higher, and the
+    /// result still parses: a manifest the parser rejects would red the gate for that, not for
+    /// the fall under test.
     #[test]
-    fn the_slack_count_tracks_the_family() {
-        // 9941/172 asked for one witness; 9942/174 asks for two (the comment's own figures).
-        let pin = |f: u32, p: u32| {
-            format!("[family.bound]\nfloor_bp = {f}\npopulation_floor = {p}\n[family.x]\n")
-        };
-        assert_eq!(slack_witnesses(&pin(9941, 172)), 1);
-        assert_eq!(slack_witnesses(&pin(9942, 174)), 2);
-        assert_eq!(slack_witnesses(""), 1);
+    fn the_bound_injection_records_its_site_as_debt() {
+        let before = "WITNESS = [\n  \"Authority\",\n]\nN | a.rs | X | 2 | why\nINERT_TOTAL=2\n";
+        let after = record_debt(before, "b.rs").expect("there is a pin to raise");
+        let m = crate::inert_authority::parse(&after).expect("the perturbed manifest parses");
+        assert_eq!(m.inert_total, 3);
+        let debt: Vec<_> = m.rows.iter().filter(|r| r.class == 'D').collect();
+        assert_eq!(debt.len(), 1);
+        assert_eq!((debt[0].file.as_str(), debt[0].count), ("b.rs", 1));
+        assert_eq!(record_debt("WITNESS = [\n]\n", "b.rs"), None);
+    }
+
+    #[test]
+    fn the_bound_injection_names_its_manifest_and_drops_its_witness() {
+        let root = tempfile::tempdir().unwrap();
+        let scripts = root.path().join("scripts");
+        fs::create_dir(&scripts).unwrap();
+        fs::write(
+            root.path().join(INERT_MANIFEST),
+            "WITNESS = [\n  \"Authority\",\n]\nN | a.rs | X | 1 | why\nINERT_TOTAL=1\n",
+        )
+        .unwrap();
+        let got = perturb_scorecard_bound_undischarged(root.path(), "fn f() {}\n");
+        assert!(got.complaint.is_none());
+        assert!(got.text.contains(concat!("(_authority: Autho", "rity)")));
+        assert_eq!(got.also.len(), 1);
+        assert_eq!(got.also[0].0, INERT_MANIFEST);
+        assert!(got.also[0].1.contains("INERT_TOTAL=2"));
+
+        // No manifest: the site is still written, and the harness hears why the probe moved.
+        let empty = tempfile::tempdir().unwrap();
+        let got = perturb_scorecard_bound_undischarged(empty.path(), "fn f() {}\n");
+        assert!(got.complaint.is_some());
+        assert!(got.also.is_empty());
     }
 
     #[test]

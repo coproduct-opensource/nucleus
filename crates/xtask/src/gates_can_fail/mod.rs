@@ -378,6 +378,9 @@ impl Probe {
             Family::Xtask { sub }
             | Family::XtaskPartial { sub, .. }
             | Family::XtaskGenerated { sub, .. } => format!("xtask {sub} ({})", self.desc),
+            Family::Scorecard { family } => {
+                format!("xtask {} [{family}] ({})", table::SCORECARD_SUB, self.desc)
+            }
         }
     }
 
@@ -389,6 +392,7 @@ impl Probe {
             Family::Xtask { sub }
             | Family::XtaskPartial { sub, .. }
             | Family::XtaskGenerated { sub, .. } => format!("xtask {sub}"),
+            Family::Scorecard { family } => format!("xtask {} [{family}]", table::SCORECARD_SUB),
         }
     }
 
@@ -400,6 +404,7 @@ impl Probe {
                 (idx.script_inputs(&format!("scripts/{gate}")), *flags)
             }
             Family::Xtask { sub } | Family::XtaskPartial { sub, .. } => (idx.xtask_inputs(sub), ""),
+            Family::Scorecard { .. } => (idx.xtask_inputs(table::SCORECARD_SUB), ""),
             Family::XtaskFlagged { sub, flags } => (idx.xtask_inputs(sub), *flags),
             Family::XtaskGenerated { sub, ci_flags, .. } => (idx.xtask_inputs(sub), *ci_flags),
         };
@@ -639,6 +644,43 @@ impl Harness {
         (v, short)
     }
 
+    /// The preflight of a gate CI invokes as bare `cargo xtask <sub>`: CI parity and the target.
+    /// `None` when it failed (already reported) or this run already saw it.
+    fn xtask_bare(
+        &mut self,
+        sub: &'static str,
+        target: &str,
+    ) -> Option<(Invocation, String, Option<Expect>)> {
+        if self.seen(format!("<xtask {sub}>")) {
+            return None;
+        }
+        let inv = wiring::cmdsub(&wiring::xtask_invocations_joined(&self.root, sub));
+        if inv.is_empty() && !wiring::xtask_mentioned(&self.root, sub) {
+            self.fail(&[format!("  FAIL  xtask {sub} — no workflow invokes it")]);
+            return None;
+        }
+        if !inv.split('\n').any(str::is_empty) {
+            self.fail(&[
+                format!(
+                    "  FAIL  xtask {sub} — CI invokes it with flags ({})",
+                    inv.split('\n').next().unwrap_or("")
+                ),
+                "        but probe_xtask runs it bare. Probing a gate differently from CI".into(),
+                "        tests something CI does not run.".into(),
+            ]);
+            return None;
+        }
+        if !self.root.join(target).is_file() {
+            self.fail(&[format!("  ERROR: {target} does not exist")]);
+            return None;
+        }
+        Some((
+            xtask_inv(sub, "", &[]),
+            format!("  ok    xtask {sub}"),
+            None,
+        ))
+    }
+
     fn probe(&mut self, probe: &Probe) {
         if !self.scope_decide(probe) {
             return;
@@ -688,33 +730,25 @@ impl Harness {
                 };
                 (invocation, ok, None)
             }
-            Family::Xtask { sub } => {
-                if self.seen(format!("<xtask {sub}>")) {
-                    return;
+            Family::Xtask { sub } => match self.xtask_bare(sub, probe.target) {
+                Some(found) => found,
+                None => return,
+            },
+            Family::Scorecard { family } => {
+                if let Err(why) = scorecard_subject(&self.root, family) {
+                    return self.fail(&why);
                 }
-                let inv = wiring::cmdsub(&wiring::xtask_invocations_joined(&self.root, sub));
-                if inv.is_empty() && !wiring::xtask_mentioned(&self.root, sub) {
-                    return self.fail(&[format!("  FAIL  xtask {sub} — no workflow invokes it")]);
+                match self.xtask_bare(table::SCORECARD_SUB, probe.target) {
+                    Some((inv, dedup, _)) => (
+                        inv,
+                        dedup,
+                        Some(Expect {
+                            ci_flags: None,
+                            marker: crate::scorecard::fell_marker(family),
+                        }),
+                    ),
+                    None => return,
                 }
-                if !inv.split('\n').any(str::is_empty) {
-                    return self.fail(&[
-                        format!(
-                            "  FAIL  xtask {sub} — CI invokes it with flags ({})",
-                            inv.split('\n').next().unwrap_or("")
-                        ),
-                        "        but probe_xtask runs it bare. Probing a gate differently from CI"
-                            .into(),
-                        "        tests something CI does not run.".into(),
-                    ]);
-                }
-                if !self.root.join(probe.target).is_file() {
-                    return self.fail(&[format!("  ERROR: {} does not exist", probe.target)]);
-                }
-                (
-                    xtask_inv(sub, "", &[]),
-                    format!("  ok    xtask {sub}"),
-                    None,
-                )
             }
             Family::XtaskFlagged { sub, flags } => {
                 let inv = wiring::xtask_invocations(&self.root, sub);
@@ -764,7 +798,10 @@ impl Harness {
                 (
                     xtask_inv(sub, "", &[]),
                     format!("  ok    xtask {sub}"),
-                    Some((*ci_flags, *marker)),
+                    Some(Expect {
+                        ci_flags: Some(ci_flags),
+                        marker: (*marker).to_string(),
+                    }),
                 )
             }
             Family::XtaskGenerated {
@@ -860,7 +897,12 @@ impl Harness {
         if self.opts.mode != Mode::VacuityOnly {
             let rc = self.run_gate(&inv, None);
             if rc != 0 {
-                self.already_red(&name, rc, &inv.base, partial.map(|(f, _)| f));
+                self.already_red(
+                    &name,
+                    rc,
+                    &inv.base,
+                    partial.as_ref().and_then(|e| e.ci_flags),
+                );
                 return;
             }
         }
@@ -888,6 +930,21 @@ impl Harness {
                 return;
             }
             return self.fail(&[format!("  ERROR: could not write {}: {e}", probe.target)]);
+        }
+        // The defect's other edits, each owed back by the same guard. Registered before the
+        // write, so a write that half-lands is restored too.
+        for (rel, text) in &perturbed.also {
+            let path = self.root.join(rel);
+            let written = fs::read(&path).and_then(|was| {
+                guard.also(path.clone(), was);
+                fs::write(&path, text.as_bytes())
+            });
+            if let Err(e) = written {
+                if !self.restore(&mut guard) {
+                    return;
+                }
+                return self.fail(&[format!("  ERROR: could not perturb {rel}: {e}")]);
+            }
         }
 
         // Did the perturbation DO anything? One whose pattern no longer matches is a no-op, the
@@ -949,8 +1006,8 @@ impl Harness {
             }
             return self.fail(&lines);
         }
-        if let Some((_, marker)) = partial {
-            if !perturbed_out.contains(marker) {
+        if let Some(Expect { marker, .. }) = &partial {
+            if !perturbed_out.contains(marker.as_str()) {
                 return self.fail(&[
                     format!(
                         "  FAIL  {name} — {} red the gate, but not for the reason under test:",
@@ -972,7 +1029,7 @@ impl Harness {
                     "        Either the restore is broken or the gate fails on everything,".into(),
                     "        and a gate that always fails detects nothing either.".into(),
                 ],
-                Family::Xtask { .. } => vec![
+                Family::Xtask { .. } | Family::Scorecard { .. } => vec![
                     format!("  FAIL  {name} — green before, still failing (exit {restored_rc}) after restore:"),
                     "        the perturbation left something behind. The baseline was checked above,".into(),
                     "        so this is the restore and not a pre-existing red.".into(),
@@ -990,6 +1047,64 @@ impl Harness {
 
 fn split(flags: &str) -> Vec<String> {
     flags.split_whitespace().map(str::to_string).collect()
+}
+
+/// What a red must SAY to count: exit status alone cannot tell the property under test from the
+/// gate falling over on the way there.
+struct Expect {
+    /// The flags CI runs the gate with, when the probe runs it without them (`XtaskPartial`).
+    ci_flags: Option<&'static str>,
+    /// A string the perturbed run's output must contain.
+    marker: String,
+}
+
+/// Whether `family` can be a scorecard probe's subject on this tree: it is on the card, and its
+/// committed floor is above zero, so one injected undischarged site can lower the ratio below
+/// it. A family at 0% is the other terminal state -- nothing undischarged can fall below zero --
+/// and is a NAMED failure here, never a probe that runs and passes vacuously (ADR 0007 I-1).
+fn scorecard_subject(root: &Path, family: &str) -> Result<(), Vec<String>> {
+    use crate::scorecard::{self, Family as _};
+    let head = format!("  FAIL  xtask {} [{family}]", table::SCORECARD_SUB);
+    if !scorecard::families().iter().any(|f| f.name() == family) {
+        return Err(vec![format!(
+            "{head} — no family named {family} is on the card; this probe ranges over nothing."
+        )]);
+    }
+    let pins = fs::read_to_string(root.join(scorecard::RATCHET))
+        .map_err(|e| e.to_string())
+        .and_then(|t| scorecard::parse_ratchet(&t).map_err(|e| format!("{e:#}")))
+        .map_err(|e| vec![format!("{head} — {} could not be read: {e}", scorecard::RATCHET)])?;
+    match pins.get(family) {
+        None => Err(vec![format!(
+            "{head} — {} pins no [family.{family}]; the gate itself reports that.",
+            scorecard::RATCHET
+        )]),
+        Some(pin) if pin.floor_bp == 0 => Err(vec![
+            format!("{head} — pinned at 0%, so an injected undischarged site cannot lower it."),
+            "        This family needs a per-family fixture whose red does not depend on a fall;"
+                .into(),
+            "        until it has one, the probe would pass whatever the gate did.".into(),
+        ]),
+        Some(_) => Ok(()),
+    }
+}
+
+/// The families on the scorecard that no `Family::Scorecard` probe injects into. Each is a gate
+/// that could stop deciding for that family with nothing here going red.
+fn unprobed_scorecard_families(probes: &[Probe]) -> Vec<&'static str> {
+    use crate::scorecard::Family as _;
+    let probed: BTreeSet<&str> = probes
+        .iter()
+        .filter_map(|p| match p.family {
+            Family::Scorecard { family } => Some(family),
+            _ => None,
+        })
+        .collect();
+    crate::scorecard::families()
+        .iter()
+        .map(|f| f.name())
+        .filter(|name| !probed.contains(name))
+        .collect()
 }
 
 fn xtask_inv(sub: &'static str, flags: &str, generated: &'static [table::Generated]) -> Invocation {
@@ -1179,16 +1294,7 @@ fn account(h: &mut Harness, probes: &[Probe]) -> i32 {
     // The SECOND half of the domain: gates that are `cargo xtask` subcommands, derived from
     // everything CI runs -- workflows, scripts, composite actions.
     let xtask_gates = wiring::xtask_domain(&root);
-    let probed_subs: BTreeSet<&str> = probes
-        .iter()
-        .filter_map(|p| match p.family {
-            Family::Script { .. } => None,
-            Family::Xtask { sub }
-            | Family::XtaskFlagged { sub, .. }
-            | Family::XtaskPartial { sub, .. }
-            | Family::XtaskGenerated { sub, .. } => Some(sub),
-        })
-        .collect();
+    let probed_subs: BTreeSet<&str> = probes.iter().filter_map(|p| p.family.xtask_sub()).collect();
     for sub in &xtask_gates {
         let gate = format!("xtask {sub}");
         if probed_subs.contains(sub.as_str()) || listed(table::UNCOVERED, &gate) {
@@ -1246,6 +1352,22 @@ fn account(h: &mut Harness, probes: &[Probe]) -> i32 {
         if !shim {
             unaccounted.push(gate);
         }
+    }
+    // The scorecard is ONE gate deciding many families, and a probe of one family says nothing
+    // about another: each family on the card is its own subject, derived from the card itself.
+    let unprobed = unprobed_scorecard_families(probes);
+    if !unprobed.is_empty() {
+        out("");
+        out(&format!(
+            "VIOLATION: {} scorecard famil{} no injected undischarged site proves can red:",
+            unprobed.len(),
+            if unprobed.len() == 1 { "y" } else { "ies" }
+        ));
+        for f in &unprobed {
+            out(&format!("    {f}"));
+        }
+        out("Add a Family::Scorecard probe that injects one site of its shape, left undischarged.");
+        h.failures += 1;
     }
     // A SHIM_COVERED row for a subcommand no longer in the domain is a gate ranging over nothing.
     for row in table::SHIM_COVERED {
@@ -1492,7 +1614,7 @@ mod tests {
         let probes = table::probes();
         assert_eq!(
             probes.len(),
-            65,
+            67,
             "the probe count is part of the accounting line"
         );
         let shell = probes
@@ -1510,5 +1632,58 @@ mod tests {
                 p.perturb.name
             );
         }
+    }
+
+    /// Every family on the card has its own injected-site probe, read from the card rather than
+    /// from a list beside it -- and dropping one names that family.
+    #[test]
+    fn every_scorecard_family_has_an_injected_undischarged_site() {
+        let probes = table::probes();
+        assert_eq!(unprobed_scorecard_families(&probes), Vec::<&str>::new());
+        for family in ["bound", "life"] {
+            let without: Vec<Probe> = table::probes()
+                .into_iter()
+                .filter(|p| !matches!(p.family, Family::Scorecard { family: f } if f == family))
+                .collect();
+            assert_eq!(unprobed_scorecard_families(&without), vec![family]);
+        }
+        // One probe per family: two would make the accounting line count a family twice.
+        let mut seen = BTreeSet::new();
+        for p in &probes {
+            if let Family::Scorecard { family } = p.family {
+                assert!(seen.insert(family), "{family} has two scorecard probes");
+            }
+        }
+    }
+
+    fn ratchet_with_bound(section: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(crate::scorecard::RATCHET),
+            format!("[family.bound]\n{section}floor_set = \"measurement\"\npopulation_floor = 9\n"),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// A nonzero floor admits the probe, 100% included: at the terminal state the injected site
+    /// is exactly what reds. Zero is the other terminal state and is refused BY NAME.
+    #[test]
+    fn a_scorecard_subject_needs_a_floor_an_injected_site_can_fall_below() {
+        for floor in ["floor_bp = 10000\n", "floor_bp = 9950\n", "floor_bp = 1\n"] {
+            let root = ratchet_with_bound(floor);
+            assert_eq!(scorecard_subject(root.path(), "bound"), Ok(()), "{floor}");
+        }
+        let zero = ratchet_with_bound("floor_bp = 0\nmeasured_zero = true\n");
+        let why = scorecard_subject(zero.path(), "bound").unwrap_err().join("\n");
+        assert!(why.contains("[bound]") && why.contains("0%"), "{why}");
+
+        let root = ratchet_with_bound("floor_bp = 9950\n");
+        let why = scorecard_subject(root.path(), "life").unwrap_err().join("\n");
+        assert!(why.contains("pins no [family.life]"), "{why}");
+        let why = scorecard_subject(root.path(), "nonesuch").unwrap_err().join("\n");
+        assert!(why.contains("no family named nonesuch"), "{why}");
+        let empty = tempfile::tempdir().unwrap();
+        assert!(scorecard_subject(empty.path(), "bound").is_err());
     }
 }
