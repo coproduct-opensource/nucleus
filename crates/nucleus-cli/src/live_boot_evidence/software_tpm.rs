@@ -141,7 +141,7 @@ pub(super) fn prepare(
         format!("--node-evidence-software-tpm={addr}"),
         format!("--node-evidence-anchor=software-tpm:{source}"),
         format!("--node-evidence-reference={}", reference.display()),
-        format!("--node-evidence-ak-pin={pin}"),
+        // RED PROOF: the node is not handed the AK pin.
         format!("--node-evidence-logs={}", logs.display()),
     ];
     running.record = SoftwareTpm::Pinned {
