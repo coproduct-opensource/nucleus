@@ -7,6 +7,11 @@
   decision ids that also expire; an eval cell's starting label is Untrusted whatever its
   spec claims (§3); an eval-cell requirement is switched on in the PR that adds it, so an
   eval cell is refused rather than run on the weaker path while a release is pending (§9).
+- **Amended by the owner (2026-10-08), before S5:** one decision wire, with a
+  host-performed effect decided and performed in one host-side step (§6). No decision id
+  reaches the guest for an effect the host performs. The only id a guest holds is an
+  approval id, and it expires (§4, §6). The amendment replaces "the broker performs only
+  against a decision id the host issued", and the S5 rows of §9 and §13 change with it.
 - Tracks: milestone M3 of the eval-cell programme, issue #2702 (L-1), ledger row **F12**.
 - Rests on: [ADR 0013](0013-eval-cell.md) (the threat model: the agent holds root in its
   guest), [ADR 0007](0007-make-the-defect-unwritable.md) (rule ids cited below),
@@ -86,7 +91,7 @@ containment of class G, which no decision service can give.
 |---|---|---|---|
 | 1 | Taint | G → H | Host-computed from what the host itself observed (§3). The guest may only raise it, by `Observe`. |
 | 2 | Approvals and budget | G, H | Host state for every operation (§4). An approval is a host ledger entry redeemed once, by value. |
-| 3 | Credentialed egress | H | Decided once, on the decision channel. The broker stops deciding and **performs only against a decision id the host issued** (§6). |
+| 3 | Credentialed egress | H | Asked for on the decision channel, and decided and performed in **one host-side step** (§6). No decision id reaches the guest. |
 | 4 | A tool call | G | Decided by the host. The guest enforces the stricter of the host's answer and its own (§2). |
 | 5 | The signed record | H | Host-signed only. The guest's signing paths are deleted (§5). |
 
@@ -165,6 +170,13 @@ evidence" (A-2). In shadow it shows up as a host-stricter disagreement, classifi
   `issue_approved_token` then accepts only a host `Verdict::Allowed`. Verifying the
   node-signed approval in the guest (`GuestCapability::ApprovalByPublicKey`) becomes
   defence in depth.
+- **An approval id is the only id a guest holds, and it expires** (amended 2026-10-08). A
+  host-performed effect that needs approval is answered with an approval id. Once the
+  operator grants it, the guest sends the request again carrying that id, and only a
+  request that presents it can spend the grant. The id dies at the host's deadline (the
+  pending window, then the grant's validity), with the pod's approval epoch, and on
+  revocation, whichever comes first. A spent, expired, refused, foreign or mismatched id is
+  refused, each with its own reason (§7).
 - **Budget.** The host's `SharedBudget` is the only spending count. The guest kernel's
   budget is a projection of it (`PodPolicy::decide_effect` already projects it this way on
   the host), so a charge the guest kernel makes on its own is never what grants. Child
@@ -186,14 +198,44 @@ only under the node's host key (C-2: evidence is minted by the checker).
 ### 6. The wire: the decision channel, vsock 1028 (G-1)
 
 **One wire decides: the decision channel** (`nucleus-decision-protocol`,
-`DECISION_VSOCK_PORT` = 1028). The broker channel (vsock 1027) stops deciding and becomes
-a **performer**. A perform or stream frame carries the `DecisionId` the host issued for
-it. The broker redeems that id from the pod's ledger with `consume(id, digest)`, by value,
-where the digest is computed **by the host** from the request it is about to send (method,
-resolved URL, credential header name, media type, payload hash; C-2). It then performs.
-`pdp_decide` and the broker's own call into `PodPolicy::decide_effect` are deleted, not
-kept in parity (G-1). Today a perform is decided twice inside the host (coarse in
-`pdp_decide`, fine in `effects`), and a third time in the guest.
+`DECISION_VSOCK_PORT` = 1028). An effect is asked for there, whichever side performs it.
+
+**Owner decision, 2026-10-08 (amends the text accepted the same day).** A host-performed
+effect is decided and performed in **one host-side step**. The guest sends
+`Perform(request)`, or `Stream(open)` for a call whose body follows. The host then:
+
+1. computes the action digest from the request it will execute: method, resolved URL,
+   credential header name, media type, forwarded headers and payload hash. It never takes
+   a digest from the guest (C-2);
+2. decides with the pod's policy (`PodPolicy`: capability, taint, budget, approvals);
+3. mints a decision id in the pod's ledger, consumes it by value against that digest, and
+   journals the authorization host-signed (`host_decide/evidence.rs`);
+4. performs, through the one performer (`broker_perform`, `broker_stream`; G-1).
+
+No decision id reaches the guest for a host-performed effect. Check and use are one step
+under one lock, so there is no window between them (no TOCTOU). There is also no bearer id
+for guest root to replay, forge or hold past its moment.
+
+- **Guest-performed effects** keep `Decide` → `Verdict`. The decision id there is a receipt
+  reference only. It authorizes nothing the host does.
+- **Approvals** are the one id a guest holds (§4). `Perform` and `Stream` can be answered
+  `ApprovalRequired { approval_id }`. After the operator grants it, the guest sends the
+  request again carrying `Redeem(approval_id)`. The host recomputes the digest, checks the
+  id against the pod's approval ledger and the operator's grant, and spends both in the
+  step that performs. A stream may also wait for the operator in line, with the host
+  holding the staged body for a bounded time. A grant that arrives during the wait is
+  spent by that stream, so it needs no id at all.
+- **Budget.** The reply to `Perform`, and the closing frame of a `Stream`, carry the host's
+  budget projection: what the pod's host budget has left. The guest kernel resets its
+  budget from it (§4). The host budget moves only when the host charges it, for a
+  host-performed effect or a child allocation, so that is when the guest is told.
+- **Eval cells** use no other wire. The broker listener (vsock 1027), `FETCH_BROKER_SECRET`
+  and the frame HMAC are retired for them. The node starts no 1027 listener and mints no
+  broker secret for an eval cell, so a guest that dials 1027 finds nothing there.
+  `pdp_decide` is not on an eval cell's path: the pod's policy alone decides its performs.
+- **Standard pods** keep 1027 and its secret until the owner raises the guest floor past
+  the release that carries `PerformOnDecisionChannel` (§9). Then 1027, `FETCH_BROKER_SECRET`
+  and the frame HMAC are deleted outright, not kept in parity (G-1).
 
 Why this channel and not the broker's:
 
@@ -209,22 +251,23 @@ Why this channel and not the broker's:
   and under guest root the guest's identity carries no authority anyway, because the host
   decides from its own state.
 
-The ledger moves from per-channel to per-pod, so a decision id issued on 1028 is
-redeemable on 1027. Epochs stay per channel. Decision-id lookup is per pod.
+**What the amendment answers.** The runner-up below lost because each effect class would be
+decided on a different wire, with a different record shape. The text accepted earlier the
+same day answered that with two wires sharing one ledger: decide on 1028, then perform on
+1027 against the id. That still left two wires. It also gave the guest a bearer id for
+every host effect, good until it expired, however short that was, and it checked on one
+connection and used on another. The amendment keeps one wire and one record shape, gives
+the guest no id for a host effect, and makes the check and the use atomic. Approval ids
+remain, and they expire, so the accepted "ids expire" decision holds wherever an id still
+exists. It is the strongest of the three readings: what the guest never holds, it cannot
+replay.
 
-A decision id is good for one perform, by this pod, of the request whose digest it was
-minted for, **and only until it expires**. The host stamps each id with a deadline (the
-2 s decision deadline of §8 plus the effect's own perform window, never longer than the
-pod's current epoch) and the broker refuses an expired id with its own reason. An id dies
-with its pod, with its epoch, and on revocation. A grant that outlives the moment it was
-decided is a grant the host no longer stands behind, so none does.
-
-**Runner-up:** decide host-performed effects at the broker, where the effect happens, and
-use 1028 only for guest-performed ones. It is simpler and is what the host already does
-for egress. It loses because each effect class would then be decided on a different wire
-with a different record shape, and the guest would keep a reason to decide egress itself.
-The plan's phrase "over the existing broker vsock channel" (#2702) is superseded by this
-section. The choice is reversible until the broker's decide path is deleted, at step S5.
+**Runner-up (still rejected):** decide host-performed effects at the broker, where the
+effect happens, and use 1028 only for guest-performed ones. It is simpler and is what the
+host already does for egress. It loses because each effect class would then be decided on
+a different wire with a different record shape, and the guest would keep a reason to
+decide egress itself. The plan's phrase "over the existing broker vsock channel" (#2702) is
+superseded by this section.
 
 ### 7. Failure semantics: no answer is a denial (ADR 0007 B, A, I-3)
 
@@ -240,9 +283,13 @@ sessions, a subject too long to carry) is enforced as `Denied`. The match that f
 enforced outcome has no `_` arm (B-3, E-2). No `Option` stands for "the host had no
 opinion" (B-2). On the host, `PolicyUnavailable` (the pod is revoked or its lock is
 poisoned) closes the channel, which the guest sees as `Unreachable`, so it denies. The
-broker refuses a perform with no decision id, an unknown id, a retired id or a
-foreign-epoch id, and refuses a digest mismatch. Each refusal has a distinct reason
-(I-3), and none of them falls back to deciding locally.
+guest's client has the same outcomes for `Perform` and `Stream`. A guest that cannot
+reach 1028 denies the call. It never falls back to 1027, and an eval cell has no 1027 to
+fall back to. A `Redeem` is refused with a distinct reason for each way it can fail (I-3):
+`approval_unknown` (never issued, or another epoch's), `approval_spent` (already
+redeemed), `approval_expired` (past the host's deadline), `approval_refused` (the operator
+refused it) and `approval_mismatch` (granted for a different request). None of them falls
+back to deciding locally, and none spends the grant.
 
 A host that is down denies everything. Availability is outside ADR 0013's claim: the agent
 can always crash its own guest, and a host outage that fails closed is the same class of
@@ -273,7 +320,7 @@ stays **2.7.0**. Every guest-side change in M3 is a new `GuestCapability` row. E
 |---|---|---|
 | `HostDecideShadow` (exists, 2.3.0) | — | `Optional`, unchanged. Standard pods keep shadowing. |
 | `HostDecideTelemetry` (new) | S1 | `Optional`: the guest prints its shadow tally and latency at shutdown. |
-| `HostDecidedPerform` (new) | S5 | `When(EvalCell)`: perform and stream frames carry the host's decision id. |
+| `PerformOnDecisionChannel` (new) | S5 | `When(EvalCell)`: the guest asks for host-performed effects with `Perform` and `Stream` on 1028, redeems approvals there, resets its kernel's budget from the host's projection, and never uses 1027. It replaces the accepted text's `HostDecidedPerform`. |
 | `HostDecides` (new) | S6 | `When(EvalCell)`: the guest enforces `stricter(host, guest)` and denies on `Unreachable`. |
 
 Each row lands as `FirstShipped::NotYet`, and its `When(EvalCell)` demand is switched on
@@ -359,7 +406,7 @@ A-5).
 | Row (`docs/architecture/mediated-set.md`) | Today | After M3 |
 |---|---|---|
 | 5 in-shell egress, 6 DNS, 10 netns raw socket | `backstopped-only` | **Unchanged: M4.** M3 does not see this traffic. |
-| 7 vsock (broker, task token, SVID) | `partial` | `mediated` at S5+S6: every vsock frame that causes an effect redeems a host-minted decision id. Workload-API frames carry no agent authority (M1 retires the served secrets). |
+| 7 vsock (broker, task token, SVID) | `partial` | `mediated` at S5+S6: the host decides every vsock frame that causes an effect, in the step that performs it, under a decision id it mints and spends itself. An eval cell has no 1027. Workload-API frames carry no agent authority (M1 retires the served secrets). |
 | 8 pod-dir socket (container broker) | `partial` | Unchanged. An eval cell refuses the container tier, so the row is outside the eval cell. |
 | 9 node API (pod management) | `partial` | Unchanged. Child allocations are already the node's ledger. An eval cell reaches the node API only if its allowlist names the node. |
 
@@ -388,9 +435,9 @@ M2, and #3338's verdict once it lands), never by new code in this programme's PR
 | **S2** Operation coverage | A second pod in the live-boot job, honest traffic only: one permitted call and one refused call per door route and per broker operation. | The reader shows ≥ 1 compared decision per operation per run. | Remove one route from the workload and the coverage check reds, naming the operation. |
 | **S3** Host taint from host facts (D2, D10) | `PodPolicy`'s `HostTaint` starts at the join of the admitted inputs (§3). Declassification is verified on the host. Shadow continues; host-stricter rows are attributed to initial taint. | New `trust_boundary` row `UnobservedTaintHeld` Holds: a pod with an untrusted workspace, whose guest sends no `Observe`, has its outbound push held by the host. | On `main` the row is Gap: the host's label is clean until a broker response, so a guest that stays silent is not held. Red on `main`, green after. Live: the escape lane's "silent read, then direct broker call" stage. |
 | **S4** Approvals and budget on the host | `effects::Approvals` covers every operation. Guest approvals are redeemed with `Redeem`. The guest kernel's budget is reset from the host's projection on every verdict. | `trust_boundary` row `GuestLocalApprovalReuseRefused` Holds. The host's verdict for a guest-performed call reflects the pod's host budget. | On `main`, a guest-performed call that needs approval is released by the guest's own `issue_approved_token`, so the host never sees the grant and cannot refuse its reuse after a reconnect. Red on `main`, `Retired` after. |
-| **S5** One decision wire (G-1) | The ledger becomes per-pod. Perform and stream frames carry a decision id (`HostDecidedPerform`). The broker redeems by value, against a digest it computes from the request. `pdp_decide` and the broker's own decide are deleted for eval cells. | An eval cell's broker refuses a perform with no id, a foreign or retired id, or an id minted for a different digest. | On `main`, a perform with no prior `Decide` is performed, because the broker decides by itself. Red on `main`, refused after. |
+| **S5** One decision wire (G-1), amended 2026-10-08 | `Perform` and `Stream` frames on 1028. The host computes the digest, decides, mints and consumes the decision id in the pod's ledger, journals it and performs, in one step, through the one performer. Approvals: `ApprovalRequired`, then `Redeem` on the re-sent request, with ids that expire. The reply carries the host's budget projection, and the guest kernel resets from it. An eval cell gets no 1027 listener and no broker secret (`PerformOnDecisionChannel`, switched on). Standard pods are unchanged. | An eval cell is served only on 1028. A perform the host's ledger did not decide is never executed. A spent, expired, refused, foreign or mismatched approval id is refused by name. | Each is driven red on `main`'s behaviour (PR bodies): an eval cell's guest that dials 1027 is served; a perform runs with no ledger decision; a re-sent request spends a grant without its id, or with a spent or expired one; the guest falls back when the host is unreachable; the guest kernel keeps its own budget count. |
 | *window* | Shadow continues over S1–S5 traffic until §10 holds. | §10, from the reader's output, quoted in S6's PR. | — |
-| **S6** Authoritative for eval cells | The guest enforces `stricter(host, guest)` and denies on `Unreachable` (`HostDecides`). | The escape lane's guest-root stage "proxy killed, untrusted content read silently, broker called directly" is CONTAINED. F12 → TESTED. ADR 0013's self-escalation row → answered. | The same stage is BREACH on the commit before (S3 and S5 reverted): guest root's direct perform after a silent read is performed. |
+| **S6** Authoritative for eval cells | The guest enforces `stricter(host, guest)` and denies on `Unreachable` (`HostDecides`). | The escape lane's guest-root stage "proxy killed, untrusted content read silently, host perform asked for directly" is CONTAINED. F12 → TESTED. ADR 0013's self-escalation row → answered. | The same stage is BREACH on the commit before (S3 and S5 reverted): guest root's direct perform after a silent read is performed. |
 | **S7** Receipts host-signed only (P10) | Every decision gets a host-signed record. The guest's `NUCLEUS_MEDIATION_SIGNING_KEY` paths and the `FetchMediationKey` arm are deleted. The live-boot bundle carries the host decision journal. | `nucleus-audit verify` and both SDK verifiers accept a decision record only under the node's host key. | A bundle whose decision record is signed by a guest-generated key is refused. Red against a verifier that accepted it. |
 
 Order: S1 → S2 → (S3 ∥ S4) → S5 → window → S6 → S7. S7 may run beside S6. M4 (the
