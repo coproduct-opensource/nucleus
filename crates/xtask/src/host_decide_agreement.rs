@@ -47,7 +47,8 @@
 //! Each directory is one run, labelled by its name. Exit status: 1 when any
 //! bundle could not be read, any disagreement is unclassified, any is guest
 //! stricter (ADR 0014 §10 bounds that class at zero: enforcing the host's
-//! answer would grant more), or a run with a coverage pod compared nothing for
+//! answer would grant more), any is host stricter with no listed honest source
+//! (`HostStricterSource`, also bounded at zero), or a run with a coverage pod compared nothing for
 //! an operation in the coverage set;
 //! otherwise 2 when nothing was compared ("could not measure"); otherwise 0.
 
@@ -149,13 +150,46 @@ impl Outcome {
 /// differently, so they are never summed into one number first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
-    /// The host withholds more than the guest enforced.
-    HostStricter,
+    /// The host withholds more than the guest enforced, for the reason named.
+    HostStricter(HostStricterSource),
     /// The host would have allowed what the guest refused — the host's verdict
     /// is the wider one. Enforcing it would grant more.
     GuestStricter,
     /// Both refuse, for different reasons: the receipt would name another cause.
     DifferingReason,
+}
+
+/// Why the host withheld more. ADR 0014 §10 tolerates a host-stricter
+/// disagreement only when it is attributed to a listed honest source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostStricterSource {
+    /// The host refused for the flow (`denied:flow_refused`) where the guest
+    /// did not. The host's label is the join of what the host itself observed
+    /// (§3: initial taint, delivered responses, every `Observe`), one label for
+    /// the pod, while the guest's graph refines taint per node. So the host's
+    /// label is never below the guest's, and a flow refusal the guest did not
+    /// make is the host's label being higher: an attributed source, §3.
+    ///
+    /// This is ADR 0014 S3's settlement of S2's first live finding (a tainted
+    /// write the guest held for `approval_required` and the host refused): the
+    /// host is right. A write is not an action-bound sink, so no approval
+    /// declassifies its flow (`ACTION_BOUND_SINKS`); the guest's approval came
+    /// from its exposure gate, reached only because its own graph did not see
+    /// the write as tainted.
+    HostTaint,
+    /// Anything else. §10 bounds these at zero.
+    Unattributed,
+}
+
+impl HostStricterSource {
+    fn of(host: &Outcome) -> Self {
+        match host {
+            Outcome::Denied(reason) if reason == "flow_refused" => HostStricterSource::HostTaint,
+            Outcome::Denied(_) | Outcome::ApprovalRequired | Outcome::Allowed => {
+                HostStricterSource::Unattributed
+            }
+        }
+    }
 }
 
 /// Classify one disagreement. `None` for a pair that is not a disagreement.
@@ -164,7 +198,7 @@ fn classify(guest: &Outcome, host: &Outcome) -> Option<Class> {
         return None;
     }
     match host.strictness().cmp(&guest.strictness()) {
-        std::cmp::Ordering::Greater => Some(Class::HostStricter),
+        std::cmp::Ordering::Greater => Some(Class::HostStricter(HostStricterSource::of(host))),
         std::cmp::Ordering::Less => Some(Class::GuestStricter),
         std::cmp::Ordering::Equal => Some(Class::DifferingReason),
     }
@@ -174,6 +208,8 @@ fn classify(guest: &Outcome, host: &Outcome) -> Option<Class> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Classes {
     pub host_stricter: u64,
+    /// Of `host_stricter`, the ones attributed to the host's taint (§3).
+    pub host_taint: u64,
     pub guest_stricter: u64,
     pub differing_reason: u64,
 }
@@ -181,7 +217,11 @@ pub struct Classes {
 impl Classes {
     fn count(&mut self, c: Class) {
         match c {
-            Class::HostStricter => self.host_stricter += 1,
+            Class::HostStricter(HostStricterSource::HostTaint) => {
+                self.host_stricter += 1;
+                self.host_taint += 1;
+            }
+            Class::HostStricter(HostStricterSource::Unattributed) => self.host_stricter += 1,
             Class::GuestStricter => self.guest_stricter += 1,
             Class::DifferingReason => self.differing_reason += 1,
         }
@@ -193,6 +233,7 @@ impl Classes {
 
     fn add(&mut self, other: Classes) {
         self.host_stricter += other.host_stricter;
+        self.host_taint += other.host_taint;
         self.guest_stricter += other.guest_stricter;
         self.differing_reason += other.differing_reason;
     }
@@ -613,6 +654,13 @@ impl Summary {
         self.tally.agree + self.tally.disagree
     }
 
+    /// Host-stricter disagreements no listed honest source explains (§10: 0).
+    pub fn unattributed_host_stricter(&self) -> u64 {
+        self.classes
+            .host_stricter
+            .saturating_sub(self.classes.host_taint)
+    }
+
     /// Disagreements no record classified.
     pub fn unclassified(&self) -> u64 {
         self.tally.disagree.saturating_sub(self.classes.total())
@@ -636,6 +684,7 @@ impl Summary {
         if !self.runs_unreadable.is_empty()
             || self.unclassified() > 0
             || self.classes.guest_stricter > 0
+            || self.unattributed_host_stricter() > 0
             || !self.coverage_missing.is_empty()
         {
             1
@@ -685,8 +734,10 @@ fn print_summary(s: &Summary) {
         None => println!("agreement: could not measure (no decision was compared)"),
     }
     println!(
-        "disagreements: host stricter {}, guest stricter {}, differing reason {}, unclassified (no record) {}",
+        "disagreements: host stricter {} (host taint, §3: {}; unattributed: {}), guest stricter {}, differing reason {}, unclassified (no record) {}",
         s.classes.host_stricter,
+        s.classes.host_taint,
+        s.unattributed_host_stricter(),
         s.classes.guest_stricter,
         s.classes.differing_reason,
         s.unclassified()
@@ -764,6 +815,12 @@ fn print_summary(s: &Summary) {
     );
     for m in &s.coverage_missing {
         println!("COVERAGE MISSING (no compared decision) {m}");
+    }
+    if s.unattributed_host_stricter() > 0 {
+        println!(
+            "HOST STRICTER UNATTRIBUTED {}: no listed honest source explains it (§10 bounds this at 0)",
+            s.unattributed_host_stricter()
+        );
     }
     if s.classes.guest_stricter > 0 {
         println!(
@@ -1069,11 +1126,42 @@ mod tests {
             s.classes,
             Classes {
                 host_stricter: 1,
+                host_taint: 1,
                 guest_stricter: 1,
                 differing_reason: 1
             }
         );
         assert_eq!(s.unclassified(), 1);
+        assert_eq!(s.exit_code(), 1);
+    }
+
+    /// ADR 0014 S3: a host-stricter disagreement is attributed to the host's
+    /// taint only for a flow refusal; any other is unattributed, and red.
+    #[test]
+    fn a_host_stricter_disagreement_is_red_unless_attributed() {
+        let judged = |guest: &str, host: &str| {
+            let log = [
+                listening("a"),
+                teardown(&[("write_files", guest, host, 1)], 0, 0),
+            ]
+            .join("\n");
+            let record = format!(r#"{{"guest":"{guest}","host":"{host}"}}"#);
+            let dir = bundle(&log, Some(&record));
+            Summary::of([("run", &read_bundle(dir.path()))])
+        };
+        // S2's live finding, run 37835337702.
+        let s = judged("approval_required", "denied:flow_refused");
+        assert_eq!(
+            (s.classes.host_taint, s.unattributed_host_stricter()),
+            (1, 0)
+        );
+        assert_eq!(s.exit_code(), 0);
+
+        let s = judged("allowed", "denied:not_granted");
+        assert_eq!(
+            (s.classes.host_taint, s.unattributed_host_stricter()),
+            (0, 1)
+        );
         assert_eq!(s.exit_code(), 1);
     }
 
@@ -1103,9 +1191,9 @@ mod tests {
         assert_eq!((s.classes.guest_stricter, s.unclassified()), (1, 0));
         assert_eq!(s.exit_code(), 1);
 
-        let s = judged("allowed", "denied:not_granted");
+        let s = judged("allowed", "denied:flow_refused");
         assert_eq!((s.classes.host_stricter, s.unclassified()), (1, 0));
-        assert_eq!(s.exit_code(), 0, "host stricter is not this check's red");
+        assert_eq!(s.exit_code(), 0, "attributed host stricter is not red");
     }
 
     /// ADR 0014 S1's falsifier: a bundle whose tally says `disagree > 0` with

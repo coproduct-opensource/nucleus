@@ -1284,7 +1284,14 @@ async fn create_pod_internal(
     // The issued lattice AND the admitted credentialed upstreams replace what the spec requested,
     // inside `admit_pod`, and the plan it returns is the only thing a driver spawns (#2600). The
     // pod's owner is the issued root identity (ADR 0001: its tenant).
-    let (plan, reservation) = state.authority.admit_pod(&admission, spec, id).await?;
+    // The host's label for the pod before its guest says anything: the join of what the host
+    // puts into the cell, an eval cell untrusted whatever it carries (ADR 0014 §3).
+    let starting =
+        host_decide::StartingLabel::of(profile, &workspace_scan::sources(&spec, &state.driver));
+    let (plan, reservation) = state
+        .authority
+        .admit_pod(&admission, spec, id, starting)
+        .await?;
     tracing::Span::current().record("chain_depth", plan.chain_depth());
     let owner = plan.owner().to_string();
     // The registry's record of the spec; the plan, not this copy, is what launches.
