@@ -181,10 +181,12 @@ information has already crossed by the time the check runs.
   audit uses. A pod the selector does not match is sent nothing: not the reason
   and not the selector.
 
-`lockdown::reaches` is the one decider for both. What is still delivered
-without a filter is deliberate and fails open. It covers two cases: a watcher
-the node cannot identify, which a pod never is, and a scope the node cannot
-parse.
+`lockdown::reaches` is the one decider for both. Nothing is delivered without
+a filter. The two cases that used to fail open are closed at their source:
+`WatchLockdown` refuses a peer that is not a pod, and `Lockdown` refuses a
+scope the node cannot parse. A label lockdown is held like a pod's, so a pod
+it matches is told when it connects later, and creating one is refused until
+the selector is lifted.
 
 ### 2. The bounded pod pool makes the promoted claim FALSE as written
 
