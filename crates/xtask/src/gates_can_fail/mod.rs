@@ -1063,7 +1063,7 @@ struct Expect {
 /// it. A family at 0% is the other terminal state -- nothing undischarged can fall below zero --
 /// and is a NAMED failure here, never a probe that runs and passes vacuously (ADR 0007 I-1).
 fn scorecard_subject(root: &Path, family: &str) -> Result<(), Vec<String>> {
-    use crate::scorecard::{self, Family as _};
+    use crate::scorecard;
     let head = format!("  FAIL  xtask {} [{family}]", table::SCORECARD_SUB);
     if !scorecard::families().iter().any(|f| f.name() == family) {
         return Err(vec![format!(
@@ -1073,7 +1073,12 @@ fn scorecard_subject(root: &Path, family: &str) -> Result<(), Vec<String>> {
     let pins = fs::read_to_string(root.join(scorecard::RATCHET))
         .map_err(|e| e.to_string())
         .and_then(|t| scorecard::parse_ratchet(&t).map_err(|e| format!("{e:#}")))
-        .map_err(|e| vec![format!("{head} — {} could not be read: {e}", scorecard::RATCHET)])?;
+        .map_err(|e| {
+            vec![format!(
+                "{head} — {} could not be read: {e}",
+                scorecard::RATCHET
+            )]
+        })?;
     match pins.get(family) {
         None => Err(vec![format!(
             "{head} — {} pins no [family.{family}]; the gate itself reports that.",
@@ -1092,7 +1097,6 @@ fn scorecard_subject(root: &Path, family: &str) -> Result<(), Vec<String>> {
 /// The families on the scorecard that no `Family::Scorecard` probe injects into. Each is a gate
 /// that could stop deciding for that family with nothing here going red.
 fn unprobed_scorecard_families(probes: &[Probe]) -> Vec<&'static str> {
-    use crate::scorecard::Family as _;
     let probed: BTreeSet<&str> = probes
         .iter()
         .filter_map(|p| match p.family {
@@ -1675,13 +1679,19 @@ mod tests {
             assert_eq!(scorecard_subject(root.path(), "bound"), Ok(()), "{floor}");
         }
         let zero = ratchet_with_bound("floor_bp = 0\nmeasured_zero = true\n");
-        let why = scorecard_subject(zero.path(), "bound").unwrap_err().join("\n");
+        let why = scorecard_subject(zero.path(), "bound")
+            .unwrap_err()
+            .join("\n");
         assert!(why.contains("[bound]") && why.contains("0%"), "{why}");
 
         let root = ratchet_with_bound("floor_bp = 9950\n");
-        let why = scorecard_subject(root.path(), "life").unwrap_err().join("\n");
+        let why = scorecard_subject(root.path(), "life")
+            .unwrap_err()
+            .join("\n");
         assert!(why.contains("pins no [family.life]"), "{why}");
-        let why = scorecard_subject(root.path(), "nonesuch").unwrap_err().join("\n");
+        let why = scorecard_subject(root.path(), "nonesuch")
+            .unwrap_err()
+            .join("\n");
         assert!(why.contains("no family named nonesuch"), "{why}");
         let empty = tempfile::tempdir().unwrap();
         assert!(scorecard_subject(empty.path(), "bound").is_err());

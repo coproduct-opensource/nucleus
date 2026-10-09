@@ -29,13 +29,14 @@ impl Restore {
     /// error is returned after every other file has been attempted.
     pub(super) fn restore(&mut self) -> std::io::Result<()> {
         let mut first_error = None;
-        self.pending.retain(|(path, original)| match fs::write(path, original) {
-            Ok(()) => false,
-            Err(e) => {
-                first_error.get_or_insert(e);
-                true
-            }
-        });
+        self.pending
+            .retain(|(path, original)| match fs::write(path, original) {
+                Ok(()) => false,
+                Err(e) => {
+                    first_error.get_or_insert(e);
+                    true
+                }
+            });
         first_error.map_or(Ok(()), Err)
     }
 }
@@ -61,7 +62,11 @@ mod tests {
         fs::create_dir(&path).unwrap();
         let mut guard = Restore::new(path.clone(), b"original".to_vec());
         assert!(guard.restore().is_err());
-        assert_eq!(guard.pending.len(), 1, "a failed write cannot discharge restoration");
+        assert_eq!(
+            guard.pending.len(),
+            1,
+            "a failed write cannot discharge restoration"
+        );
         fs::remove_dir(&path).unwrap();
         guard.restore().unwrap();
         assert!(guard.pending.is_empty());
@@ -84,10 +89,18 @@ mod tests {
         guard.also(c.clone(), b"c".to_vec());
         assert!(guard.restore().is_err());
         assert_eq!(fs::read(&a).unwrap(), b"a");
-        assert_eq!(fs::read(&c).unwrap(), b"c", "a failure before it must not skip it");
+        assert_eq!(
+            fs::read(&c).unwrap(),
+            b"c",
+            "a failure before it must not skip it"
+        );
         assert_eq!(guard.pending.len(), 1);
         fs::remove_dir(&blocked).unwrap();
         drop(guard);
-        assert_eq!(fs::read(&blocked).unwrap(), b"b", "the drop retries what is still owed");
+        assert_eq!(
+            fs::read(&blocked).unwrap(),
+            b"b",
+            "the drop retries what is still owed"
+        );
     }
 }

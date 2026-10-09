@@ -1454,7 +1454,11 @@ population_floor = 250
         assert!(decide(&pins, &[("bound".to_string(), c(198, 198))]).is_empty());
         for population in [199, 10_000, 1_000_000] {
             assert!(matches!(
-                decide(&pins, &[("bound".to_string(), c(population, population - 1))]).as_slice(),
+                decide(
+                    &pins,
+                    &[("bound".to_string(), c(population, population - 1))]
+                )
+                .as_slice(),
                 [Finding::Fell { .. }]
             ));
         }
