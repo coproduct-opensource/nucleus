@@ -32,6 +32,7 @@
   - [The economic layer boundary](econ-layer-boundary.md)
 - [Decision Records]()
   - [0016 — Verify from the outside](adr/0016-verify-from-the-outside.md)
+  - [0015 — Mediated egress](adr/0015-mediated-egress.md)
   - [0014 — The host decides](adr/0014-the-host-decides.md)
   - [0013 — The eval cell](adr/0013-eval-cell.md)
   - [0012 — The federation key lives in the TPM](adr/0012-the-federation-key-lives-in-the-tpm.md)
