@@ -669,7 +669,7 @@ jobs:
         if: steps.relevance.outputs.relevant == 'true'
         with:
           node-version: "22"
-      # The node's TPM is SOFTWARE: swtpm behind the kernel's vTPM proxy, which
+      # The node's TPM is SOFTWARE: swtpm on a loopback socket, which
       # the collector starts, measures the node's binaries into and pins, per
       # run, before the node starts. Evidence and results say `software_tpm`
       # wherever they name the anchor, and a verifier accepts it only through
@@ -677,11 +677,9 @@ jobs:
       # Attested against this build's reference under the real admission rule
       # (an eval cell is admitted only on an attested node), never as a
       # hardware root. All logic is in the xtask and the collector.
-      # tpm_vtpm_proxy ships in the kernel's modules-extra package on the
-      # runner's azure kernel, not in the base modules.
-      - name: Install swtpm and the vTPM proxy module (the live boot node's software TPM)
+      - name: Install swtpm (the live boot node's software TPM)
         if: steps.relevance.outputs.relevant == 'true'
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq swtpm "linux-modules-extra-$(uname -r)"
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq swtpm
 
       - name: Live boot evidence, verified by the public verifiers
         if: steps.relevance.outputs.relevant == 'true'

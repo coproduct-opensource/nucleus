@@ -40,8 +40,9 @@ use nucleus_federation::keyring::{Held, KeyDir};
 use nucleus_federation::{FileCustody, KeyCustody, TpmCustody, TpmEndpoint};
 use nucleus_federation::{NodeAttestation, SelfAppraisal};
 use nucleus_node_evidence::attester::{
-    AkTemplate, Attester, DeviceTransport, LogSources, Tpm, default_pcrs,
+    AkTemplate, Attester, LogSources, default_pcrs,
 };
+use nucleus_node_evidence::tpm_key::AnyTransport;
 use nucleus_node_evidence::{
     AkAnchorClaim, AnchorPolicy, AttestedKey, CustodyStatement, ExecutorKey, Federation,
     FederationKeyAttestation, Freshness, KEY_ATTESTATION_PROFILE, KeyBinding, Nonce, OperatorPin,
@@ -60,6 +61,15 @@ pub(crate) struct NodeEvidenceArgs {
     /// a startup error, never a silent downgrade.
     #[arg(long, env = "NUCLEUS_NODE_EVIDENCE_TPM")]
     node_evidence_tpm: Option<PathBuf>,
+    /// Attest with a SOFTWARE TPM's data socket (`HOST:PORT`, `swtpm socket`)
+    /// instead of a device. Only with `--node-evidence-anchor
+    /// software-tpm:<source>`, so every result says what it is. A software
+    /// TPM holds no node key: its state is a file beside the keys, so sealing
+    /// to it would protect nothing a copied disk does not already hold, and
+    /// the keys stay files, as on a node with no TPM. A flag only, never an
+    /// env var.
+    #[arg(long, conflicts_with = "node_evidence_tpm")]
+    node_evidence_software_tpm: Option<String>,
     /// Where the attestation key's template comes from: `default-ecc`, or
     /// `nv:<index>` for a template a cloud provider publishes in NV (e.g.
     /// `nv:0x01c10003`), whose key the provider's API then vouches for.
@@ -264,6 +274,31 @@ fn parse_anchor(s: &str) -> Result<AkAnchorClaim, String> {
     }
 }
 
+/// The TPM this node quotes with: the kernel's device, or a software TPM's
+/// socket, which only a software-TPM anchor may name (B-5).
+fn tpm_endpoint(args: &NodeEvidenceArgs, anchor: &AkAnchorClaim) -> Result<TpmEndpoint, String> {
+    match (&args.node_evidence_tpm, &args.node_evidence_software_tpm, anchor) {
+        (Some(device), None, _) => Ok(TpmEndpoint::Device(device.clone())),
+        (None, Some(addr), AkAnchorClaim::SoftwareTpm { .. }) => {
+            Ok(TpmEndpoint::Socket(addr.clone()))
+        }
+        (
+            None,
+            Some(_),
+            AkAnchorClaim::None
+            | AkAnchorClaim::OperatorFetched { .. }
+            | AkAnchorClaim::CertificateChain { .. },
+        ) => Err(
+            "--node-evidence-software-tpm needs --node-evidence-anchor software-tpm:<source>: \
+             a software TPM is never presented as anything else"
+                .into(),
+        ),
+        (Some(_), Some(_), _) | (None, None, _) => Err(
+            "exactly one of --node-evidence-tpm and --node-evidence-software-tpm".into(),
+        ),
+    }
+}
+
 /// Where this node reads its boot and IMA logs: securityfs, or the directory
 /// a software TPM's measurer wrote, which only a software-TPM anchor may name
 /// (a hardware TPM's logs are the kernel's, B-5).
@@ -353,7 +388,7 @@ struct Epoch {
 
 /// A node with a TPM.
 pub(crate) struct TpmNode {
-    attester: Mutex<Attester<DeviceTransport>>,
+    attester: Mutex<Attester<AnyTransport>>,
     executor_key: [u8; 32],
     /// The state dir holding the federation keyring and the key's custody,
     /// when federation is on.
@@ -575,7 +610,7 @@ impl NodePlatformSource {
         executor_key: [u8; 32],
         federated: bool,
     ) -> Result<Self, String> {
-        let Some(device) = &args.node_evidence_tpm else {
+        if args.node_evidence_tpm.is_none() && args.node_evidence_software_tpm.is_none() {
             // A reference with no evidence to appraise configures nothing
             // (B-5); the pin `requires` the reference, so this covers both.
             // Nor does a log directory with no TPM to replay it against.
@@ -587,9 +622,10 @@ impl NodePlatformSource {
             return Ok(Self::Unattested(
                 "no TPM attester configured (--node-evidence-tpm is unset)".into(),
             ));
-        };
+        }
         let template = parse_template(&args.node_evidence_ak_template)?;
         let anchor = parse_anchor(&args.node_evidence_anchor)?;
+        let endpoint = tpm_endpoint(args, &anchor)?;
         let logs = log_sources(args.node_evidence_logs.as_ref(), &anchor)?;
         let own_appraisal = OwnAppraisal::from_args(args, &anchor)?;
         if federated && own_appraisal.is_none() {
@@ -601,8 +637,9 @@ impl NodePlatformSource {
         if args.node_evidence_epoch_secs == 0 {
             return Err("--node-evidence-epoch-secs must be positive".into());
         }
-        let transport = DeviceTransport::open(device)
-            .map_err(|e| format!("--node-evidence-tpm {}: {e}", device.display()))?;
+        let tpm = endpoint
+            .connect()
+            .map_err(|e| format!("node evidence TPM {endpoint}: {e}"))?;
         let federation = if federated {
             let custody = args.federation_key_custody()?;
             if custody == KeyCustody::File(FileCustody::Waived) {
@@ -627,7 +664,7 @@ impl NodePlatformSource {
             .unwrap_or(0);
         let node = Arc::new(TpmNode {
             attester: Mutex::new(Attester::new(
-                Tpm::new(transport),
+                tpm,
                 template,
                 default_pcrs(),
                 logs,
@@ -870,6 +907,7 @@ mod tests {
     fn no_tpm_is_unattested_with_its_reason() {
         let args = NodeEvidenceArgs {
             node_evidence_tpm: None,
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
@@ -893,6 +931,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let args = NodeEvidenceArgs {
             node_evidence_tpm: Some(dir.path().join("no-such-tpm")),
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
@@ -910,6 +949,7 @@ mod tests {
     fn a_tpm_holds_the_federation_key_unless_waived_by_name() {
         let args = |tpm: Option<&str>, waived: bool| NodeEvidenceArgs {
             node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
@@ -962,6 +1002,7 @@ mod tests {
     fn a_tpm_seals_the_node_keys_unless_waived_by_their_own_name() {
         let args = |tpm: Option<&str>, fed_waived: bool, keys_waived: bool| NodeEvidenceArgs {
             node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_software_tpm: None,
             node_evidence_ak_template: "default-ecc".into(),
             node_evidence_anchor: "none".into(),
             node_evidence_epoch_secs: 300,
@@ -1023,6 +1064,7 @@ mod tests {
         let args =
             |tpm: Option<&str>, reference: Option<&PathBuf>, pin: Option<&str>| NodeEvidenceArgs {
                 node_evidence_tpm: tpm.map(PathBuf::from),
+            node_evidence_software_tpm: None,
                 node_evidence_ak_template: "default-ecc".into(),
                 node_evidence_anchor: "none".into(),
                 node_evidence_epoch_secs: 300,
@@ -1111,6 +1153,7 @@ mod tests {
             "node-evidence-reference",
             "node-evidence-ak-pin",
             "node-evidence-logs",
+            "node-evidence-software-tpm",
         ] {
             let a = cmd
                 .get_arguments()
@@ -1122,6 +1165,48 @@ mod tests {
                 "{flag} must not be read from the environment"
             );
         }
+    }
+
+    /// A software TPM's socket is accepted only under a software-TPM anchor,
+    /// so a node never presents an emulator as anything else.
+    #[test]
+    fn a_software_tpm_socket_is_accepted_only_under_its_own_anchor() {
+        let args = NodeEvidenceArgs {
+            node_evidence_tpm: None,
+            node_evidence_software_tpm: Some("127.0.0.1:2321".into()),
+            node_evidence_ak_template: "default-ecc".into(),
+            node_evidence_anchor: "none".into(),
+            node_evidence_epoch_secs: 300,
+            node_evidence_reference: None,
+            node_evidence_ak_pin: None,
+            node_evidence_logs: None,
+            allow_federation_key_in_file: false,
+            allow_node_keys_in_file: false,
+            public: Default::default(),
+        };
+        let software = AkAnchorClaim::SoftwareTpm {
+            source: "ci-swtpm".into(),
+        };
+        assert_eq!(
+            tpm_endpoint(&args, &software),
+            Ok(TpmEndpoint::Socket("127.0.0.1:2321".into()))
+        );
+        for hardware in [
+            AkAnchorClaim::None,
+            AkAnchorClaim::OperatorFetched {
+                source: "cloud-api".into(),
+            },
+            AkAnchorClaim::CertificateChain { chain: vec![] },
+        ] {
+            let err = tpm_endpoint(&args, &hardware).unwrap_err();
+            assert!(err.contains("software-tpm:"), "{err}");
+        }
+        // Startup refuses it before touching the socket.
+        let dir = tempfile::tempdir().unwrap();
+        let err = NodePlatformSource::start(&args, dir.path(), [1; 32], false)
+            .err()
+            .expect("an emulator under a hardware anchor is refused");
+        assert!(err.contains("software-tpm:"), "{err}");
     }
 
     /// An operator-written log directory speaks only for a software TPM; on

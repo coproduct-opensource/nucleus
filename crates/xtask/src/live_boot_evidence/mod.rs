@@ -87,7 +87,7 @@ pub struct Args {
     #[arg(long)]
     operator_pin: Vec<String>,
     /// Give the node a SOFTWARE TPM named SOURCE: the collector starts swtpm
-    /// behind a vTPM proxy, measures the node's binaries into PCR 10, reads
+    /// on a loopback socket, measures the node's binaries into PCR 10, reads
     /// the AK, and starts the node with it, this build's reference manifest
     /// and that pin. The appraisal accepts the AK only as a software TPM
     /// (`--allow-software-tpm-pin`), labels it so, and requires `Attested`.
