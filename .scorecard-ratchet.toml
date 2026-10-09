@@ -254,9 +254,12 @@ population_floor = 278
 # 2026-10-08 (eval cell M2): new crate ci-scope, the decider every quickstart-boot job runs
 # first, declares all seven from its first commit -- a panic would fail a required context
 # for a reason that names nothing. 38 of 95 = 40.00%.
-floor_bp = 4000
+# 2026-10-08 (ADR 0015 E2): new crate nucleus-egress-proxy, the host egress proxy's
+# guest-facing parser -- every byte guest root writes toward the network -- declares all
+# seven from its first commit; a panic is a proxy the guest can stop. 39 of 96 = 40.62%.
+floor_bp = 4062
 floor_set = "measurement"
-population_floor = 95
+population_floor = 96
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

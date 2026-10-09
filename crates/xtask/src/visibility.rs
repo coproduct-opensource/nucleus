@@ -70,6 +70,7 @@ const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
 /// place the rule would not be checked.
 const DECLARED_SATELLITES: &[&str] = &[
     "crates/nucleus-decision-protocol/fuzz",
+    "crates/nucleus-egress-proxy/fuzz",
     "crates/portcullis-zkvm-guest",
     "examples/a2a-server",
     "examples/marketplace-live",
