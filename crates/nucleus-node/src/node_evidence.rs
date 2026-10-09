@@ -39,9 +39,7 @@ use nucleus_federation::custody::KEY_ATTESTATION_STATE_FILE;
 use nucleus_federation::keyring::{Held, KeyDir};
 use nucleus_federation::{FileCustody, KeyCustody, TpmCustody, TpmEndpoint};
 use nucleus_federation::{NodeAttestation, SelfAppraisal};
-use nucleus_node_evidence::attester::{
-    AkTemplate, Attester, LogSources, default_pcrs,
-};
+use nucleus_node_evidence::attester::{AkTemplate, Attester, LogSources, default_pcrs};
 use nucleus_node_evidence::tpm_key::AnyTransport;
 use nucleus_node_evidence::{
     AkAnchorClaim, AnchorPolicy, AttestedKey, CustodyStatement, ExecutorKey, Federation,
@@ -277,7 +275,11 @@ fn parse_anchor(s: &str) -> Result<AkAnchorClaim, String> {
 /// The TPM this node quotes with: the kernel's device, or a software TPM's
 /// socket, which only a software-TPM anchor may name (B-5).
 fn tpm_endpoint(args: &NodeEvidenceArgs, anchor: &AkAnchorClaim) -> Result<TpmEndpoint, String> {
-    match (&args.node_evidence_tpm, &args.node_evidence_software_tpm, anchor) {
+    match (
+        &args.node_evidence_tpm,
+        &args.node_evidence_software_tpm,
+        anchor,
+    ) {
         (Some(device), None, _) => Ok(TpmEndpoint::Device(device.clone())),
         (None, Some(addr), AkAnchorClaim::SoftwareTpm { .. }) => {
             Ok(TpmEndpoint::Socket(addr.clone()))
@@ -293,9 +295,9 @@ fn tpm_endpoint(args: &NodeEvidenceArgs, anchor: &AkAnchorClaim) -> Result<TpmEn
              a software TPM is never presented as anything else"
                 .into(),
         ),
-        (Some(_), Some(_), _) | (None, None, _) => Err(
-            "exactly one of --node-evidence-tpm and --node-evidence-software-tpm".into(),
-        ),
+        (Some(_), Some(_), _) | (None, None, _) => {
+            Err("exactly one of --node-evidence-tpm and --node-evidence-software-tpm".into())
+        }
     }
 }
 
@@ -663,13 +665,7 @@ impl NodePlatformSource {
             .and_then(|s| s.trim().parse::<u64>().ok())
             .unwrap_or(0);
         let node = Arc::new(TpmNode {
-            attester: Mutex::new(Attester::new(
-                tpm,
-                template,
-                default_pcrs(),
-                logs,
-                anchor,
-            )),
+            attester: Mutex::new(Attester::new(tpm, template, default_pcrs(), logs, anchor)),
             executor_key,
             federation,
             certified: Mutex::new(BTreeMap::new()),
@@ -1064,7 +1060,7 @@ mod tests {
         let args =
             |tpm: Option<&str>, reference: Option<&PathBuf>, pin: Option<&str>| NodeEvidenceArgs {
                 node_evidence_tpm: tpm.map(PathBuf::from),
-            node_evidence_software_tpm: None,
+                node_evidence_software_tpm: None,
                 node_evidence_ak_template: "default-ecc".into(),
                 node_evidence_anchor: "none".into(),
                 node_evidence_epoch_secs: 300,
