@@ -189,6 +189,7 @@ pub(crate) fn pinned() -> AnchorPolicy {
     ))
     .unwrap();
     AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![OperatorPin {
             source: SOURCE.into(),
@@ -904,6 +905,7 @@ fn a_pinned_pcr_that_differs_is_contested() {
 #[test]
 fn an_operator_claim_without_a_pin_is_unattested() {
     let none = AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![],
     };
@@ -954,6 +956,85 @@ fn unclaimed_anchor_is_unattested_even_when_everything_else_matches() {
     assert!(a.divergences().is_empty());
 }
 
+/// The same AK, pinned as a software TPM's rather than as operator-fetched.
+fn software_pinned() -> AnchorPolicy {
+    let mut p = pinned();
+    p.software_tpm_pins = std::mem::take(&mut p.operator_pins);
+    p
+}
+
+fn software_claimed() -> NodeEvidence {
+    let mut e = challenged();
+    e.ak_anchor = AkAnchorClaim::SoftwareTpm {
+        source: SOURCE.into(),
+    };
+    e
+}
+
+#[test]
+fn a_software_tpm_pinned_as_one_is_attested_and_labelled_software() {
+    let a = run(&software_claimed(), challenge(1), &software_pinned()).unwrap();
+    assert_eq!(a.tier(), &Tier::Attested);
+    assert_eq!(
+        a.anchor(),
+        &AkAnchor::SoftwareTpm {
+            source: SOURCE.into()
+        }
+    );
+    assert!(a.anchor().is_anchored());
+    assert!(!a.anchor().is_hardware());
+    let ear = a.to_ear("t", NOW);
+    assert_eq!(
+        ear["submods"]["node"]["nucleus.appraisal"]["anchor"]["software_tpm"]["source"],
+        SOURCE
+    );
+}
+
+#[test]
+fn a_software_tpm_claim_is_never_anchored_by_an_operator_pin() {
+    // The relying party pinned this AK as operator-fetched (hardware). A node
+    // that says its TPM is software does not borrow that label.
+    let a = run(&software_claimed(), challenge(1), &pinned()).unwrap();
+    assert_eq!(
+        a.tier(),
+        &Tier::Unattested {
+            reason: UnattestedReason::AkUnanchored(UnanchoredReason::NoMatchingSoftwareTpmPin)
+        }
+    );
+}
+
+#[test]
+fn an_operator_claim_is_never_anchored_by_a_software_tpm_pin() {
+    // The relying party knows this AK is a software TPM's. Evidence claiming
+    // an operator-fetched (hardware) AK cannot launder it into that label.
+    let a = run(&challenged(), challenge(1), &software_pinned()).unwrap();
+    assert_eq!(
+        a.tier(),
+        &Tier::Unattested {
+            reason: UnattestedReason::AkUnanchored(UnanchoredReason::NoMatchingOperatorPin)
+        }
+    );
+}
+
+#[test]
+fn a_software_tpm_whose_measurements_diverge_is_contested() {
+    let mut r = reference();
+    r.reference_values.pcrs.insert(0, hex::encode([9u8; 32]));
+    let b = binding();
+    let a = appraise(
+        &software_claimed(),
+        &AppraisalPolicy {
+            expected_binding: &b,
+            freshness: challenge(1),
+            reference: &r,
+            anchors: &software_pinned(),
+            now: NOW,
+        },
+    )
+    .unwrap();
+    assert_eq!(a.tier(), &Tier::Contested);
+}
+
 mod chains {
     use super::*;
     use p256::pkcs8::EncodePrivateKey;
@@ -996,6 +1077,7 @@ mod chains {
     fn a_chain_to_a_trusted_root_is_a_certificate_anchor() {
         let p = pki(&ak());
         let policy = AnchorPolicy {
+            software_tpm_pins: Vec::new(),
             trust_roots: vec![p.root_der.clone()],
             operator_pins: vec![],
         };
@@ -1009,6 +1091,7 @@ mod chains {
         let p = pki(&ak());
         let other = pki(&ak());
         let policy = AnchorPolicy {
+            software_tpm_pins: Vec::new(),
             trust_roots: vec![other.root_der],
             operator_pins: vec![],
         };
@@ -1026,6 +1109,7 @@ mod chains {
         // A real, validly chained certificate — for a different key.
         let p = pki(&SigningKey::from_slice(&[0x44; 32]).unwrap());
         let policy = AnchorPolicy {
+            software_tpm_pins: Vec::new(),
             trust_roots: vec![p.root_der.clone()],
             operator_pins: vec![],
         };
@@ -1042,6 +1126,7 @@ mod chains {
         leaf[n - 3] ^= 1;
         let mid = pki(&ak());
         let policy = AnchorPolicy {
+            software_tpm_pins: Vec::new(),
             trust_roots: vec![mid.root_der.clone(), p.root_der.clone()],
             operator_pins: vec![],
         };

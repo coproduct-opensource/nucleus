@@ -86,6 +86,7 @@ fn vtpm_reference() -> ReferenceManifest {
 
 fn pins(source: &str, pin: &str) -> AnchorPolicy {
     AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![OperatorPin {
             source: source.into(),
@@ -269,6 +270,7 @@ fn an_unlisted_executable_is_contested() {
 fn without_the_operators_pin_the_cloud_vtpm_is_unattested() {
     let e = evidence("vtpm-challenge-evidence.json");
     let none = AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![],
     };

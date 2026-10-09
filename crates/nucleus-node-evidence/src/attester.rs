@@ -47,6 +47,8 @@ const CC_QUOTE: u32 = 0x0000_0158;
 const CC_FLUSH_CONTEXT: u32 = 0x0000_0165;
 const CC_NV_READ_PUBLIC: u32 = 0x0000_0169;
 const CC_PCR_READ: u32 = 0x0000_017E;
+/// The PCR IMA extends.
+const PCR_IMA: u8 = 10;
 
 /// The largest response this attester accepts from a TPM.
 const MAX_RESPONSE: usize = 8192;
@@ -512,10 +514,18 @@ pub struct LogSources {
 impl LogSources {
     /// The Linux securityfs paths.
     pub fn linux() -> Self {
+        Self::under(Path::new(SECURITYFS))
+    }
+
+    /// The logs under `root`, laid out as securityfs lays them out:
+    /// `tpm0/binary_bios_measurements` and `ima/binary_runtime_measurements*`.
+    /// A software TPM's node reads them from where its measurer wrote them
+    /// ([`measure_into_pcr10`]); the kernel's logs belong to the kernel's TPM.
+    pub fn under(root: &Path) -> Self {
         Self {
-            boot_event_log: "/sys/kernel/security/tpm0/binary_bios_measurements".into(),
-            ima_sha256: "/sys/kernel/security/ima/binary_runtime_measurements_sha256".into(),
-            ima_sha1: "/sys/kernel/security/ima/binary_runtime_measurements".into(),
+            boot_event_log: root.join("tpm0/binary_bios_measurements"),
+            ima_sha256: root.join(IMA_SHA256_LOG),
+            ima_sha1: root.join("ima/binary_runtime_measurements"),
         }
     }
 
@@ -535,6 +545,57 @@ impl LogSources {
             },
         }
     }
+}
+
+/// Where Linux publishes the TPM and IMA logs.
+pub const SECURITYFS: &str = "/sys/kernel/security";
+
+/// The IMA SHA-256 per-bank list, relative to a log root.
+const IMA_SHA256_LOG: &str = "ima/binary_runtime_measurements_sha256";
+
+/// Measure `files` into PCR 10 of a SOFTWARE TPM as the kernel's IMA would
+/// on exec, and write the matching `ima-ng` list under `root` (see
+/// [`LogSources::under`]). Each file is recorded by the path given, which
+/// must be the path a reference manifest names.
+///
+/// This is the operator standing in for the kernel, and it is only honest on
+/// a TPM whose evidence says it is software ([`AkAnchorClaim::SoftwareTpm`]):
+/// nothing roots these measurements but the operator's word, which is what a
+/// software TPM's anchor already says. The node refuses a log root on any
+/// other anchor.
+///
+/// # Errors
+/// A file that cannot be read, a TPM command that fails, or a log that
+/// cannot be written. The log is written only after every extend succeeded,
+/// so a failure never leaves a list that claims more than PCR 10 holds.
+pub fn measure_into_pcr10<T: Transport>(
+    tpm: &mut Tpm<T>,
+    root: &Path,
+    files: &[PathBuf],
+) -> Result<Vec<crate::ima::ImaEntry>, AttestError> {
+    let mut log = Vec::new();
+    let mut measured = Vec::new();
+    for file in files {
+        let label = file
+            .to_str()
+            .ok_or_else(|| AttestError::Other(format!("{} is not UTF-8", file.display())))?;
+        let digest = sha256(&std::fs::read(file)?);
+        let (template_digest, entry) = crate::ima::ima_ng_entry(label, &digest)?;
+        tpm.pcr_extend(PCR_IMA, &template_digest)?;
+        log.extend_from_slice(&entry);
+        measured.push(crate::ima::ImaEntry {
+            path: label.to_string(),
+            algorithm: "sha256".into(),
+            digest: hex::encode(digest),
+            template: "ima-ng".into(),
+        });
+    }
+    let path = root.join(IMA_SHA256_LOG);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(&path, &log)?;
+    Ok(measured)
 }
 
 /// The PCRs quoted by default: the boot chain (0-9), IMA (10), and shim's

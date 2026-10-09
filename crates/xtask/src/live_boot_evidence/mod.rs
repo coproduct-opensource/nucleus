@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail, ensure};
-use nucleus_spec::live_boot::{self, Collection, NodeEvidence};
+use nucleus_spec::live_boot::{self, Collection, NodeEvidence, SoftwareTpm};
 use serde::Serialize;
 
 use crate::release_reference::Arch;
@@ -86,7 +86,20 @@ pub struct Args {
     /// `SOURCE=SPKI_SHA256`: an operator pin for appraising node evidence.
     #[arg(long)]
     operator_pin: Vec<String>,
+    /// Give the node a SOFTWARE TPM named SOURCE: the collector starts swtpm
+    /// behind a vTPM proxy, measures the node's binaries into PCR 10, reads
+    /// the AK, and starts the node with it, this build's reference manifest
+    /// and that pin. The appraisal accepts the AK only as a software TPM
+    /// (`--allow-software-tpm-pin`), labels it so, and requires `Attested`.
+    #[arg(long, conflicts_with = "node_evidence_tpm")]
+    software_tpm: Option<String>,
 }
+
+/// The reference manifest this build would publish, written once before the
+/// node starts: the node appraises itself against it (with a software TPM)
+/// and the appraiser checks its predictions and the evidence against the
+/// same file (ADR 0007 G-1).
+const REFERENCE_FILE: &str = "reference-manifest.json";
 
 /// A tool's run, kept in the bundle beside the verdict it produced.
 struct Ran {
@@ -149,7 +162,7 @@ fn now_micros() -> Result<u64> {
 
 /// Step 1: run the collector, under sudo when asked, and give the files back
 /// to the invoking user.
-fn collect(root: &Path, a: &Args, out: &Path, nonce: &str) -> Result<()> {
+fn collect(root: &Path, a: &Args, out: &Path, nonce: &str, reference: Option<&Path>) -> Result<()> {
     let bins = a.bin_dir.canonicalize().context("binary directory")?;
     for name in ["nucleus-hostctl", "nucleus-audit"] {
         ensure!(
@@ -191,14 +204,25 @@ fn collect(root: &Path, a: &Args, out: &Path, nonce: &str) -> Result<()> {
         .arg(format!(
             "NUCLEUS_LIVE_BOOT_NODE_ARGS={}",
             node_args.join("\n")
-        ))
-        .arg(test)
-        .args([
-            "live_boot_evidence::collect_live_boot_evidence",
-            "--ignored",
-            "--exact",
-            "--nocapture",
-        ]);
+        ));
+    if let Some(source) = &a.software_tpm {
+        let reference = reference.context(
+            "--software-tpm: the node appraises itself against this build's reference \
+             manifest, and it could not be generated",
+        )?;
+        command
+            .arg(format!("NUCLEUS_LIVE_BOOT_SOFTWARE_TPM={source}"))
+            .arg(format!(
+                "NUCLEUS_LIVE_BOOT_REFERENCE={}",
+                reference.display()
+            ));
+    }
+    command.arg(test).args([
+        "live_boot_evidence::collect_live_boot_evidence",
+        "--ignored",
+        "--exact",
+        "--nocapture",
+    ]);
     let status = command.status()?;
     if a.sudo {
         // The collector ran as root; the bundle is uploaded as this user.
@@ -263,7 +287,19 @@ pub fn run(root: &Path, a: &Args) -> Result<()> {
     let out = a.out.canonicalize()?;
     let nonce = nonce()?;
     let mut checks = Vec::new();
-    let collected = collect(root, a, &out, &nonce);
+    let work = tempfile::tempdir()?;
+    let manifest = predict::generate(&a.bin_dir, a.arch, work.path());
+    let reference = out.join(REFERENCE_FILE);
+    if let Ok(m) = &manifest {
+        std::fs::write(&reference, serde_json::to_vec_pretty(m)?)?;
+    }
+    let collected = collect(
+        root,
+        a,
+        &out,
+        &nonce,
+        manifest.is_ok().then_some(reference.as_path()),
+    );
     let mut summary = Summary {
         schema: SUMMARY_SCHEMA,
         nonce: nonce.clone(),
@@ -310,7 +346,7 @@ pub fn run(root: &Path, a: &Args) -> Result<()> {
                     outputs,
                     collection,
                 };
-                appraise(root, a, &bundle, &mut checks, &mut summary)
+                appraise(root, a, &bundle, &manifest, &mut checks, &mut summary)
             })();
             if let Err(e) = appraised {
                 // Whatever was decided before the error stands; the error is
@@ -379,6 +415,38 @@ fn print_summary(s: &Summary) {
     }
 }
 
+/// The software TPM's PCR 10 measurements, taken before the node started,
+/// against the binaries as they ran: the stand-in for the kernel's IMA must
+/// have measured the bytes that executed, or an `Attested` appraisal of them
+/// would be about other files.
+fn software_measured_what_ran(
+    software: &[live_boot::Measured],
+    ran: &[live_boot::Measured],
+) -> Check {
+    let mut differ = Vec::new();
+    for m in software {
+        match ran.iter().find(|r| r.path == m.path) {
+            Some(r) if r.sha256 == m.sha256 => {}
+            Some(r) => differ.push(format!(
+                "{}: measured {} ran {}",
+                m.path, m.sha256, r.sha256
+            )),
+            None => differ.push(format!("{}: measured, never seen running", m.path)),
+        }
+    }
+    Check::new(
+        "software_tpm.measured_what_ran",
+        match (software.is_empty(), differ.is_empty()) {
+            (true, _) => Verdict::Fail("the software TPM measured nothing".into()),
+            (false, true) => Verdict::Pass(format!(
+                "{} binaries measured into PCR 10 are the ones that ran",
+                software.len()
+            )),
+            (false, false) => Verdict::Fail(differ.join("; ")),
+        },
+    )
+}
+
 /// A copy of `name` under `tamper/`, changed by `change`.
 fn tampered(
     b: &Bundle,
@@ -417,6 +485,7 @@ fn appraise(
     root: &Path,
     a: &Args,
     b: &Bundle,
+    manifest: &Result<nucleus_node_evidence::ReferenceManifest>,
     checks: &mut Vec<Check>,
     summary: &mut Summary,
 ) -> Result<()> {
@@ -424,14 +493,9 @@ fn appraise(
     let audit = a.bin_dir.join("nucleus-audit");
 
     // ── 2. The manifest this build would publish, against what booted ──
-    let work = tempfile::tempdir()?;
-    match predict::generate(&a.bin_dir, a.arch, work.path()) {
+    match manifest {
         Ok(manifest) => {
-            std::fs::write(
-                b.path("reference-manifest.json"),
-                serde_json::to_vec_pretty(&manifest)?,
-            )?;
-            let (predicted, not_checked) = predict::check(&manifest, &b.collection.measured);
+            let (predicted, not_checked) = predict::check(manifest, &b.collection.measured);
             checks.extend(predicted);
             summary.not_checked = not_checked;
         }
@@ -483,7 +547,38 @@ fn appraise(
         .as_str()
         .unwrap_or_default()
         .to_string();
-    let reference = b.path("reference-manifest.json");
+    let reference = b.path(REFERENCE_FILE);
+    // The pins this appraiser holds: the operator's from the command line,
+    // and the software TPM's AK as the collector read it from the TPM before
+    // the node started, accepted only under its own flag and label.
+    let mut pin_args: Vec<String> = Vec::new();
+    for pin in &a.operator_pin {
+        pin_args.extend(["--operator-pin".into(), pin.clone()]);
+    }
+    let software_pins = match &b.collection.software_tpm {
+        SoftwareTpm::NotUsed => Vec::new(),
+        SoftwareTpm::Pinned {
+            source,
+            ak_spki_sha256,
+            measured,
+        } => {
+            checks.push(software_measured_what_ran(measured, &b.collection.measured));
+            pin_args.extend([
+                "--allow-software-tpm-pin".into(),
+                format!("{source}={ak_spki_sha256}"),
+            ]);
+            vec![nucleus_node_evidence::OperatorPin {
+                source: source.clone(),
+                ak_spki_sha256: ak_spki_sha256.clone(),
+            }]
+        }
+    };
+    // A node given a software TPM and this build's reference must appraise
+    // `Attested`; anything less is a failure of this run, not a tier to note.
+    let require_attested = match &b.collection.software_tpm {
+        SoftwareTpm::NotUsed => false,
+        SoftwareTpm::Pinned { .. } => true,
+    };
     let evidence = match &b.collection.node_evidence {
         NodeEvidence::Evidence { file, .. } => Some(b.path(file)),
         NodeEvidence::Unattested { .. } => None,
@@ -499,10 +594,11 @@ fn appraise(
             c.arg("--node-evidence")
                 .arg(evidence)
                 .arg("--node-reference")
-                .arg(&reference);
-            for pin in &a.operator_pin {
-                c.args(["--operator-pin", pin]);
-            }
+                .arg(&reference)
+                .args(&pin_args);
+        }
+        if require_attested {
+            c.arg("--require-attested");
         }
         b.run(name, &mut c)
     };
@@ -669,10 +765,8 @@ fn appraise(
             .arg("--reference")
             .arg(&reference)
             .args(["--executor-ed25519", &signer, "--federation", &federation])
-            .args(["--receipt-time", &receipt_time.to_string()]);
-        for pin in &a.operator_pin {
-            c.args(["--operator-pin", pin]);
-        }
+            .args(["--receipt-time", &receipt_time.to_string()])
+            .args(&pin_args);
         let ran = b.run("verify-node-evidence", &mut c)?;
         let status = ran
             .json()
@@ -709,6 +803,7 @@ fn appraise(
             },
             trust_roots: Vec::new(),
             operator_pins,
+            software_tpm_pins: software_pins,
             now: i64::try_from(now_micros()? / 1_000_000)?,
         };
         let rp = b.path("relying-party.json");

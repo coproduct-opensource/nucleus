@@ -51,6 +51,8 @@ pub struct Collection {
     /// What the receipt says about the node's platform, and the document it
     /// names when it names one.
     pub node_evidence: NodeEvidence,
+    /// The software TPM the collector gave the node, if it gave one.
+    pub software_tpm: SoftwareTpm,
     /// Wall-clock milliseconds, recorded for a later ratchet.
     pub timings: Timings,
 }
@@ -200,6 +202,27 @@ pub enum NodeEvidence {
     },
 }
 
+/// The software TPM (swtpm) the collector started for the node, measured the
+/// node's binaries into, and pinned before the node started. Two different
+/// runs, so two cases (ADR 0007 A-1): `NotUsed` is not "pinned to nothing".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum SoftwareTpm {
+    /// The collector started none.
+    NotUsed,
+    /// The collector started one and read its AK before the node ran.
+    Pinned {
+        /// The source the node's anchor claim and every pin name.
+        source: String,
+        /// SHA-256 of the AK's SubjectPublicKeyInfo, hex, read from the
+        /// software TPM itself before the node started.
+        ak_spki_sha256: String,
+        /// What the collector measured into PCR 10, by install path, before
+        /// the node started: the software stand-in for the kernel's IMA.
+        measured: Vec<Measured>,
+    },
+}
+
 /// Wall-clock milliseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -243,6 +266,11 @@ mod tests {
             }],
             node_evidence: NodeEvidence::Unattested {
                 reason: "no TPM".into(),
+            },
+            software_tpm: SoftwareTpm::Pinned {
+                source: "ci-swtpm".into(),
+                ak_spki_sha256: "11".repeat(32),
+                measured: vec![],
             },
             timings: Timings {
                 node_ready_ms: 1,

@@ -8,7 +8,9 @@
 //! Never a mock driver. Invoked by the xtask, which passes its inputs as
 //! `NUCLEUS_LIVE_BOOT_*` variables on the command line it runs under `sudo`.
 use anyhow::{Context, Result, bail, ensure};
-use nucleus_spec::live_boot::{self, Collection, Files, Measured, MeasuredHow, NodeEvidence};
+use nucleus_spec::live_boot::{
+    self, Collection, Files, Measured, MeasuredHow, NodeEvidence, SoftwareTpm,
+};
 use nucleus_spec::workload_result::WorkloadResult;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -19,6 +21,8 @@ use std::{
 use uuid::Uuid;
 
 use crate::host_evidence_live::{self as live, node::Node};
+
+mod software_tpm;
 
 /// Where `nucleus setup` installs the VMM; the fixture node is started with
 /// these paths, so they are what the measurements are keyed by.
@@ -369,6 +373,7 @@ async fn collect(
     nonce: &str,
     started: Instant,
     node_ready_ms: u64,
+    software_tpm: SoftwareTpm,
 ) -> Result<()> {
     let files = Files::standard();
     let key = live::host_key(node, bins).await?;
@@ -413,6 +418,7 @@ async fn collect(
         files,
         measured: vec![node_bin, run.firecracker, jailer],
         node_evidence: run.node_evidence,
+        software_tpm,
         timings: live_boot::Timings {
             node_ready_ms,
             pod_create_ms: run.create_ms,
@@ -500,22 +506,43 @@ async fn collect_live_boot_evidence() -> Result<()> {
     let nonce = var("NUCLEUS_LIVE_BOOT_NONCE")?;
     // Extra node arguments, one per line (the node-evidence flags when the
     // host has a TPM). Absent means none.
-    let extra: Vec<String> = std::env::var("NUCLEUS_LIVE_BOOT_NODE_ARGS")
+    let mut extra: Vec<String> = std::env::var("NUCLEUS_LIVE_BOOT_NODE_ARGS")
         .unwrap_or_default()
         .lines()
         .filter(|l| !l.is_empty())
         .map(str::to_owned)
         .collect();
     ensure!(out.is_dir(), "{} is not a directory", out.display());
+    // A software TPM, when the appraiser asked for one: the source it is
+    // named by, and the reference manifest the node appraises itself against.
+    // Kept alive until the node has stopped; dropping it removes the device.
+    let swtpm_dir = tempfile::Builder::new()
+        .prefix("swtpm")
+        .tempdir_in("/var/tmp")?;
+    let swtpm = match std::env::var("NUCLEUS_LIVE_BOOT_SOFTWARE_TPM") {
+        Err(std::env::VarError::NotPresent) => None,
+        Err(e) => bail!("NUCLEUS_LIVE_BOOT_SOFTWARE_TPM: {e}"),
+        Ok(source) => {
+            let reference = PathBuf::from(var("NUCLEUS_LIVE_BOOT_REFERENCE")?);
+            let binaries = [node_bin.clone(), FIRECRACKER.into(), JAILER.into()];
+            let running = software_tpm::prepare(&source, &reference, &binaries, swtpm_dir.path())?;
+            extra.extend(running.node_args.iter().cloned());
+            Some(running)
+        }
+    };
+    let record = swtpm
+        .as_ref()
+        .map_or(SoftwareTpm::NotUsed, |s| s.record.clone());
     let started = Instant::now();
     let mut node = Node::start_with(&node_bin, &nonce, &extra).await?;
     let node_ready_ms = millis(started);
-    let result = collect(&node, &bins, &out, &nonce, started, node_ready_ms).await;
+    let result = collect(&node, &bins, &out, &nonce, started, node_ready_ms, record).await;
     let log = node
         .log()
         .unwrap_or_else(|e| format!("could not read the node log: {e}"));
     let diagnostics = result.as_ref().err().map(|_| node.diagnostics());
     node.stop().await?;
+    drop(swtpm);
     std::fs::write(out.join(Files::standard().node_log), log)?;
     if let Some(diagnostics) = diagnostics {
         result.context(diagnostics)?;

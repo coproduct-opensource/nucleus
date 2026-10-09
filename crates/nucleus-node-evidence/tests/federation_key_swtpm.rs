@@ -243,6 +243,7 @@ fn attest(attester: &mut Attester<AnyTransport>, nonce_byte: u8) -> Stranger {
     Stranger {
         evidence,
         anchors: AnchorPolicy {
+            software_tpm_pins: Vec::new(),
             trust_roots: vec![],
             operator_pins: vec![OperatorPin {
                 source: SOURCE.into(),

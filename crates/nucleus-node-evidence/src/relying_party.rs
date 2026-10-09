@@ -10,7 +10,10 @@
 //!
 //! Every field of [`RelyingParty`] is required (ADR 0007 B-1): an omitted
 //! operator pin list is not "no pins", it is a parse error, so a relying party
-//! that meant "trust nothing" writes `[]`.
+//! that meant "trust nothing" writes `[]`. The one exception is
+//! `software_tpm_pins`, whose omission is "accept no software TPM": the
+//! denying direction, so a document written before the field existed keeps
+//! its meaning and grants nothing new.
 
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
@@ -29,6 +32,7 @@ use crate::reference::ReferenceManifest;
 ///   "freshness": { "epoch": { "receipt_time": 1791247262, "max_age_secs": 900, "max_future_secs": 60 } },
 ///   "trust_roots": [],
 ///   "operator_pins": [ { "source": "<source>", "ak_spki_sha256": "<hex>" } ],
+///   "software_tpm_pins": [],
 ///   "now": 1791247262
 /// }
 /// ```
@@ -46,8 +50,14 @@ pub struct RelyingParty {
     pub freshness: FreshnessExpectation,
     /// Root certificates an AK certificate chain may end at, base64 DER.
     pub trust_roots: Vec<String>,
-    /// Operator pins this relying party chose to accept. The weakest anchor.
+    /// Operator pins this relying party chose to accept. The weakest anchor
+    /// that names hardware.
     pub operator_pins: Vec<OperatorPin>,
+    /// Software-TPM pins this relying party chose to accept: no hardware
+    /// root, labelled `software_tpm` in every result. Omitted, it is empty,
+    /// which accepts no software TPM.
+    #[serde(default)]
+    pub software_tpm_pins: Vec<OperatorPin>,
     /// The time to check certificate validity at, Unix seconds. A browser
     /// passes `Math.floor(Date.now() / 1000)`; a test passes a fixed value.
     pub now: i64,
@@ -99,18 +109,24 @@ impl RelyingParty {
                 .map_err(|e| InputError::RelyingParty(format!("trust_roots[{i}]: {e}")))?;
             trust_roots.push(der);
         }
-        for pin in &self.operator_pins {
-            let fp = &pin.ak_spki_sha256;
-            if fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return Err(InputError::RelyingParty(format!(
-                    "operator pin {:?}: ak_spki_sha256 is not SHA-256 hex",
-                    pin.source
-                )));
+        for (kind, pins) in [
+            ("operator pin", &self.operator_pins),
+            ("software-TPM pin", &self.software_tpm_pins),
+        ] {
+            for pin in pins {
+                let fp = &pin.ak_spki_sha256;
+                if fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return Err(InputError::RelyingParty(format!(
+                        "{kind} {:?}: ak_spki_sha256 is not SHA-256 hex",
+                        pin.source
+                    )));
+                }
             }
         }
         Ok(AnchorPolicy {
             trust_roots,
             operator_pins: self.operator_pins.clone(),
+            software_tpm_pins: self.software_tpm_pins.clone(),
         })
     }
 }
