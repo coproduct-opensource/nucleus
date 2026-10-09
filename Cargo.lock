@@ -7309,6 +7309,7 @@ version = "1.0.0"
 name = "nucleus-node"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "bollard",
