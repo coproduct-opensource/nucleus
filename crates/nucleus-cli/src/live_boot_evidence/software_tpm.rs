@@ -116,9 +116,8 @@ pub(super) fn prepare(
     let logs = dir.join("logs");
     // One connection, closed before the node opens its own: swtpm serves one
     // client at a time.
-    let mut tpm = Tpm::new(
-        SocketTransport::connect(&addr).with_context(|| format!("connecting to {addr}"))?,
-    );
+    let mut tpm =
+        Tpm::new(SocketTransport::connect(&addr).with_context(|| format!("connecting to {addr}"))?);
     let measured = measure_into_pcr10(&mut tpm, &logs, binaries)
         .context("measuring the node's binaries into the software TPM")?;
     let ak = Attester::new(
