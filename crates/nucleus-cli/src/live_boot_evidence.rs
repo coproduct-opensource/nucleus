@@ -516,9 +516,11 @@ async fn collect_live_boot_evidence() -> Result<()> {
     // A software TPM, when the appraiser asked for one: the source it is
     // named by, and the reference manifest the node appraises itself against.
     // Kept alive until the node has stopped; dropping it removes the device.
+    // Under /tmp: Ubuntu's AppArmor profile for swtpm lets it lock its state
+    // only there (measured: under /var/tmp it cannot open its lockfile).
     let swtpm_dir = tempfile::Builder::new()
         .prefix("swtpm")
-        .tempdir_in("/var/tmp")?;
+        .tempdir_in("/tmp")?;
     let swtpm = match std::env::var("NUCLEUS_LIVE_BOOT_SOFTWARE_TPM") {
         Err(std::env::VarError::NotPresent) => None,
         Err(e) => bail!("NUCLEUS_LIVE_BOOT_SOFTWARE_TPM: {e}"),
