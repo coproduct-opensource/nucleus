@@ -851,7 +851,9 @@ async fn main() -> Result<(), ApiError> {
         &args.state_dir,
         &custody,
     )
-    .map_err(ApiError::Driver)?;
+    .map_err(ApiError::Driver)?
+    // The node's own NUCLEUS_DLC_*, read once: the admitted DLC of a pod whose labels ask for none.
+    .with_node_dlc(DlcProvisioning::from_env(|name| std::env::var(name).ok()));
 
     // A zero bound is refused at start-up, not discovered as a refusal of
     // every streamed call later (ADR 0007 B).
@@ -1402,6 +1404,19 @@ impl LocalPod {
     }
 }
 
+/// The local tool-proxy's DLC-D environment: exactly the provisioning the pod was admitted under
+/// (`PodAuthority::dlc`), the value the host's kernel decides with. Every `NUCLEUS_DLC_*` name is
+/// removed first, so nothing reaches the proxy by inheritance from the node (ADR 0007 G-1).
+#[cfg(feature = "local-driver")]
+pub(crate) fn provision_local_dlc_env(command: &mut Command, admitted: Option<&DlcProvisioning>) {
+    for field in nucleus_spec::dlc_admission::DlcField::ALL {
+        command.env_remove(field.env());
+    }
+    if let Some(dlc) = admitted {
+        command.envs(dlc.env());
+    }
+}
+
 /// The local tool-proxy's audit uploader environment (#3131, #3160).
 ///
 /// The tool-proxy inherits the node's environment (`Command` does not `env_clear`), so every name
@@ -1519,17 +1534,10 @@ async fn spawn_local_pod(
         command.env(key, value);
     }
 
-    // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
-    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads. The
-    // label->env mapping is `nucleus_spec::dlc_admission`'s, the same one the
-    // container driver and the Firecracker workload API use. Node-global env
-    // still inherits (Command does not env_clear); labels let a single pod —
-    // e.g. `nucleus verify --tier2`'s — run under admission without touching
-    // host config. Values are NOT validated here: the proxy's parser owns that
-    // and fails CLOSED (partial/garbage config provisions deny-all).
-    if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
-        command.envs(dlc.env());
-    }
+    // DLC-D verified admission: the provisioning admission recorded (the labels', else the
+    // node's own), the value the host's kernel decides with. Values are NOT validated here: the
+    // proxy's parser owns that and fails CLOSED (partial/garbage config provisions deny-all).
+    provision_local_dlc_env(&mut command, state.authority.dlc(id).await.as_ref());
 
     // Detect orchestrator pod: inject pod management env vars
     let enable_pod_mgmt = spec
