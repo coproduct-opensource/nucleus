@@ -19,7 +19,7 @@
 //! SPIFFE identities map deterministically to did:web identifiers:
 //!
 //! ```text
-//! spiffe://groundtruth.dev/ns/apps/sa/music-app  →  did:web:music-app.groundtruth.dev
+//! spiffe://groundtruth.dev/ns/apps/sa/music-app  →  did:web:groundtruth.dev:ns:apps:sa:music-app
 //! ```
 //!
 //! See [`Identity::to_did_web`] and [`Identity::from_did_web`] for the mapping.
