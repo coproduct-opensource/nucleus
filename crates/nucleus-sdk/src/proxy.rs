@@ -151,9 +151,11 @@ impl ProxyClient {
             }
             ProxyEndpoint::Http { base } => {
                 validate_tcp_endpoint(&base, mtls.is_some())?;
-                if base.starts_with("http://") {
-                    builder = builder.no_proxy();
-                }
+                builder = if base.starts_with("https://") {
+                    builder.https_only(true)
+                } else {
+                    builder.no_proxy()
+                };
                 if let Some(mtls) = mtls {
                     let identity = mtls.reqwest_identity()?;
                     builder = builder.identity(identity);

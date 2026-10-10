@@ -363,7 +363,9 @@ mod mtls_tests {
     /// Serves exactly one RPC: `watch_lockdown`, which sends a single
     /// `LockdownCommand` and then closes its half of the stream. Every other
     /// method is unreachable from this test and left `unimplemented!()`.
-    struct OneShotLockdown;
+    struct OneShotLockdown {
+        active: bool,
+    }
 
     #[tonic::async_trait]
     impl NodeService for OneShotLockdown {
@@ -436,7 +438,7 @@ mod mtls_tests {
 
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.send(Ok(proto::LockdownCommand {
-                active: true,
+                active: self.active,
                 scope: "all".to_string(),
                 reason: "mtls integration test".to_string(),
                 operator_id: "test".to_string(),
@@ -451,8 +453,7 @@ mod mtls_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_and_watch_completes_a_real_mtls_handshake_and_receives_a_command() {
+    async fn round_trip(active: bool) {
         // The server task's TLS accept races `connect()`'s own install — do
         // it here too so whichever runs first doesn't leave the other
         // without a provider.
@@ -490,7 +491,7 @@ mod mtls_tests {
             tonic::transport::Server::builder()
                 .tls_config(server_tls)
                 .unwrap()
-                .add_service(NodeServiceServer::new(OneShotLockdown))
+                .add_service(NodeServiceServer::new(OneShotLockdown { active }))
                 .serve_with_incoming(TcpListenerStream::new(listener))
                 .await
                 .unwrap();
@@ -510,7 +511,11 @@ mod mtls_tests {
             proxy_id: "test-proxy".to_string(),
             pod_id: None,
         };
-        let flag = Arc::new(AtomicBool::new(false));
+        let flag = Arc::new(AtomicBool::new(!active));
+        let local_locks = vec![
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+        ];
 
         tokio::time::timeout(
             Duration::from_secs(10),
@@ -520,11 +525,21 @@ mod mtls_tests {
         .expect("connect_and_watch should complete, not hang")
         .expect("a real mTLS handshake against the SAME CA must succeed");
 
-        assert!(
-            flag.load(Ordering::SeqCst),
-            "the LockdownCommand sent over the mTLS stream must have flipped the flag"
-        );
+        assert_eq!(flag.load(Ordering::SeqCst), active);
+        for lock in local_locks {
+            assert_eq!(lock.load(Ordering::SeqCst), active);
+        }
 
         server_handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_and_watch_completes_a_real_mtls_handshake_and_receives_a_command() {
+        round_trip(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_node_restore_clears_local_and_breaker_locks() {
+        round_trip(false).await;
     }
 }
