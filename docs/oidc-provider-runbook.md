@@ -11,51 +11,64 @@ The OP is the cryptographic identity root for a nucleus mesh deployment. This do
 
 ## 1. Initial key-store bootstrap
 
-The first time the OP starts in a new environment, it has no `keystore.age` blob and no upstream-IdP verifying keys registered. Follow these steps in order.
+**Corrected 2026-10-08.** This section used to describe a `keystore.age` blob created on first
+boot, with its passphrase from a secret, and §3 a `--federation-rules-path` flag. Neither existed:
+`main` always started an in-memory EdDSA key (gone on restart) and an empty rule set, and nothing
+could load rules. An OP deployed by the old steps would have served a key that changed on every
+restart and refused every exchange. What follows is what the binary does
+(`docs/findings/oidc-provider-first-tenant.md` §2).
 
-### 1a. Decide on the passphrase source
+### 1a. Choose the signing algorithm, which chooses the key store
 
-Production: derive from KMS-unwrapped material at deploy time (do NOT type a passphrase into your shell). Recommended pattern:
+| | `--signing-key-dir` set | not set |
+|---|---|---|
+| algorithm | **ES256** | EdDSA |
+| key store | `KeyringKeyStore`: `nucleus-federation`'s keyring directory | `InMemoryKeyStore`: lost on restart (dev only) |
+| rotation | `nucleus-oidc-provider keys {stage,promote,retire}` (§2E) | in process |
+| relying parties | anything that takes an outside OIDC issuer: cloud workload-identity federation (RS256/ES256 only), SPIFFE JWT-SVID verifiers | nucleus-aware relying parties only |
 
-```bash
-# AWS KMS example — adapt to your KMS vendor.
-PASSPHRASE=$(aws kms decrypt \
-  --ciphertext-blob fileb://passphrase.ciphertext \
-  --query Plaintext --output text | base64 -d)
+Use ES256 whenever a token leaves the mesh. The OP signs exactly one algorithm. Discovery, the JWKS
+and `/healthz` (`signing_alg`) all name it (THREAT_MODEL T04).
 
-flyctl secrets set NUCLEUS_OIDC_KEYSTORE_PASSPHRASE="$PASSPHRASE"
-unset PASSPHRASE
-```
+### 1b. Key custody: say what it is
 
-Dev / staging: generate a 32-byte random passphrase, store in a password manager.
+The keyring's custody is a `KeyCustody`. On a host with no TPM, which is every platform VM this
+runbook deploys to, the key is `File(NoTpmConfigured)`: a `0400` PKCS#8 file in
+`--signing-key-dir`, owned by the directory's owner. **It is not sealed.** Anyone holding the volume,
+or a snapshot of it, holds the key. No passphrase is involved, so there is nothing to type and
+nothing to fetch from a KMS. The volume's at-rest encryption is the platform's.
 
-### 1b. Set the issuer URL
+A TPM- or KMS-held key needs no change here: it is another implementation of
+`nucleus_federation::AssertionSigner`, the trait the keyring signs through (ADR 0009, ADR 0012). A
+KMS signer (e.g. a cloud KMS `EC_SIGN_P256_SHA256` key with `asymmetricSign`, the result verified
+locally before use) belongs in a sibling crate that names its vendor, never in this one.
 
-```bash
-flyctl secrets set NUCLEUS_OIDC_ISSUER_URL=https://oidc.YOUR-DOMAIN.example/
-```
+### 1c. Set the issuer URL, and do not change it later
 
-The default in `fly.toml` is deliberately bogus to fail-loud on a forgotten override.
+`NUCLEUS_OIDC_ISSUER_URL` is written into every token as `iss`. Relying parties compare it byte for
+byte, and an outside issuer's tokens must carry it as `aud`. Pick the final hostname before the
+first relying party is configured. Use no trailing slash, because `https://x` and `https://x/` are
+different issuers. A custom hostname needs DNS pointing at the app and a certificate for it.
 
-### 1c. Provision the persistent volume
+### 1d. Provision the volume, then deploy
 
 ```bash
 flyctl volumes create nucleus_oidc_data --region iad --size 1
+flyctl deploy . --config crates/nucleus-oidc-provider/fly.toml \
+  --dockerfile crates/nucleus-oidc-provider/Dockerfile        # from the repository root
 ```
 
-### 1d. First deploy
+The volume's mount point is owned by the image's user (distroless `nonroot`), so on first boot the
+OP creates `--signing-key-dir` (`0700`) and its first key (`0400`). The log says so once:
 
-```bash
-flyctl deploy
+```text
+keyring: created the first signing key kid=<43-char thumbprint>
+signing ES256 with the keyring's current key active_kid=<same>
+federation config loaded rules=<n> outside_issuers=<n>
 ```
 
-On first boot the OP creates a fresh `keystore.age` at `/data/keystore.age`. Tail the logs:
-
-```bash
-flyctl logs | grep -i bootstrap
-```
-
-You should see the active KID printed exactly once.
+A key directory whose key fails its checks (mode, owner, parse), or holds the other custody's
+layout, stops the OP from starting. It does not replace a key that relying parties trust.
 
 ### 1e. Verify discovery + JWKS work
 
@@ -65,11 +78,15 @@ curl https://oidc.YOUR-DOMAIN.example/jwks.json | jq
 curl https://oidc.YOUR-DOMAIN.example/healthz | jq
 ```
 
-`healthz` should show `ok: true`, `active_kid: "<43-char-thumbprint>"`, `verify_keys: 1`, `federation_rules: 0`.
+`healthz` should show `ok: true`, `signing_alg: "ES256"`, `active_kid` (43 characters),
+`verify_keys: 1`, and the `federation_rules` / `outside_issuers` counts you deployed. The JWKS entry
+is `{"kty":"EC","crv":"P-256","x":…,"y":…,"kid":…,"alg":"ES256","use":"sig"}`.
 
 ### 1f. Load federation rules (see §3)
 
-Without rules the OP returns `invalid_target` for every token-exchange — this is the default-deny posture from #41. Load rules before pointing real traffic at the OP.
+Without rules the OP returns `invalid_target` for every token exchange. This is the default-deny
+posture from #41. `--federation-config` (`NUCLEUS_OIDC_FEDERATION_CONFIG`) names the TOML file, and
+a file that does not parse or validate stops the OP from starting.
 
 ---
 
@@ -118,6 +135,26 @@ If after 2 × grace_window the verify-set is still > 1, the sweep loop is stuck.
 ```bash
 flyctl machine restart -a nucleus-oidc-provider
 ```
+
+### 2E. ES256 (`KeyringKeyStore`): stage, promote, retire
+
+The keyring does not swap keys at once, because a relying party that cached the JWKS just before
+would see a `kid` it does not have. Run each step as the key directory's owner: a file written by
+anyone else is refused, which is the safe direction because it fails before the server could be
+handed a key it cannot read. On the platform VM that means
+`flyctl ssh console -u nonroot -C "/app/nucleus-oidc-provider keys <step>"`.
+
+```bash
+nucleus-oidc-provider keys status    # published kids; when promote / retire become allowed
+nucleus-oidc-provider keys stage     # next key: published from now, never signs
+# ≥ 75 min later (JWKS cache 15 min + longest token 60 min):
+nucleus-oidc-provider keys promote   # next becomes current; the OP signs with it at once, no restart
+# ≥ 65 min later (longest token + 5 min skew):
+nucleus-oidc-provider keys retire    # previous key leaves the JWKS
+```
+
+The running OP reads the directory on every signature and every JWKS request, so no restart is
+needed. `rotate()` and `revoke()` on this store answer `OperatorRotated`. The emergency path is §4E.
 
 ---
 
@@ -269,26 +306,77 @@ been delegated nothing, when in fact nobody had said either way.
 
 Glob semantics: `*` suffix only (no regex, no anywhere-glob). Audience is exact match. See `crates/nucleus-oidc-provider/src/federation.rs` for the schema.
 
+### 3a′. `[[outside_issuer]]`: tokens from an issuer nucleus does not run
+
+A workload on a platform with its own OIDC issuer has no SPIFFE JWT-SVID to present, but it has
+that issuer's token. A binding exchanges such a token as **one** SPIFFE ID, and from there the rules
+above apply to it like any other subject:
+
+```toml
+[[outside_issuer]]
+id = "build-runners"
+issuer = "https://idp.example/tenant-a"      # exact `iss`; dispatch is by this string
+algs = ["RS256"]                              # what the issuer signs with; no none/HMAC/EdDSA
+jwks = "discovery"                            # or { uri = "https://idp.example/keys" }
+max_lifetime_secs = 3600                      # largest exp − iat accepted (≤ 24 h)
+leeway_secs = 30                              # required (never defaulted), ≤ 60
+spiffe_id = "spiffe://example.org/ns/ci/sa/runner"
+[outside_issuer.required_claims]              # REQUIRED, non-empty; exact string match
+tenant = "tenant-a"
+workload = "runner"
+```
+
+The binding sets what the token must carry. The validator checks it with
+`nucleus_federation::ExternalIssuerValidator`, the same checks as the node's federation ingress
+(#3022):
+
+- **`aud` is this OP's issuer URL.** It is not configurable. The workload requests its token with
+  that audience.
+- The algorithm is in `algs` and fits its key.
+- The token has not been presented before. Replay is keyed on the token's hash.
+- With `jwks = "discovery"`, the discovery document's `issuer` must equal `issuer` byte for byte.
+
+The binding refuses to load if:
+
+- `required_claims` is empty. An issuer serves many workloads, and naming none would give
+  `spiffe_id` to all of them.
+- `spiffe_id` is a prefix or a wildcard.
+- The issuer is bound twice.
+- The issuer is this OP's own issuer URL.
+- `leeway_secs` is absent.
+
+A token past its `exp` is refused even inside the leeway, the same line the SPIFFE path holds. The
+issued token is stamped `urn:nucleus:kind = "outside_token_exchange"`, not `"token_exchange"`, so a
+relying party can tell an identity a binding granted from one a workload's own SVID proved.
+
+The binding grants an identity and nothing else. Audience, grant, lifetime and `max_scope` come from
+a `[[rule]]` naming that SPIFFE ID. Refusals reach the caller as the same opaque `invalid_grant`.
+The log says which check failed (`outside issuer: token refused binding=<id> reason=<Check>`). An
+issuer whose keys cannot be fetched answers `503 temporarily_unavailable` so the caller retries.
+
+The coproduct.one deployment's config is `crates/nucleus-oidc-provider/deploy/federation.coproduct-one.toml`.
+The Dockerfile copies `deploy/` into the image at `/app/deploy/`, so the rules a running OP enforces
+are part of its image digest.
+
 ### 3b. Validate before deploy
 
 ```bash
-# Locally:
-cargo run --bin nucleus-oidc-provider -- --federation-rules-path ./oidc-federation.toml --dry-run
-# TODO: wire up --dry-run flag. Until then, use the test:
-cargo test -p nucleus-oidc-provider federation::tests::toml_round_trip_parses
+# Start it locally against the file. A config that does not validate exits non-zero before binding.
+cargo run -p nucleus-oidc-provider -- --bind 127.0.0.1:18080 \
+  --issuer-url https://oidc.YOUR-DOMAIN.example --signing-key-dir "$(mktemp -d)/keys" \
+  --federation-config ./oidc-federation.toml
+curl -s 127.0.0.1:18080/healthz | jq '{federation_rules, outside_issuers}'
 ```
+
+A shipped deployment config also has a test that loads it the way `main` does
+(`tests/outside_issuer.rs`, `the_shipped_coproduct_one_config_loads_and_grants_only_admin_data`).
 
 `deny_unknown_fields` ensures typos fail-loud at parse.
 
 ### 3c. Deploy
 
-Copy the file into the VM and SIGHUP to reload (when wired):
-
-```bash
-flyctl ssh sftp -a nucleus-oidc-provider <<< "put oidc-federation.toml /data/oidc-federation.toml"
-# TODO: SIGHUP handler. Until then, restart:
-flyctl machine restart -a nucleus-oidc-provider
-```
+Rules are read once at start-up. There is no reload signal. Change the file under `deploy/` and
+redeploy (§1d): the new image carries the new rules, and the deploy record says when they changed.
 
 ### 3d. Audit-log diff
 
@@ -337,6 +425,24 @@ The `revoke` endpoint removes the key from the verify-set IMMEDIATELY with no gr
 # 2. cargo run --bin nucleus-oidc-provider -- revoke --kid <compromised-kid>
 ```
 
+### 4E. ES256 (`KeyringKeyStore`): replace the key outright
+
+The keyring has no `revoke`: its stage/promote protocol waits for caches on purpose, which is the
+wrong speed during a compromise. Replace the key instead:
+
+```bash
+curl -s https://oidc.YOUR-DOMAIN.example/jwks.json > /tmp/jwks-pre-incident.json
+flyctl ssh console -a nucleus-oidc-provider -C "rm -f /data/keys/jwt_svid_p256_signing_key.der \
+  /data/keys/jwt_svid_p256_signing_key.next.der /data/keys/jwt_svid_p256_signing_key.prev.der \
+  /data/keys/jwt_svid_p256_rotation.json"
+flyctl machine restart -a nucleus-oidc-provider
+```
+
+From the moment the files are gone, every signature fails closed. The signer never falls back to a
+key it no longer finds. On restart the OP creates a fresh key, and the JWKS publishes only that one.
+Every token the old key signed stops verifying as relying parties refetch the JWKS (`max-age=300`).
+Confirm the new `active_kid` differs from the snapshot.
+
 ### 4d. Force-refresh downstream caches
 
 Most RPs respect `Cache-Control` and will pick up the new JWKS within 5 min. For urgent cases:
@@ -354,10 +460,11 @@ Most RPs respect `Cache-Control` and will pick up the new JWKS within 5 min. For
 
 ## Appendix A: Observability
 
-- `GET /healthz` — JSON body: `{ok, active_kid, verify_keys, federation_rules}`. Wire to Fly health check (already in `fly.toml`).
+- `GET /healthz` — JSON body: `{ok, active_kid, verify_keys, federation_rules, bundle_keys, outside_issuers, signing_alg}`. Wire to Fly health check (already in `fly.toml`).
 - `flyctl logs` — structured tracing output. `RUST_LOG=info,nucleus_oidc_provider=debug` for deeper trace.
 - Token-endpoint Deny events: `grep "federation: DENY"`.
-- Replay rejections: `grep "subject_token .* already presented"`.
+- Replay rejections: `grep "subject_token .* already presented"` (JWT-SVIDs); outside issuers log `reason=Replayed`.
+- Outside-issuer decisions: `grep "outside issuer:"`. An accepted token logs the binding, the outside `sub` and the SPIFFE ID it became.
 
 ## Appendix B: Cross-references
 

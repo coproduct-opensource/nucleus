@@ -1,16 +1,19 @@
 //! `nucleus-oidc-provider` — OP service binary.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
+use nucleus_federation::keyring::{KeyDir, RotationPolicy};
+use nucleus_federation::{FileCustody, KeyCustody};
 use nucleus_oidc_provider::{
-    JtiCache,
+    FederationRules, JtiCache, OutsideIssuers,
     app::{AppState, build_app},
     federation::FederationRegistry,
     issuer::JwtIssuer,
-    keystore::{InMemoryKeyStore, JwtKeyStore},
+    keystore::{InMemoryKeyStore, JwtKeyStore, KeyringKeyStore},
 };
 
 #[derive(Parser, Debug)]
@@ -28,24 +31,98 @@ struct Cli {
         env = "NUCLEUS_OIDC_ISSUER_URL"
     )]
     issuer_url: String,
+    /// Directory holding the ES256 signing key (`nucleus-federation`'s keyring
+    /// layout, file custody). Created with a fresh key on first start. When
+    /// set the OP signs ES256; when absent it signs EdDSA with an in-memory
+    /// key that does not survive a restart.
+    #[arg(long, env = "NUCLEUS_OIDC_SIGNING_KEY_DIR")]
+    signing_key_dir: Option<PathBuf>,
+    /// TOML file of federation rules (`[[rule]]`) and outside-issuer bindings
+    /// (`[[outside_issuer]]`). A file that does not parse or validate stops the
+    /// OP from starting. Absent: no rules, so every exchange is refused.
+    #[arg(long, env = "NUCLEUS_OIDC_FEDERATION_CONFIG")]
+    federation_config: Option<PathBuf>,
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Rotate the ES256 signing key: the keyring's stage → promote → retire
+    /// protocol on the signing key directory. Run as the directory's owner
+    /// (the OP's user); a write by anyone else is refused.
+    Keys {
+        /// The signing key directory (as `--signing-key-dir`).
+        #[arg(long, env = "NUCLEUS_OIDC_SIGNING_KEY_DIR", hide_env_values = true)]
+        dir: PathBuf,
+        #[command(subcommand)]
+        step: KeyStep,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, Copy)]
+enum KeyStep {
+    /// Print the published keys and when the next step is allowed.
+    Status,
+    /// Generate the next key. Published from now on; never signs until promoted.
+    Stage,
+    /// Make the staged key current. Refused until it has been published for
+    /// the relying parties' JWKS cache lifetime plus the longest token.
+    Promote,
+    /// Unpublish the previous key. Refused until its last token expired.
+    Retire,
+}
+
+/// File custody on a host with no TPM. Named so the deployment's custody is
+/// one grep away; the docs say plainly what it means.
+const FILE_CUSTODY: KeyCustody = KeyCustody::File(FileCustody::NoTpmConfigured);
+
+fn now_unix() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("clock before unix epoch")?
+        .as_secs())
+}
+
+fn run_key_step(dir: &Path, step: KeyStep) -> Result<()> {
+    let keys = KeyDir::new(dir);
+    let policy = RotationPolicy::default();
+    let now = now_unix()?;
+    let state = match step {
+        KeyStep::Status => keys.state(now)?,
+        KeyStep::Stage => keys.stage(now, &FILE_CUSTODY)?.after,
+        KeyStep::Promote => keys.promote(now, &policy)?.after,
+        KeyStep::Retire => keys.retire(now, &policy)?.after,
+    };
+    let report = serde_json::json!({
+        "current": state.current.kid,
+        "next": state.next.as_ref().map(|s| &s.jwk.kid),
+        "prev": state.prev.as_ref().map(|r| &r.jwk.kid),
+        "promote_allowed_at": state.promote_allowed_at(&policy),
+        "retire_allowed_at": state.retire_allowed_at(&policy),
+        "jwks": state.jwks(),
+    });
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // reqwest is built with `rustls-no-provider` (workspace convention); the
+    // outside-issuer validator's JWKS fetches need a provider installed before
+    // the first client is built.
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow::anyhow!("failed to install the rustls crypto provider"))?;
+
+    let cli = Cli::parse();
+    if let Some(Command::Keys { dir, step }) = &cli.command {
+        return run_key_step(dir, *step);
+    }
+
     // Shared OTel bootstrap — emits to OTEL_EXPORTER_OTLP_ENDPOINT
     // when set, falls through to stderr-only otherwise.
     let _otel = nucleus_otel_bootstrap::init("nucleus-oidc-provider")?;
-
-    let cli = Cli::parse();
-
-    // Skeleton bootstrap: in-memory keystore with a fresh active key.
-    // Production deployments swap this for `FileKeyStore::open_with_passphrase`
-    // (task #53 wires the env-var / CLI plumbing).
-    let keystore: Arc<dyn JwtKeyStore> = Arc::new(InMemoryKeyStore::new());
-    tracing::warn!(
-        active_kid = %keystore.active_kid().unwrap_or_default(),
-        "bootstrap: in-memory keystore (NOT durable). Wire FileKeyStore via task #53 for production."
-    );
 
     if !cli.issuer_url.starts_with("https://") {
         anyhow::bail!(
@@ -53,6 +130,33 @@ async fn main() -> Result<()> {
             cli.issuer_url
         );
     }
+
+    let keystore: Arc<dyn JwtKeyStore> = match &cli.signing_key_dir {
+        Some(dir) => {
+            let store =
+                KeyringKeyStore::open_or_create(dir, FILE_CUSTODY, RotationPolicy::default())
+                    .with_context(|| {
+                        format!("opening the signing key directory {}", dir.display())
+                    })?;
+            tracing::info!(
+                active_kid = %store.active_kid().unwrap_or_default(),
+                dir = %dir.display(),
+                custody = "file (no TPM configured)",
+                "signing ES256 with the keyring's current key"
+            );
+            Arc::new(store)
+        }
+        None => {
+            let store = InMemoryKeyStore::new();
+            tracing::warn!(
+                active_kid = %store.active_kid().unwrap_or_default(),
+                "no --signing-key-dir: signing EdDSA with an in-memory key that does NOT \
+                 survive a restart. Relying parties lose every issued token's key on restart."
+            );
+            Arc::new(store)
+        }
+    };
+
     let issuer = Arc::new(
         JwtIssuer::new(
             keystore.clone(),
@@ -61,14 +165,31 @@ async fn main() -> Result<()> {
         )
         .context("constructing JwtIssuer")?,
     );
+
+    let rules = match &cli.federation_config {
+        Some(path) => FederationRules::read_from_file(path)
+            .with_context(|| format!("loading federation config {}", path.display()))?,
+        None => {
+            tracing::warn!("no --federation-config: no rules, so every token exchange is refused");
+            FederationRules::default()
+        }
+    };
+    let outside_issuers = OutsideIssuers::build(&rules.outside_issuer, &cli.issuer_url)
+        .context("binding outside issuers")?;
+    tracing::info!(
+        rules = rules.rule.len(),
+        outside_issuers = outside_issuers.len(),
+        "federation config loaded"
+    );
+
     // v1 bootstrap: empty static bundle (no upstream IdPs registered).
     // Operators populate the bundle from config; production deployments
     // swap to WorkloadApiBundleProvider once that lands (task v2.x).
     let bundle_provider: Arc<dyn nucleus_oidc_provider::spire::SpireBundleProvider> =
         Arc::new(nucleus_oidc_provider::spire::StaticBundleProvider::new());
-    tracing::warn!(
-        "bootstrap: empty static SPIRE bundle. Token endpoint will reject ALL \
-         subject_tokens until upstream verifying keys are registered."
+    tracing::info!(
+        "empty static SPIRE bundle: JWT-SVID subject tokens are refused; outside-issuer \
+         bindings are the only accepted subjects"
     );
 
     // The root a presented pod certificate must chain to. Absent by default:
@@ -101,9 +222,8 @@ async fn main() -> Result<()> {
         issuer_url: Arc::from(cli.issuer_url.as_str()),
         issuer,
         jti_cache: Arc::new(JtiCache::new()),
-        // Default: empty rule set (default-deny). Operators load rules via #53's
-        // `--federation-rules-path` flag / SIGHUP reload.
-        federation: Arc::new(FederationRegistry::empty()),
+        federation: Arc::new(FederationRegistry::new(rules)),
+        outside_issuers: Arc::new(outside_issuers),
         bundle_provider,
         cert_root_pubkey: cert_root_pubkey.map(Arc::new),
     };

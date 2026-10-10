@@ -236,7 +236,8 @@ mod tests {
         let vk = store.verify_key(&signed.kid).unwrap();
         let sig_arr: [u8; 64] = signed.signature.as_slice().try_into().unwrap();
         let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-        vk.verifying_key
+        vk.ed25519()
+            .expect("an Ed25519 store publishes Ed25519 keys")
             .verify(b"after-the-rotations", &sig)
             .expect("post-storm signature must verify");
     }

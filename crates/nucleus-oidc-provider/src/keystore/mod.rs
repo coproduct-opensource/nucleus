@@ -30,6 +30,7 @@
 //! key compromise), T13 (rotation gap) for the security context.
 
 pub mod file;
+pub mod keyring;
 pub mod memory;
 pub mod rotator;
 
@@ -42,6 +43,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub use file::FileKeyStore;
+pub use keyring::KeyringKeyStore;
 pub use memory::InMemoryKeyStore;
 pub use rotator::KeyRotator;
 
@@ -65,18 +67,83 @@ pub enum KeyStoreError {
     /// grace window) then revoke from there.
     #[error("cannot revoke the active key — rotate first")]
     CannotRevokeActive,
+    /// The store's key is replaced by an operator protocol over its files
+    /// (stage, promote, retire), never by an in-process `rotate()`. Distinct
+    /// from [`KeyStoreError::RotationUnsupported`]: this store DOES rotate, on
+    /// a schedule relying parties' JWKS caches can follow.
+    #[error(
+        "this key store rotates by the keyring protocol (stage, promote, retire), not rotate()"
+    )]
+    OperatorRotated,
     /// Backend (filesystem, age decryption, etc.) failure.
     #[error("backend error: {0}")]
     Backend(String),
 }
 
+/// The one algorithm a key store signs with.
+///
+/// `THREAT_MODEL.md` T04 is "one issuer, one algorithm". A store has exactly
+/// one of these, fixed when it is built, and the issuer writes it into every
+/// header, the discovery document and the JWKS, so a deployment cannot
+/// advertise one algorithm and sign with another. There is no `none`, no HMAC
+/// and no RSA variant: a store for them cannot be written against this enum.
+///
+/// Two variants because the relying parties differ. EdDSA is the OP's
+/// original pin. ES256 is what the SPIFFE JWT-SVID profile lists and what
+/// cloud workload-identity federation accepts from an outside OIDC issuer
+/// (RS256 or ES256, never EdDSA), so a deployment whose tokens must reach one
+/// signs ES256 — through `nucleus-federation`'s P-256 signer, not a second
+/// implementation of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningAlg {
+    /// Ed25519 (RFC 8037).
+    EdDsa,
+    /// ECDSA P-256 / SHA-256, JOSE `r || s` form (RFC 7518 §3.4).
+    Es256,
+}
+
+impl SigningAlg {
+    /// The JOSE `alg` name. ES256's comes from `nucleus-federation`'s single
+    /// pin constant rather than a second literal here.
+    pub fn jose_name(self) -> &'static str {
+        match self {
+            Self::EdDsa => "EdDSA",
+            Self::Es256 => nucleus_federation::SIGNING_ALG,
+        }
+    }
+}
+
+/// The public half of a verify-set entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PublicKey {
+    /// An Ed25519 key, published as an OKP JWK (RFC 8037 §2).
+    Ed25519(VerifyingKey),
+    /// A P-256 key, published as an EC JWK (RFC 7518 §6.2), exactly as the
+    /// keyring computed it — `kid` included — so the JWKS restates nothing.
+    P256(nucleus_federation::PublicJwk),
+}
+
 /// A verify-side key entry. Public material plus the validity window.
+///
+/// For an operator-rotated store (`KeyringKeyStore`) `not_after` is a lower
+/// bound: the key stays published at least until then, because leaving the
+/// JWKS takes a promote followed by the retire window.
 #[derive(Debug, Clone)]
 pub struct VerifyKey {
     pub kid: String,
-    pub verifying_key: VerifyingKey,
+    pub public: PublicKey,
     pub not_before: SystemTime,
     pub not_after: SystemTime,
+}
+
+impl VerifyKey {
+    /// The Ed25519 key, if this entry is one.
+    pub fn ed25519(&self) -> Option<&VerifyingKey> {
+        match &self.public {
+            PublicKey::Ed25519(vk) => Some(vk),
+            PublicKey::P256(_) => None,
+        }
+    }
 }
 
 /// Result of a sign call. KID and ALG are returned alongside the raw
@@ -85,8 +152,9 @@ pub struct VerifyKey {
 #[derive(Debug)]
 pub struct SignedBytes {
     pub kid: String,
-    /// Always `"EdDSA"` in v1. Pinned per `THREAT_MODEL.md` T04.
-    pub alg: &'static str,
+    /// The store's one algorithm ([`JwtKeyStore::alg`]). The issuer refuses a
+    /// signature whose algorithm differs from the header it wrote.
+    pub alg: SigningAlg,
     pub signature: Vec<u8>,
 }
 
@@ -104,6 +172,9 @@ pub struct RotateOutcome {
 /// MUST be `Send + Sync` so the store can be shared across the axum
 /// router as `Arc<dyn JwtKeyStore>`.
 pub trait JwtKeyStore: Send + Sync {
+    /// The one algorithm this store signs with, fixed for its lifetime.
+    fn alg(&self) -> SigningAlg;
+
     /// Sign the given canonical bytes with the active key. Returns
     /// `(kid, alg, signature)`. The signing key is NEVER returned;
     /// callers must use this method rather than holding a key handle.
@@ -139,7 +210,10 @@ pub trait JwtKeyStore: Send + Sync {
     /// exists for memory hygiene under a `KeyRotator` background loop.
     fn sweep_expired(&self) -> Result<usize, KeyStoreError>;
 
-    /// True if `rotate()` / `revoke()` change state. False for
+    /// True if the store's signing key can be replaced while the OP runs —
+    /// in process through `rotate()`, or (for `KeyringKeyStore`) by the
+    /// operator's stage/promote/retire protocol on its files, in which case
+    /// `rotate()` answers [`KeyStoreError::OperatorRotated`]. False for
     /// hypothetical read-only stores (none ship in v1).
     fn supports_rotation(&self) -> bool;
 }

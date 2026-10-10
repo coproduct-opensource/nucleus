@@ -22,10 +22,15 @@ Together they form the public surface of a nucleus mesh.
 ## Wire surface (v1)
 
 - `GET /.well-known/openid-configuration` — RFC 8414 discovery doc.
-- `GET /jwks.json` — the OP's verify-set. RFC 7517 + RFC 8037 (Ed25519
-  OKP).
-- `POST /oauth/token` — RFC 8693 token exchange. Subject token is a
-  workload-presented SVID; response is an audience-bound access token.
+- `GET /jwks.json` — the OP's verify-set. RFC 7517, holding the keys of
+  the OP's ONE signing algorithm: Ed25519 OKP (RFC 8037) for the in-process
+  key stores, or P-256 EC (RFC 7518 §6.2, ES256) for the keyring store
+  (`--signing-key-dir`). ES256 is what cloud workload-identity federation
+  and SPIFFE JWT-SVID verifiers accept.
+- `POST /oauth/token` — RFC 8693 token exchange. The subject token is a
+  workload-presented JWT-SVID, or a token from a bound outside issuer
+  (`[[outside_issuer]]`), which is exchanged as the one SPIFFE ID its binding
+  names. The response is an audience-bound access token.
 - `GET /healthz` — operator-meaningful liveness.
 
 ## Non-goals
@@ -42,13 +47,13 @@ Together they form the public surface of a nucleus mesh.
   module at startup. See `docs/oidc-vendor-neutrality-audit.md`.
 - **No UI.** Clients are workloads, not humans.
 
-## Skeleton scope
+## Running it
 
-The skeleton in this commit wires only `/healthz` so the crate
-compiles. The eight production routes / modules land progressively
-under the OIDC scoping DAG (tasks #32 through #56). The companion
-`THREAT_MODEL.md` is already complete and pins the security spec for
-every subsequent implementation task.
+`docs/oidc-provider-runbook.md` is the operator's guide: choosing the key
+store (§1a), custody (§1b), federation rules and outside-issuer bindings (§3),
+and rotation (§2E). `deploy/` holds the federation configs of deployments
+run from this tree; the Dockerfile bakes them into the image, inert unless
+`NUCLEUS_OIDC_FEDERATION_CONFIG` selects one.
 
 ## Threat model
 
