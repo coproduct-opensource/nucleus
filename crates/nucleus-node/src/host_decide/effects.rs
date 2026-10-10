@@ -349,6 +349,91 @@ impl Approvals {
     }
 }
 
+/// What a guest's `Redeem` found on the host for the call it was held for
+/// (ADR 0014 §4, S4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GuestRedemption {
+    /// The operator granted it, and this redemption spent the grant.
+    Granted,
+    /// The operator has not decided yet.
+    Pending,
+    /// The operator refused it.
+    Refused,
+    /// No live approval for the call: never held, expired, or already spent.
+    Unknown,
+}
+
+impl Approvals {
+    /// Hold a guest-performed call the host's kernel answered with
+    /// `ApprovalRequired`, as an approval the operator can grant on the host
+    /// (ADR 0014 §4). Keyed by the call's `args_digest`, so a re-asked call
+    /// finds the entry it already has. A grant already waiting is left for the
+    /// guest's `Redeem` to spend.
+    pub(super) fn hold_guest_call(
+        &mut self,
+        digest: ArgsDigest,
+        op: Operation,
+        subject: &str,
+        now: u64,
+    ) -> Result<(), String> {
+        let held = self.check_or_request(
+            digest,
+            op,
+            subject,
+            now,
+            EffectCheck {
+                phase: Phase::Preflight,
+                charge: crate::upstreams::CallCharge::guest_call(),
+                require_approval: true,
+            },
+            ApprovalCategory::Ordinary,
+        );
+        // The outcome is read from the entries, not from the message: a call
+        // is held exactly when an ordinary entry for its digest is live.
+        let live = self.entries.values().any(|a| {
+            a.digest == digest
+                && a.view.category == ApprovalCategory::Ordinary
+                && matches!(
+                    a.view.status,
+                    ApprovalStatus::Pending | ApprovalStatus::Granted
+                )
+        });
+        match (held, live) {
+            (_, true) => Ok(()),
+            (Err(e), false) => Err(e),
+            (Ok(_), false) => Err("the guest call was not held".into()),
+        }
+    }
+
+    /// Redeem the approval a guest-performed call was held for. A grant is
+    /// spent by the redemption that finds it: one grant, one release. Only an
+    /// ordinary approval is a guest call's; a declassification releases a
+    /// host-performed effect, through `authorize_effect`.
+    pub(super) fn redeem_guest_call(&mut self, digest: ArgsDigest, now: u64) -> GuestRedemption {
+        self.prune(now);
+        let mut found = GuestRedemption::Unknown;
+        for a in self
+            .entries
+            .values_mut()
+            .filter(|a| a.digest == digest && a.view.category == ApprovalCategory::Ordinary)
+        {
+            match a.view.status {
+                ApprovalStatus::Granted => {
+                    a.view.status = ApprovalStatus::Spent;
+                    self.changed.send_replace(());
+                    return GuestRedemption::Granted;
+                }
+                ApprovalStatus::Pending => found = GuestRedemption::Pending,
+                ApprovalStatus::Refused if found == GuestRedemption::Unknown => {
+                    found = GuestRedemption::Refused;
+                }
+                ApprovalStatus::Refused | ApprovalStatus::Spent => {}
+            }
+        }
+        found
+    }
+}
+
 /// An affine witness required to construct a host upstream call.
 #[derive(Debug)]
 #[must_use]

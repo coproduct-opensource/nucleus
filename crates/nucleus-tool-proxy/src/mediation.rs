@@ -316,7 +316,18 @@ pub(crate) fn decide_and_record(
     // here: no decision leaves this function unshadowed. The kernel's own
     // verdict is reported — a deferral a grant satisfied is still the
     // `RequiresApproval` the host's kernel would also have said.
-    shadow.submit(kernel, graph, operation, subject, &decision.verdict);
+    let released = match (&decision.verdict, &mapped) {
+        (Verdict::RequiresApproval, Ok(_)) => crate::host_decide::Released::ByGuestGrant,
+        _ => crate::host_decide::Released::No,
+    };
+    shadow.submit_released(
+        kernel,
+        graph,
+        operation,
+        subject,
+        &decision.verdict,
+        released,
+    );
 
     crate::verdict_sink::record_kernel_decision(
         sink,
@@ -440,6 +451,7 @@ pub(crate) fn decide_for_broker(
         // request, which the host alone can grant (#3255). No guest grant
         // discharges it, and a submission mints no execution token.
         let decision = kernel.decide_effect_with_flow(term, Some(graph)).decision;
+        // A submission is released by the host, never by a guest grant.
         shadow.submit(kernel, graph, operation, subject, &decision.verdict);
         crate::verdict_sink::record_kernel_decision(
             sink,
