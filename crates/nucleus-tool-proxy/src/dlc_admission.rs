@@ -23,82 +23,19 @@
 // The variable names are `nucleus_spec::dlc_admission`'s: the same declaration
 // the node maps PodSpec labels through and guest-init exports with.
 use nucleus_spec::dlc_admission::DlcField;
-use portcullis::says_admission::{
-    DlcAdmission, DlcKeyRecord, DlcKeyRing, DlcPrincipal, DlcPrincipalId, DlcSignature,
-};
-
-/// Decode a 64-char hex string into 32 bytes.
-fn hex32(s: &str) -> Option<[u8; 32]> {
-    let bytes = hex::decode(s.trim()).ok()?;
-    bytes.try_into().ok()
-}
+use portcullis::says_admission::DlcAdmission;
 
 /// Build the pod's [`DlcAdmission`] from the environment. `None` ⇔ the feature
-/// is unprovisioned (inert). See the module docs for the variables and the
-/// fail-closed semantics.
+/// is unprovisioned (inert). The fields are read here and decided by
+/// [`DlcAdmission::provision`], the one reading the host's decision service
+/// applies to the same pod's labels (ADR 0007 G-1).
 pub(crate) fn provision_from_env() -> Option<DlcAdmission> {
-    let raw_keys = std::env::var(DlcField::TrustedKeys.env()).ok()?;
-    if raw_keys.trim().is_empty() {
-        return None;
-    }
-
-    let entries: Vec<DlcKeyRecord> = raw_keys
-        .split(',')
-        .filter_map(|k| {
-            let pk = hex32(k).or_else(|| {
-                tracing::warn!("NUCLEUS_DLC_TRUSTED_KEYS: skipping malformed key entry");
-                None
-            })?;
-            Some(DlcKeyRecord {
-                principal: DlcPrincipalId(pk),
-                alg: 0,
-                public_key: pk.to_vec(),
-            })
-        })
-        .collect();
-
-    let issuer = match std::env::var(DlcField::Issuer.env())
-        .ok()
-        .and_then(|s| hex32(&s))
-    {
-        Some(pk) => DlcPrincipal::Atom(DlcPrincipalId(pk)),
-        None => {
-            // Trusted keys were set but the issuer is absent/malformed: provision an
-            // unsatisfiable state (zero principal + EMPTY keyring) so every operation
-            // is denied — misconfiguration narrows, never widens.
-            tracing::error!(
-                "NUCLEUS_DLC_TRUSTED_KEYS is set but NUCLEUS_DLC_ISSUER is missing or \
-                 malformed — provisioning DENY-ALL admission (fail-closed)"
-            );
-            return Some(DlcAdmission::new(
-                DlcKeyRing { entries: vec![] },
-                DlcPrincipal::Atom(DlcPrincipalId([0u8; 32])),
-            ));
-        }
-    };
-
-    let mut admission = DlcAdmission::new(DlcKeyRing { entries }, issuer);
-    if let Ok(raw_creds) = std::env::var(DlcField::Credentials.env()) {
-        for pair in raw_creds.split(',').filter(|p| !p.trim().is_empty()) {
-            match pair.split_once('=') {
-                Some((op, sig_hex)) => match hex::decode(sig_hex.trim()) {
-                    Ok(bytes) => {
-                        admission =
-                            admission.with_credential(op.trim(), DlcSignature { alg: 0, bytes });
-                    }
-                    Err(_) => tracing::warn!(
-                        operation = op.trim(),
-                        "NUCLEUS_DLC_CREDENTIALS: malformed signature hex — operation \
-                         will be denied"
-                    ),
-                },
-                None => {
-                    tracing::warn!("NUCLEUS_DLC_CREDENTIALS: entry without '=' — skipped (denied)")
-                }
-            }
-        }
-    }
-    Some(admission)
+    let field = |f: DlcField| std::env::var(f.env()).unwrap_or_default();
+    DlcAdmission::provision(
+        &field(DlcField::TrustedKeys),
+        &field(DlcField::Issuer),
+        &field(DlcField::Credentials),
+    )
 }
 
 #[cfg(test)]

@@ -102,6 +102,10 @@ impl StoppedVm<'_> {
         }
         if let Some(layout) = jail.take() {
             pod_receipt::preserve_exit_report(&layout, &pod.pod_dir);
+            if let Some(to) = &pod.scratch_export {
+                let disk = layout.host_path(firecracker_config::in_jail::SCRATCH);
+                crate::scratch_export::export_and_record(&disk, to, &pod.pod_dir).await;
+            }
             firecracker_config::cleanup_jail(&layout);
         }
         drop(jail);
@@ -129,6 +133,7 @@ mod tests {
             direct_cgroup: Mutex::new(None),
             workload_filesystem: crate::net::confinement::WorkloadFilesystem::Unreported,
             pod_dir: path.to_owned(),
+            scratch_export: None,
             vmm: Arc::new(Mutex::new(crate::vmm_process::VmmProcess::direct_for_test(
                 child,
             ))),

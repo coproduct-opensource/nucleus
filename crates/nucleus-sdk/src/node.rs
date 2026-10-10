@@ -85,6 +85,9 @@ pub struct ExecutionReceipt {
     /// Node signature and claimed public key; verification requires an independent pin.
     pub signature: String,
     pub signer_pubkey: String,
+    /// An eval cell's scratch export: `sha-256:<hex>` of the disk the node copied back to the
+    /// caller at exit, or `not exported: <why>`. Empty when no export was owed.
+    pub scratch_export: String,
     /// SHA-256 of canonical v1 fields — verifiable even by v1-only verifiers.
     pub v1_content_hash: String,
     /// Forward-compatible extension data.
@@ -106,6 +109,7 @@ impl From<nucleus_node::ExecutionReceipt> for ExecutionReceipt {
             report_provenance: r.report_provenance,
             signature: r.signature,
             signer_pubkey: r.signer_pubkey,
+            scratch_export: r.scratch_export,
             v1_content_hash: r.v1_content_hash,
             extensions: r.extensions.into_iter().collect(),
         }

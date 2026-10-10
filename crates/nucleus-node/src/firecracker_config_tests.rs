@@ -2202,3 +2202,54 @@ fn startup_reclaims_jails_a_previous_node_stranded() {
     let missing = tempfile::tempdir().expect("tempdir");
     assert!(reclaim_orphaned_jails(missing.path(), firecracker).is_empty());
 }
+
+// ── Eval cell: the guest boots a node-owned copy (ADR 0013 rule 7) ───────
+
+/// A write to the caller's scratch file after placement, where `image_identity::verify` checks
+/// the in-jail disk, must not reach an eval cell's guest. A standard pod still links.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_write_to_the_callers_file_after_placement_does_not_reach_an_eval_cells_guest() {
+    use nucleus_spec::isolation_profile::IsolationProfile;
+    use std::os::unix::fs::MetadataExt;
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dir = tmp.path();
+    let fx = JailFixture::new(dir);
+    let src = fx.scratch(dir);
+    std::fs::write(&src, b"the scanned, pinned bytes").expect("caller disk");
+    let mut img = image(true, true);
+    img.scratch_path = Some(src.clone());
+    let mut spec = base_spec();
+    IsolationProfile::EvalCell.label(&mut spec);
+
+    let placed = jail_resources(&host(&img), &spec, false);
+    let scratch = placed
+        .iter()
+        .find(|r| r.in_jail() == in_jail::SCRATCH)
+        .expect("an eval cell's caller scratch is jailed");
+    let dest = dir.join("in-jail-scratch");
+    place(scratch, &dest, fx.who).expect("placed");
+
+    std::fs::write(&src, b"rewritten after the boot check").expect("caller rewrites");
+    assert_eq!(
+        std::fs::read(&dest).expect("guest disk"),
+        b"the scanned, pinned bytes",
+        "the caller's write reached the eval cell's guest disk"
+    );
+    let guest = std::fs::metadata(&dest).expect("meta");
+    assert_ne!(guest.ino(), std::fs::metadata(&src).expect("meta").ino());
+    assert_eq!(
+        (guest.uid(), guest.nlink()),
+        (fx.who.uid, 1),
+        "the jail user's own inode"
+    );
+
+    let standard = jail_resources(&host(&img), &base_spec(), false);
+    assert!(
+        standard
+            .iter()
+            .any(|r| r.in_jail() == in_jail::SCRATCH
+                && r.placement() == Placement::GuestWritesThrough),
+        "a standard pod's caller scratch is still linked: {standard:?}"
+    );
+}

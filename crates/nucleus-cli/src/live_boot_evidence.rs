@@ -8,7 +8,9 @@
 //! Never a mock driver. Invoked by the xtask, which passes its inputs as
 //! `NUCLEUS_LIVE_BOOT_*` variables on the command line it runs under `sudo`.
 use anyhow::{Context, Result, bail, ensure};
-use nucleus_spec::live_boot::{self, Collection, Files, Measured, MeasuredHow, NodeEvidence};
+use nucleus_spec::live_boot::{
+    self, Collection, EvalCellRun, Files, Measured, MeasuredHow, NodeEvidence,
+};
 use nucleus_spec::workload_result::WorkloadResult;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -61,13 +63,6 @@ fn execution_spec(
     manifest: &crate::workload_verification::Manifest,
     nonce: &str,
 ) -> Result<serde_json::Value> {
-    let digest = |name: &str| -> Result<String> {
-        let input = manifest
-            .files
-            .get(name)
-            .with_context(|| format!("host manifest has no {name}"))?;
-        Ok(format!("sha-256:{}", input.sha256.to_ascii_lowercase()))
-    };
     Ok(json!({
         "apiVersion":"nucleus/v1", "kind":"Pod",
         "metadata":{"name":"live-boot-evidence"},
@@ -81,13 +76,64 @@ fn execution_spec(
                 "env":environment(),
                 "artifacts":{(live_boot::ARTIFACT_NAME):live_boot::ARTIFACT_PATH},
             },
-            "image":{
-                "kernel_path":nucleus_spec::microvm_host::guest_kernel_path(),
-                "rootfs_path":nucleus_spec::microvm_host::guest_rootfs_path(),
-                "kernel_digest":digest(nucleus_spec::tier2_artifacts::GUEST_KERNEL_FILE)?,
-                "rootfs_digest":digest(nucleus_spec::tier2_artifacts::GUEST_ROOTFS_FILE)?,
-                "read_only":true,
+            "image":guest_image(manifest)?,
+            "vsock":{"guest_cid":3,"port":5005},
+            "seccomp":{"mode":"default"},
+        }
+    }))
+}
+
+/// The installed guest, its kernel and rootfs pinned by digest.
+fn guest_image(manifest: &crate::workload_verification::Manifest) -> Result<serde_json::Value> {
+    let digest = |name: &str| -> Result<String> {
+        let input = manifest
+            .files
+            .get(name)
+            .with_context(|| format!("host manifest has no {name}"))?;
+        Ok(format!("sha-256:{}", input.sha256.to_ascii_lowercase()))
+    };
+    Ok(json!({
+        "kernel_path":nucleus_spec::microvm_host::guest_kernel_path(),
+        "rootfs_path":nucleus_spec::microvm_host::guest_rootfs_path(),
+        "kernel_digest":digest(nucleus_spec::tier2_artifacts::GUEST_KERNEL_FILE)?,
+        "rootfs_digest":digest(nucleus_spec::tier2_artifacts::GUEST_ROOTFS_FILE)?,
+        "read_only":true,
+    }))
+}
+
+/// The eval cell's workload: ordinary local work, and no network at all.
+const EVAL_CELL_WORKLOAD: &str =
+    "printf 'eval-cell\\n' > /work/eval-cell.txt && cat /work/eval-cell.txt";
+
+/// An honest eval cell (ADR 0013, ADR 0015 E1): labelled `eval-cell`, on the
+/// same pinned guest as the execution pod, with the same empty network policy,
+/// a policy that grants no network capability, the default VMM seccomp filter
+/// and no audit sink. It lists no destination because it sends nothing.
+fn eval_cell_spec(manifest: &crate::workload_verification::Manifest) -> Result<serde_json::Value> {
+    use nucleus_spec::isolation_profile::{IsolationProfile, PROFILE_LABEL};
+    let mut lattice = nucleus_spec::PolicySpec::Profile {
+        name: "codegen".into(),
+    }
+    .resolve()
+    .context("the codegen profile")?;
+    lattice.capabilities.web_fetch = portcullis::CapabilityLevel::Never;
+    lattice.capabilities.web_search = portcullis::CapabilityLevel::Never;
+    Ok(json!({
+        "apiVersion":"nucleus/v1", "kind":"Pod",
+        "metadata":{
+            "name":"live-boot-eval-cell",
+            "labels":{(PROFILE_LABEL):IsolationProfile::EvalCell.name()},
+        },
+        "spec":{
+            "work_dir":"/work", "timeout_seconds":300,
+            "policy":nucleus_spec::PolicySpec::Inline { lattice: Box::new(lattice) },
+            "network":{"allow":[], "deny":[]},
+            "workload":{
+                "command":"/bin/sh", "args":["-c", EVAL_CELL_WORKLOAD],
+                "uid":65534,
+                "env":environment(),
             },
+            "image":guest_image(manifest)?,
             "vsock":{"guest_cid":3,"port":5005},
             "seccomp":{"mode":"default"},
         }
@@ -120,6 +166,31 @@ fn process_exe(pid: u32, path: &str) -> Result<Measured> {
 /// The Firecracker process serving `pod`: the jailer passes the pod id as
 /// `--id`, and the executable is the jail's copy of the configured binary.
 fn firecracker_for(pod: Uuid) -> Result<Measured> {
+    process_exe(firecracker_pid(pod)?, FIRECRACKER)
+}
+
+/// The filter table of the network namespace `pod`'s VMM runs in, with its
+/// packet counters (`iptables-save -c`): the fence as the guest's traffic left
+/// it (ADR 0015 E1). Taken before the pod is cancelled, because teardown
+/// deletes the namespace. Read through the VMM's own `/proc/<pid>/ns/net`, so
+/// it is the namespace the guest's tap is in, not one found by name.
+fn fence_snapshot(pod: Uuid) -> Result<String> {
+    let pid = firecracker_pid(pod)?;
+    let output = std::process::Command::new("nsenter")
+        .arg(format!("--net=/proc/{pid}/ns/net"))
+        .args(["--", "iptables-save", "-c"])
+        .output()
+        .context("running iptables-save in the pod's network namespace")?;
+    ensure!(
+        output.status.success(),
+        "iptables-save in pod {pod}'s namespace: {}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).context("iptables-save printed non-UTF-8")
+}
+
+fn firecracker_pid(pod: Uuid) -> Result<u32> {
     let id = pod.to_string();
     let mut found = Vec::new();
     for entry in std::fs::read_dir("/proc")?.flatten() {
@@ -144,7 +215,7 @@ fn firecracker_for(pod: Uuid) -> Result<Measured> {
         }
     }
     match found.as_slice() {
-        [pid] => process_exe(*pid, FIRECRACKER),
+        [pid] => Ok(*pid),
         [] => bail!("no running firecracker process names pod {pod}"),
         many => bail!("several firecracker processes name pod {pod}: {many:?}"),
     }
@@ -211,6 +282,44 @@ async fn then_cancel<T>(
     }
 }
 
+/// When a workload's supervisor first answered and when it reported the exit.
+struct Exit {
+    ready_ms: u64,
+    exit_ms: u64,
+    exit_code: Option<i32>,
+}
+
+/// Poll `base`'s workload result until it reports the exit.
+async fn wait_exit(node: &Node, base: &str, started: Instant) -> Result<Exit> {
+    let mut ready_ms = None;
+    let (exit_ms, exit_code) = tokio::time::timeout(Duration::from_secs(600), async {
+        loop {
+            let (status, bytes) = get(node, &format!("{base}/workload-result")).await?;
+            if status == 200 {
+                ready_ms.get_or_insert_with(|| millis(started));
+                match serde_json::from_slice::<WorkloadResult>(&bytes)? {
+                    WorkloadResult::Exited { exit_code, .. } => {
+                        return Ok::<_, anyhow::Error>((millis(started), exit_code));
+                    }
+                    WorkloadResult::Running => {}
+                    WorkloadResult::NotConfigured => bail!("the workload was not configured"),
+                    WorkloadResult::Unavailable { reason } => {
+                        bail!("the workload is unavailable: {reason}")
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    })
+    .await
+    .context("timed out waiting for the workload to exit")??;
+    Ok(Exit {
+        ready_ms: ready_ms.context("the supervisor never answered")?,
+        exit_ms,
+        exit_code,
+    })
+}
+
 struct Execution {
     pod: Uuid,
     create_ms: u64,
@@ -242,29 +351,12 @@ async fn execution(node: &Node, out: &Path, files: &Files, nonce: &str) -> Resul
         let base = format!("{}/v1/pods/{pod}", node.url);
         let admission = ok(node, &format!("{base}/workload-admission")).await?;
         std::fs::write(out.join(&files.admission), admission)?;
-        let mut ready_ms = None;
-        let exit_ms = tokio::time::timeout(Duration::from_secs(600), async {
-            loop {
-                let (status, bytes) = get(node, &format!("{base}/workload-result")).await?;
-                if status == 200 {
-                    ready_ms.get_or_insert_with(|| millis(started));
-                    match serde_json::from_slice::<WorkloadResult>(&bytes)? {
-                        WorkloadResult::Exited { .. } => {
-                            return Ok::<_, anyhow::Error>(millis(started));
-                        }
-                        WorkloadResult::Running => {}
-                        WorkloadResult::NotConfigured => bail!("the workload was not configured"),
-                        WorkloadResult::Unavailable { reason } => {
-                            bail!("the workload is unavailable: {reason}")
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(250)).await;
-            }
-        })
-        .await
-        .context("timed out waiting for the posture workload to exit")??;
-        let ready_ms = ready_ms.context("the supervisor never answered")?;
+        let Exit {
+            ready_ms, exit_ms, ..
+        } = wait_exit(node, &base, started)
+            .await
+            .context("the posture workload")?;
+        std::fs::write(out.join(&files.fence_execution), fence_snapshot(pod)?)?;
         let bundle = live::body(
             node.client
                 .post(format!("{base}/execution-receipt"))
@@ -357,9 +449,64 @@ async fn effect(node: &Node, out: &Path, files: &Files, nonce: &str) -> Result<(
             out.join(&files.host_effects),
         )?;
         std::fs::copy(&outcomes, out.join(&files.host_effect_outcomes))?;
+        std::fs::write(out.join(&files.fence_effect), fence_snapshot(pod)?)?;
         Ok((pod, create_ms))
     })
     .await
+}
+
+/// Boot the honest eval cell, or record the node's refusal of it. Writes the
+/// spec, the [`EvalCellRun`] and, when admitted, the cell's filter table; the
+/// console is copied by the caller after cancellation, like the effect pod's.
+async fn eval_cell(node: &Node, out: &Path, files: &Files) -> Result<Option<Uuid>> {
+    let manifest =
+        tokio::task::spawn_blocking(crate::workload_verification::installed_manifest).await??;
+    let spec = eval_cell_spec(&manifest)?;
+    std::fs::write(
+        out.join(&files.eval_cell_spec),
+        serde_json::to_vec_pretty(&spec)?,
+    )?;
+    let started = Instant::now();
+    let response = node
+        .client
+        .post(format!("{}/v1/pods", node.url))
+        .timeout(nucleus_spec::boot_budget::POD_CREATE_CLIENT_TIMEOUT)
+        .json(&spec)
+        .send()
+        .await?;
+    let status = response.status();
+    let bytes = response.bytes().await?;
+    let (run, admitted) = if status.is_client_error() {
+        let refused = EvalCellRun::Refused {
+            status: status.as_u16(),
+            reason: String::from_utf8_lossy(&bytes).into_owned(),
+        };
+        (refused, None)
+    } else {
+        ensure!(
+            status.is_success(),
+            "creating the eval cell: HTTP {status}: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let created: live::Created = serde_json::from_slice(&bytes)?;
+        let pod = created.id;
+        let exit = then_cancel(node, pod, async {
+            let base = format!("{}/v1/pods/{pod}", node.url);
+            let exit = wait_exit(node, &base, started)
+                .await
+                .context("the eval-cell workload")?;
+            std::fs::write(out.join(&files.fence_eval_cell), fence_snapshot(pod)?)?;
+            Ok(exit)
+        })
+        .await?;
+        let admitted = EvalCellRun::Admitted {
+            pod: pod.to_string(),
+            exit_code: exit.exit_code,
+        };
+        (admitted, Some(pod))
+    };
+    std::fs::write(out.join(&files.eval_cell), serde_json::to_vec_pretty(&run)?)?;
+    Ok(admitted)
 }
 
 async fn collect(
@@ -392,11 +539,17 @@ async fn collect(
     copy_console(&pods, effect_pod, &out.join(&files.effect_console))?;
     let (coverage_pod, coverage_ms) = coverage(node, out, &files).await?;
     copy_console(&pods, coverage_pod, &out.join(&files.coverage_console))?;
+    let eval_cell = eval_cell(node, out, &files).await?;
+    let mut cancelled = vec![run.pod, effect_pod, coverage_pod];
+    if let Some(pod) = eval_cell {
+        copy_console(&pods, pod, &out.join(&files.eval_cell_console))?;
+        cancelled.push(pod);
+    }
     // After every pod was cancelled: every comparison any pod's shadow service
     // made has been appended by now.
     gather_disagreements(
         &pods,
-        &[run.pod, effect_pod, coverage_pod],
+        &cancelled,
         &out.join(&files.host_decide_disagreements),
     )?;
     let jailer = Measured {

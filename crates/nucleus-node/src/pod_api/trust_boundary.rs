@@ -90,6 +90,10 @@ enum Property {
     /// P5b (#3255): the approval that declassified one tainted push is spent
     /// by it; the next push from the same session is held again.
     ReusedDeclassificationRefused,
+    /// P6 (ADR 0014 S3): a pod whose workspace the host put in untrusted, and
+    /// whose guest reports nothing (no `Observe`), has its outbound effect
+    /// withheld by the host. The guest's silence is not evidence (A-2).
+    UnobservedTaintHeld,
 }
 
 /// Every property, in table order. Each is measured exactly once.
@@ -102,6 +106,7 @@ const ALL: &[Property] = &[
     Property::ReusedApprovalRefused,
     Property::TaintedPushRequiresApproval,
     Property::ReusedDeclassificationRefused,
+    Property::UnobservedTaintHeld,
 ];
 
 impl Property {
@@ -115,6 +120,7 @@ impl Property {
             Property::ReusedApprovalRefused => "P5",
             Property::TaintedPushRequiresApproval => "P2b",
             Property::ReusedDeclassificationRefused => "P5b",
+            Property::UnobservedTaintHeld => "P6",
         }
     }
 }
@@ -130,6 +136,7 @@ fn expected(p: Property) -> Expected {
         Property::ReusedApprovalRefused => Expected::Holds,
         Property::TaintedPushRequiresApproval => Expected::Holds,
         Property::ReusedDeclassificationRefused => Expected::Holds,
+        Property::UnobservedTaintHeld => Expected::Holds,
     }
 }
 
@@ -189,10 +196,12 @@ trait Host {
     type Pod: GuestFacing;
     /// Boot one pod under `policy`. `approvals` are operator approvals the host
     /// itself has verified, by operation and count.
+    /// `workspace` is what the host put into the pod at admission.
     async fn boot(
         &self,
         policy: PermissionLattice,
         approvals: &[(Operation, u32)],
+        workspace: Workspace,
     ) -> Result<Self::Pod, String>;
 }
 
@@ -228,6 +237,17 @@ struct BrokerScenario {
     approvals: Vec<(Operation, u32)>,
     prelude: Vec<PerformRequest>,
     probe: PerformRequest,
+    workspace: Workspace,
+}
+
+/// What the host put into the pod at admission (ADR 0014 §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Workspace {
+    /// Nothing caller-supplied: the host's label starts clean.
+    Clean,
+    /// A caller-supplied workspace no host verifier vouched for: the host's
+    /// label starts untrusted.
+    Untrusted,
 }
 
 fn scenario_taint() -> BrokerScenario {
@@ -238,6 +258,7 @@ fn scenario_taint() -> BrokerScenario {
         // taint is something the host itself observed, not a guest claim.
         prelude: vec![perform_request(Operation::WebFetch, "taint-fetch")],
         probe: perform_request(Operation::GitCommit, "taint-commit"),
+        workspace: Workspace::Clean,
     }
 }
 
@@ -253,6 +274,7 @@ fn scenario_unapproved() -> BrokerScenario {
         approvals: Vec::new(),
         prelude: Vec::new(),
         probe: perform_request(Operation::GitCommit, "unapproved-commit"),
+        workspace: Workspace::Clean,
     }
 }
 
@@ -266,6 +288,7 @@ fn scenario_budget() -> BrokerScenario {
         approvals: Vec::new(),
         prelude: Vec::new(),
         probe: perform_request(Operation::WebFetch, "over-budget-fetch"),
+        workspace: Workspace::Clean,
     }
 }
 
@@ -278,6 +301,7 @@ fn scenario_reuse() -> BrokerScenario {
         // A fresh idempotency key: the key is guest-chosen, so the host's ledger
         // deduplicates retries and is no defence against a second decision.
         probe: perform_request(Operation::GitCommit, "reused-approval-commit"),
+        workspace: Workspace::Clean,
     }
 }
 
@@ -288,6 +312,7 @@ fn scenario_tainted_push() -> BrokerScenario {
         // The host's own fetch taints the session, as in P2.
         prelude: vec![perform_request(Operation::WebFetch, "push-taint-fetch")],
         probe: perform_request(Operation::GitPush, "tainted-push"),
+        workspace: Workspace::Clean,
     }
 }
 
@@ -302,6 +327,24 @@ fn scenario_reused_declassification() -> BrokerScenario {
         ],
         // The same effect again, under a fresh guest-chosen key.
         probe: perform_request(Operation::GitPush, "redeclassified-push"),
+        workspace: Workspace::Clean,
+    }
+}
+
+/// P6: nothing in the prelude, nothing observed; the only untrusted thing is
+/// the workspace the host itself put in. Measured against the same commit from
+/// a clean workspace, which must be performed, so the row reds for the taint
+/// and for nothing else. (A push is held by P2b's mechanism once the label is
+/// tainted; a commit is used here because a clean push is not performed
+/// without an approval either, which would make the row hold for another
+/// reason.)
+fn scenario_unobserved_taint(workspace: Workspace) -> BrokerScenario {
+    BrokerScenario {
+        policy: PermissionLattice::permissive(),
+        approvals: Vec::new(),
+        prelude: Vec::new(),
+        probe: perform_request(Operation::GitCommit, "silent-commit"),
+        workspace,
     }
 }
 
@@ -311,6 +354,7 @@ fn scenario_control() -> BrokerScenario {
         approvals: Vec::new(),
         prelude: Vec::new(),
         probe: perform_request(Operation::WebFetch, "control-fetch"),
+        workspace: Workspace::Clean,
     }
 }
 
@@ -375,6 +419,25 @@ fn witness_tainted_push(s: &BrokerScenario, what: &str) -> Result<String, String
     refuses(decided.decision.verdict, what)
 }
 
+/// The honest guest for P6 labels its untrusted workspace as the host does:
+/// adversarial integrity, the lattice point web content has. Having read it, it
+/// holds the push for an approval. A guest that reports nothing is the
+/// adversary's guest, not this one.
+fn witness_unobserved_taint(s: &BrokerScenario) -> Result<String, String> {
+    let mut kernel = Kernel::new(s.policy.clone());
+    let mut read = portcullis::flow_graph::FlowGraph::new();
+    read.insert_observation(NodeKind::WebContent, &[], 1)
+        .map_err(|e| format!("could not record the workspace read: {e:?}"))?;
+    let decided = kernel.decide_effect_with_flow(
+        ActionTerm::from_operation(Operation::GitCommit, "https://upstream.invalid/v1/act"),
+        Some(&read),
+    );
+    refuses(
+        decided.decision.verdict,
+        "a GitCommit after reading an untrusted workspace",
+    )
+}
+
 fn witness_unapproved(s: &BrokerScenario) -> Result<String, String> {
     let mut kernel = Kernel::new(s.policy.clone());
     refuses(
@@ -423,7 +486,7 @@ fn witness_reuse(s: &BrokerScenario) -> Result<String, String> {
 /// The broker's positive control: a legitimate PERFORM on a permissive pod is made.
 async fn broker_control<H: Host>(host: &H) -> Result<String, String> {
     let s = scenario_control();
-    let mut pod = host.boot(s.policy, &s.approvals).await?;
+    let mut pod = host.boot(s.policy, &s.approvals, s.workspace).await?;
     match pod.perform(&s.probe).await {
         Probe::Admitted(e) => Ok(e),
         other => Err(format!("a legitimate PERFORM was not performed: {other:?}")),
@@ -435,9 +498,10 @@ async fn boot_live<H: Host>(
     host: &H,
     policy: PermissionLattice,
     approvals: &[(Operation, u32)],
+    workspace: Workspace,
 ) -> Result<H::Pod, Probe> {
     let mut pod = host
-        .boot(policy, approvals)
+        .boot(policy, approvals, workspace)
         .await
         .map_err(|e| Probe::Inconclusive(format!("the pod did not boot: {e}")))?;
     match pod.legitimate_fetch().await {
@@ -502,10 +566,11 @@ fn forged_exit_report(key: &SigningKey) -> Result<String, String> {
 }
 
 async fn probe_receipt<H: Host>(host: &H) -> Probe {
-    let mut pod = match boot_live(host, PermissionLattice::permissive(), &[]).await {
-        Ok(pod) => pod,
-        Err(p) => return p,
-    };
+    let mut pod =
+        match boot_live(host, PermissionLattice::permissive(), &[], Workspace::Clean).await {
+            Ok(pod) => pod,
+            Err(p) => return p,
+        };
     let (key, provenance) = match guest_signing_key(&mut pod).await {
         Ok(k) => k,
         Err(p) => return p,
@@ -518,10 +583,11 @@ async fn probe_receipt<H: Host>(host: &H) -> Probe {
 }
 
 async fn probe_exit_report<H: Host>(host: &H) -> Probe {
-    let mut pod = match boot_live(host, PermissionLattice::permissive(), &[]).await {
-        Ok(pod) => pod,
-        Err(p) => return p,
-    };
+    let mut pod =
+        match boot_live(host, PermissionLattice::permissive(), &[], Workspace::Clean).await {
+            Ok(pod) => pod,
+            Err(p) => return p,
+        };
     let (key, provenance) = match guest_signing_key(&mut pod).await {
         Ok(k) => k,
         Err(p) => return p,
@@ -540,7 +606,7 @@ async fn probe_broker<H: Host>(
     if let Err(why) = control {
         return Probe::Inconclusive(format!("the broker's positive control failed: {why}"));
     }
-    let mut pod = match boot_live(host, s.policy, &s.approvals).await {
+    let mut pod = match boot_live(host, s.policy, &s.approvals, s.workspace).await {
         Ok(pod) => pod,
         Err(p) => return p,
     };
@@ -600,6 +666,18 @@ async fn measure<H: Host>(host: &H, control: &Result<String, String>, p: Propert
             let s = scenario_reused_declassification();
             let w = witness_tainted_push(&s, "a second tainted GitPush on one approval");
             (w, probe_broker(host, control, s).await)
+        }
+        Property::UnobservedTaintHeld => {
+            let s = scenario_unobserved_taint(Workspace::Untrusted);
+            let witness = witness_unobserved_taint(&s);
+            let clean = probe_broker(host, control, scenario_unobserved_taint(Workspace::Clean));
+            let probe = match clean.await {
+                Probe::Admitted(_) => probe_broker(host, control, s).await,
+                other => Probe::Inconclusive(format!(
+                    "the same commit from a clean workspace was not performed: {other:?}"
+                )),
+            };
+            (witness, probe)
         }
     };
     match witness {
@@ -683,6 +761,7 @@ impl Host for Node {
         &self,
         policy: PermissionLattice,
         approvals: &[(Operation, u32)],
+        workspace: Workspace,
     ) -> Result<NodePod, String> {
         let dir = tempfile::tempdir_in("/tmp").map_err(|e| e.to_string())?;
         let mut st = super::handler_tests::state(&dir);
@@ -712,8 +791,18 @@ impl Host for Node {
         spec.spec.policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
         };
+        // What `create_pod_internal` decides from the spec and the node's
+        // driver (`StartingLabel::of`), given here as its result.
+        let starting = match workspace {
+            Workspace::Clean => crate::host_decide::StartingLabel::Clean,
+            Workspace::Untrusted => crate::host_decide::StartingLabel::Untrusted(
+                crate::host_decide::Untrusted::Workspace {
+                    field: "image.scratch_path",
+                },
+            ),
+        };
         st.authority
-            .admit_kept(
+            .admit_kept_as(
                 &crate::pod_authority::Admission {
                     caller_spiffe_id: st.authority.root_minter().into(),
                     caller_pod: None,
@@ -721,6 +810,7 @@ impl Host for Node {
                 },
                 &spec,
                 id,
+                starting,
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -1035,7 +1125,7 @@ fn an_unmeasured_row_is_never_accepted_as_a_gap_or_a_hold() {
 async fn host_signed_evidence_survives_guest_key_refusal_and_forged_receipt_upload() {
     use nucleus_spec::host_effect::{SignedAuthorization, signing_bytes};
     let mut pod = Node
-        .boot(PermissionLattice::permissive(), &[])
+        .boot(PermissionLattice::permissive(), &[], Workspace::Clean)
         .await
         .unwrap();
     assert!(matches!(
@@ -1144,11 +1234,12 @@ impl Host for Enforcing {
         &self,
         policy: PermissionLattice,
         approvals: &[(Operation, u32)],
+        workspace: Workspace,
     ) -> Result<EnforcingPod, String> {
         Ok(EnforcingPod {
             policy,
             approvals: approvals.iter().copied().collect(),
-            tainted: false,
+            tainted: workspace == Workspace::Untrusted,
             receipt_key: SigningKey::from_bytes(&[0x07; 32]),
         })
     }
@@ -1239,6 +1330,7 @@ impl Host for Disconnected {
         &self,
         _policy: PermissionLattice,
         _approvals: &[(Operation, u32)],
+        _workspace: Workspace,
     ) -> Result<DeadPod, String> {
         Ok(DeadPod)
     }
@@ -1298,6 +1390,7 @@ fn a_scenario_the_honest_kernel_allows_is_not_evaluated() {
         approvals: Vec::new(),
         prelude: Vec::new(),
         probe: perform_request(Operation::GitCommit, "ungated-commit"),
+        workspace: Workspace::Clean,
     };
     assert!(witness_unapproved(&s).is_err());
 }

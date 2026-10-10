@@ -237,6 +237,26 @@ fn deny_precedes_allow_in_the_chain() {
     );
 }
 
+/// Each rule's fence tag names what its verdict is (ADR 0015 E1): a drop is
+/// counted as a floor or a spec deny, an accept as a listed destination, and the
+/// floor is exactly the node's floor. A tag that disagreed with the verdict would
+/// put a dropped packet in an accepted counter.
+#[test]
+fn every_chain_rule_is_tagged_with_what_it_decides() {
+    use nucleus_spec::egress_fence::FenceRule;
+    let spec = spec_from(&["10.0.0.7/32"], &["10.0.0.0/8", "192.168.0.0/16"]);
+    let chain = egress_chain(&spec, None).expect("chain");
+    let floor = chain.iter().filter(|r| r.tag == FenceRule::Floor).count();
+    assert_eq!(floor, crate::net::NODE_DENY_FLOOR.len());
+    for rule in &chain {
+        match (rule.kind, rule.tag) {
+            (RuleKind::Deny, FenceRule::Floor | FenceRule::SpecDeny)
+            | (RuleKind::Allow, FenceRule::Allow) => {}
+            (kind, tag) => panic!("{kind:?} rule tagged {tag:?}: {rule:?}"),
+        }
+    }
+}
+
 /// A deny inside a broader allow still wins — the confused-deputy of firewalls.
 /// This is `deny_before_allow_wins` instantiated on a real policy.
 #[test]

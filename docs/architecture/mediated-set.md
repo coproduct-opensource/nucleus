@@ -52,7 +52,8 @@ Status vocabulary (the `Status` column, machine-stable):
   (`crates/nucleus-node/src/net.rs:385` `apply_default_deny`), which is now
   **proven applied on boot** by the in-guest egress probe
   (`scripts/check-egress-probe.sh`, the x86_64 boot gate: an off-allowlist
-  connect from inside the live guest returns `ENETUNREACH`; C6 phase 2).
+  connect from inside the live guest fails with `connection timed out`, the
+  chain's DROP, in every live-boot bundle read for ADR 0015; C6 phase 2).
 - **`partial`** — some frames on the transport are mediated, the rest rest on a
   structural property (peer-CID pin, identity refusal) rather than a token.
 - **`open-hole`** — a known unmediated path with no fence beyond "tracked open".

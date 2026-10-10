@@ -222,6 +222,7 @@ impl Run {
             direct_cgroup: Mutex::new(None),
             workload_filesystem: crate::net::confinement::WorkloadFilesystem::Unreported,
             pod_dir: dir.path().to_path_buf(),
+            scratch_export: None,
             jail: Mutex::new(None),
             vmm: Arc::new(Mutex::new(crate::vmm_process::VmmProcess::direct_for_test(
                 child,

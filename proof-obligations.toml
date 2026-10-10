@@ -378,7 +378,7 @@ status = "allowlisted"
 tracking = "#3310"
 
 [[obligation]]
-function = "nucleus_node::pod_authority::PodAuthority::admit"
+function = "nucleus_node::pod_authority::PodAuthority::admit_as"
 kind = "missing"
 status = "allowlisted"
 tracking = "#3311"

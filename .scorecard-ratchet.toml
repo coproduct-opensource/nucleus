@@ -88,9 +88,11 @@
 # is unchanged at 33, so INERT_TOTAL still agrees. 192/193 = 99.48%.
 # 2026-10-04: memory journal integration and its authority fixtures measure
 # 196/197 witness sites; tighten both pins to the scanner result.
-floor_bp = 9949
+# 2026-10-08: ADR 0016 S1, the eval-cell launch check: three new sites taking a
+# `LaunchAttestation`, all bound. 199/200 = 99.50%, and the floor follows it up.
+floor_bp = 9950
 floor_set = "measurement"
-population_floor = 197
+population_floor = 200
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
