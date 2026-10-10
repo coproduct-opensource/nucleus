@@ -366,8 +366,14 @@ export interface NodeEvidenceRelyingParty {
     | { epoch: { receipt_time: number; max_age_secs: number; max_future_secs: number } };
   /** Root certificates (base64 DER) an AK certificate chain may end at. */
   trust_roots: string[];
-  /** Operator pins this relying party accepts — the weakest anchor. */
+  /** Operator pins this relying party accepts — the weakest anchor that names hardware. */
   operator_pins: { source: string; ak_spki_sha256: string }[];
+  /**
+   * Software-TPM pins this relying party accepts: no hardware root, labelled
+   * `software_tpm` in every result. Omitted, it is empty: no software TPM is
+   * accepted.
+   */
+  software_tpm_pins?: { source: string; ak_spki_sha256: string }[];
   /** Unix seconds, for certificate validity. */
   now: number;
 }

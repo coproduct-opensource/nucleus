@@ -25,9 +25,36 @@ pub(crate) struct AnchorArgs {
     #[arg(long)]
     trust_root: Vec<PathBuf>,
     /// `SOURCE=SPKI_SHA256`: accept the operator's word that the AK with this
-    /// fingerprint, fetched from SOURCE, is a TPM's. The weakest anchor.
+    /// fingerprint, fetched from SOURCE, is a TPM's. The weakest anchor that
+    /// names hardware.
     #[arg(long)]
     operator_pin: Vec<String>,
+    /// `SOURCE=SPKI_SHA256`: accept the AK with this fingerprint as a
+    /// SOFTWARE TPM's (swtpm, as CI runs). No hardware holds that key, so
+    /// whoever runs the emulator can sign any quote; the result is labelled
+    /// `software_tpm`. Evidence claiming a software TPM is never anchored
+    /// without this flag, and an `--operator-pin` never anchors it.
+    #[arg(long)]
+    allow_software_tpm_pin: Vec<String>,
+}
+
+/// Parse `SOURCE=SPKI_SHA256` pins given under `flag`.
+fn pins(flag: &str, specs: &[String]) -> Result<Vec<OperatorPin>> {
+    specs
+        .iter()
+        .map(|spec| {
+            let (source, fp) = spec
+                .rsplit_once('=')
+                .ok_or_else(|| anyhow!("{flag} is SOURCE=SPKI_SHA256, got {spec:?}"))?;
+            if fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_hexdigit()) {
+                bail!("{flag} {spec:?}: the fingerprint is not SHA-256 hex");
+            }
+            Ok(OperatorPin {
+                source: source.to_string(),
+                ak_spki_sha256: fp.to_ascii_lowercase(),
+            })
+        })
+        .collect()
 }
 
 fn der_of(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -56,22 +83,10 @@ impl AnchorArgs {
                 std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             trust_roots.push(der_of(&bytes)?);
         }
-        let mut operator_pins = Vec::new();
-        for spec in &self.operator_pin {
-            let (source, fp) = spec
-                .rsplit_once('=')
-                .ok_or_else(|| anyhow!("--operator-pin is SOURCE=SPKI_SHA256, got {spec:?}"))?;
-            if fp.len() != 64 || !fp.bytes().all(|b| b.is_ascii_hexdigit()) {
-                bail!("--operator-pin {spec:?}: the fingerprint is not SHA-256 hex");
-            }
-            operator_pins.push(OperatorPin {
-                source: source.to_string(),
-                ak_spki_sha256: fp.to_ascii_lowercase(),
-            });
-        }
         Ok(AnchorPolicy {
             trust_roots,
-            operator_pins,
+            operator_pins: pins("--operator-pin", &self.operator_pin)?,
+            software_tpm_pins: pins("--allow-software-tpm-pin", &self.allow_software_tpm_pin)?,
         })
     }
 }

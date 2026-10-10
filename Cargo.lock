@@ -6743,6 +6743,7 @@ dependencies = [
  "nucleus-jsonl",
  "nucleus-lineage",
  "nucleus-node-binding",
+ "nucleus-node-evidence",
  "nucleus-oci-rootfs",
  "nucleus-proto",
  "nucleus-provenance-memory",

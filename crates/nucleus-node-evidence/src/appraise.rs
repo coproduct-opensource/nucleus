@@ -836,7 +836,9 @@ pub fn appraise(
         },
         (_, FreshnessVerdict::Fresh, false) => Tier::Contested,
         (
-            AkAnchor::CertificateChain { .. } | AkAnchor::OperatorFetched { .. },
+            AkAnchor::CertificateChain { .. }
+            | AkAnchor::OperatorFetched { .. }
+            | AkAnchor::SoftwareTpm { .. },
             FreshnessVerdict::Fresh,
             true,
         ) => Tier::Attested,

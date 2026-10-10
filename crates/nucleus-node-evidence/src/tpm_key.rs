@@ -321,8 +321,10 @@ impl<T: Transport> Tpm<T> {
         Ok((attest, signature))
     }
 
-    /// `TPM2_PCR_Extend` the SHA-256 bank of `pcr` with `digest`. For tests
-    /// and the live check that a moved boot state stops the key.
+    /// `TPM2_PCR_Extend` the SHA-256 bank of `pcr` with `digest`. For tests,
+    /// the live check that a moved boot state stops the key, and the software
+    /// measurer of a software TPM ([`crate::attester::measure_into_pcr10`]).
+    /// On a hardware node the kernel extends the PCRs, never nucleus.
     pub fn pcr_extend(&mut self, pcr: u8, digest: &[u8; 32]) -> Result<(), AttestError> {
         let mut params = Vec::new();
         params.extend_from_slice(&1u32.to_be_bytes());

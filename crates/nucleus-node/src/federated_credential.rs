@@ -1407,6 +1407,7 @@ policy_id = "example-policy-0001"
             let reference: nucleus_node_evidence::ReferenceManifest =
                 serde_json::from_slice(&fixture("live-node-reference-exact.json")).unwrap();
             let anchors = nucleus_node_evidence::AnchorPolicy {
+                software_tpm_pins: Vec::new(),
                 trust_roots: vec![],
                 operator_pins: vec![nucleus_node_evidence::OperatorPin {
                     source: doc["ak_anchor"]["operator_fetched"]["source"]

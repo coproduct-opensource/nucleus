@@ -164,5 +164,9 @@
 # No function the wasm exports changed behaviour, and the cause of the byte move was not
 # isolated further. The digest is from CI's Clippy run of this PR's head (a1a73ccb8), and
 # `f2b7954f…` is REPLACED, on the rule above. The .js shim did not move: no export changed.
-7e5755cfcf705027852194435d2ec3038ce2f1a8fa64838e6a0e491ce46201e2  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-10-09 (#3372): the .wasm moved because `nucleus-node-evidence`'s source did: the AK
+# anchor gained `SoftwareTpm` and the relying-party document `software_tpm_pins`, which the
+# wasm's node-evidence report parses. The digest is from CI's Clippy run of this PR's head
+# (87022dda1), and `7e5755cf…` is REPLACED, on the rule above. The .js shim did not move.
+b02b4c07a63a4227259b6ed99658f109e7872597129c8c4236090b87efd04861  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

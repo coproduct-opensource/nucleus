@@ -173,6 +173,16 @@ labelled as such in every result. Without a pin, the platform tier is `Unatteste
 A hardware-anchored AK (`CertificateChain`) needs no operator trust; see ADR 0011,
 "Limits".
 
+**A software TPM is not a hardware root, and the verifier will not take it as one.**
+Evidence whose anchor claim is `software_tpm` (swtpm, as nucleus's own CI live boot
+runs) is anchored only by `--allow-software-tpm-pin 'SOURCE=SPKI_SHA256'`, and every
+result labels it `software_tpm`. An `--operator-pin` never anchors it, and a
+software-TPM pin never anchors an operator claim, so the commands below, which pass
+only `--operator-pin`, return `Unattested` for a software TPM and
+`--require-attested` fails. Whoever runs a software TPM can sign any quote with its AK:
+pass that flag only for a node whose operator you are, or whose software TPM you
+accept for testing.
+
 ## 4. Run the verifier
 
 With the audit CLI, `nucleus-audit` from the release's `nucleus-audit-*` tarball, which
@@ -219,7 +229,7 @@ its federation JWKS into every quote, next to its executor key.
 | `Attested` (exit 0) | The anchor is not `None`, the evidence is fresh at the receipt's time, and nothing in the reference's scope diverges from it. The `not_checked` list says what was not looked at, and `ima_not_in_scope` lists what was measured outside the reference's scope. |
 | `Contested` | A measurement diverges, and each divergence is named. |
 | `Expired` | The evidence is not fresh: a replayed challenge (`nonce_mismatch`), or epoch evidence that is too old or from the future. |
-| `Unattested` | Nothing ties the quote to a TPM (no matching pin), or the receipt says the node had no evidence. |
+| `Unattested` | Nothing ties the quote to a TPM (no matching pin, including a software TPM with no `--allow-software-tpm-pin`), or the receipt says the node had no evidence. |
 | Refusal | Not evidence at all: a bad signature, a log that does not replay, a binding to another executor key (`executor_key_mismatch`), or to another federation set (`federation_mismatch`, which names both sets). |
 
 A browser and JavaScript verifier for node evidence, built from the same Rust verifier
@@ -233,7 +243,8 @@ compiled to wasm in `sdks/verifier-js`, is being added in a separate change.
 - **The host's kernel modules, and any other file outside the release's scope.** They
   are listed (`ima_not_in_scope`), not judged. Only the operator's reference values, or a
   published host image, can say whether they are the expected ones.
-- **The AK, without the operator.** `OperatorFetched` is the operator's word.
+- **The AK, without the operator.** `OperatorFetched` is the operator's word, and
+  `SoftwareTpm` is the operator's word about a key no hardware holds.
 - **EFI applications (PCR 4).** The reference generator does not compute Authenticode
   digests yet.
 - **Inside the guest.** The host TPM does not measure what runs in a Firecracker guest.
