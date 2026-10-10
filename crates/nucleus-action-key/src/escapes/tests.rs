@@ -235,3 +235,55 @@ fn source_that_does_not_lex_is_an_error_not_an_empty_scan() {
     .expect_err("unlexable source must not read as 'no reads found'");
     assert!(format!("{err:#}").contains("lexing"));
 }
+
+/// The lexer's cache is keyed by FILE, and only what the file alone decides is cached. Whether a
+/// read is covered depends on whose closure asks, so one shared file must answer differently for
+/// two closures through one `Lexer`, each exactly as a fresh scan answers. A cache that kept a
+/// classified answer per file would hand `b` the verdict computed for `a`.
+#[test]
+fn a_shared_lexer_answers_each_closure_as_a_fresh_scan_does() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let files = [
+        (
+            "crates/a/src/lib.rs",
+            r#"const X: &str = include_str!("../../c/data/v.json");"#,
+        ),
+        ("crates/c/data/v.json", "{}"),
+    ];
+    let mut tracked: Vec<String> = Vec::new();
+    for (path, body) in files {
+        let full = root.path().join(path);
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&full, body).expect("write");
+        tracked.push(path.to_string());
+    }
+    let mut w = Workspace::default();
+    for (name, dir) in [("a", "crates/a"), ("b", "crates/b"), ("c", "crates/c")] {
+        w.dirs.insert(name.to_string(), dir.to_string());
+    }
+    // `a` alone: the read leaves its closure. `b` holds `a` and `c`: the same read is covered.
+    w.closures
+        .insert("a".to_string(), std::iter::once("a".to_string()).collect());
+    w.closures.insert(
+        "b".to_string(),
+        ["a", "b", "c"].iter().map(|s| (*s).to_string()).collect(),
+    );
+
+    let fresh_a = scan(&w, root.path(), &tracked, "a").expect("scan a");
+    let fresh_b = scan(&w, root.path(), &tracked, "b").expect("scan b");
+    assert_eq!(fresh_a.escapes.len(), 1, "{fresh_a:?}");
+    assert!(fresh_b.is_clean(), "{fresh_b:?}");
+
+    // Both orders, so neither closure's answer can be the one left in the cache by the other.
+    for order in [["a", "b"], ["b", "a"]] {
+        let mut lexer = Lexer::new(root.path());
+        for name in order {
+            let shared = lexer.scan(&w, &tracked, name).expect("shared scan");
+            let want = if name == "a" { &fresh_a } else { &fresh_b };
+            assert_eq!(
+                &shared, want,
+                "{name} through a shared lexer, order {order:?}"
+            );
+        }
+    }
+}
