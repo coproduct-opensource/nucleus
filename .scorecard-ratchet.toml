@@ -88,9 +88,11 @@
 # is unchanged at 33, so INERT_TOTAL still agrees. 192/193 = 99.48%.
 # 2026-10-04: memory journal integration and its authority fixtures measure
 # 196/197 witness sites; tighten both pins to the scanner result.
-floor_bp = 9949
+# 2026-10-08: ADR 0016 S1, the eval-cell launch check: three new sites taking a
+# `LaunchAttestation`, all bound. 199/200 = 99.50%, and the floor follows it up.
+floor_bp = 9950
 floor_set = "measurement"
-population_floor = 197
+population_floor = 200
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -252,9 +254,12 @@ population_floor = 278
 # 2026-10-08 (eval cell M2): new crate ci-scope, the decider every quickstart-boot job runs
 # first, declares all seven from its first commit -- a panic would fail a required context
 # for a reason that names nothing. 38 of 95 = 40.00%.
-floor_bp = 4000
+# 2026-10-08 (ADR 0015 E2): new crate nucleus-egress-proxy, the host egress proxy's
+# guest-facing parser -- every byte guest root writes toward the network -- declares all
+# seven from its first commit; a panic is a proxy the guest can stop. 39 of 96 = 40.62%.
+floor_bp = 4062
 floor_set = "measurement"
-population_floor = 95
+population_floor = 96
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.

@@ -73,6 +73,71 @@ pub fn governor_keys_from_env(raw: Option<&str>) -> Vec<[u8; 32]> {
     keys
 }
 
+/// The governor keys this pod's guest verifies declassifications with (ADR 0013 rule 8).
+///
+/// Decided once, at startup, from the pod's isolation profile and the node-controlled env; both
+/// transports' kernels and the memory path read this value, never the env again (ADR 0007 G-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GovernorKeys {
+    /// A standard pod: the keys the node provisioned. Empty refuses every token (fail-closed).
+    FromNode(Vec<[u8; 32]>),
+    /// An eval cell: no key, whatever the environment carries. Every declassification is
+    /// refused by name, before any signature is read.
+    WithheldFromEvalCell,
+}
+
+/// The refusal an eval cell's guest gives every declassification.
+pub(crate) const EVAL_CELL_REFUSAL: &str = "this pod is an eval cell, and an eval cell's guest \
+     holds no declassification governor key: a key the guest holds is a key guest root holds. \
+     An eval cell cannot declassify until the host verifies declassifications (ADR 0013 rule 8, \
+     ADR 0014 section 3)";
+
+impl GovernorKeys {
+    /// The keys for a pod under `spec`'s profile, given the raw `NUCLEUS_DECLASSIFY_TRUSTED_KEYS`.
+    ///
+    /// A profile label this build does not know is read as the stricter profile: the node refuses
+    /// such a pod at create, so here it can only be a guest-side rewrite (ADR 0007 B-3).
+    pub fn for_pod(spec: &nucleus_spec::PodSpec, raw: Option<&str>) -> Self {
+        use nucleus_spec::isolation_profile::{GuestGovernor, IsolationProfile};
+        let governor = IsolationProfile::of(spec)
+            .map_or(GuestGovernor::Withheld, IsolationProfile::guest_governor);
+        match governor {
+            GuestGovernor::FromNode => Self::FromNode(governor_keys_from_env(raw)),
+            GuestGovernor::Withheld => {
+                if raw.is_some_and(|r| !r.trim().is_empty()) {
+                    warn!("governor keys in the environment are ignored: {EVAL_CELL_REFUSAL}");
+                }
+                Self::WithheldFromEvalCell
+            }
+        }
+    }
+
+    /// [`Self::for_pod`] over this process's node-controlled environment: read once, at startup.
+    pub fn from_env(spec: &nucleus_spec::PodSpec) -> Self {
+        let raw = std::env::var(nucleus_spec::isolation_profile::GOVERNOR_KEY_ENV[0]).ok();
+        Self::for_pod(spec, raw.as_deref())
+    }
+
+    /// The keys a kernel or the memory path verifies with. None for an eval cell.
+    pub fn keys(&self) -> &[[u8; 32]] {
+        match self {
+            Self::FromNode(keys) => keys,
+            Self::WithheldFromEvalCell => &[],
+        }
+    }
+
+    /// Whether this guest may attempt a declassification at all. An eval cell's attempt is
+    /// refused by name, so the refusal never reads as a bad signature.
+    pub(crate) fn admit(&self) -> Result<(), ApiError> {
+        match self {
+            Self::FromNode(_) => Ok(()),
+            Self::WithheldFromEvalCell => {
+                Err(ApiError::Declassification(EVAL_CELL_REFUSAL.to_string()))
+            }
+        }
+    }
+}
+
 /// A governor's request to apply a single-use declassification token.
 ///
 /// The token carries its own Ed25519 signature; this endpoint is a thin,
@@ -133,15 +198,21 @@ pub(crate) async fn apply_declassification(
     // (kernel, then flow_graph) to match `http_kernel_decide` and the ingest
     // path, or the two lock sites could deadlock.
     let now = chrono::Utc::now().timestamp() as u64;
-    let applied = {
-        let kernel = state.kernel.lock().await;
-        let mut graph = state.flow_graph.lock().await;
-        kernel
-            .verify_declassification(&token)
-            .and_then(|v| graph.apply_verified(v, now))
+    // An eval cell is refused by name before any signature is read (ADR 0013 rule 8). The
+    // refusal is audited below like every other.
+    let result = match state.governor_keys.admit() {
+        Err(refused) => Err(refused),
+        Ok(()) => {
+            let applied = {
+                let kernel = state.kernel.lock().await;
+                let mut graph = state.flow_graph.lock().await;
+                kernel
+                    .verify_declassification(&token)
+                    .and_then(|v| graph.apply_verified(v, now))
+            };
+            classify_apply_result(applied, target, &sinks)
+        }
     };
-
-    let result = classify_apply_result(applied, target, &sinks);
 
     // Audit record (mirrors `/v1/escalate`): a declassification is the one
     // place a value's confidentiality is lowered at runtime, and it is
@@ -353,3 +424,7 @@ mod tests {
         assert_eq!(keys.len(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "declassify_governor_tests.rs"]
+mod governor_tests;

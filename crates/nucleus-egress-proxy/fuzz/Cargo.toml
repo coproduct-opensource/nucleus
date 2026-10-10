@@ -1,0 +1,31 @@
+[package]
+name = "nucleus-egress-proxy-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+# Excluded from the workspace (the empty `[workspace]` below makes this its own
+# root) because `cargo fuzz` builds with nightly `-Z` flags that must not leak
+# into the rest of the workspace. Same arrangement as
+# crates/nucleus-decision-protocol/fuzz.
+#
+#   cd crates/nucleus-egress-proxy/fuzz
+#   cargo +nightly fuzz run guest_request -- -max_total_time=60
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+nucleus-egress-proxy = { path = ".." }
+
+[[bin]]
+name = "guest_request"
+path = "fuzz_targets/guest_request.rs"
+test = false
+doc = false
+
+[lints.cargo]
+non_kebab_case_bins = "allow"

@@ -54,24 +54,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::ApiError;
 
-/// Parse `NUCLEUS_DECLASSIFY_TRUSTED_KEYS` — a comma-separated list of 64-char
-/// hex Ed25519 verifying keys — into 32-byte arrays. Malformed entries are
-/// skipped (fail-closed: a bad key simply can't cosign). `None`/empty ⇒ no
-/// trusted keys ⇒ every declassification fails closed.
-pub fn parse_trusted_keys_env(raw: Option<&str>) -> Vec<[u8; 32]> {
-    let Some(raw) = raw else {
-        return Vec::new();
-    };
-    raw.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| {
-            let bytes = hex::decode(s).ok()?;
-            <[u8; 32]>::try_from(bytes.as_slice()).ok()
-        })
-        .collect()
-}
-
 /// Persist a memory record (provenance-verified admission).
 #[derive(Debug, Deserialize)]
 pub struct MemoryWriteReq {
@@ -376,6 +358,11 @@ pub(crate) async fn memory_recall(
     Json(req): Json<MemoryRecallReq>,
 ) -> Result<Json<MemoryRecallResp>, ApiError> {
     use nucleus_ifc_kernel::discharge::PreflightResult;
+    // An eval cell's guest holds no governor key, so its declassify is refused by name rather
+    // than as a missing quorum (ADR 0013 rule 8).
+    if req.declassify.is_some() {
+        state.governor_keys.admit()?;
+    }
     let _dt = crate::http_kernel_decide(
         &state,
         Operation::ReadFiles,
@@ -408,7 +395,7 @@ pub(crate) async fn memory_recall(
     let resp = memory_recall_core(
         set.records()?,
         &mut graph,
-        state.declassify_trusted_keys.as_ref(),
+        state.governor_keys.keys(),
         state.declassify_threshold,
         now,
         req,
