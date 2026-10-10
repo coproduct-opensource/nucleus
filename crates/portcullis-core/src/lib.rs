@@ -76,6 +76,7 @@
 //!   complementary assurance.
 
 pub mod act;
+pub mod canonical;
 pub mod agent_message;
 pub mod argv;
 #[cfg(feature = "artifact")]
