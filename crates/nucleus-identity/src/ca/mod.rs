@@ -15,6 +15,8 @@
 //! - SPIFFE URI matching the requested identity
 //! - Trust domain membership
 
+#[cfg(test)]
+mod default_tests;
 mod self_signed;
 #[cfg(feature = "spire")]
 mod spire;
@@ -102,19 +104,42 @@ pub trait CaClient: Send + Sync {
     ///
     /// # Default Implementation
     ///
-    /// By default, this falls back to `sign_csr()` without the attestation extension.
-    /// Implementations should override this to properly embed attestation.
+    /// Refuses, naming why. It used to fall back to `sign_csr()` and drop the
+    /// attestation, so a CA that never opted in issued a PLAIN certificate where a
+    /// measured launch was asked for, and the caller could not tell. A launch the
+    /// CA cannot attest is now an error the caller must handle; nothing signs a
+    /// weaker certificate in its place (ADR 0007 B, ADR 0016 D5).
     async fn sign_attested_csr(
         &self,
-        csr: &str,
-        private_key: &str,
+        _csr: &str,
+        _private_key: &str,
         identity: &Identity,
-        ttl: Duration,
+        _ttl: Duration,
         _attestation: &LaunchAttestation,
     ) -> Result<WorkloadCertificate> {
-        // Default: ignore attestation, just sign normally
-        // Implementations should override to embed attestation as X.509 extension
-        self.sign_csr(csr, private_key, identity, ttl).await
+        Err(cannot_embed(identity, "a launch attestation"))
+    }
+
+    /// Signs a CSR for a launch the tier cannot measure: the leaf carries the
+    /// unmeasured-launch extension (OID `.1.6`) naming `tier`, so the absence of
+    /// a measurement is stated, and a verifier that requires one refuses it by
+    /// name rather than reading a plain certificate as "no check was asked for".
+    ///
+    /// # Default Implementation
+    ///
+    /// Refuses: a CA that cannot state the tier issues nothing for a launch.
+    async fn sign_unmeasured_csr(
+        &self,
+        _csr: &str,
+        _private_key: &str,
+        identity: &Identity,
+        _ttl: Duration,
+        tier: crate::attestation::UnmeasuredTier,
+    ) -> Result<WorkloadCertificate> {
+        Err(cannot_embed(
+            identity,
+            &format!("an unmeasured-launch statement (`{}`)", tier.as_str()),
+        ))
     }
 
     /// Signs a CSR with both launch attestation and permission fingerprint.
@@ -129,18 +154,18 @@ pub trait CaClient: Send + Sync {
     ///
     /// # Default Implementation
     ///
-    /// Falls back to `sign_attested_csr()` (ignoring the fingerprint).
+    /// Refuses. It used to fall back to `sign_attested_csr()` and drop the
+    /// fingerprint, a weaker certificate than the one asked for.
     async fn sign_fused_csr(
         &self,
-        csr: &str,
-        private_key: &str,
+        _csr: &str,
+        _private_key: &str,
         identity: &Identity,
-        ttl: Duration,
-        attestation: &LaunchAttestation,
+        _ttl: Duration,
+        _attestation: &LaunchAttestation,
         _permission_fingerprint: &[u8; 32],
     ) -> Result<WorkloadCertificate> {
-        self.sign_attested_csr(csr, private_key, identity, ttl, attestation)
-            .await
+        Err(cannot_embed(identity, "a permission fingerprint"))
     }
 
     /// Signs a CSR with launch attestation AND a mediator-key binding (OID .1.4).
@@ -153,20 +178,18 @@ pub trait CaClient: Send + Sync {
     ///
     /// # Default Implementation
     ///
-    /// Falls back to `sign_attested_csr()` (ignoring the binding), so a CA that
-    /// does not embed nucleus extensions degrades to a plain attested cert rather
-    /// than failing.
+    /// Refuses. It used to fall back to `sign_attested_csr()` and drop the
+    /// binding, a weaker certificate than the one asked for.
     async fn sign_attested_and_bound_csr(
         &self,
-        csr: &str,
-        private_key: &str,
+        _csr: &str,
+        _private_key: &str,
         identity: &Identity,
-        ttl: Duration,
-        attestation: &LaunchAttestation,
+        _ttl: Duration,
+        _attestation: &LaunchAttestation,
         _mediator_pubkey_sha256: &[u8; 32],
     ) -> Result<WorkloadCertificate> {
-        self.sign_attested_csr(csr, private_key, identity, ttl, attestation)
-            .await
+        Err(cannot_embed(identity, "a mediator-key binding"))
     }
 
     /// Signs a CSR and returns only the certificate chain (not the private key).
@@ -246,6 +269,15 @@ pub trait CaClient: Send + Sync {
 /// runs. This matters: if the defaults were inherited here, an `Arc<dyn CaClient>`
 /// wrapping a `SelfSignedCa` would silently drop the attestation extension and serve
 /// a plain cert. The `attested_svid_is_served_*` round-trip test guards against that.
+/// The refusal every extension-carrying default returns: the CA cannot embed
+/// `what`, and no plain certificate is issued in its place.
+fn cannot_embed(identity: &Identity, what: &str) -> crate::Error {
+    crate::Error::NotSupported(format!(
+        "this CA cannot embed {what} in a certificate for {identity}; a plain certificate is \
+         never issued in its place"
+    ))
+}
+
 #[async_trait]
 impl CaClient for Arc<dyn CaClient> {
     async fn sign_csr(
@@ -268,6 +300,19 @@ impl CaClient for Arc<dyn CaClient> {
     ) -> Result<WorkloadCertificate> {
         (**self)
             .sign_attested_csr(csr, private_key, identity, ttl, attestation)
+            .await
+    }
+
+    async fn sign_unmeasured_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        tier: crate::attestation::UnmeasuredTier,
+    ) -> Result<WorkloadCertificate> {
+        (**self)
+            .sign_unmeasured_csr(csr, private_key, identity, ttl, tier)
             .await
     }
 

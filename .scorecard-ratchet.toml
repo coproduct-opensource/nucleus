@@ -90,9 +90,12 @@
 # 196/197 witness sites; tighten both pins to the scanner result.
 # 2026-10-08: ADR 0016 S1, the eval-cell launch check: three new sites taking a
 # `LaunchAttestation`, all bound. 199/200 = 99.50%, and the floor follows it up.
-floor_bp = 9950
+# 2026-10-08: ADR 0016 D5. CaClient's refusing defaults perform no act, so its row
+# is N, not debt: the one undischarged site is paid. Measured on this tree by the
+# scanner: 198/198 = 100.00%, the population and the floor both pinned to it.
+floor_bp = 10000
 floor_set = "measurement"
-population_floor = 200
+population_floor = 198
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
