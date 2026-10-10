@@ -32,7 +32,10 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
 use super::memory::DEFAULT_GRACE_WINDOW;
-use super::{JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey, rfc7638_kid};
+use super::{
+    JwtKeyStore, KeyStoreError, PublicKey, RotateOutcome, SignedBytes, SigningAlg, VerifyKey,
+    rfc7638_kid,
+};
 
 /// scrypt work factor (`N = 2^18`) the keystore file is written with. age's
 /// own "roughly one second on a modern machine" figure, pinned so the file
@@ -202,7 +205,7 @@ impl FileKeyStore {
                 .map_err(|e| KeyStoreError::Backend(format!("vk parse: {e}")))?;
             let entry = Arc::new(VerifyKey {
                 kid: p.kid.clone(),
-                verifying_key: vk,
+                public: PublicKey::Ed25519(vk),
                 not_before: UNIX_EPOCH + Duration::from_secs(p.not_before_unix),
                 not_after: UNIX_EPOCH + Duration::from_secs(p.not_after_unix),
             });
@@ -237,21 +240,29 @@ impl FileKeyStore {
             previous: inner
                 .previous
                 .values()
-                .map(|vk| PersistedVerify {
-                    kid: vk.kid.clone(),
-                    verifying_key_bytes: vk.verifying_key.to_bytes(),
-                    not_before_unix: vk
-                        .not_before
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
-                    not_after_unix: vk
-                        .not_after
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0),
+                .map(|vk| {
+                    let ed = vk.ed25519().ok_or_else(|| {
+                        KeyStoreError::Backend(format!(
+                            "kid {:?} is not an Ed25519 key; an Ed25519 store cannot persist it",
+                            vk.kid
+                        ))
+                    })?;
+                    Ok(PersistedVerify {
+                        kid: vk.kid.clone(),
+                        verifying_key_bytes: ed.to_bytes(),
+                        not_before_unix: vk
+                            .not_before
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                        not_after_unix: vk
+                            .not_after
+                            .duration_since(UNIX_EPOCH)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, KeyStoreError>>()?,
             grace_window_secs: grace_window.as_secs(),
         };
 
@@ -311,7 +322,7 @@ impl FileKeyStore {
     fn active_verify_key(inner: &Inner) -> Arc<VerifyKey> {
         Arc::new(VerifyKey {
             kid: inner.active_kid.clone(),
-            verifying_key: inner.active_signing.verifying_key(),
+            public: PublicKey::Ed25519(inner.active_signing.verifying_key()),
             not_before: inner.active_not_before,
             not_after: SystemTime::now() + Duration::from_secs(365 * 24 * 3600),
         })
@@ -332,12 +343,16 @@ impl FileKeyStore {
 }
 
 impl JwtKeyStore for FileKeyStore {
+    fn alg(&self) -> SigningAlg {
+        SigningAlg::EdDsa
+    }
+
     fn sign(&self, bytes: &[u8]) -> Result<SignedBytes, KeyStoreError> {
         let inner = self.inner.lock().map_err(|_| KeyStoreError::Poisoned)?;
         let sig = inner.active_signing.sign(bytes);
         Ok(SignedBytes {
             kid: inner.active_kid.clone(),
-            alg: "EdDSA",
+            alg: SigningAlg::EdDsa,
             signature: sig.to_bytes().to_vec(),
         })
     }
@@ -402,7 +417,7 @@ impl JwtKeyStore for FileKeyStore {
         // Mutate the snapshot OUTSIDE the lock.
         let old_verify = Arc::new(VerifyKey {
             kid: old_kid.clone(),
-            verifying_key: old_verifying,
+            public: PublicKey::Ed25519(old_verifying),
             not_before: old_not_before,
             not_after: now + self.grace_window,
         });

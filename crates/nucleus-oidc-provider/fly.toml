@@ -1,6 +1,9 @@
 # Fly.io deployment for nucleus-oidc-provider.   # vendor-allow: Fly-specific deploy config by design
 #
-# Architecture per `nucleus/CLAUDE.md` Fly.io section:   # vendor-allow: cite project Fly.io guidelines
+# Deploy and operate per `docs/oidc-provider-runbook.md`. Build context is the
+# repository root (the image builds workspace path dependencies):
+#   flyctl deploy . --config crates/nucleus-oidc-provider/fly.toml \
+#     --dockerfile crates/nucleus-oidc-provider/Dockerfile
 # - Service binds 0.0.0.0:8080 so 6PN can reach it via `<app>.internal`.
 # - Public listener: HTTPS termination at the Fly edge.
 # - Critical path: `min_machines_running = 1` (the OP is the
@@ -18,9 +21,17 @@ kill_timeout = 30
 
 [env]
   NUCLEUS_OIDC_BIND = "0.0.0.0:8080"
-  # Issuer URL — operators MUST override per environment. Defaults to a
-  # bogus value so a forgotten override fails-loud at boot.
-  NUCLEUS_OIDC_ISSUER_URL = "https://oidc-MUST-BE-OVERRIDDEN.example/"
+  # The coproduct.one deployment (owner decision 2026-10-08). Written into
+  # every token as `iss` and compared byte for byte by relying parties and
+  # outside issuers' `aud`: no trailing slash, and changing it later means
+  # reconfiguring every relying party. Needs DNS (CNAME to this app) and a
+  # certificate (`flyctl certs add oidc.coproduct.one`).
+  NUCLEUS_OIDC_ISSUER_URL = "https://oidc.coproduct.one"
+  # ES256 signing key, keyring layout, file custody, on the volume below.
+  # Created on first boot; rotated with `nucleus-oidc-provider keys ...`.
+  NUCLEUS_OIDC_SIGNING_KEY_DIR = "/data/keys"
+  # Rules + outside-issuer bindings, baked into the image by the Dockerfile.
+  NUCLEUS_OIDC_FEDERATION_CONFIG = "/app/deploy/federation.coproduct-one.toml"
   RUST_LOG = "info,nucleus_oidc_provider=info"
 
 # Public HTTPS surface — discovery doc, JWKS, token-exchange endpoint.
@@ -62,10 +73,11 @@ kill_timeout = 30
   # Bump to "shared-cpu-2x" / 1gb when integration tests show p99 > 200ms
   # under target traffic.
 
-# Persistent volume for the FileKeyStore. The keystore.age blob lives
-# at /data/keystore.age inside the VM. age-encrypted at rest; the
-# passphrase comes from a Fly secret (set with `flyctl secrets set
-# NUCLEUS_OIDC_KEYSTORE_PASSPHRASE=...`).
+# Persistent volume for the ES256 signing key (/data/keys). The platform chowns
+# the mount point to the image's user (distroless `nonroot`), which is the
+# owner the keyring requires of every key file. Custody is a 0400 PKCS#8 file
+# on this volume: NOT sealed — anyone with the volume or a snapshot of it holds
+# the key. No passphrase is involved; see the runbook's custody section.
 [mounts]
   source = "nucleus_oidc_data"
   destination = "/data"

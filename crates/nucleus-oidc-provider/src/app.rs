@@ -39,6 +39,7 @@ use crate::federation::FederationRegistry;
 use crate::issuer::JwtIssuer;
 use crate::jwks;
 use crate::keystore::JwtKeyStore;
+use crate::outside::OutsideIssuers;
 use crate::spire::SpireBundleProvider;
 use crate::token;
 use nucleus_oidc_core::JtiCache;
@@ -85,6 +86,10 @@ pub struct AppState {
     /// max_lifetime)` registry. Token endpoint consults this for every
     /// exchange; default-deny when empty.
     pub federation: Arc<FederationRegistry>,
+    /// Outside issuers whose tokens are exchanged as one configured SPIFFE
+    /// ID each (`crate::outside`). Empty: every subject_token must be a
+    /// JWT-SVID from the trust bundle.
+    pub outside_issuers: Arc<OutsideIssuers>,
     /// SPIRE trust-bundle source — validates subject_token signatures
     /// against per-trust-domain verifying keys (#45).
     pub bundle_provider: Arc<dyn SpireBundleProvider>,
@@ -158,6 +163,11 @@ struct HealthBody {
     /// reject every subject_token — observable directly rather than
     /// hidden behind every Deny.
     bundle_keys: usize,
+    /// Outside issuers bound. Shown so an operator can see the binding
+    /// loaded without presenting a token.
+    outside_issuers: usize,
+    /// The one algorithm this OP signs with (`EdDSA` or `ES256`).
+    signing_alg: &'static str,
 }
 
 /// Operator-meaningful health check.
@@ -179,6 +189,8 @@ async fn healthz(axum::extract::State(state): axum::extract::State<AppState>) ->
         .unwrap_or(0);
     let federation_rules = state.federation.rule_count();
     let bundle_keys = state.bundle_provider.total_key_count();
+    let outside_issuers = state.outside_issuers.len();
+    let signing_alg = state.keystore.alg().jose_name();
 
     let ok = !active_kid.is_empty();
     let body = HealthBody {
@@ -187,6 +199,8 @@ async fn healthz(axum::extract::State(state): axum::extract::State<AppState>) ->
         verify_keys,
         federation_rules,
         bundle_keys,
+        outside_issuers,
+        signing_alg,
     };
     let status = if ok {
         StatusCode::OK
@@ -216,6 +230,7 @@ mod tests {
             .unwrap(),
         );
         build_app(AppState {
+            outside_issuers: std::sync::Arc::new(crate::outside::OutsideIssuers::empty()),
             keystore: store,
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,

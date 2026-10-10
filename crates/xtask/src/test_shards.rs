@@ -559,8 +559,12 @@ pub fn compile_reads(
     };
     let mut reads = Vec::new();
     let mut unresolvable = BTreeSet::new();
+    // One lexer for every member: a crate in many closures is tokenized once, not once per
+    // closure. Per-member scanning was nearly all of this gate's time (2026-10-08).
+    let mut lexer = escapes::Lexer::new(root);
     for m in members {
-        let scan = escapes::scan(&ws, root, files, &m.name)
+        let scan = lexer
+            .scan(&ws, files, &m.name)
             .with_context(|| format!("scanning {}'s compile-time reads", m.name))?;
         for e in scan.escapes {
             reads.push(CompileRead {
