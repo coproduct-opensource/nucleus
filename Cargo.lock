@@ -7346,6 +7346,7 @@ dependencies = [
  "nucleus-cred-broker",
  "nucleus-cred-protocol",
  "nucleus-decision-protocol",
+ "nucleus-egress-proxy",
  "nucleus-federation",
  "nucleus-identity",
  "nucleus-ifc-kernel",

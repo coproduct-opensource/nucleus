@@ -394,6 +394,10 @@ impl FirecrackerPod {
             crate::host_decide::log_teardown(&self.pod_dir, listener.shutdown().await);
         }
 
+        if let Some(proxy) = self.egress_proxy.lock().await.take() {
+            proxy.shutdown().await;
+        }
+
         // A let-chain (edition 2024) rather than a tuple of Options: it says the
         // same thing without building a throwaway tuple, and the explicit `ref`
         // bindings the tuple form needed are gone.

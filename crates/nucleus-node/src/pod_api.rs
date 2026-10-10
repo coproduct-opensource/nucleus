@@ -1240,6 +1240,11 @@ pub(crate) mod handler_tests {
             jailer_chroot_base: a.jailer_chroot_base.clone(),
             jailer_uid: a.jailer_uid,
             jailer_gid: a.jailer_gid,
+            egress_proxy: crate::egress_proxy::ProxyConfig::from_flags(
+                a.egress_proxy_bin.clone(),
+                a.egress_proxy_uid.get(),
+                a.egress_proxy_gid,
+            ),
             jailer_limits: a.jailer_limits.limits(),
             sealed_rootfs: None,
             network_allocator: Arc::new(crate::net::NetworkAllocator::new()),
