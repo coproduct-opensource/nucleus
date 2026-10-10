@@ -116,6 +116,33 @@ impl DlcProvisioning {
         })
     }
 
+    /// The node's own provisioning, from its environment's [`DlcField::env`] names: present exactly
+    /// when the trust anchors are, as [`Self::from_labels`] reads the labels.
+    ///
+    /// A local tool-proxy used to inherit these variables from the node (`Command` does not
+    /// `env_clear`), so the guest gated on them while the host, reading labels only, did not.
+    /// The node now reads them once, at start-up, and [`Self::admitted`] decides with them.
+    pub fn from_env(read: impl Fn(&str) -> Option<String>) -> Option<Self> {
+        let field = |f: DlcField| read(f.env());
+        Some(Self {
+            trusted_keys: field(DlcField::TrustedKeys)?,
+            issuer: field(DlcField::Issuer).unwrap_or_default(),
+            credentials: field(DlcField::Credentials).unwrap_or_default(),
+        })
+    }
+
+    /// The provisioning a pod is admitted under: its labels' whole, when they ask for one, and
+    /// otherwise the node's own. The one decider of which DLC-D admission a pod runs under
+    /// (ADR 0007 G-1): the node records the result in the pod's authority, the host's kernel is
+    /// provisioned from that record, and every driver delivers that record to the guest, so the
+    /// two kernels decide from the same value.
+    ///
+    /// Labels win whole, never field by field: this is the precedence the local driver always
+    /// had (the labels' three variables overwrote the inherited three).
+    pub fn admitted(labels: &BTreeMap<String, String>, node: Option<&Self>) -> Option<Self> {
+        Self::from_labels(labels).or_else(|| node.cloned())
+    }
+
     /// The value of one field.
     pub fn get(&self, field: DlcField) -> &str {
         match field {
@@ -153,6 +180,37 @@ mod tests {
             issuer: "bb".repeat(32),
             credentials: "read_files=cc".to_string(),
         }
+    }
+
+    /// A pod's labels win whole over the node's own provisioning, never field by field, and a pod
+    /// that asks for none runs under the node's: the precedence the local driver's child saw when
+    /// the labels' variables overwrote the inherited ones.
+    #[test]
+    fn admitted_is_the_labels_whole_else_the_nodes() {
+        let node = provisioning();
+        let env: BTreeMap<String, String> = node
+            .env()
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        let from_env = DlcProvisioning::from_env(|name| env.get(name).cloned());
+        assert!(from_env.as_ref() == Some(&node), "the env reads back whole");
+        assert!(DlcProvisioning::from_env(|_| None).is_none());
+
+        let none = BTreeMap::new();
+        assert!(DlcProvisioning::admitted(&none, Some(&node)) == Some(node.clone()));
+        assert!(DlcProvisioning::admitted(&none, None).is_none());
+
+        let mut labels = BTreeMap::new();
+        labels.insert(DlcField::TrustedKeys.label().to_string(), "dd".repeat(32));
+        let admitted = DlcProvisioning::admitted(&labels, Some(&node)).expect("labels ask");
+        assert_eq!(admitted.get(DlcField::TrustedKeys), "dd".repeat(32));
+        assert_eq!(
+            admitted.get(DlcField::Issuer),
+            "",
+            "no field leaks from the node"
+        );
+        assert_eq!(admitted.get(DlcField::Credentials), "");
     }
 
     /// `ALL` names every variant: a variant added without a row here is a

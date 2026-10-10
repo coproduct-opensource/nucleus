@@ -542,9 +542,10 @@ struct PodCert {
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
     upstreams: Vec<CredentialedEgressSpec>,
-    /// The DLC admission its spec's labels provision, read at admission so the
-    /// host's kernel carries the same gate the guest's does (ADR 0014, host DLC
-    /// admission). `None` ⇔ the labels ask for none.
+    /// The DLC admission the pod was admitted under (`DlcProvisioning::admitted`:
+    /// its labels', else the node's own), decided at admission so the host's
+    /// kernel carries the same gate the guest's does, and delivered to the guest
+    /// from here (ADR 0014, host DLC admission). `None` ⇔ neither asks for one.
     dlc: Option<DlcProvisioning>,
     /// The host's label for the pod before its guest says anything, decided at
     /// admission from what the host put into the cell (ADR 0014 §3).
@@ -619,7 +620,7 @@ struct PersistedAuthority {
     /// before ledgers were persisted, which recorded none.
     #[serde(default)]
     ledger: LedgerRecord,
-    /// The DLC admission the pod's labels provisioned. Absent from files
+    /// The DLC admission the pod was admitted under. Absent from files
     /// written before the host read it; a pod restored from one has no policy
     /// history either (`UnavailableAfterRestart`), so no host kernel decides
     /// for it.
@@ -788,6 +789,9 @@ pub(crate) struct PodAuthority {
     federation: Option<std::sync::Arc<FederatedSource>>,
     /// The `[[caller]]` bindings; empty when there are none.
     bindings: std::sync::Arc<CallerBindings>,
+    /// The node's own DLC-D provisioning (its `NUCLEUS_DLC_*` environment, read once by `main`).
+    /// A pod whose labels ask for none is admitted under it (`DlcProvisioning::admitted`).
+    node_dlc: Option<DlcProvisioning>,
     /// Shared with every live [`Reservation`], which releases through it.
     inner: std::sync::Arc<tokio::sync::Mutex<Inner>>,
 }
@@ -885,6 +889,7 @@ impl PodAuthority {
             registry,
             federation,
             bindings: std::sync::Arc::new(bindings),
+            node_dlc: None,
             inner: std::sync::Arc::new(tokio::sync::Mutex::new(Inner {
                 pods: HashMap::new(),
                 external: HashMap::new(),
@@ -892,6 +897,22 @@ impl PodAuthority {
                 unreadable_pod: false,
             })),
         })
+    }
+
+    /// This authority, admitting a pod whose labels ask for no DLC-D admission under the node's
+    /// own (`node`, read from its environment at start-up). One value per node process: a pod's
+    /// admitted provisioning is decided at admission and recorded, never re-read.
+    #[must_use]
+    pub(crate) fn with_node_dlc(mut self, node: Option<DlcProvisioning>) -> Self {
+        self.node_dlc = node;
+        self
+    }
+
+    /// The DLC-D provisioning `pod_id` was admitted under: what the host's kernel is provisioned
+    /// from, and what every driver delivers to the guest's tool-proxy. `None` when it was
+    /// admitted under none, or the node issued it nothing.
+    pub(crate) async fn dlc(&self, pod_id: Uuid) -> Option<DlcProvisioning> {
+        self.inner.lock().await.pods.get(&pod_id)?.dlc.clone()
     }
 
     /// [`Self::new`] from the node's parsed CLI.
@@ -1353,7 +1374,7 @@ impl PodAuthority {
             holder_pkcs8: child_pkcs8.as_ref().to_vec(),
             parent,
             upstreams: upstreams.clone(),
-            dlc: DlcProvisioning::from_labels(&spec.metadata.labels),
+            dlc: DlcProvisioning::admitted(&spec.metadata.labels, self.node_dlc.as_ref()),
             starting,
         };
         // A child that would not survive a restart would be missing from its

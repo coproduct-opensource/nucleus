@@ -328,10 +328,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 pod_certificate,
                 // No caller token: a Firecracker guest cannot reach the HTTP
                 // listener that reads one (see `handle_fetch_pod_caller_token`).
-                // Pod-scoped DLC-D admission provisioning (PodSpec labels).
-                dlc_admission: nucleus_spec::dlc_admission::DlcProvisioning::from_labels(
-                    &spec.metadata.labels,
-                ),
+                // The DLC-D provisioning admission recorded: the labels', else the node's own.
+                dlc_admission: state.authority.dlc(id).await,
                 // The broker capability, minted per pod and served ONCE. See
                 // `handle_fetch_broker_secret`: this is what lets the host
                 // tell the mediating proxy from every other guest process.

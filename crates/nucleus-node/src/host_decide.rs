@@ -51,7 +51,7 @@
 //!
 //! * a human approval grant (`issue_approved_token` moves the guest's exposure);
 //! * declassification keys provisioned into the guest kernel (DLC admission no
-//!   longer: the host's kernel reads the pod's DLC labels through the same
+//!   longer: the host's kernel reads the pod's admitted DLC through the same
 //!   `DlcAdmission::provision` the guest's does);
 //! * per-node declassification scopes in the guest's graph (the host's taint is
 //!   one label, so it is never less restrictive than the graph);
