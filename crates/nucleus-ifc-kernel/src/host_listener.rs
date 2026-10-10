@@ -45,6 +45,12 @@ pub enum VsockListener {
     CredentialBroker = 2,
     /// The per-pod decision channel (`nucleus-decision-protocol`, #2702).
     DecisionChannel = 3,
+    /// The per-pod host egress proxy (ADR 0015 §1, §8): every HTTP request an
+    /// eval cell sends leaves through it, decided by the host per request. The
+    /// proxy is its own process (`nucleus-egress-proxy`), not the node. The
+    /// workload reaches it only through the guest's loopback relay (E4),
+    /// because its own `AF_VSOCK` stays denied.
+    EgressProxy = 4,
 }
 
 impl VsockListener {
@@ -54,6 +60,7 @@ impl VsockListener {
         VsockListener::SpiffeWorkloadApi,
         VsockListener::CredentialBroker,
         VsockListener::DecisionChannel,
+        VsockListener::EgressProxy,
     ];
 
     /// The vsock port the guest dials. The ONLY place these numbers are
@@ -64,6 +71,7 @@ impl VsockListener {
             VsockListener::SpiffeWorkloadApi => 15013,
             VsockListener::CredentialBroker => 1027,
             VsockListener::DecisionChannel => 1028,
+            VsockListener::EgressProxy => 1029,
         }
     }
 }
@@ -132,6 +140,7 @@ impl HostListener {
         HostListener::Vsock(VsockListener::SpiffeWorkloadApi),
         HostListener::Vsock(VsockListener::CredentialBroker),
         HostListener::Vsock(VsockListener::DecisionChannel),
+        HostListener::Vsock(VsockListener::EgressProxy),
         HostListener::PodDns,
         HostListener::AllowlistedEgress,
     ];
@@ -147,6 +156,7 @@ impl HostListener {
             HostListener::Vsock(VsockListener::SpiffeWorkloadApi) => "spiffe_workload_api",
             HostListener::Vsock(VsockListener::CredentialBroker) => "credential_broker",
             HostListener::Vsock(VsockListener::DecisionChannel) => "decision_channel",
+            HostListener::Vsock(VsockListener::EgressProxy) => "egress_proxy",
             HostListener::PodDns => "pod_dns",
             HostListener::AllowlistedEgress => "allowlisted_egress",
         }
@@ -172,7 +182,11 @@ impl HostListener {
                 | VsockListener::CredentialBroker
                 | VsockListener::DecisionChannel,
             ) => WorkloadReach::Refused,
-            HostListener::PodDns | HostListener::AllowlistedEgress => WorkloadReach::Filtered,
+            // Filtered: the proxy answers only what the host decides, request
+            // by request; everything else is refused with its reason.
+            HostListener::Vsock(VsockListener::EgressProxy)
+            | HostListener::PodDns
+            | HostListener::AllowlistedEgress => WorkloadReach::Filtered,
         }
     }
 
@@ -185,6 +199,7 @@ impl HostListener {
                 | VsockListener::CredentialBroker
                 | VsockListener::DecisionChannel,
             ) => EgressChannel::VsockTransport,
+            HostListener::Vsock(VsockListener::EgressProxy) => EgressChannel::InShellEgress,
             HostListener::PodDns => EgressChannel::Dns,
             HostListener::AllowlistedEgress => EgressChannel::NetnsRawSocket,
         }

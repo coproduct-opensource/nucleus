@@ -1280,11 +1280,18 @@ async fn create_pod_internal(
     // ── Authority Gate: proof of caller authority, budget conserved ──
     // The caller's certificate decides what this pod may do; the spec's policy
     // is a REQUEST, meet-clamped and never trusted alone. See pod_authority.rs.
-    lockdown::admits(state, admission.caller_pod).await?;
+    lockdown::admits(state, admission.caller_pod, &spec.metadata.labels).await?;
     // The issued lattice AND the admitted credentialed upstreams replace what the spec requested,
     // inside `admit_pod`, and the plan it returns is the only thing a driver spawns (#2600). The
     // pod's owner is the issued root identity (ADR 0001: its tenant).
-    let (plan, reservation) = state.authority.admit_pod(&admission, spec, id).await?;
+    // The host's label for the pod before its guest says anything: the join of what the host
+    // puts into the cell, an eval cell untrusted whatever it carries (ADR 0014 §3).
+    let starting =
+        host_decide::StartingLabel::of(profile, &workspace_scan::sources(&spec, &state.driver));
+    let (plan, reservation) = state
+        .authority
+        .admit_pod(&admission, spec, id, starting)
+        .await?;
     tracing::Span::current().record("chain_depth", plan.chain_depth());
     let owner = plan.owner().to_string();
     // The registry's record of the spec; the plan, not this copy, is what launches.
@@ -3082,7 +3089,7 @@ impl NodeService for GrpcService {
 
         let (operator, req) = lockdown::attributed(request)?;
         Ok(GrpcResponse::new(
-            lockdown::issue(&self.state, operator, req).await,
+            lockdown::issue(&self.state, operator, req).await?,
         ))
     }
 
@@ -3099,17 +3106,8 @@ impl NodeService for GrpcService {
         )?;
 
         // WHICH pod is watching, resolved as every other handler resolves it (a
-        // pod peer is its own pod). A caller that is merely unresolved still
-        // receives, fail-open. A claim that was presented and failed is
-        // refused: otherwise a bad token would buy the unfiltered stream.
-        let watcher =
-            match pod_api::grpc_caller(&self.state, request.metadata(), request.extensions()) {
-                Ok(scope) => scope.pod(),
-                Err(status) if status.code() == tonic::Code::Unauthenticated => {
-                    return Err(status);
-                }
-                Err(_) => None,
-            };
+        // pod peer is its own pod); a peer that is not a pod is refused.
+        let watcher = lockdown::watcher(&self.state, request.metadata(), request.extensions())?;
 
         let mut ack_stream = request.into_inner();
         // `rx` is moved into the forwarder (which owns the `recv` loop and takes

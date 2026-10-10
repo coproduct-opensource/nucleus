@@ -423,6 +423,11 @@ fn class(o: Outcome) -> &'static str {
             reason:
                 DenyReason::ApprovalRefused | DenyReason::ApprovalExpired | DenyReason::ApprovalUnknown,
         } => "denied:approval",
+        // The egress proxy's reasons (ADR 0015 §2); the guest's channel never
+        // carries them.
+        Outcome::Denied {
+            reason: DenyReason::NotRegistered | DenyReason::RouteRefused,
+        } => "denied:egress_route",
     }
 }
 

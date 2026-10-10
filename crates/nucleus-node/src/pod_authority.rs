@@ -546,6 +546,20 @@ struct PodCert {
     /// host's kernel carries the same gate the guest's does (ADR 0014, host DLC
     /// admission). `None` ⇔ the labels ask for none.
     dlc: Option<DlcProvisioning>,
+    /// The host's label for the pod before its guest says anything, decided at
+    /// admission from what the host put into the cell (ADR 0014 §3).
+    starting: crate::host_decide::StartingLabel,
+}
+
+/// The starting label a Firecracker node decides for `spec`, for tests that
+/// admit through the authority directly rather than through `create_pod_internal`.
+#[cfg(test)]
+fn test_starting_label(spec: &PodSpec) -> crate::host_decide::StartingLabel {
+    crate::host_decide::StartingLabel::of(
+        nucleus_spec::isolation_profile::IsolationProfile::of(spec)
+            .unwrap_or(nucleus_spec::isolation_profile::IsolationProfile::EvalCell),
+        &crate::workspace_scan::sources(spec, &crate::driver::DriverKind::Firecracker),
+    )
 }
 
 /// One verifier for both fresh guest-equivalent kernels and shared host state.
@@ -1095,11 +1109,28 @@ impl PodAuthority {
     /// On `Ok`, the child is registered and its certificate persisted; the
     /// caller MUST call [`Self::release_child`] if the pod then fails to
     /// spawn, or the allocation leaks until the reaper would have run.
+    /// [`Self::admit_as`] with the starting label a Firecracker node would
+    /// decide for `spec`: for tests about what admission decides.
+    #[cfg(test)]
     pub async fn admit(
         &self,
         admission: &Admission,
         spec: &PodSpec,
         child_id: Uuid,
+    ) -> Result<IssuedAuthority, ApiError> {
+        self.admit_as(admission, spec, child_id, test_starting_label(spec))
+            .await
+    }
+
+    /// Admit `spec` as `child_id`. `starting` is the host's label for the pod
+    /// before its guest says anything ([`crate::host_decide::StartingLabel::of`]),
+    /// decided by the caller, which knows the node's driver.
+    async fn admit_as(
+        &self,
+        admission: &Admission,
+        spec: &PodSpec,
+        child_id: Uuid,
+        starting: crate::host_decide::StartingLabel,
     ) -> Result<IssuedAuthority, ApiError> {
         let requested = spec
             .spec
@@ -1323,6 +1354,7 @@ impl PodAuthority {
             parent,
             upstreams: upstreams.clone(),
             dlc: DlcProvisioning::from_labels(&spec.metadata.labels),
+            starting,
         };
         // A child that would not survive a restart would be missing from its
         // parent's ledger after one, so it is not issued. Nor is a charge to a
@@ -1452,6 +1484,9 @@ impl PodAuthority {
                     evidence,
                     entry.ledger.clone(),
                     self.approval_timing,
+                    entry
+                        .starting
+                        .taint(u64::try_from(Utc::now().timestamp()).unwrap_or(0)),
                 );
                 entry.host_policy = PolicyHistory::Live(std::sync::Arc::clone(&policy));
                 Ok(policy)
@@ -1469,8 +1504,9 @@ impl PodAuthority {
         admission: &Admission,
         mut spec: PodSpec,
         id: Uuid,
+        starting: crate::host_decide::StartingLabel,
     ) -> Result<(AdmittedPodPlan, Reservation), ApiError> {
-        let issued = self.admit(admission, &spec, id).await?;
+        let issued = self.admit_as(admission, &spec, id, starting).await?;
         let chain_depth = issued.chain_depth;
         let owner = issued.root_identity.clone();
         let reservation = issued.apply_to(&mut spec);
@@ -1492,7 +1528,21 @@ impl PodAuthority {
         spec: &PodSpec,
         child_id: Uuid,
     ) -> Result<IssuedAuthority, ApiError> {
-        let mut issued = self.admit(admission, spec, child_id).await?;
+        self.admit_kept_as(admission, spec, child_id, test_starting_label(spec))
+            .await
+    }
+
+    /// [`Self::admit_kept`] with the starting label given, for a test about
+    /// what the host does with one.
+    #[cfg(test)]
+    pub(crate) async fn admit_kept_as(
+        &self,
+        admission: &Admission,
+        spec: &PodSpec,
+        child_id: Uuid,
+        starting: crate::host_decide::StartingLabel,
+    ) -> Result<IssuedAuthority, ApiError> {
+        let mut issued = self.admit_as(admission, spec, child_id, starting).await?;
         let reservation = std::mem::replace(&mut issued.reservation, Reservation { release: None });
         reservation.commit();
         Ok(issued)
@@ -1741,6 +1791,9 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
         parent: persisted.parent,
         upstreams: persisted.upstreams,
         dlc: persisted.dlc,
+        starting: crate::host_decide::StartingLabel::Untrusted(
+            crate::host_decide::Untrusted::Restored,
+        ),
     })
 }
 

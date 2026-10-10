@@ -365,7 +365,7 @@ fn create_scans_the_workspace_after_confinement_and_before_any_driver() {
         "profile decided first"
     );
     assert!(
-        scan < at("state.authority.admit_pod("),
+        scan < at(".admit_pod(&admission, spec, id, starting)"),
         "before the authority gate"
     );
     assert!(

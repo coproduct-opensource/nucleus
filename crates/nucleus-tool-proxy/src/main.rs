@@ -687,10 +687,10 @@ pub(crate) struct AppState {
     /// Deterministic transforms used to recompute-verify `Deterministic` memory
     /// records. Empty by default ⇒ deterministic records fail closed (`Invalid`).
     pub(crate) memory_transforms: Arc<nucleus_provenance_memory::TransformRegistry>,
-    /// Trusted Ed25519 verifying keys (32-byte) that may cosign a memory
-    /// declassification. From `NUCLEUS_DECLASSIFY_TRUSTED_KEYS`; empty ⇒ every
-    /// declassify fails closed (no quorum possible).
-    pub(crate) declassify_trusted_keys: Arc<Vec<[u8; 32]>>,
+    /// The governor keys that verify a token or cosign a memory declassification
+    /// (`NUCLEUS_DECLASSIFY_TRUSTED_KEYS`); empty or withheld from an eval cell ⇒
+    /// every declassify fails closed (ADR 0013 rule 8).
+    pub(crate) governor_keys: Arc<declassify::GovernorKeys>,
     /// k-of-n threshold for memory declassification. From
     /// `NUCLEUS_DECLASSIFY_THRESHOLD` (default 1); with empty trusted keys this
     /// is unsatisfiable, so declassification is fail-closed until configured.
@@ -1579,6 +1579,7 @@ async fn main() -> Result<(), ApiError> {
     if dlc_provisioned {
         tracing::info!("DLC-D verified admission provisioned from NUCLEUS_DLC_* env");
     }
+    let governor_keys = Arc::new(declassify::GovernorKeys::from_env(&spec));
     let kernel = Arc::new(tokio::sync::Mutex::new({
         // From the certificate when there is one: same lattice (checked
         // above), plus provenance on every decision.
@@ -1593,18 +1594,14 @@ async fn main() -> Result<(), ApiError> {
         // place the trusted-key set is written, and it comes from the
         // node-controlled env — never from a request handler — which is what
         // keeps declassification robust (the workload cannot enroll its own
-        // key). Absent/empty ⇒ every token is refused fail-closed.
-        let governor_keys = declassify::governor_keys_from_env(
-            std::env::var("NUCLEUS_DECLASSIFY_TRUSTED_KEYS")
-                .ok()
-                .as_deref(),
-        );
-        if !governor_keys.is_empty() {
+        // key). Absent/empty ⇒ every token is refused fail-closed; an eval
+        // cell holds none whatever the env says (ADR 0013 rule 8).
+        if !governor_keys.keys().is_empty() {
             tracing::info!(
-                count = governor_keys.len(),
+                count = governor_keys.keys().len(),
                 "declassification governor keys provisioned from NUCLEUS_DECLASSIFY_TRUSTED_KEYS"
             );
-            k.set_trusted_keys(governor_keys);
+            k.set_trusted_keys(governor_keys.keys().to_vec());
         }
         k
     }));
@@ -1615,11 +1612,6 @@ async fn main() -> Result<(), ApiError> {
     let provenance_memory = Arc::new(tokio::sync::Mutex::new(
         args.memory
             .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
-    ));
-    let declassify_trusted_keys = Arc::new(memory::parse_trusted_keys_env(
-        std::env::var("NUCLEUS_DECLASSIFY_TRUSTED_KEYS")
-            .ok()
-            .as_deref(),
     ));
     let declassify_threshold = startup_trace::declassify_threshold();
 
@@ -1727,7 +1719,7 @@ async fn main() -> Result<(), ApiError> {
         flow_graph,
         provenance_memory,
         memory_transforms,
-        declassify_trusted_keys,
+        governor_keys,
         declassify_threshold,
         session_task_token,
         host_decide: Arc::new(host_decide::HostDecide::for_transport(

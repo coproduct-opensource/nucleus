@@ -1,0 +1,37 @@
+[package]
+name = "nucleus-egress-proxy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The per-pod host egress proxy (ADR 0015): parses one HTTP/1.1 request at a time, asks the node to decide it, and performs only what the node allowed"
+
+# ADR 0015 §7. A separate, unprivileged process per eval cell, spawned by the
+# node. It holds no node key and no policy of its own (ADR 0007 G-1): every
+# request is one decision by the node's pod policy over
+# `nucleus-decision-protocol`, the existing total, bounded, canonical frame
+# codec, never a new wire format.
+#
+# No new external dependency: every crate below is already in the lockfile
+# (httparse through hyper, landlock through `nucleus`), so the offline gates
+# build it from the cache they already hold.
+
+[dependencies]
+nucleus-decision-protocol = { path = "../nucleus-decision-protocol" }
+httparse = "1.10"
+ipnet = "2.12"
+sha2 = { workspace = true }
+hex = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4.7"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "sync", "time"] }
+
+[lints]
+workspace = true

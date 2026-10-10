@@ -134,6 +134,15 @@ pub(crate) enum EvalCellRefused {
          receipts reach the host over SHIP_RECEIPT instead; remove audit_sink (ADR 0013)"
     )]
     GuestHeldAuditCredential { sink: String },
+    /// The spec names a declassification governor key for the guest.
+    #[error(
+        "the eval-cell profile is refused: credentials.env names `{key}`, which the guest's \
+         tool-proxy reads its declassification governor keys from. An eval cell's guest holds no \
+         governor key, because a key the guest holds is a key guest root holds; an eval cell \
+         cannot declassify until the host verifies declassifications. Remove `{key}` \
+         (ADR 0013 rule 8)"
+    )]
+    GuestHeldGovernorKey { key: String },
     /// The policy could not be resolved, so its network capabilities could not be read.
     #[error("the eval-cell profile is refused: the policy does not resolve ({0})")]
     Policy(String),
@@ -266,6 +275,19 @@ fn admit_eval_cell(spec: &PodSpec, node: &NodePosture<'_>) -> Result<(), EvalCel
         return Err(EvalCellRefused::GuestHeldAuditCredential {
             sink: audit.sink.clone(),
         });
+    }
+    // No governor key reaches an eval cell's guest (ADR 0013 rule 8). The node itself delivers
+    // none to a Firecracker guest: its command line takes no undotted spec token, and the
+    // workload API has no command that serves one. `credentials.env` is the one field a spec
+    // names guest environment in, so a governor name there is refused here by name, whatever
+    // `spec_posture` allows the namespace to carry.
+    let governor = spec.spec.credentials.as_ref().and_then(|c| {
+        c.env
+            .keys()
+            .find(|key| nucleus_spec::isolation_profile::GOVERNOR_KEY_ENV.contains(&key.as_str()))
+    });
+    if let Some(key) = governor {
+        return Err(EvalCellRefused::GuestHeldGovernorKey { key: key.clone() });
     }
     match &spec.spec.seccomp {
         None | Some(nucleus_spec::SeccompSpec::Default) => {}

@@ -4,6 +4,7 @@ pub mod boot_args;
 pub mod boot_budget;
 pub mod dlc_admission;
 pub mod egress_budget;
+pub mod egress_fence;
 pub mod exit_report_auth;
 pub mod guest_layout;
 pub mod host_decide_telemetry;
