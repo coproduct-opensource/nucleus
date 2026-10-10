@@ -339,65 +339,55 @@ impl Identity {
         self.trust_domain == trust_domain
     }
 
-    /// Convert this SPIFFE identity to a `did:web` identifier.
+    /// Convert the complete SPIFFE identity to a path-based `did:web`.
     ///
-    /// The mapping is deterministic and injective: the service account becomes
-    /// the subdomain of the trust domain.
-    ///
-    /// ```text
-    /// spiffe://groundtruth.dev/ns/apps/sa/music-app  →  did:web:music-app.groundtruth.dev
-    /// ```
-    ///
-    /// # Example
+    /// Namespace and every service-account segment remain distinct. Dots in
+    /// an account are path characters, never trust-domain separators.
     ///
     /// ```
     /// use nucleus_identity::Identity;
-    ///
     /// let id = Identity::new("groundtruth.dev", "apps", "music-app");
-    /// assert_eq!(id.to_did_web(), "did:web:music-app.groundtruth.dev");
+    /// assert_eq!(id.to_did_web(), "did:web:groundtruth.dev:ns:apps:sa:music-app");
     /// ```
     pub fn to_did_web(&self) -> String {
-        format!("did:web:{}.{}", self.service_account, self.trust_domain)
+        format!(
+            "did:web:{}:ns:{}:sa:{}",
+            self.trust_domain,
+            self.namespace,
+            self.service_account.replace('/', ":")
+        )
     }
 
-    /// Parse a `did:web` identifier back to a SPIFFE identity.
+    /// Parse the canonical path-based DID and require the expected namespace.
     ///
-    /// The first subdomain label is the service account, the remainder
-    /// is the trust domain.
-    ///
-    /// ```text
-    /// did:web:music-app.groundtruth.dev  →  spiffe://groundtruth.dev/ns/{namespace}/sa/music-app
-    /// ```
-    ///
-    /// # Arguments
-    ///
-    /// * `did` - The `did:web` identifier to parse.
-    /// * `namespace` - The SPIFFE namespace (cannot be inferred from the DID).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the DID doesn't start with `did:web:` or has
-    /// no subdomain separator.
+    /// The former subdomain mapping discarded the namespace and is refused:
+    /// guessing it from caller input would retain the identity collision.
+    /// This parses an identifier only; it does not authenticate a DID document.
     pub fn from_did_web(did: &str, namespace: &str) -> Result<Self> {
-        let method_specific = did
+        let value = did
             .strip_prefix("did:web:")
             .ok_or_else(|| Error::InvalidSpiffeUri("DID must start with did:web:".into()))?;
-
-        let dot_pos = method_specific.find('.').ok_or_else(|| {
-            Error::InvalidSpiffeUri("did:web must have subdomain.domain format".into())
-        })?;
-
-        let app_name = &method_specific[..dot_pos];
-        let trust_domain = &method_specific[dot_pos + 1..];
-
-        if app_name.is_empty() {
-            return Err(Error::InvalidSpiffeUri("empty subdomain in did:web".into()));
+        let parts: Vec<_> = value.split(':').collect();
+        let [domain, "ns", embedded_namespace, "sa", account @ ..] = parts.as_slice() else {
+            return Err(Error::InvalidSpiffeUri(
+                "expected did:web:<domain>:ns:<namespace>:sa:<account>".into(),
+            ));
+        };
+        if *embedded_namespace != namespace {
+            return Err(Error::InvalidSpiffeUri(
+                "DID namespace does not match expected namespace".into(),
+            ));
         }
-        if trust_domain.is_empty() {
-            return Err(Error::InvalidSpiffeUri("empty domain in did:web".into()));
+        let identity = Self::from_spiffe_uri(&format!(
+            "spiffe://{domain}/ns/{embedded_namespace}/sa/{}",
+            account.join("/")
+        ))?;
+        if identity.to_did_web() != did {
+            return Err(Error::InvalidSpiffeUri(
+                "noncanonical did:web identity".into(),
+            ));
         }
-
-        Self::try_new(trust_domain, namespace, app_name)
+        Ok(identity)
     }
 }
 
@@ -595,7 +585,10 @@ mod tests {
     #[test]
     fn test_to_did_web() {
         let id = Identity::new("groundtruth.dev", "apps", "music-app");
-        assert_eq!(id.to_did_web(), "did:web:music-app.groundtruth.dev");
+        assert_eq!(
+            id.to_did_web(),
+            "did:web:groundtruth.dev:ns:apps:sa:music-app"
+        );
     }
 
     #[test]
@@ -603,13 +596,14 @@ mod tests {
         let id = Identity::new("cluster-1.nucleus.example.com", "prod", "api-server");
         assert_eq!(
             id.to_did_web(),
-            "did:web:api-server.cluster-1.nucleus.example.com"
+            "did:web:cluster-1.nucleus.example.com:ns:prod:sa:api-server"
         );
     }
 
     #[test]
     fn test_from_did_web() {
-        let id = Identity::from_did_web("did:web:music-app.groundtruth.dev", "apps").unwrap();
+        let id =
+            Identity::from_did_web("did:web:groundtruth.dev:ns:apps:sa:music-app", "apps").unwrap();
         assert_eq!(id.trust_domain(), "groundtruth.dev");
         assert_eq!(id.namespace(), "apps");
         assert_eq!(id.service_account(), "music-app");
@@ -617,8 +611,11 @@ mod tests {
 
     #[test]
     fn test_from_did_web_complex_domain() {
-        let id = Identity::from_did_web("did:web:api-server.cluster-1.nucleus.example.com", "prod")
-            .unwrap();
+        let id = Identity::from_did_web(
+            "did:web:cluster-1.nucleus.example.com:ns:prod:sa:api-server",
+            "prod",
+        )
+        .unwrap();
         assert_eq!(id.trust_domain(), "cluster-1.nucleus.example.com");
         assert_eq!(id.service_account(), "api-server");
     }
@@ -629,6 +626,35 @@ mod tests {
         let did = original.to_did_web();
         let parsed = Identity::from_did_web(&did, "apps").unwrap();
         assert_eq!(original, parsed);
+    }
+
+    #[test]
+    fn did_web_preserves_namespace_and_account_segments() {
+        let ids = [
+            Identity::new("example.com", "a", "worker"),
+            Identity::new("example.com", "b", "worker"),
+            Identity::new("example.com", "a", "worker.team"),
+            Identity::new("team.example.com", "a", "worker"),
+            Identity::from_spiffe_uri("spiffe://example.com/ns/a/sa/owner/repo/refs/main").unwrap(),
+        ];
+        let dids: std::collections::HashSet<_> = ids.iter().map(Identity::to_did_web).collect();
+        assert_eq!(dids.len(), ids.len());
+        for id in ids {
+            let did = id.to_did_web();
+            assert!(!did.contains('/'));
+            assert_eq!(Identity::from_did_web(&did, id.namespace()).unwrap(), id);
+            assert!(Identity::from_did_web(&did, "other").is_err());
+        }
+        for invalid in [
+            "did:web:worker.example.com",
+            "did:web:example.com:ns:a:sa:",
+            "did:web:example.com:ns:a:sa:owner::repo",
+            "did:web:example.com:ns:a:sa:..",
+            "did:web:example.com:ns:a:sa:owner%2Frepo",
+            "did:web:example.com:ns:a:sa:owner/repo",
+        ] {
+            assert!(Identity::from_did_web(invalid, "a").is_err(), "{invalid}");
+        }
     }
 
     #[test]
