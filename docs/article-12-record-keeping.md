@@ -1,8 +1,9 @@
-> Security configuration: enabling `--art12-log` requires a non-empty,
-> operator-provisioned `--audit-secret`. Missing or empty keys now refuse startup;
-> public session identifiers are never used as MAC keys. Keep the secret outside
-> the workload's environment and filesystem. MAC holders can still rewrite records:
-> migration to asymmetric signed records remains tracked in #3309.
+> Security configuration: without `--audit-secret`, the proxy generates a fresh
+> private MAC key from the OS RNG. It is held in memory, never derived from the
+> session ID or exported. An explicitly empty key refuses startup. Provision a
+> non-empty operator key for legacy offline MAC verification; otherwise verification
+> remains hash-chain-only, plus any host-signed evidence. Signed-record migration
+> remains tracked in #3309.
 
 # Article 12 record-keeping
 
@@ -96,7 +97,7 @@ consumer cannot render "verified" without it.
 
 The third row is the one to read twice. Older releases derived a signing key
 from the public session ID when no audit secret was supplied. Those records
-do not establish writer authenticity. Current releases refuse that configuration.
+do not establish writer authenticity. Current releases generate a fresh private key instead.
 A holder of an operator-provisioned MAC key can still rewrite history, so
 **the log alone is not evidence against a pod that holds that key**.
 

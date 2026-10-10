@@ -275,9 +275,9 @@ pub(crate) fn reject_workspace_path(path: &Path, work_dir: &Path) -> Result<(), 
 /// about evidence, and splitting them across a long `main` is how one of them
 /// gets edited without the others.
 ///
-/// Refuse absent or empty keys: a public session identifier is not a MAC key.
-/// This legacy MAC log still requires an operator-provisioned secret until its
-/// signed-record migration is complete (#3309).
+/// An absent operator key gets a fresh process-private key from the OS RNG.
+/// Explicit empty keys are refused. No key is derived from public session data.
+/// Asymmetric signed-record migration remains tracked in #3309.
 pub(crate) fn open_log(
     path: &Path,
     audit_secret: Option<&str>,
@@ -285,9 +285,7 @@ pub(crate) fn open_log(
     session_id: &str,
 ) -> Result<Arc<Art12Log>, String> {
     reject_workspace_path(path, work_dir).map_err(|e| e.to_string())?;
-    let secret = audit_secret.filter(|secret| !secret.is_empty()).ok_or_else(|| {
-        "Article 12 logging requires a non-empty audit secret; session-derived MAC keys are refused (#3309)".to_string()
-    })?.as_bytes().to_vec();
+    let secret = session_mac_key(audit_secret)?;
     // A dedicated genesis string rather than a borrowed hash: the audit log is
     // constructed later in startup, and reaching for a value that does not exist
     // yet is how an anchor silently becomes the empty string.
@@ -295,6 +293,22 @@ pub(crate) fn open_log(
     let log = Art12Log::open(path, secret, genesis, false)
         .map_err(|e| format!("failed to open Article 12 log: {e:?}"))?;
     Ok(Arc::new(log))
+}
+
+/// One key decision for startup; no public session identifier is an input.
+fn session_mac_key(configured: Option<&str>) -> Result<Vec<u8>, String> {
+    match configured {
+        Some("") => Err("Article 12 logging refuses an empty audit secret".into()),
+        Some(secret) => Ok(secret.as_bytes().to_vec()),
+        None => {
+            use ring::rand::SecureRandom;
+            let mut secret = vec![0u8; 32];
+            ring::rand::SystemRandom::new()
+                .fill(&mut secret)
+                .map_err(|_| "OS RNG failed to generate Article 12 MAC key".to_string())?;
+            Ok(secret)
+        }
+    }
 }
 
 /// Derive where the full signed MediationReceipts are persisted for offline
@@ -696,23 +710,37 @@ mod tests {
     }
 
     #[test]
-    fn startup_requires_a_provisioned_nonempty_mac_key() {
+    fn startup_refuses_empty_keys_and_supports_secret_free_guests() {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         let path = dir.path().join("private/art12.jsonl");
-        for secret in [None, Some("")] {
-            let result = super::open_log(&path, secret, &workspace, "session-123");
-            assert!(matches!(result, Err(ref error) if error.contains("non-empty audit secret")));
-            assert!(
-                !path.exists(),
-                "invalid configuration must not create a log"
-            );
+        let result = super::open_log(&path, Some(""), &workspace, "session-123");
+        assert!(matches!(result, Err(ref error) if error.contains("empty audit secret")));
+        assert!(!path.exists(), "refusal must not create a log");
+        for (name, secret) in [("guest", None), ("operator", Some("operator-test-key"))] {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            let log = super::open_log(&path, secret, &workspace, "session-123").unwrap();
+            assert_eq!(log.head().unwrap(), ("art12-genesis:session-123".into(), 0));
+            assert!(path.is_file());
         }
-        let log = super::open_log(&path, Some("operator-test-key"), &workspace, "session-123")
-            .expect("provisioned key permits startup");
-        assert_eq!(log.head().unwrap(), ("art12-genesis:session-123".into(), 0));
-        assert!(path.is_file());
+    }
+
+    #[test]
+    fn unprovisioned_sessions_have_independent_private_mac_keys() {
+        let first = super::session_mac_key(None).unwrap();
+        let second = super::session_mac_key(None).unwrap();
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert_ne!(first, second);
+        assert_ne!(
+            crate::auth::sign_message(&first, b"record"),
+            crate::auth::sign_message(&second, b"record")
+        );
+        assert_eq!(
+            super::session_mac_key(Some("operator-key")).unwrap(),
+            b"operator-key"
+        );
     }
 
     fn open_log(dir: &TempDir) -> Arc<Art12Log> {
