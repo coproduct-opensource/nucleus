@@ -423,6 +423,11 @@ fn class(o: Outcome) -> &'static str {
             reason:
                 DenyReason::ApprovalRefused | DenyReason::ApprovalExpired | DenyReason::ApprovalUnknown,
         } => "denied:approval",
+        // The egress proxy's reasons (ADR 0015 §2); the guest's channel never
+        // carries them.
+        Outcome::Denied {
+            reason: DenyReason::NotRegistered | DenyReason::RouteRefused,
+        } => "denied:egress_route",
     }
 }
 
@@ -1216,4 +1221,81 @@ async fn a_decide_never_reported_is_counted_unreported() {
     assert!(report.pairs.is_empty(), "nothing was compared");
     assert_eq!(report.service.count(), 2);
     drop(held);
+}
+
+// ── DLC admission (ADR 0014, host DLC admission) ────────────────────────────
+
+/// A pod whose labels provision DLC admission is decided by a host kernel
+/// carrying the same gate as the guest's. The guest double is provisioned as
+/// the tool-proxy provisions itself (`dlc_admission::provision_from_env`): the
+/// same three fields, through `DlcAdmission::provision`. The node read them
+/// from the labels at admission.
+///
+/// Red before the host read the labels: the guest refused `glob_search` as not
+/// granted and the host allowed it, a guest-stricter disagreement (live run
+/// 37833208274 measured six of them), the class §10 bounds at zero.
+#[tokio::test]
+async fn a_dlc_labelled_pod_is_decided_by_the_same_admission_on_both_sides() {
+    use nucleus_spec::dlc_admission::{DlcField, DlcProvisioning};
+    use portcullis::says_admission::{DlcAdmission, mint_credential};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let auth = authority(dir.path());
+    let seed = [23u8; 32];
+    let (issuer, read) = mint_credential(&seed, "read_files");
+    let dlc = DlcProvisioning {
+        trusted_keys: hex::encode(issuer),
+        issuer: hex::encode(issuer),
+        credentials: format!("read_files={}", hex::encode(read.bytes)),
+    };
+    let pod = Uuid::new_v4();
+    let mut spec = spec_with(PermissionLattice::permissive());
+    spec.metadata.labels = dlc.labels();
+    auth.admit_kept(
+        &Admission {
+            caller_spiffe_id: MINTER.to_string(),
+            caller_pod: None,
+            header_cert: None,
+        },
+        &spec,
+        pod,
+    )
+    .await
+    .expect("the root minter admits the pod");
+
+    let mut kernel = guest_kernel(&auth, pod).await;
+    kernel.set_dlc_admission(
+        DlcAdmission::provision(
+            dlc.get(DlcField::TrustedKeys),
+            dlc.get(DlcField::Issuer),
+            dlc.get(DlcField::Credentials),
+        )
+        .expect("trust anchors provision the gate"),
+    );
+    let epochs = Arc::new(EpochSource::starting_at(1));
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
+    let mut guest = Guest::new(kernel, connect(&listener).await);
+
+    let admitted = guest.decide(Operation::ReadFiles, "src/main.rs").await;
+    assert_eq!(admitted.guest, Outcome::Allowed);
+    assert_eq!(admitted.host, Outcome::Allowed, "credentialed: both admit");
+    for op in [
+        Operation::GlobSearch,
+        Operation::WebFetch,
+        Operation::WriteFiles,
+    ] {
+        let refused = guest.decide(op, "src/main.rs").await;
+        assert!(
+            matches!(refused.guest, Outcome::Denied { .. }),
+            "{op:?}: the guest's DLC gate refuses"
+        );
+        assert_eq!(
+            refused.host, refused.guest,
+            "{op:?}: the host refuses as the guest does, for the same reason"
+        );
+        assert_eq!(refused.agreement, Agreement::Agree, "{op:?}");
+    }
+    let report = listener.shutdown().await;
+    assert_eq!(report.tally.disagree, 0);
+    assert_eq!(report.tally.agree, 4);
 }

@@ -44,6 +44,70 @@ fn standard(network: &str) -> PodSpec {
     spec_json(None, &format!(r#"{{"policy":{policy}{network}}}"#))
 }
 
+/// A platform whose appraisal is fixed, whatever the time it is asked at.
+struct Fixed(nucleus_federation::NodeAttestation);
+
+impl PlatformAttestation for Fixed {
+    fn attestation_now(&self, _now: u64) -> nucleus_federation::NodeAttestation {
+        self.0.clone()
+    }
+}
+
+/// The live run's epoch-4 evidence (#2706), appraised at its own mint time
+/// against its reference and AK pin: `attested`, through the same
+/// `NodeAttestation::of_current_evidence` the node runs.
+static ATTESTED: std::sync::LazyLock<Fixed> = std::sync::LazyLock::new(|| {
+    let fixture = |name: &str| {
+        std::fs::read(format!(
+            "{}/../nucleus-node-evidence/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("fixture")
+    };
+    let evidence = fixture("live-node-epoch4-evidence.json");
+    let doc: serde_json::Value = serde_json::from_slice(&evidence).expect("evidence parses");
+    let binding = nucleus_node_evidence::KeyBinding {
+        executor_key: nucleus_node_evidence::ExecutorKey::Ed25519(
+            hex::decode(doc["binding"]["executor_key"]["ed25519"].as_str().unwrap())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        ),
+        federation: nucleus_node_evidence::Federation::NotFederated,
+    };
+    let reference: nucleus_node_evidence::ReferenceManifest =
+        serde_json::from_slice(&fixture("live-node-reference-exact.json")).unwrap();
+    let anchors = nucleus_node_evidence::AnchorPolicy {
+        software_tpm_pins: vec![],
+        trust_roots: vec![],
+        operator_pins: vec![nucleus_node_evidence::OperatorPin {
+            source: doc["ak_anchor"]["operator_fetched"]["source"]
+                .as_str()
+                .unwrap()
+                .into(),
+            ak_spki_sha256: "beced81752041938278acd53c5df51df98652f58bb76bdf722e8965d25bd2366"
+                .into(),
+        }],
+    };
+    let attestation = nucleus_federation::NodeAttestation::of_current_evidence(
+        &evidence,
+        Some(&nucleus_federation::SelfAppraisal {
+            binding: &binding,
+            reference: &reference,
+            anchors: &anchors,
+            max_age_secs: nucleus_federation::SelfAppraisal::max_age_for_epoch(300),
+        }),
+        1_791_247_262,
+    );
+    assert_eq!(
+        attestation.tier(),
+        ClaimedTier::Attested,
+        "{}",
+        attestation.note()
+    );
+    Fixed(attestation)
+});
+
 /// A Firecracker node with every posture an eval cell needs.
 fn holding(driver: &DriverKind) -> NodePosture<'_> {
     NodePosture {
@@ -52,7 +116,148 @@ fn holding(driver: &DriverKind) -> NodePosture<'_> {
         jailer: true,
         landlock: nucleus::LandlockWaiver::Absent,
         host_spec: HostSpecEnforcement::Required,
+        platform: &*ATTESTED,
     }
+}
+
+/// ADR 0016 D3: an eval cell runs only on a node whose own evidence appraises
+/// `attested` now. Every other tier refuses it by name, the tier and the
+/// appraisal's note in the message; a standard pod on the same node is admitted,
+/// and the same cell on an attested node is admitted (non-vacuous).
+#[test]
+fn an_eval_cell_is_refused_on_a_node_whose_evidence_is_not_attested() {
+    let fc = DriverKind::Firecracker;
+    let evidence = std::fs::read(format!(
+        "{}/../nucleus-node-evidence/tests/fixtures/live-node-epoch4-evidence.json",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .expect("fixture");
+    let cases = [
+        (
+            Fixed(nucleus_federation::NodeAttestation::without_evidence(
+                "no TPM configured",
+            )),
+            "no TPM configured",
+        ),
+        // Real evidence the node did not appraise (no reference configured).
+        (
+            Fixed(nucleus_federation::NodeAttestation::of_current_evidence(
+                &evidence,
+                None,
+                1_791_247_262,
+            )),
+            "no reference manifest",
+        ),
+    ];
+    for (platform, note) in &cases {
+        let node = NodePosture {
+            platform,
+            ..holding(&fc)
+        };
+        let refused = admit(&eval_cell(""), &node, None).expect_err("not attested");
+        assert!(
+            matches!(
+                refused,
+                EvalCellRefused::NodeNotAttested {
+                    tier: "unattested",
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert!(refused.to_string().contains(note), "{refused}");
+        assert_eq!(
+            admit(&standard(""), &node, None),
+            Ok(IsolationProfile::Standard)
+        );
+    }
+    assert_eq!(
+        admit(&eval_cell(""), &holding(&fc), None),
+        Ok(IsolationProfile::EvalCell)
+    );
+}
+
+/// An attested launch for `measured` from `ca`, as the leaf DER the node serves.
+async fn attested_leaf(
+    ca: &nucleus_identity::SelfSignedCa,
+    measured: &nucleus_identity::LaunchAttestation,
+) -> Vec<u8> {
+    use nucleus_identity::CaClient;
+    let identity = nucleus_identity::Identity::for_pod("test.local", "cell");
+    let cs = nucleus_identity::CsrOptions::new(identity.to_spiffe_uri())
+        .generate()
+        .unwrap();
+    ca.sign_attested_csr(
+        cs.csr(),
+        cs.private_key(),
+        &identity,
+        std::time::Duration::from_secs(3600),
+        measured,
+    )
+    .await
+    .unwrap()
+    .leaf()
+    .der()
+    .to_vec()
+}
+
+/// ADR 0016 D3, the decider: an eval cell's launch verifies only when its leaf
+/// chains to the node's CA and carries exactly the measurement the node took.
+/// Each failure is refused by name; a standard pod is never checked.
+#[tokio::test]
+async fn an_eval_cell_launch_verifies_only_as_the_node_measured_it() {
+    use nucleus_identity::{CaClient, LaunchAttestation, SelfSignedCa};
+    let ca = SelfSignedCa::new("test.local").unwrap();
+    let measured = LaunchAttestation::from_hashes([1; 32], [2; 32], [3; 32]);
+    let leaf = attested_leaf(&ca, &measured).await;
+    let issued = |leaf: &[u8], ca: &SelfSignedCa, m: &LaunchAttestation| {
+        let launch = LaunchIdentity::Issued {
+            measured: m,
+            leaf_der: leaf,
+            trust_bundle: ca.trust_bundle(),
+        };
+        require_verified_launch(IsolationProfile::EvalCell, launch)
+    };
+
+    // Non-vacuous: the node's own launch verifies.
+    assert_eq!(issued(&leaf, &ca, &measured), Ok(()));
+
+    // Another launch's measurement.
+    let other = LaunchAttestation::from_hashes([1; 32], [2; 32], [4; 32]);
+    let e = issued(&leaf, &ca, &other).expect_err("measurement differs");
+    assert!(e.to_string().contains("but the node measured"), "{e}");
+
+    // A leaf from a CA that is not this node's, carrying the right measurement.
+    let foreign = SelfSignedCa::new("test.local").unwrap();
+    let forged = attested_leaf(&foreign, &measured).await;
+    let e = issued(&forged, &ca, &measured).expect_err("foreign issuer");
+    assert!(e.to_string().contains("not issued by a trusted CA"), "{e}");
+
+    // Each fallback a standard pod keeps.
+    for launch in [
+        LaunchIdentity::NoIdentity,
+        LaunchIdentity::NotMeasured("io".into()),
+        LaunchIdentity::NotIssued("ca".into()),
+    ] {
+        let e = require_verified_launch(IsolationProfile::EvalCell, launch)
+            .expect_err("an eval cell is refused");
+        assert!(matches!(e, EvalCellRefused::LaunchUnverified(_)), "{e:?}");
+    }
+
+    // A standard pod is not checked at all, even with a forged leaf.
+    let launch = LaunchIdentity::Issued {
+        measured: &other,
+        leaf_der: &forged,
+        trust_bundle: ca.trust_bundle(),
+    };
+    assert_eq!(
+        require_verified_launch(IsolationProfile::Standard, launch),
+        Ok(())
+    );
+    assert_eq!(
+        require_verified_launch(IsolationProfile::Standard, LaunchIdentity::NoIdentity),
+        Ok(())
+    );
 }
 
 fn every_driver() -> Vec<DriverKind> {
@@ -202,6 +407,36 @@ fn an_eval_cell_is_never_served_an_audit_uploader_credential() {
     );
     assert_eq!(
         admit(&eval_cell(""), &node, None),
+        Ok(IsolationProfile::EvalCell)
+    );
+}
+
+/// ADR 0013 rule 8 (A-19 row 1): an eval cell given a governor key is refused by the key's name,
+/// for each name the guest reads; the same spec as a standard pod passes this decider, and an
+/// eval cell with an unrelated credential is admitted, so the refusal is the key's under this
+/// profile alone.
+#[test]
+fn an_eval_cell_is_never_given_a_governor_key() {
+    let fc = DriverKind::Firecracker;
+    let node = holding(&fc);
+    for key in nucleus_spec::isolation_profile::GOVERNOR_KEY_ENV {
+        let creds = format!(r#","credentials":{{"env":{{"{key}":"aa"}}}}"#);
+        assert_eq!(
+            admit(&eval_cell(&creds), &node, None),
+            Err(EvalCellRefused::GuestHeldGovernorKey { key: key.into() })
+        );
+        let msg = admit(&eval_cell(&creds), &node, None)
+            .expect_err("refused")
+            .to_string();
+        assert!(msg.contains(key) && msg.contains("rule 8"), "{msg}");
+        assert_eq!(
+            admit(&standard(&creds), &node, None),
+            Ok(IsolationProfile::Standard)
+        );
+    }
+    let unrelated = r#","credentials":{"env":{"LLM_API_TOKEN":"test-token-123"}}"#;
+    assert_eq!(
+        admit(&eval_cell(unrelated), &node, None),
         Ok(IsolationProfile::EvalCell)
     );
 }
@@ -406,7 +641,9 @@ fn the_eval_cell_decider_runs_at_create_before_the_clamp_and_admission() {
 
 /// The live decider records each eval cell it admits, before the guest exists,
 /// and holds that pod's children to the profile: a child that omits the label
-/// is refused by name. A standard parent's standard child is admitted.
+/// is refused by name. A standard parent's standard child is admitted. This
+/// fixture's node is not attested, so it refuses the cell itself (ADR 0016) and
+/// the parent's record is written as admission writes it.
 #[cfg(feature = "local-driver")]
 #[test]
 fn the_node_holds_a_child_to_the_profile_it_admitted_its_parent_under() {
@@ -418,18 +655,25 @@ fn the_node_holds_a_child_to_the_profile_it_admitted_its_parent_under() {
     st.workload_landlock = nucleus::LandlockWaiver::Absent;
     st.broker_enforcing = HostSpecEnforcement::Required;
     let cell = Uuid::new_v4();
-    assert_eq!(
-        admit_on(&st, &eval_cell(""), None, cell).expect("an eval cell on a holding node"),
-        IsolationProfile::EvalCell
-    );
+    // Wired through the live state (ADR 0016 D3): this fixture's node has no TPM,
+    // so its own evidence appraises `unattested` and the eval cell is refused by
+    // name, and a refused cell is not recorded.
+    let msg = admit_on(&st, &eval_cell(""), None, cell)
+        .expect_err("an eval cell on a node with no attested evidence")
+        .to_string();
+    assert!(msg.contains("appraises `unattested`"), "{msg}");
+    assert!(msg.contains("test node"), "{msg}");
+    assert_eq!(st.eval_cells.profile_of(cell), IsolationProfile::Standard);
+    // What admit_on records for a cell it admits on an attested node.
+    st.eval_cells.record(cell);
     let msg = admit_on(&st, &standard(""), Some(cell), Uuid::new_v4())
         .expect_err("a child cannot shed its parent's profile")
         .to_string();
     assert!(msg.contains(&cell.to_string()), "{msg}");
-    assert_eq!(
-        admit_on(&st, &eval_cell(""), Some(cell), Uuid::new_v4()).expect("an eval-cell child"),
-        IsolationProfile::EvalCell
-    );
+    let msg = admit_on(&st, &eval_cell(""), Some(cell), Uuid::new_v4())
+        .expect_err("an eval-cell child is held to the attested-node rule too")
+        .to_string();
+    assert!(msg.contains("appraises `unattested`"), "{msg}");
     let plain = Uuid::new_v4();
     assert_eq!(
         admit_on(&st, &standard(""), None, plain).expect("a standard pod"),

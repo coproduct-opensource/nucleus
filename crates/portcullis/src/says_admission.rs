@@ -105,6 +105,82 @@ impl DlcAdmission {
     }
 }
 
+/// Decode a 64-char hex string into 32 bytes.
+fn hex32(s: &str) -> Option<[u8; 32]> {
+    let bytes = hex::decode(s.trim()).ok()?;
+    bytes.try_into().ok()
+}
+
+impl DlcAdmission {
+    /// The admission a pod's three provisioning fields mean: the ONE reading of
+    /// them (ADR 0007 G-1). The guest's tool-proxy reads the fields from its
+    /// `NUCLEUS_DLC_*` environment and the host's decision service from the
+    /// pod's labels, and both hand them here, so the two kernels are provisioned
+    /// with the same admission or neither is. Before ADR 0014's host DLC
+    /// admission, only the guest read them, and the host allowed what the
+    /// guest's gate refused (a guest-stricter disagreement, §10).
+    ///
+    /// - `trusted_keys`: comma-separated 64-hex Ed25519 issuer public keys.
+    ///   **Empty ⇒ `None`**, admission is inert.
+    /// - `issuer`: 64-hex public key of the issuer whose credentials are
+    ///   presented (its bytes are also its principal id).
+    /// - `credentials`: comma-separated `operation=hex_signature` pairs.
+    ///
+    /// Fail-closed on partial configuration: once `trusted_keys` is non-empty,
+    /// admission is ALWAYS provisioned. A malformed issuer provisions an
+    /// unsatisfiable state (empty keyring), and a malformed or missing
+    /// credential denies its operation. Misconfiguration only narrows.
+    #[must_use]
+    pub fn provision(trusted_keys: &str, issuer: &str, credentials: &str) -> Option<Self> {
+        if trusted_keys.trim().is_empty() {
+            return None;
+        }
+        let entries: Vec<DlcKeyRecord> = trusted_keys
+            .split(',')
+            .filter_map(|k| {
+                let pk = hex32(k).or_else(|| {
+                    tracing::warn!("DLC trusted keys: skipping malformed key entry");
+                    None
+                })?;
+                Some(DlcKeyRecord {
+                    principal: DlcPrincipalId(pk),
+                    alg: 0,
+                    public_key: pk.to_vec(),
+                })
+            })
+            .collect();
+        let Some(issuer) = hex32(issuer) else {
+            // Trust anchors without an issuer: a zero principal and an EMPTY
+            // keyring, so every operation is denied.
+            tracing::error!(
+                "DLC trusted keys are set but the issuer is missing or malformed — \
+                 provisioning DENY-ALL admission (fail-closed)"
+            );
+            return Some(Self::new(
+                KeyRing { entries: vec![] },
+                Principal::Atom(DlcPrincipalId([0u8; 32])),
+            ));
+        };
+        let mut admission = Self::new(KeyRing { entries }, Principal::Atom(DlcPrincipalId(issuer)));
+        for pair in credentials.split(',').filter(|p| !p.trim().is_empty()) {
+            match pair.split_once('=') {
+                Some((op, sig_hex)) => match hex::decode(sig_hex.trim()) {
+                    Ok(bytes) => {
+                        admission =
+                            admission.with_credential(op.trim(), Signature { alg: 0, bytes });
+                    }
+                    Err(_) => tracing::warn!(
+                        operation = op.trim(),
+                        "DLC credentials: malformed signature hex — operation will be denied"
+                    ),
+                },
+                None => tracing::warn!("DLC credentials: entry without '=' — skipped (denied)"),
+            }
+        }
+        Some(admission)
+    }
+}
+
 /// Mint an ephemeral issuer credential for one operation — **harness/host tooling,
 /// not a production issuance path** (real issuance belongs to the issuer's own key
 /// management). Returns the issuer's public key (which is also its principal id,

@@ -92,7 +92,7 @@ pub(crate) fn attestation_config(args: &Args) -> AttestationConfig {
 /// its line ratchet, so instrumentation has to pay for itself. Defaults to 1 on
 /// an unset or unparseable value.
 pub(crate) fn declassify_threshold() -> usize {
-    std::env::var("NUCLEUS_DECLASSIFY_THRESHOLD")
+    std::env::var(nucleus_spec::isolation_profile::GOVERNOR_KEY_ENV[1])
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(1)

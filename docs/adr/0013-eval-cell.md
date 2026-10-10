@@ -11,7 +11,7 @@
   node's own authority).
 - Applies to: `nucleus-spec` (`isolation_profile`, `tier2_artifacts`), `nucleus-node`
   (`eval_cell`, `workspace_scan`, `net`, `net::confinement`, `main.rs`'s create path),
-  `portcullis` (`git_exec`), `nucleus-cli`
+  `portcullis` (`git_exec`), `nucleus-tool-proxy` (`declassify`), `nucleus-cli`
   (`run --isolation-profile`).
 
 ## Context
@@ -125,6 +125,41 @@ The node refuses the pod at create, by name, unless all of the following hold
    from the copy (`workspace_scan::read_pinned_disk`). The verdict therefore covers only
    the pinned bytes. At boot, `image_identity::verify` holds the disk placed in the jail
    to the same pin, so a disk rewritten between create and boot does not boot.
+   The disk checked there is a copy the node owns, never a link to the caller's file
+   (`jail_placement::Placement::NodeCopyGuestWrites`; the data disk is a root-owned
+   read-only copy). A write to the caller's file after the check cannot reach the guest.
+   The guest's writes reach the caller through one path: at pod exit, after the VMM has
+   stopped, the node copies its disk over the caller's `image.scratch_path`
+   (`scratch_export`). The signed receipt carries the digest of what the node exported
+   (`scratch_export`), or `not exported: <why>`. A standard pod's disks are still linked.
+8. **The guest holds no governor key, so an eval cell cannot declassify.** The keys that
+   verify a declassification token, or cosign a memory declassification, are the guest
+   tool-proxy's `NUCLEUS_DECLASSIFY_TRUSTED_KEYS` (and its threshold,
+   `NUCLEUS_DECLASSIFY_THRESHOLD`; both declared once as
+   `isolation_profile::GOVERNOR_KEY_ENV`). A key the guest holds is a key guest root
+   holds: it can replace the trusted set and sign its own tokens (ADR 0014 §3). Owner
+   decision 2026-10-08: until the host verifies declassifications, an eval cell's guest
+   receives none. The paths a key could take to a guest, and what closes each:
+   - **node environment inherited by the tool-proxy**: the local tier only, refused by
+     rule 1;
+   - **container environment**: written explicitly by the node, never inherited, and the
+     container tier is refused by rule 1;
+   - **the kernel command line**: built by the node, which writes no governor key, and a
+     spec may add only `quiet`, `loglevel=` and a dotted canary (`nucleus_spec::boot_args`),
+     so no undotted token reaches PID 1's environment;
+   - **the workload API**: no command serves one;
+   - **the spec's `credentials.env`**: refused by the key's name
+     (`EvalCellRefused::GuestHeldGovernorKey`). `spec_posture` already refuses the whole
+     `NUCLEUS_` namespace for every pod; this refusal is the eval-cell rule, kept if that
+     namespace rule ever widens.
+
+   In the guest, the tool-proxy decides once at startup from the profile label
+   (`declassify::GovernorKeys::for_pod`): an eval cell's guest holds no key whatever its
+   environment carries, and the token and memory endpoints refuse every declassification
+   by name before reading a signature. An unknown profile label is read as an eval cell
+   there (B-3). A standard pod with no key already refused every declassification
+   (`Kernel::verify_declassification`, `nucleus_provenance_memory::declassify`), so this
+   rule changes nothing for standard pods.
 
 ADR 0007 B applies throughout: an unknown profile name is refused (B-3); the absent
 label is the standard profile, which is the admission every pod already receives and
@@ -141,7 +176,7 @@ what an eval cell needs of it.
 | Evaluation sandbox with live internet | Every pod sits in a host network namespace with a default-deny chain the guest cannot reach, and the node refuses a pod whose guest cannot prove the fence drops traffic (`net::confinement`, egress attestation). An eval cell's allowlist names hosts one by one, never a range, and a network capability with nothing listed is refused (`eval_cell::admit_egress`). | **Answered** at admission (M0). The live probe that pins it under guest root is M2. |
 | Zero-day in a reachable supporting proxy | An eval cell cannot list a range, so a supporting service is reachable only if listed by address. The host-side listeners the guest reaches over vsock (workload API, broker, decision channel) are reachable from guest root. They are one inventoried type, `HostListener` in `nucleus-ifc-kernel`, bound only through `guest_socket::bind_guest_listener` and held equal to the table in `docs/architecture/mediated-set.md` (#3331). | **Inventoried** (M1, #3331); **NOT YET → M1** for in-guest probes that reach each listener, **M4** (one mediated egress proxy; DNS answered by it). |
 | Unauthenticated localhost or control API used for self-escalation | The node API is mTLS-only; approvals are Ed25519 signatures by a key the guest never holds; the tool-proxy's shared-secret tier carries no authority (#2446 step 2). But the deciding kernel is in the guest, so guest root can bypass the in-guest decision entirely. | **NOT YET → M3** (the host decides; the guest proxy becomes a thin client). |
-| Repository-borne exec config before approval | One list of what a repository can make git execute (`portcullis::git_exec`: non-sample hooks, and every `.git/config` key git's manual documents as running a program), read by two deciders. `nucleus/src/consume_guard.rs` reverts a shell command that adds one during a run. `nucleus-node/src/workspace_scan.rs` reads what enters the pod before any driver runs: an eval cell's scratch and data disks are copied out as written (a journal needing recovery is refused, not replayed) and scanned, and an eval cell carrying any finding, or a disk that could not be scanned, is refused naming each path and key. A standard pod is admitted with its findings in the node-owned `workspace.coproduct.one/exec-config` label, which the signed receipt's manifest hash covers. No host-side agent config enters a pod: the node copies nothing but the disks the spec names, and `nucleus run` hands a pod only the agent's program, its arguments and an inline MCP document (`run/pod_agent.rs`). | **Answered** at admission (M1). The create-to-boot window is closed by rule 7: an eval cell's disks are pinned, the scan reads only the pinned bytes, and `image_identity::verify` holds the placed disk to the same pin at boot. What remains is the gap between that boot check and the moment the VMM opens the drive. A caller-supplied scratch is hard-linked into the jail, so whoever can write the caller's inode can still change it in that gap or while the pod runs. That party is the caller, which is outside this record's adversary (the agent). |
+| Repository-borne exec config before approval | One list of what a repository can make git execute (`portcullis::git_exec`: non-sample hooks, and every `.git/config` key git's manual documents as running a program), read by two deciders. `nucleus/src/consume_guard.rs` reverts a shell command that adds one during a run. `nucleus-node/src/workspace_scan.rs` reads what enters the pod before any driver runs: an eval cell's scratch and data disks are copied out as written (a journal needing recovery is refused, not replayed) and scanned, and an eval cell carrying any finding, or a disk that could not be scanned, is refused naming each path and key. A standard pod is admitted with its findings in the node-owned `workspace.coproduct.one/exec-config` label, which the signed receipt's manifest hash covers. No host-side agent config enters a pod: the node copies nothing but the disks the spec names, and `nucleus run` hands a pod only the agent's program, its arguments and an inline MCP document (`run/pod_agent.rs`). | **Answered** at admission (M1). The create-to-boot window is closed by rule 7: an eval cell's disks are pinned, the scan reads only the pinned bytes, and `image_identity::verify` holds the placed disk to the same pin at boot. The caller-side window is closed too: the guest boots a node-owned copy of each disk, so nothing written to the caller's file after the boot check reaches it, and the guest's writes come back only through the node's export at exit, whose digest the signed receipt carries. |
 | Credential theft | Enforcing host-spec delivery withholds every credential value from the guest's spec (`cred_split`), and credentialed egress is performed by the host, so the guest never holds the token; an eval cell is refused on a node without it. The broker capability is served to the guest once per pod, and guest root can always hold it (it can read the proxy that fetched it), so it is not treated as a secret. What it grants is fixed by the host: it is bound to this pod (minted per pod, verified only by this pod's listener on this VM's vsock socket, `WrongPod` otherwise), the broker never returns a credential (`BrokerResponse` cannot carry one), and every perform is authorized by the host's own pod policy (`authorize_effect`) against upstreams admission resolved. The signing seed behind `FETCH_MEDIATION_KEY` is never served. The audit uploader's cloud credential was the one third-party credential still served; an eval cell naming an `audit_sink` is now refused (rule 6). | **Answered** for spec credentials (M0) and for every value the workload API serves (M1). The broker capability lets guest root skip the in-guest taint checks on the way to an admitted upstream: that is the deciding-kernel row (**M3**), not a credential leak. The SVID key and the caller token are this pod's own identity, usable away from the pod only through egress the cell lists. |
 | VMM escape | Firecracker under the jailer (chroot, cgroups, a uid that cannot be root), the VMM's seccomp filter verified active and fail-closed, both required of an eval cell; the node's boot measured and quoted by the TPM (ADRs 0011, 0012). | **Answered** at admission (M0); the VMM runs as pid 1 of its own PID namespace, is held through a pidfd, and runs under the jailer's file-size and open-file limits (M1, #3329, closes #2571). The guest-side PID namespace for workload children is not yet covered. |
 
