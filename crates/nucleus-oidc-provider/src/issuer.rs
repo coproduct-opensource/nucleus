@@ -22,7 +22,9 @@
 //!     with whatever the keystore says is active.
 //!   - GA-6 — lifetime hard-capped at 3600 seconds; rejected higher
 //!     at construction.
-//!   - GA-10 — algorithm-pinned `EdDSA` in the header at compile time
+//!   - GA-10 — the header's `alg` is the key store's one algorithm
+//!     ([`crate::keystore::SigningAlg`]), checked against the signature's;
+//!     originally algorithm-pinned `EdDSA` in the header at compile time
 //!     (literal string in `format!`).
 //!   - GA-12 — no `warn_once`; invariants are asserted, not warned.
 //!   - GA-13 — no raw key accessor; the keystore signs internally.
@@ -67,6 +69,34 @@ pub enum JwtIssuerError {
     Clock,
     #[error("claims serialization: {0}")]
     Encoding(String),
+    /// The key store signed with a different algorithm than the header
+    /// states. Unreachable for a correct store; refused rather than emitted,
+    /// because a token whose header lies about its algorithm is the shape of
+    /// every algorithm-confusion attack (T04).
+    #[error("key store signed {signed:?}, header says {header:?}")]
+    AlgMismatch {
+        header: &'static str,
+        signed: &'static str,
+    },
+    /// The active key changed between reading its `kid` for the header and
+    /// signing (an operator promoted the keyring's staged key in between),
+    /// twice in a row. The token would name one key and be signed by another.
+    #[error("the active signing key changed while minting")]
+    KeyChanged,
+    /// The request's `not_after` leaves the token no lifetime at all.
+    #[error("no lifetime left: not_after is not after the issue time")]
+    NoLifetimeLeft,
+}
+
+/// A minted token and the times written into it.
+#[derive(Debug, Clone)]
+pub struct MintedToken {
+    /// The compact JWS.
+    pub token: String,
+    /// Its `iat`.
+    pub iat: u64,
+    /// Its `exp`.
+    pub exp: u64,
 }
 
 /// RFC 8693 §4.1 delegated-actor chain. Recursive: an `act` may have
@@ -144,6 +174,14 @@ pub struct MintRequest {
     /// Maps to `urn:nucleus:effects`. `None` = no certificate was verified,
     /// which is not the same as an empty grant.
     pub effects: Option<Vec<String>>,
+    /// The latest the token may be valid, unix seconds. The issued `exp` is
+    /// `min(iat + the issuer's configured lifetime, not_after)`, and a token
+    /// with no life left is refused rather than given a floor. Absolute, not
+    /// a duration, so a clock tick between the caller computing it (from a
+    /// subject token's `exp`) and `mint` reading the time cannot stretch it.
+    /// Required, so a caller holding a tighter bound cannot forget it; a
+    /// caller with none passes `u64::MAX` and says so.
+    pub not_after: u64,
 }
 
 /// Boundary kind for [`JwtIssuer::mint_boundary_svid`] — distinguishes
@@ -330,6 +368,8 @@ impl JwtIssuer {
             }),
             kind: Some(request.kind.claim_kind()),
             effects: None,
+            // A boundary SVID is bounded by the issuer's lifetime alone.
+            not_after: u64::MAX,
         })?;
 
         Ok(MintedBoundarySvid {
@@ -338,10 +378,49 @@ impl JwtIssuer {
         })
     }
 
+    /// The `exp` of a token issued at `iat` under `not_after`: the earlier of
+    /// the issuer's lifetime and `not_after`. The one place this is decided;
+    /// [`JwtIssuer::mint_with_expiry`] returns it, so `expires_in` is read
+    /// off the token rather than recomputed.
+    ///
+    /// # Errors
+    /// [`JwtIssuerError::NoLifetimeLeft`] when that leaves nothing — never a
+    /// one-second floor, which would issue a credential past its bound.
+    fn expiry(&self, iat: u64, not_after: u64) -> Result<u64, JwtIssuerError> {
+        let exp = iat.saturating_add(self.lifetime.as_secs()).min(not_after);
+        if exp <= iat {
+            return Err(JwtIssuerError::NoLifetimeLeft);
+        }
+        Ok(exp)
+    }
+
+    /// The one algorithm this issuer signs with — its key store's.
+    pub fn alg(&self) -> crate::keystore::SigningAlg {
+        self.keystore.alg()
+    }
+
     /// Mint a compact JWS (RFC 7515 §3.1) — three base64url segments
     /// separated by `.`. The signing material comes from the keystore;
     /// JwtIssuer never sees the raw signing key.
     pub fn mint(&self, request: MintRequest) -> Result<String, JwtIssuerError> {
+        self.mint_with_expiry(request).map(|m| m.token)
+    }
+
+    /// [`JwtIssuer::mint`], returning the `iat` and `exp` written into the
+    /// token alongside it — what a caller reports as `expires_in`.
+    pub fn mint_with_expiry(&self, request: MintRequest) -> Result<MintedToken, JwtIssuerError> {
+        // A keyring promote between reading the `kid` and signing would put
+        // one key's id on another's signature. One retry absorbs a promote;
+        // two in a row is refused.
+        match self.mint_once(&request)? {
+            Some(minted) => Ok(minted),
+            None => self.mint_once(&request)?.ok_or(JwtIssuerError::KeyChanged),
+        }
+    }
+
+    /// One attempt. `Ok(None)` means the active key changed under it.
+    fn mint_once(&self, request: &MintRequest) -> Result<Option<MintedToken>, JwtIssuerError> {
+        let request = request.clone();
         if request.audience.trim().is_empty() {
             return Err(JwtIssuerError::EmptyAudience);
         }
@@ -371,7 +450,12 @@ impl JwtIssuer {
         // Header: alg/kid/typ in lexicographic order. Hand-built so the
         // typ value is hard-coded; no library can be tricked into
         // emitting `alg: none` or HS-of-public-key etc.
-        let header_json = format!(r#"{{"alg":"EdDSA","kid":"{}","typ":"at+jwt"}}"#, kid);
+        let alg = self.keystore.alg();
+        let header_json = format!(
+            r#"{{"alg":"{}","kid":"{}","typ":"at+jwt"}}"#,
+            alg.jose_name(),
+            kid
+        );
 
         let claims = AccessTokenClaims {
             iss: self.issuer_url.clone(),
@@ -379,13 +463,14 @@ impl JwtIssuer {
             aud: request.audience,
             client_id: request.client_id,
             iat: now,
-            exp: now + self.lifetime.as_secs(),
+            exp: self.expiry(now, request.not_after)?,
             jti: Uuid::new_v4().to_string(),
             scope: request.scope,
             act: request.act.map(Box::new),
             nucleus_kind: request.kind,
             nucleus_effects: request.effects,
         };
+        let (claims_iat, claims_exp) = (claims.iat, claims.exp);
         let payload_json =
             serde_json::to_string(&claims).map_err(|e| JwtIssuerError::Encoding(e.to_string()))?;
 
@@ -394,11 +479,22 @@ impl JwtIssuer {
         let signing_input = format!("{header_b64}.{payload_b64}");
 
         let signed = self.keystore.sign(signing_input.as_bytes())?;
-        debug_assert_eq!(signed.alg, "EdDSA", "keystore must sign EdDSA");
-        debug_assert_eq!(signed.kid, kid, "active KID raced between query and sign");
+        if signed.alg != alg {
+            return Err(JwtIssuerError::AlgMismatch {
+                header: alg.jose_name(),
+                signed: signed.alg.jose_name(),
+            });
+        }
+        if signed.kid != kid {
+            return Ok(None);
+        }
 
         let sig_b64 = URL_SAFE_NO_PAD.encode(&signed.signature);
-        Ok(format!("{signing_input}.{sig_b64}"))
+        Ok(Some(MintedToken {
+            token: format!("{signing_input}.{sig_b64}"),
+            iat: claims_iat,
+            exp: claims_exp,
+        }))
     }
 }
 
@@ -470,6 +566,7 @@ mod tests {
             act: None,
             kind: None,
             effects: None,
+            not_after: u64::MAX,
         })
         .unwrap()
     }
@@ -591,6 +688,7 @@ mod tests {
                 }),
                 kind: Some("llm_call".into()),
                 effects: None,
+                not_after: u64::MAX,
             })
             .unwrap();
         let (_, claims, _) = decode_unverified(&token).unwrap();
@@ -614,6 +712,7 @@ mod tests {
                 act: None,
                 kind: Some("test-kind".into()),
                 effects: None,
+                not_after: u64::MAX,
             })
             .unwrap();
         let payload_b64 = token.split('.').nth(1).unwrap();
@@ -637,6 +736,7 @@ mod tests {
                 act: None,
                 kind: None,
                 effects: None,
+                not_after: u64::MAX,
             })
             .unwrap_err();
         assert!(matches!(err, JwtIssuerError::EmptyAudience));
@@ -654,6 +754,7 @@ mod tests {
                 act: None,
                 kind: None,
                 effects: None,
+                not_after: u64::MAX,
             })
             .unwrap_err();
         assert!(matches!(err, JwtIssuerError::EmptyClientId));
@@ -712,7 +813,8 @@ mod tests {
 
         let active_kid = store.active_kid().unwrap();
         let vk = store.verify_key(&active_kid).unwrap();
-        vk.verifying_key
+        vk.ed25519()
+            .expect("an Ed25519 store publishes Ed25519 keys")
             .verify(signing_input.as_bytes(), &sig)
             .expect("signature verifies against active keystore key");
     }

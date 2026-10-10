@@ -62,6 +62,7 @@ impl MeshHarness {
         );
 
         let rules = FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![FederationRule {
                 id: "test-allow".to_string(),
                 subject_prefix: "spiffe://prod.example.com/*".to_string(),
@@ -84,6 +85,7 @@ impl MeshHarness {
         );
 
         let app = build_app(AppState {
+            outside_issuers: std::sync::Arc::new(nucleus_oidc_provider::OutsideIssuers::empty()),
             keystore: store,
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,

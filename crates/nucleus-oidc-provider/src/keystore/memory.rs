@@ -21,7 +21,10 @@ use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::{Signer, SigningKey};
 
-use super::{JwtKeyStore, KeyStoreError, RotateOutcome, SignedBytes, VerifyKey, rfc7638_kid};
+use super::{
+    JwtKeyStore, KeyStoreError, PublicKey, RotateOutcome, SignedBytes, SigningAlg, VerifyKey,
+    rfc7638_kid,
+};
 
 /// Default rotation grace window. Tokens signed pre-rotation verify
 /// for this long after the rotation event. Matches the value
@@ -74,7 +77,7 @@ impl InMemoryKeyStore {
     fn active_verify_key(inner: &Inner) -> Arc<VerifyKey> {
         Arc::new(VerifyKey {
             kid: inner.active_kid.clone(),
-            verifying_key: inner.active_signing.verifying_key(),
+            public: PublicKey::Ed25519(inner.active_signing.verifying_key()),
             not_before: inner.active_not_before,
             // Active keys are open-ended; the JWKS endpoint serves
             // them until they rotate. `not_after` is set to far-future.
@@ -95,12 +98,16 @@ impl Default for InMemoryKeyStore {
 }
 
 impl JwtKeyStore for InMemoryKeyStore {
+    fn alg(&self) -> SigningAlg {
+        SigningAlg::EdDsa
+    }
+
     fn sign(&self, bytes: &[u8]) -> Result<SignedBytes, KeyStoreError> {
         let inner = self.inner.lock().map_err(|_| KeyStoreError::Poisoned)?;
         let sig = inner.active_signing.sign(bytes);
         Ok(SignedBytes {
             kid: inner.active_kid.clone(),
-            alg: "EdDSA",
+            alg: SigningAlg::EdDsa,
             signature: sig.to_bytes().to_vec(),
         })
     }
@@ -146,7 +153,7 @@ impl JwtKeyStore for InMemoryKeyStore {
         let old_kid = inner.active_kid.clone();
         let old_verify = VerifyKey {
             kid: old_kid.clone(),
-            verifying_key: inner.active_signing.verifying_key(),
+            public: PublicKey::Ed25519(inner.active_signing.verifying_key()),
             not_before: inner.active_not_before,
             not_after: now + self.grace_window,
         };
@@ -228,13 +235,14 @@ mod tests {
         let store = InMemoryKeyStore::new();
         let bytes = b"canonical payload";
         let signed = store.sign(bytes).unwrap();
-        assert_eq!(signed.alg, "EdDSA");
+        assert_eq!(signed.alg, SigningAlg::EdDsa);
         assert_eq!(signed.signature.len(), 64);
 
         let vk = store.verify_key(&signed.kid).unwrap();
         let sig_bytes: [u8; 64] = signed.signature.as_slice().try_into().unwrap();
         let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        vk.verifying_key
+        vk.ed25519()
+            .expect("an Ed25519 store publishes Ed25519 keys")
             .verify(bytes, &sig)
             .expect("signature must verify against active key");
     }
@@ -271,7 +279,8 @@ mod tests {
         let vk = store.verify_key(&pre_kid).unwrap();
         let sig_bytes: [u8; 64] = signed.signature.as_slice().try_into().unwrap();
         let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        vk.verifying_key
+        vk.ed25519()
+            .expect("an Ed25519 store publishes Ed25519 keys")
             .verify(bytes, &sig)
             .expect("pre-rotation signature must verify during grace");
     }

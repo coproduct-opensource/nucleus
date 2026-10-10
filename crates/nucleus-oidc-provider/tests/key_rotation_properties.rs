@@ -92,7 +92,7 @@ proptest! {
                 if let Ok(vk) = store.verify_key(kid) {
                     let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
                     prop_assert!(
-                        vk.verifying_key.verify(msg, &sig).is_ok(),
+                        vk.ed25519().expect("Ed25519 store").verify(msg, &sig).is_ok(),
                         "sig for kid {kid:?} must verify while kid is in verify-set"
                     );
                 }
@@ -226,7 +226,10 @@ fn prop_concurrent_rotate_sign_keeps_signatures_verifiable() {
             Ok(vk) => {
                 let sig = ed25519_dalek::Signature::from_bytes(sig_bytes);
                 assert!(
-                    vk.verifying_key.verify(msg, &sig).is_ok(),
+                    vk.ed25519()
+                        .expect("Ed25519 store")
+                        .verify(msg, &sig)
+                        .is_ok(),
                     "TORN READ: kid {kid:?} resolves but signature fails to verify"
                 );
                 verified += 1;

@@ -77,6 +77,13 @@ pub enum OidcApiError {
     /// Always wire-stripped to `error: server_error` without details.
     #[error("internal error: {0}")]
     Internal(String),
+    /// The subject_token could not be JUDGED right now — an outside issuer's
+    /// keys were unreachable, or its replay cache was full of live tokens.
+    /// Fails closed like a refusal, but answers 503 so a caller retries
+    /// rather than concluding its credential is bad. RFC 6749 §4.1.2.1's
+    /// `temporarily_unavailable`; the detail is for operator logs only.
+    #[error("temporarily unavailable: {0}")]
+    TemporarilyUnavailable(String),
 }
 
 /// Token-endpoint OAuth error response per RFC 6749 §5.2 / RFC 8693 §2.2.2.
@@ -106,6 +113,7 @@ impl OidcApiError {
                 | OidcApiError::InvalidTarget(_)
                 | OidcApiError::UnsupportedGrantType(_)
                 | OidcApiError::InvalidScope(_)
+                | OidcApiError::TemporarilyUnavailable(_)
         )
     }
 }
@@ -144,6 +152,11 @@ impl IntoResponse for OidcApiError {
                 // Never reflect internal state.
                 (StatusCode::INTERNAL_SERVER_ERROR, "server_error", None)
             }
+            OidcApiError::TemporarilyUnavailable(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                None,
+            ),
         };
 
         if self.is_oauth_error() {

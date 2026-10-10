@@ -30,6 +30,11 @@ WORKDIR /app
 # keystore goes on the mounted volume at /data.
 COPY --from=builder /build/target/release/nucleus-oidc-provider /app/nucleus-oidc-provider
 
+# Deployment federation configs (rules + outside-issuer bindings). Not secret,
+# inert unless NUCLEUS_OIDC_FEDERATION_CONFIG names one, and part of the image
+# digest — so which rules a running OP enforces is fixed by what was deployed.
+COPY crates/nucleus-oidc-provider/deploy/ /app/deploy/
+
 # Non-root by default — distroless `:nonroot` tag drops to UID 65532.
 USER nonroot:nonroot
 

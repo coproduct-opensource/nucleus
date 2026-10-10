@@ -136,11 +136,12 @@
 **Likelihood.** Medium — these are the most-exploited JWT bugs in the wild.
 
 **Mitigation.**
-- Algorithm-pinned construction in JwtIssuer (#34): constructor rejects HS\*, RS\*, none, ES\*, leaves only EdDSA.
-- Algorithm-pinned verification: every verify path takes the expected `alg` as input, not from the token header.
-- CI gate (#54) static-checks every source path under `crates/nucleus-oidc-{provider,core}/` for accidental `alg=none`/HS\*/RS\* references outside explicit-reject negative-test fixtures.
-- JWKS endpoint advertises only Ed25519/OKP keys (#35).
-- Discovery doc advertises `id_token_signing_alg_values_supported = ["EdDSA"]` exclusively (#36).
+- **One deployment, one signing algorithm** (re-reviewed 2026-10-08). The key store fixes it: `JwtKeyStore::alg()` returns one `SigningAlg`, `EdDsa` for the in-process stores or `Es256` for `KeyringKeyStore`. The enum has no `none`, HMAC or RSA variant, so a store for them cannot be written. `JwtIssuer::mint` writes the store's algorithm into the header and refuses a signature whose algorithm differs (`AlgMismatch`). Before 2026-10-08 that check was a `debug_assert`, a no-op in release builds.
+- **Why ES256 at all.** Cloud workload-identity federation accepts an outside OIDC issuer's tokens signed RS256 or ES256, never EdDSA, and the SPIFFE JWT-SVID profile's algorithm list has no EdDSA. A deployment whose tokens must reach such a relying party signs ES256. The signing goes through `nucleus-federation`'s P-256 signer, whose only signing method returns a fixed 64-byte `r||s`, and the `alg` string is that crate's single `SIGNING_ALG` constant. No second P-256 implementation and no second literal exist.
+- Algorithm-pinned verification: every verify path takes the expected `alg` as input, not from the token header. JWT-SVID subject tokens are EdDSA only. Outside issuers' tokens are verified with the binding's allowlist, drawn from `nucleus_federation::VerifyAlg` (no `none`, HMAC or EdDSA variant), and the key's type and curve must fit the algorithm (RFC 8725 §3.1).
+- CI gate (#54) static-checks every source path under `crates/nucleus-oidc-{provider,core}/` for accidental `alg=none`/HS\*/RS\*/ES\* references outside explicit-reject negative-test fixtures.
+- The JWKS endpoint advertises only the store's keys: Ed25519/OKP (#35) or P-256/EC.
+- The discovery doc advertises exactly one value in `id_token_signing_alg_values_supported`: the store's (#36).
 - Fuzz harness (#51) tests subject_token validator against malformed `alg` headers.
 
 **Residual risk.** Very Low at the OP. RP-side downgrade is outside scope; operator runbook documents.
@@ -167,6 +168,7 @@
 - Audit-log each Deny with the matched-rule-id or "no rule matched" (#41), enabling diff-based config review.
 - Operator runbook (#53) mandates least-privilege subject_prefix per audience.
 - Real-world validation (#56) against an actual external RP exercises the rule path end-to-end.
+- **Outside-issuer bindings (2026-10-08).** A binding maps an outside issuer's tokens to ONE full SPIFFE ID, never a prefix, and only when every `required_claims` value matches exactly. A binding with no required claims is refused at load, because an issuer serves many workloads and naming none would give the identity to all of them. One binding per issuer. The token's `aud` must be this OP's issuer URL, and the binding has no field that could say otherwise. The binding grants an identity only: audience, grant, lifetime and scope still come from the rules.
 
 **Residual risk.** Medium. Rule correctness is intrinsically operator-dependent. We provide tooling but cannot prove the operator's intent matches their config.
 
@@ -348,6 +350,7 @@
 - Operator runbook (#53) mandates `revoke()` (not `rotate()`) on suspected compromise.
 - Property test (#52): revoked key is absent from /jwks.json within one polling cycle.
 - Audit-log on every rotate AND revoke (#37) with reason field.
+- **`KeyringKeyStore` (ES256) has no `revoke()`** (2026-10-08). Its rotation is the keyring's stage → promote → retire protocol, which deliberately waits for relying parties' JWKS caches. On compromise the runbook's ES256 procedure replaces the key outright: stop, remove the key files, start. The old key leaves the JWKS at once, and every token it signed stops verifying as relying parties refetch. That is the same blast-radius bound as `revoke()`, paid with a restart.
 
 **Residual risk.** Low when operator follows runbook.
 
@@ -392,6 +395,10 @@ This document MUST be re-reviewed before any of:
 5. Adding any new endpoint that exposes OP-signed material.
 6. Promoting the per-call SVID work (#46) to non-boundary internal flows.
 7. Removing any algorithm-pinning CI gate (#54).
+
+### Re-review record
+
+- **2026-10-08** (triggers 2 and 3: ES256 signing; `[[outside_issuer]]` in the federation schema). T04, T05 and T13 were updated above. T03 (replay): an outside token is replay-checked by `ExternalIssuerValidator` on the SHA-256 of its signed content (`header.payload`), because such issuers often send no `jti`. It is NOT keyed on the whole token: an independent review found that an ECDSA signature flipped to `n − s` still verifies and hashed as a new token, so a captured ES256 outside token could be exchanged again until it expired. That was reproduced, fixed and pinned by a test, and it also closes the same hole at nucleus-node's federation ingress (#3022). A JWT-SVID keeps the `JtiCache`. T06 (clock skew): the binding's leeway is required (never defaulted) and capped at 60 s, and a token past its `exp` is refused inside the leeway too. T05: a binding may not name this OP's own issuer URL. Known and accepted: the 503 an outside issuer's unreachable keys produce can only arise for a BOUND `iss`, so a caller can learn which issuers are bound. The response bodies stay opaque. Also found and fixed: `mint` stamped `exp = iat + 300` whatever the rule's `max_token_lifetime_secs` or the subject token's remaining life. Only `expires_in` was clamped. `MintRequest::not_after` (absolute) is now required, `mint` decides `exp` once and returns it, and `expires_in` is read off the minted token (`docs/findings/oidc-provider-first-tenant.md` §1).
 
 ## 8. References
 

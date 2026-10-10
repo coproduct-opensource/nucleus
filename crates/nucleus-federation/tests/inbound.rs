@@ -374,6 +374,48 @@ async fn the_same_token_twice_is_a_replay() {
     );
 }
 
+/// ECDSA signatures are malleable: if `(r, s)` verifies, so does `(r, n − s)`,
+/// and anyone holding a token can compute it without the key. A replay cache
+/// keyed on the whole compact token sees a NEW token and admits it — so a
+/// captured ES256 token could be exchanged again and again until it expired.
+/// The replay key is the signed content, which the flip does not change.
+#[tokio::test]
+async fn a_token_with_its_ecdsa_signature_flipped_is_still_a_replay() {
+    let (k, v) = fixture();
+    let tok = sign(es256_header("k1"), claims(), &k);
+    v.validate(&tok, NOW).await.unwrap();
+
+    let (input, sig_b64) = tok.rsplit_once('.').unwrap();
+    let mut sig = URL_SAFE_NO_PAD.decode(sig_b64).unwrap();
+    let flipped_s = p256_order_minus(&sig[32..]);
+    sig[32..].copy_from_slice(&flipped_s);
+    let flipped = format!("{input}.{}", URL_SAFE_NO_PAD.encode(&sig));
+    assert_ne!(flipped, tok, "a different compact token");
+    assert_eq!(
+        reason(&v, &flipped).await,
+        RefusalReason::Replayed,
+        "the flipped signature verifies, so only the replay check can refuse it"
+    );
+}
+
+/// `n − s` for the P-256 group order `n`, big-endian, for `0 < s < n`.
+fn p256_order_minus(s: &[u8]) -> [u8; 32] {
+    const N: [u8; 32] = [
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+        0xff, 0xbc, 0xe6, 0xfa, 0xad, 0xa7, 0x17, 0x9e, 0x84, 0xf3, 0xb9, 0xca, 0xc2, 0xfc, 0x63,
+        0x25, 0x51,
+    ];
+    let mut out = [0u8; 32];
+    let mut borrow = false;
+    for i in (0..32).rev() {
+        let (d1, b1) = N[i].overflowing_sub(s[i]);
+        let (d2, b2) = d1.overflowing_sub(u8::from(borrow));
+        out[i] = d2;
+        borrow = b1 || b2;
+    }
+    out
+}
+
 #[tokio::test]
 async fn a_refused_token_does_not_occupy_the_replay_cache() {
     let k = key(&ECDSA_P256_SHA256_FIXED_SIGNING);
@@ -396,8 +438,12 @@ async fn a_refused_token_does_not_occupy_the_replay_cache() {
         .await
         .unwrap();
     // Capacity 1, one live token: the next distinct valid token fails closed.
+    // Distinct CONTENT: the same claims re-signed are the same token (the
+    // replay key is the signed content; see the flipped-signature test).
+    let mut other = claims();
+    other["session"] = json!("s-2");
     let err = v
-        .validate(&sign(es256_header("k1"), claims(), &k), NOW)
+        .validate(&sign(es256_header("k1"), other, &k), NOW)
         .await
         .unwrap_err();
     assert!(matches!(

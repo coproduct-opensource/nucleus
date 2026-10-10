@@ -19,6 +19,16 @@ path = "src/main.rs"
 nucleus-lineage = { path = "../nucleus-lineage" }
 # Public OIDC primitives — JtiCache, federation traits, key resolution.
 nucleus-oidc-core = { path = "../nucleus-oidc-core" }
+# Two things, both reused rather than restated. (1) The outside-issuer
+# validator (`inbound::ExternalIssuerValidator`): exact iss/aud, an algorithm
+# set with no `none`/HMAC variant, key-fits-algorithm, replay by token hash —
+# the same checks nucleus-node applies at its federation ingress (#3022).
+# (2) The ES256 signing key and its rotation protocol (`keyring`): one P-256
+# signer in the workspace, behind a trait a TPM- or KMS-held key implements.
+nucleus-federation = { path = "../nucleus-federation" }
+# The validator's JWKS fetches go through reqwest with `rustls-no-provider`
+# (workspace convention); `main` installs ring's provider first thing.
+rustls = { workspace = true }
 # Certificate verification + the effect dimension, so a federated token can be
 # bounded by the authority a person actually delegated rather than only by the
 # operator's rule. Lean on purpose: `serde` + `crypto` gives `verify_certificate`
@@ -95,6 +105,9 @@ tower = { version = "0.5", features = ["util", "limit"] }
 http-body-util = "0.1"
 tempfile = { workspace = true }
 proptest = { workspace = true }
+# Verifying an issued ES256 token the way a relying party's JWT library does
+# (tests/outside_issuer.rs), so "an RP accepts it" is tested, not assumed.
+jsonwebtoken = { workspace = true }
 
 [lints]
 workspace = true

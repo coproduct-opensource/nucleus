@@ -19,6 +19,11 @@
 //! 6. Mint response via [`JwtIssuer::mint`] with `act` claim attesting
 //!    the original SVID subject per RFC 8693 §4.1.
 //!
+//! A subject_token whose exact `iss` names a bound outside issuer
+//! (`[[outside_issuer]]`, `crate::outside`) takes the other path at step 3:
+//! it is judged by its binding and becomes the binding's one SPIFFE ID, then
+//! meets the same federation rule, scope ceiling and lifetime bound.
+//!
 //! Error responses follow RFC 6749 §5.2 + RFC 8693 §2.2.2 shapes
 //! (`{error, error_description}`).
 
@@ -33,7 +38,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use nucleus_lineage::CallSpiffeId;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq as _;
 
 use crate::app::AppState;
@@ -385,11 +390,155 @@ pub async fn handler(
         ));
     }
 
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| OidcApiError::Internal("clock before unix epoch".into()))?
+        .as_secs();
+
+    // 3-4. Who is the subject? Dispatch by the token's exact `iss`: a bound
+    //      outside issuer's token is judged by its binding and becomes the
+    //      binding's one SPIFFE ID; anything else must be a JWT-SVID from the
+    //      trust bundle. Either way, from step 5 on it is the same subject
+    //      meeting the same federation rules.
+    let ResolvedSubject {
+        spiffe: sub_spiffe,
+        exp: sub_exp,
+        act,
+        kind,
+    } = match state.outside_issuers.for_token(&req.subject_token) {
+        Some(outside) => resolve_outside(outside, &req.subject_token, now).await?,
+        None => resolve_spiffe(&state, &req.subject_token, now)?,
+    };
+
+    // 5. Federation rule lookup (#41).
+    let decision = state
+        .federation
+        .evaluate(sub_spiffe.as_str(), &audience, TOKEN_EXCHANGE_GRANT);
+    let (rule_max_lifetime, rule_max_scope, rule_scope_requires) = match decision {
+        crate::federation::Decision::Allow {
+            matched_rule_id,
+            max_lifetime,
+            max_scope,
+            scope_requires,
+        } => {
+            tracing::info!(
+                sub = %sub_spiffe,
+                audience = %audience,
+                matched_rule = %matched_rule_id,
+                "federation: ALLOW"
+            );
+            (max_lifetime, max_scope, scope_requires)
+        }
+        crate::federation::Decision::Deny(reason) => {
+            tracing::warn!(
+                sub = %sub_spiffe,
+                audience = %audience,
+                ?reason,
+                "federation: DENY"
+            );
+            return Err(OidcApiError::InvalidTarget(format!(
+                "federation policy denies (sub, audience) — {reason:?}"
+            )));
+        }
+    };
+
+    // 5b. Scope ceiling. The federation rule bounds WHICH audience this
+    //     subject may reach and FOR HOW LONG; this bounds WHAT the issued
+    //     token may do when it gets there.
+    //
+    //     Before this, `scope` was echoed from the request verbatim — a
+    //     workload asked and the OP minted. The delegation ceiling that the
+    //     kernel, the certificate and the effect gate all enforce inside the
+    //     boundary simply stopped at it, which is the one place a federated
+    //     credential most needs to carry it.
+    let cert_effects = granted_effects(&state, &req)?;
+    let granted_scope = clamp_scope(
+        req.scope.as_deref(),
+        rule_max_scope.as_deref(),
+        rule_scope_requires.as_ref(),
+        cert_effects.as_ref(),
+    )?;
+
+    // 6. Mint response token. `act` claim attests the upstream actor
+    //    per RFC 8693 §4.1.
+    //    `not_after` is the earlier of the subject token's `exp` and the
+    //    rule's lifetime from now; the issuer applies its own lifetime on
+    //    top, and `expires_in` is read off the minted token.
+    let not_after = sub_exp.min(now.saturating_add(rule_max_lifetime.as_secs()));
+    if not_after <= now {
+        return Err(OidcApiError::InvalidGrant(
+            "no lifetime left under the subject token and the federation rule".into(),
+        ));
+    }
+    let client_id = sub_spiffe.to_string();
+    let issuer = state.issuer.clone();
+    let minted = issuer
+        .mint_with_expiry(MintRequest {
+            subject: sub_spiffe,
+            audience: audience.clone(),
+            client_id,
+            scope: granted_scope.clone(),
+            // The attenuation, carried. An RP that understands nucleus can
+            // enforce per-effect from the token alone rather than being handed
+            // the certificate as well; one that does not ignores a namespaced
+            // claim it has never heard of.
+            effects: cert_effects
+                .as_ref()
+                .map(|e| e.iter().cloned().collect::<Vec<_>>()),
+            act,
+            kind: Some(kind.to_string()),
+            not_after,
+        })
+        .map_err(|e| match e {
+            // The clock moved past `not_after` between the check above and
+            // the mint: the subject token's life ran out, not the OP.
+            crate::issuer::JwtIssuerError::NoLifetimeLeft => {
+                OidcApiError::InvalidGrant(format!("mint: {e}"))
+            }
+            other => OidcApiError::Internal(format!("mint: {other}")),
+        })?;
+
+    let body = TokenExchangeResponse {
+        access_token: minted.token,
+        issued_token_type: TOKEN_TYPE_ACCESS_TOKEN,
+        token_type: "Bearer",
+        expires_in: minted.exp.saturating_sub(minted.iat),
+        scope: granted_scope,
+    };
+    Ok((StatusCode::OK, Json(body)).into_response())
+}
+
+/// The subject an exchange is for, however it was established.
+struct ResolvedSubject {
+    spiffe: CallSpiffeId,
+    /// The presented token's `exp` — the issued token never outlives it.
+    exp: u64,
+    /// RFC 8693 §4.1 `act` for the issued token.
+    act: Option<DelegatedActor>,
+    /// `urn:nucleus:kind` for the issued token: which path established the
+    /// subject, so a relying party can tell an identity a binding granted
+    /// from one a workload's own SVID proved.
+    kind: &'static str,
+}
+
+/// `urn:nucleus:kind` of a token exchanged for a JWT-SVID.
+pub const KIND_TOKEN_EXCHANGE: &str = "token_exchange";
+/// `urn:nucleus:kind` of a token exchanged for an outside issuer's token.
+pub const KIND_OUTSIDE_TOKEN_EXCHANGE: &str = "outside_token_exchange";
+
+/// A JWT-SVID verified against the SPIRE trust bundle (#45): EdDSA only,
+/// `kid` in the bundle for the `sub`'s trust domain, `aud` (if present)
+/// naming this OP, `nbf`/`exp` against `now`, and a fresh `jti`.
+fn resolve_spiffe(
+    state: &AppState,
+    subject_token: &str,
+    now: u64,
+) -> Result<ResolvedSubject, OidcApiError> {
     // 3. Decode + verify the subject_token signature against the
     //    SPIRE trust bundle (#45). The decode step happens first to
     //    extract `kid` + `iss` + `sub`; we then dispatch the verifying
     //    key lookup through `state.bundle_provider`.
-    let (header_b64, payload_b64, sig_b64) = split_jwt(&req.subject_token).map_err(|m| {
+    let (header_b64, payload_b64, sig_b64) = split_jwt(subject_token).map_err(|m| {
         tracing::warn!(detail = %m, "subject_token malformed");
         OidcApiError::InvalidGrant(m)
     })?;
@@ -416,7 +565,7 @@ pub async fn handler(
         .and_then(|v| v.as_str())
         .ok_or_else(|| OidcApiError::InvalidGrant("subject_token missing kid".into()))?;
 
-    let claims = decode_jwt_payload(&req.subject_token)
+    let claims = decode_jwt_payload(subject_token)
         .map_err(|m| OidcApiError::InvalidGrant(format!("subject_token claim decode: {m}")))?;
 
     let sub_spiffe = CallSpiffeId::parse(claims.sub.clone()).map_err(|e| {
@@ -455,11 +604,6 @@ pub async fn handler(
             tracing::warn!(error = %e, "subject_token signature verify failed");
             OidcApiError::InvalidGrant("subject_token signature verify failed".into())
         })?;
-
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| OidcApiError::Internal("clock before unix epoch".into()))?
-        .as_secs();
 
     // (#55 HIGH-3) RFC 8693 §1 confused-deputy defense: subject_token
     // `aud` MUST include the OP's own issuer URL. If absent or empty,
@@ -513,98 +657,70 @@ pub async fn handler(
             OidcApiError::InvalidGrant(format!("subject_token jti {jti:?} already presented"))
         })?;
 
-    // 5. Federation rule lookup (#41).
-    let decision = state
-        .federation
-        .evaluate(sub_spiffe.as_str(), &audience, TOKEN_EXCHANGE_GRANT);
-    let (rule_max_lifetime, rule_max_scope, rule_scope_requires) = match decision {
-        crate::federation::Decision::Allow {
-            matched_rule_id,
-            max_lifetime,
-            max_scope,
-            scope_requires,
-        } => {
-            tracing::info!(
-                sub = %sub_spiffe,
-                audience = %audience,
-                matched_rule = %matched_rule_id,
-                "federation: ALLOW"
-            );
-            (max_lifetime, max_scope, scope_requires)
-        }
-        crate::federation::Decision::Deny(reason) => {
-            tracing::warn!(
-                sub = %sub_spiffe,
-                audience = %audience,
-                ?reason,
-                "federation: DENY"
-            );
-            return Err(OidcApiError::InvalidTarget(format!(
-                "federation policy denies (sub, audience) — {reason:?}"
-            )));
-        }
-    };
-
-    // 5b. Scope ceiling. The federation rule bounds WHICH audience this
-    //     subject may reach and FOR HOW LONG; this bounds WHAT the issued
-    //     token may do when it gets there.
-    //
-    //     Before this, `scope` was echoed from the request verbatim — a
-    //     workload asked and the OP minted. The delegation ceiling that the
-    //     kernel, the certificate and the effect gate all enforce inside the
-    //     boundary simply stopped at it, which is the one place a federated
-    //     credential most needs to carry it.
-    let cert_effects = granted_effects(&state, &req)?;
-    let granted_scope = clamp_scope(
-        req.scope.as_deref(),
-        rule_max_scope.as_deref(),
-        rule_scope_requires.as_ref(),
-        cert_effects.as_ref(),
-    )?;
-
-    // 6. Mint response token. `act` claim attests the upstream actor
-    //    per RFC 8693 §4.1.
-    let mint_lifetime = bounded_lifetime(sub_exp, now).min(rule_max_lifetime);
     let client_id = sub_spiffe.to_string();
-    let act = Some(DelegatedActor {
-        sub: client_id.clone(),
-        act: None,
-    });
-    let issuer = state.issuer.clone();
-    let token = issuer
-        .mint(MintRequest {
-            subject: sub_spiffe,
-            audience: audience.clone(),
-            client_id,
-            scope: granted_scope.clone(),
-            // The attenuation, carried. An RP that understands nucleus can
-            // enforce per-effect from the token alone rather than being handed
-            // the certificate as well; one that does not ignores a namespaced
-            // claim it has never heard of.
-            effects: cert_effects
-                .as_ref()
-                .map(|e| e.iter().cloned().collect::<Vec<_>>()),
-            act,
-            kind: Some("token_exchange".to_string()),
-        })
-        .map_err(|e| OidcApiError::Internal(format!("mint: {e}")))?;
-
-    let body = TokenExchangeResponse {
-        access_token: token,
-        issued_token_type: TOKEN_TYPE_ACCESS_TOKEN,
-        token_type: "Bearer",
-        expires_in: mint_lifetime.as_secs(),
-        scope: granted_scope,
-    };
-    Ok((StatusCode::OK, Json(body)).into_response())
+    Ok(ResolvedSubject {
+        spiffe: sub_spiffe,
+        exp: sub_exp,
+        act: Some(DelegatedActor {
+            sub: client_id,
+            act: None,
+        }),
+        kind: KIND_TOKEN_EXCHANGE,
+    })
 }
 
-/// Clamp the mint lifetime so the response token never outlives the
-/// subject_token's exp. Both bounds: ≤ subject_exp - now AND ≤ 1h.
-fn bounded_lifetime(subject_exp: u64, now: u64) -> Duration {
-    let remaining = subject_exp.saturating_sub(now);
-    let bounded = remaining.min(3600);
-    Duration::from_secs(bounded.max(1))
+/// A token from a bound outside issuer, judged by its binding
+/// (`crate::outside`). Refusals reach the caller as the same opaque
+/// `invalid_grant` as every other subject_token refusal; which check failed
+/// goes to the log only. A token that could not be judged right now (the
+/// issuer's keys unreachable) answers 503 so the caller retries.
+async fn resolve_outside(
+    outside: &crate::outside::OutsideIssuer,
+    subject_token: &str,
+    now: u64,
+) -> Result<ResolvedSubject, OidcApiError> {
+    match outside.validate(subject_token, now).await {
+        // The validator admits a token up to `exp + leeway`; the SPIFFE path
+        // refuses at `exp`. Hold both to the same line, so no issued token
+        // starts life already past its subject token's.
+        Ok(t) if t.exp <= now => {
+            tracing::warn!(binding = %t.binding_id, "outside issuer: token within leeway but past exp");
+            Err(OidcApiError::InvalidGrant(format!(
+                "outside issuer {:?}: subject_token past exp",
+                t.binding_id
+            )))
+        }
+        Ok(t) => {
+            tracing::info!(
+                binding = %t.binding_id,
+                outside_sub = %t.outside_sub,
+                spiffe_id = %t.spiffe_id,
+                "outside issuer: token accepted"
+            );
+            Ok(ResolvedSubject {
+                spiffe: t.spiffe_id,
+                exp: t.exp,
+                // The outside `sub` is not a SPIFFE ID and not this OP's to
+                // name in `act`; it is in the log above.
+                act: None,
+                kind: KIND_OUTSIDE_TOKEN_EXCHANGE,
+            })
+        }
+        Err(nucleus_federation::InboundError::Refused(reason)) => {
+            tracing::warn!(binding = %outside.id(), ?reason, "outside issuer: token refused");
+            Err(OidcApiError::InvalidGrant(format!(
+                "outside issuer {:?} refused the subject_token: {reason:?}",
+                outside.id()
+            )))
+        }
+        Err(nucleus_federation::InboundError::Unavailable(reason)) => {
+            tracing::warn!(binding = %outside.id(), ?reason, "outside issuer: token could not be judged");
+            Err(OidcApiError::TemporarilyUnavailable(format!(
+                "outside issuer {:?}: {reason:?}",
+                outside.id()
+            )))
+        }
+    }
 }
 
 fn decode_jwt_payload(jwt: &str) -> Result<SubjectClaims, String> {
@@ -660,6 +776,7 @@ mod tests {
     use http_body_util::BodyExt;
     use nucleus_oidc_core::JtiCache;
     use std::sync::Arc;
+    use std::time::Duration;
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -697,6 +814,7 @@ mod tests {
             .unwrap(),
         );
         let rules = crate::federation::FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![crate::federation::FederationRule {
                 id: "test-allow".to_string(),
                 subject_prefix: "spiffe://prod.example.com/*".to_string(),
@@ -716,6 +834,7 @@ mod tests {
         bundle.add_key("prod.example.com", kid, sk.verifying_key());
 
         crate::app::build_app(crate::app::AppState {
+            outside_issuers: std::sync::Arc::new(crate::outside::OutsideIssuers::empty()),
             keystore: store,
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,
@@ -808,6 +927,38 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    /// The issued token's OWN `exp` is bounded by the subject token's, and
+    /// `expires_in` reports it. Before, `mint` stamped `iat + 300` whatever
+    /// the subject token's remaining life or the rule's lifetime, and only
+    /// `expires_in` was clamped — so a subject token with 60 s left bought a
+    /// 300 s credential while the response said 60.
+    #[tokio::test]
+    async fn issued_exp_never_outlives_the_subject_token_and_matches_expires_in() {
+        let sub = "spiffe://prod.example.com/ns/agents/sa/coder";
+        let subject = make_subject_jwt(sub, 60, None);
+        let body = form_body(&[
+            ("grant_type", TOKEN_EXCHANGE_GRANT),
+            ("subject_token", &subject),
+            ("subject_token_type", TOKEN_TYPE_JWT),
+            ("audience", "https://rp-a.example/api"),
+        ]);
+        let resp = post_token(app(), body).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v = body_to_value(resp.into_body()).await;
+        let (_, claims, _) =
+            crate::issuer::decode_unverified(v["access_token"].as_str().unwrap()).unwrap();
+        let lived = claims.exp - claims.iat;
+        assert!(
+            lived <= 60,
+            "issued token lives {lived}s; its subject token had 60s left"
+        );
+        assert_eq!(
+            v["expires_in"].as_u64().unwrap(),
+            lived,
+            "expires_in must report the token's actual lifetime"
+        );
+    }
+
     #[tokio::test]
     async fn happy_path_returns_access_token() {
         let sub = "spiffe://prod.example.com/ns/agents/sa/coder";
@@ -875,6 +1026,7 @@ mod tests {
             .unwrap(),
         );
         let rules = crate::federation::FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![crate::federation::FederationRule {
                 id: "test-allow".to_string(),
                 subject_prefix: "spiffe://prod.example.com/*".to_string(),
@@ -889,6 +1041,7 @@ mod tests {
         let bundle = crate::spire::StaticBundleProvider::new();
         bundle.add_key("prod.example.com", identity_kid.clone(), identity_vk);
         let forged_app = crate::app::build_app(crate::app::AppState {
+            outside_issuers: std::sync::Arc::new(crate::outside::OutsideIssuers::empty()),
             keystore: store,
             issuer_url: Arc::from("https://oidc.nucleus.example/"),
             issuer,
