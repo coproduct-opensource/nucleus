@@ -28,6 +28,7 @@ use sha2::{Digest, Sha256};
 
 use crate::app::AppState;
 use crate::error::OidcApiError;
+use crate::keystore::SigningAlg;
 
 /// Wire form of the discovery doc.
 ///
@@ -52,8 +53,8 @@ struct DiscoveryDoc {
     /// (the client/workload presents a JWT-SVID as `client_assertion`).
     token_endpoint_auth_methods_supported: Vec<&'static str>,
     /// Signing algorithms the OP advertises for the `id_token_signing_alg`
-    /// field. We don't issue id_tokens, but advertising EdDSA pins the
-    /// algorithm at the discovery layer — RPs that read this to pick
+    /// field. We don't issue id_tokens, but advertising the key store's one
+    /// algorithm (EdDSA or ES256) pins it at the discovery layer — RPs that read this to pick
     /// a verifying alg get the right answer.
     id_token_signing_alg_values_supported: Vec<&'static str>,
     /// Subject-identifier types. RFC 8414 / OIDC Discovery: "public"
@@ -71,7 +72,7 @@ struct DiscoveryDoc {
     workload_identity_supported: bool,
 }
 
-fn build_doc(issuer_url: &str) -> DiscoveryDoc {
+fn build_doc(issuer_url: &str, alg: SigningAlg) -> DiscoveryDoc {
     let base = issuer_url.trim_end_matches('/');
     DiscoveryDoc {
         issuer: issuer_url.to_string(),
@@ -80,7 +81,8 @@ fn build_doc(issuer_url: &str) -> DiscoveryDoc {
         response_types_supported: vec![],
         grant_types_supported: vec!["urn:ietf:params:oauth:grant-type:token-exchange"],
         token_endpoint_auth_methods_supported: vec!["private_key_jwt"],
-        id_token_signing_alg_values_supported: vec!["EdDSA"],
+        // The store's one algorithm, never a list: T04.
+        id_token_signing_alg_values_supported: vec![alg.jose_name()],
         subject_types_supported: vec!["public"],
         scopes_supported: vec![],
         service_documentation: "https://github.com/coproduct-opensource/nucleus", // vendor-allow: project repo
@@ -108,7 +110,7 @@ pub async fn handler(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, OidcApiError> {
-    let doc = build_doc(&state.issuer_url);
+    let doc = build_doc(&state.issuer_url, state.keystore.alg());
     let json = serde_json::to_vec(&doc)
         .map_err(|e| OidcApiError::Internal(format!("discovery serialize: {e}")))?;
     let etag = etag_for(&json);
@@ -168,6 +170,7 @@ mod tests {
             .unwrap(),
         );
         crate::app::build_app(AppState {
+            outside_issuers: std::sync::Arc::new(crate::outside::OutsideIssuers::empty()),
             keystore: store,
             issuer_url: Arc::from(issuer_url),
             issuer: jwt_issuer,
@@ -355,7 +358,11 @@ mod tests {
     #[test]
     fn workload_identity_extension_uses_urn_namespace() {
         // RFC 7519 §4.3 collision-resistant naming for the extension.
-        let json = serde_json::to_string(&build_doc("https://oidc.nucleus.example/")).unwrap();
+        let json = serde_json::to_string(&build_doc(
+            "https://oidc.nucleus.example/",
+            SigningAlg::EdDsa,
+        ))
+        .unwrap();
         assert!(json.contains("urn:nucleus:workload_identity_supported"));
         assert!(!json.contains("\"workload_identity_supported\""));
     }

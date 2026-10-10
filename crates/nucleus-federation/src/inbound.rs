@@ -29,8 +29,13 @@
 //!    the binding's maximum, `sub` present, every required claim an exact
 //!    string match.
 //! 6. **Replay**, last, so a token that fails any other check cannot occupy
-//!    the cache. Keyed on SHA-256 of the whole compact token and held until
-//!    `exp` plus leeway, because the issuers this serves often send no `jti`.
+//!    the cache. Keyed on SHA-256 of the SIGNED CONTENT (`header.payload`)
+//!    and held until `exp` plus leeway, because the issuers this serves often
+//!    send no `jti`. Not the whole compact token: an ECDSA signature is
+//!    malleable — `(r, s)` and `(r, n − s)` both verify, and anyone holding a
+//!    token can compute the second without the key — so a cache keyed on the
+//!    signature too would admit the same token twice (found 2026-10-08,
+//!    `docs/findings/oidc-provider-first-tenant.md` §10).
 //!
 //! # Discovery pins the issuer
 //!
@@ -329,8 +334,9 @@ pub struct ValidatedCaller {
     pub sub: String,
     /// Every claim, for the binding's mapping to act on.
     pub claims: Map<String, Value>,
-    /// SHA-256 of the compact token — the replay key, and the `provenance`
-    /// a delegation certificate minted for this caller records.
+    /// SHA-256 of the compact token — the `provenance` a delegation
+    /// certificate minted for this caller records. NOT the replay key, which
+    /// is the hash of the signed content alone (module docs, check 6).
     pub token_hash: [u8; 32],
     /// The token's `exp`.
     pub exp: u64,
@@ -619,13 +625,16 @@ impl ExternalIssuerValidator {
         let claims = decode_object(p64)?;
         let (sub, exp) = self.check_claims(&claims, now_unix)?;
 
-        // 6. Replay, only for a token that passed everything else.
+        // 6. Replay, only for a token that passed everything else. Keyed on
+        //    what was signed, so a re-encoded signature (ECDSA's `n − s`) is
+        //    the same token, not a new one.
+        let replay_key: [u8; 32] = Sha256::digest(signing_input.as_bytes()).into();
         let token_hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         let retain_until = exp.saturating_add(self.cfg.leeway.as_secs());
         self.replay
             .lock()
             .map_err(|_| InboundError::Unavailable(RefusalReason::ReplayCacheFull))?
-            .admit(token_hash, retain_until, now_unix)?;
+            .admit(replay_key, retain_until, now_unix)?;
 
         Ok(ValidatedCaller {
             sub,

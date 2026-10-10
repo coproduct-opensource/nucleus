@@ -56,8 +56,9 @@
 //! cannot contain `none` or an HMAC algorithm (the enum has no such variant),
 //! a key whose type and curve agree with the header's algorithm (RFC 8725
 //! §3.1), a lifetime cap, exact-match required claims, and a replay cache
-//! keyed on the token's hash because the issuers this serves often send no
-//! `jti`. What the node does with a validated caller — the SVID and the
+//! keyed on the hash of the token's signed content — not the whole token,
+//! whose ECDSA signature is malleable — because the issuers this serves often
+//! send no `jti`. What the node does with a validated caller — the SVID and the
 //! delegation certificate it mints — lives in the node.
 //!
 //! # Vendor neutrality

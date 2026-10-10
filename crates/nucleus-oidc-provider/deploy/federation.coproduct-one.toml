@@ -1,0 +1,35 @@
+# Federation config for the coproduct.one deployment of this OP
+# (issuer https://oidc.coproduct.one, trust domain coproduct.one).
+# Read at start-up via NUCLEUS_OIDC_FEDERATION_CONFIG; fly.toml's [[files]]
+# places it in the machine. A change here takes effect on the next deploy.
+#
+# First tenant (owner decision 2026-10-08): olog's production app. Its
+# machines exchange their platform OIDC token for a JWT-SVID that olog's
+# admin routes accept. Everything not matched below is refused.
+
+# --- Who: the platform's per-org issuer, narrowed to one app -------------
+[[outside_issuer]]
+id = "olog-production"
+issuer = "https://oidc.fly.io/coproduct"   # vendor-allow: deployment config names the platform issuer it binds
+algs = ["RS256"]                            # alg-pin-allow: the outside issuer's verification algorithm (its JWKS is RSA)
+jwks = "discovery"
+# The platform's tokens live 600 s; this is a ceiling, not a target.
+max_lifetime_secs = 3600
+leeway_secs = 30                            # clock skew allowed on exp/iat/nbf (≤ 60)
+spiffe_id = "spiffe://coproduct.one/ns/olog/sa/coproduct"
+
+[outside_issuer.required_claims]
+org_name = "coproduct"
+app_name = "coproduct"
+
+# --- What: olog's admin audience, one scope, five minutes ----------------
+[[rule]]
+id = "olog-admin-data"
+subject_prefix = "spiffe://coproduct.one/ns/olog/sa/coproduct"
+# The audience olog's verifier requires (`required_audience` in its
+# spiffe_authz.toml).
+audience = "https://coproduct.one/admin"
+allowed_grants = ["urn:ietf:params:oauth:grant-type:token-exchange"]
+# olog refuses an SVID whose exp - iat exceeds 300 s.
+max_token_lifetime_secs = 300
+max_scope = ["admin:data"]
