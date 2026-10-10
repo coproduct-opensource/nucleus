@@ -1,3 +1,9 @@
+> Security configuration: enabling `--art12-log` requires a non-empty,
+> operator-provisioned `--audit-secret`. Missing or empty keys now refuse startup;
+> public session identifiers are never used as MAC keys. Keep the secret outside
+> the workload's environment and filesystem. MAC holders can still rewrite records:
+> migration to asymmetric signed records remains tracked in #3309.
+
 # Article 12 record-keeping
 
 EU AI Act Article 12 requires high-risk AI systems to record events automatically
@@ -88,9 +94,11 @@ consumer cannot render "verified" without it.
 | No party **lacking the signing secret** modified the file | That a **holder** of the secret did not rewrite history |
 | Each record's fields match its own hash and signature | That the signer is independent of the signed |
 
-The third row is the one to read twice. If the pod derived its own signing
-secret — no operator-supplied `--audit-secret` — then the pod can re-sign any
-history it likes, and **the log alone is not evidence against the pod**.
+The third row is the one to read twice. Older releases derived a signing key
+from the public session ID when no audit secret was supplied. Those records
+do not establish writer authenticity. Current releases refuse that configuration.
+A holder of an operator-provisioned MAC key can still rewrite history, so
+**the log alone is not evidence against a pod that holds that key**.
 
 ## The executor attestation closes that
 

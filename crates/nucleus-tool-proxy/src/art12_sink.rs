@@ -275,10 +275,9 @@ pub(crate) fn reject_workspace_path(path: &Path, work_dir: &Path) -> Result<(), 
 /// about evidence, and splitting them across a long `main` is how one of them
 /// gets edited without the others.
 ///
-/// The secret defaults to a session-derived value when no audit secret is
-/// configured. That is weaker than an operator-held secret — a pod that derives
-/// its own signing key can re-sign a rewritten chain — and is reported as a
-/// limitation by the verifier rather than passed off as tamper-evidence.
+/// Refuse absent or empty keys: a public session identifier is not a MAC key.
+/// This legacy MAC log still requires an operator-provisioned secret until its
+/// signed-record migration is complete (#3309).
 pub(crate) fn open_log(
     path: &Path,
     audit_secret: Option<&str>,
@@ -286,10 +285,9 @@ pub(crate) fn open_log(
     session_id: &str,
 ) -> Result<Arc<Art12Log>, String> {
     reject_workspace_path(path, work_dir).map_err(|e| e.to_string())?;
-    let secret = audit_secret.map_or_else(
-        || format!("art12:{session_id}").into_bytes(),
-        |s| s.as_bytes().to_vec(),
-    );
+    let secret = audit_secret.filter(|secret| !secret.is_empty()).ok_or_else(|| {
+        "Article 12 logging requires a non-empty audit secret; session-derived MAC keys are refused (#3309)".to_string()
+    })?.as_bytes().to_vec();
     // A dedicated genesis string rather than a borrowed hash: the audit log is
     // constructed later in startup, and reaching for a value that does not exist
     // yet is how an anchor silently becomes the empty string.
@@ -695,6 +693,26 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn startup_requires_a_provisioned_nonempty_mac_key() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let path = dir.path().join("private/art12.jsonl");
+        for secret in [None, Some("")] {
+            let result = super::open_log(&path, secret, &workspace, "session-123");
+            assert!(matches!(result, Err(ref error) if error.contains("non-empty audit secret")));
+            assert!(
+                !path.exists(),
+                "invalid configuration must not create a log"
+            );
+        }
+        let log = super::open_log(&path, Some("operator-test-key"), &workspace, "session-123")
+            .expect("provisioned key permits startup");
+        assert_eq!(log.head().unwrap(), ("art12-genesis:session-123".into(), 0));
+        assert!(path.is_file());
     }
 
     fn open_log(dir: &TempDir) -> Arc<Art12Log> {
