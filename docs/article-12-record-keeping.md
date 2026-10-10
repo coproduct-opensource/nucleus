@@ -1,3 +1,10 @@
+> Security configuration: without `--audit-secret`, the proxy generates a fresh
+> private MAC key from the OS RNG. It is held in memory, never derived from the
+> session ID or exported. An explicitly empty key refuses startup. Provision a
+> non-empty operator key for legacy offline MAC verification; otherwise verification
+> remains hash-chain-only, plus any host-signed evidence. Signed-record migration
+> remains tracked in #3309.
+
 # Article 12 record-keeping
 
 EU AI Act Article 12 requires high-risk AI systems to record events automatically
@@ -88,9 +95,11 @@ consumer cannot render "verified" without it.
 | No party **lacking the signing secret** modified the file | That a **holder** of the secret did not rewrite history |
 | Each record's fields match its own hash and signature | That the signer is independent of the signed |
 
-The third row is the one to read twice. If the pod derived its own signing
-secret — no operator-supplied `--audit-secret` — then the pod can re-sign any
-history it likes, and **the log alone is not evidence against the pod**.
+The third row is the one to read twice. Older releases derived a signing key
+from the public session ID when no audit secret was supplied. Those records
+do not establish writer authenticity. Current releases generate a fresh private key instead.
+A holder of an operator-provisioned MAC key can still rewrite history, so
+**the log alone is not evidence against a pod that holds that key**.
 
 ## The executor attestation closes that
 
