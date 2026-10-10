@@ -134,7 +134,7 @@ impl ProxyClient {
         // Ensure ring crypto provider is installed for rustls (idempotent)
         let _ = rustls::crypto::ring::default_provider().install_default();
 
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
         let endpoint = ProxyEndpoint::parse(base_url).map_err(|e| Error::Config(e.to_string()))?;
         let base_url = match endpoint {
             ProxyEndpoint::Unix { socket } => {
@@ -150,6 +150,10 @@ impl ProxyClient {
                 UNIX_BASE_URL.to_string()
             }
             ProxyEndpoint::Http { base } => {
+                validate_tcp_endpoint(&base, mtls.is_some())?;
+                if base.starts_with("http://") {
+                    builder = builder.no_proxy();
+                }
                 if let Some(mtls) = mtls {
                     let identity = mtls.reqwest_identity()?;
                     builder = builder.identity(identity);
@@ -173,20 +177,25 @@ impl ProxyClient {
         })
     }
 
-    /// Create from an existing reqwest client (for sharing connection pools).
-    ///
-    /// For an `http(s)://` proxy only: a `unix://` one needs the socket
-    /// connector [`ProxyClient::new`] builds into its client.
-    pub fn with_client(
+    /// Build with custom connection settings while retaining transport policy.
+    /// A prebuilt client cannot be accepted: its redirect policy is opaque.
+    pub fn with_client_builder(
         base_url: &str,
-        client: reqwest::Client,
+        builder: reqwest::ClientBuilder,
         auth: Option<Arc<dyn AuthStrategy>>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        // Custom TLS configuration is opaque, so this constructor requires HTTPS.
+        validate_tcp_endpoint(base_url, true)?;
+        let client = builder
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| Error::Config(e.to_string()))?;
+        Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             client,
             auth,
-        }
+        })
     }
 
     /// Internal request method. Injects auth headers and parses error responses.
@@ -231,6 +240,11 @@ impl ProxyClient {
 
         let status = response.status().as_u16();
 
+        if response.status().is_redirection() {
+            return Err(Error::Other(format!(
+                "proxy redirect refused (HTTP {status})"
+            )));
+        }
         if status >= 400 {
             let body: Value = response
                 .json()
@@ -445,20 +459,92 @@ fn unix_socket(
     )))
 }
 
+/// TCP plaintext is reserved for literal loopback without mTLS. Hostnames
+/// cannot qualify by resolving to loopback once and elsewhere later.
+fn validate_tcp_endpoint(base: &str, mtls: bool) -> Result<(), Error> {
+    let url = reqwest::Url::parse(base).map_err(|e| Error::Config(e.to_string()))?;
+    let loopback = url
+        .host_str()
+        .and_then(|h| h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().ok())
+        .is_some_and(|ip| ip.is_loopback());
+    if url.scheme() != "https" && !(url.scheme() == "http" && loopback && !mtls) {
+        return Err(Error::Config("use HTTPS for remote TCP or mTLS; plaintext is only allowed on a literal loopback address without mTLS".into()));
+    }
+    if url.host_str().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return Err(Error::Config(
+            "proxy URL must have a host and no embedded credentials".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn redirects_never_receive_signed_requests() {
+        use std::io::{Read, Write};
+        let origin = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let destination = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        destination.set_nonblocking(true).unwrap();
+        let url = format!("http://{}", origin.local_addr().unwrap());
+        let location = format!("http://{}/stolen", destination.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = origin.accept().unwrap();
+            socket
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = [0u8; 8192];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            write!(socket, "HTTP/1.1 307 Temporary Redirect\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let auth = crate::auth::HmacAuth::new(b"test-only-key", Some("operator"));
+        let client = ProxyClient::new(&url, Some(Box::new(auth)), None).unwrap();
+        assert!(client.list_pods().await.is_err());
+        server.join().unwrap();
+        assert_eq!(
+            destination.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn transport_refuses_remote_plaintext_and_mtls_downgrades() {
+        for url in [
+            "http://example.com",
+            "http://localhost",
+            "http://127.0.0.1.example.com",
+            "ftp://127.0.0.1",
+        ] {
+            assert!(ProxyClient::new(url, None, None).is_err(), "{url}");
+        }
+        let mtls = MtlsConfig::new("/missing/cert", "/missing/key");
+        assert!(
+            ProxyClient::new("http://127.0.0.1", None, Some(&mtls))
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("HTTPS")
+        );
+        assert!(ProxyClient::new("https://example.com", None, None).is_ok());
+        assert!(ProxyClient::new("http://[::1]", None, None).is_ok());
+        assert!(
+            ProxyClient::with_client_builder("http://127.0.0.1", reqwest::Client::builder(), None)
+                .is_err()
+        );
+    }
+
     #[test]
     fn test_proxy_client_trims_trailing_slash() {
-        let client = ProxyClient::new("http://localhost:8080/", None, None).unwrap();
-        assert_eq!(client.base_url, "http://localhost:8080");
+        let client = ProxyClient::new("http://127.0.0.1:8080/", None, None).unwrap();
+        assert_eq!(client.base_url, "http://127.0.0.1:8080");
     }
 
     #[test]
     fn test_proxy_client_no_slash() {
-        let client = ProxyClient::new("http://localhost:8080", None, None).unwrap();
-        assert_eq!(client.base_url, "http://localhost:8080");
+        let client = ProxyClient::new("http://127.0.0.1:8080", None, None).unwrap();
+        assert_eq!(client.base_url, "http://127.0.0.1:8080");
     }
 
     /// One request as a stand-in door received it, read off a real Unix socket.

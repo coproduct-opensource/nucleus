@@ -268,7 +268,7 @@ mod tests {
             .proxy_url("http://localhost:8080")
             .build()
             .unwrap();
-        let proxy = nucleus.proxy_at("http://other:9090");
+        let proxy = nucleus.proxy_at("https://other:9090");
         assert!(proxy.is_ok());
     }
 }

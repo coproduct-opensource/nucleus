@@ -52,6 +52,9 @@ pub struct Node {
 impl Node {
     /// Build the client. All three of `tls` are required.
     pub fn connect(url: &str, tls: &NodeTls) -> Result<Self> {
+        if reqwest::Url::parse(url)?.scheme() != "https" {
+            bail!("node mTLS requires an https:// URL");
+        }
         let (Some(cert), Some(key), Some(bundle)) =
             (&tls.tls_cert, &tls.tls_key, &tls.trust_bundle)
         else {
@@ -72,6 +75,8 @@ impl Node {
         // trust domain, chained to `--trust-bundle`.
         let tls = nucleus_identity::node_tls::node_client_config(&identity, &bundle)?;
         let client = reqwest::blocking::Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
             .tls_backend_preconfigured(tls)
             .timeout(Duration::from_secs(60))
             .build()?;
@@ -163,6 +168,12 @@ impl Node {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plaintext_is_refused_before_loading_identity() {
+        let result = Node::connect("http://127.0.0.1:8080", &NodeTls::default());
+        assert!(result.err().unwrap().to_string().contains("https://"));
+    }
 
     /// A partial identity is refused by name rather than attempted: a half-set
     /// would otherwise surface as an opaque TLS handshake failure.
