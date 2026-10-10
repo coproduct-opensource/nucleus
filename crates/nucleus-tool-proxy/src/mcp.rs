@@ -298,13 +298,10 @@ impl NucleusMcpServer {
             // Same governor declassification keys as the HTTP path: the token
             // path is live on both transports or neither. Node-controlled env
             // only; absent ⇒ fail-closed refusal of every token.
-            let governor_keys = crate::declassify::governor_keys_from_env(
-                std::env::var("NUCLEUS_DECLASSIFY_TRUSTED_KEYS")
-                    .ok()
-                    .as_deref(),
-            );
-            if !governor_keys.is_empty() {
-                k.set_trusted_keys(governor_keys);
+            // The value the startup decided, never the env again; an eval cell's is empty
+            // (ADR 0013 rule 8).
+            if !state.governor_keys.keys().is_empty() {
+                k.set_trusted_keys(state.governor_keys.keys().to_vec());
             }
             k
         }));

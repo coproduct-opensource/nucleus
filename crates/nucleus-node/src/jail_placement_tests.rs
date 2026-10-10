@@ -44,6 +44,15 @@ fn only_the_callers_scratch_is_written_through() {
         };
         assert_eq!(role.placement(), expected, "{role:?}");
     }
+    // An eval cell's disks are copies the node owns, never links (ADR 0013 rule 7).
+    assert_eq!(
+        ArtifactRole::EvalCellScratch.placement(),
+        Placement::NodeCopyGuestWrites
+    );
+    assert_eq!(
+        ArtifactRole::EvalCellData.placement(),
+        Placement::NodeCopyReadOnly
+    );
 }
 
 fn file_with_mode(dir: &Path, name: &str, mode: u32) -> PathBuf {

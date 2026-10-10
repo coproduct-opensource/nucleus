@@ -21,6 +21,7 @@ members = [
     "crates/nucleus-microvm-host", # Host requirements + KVM probe, workspace seed/harvest (nucleus-hostctl)
     "crates/nucleus-tool-proxy", # Tool proxy server (runs inside pod)
     "crates/nucleus-egress-http", # Unprivileged workload client for the enforcing Unix door
+    "crates/nucleus-egress-proxy", # ADR 0015 E2: the per-pod host egress proxy (unprivileged, sandboxed, HTTP/1.1 only, decides nothing)
     "crates/nucleus-mcp-guard",  # Trifecta Gate: observe-only MCP proxy, flags exfil risk
     "crates/nucleus-guest-init", # Guest init for Firecracker images
     "crates/nucleus-net-probe", # TCP probe for network policy tests

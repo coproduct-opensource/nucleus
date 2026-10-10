@@ -517,6 +517,20 @@ enum Command {
         #[command(subcommand)]
         cmd: CiSpecCmd,
     },
+    /// What network egress do live-boot pods make today, and through which
+    /// path? Reads downloaded `live-boot-evidence` bundles (one directory per
+    /// run) and reports declared egress, the guest's direct connects and their
+    /// refusals, host-performed egress, each pod's fence counters (what the
+    /// default-deny dropped, by destination class, and the DNS the guest sent),
+    /// the credentialed pod's guest and the eval cell. A measurement a bundle
+    /// does not hold is printed as "could not measure" and exits 2 (ADR 0015
+    /// E1, #2698 M4).
+    EgressCensus {
+        /// Bundle directories, one per run; each must hold `spec.json`,
+        /// `guest-console.log` and `host-effects.jsonl`.
+        #[arg(required = true)]
+        bundles: Vec<std::path::PathBuf>,
+    },
     /// Measure the exemplar scoreboard (formal verification, Rust craft,
     /// sandboxing) and write scoreboard.json. Replaces
     /// scripts/exemplar-scoreboard.sh; see crates/xtask/src/exemplar_scoreboard.rs.
@@ -637,6 +651,7 @@ mod command_grammar;
 mod convergence;
 mod coverage_floor;
 mod econ_boundary;
+mod egress_census;
 mod escape_lane;
 mod exemplar_scoreboard;
 mod fly_pools;
@@ -928,6 +943,10 @@ fn main() -> Result<()> {
             } => ci_spec::trace_check(&github, since_hours, json),
         },
         Command::GatesCanFail { args } => std::process::exit(gates_can_fail::run(&args)),
+        Command::EgressCensus { bundles } => match egress_census::run(&bundles)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::ExemplarScoreboard { out } => exemplar_scoreboard::run(&out),
         Command::ScoreboardRatchet { current, baseline } => {
             scoreboard::scoreboard_ratchet(current.as_deref(), &baseline)

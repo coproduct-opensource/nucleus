@@ -188,13 +188,26 @@ fn owned(inst: Instance) -> Result<Owned, Refusal> {
     }
 }
 
+/// Debug-info levels every agent build on the VM uses, appended to the user's cargo config.
+/// Full debug info made each agent's `target/` 25-150 GiB, and several agents at once filled
+/// the 200 GB disk (2026-10-08). Line tables keep panic and backtrace locations;
+/// dependencies carry none. CI builds are unaffected: this lives only on the builder.
+const BUILDER_PROFILE: &str = "[profile.dev]\n\
+                               debug = \"line-tables-only\"\n\
+                               [profile.dev.package.\"*\"]\n\
+                               debug = false\n";
+
 /// The boot-time script. Deliberately minimal: everything slow is in the image. It refreshes
-/// the baked clone (a failed pull leaves the image's commit, which is still a usable clone)
-/// and then writes the ready marker that `up` waits for.
+/// the baked clone (a failed pull leaves the image's commit, which is still a usable clone),
+/// appends [`BUILDER_PROFILE`] to the user's cargo config once, and then writes the ready
+/// marker that `up` waits for.
 pub fn startup_script(user: &str) -> String {
     format!(
         "#!/bin/bash\n\
          runuser -u {user} -- git -C /home/{user}/nucleus pull -q --ff-only\n\
+         CFG=/home/{user}/.cargo/config.toml\n\
+         grep -q 'line-tables-only' \"$CFG\" || runuser -u {user} -- tee -a \"$CFG\" >/dev/null <<'EOF'\n\
+         {BUILDER_PROFILE}EOF\n\
          touch {READY_MARKER}\n"
     )
 }
@@ -607,7 +620,11 @@ mod tests {
     fn startup_script_refreshes_then_marks_ready() {
         let s = startup_script("dev");
         assert!(s.contains("runuser -u dev -- git -C /home/dev/nucleus pull"));
+        assert!(s.contains(BUILDER_PROFILE));
+        assert!(s.contains("debug = \"line-tables-only\""));
         assert!(s.trim_end().ends_with(&format!("touch {READY_MARKER}")));
+        // gcloud splits `--metadata` on commas; a comma would truncate the script.
+        assert!(!s.contains(','));
         let a = create_args(&target(), &shape(), "zone-a", "dev");
         assert_eq!(
             value(&a, "--metadata"),

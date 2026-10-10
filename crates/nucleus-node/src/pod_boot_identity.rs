@@ -208,7 +208,17 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         audit_creds,
         measured,
     } = inputs;
+    // An eval cell is served only a launch that verifies; each fallback below is a refusal for
+    // it, never the plain SVID a standard pod keeps (ADR 0016 D3, `Demand::When(EvalCell)`).
+    let profile = nucleus_spec::isolation_profile::IsolationProfile::of(spec)
+        .map_err(crate::eval_cell::EvalCellRefused::from)?;
     let identity_source = net::identity_registration(state.identity_manager.as_ref(), grant);
+    if identity_source.is_none() {
+        crate::eval_cell::require_verified_launch(
+            profile,
+            crate::eval_cell::LaunchIdentity::NoIdentity,
+        )?;
+    }
     let mut ready = PreparedIdentity {
         parts: Some(IdentityParts {
             identity: None,
@@ -254,16 +264,34 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 );
                 // Cache the attested cert so the served FETCH_SVID carries the measurement;
                 // else the pod serves a plain SVID an attesting relying party refuses.
-                if let Err(e) = manager
+                match manager
                     .fetch_attested_certificate(&identity, &pod_id_str)
                     .await
                 {
-                    tracing::warn!(
-                        "pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}"
-                    );
+                    Ok(cert) => crate::eval_cell::require_verified_launch(
+                        profile,
+                        crate::eval_cell::LaunchIdentity::Issued {
+                            measured: &attestation,
+                            leaf_der: cert.leaf().der(),
+                            trust_bundle: manager.trust_bundle(),
+                        },
+                    )?,
+                    Err(e) => {
+                        crate::eval_cell::require_verified_launch(
+                            profile,
+                            crate::eval_cell::LaunchIdentity::NotIssued(e.clone()),
+                        )?;
+                        tracing::warn!(
+                            "pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}"
+                        );
+                    }
                 }
             }
             Err(e) => {
+                crate::eval_cell::require_verified_launch(
+                    profile,
+                    crate::eval_cell::LaunchIdentity::NotMeasured(e.to_string()),
+                )?;
                 tracing::warn!(
                     "failed to compute attestation for pod {}, using standard certificate: {}",
                     id,

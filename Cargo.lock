@@ -6962,6 +6962,21 @@ name = "nucleus-egress-probe"
 version = "1.0.0"
 
 [[package]]
+name = "nucleus-egress-proxy"
+version = "1.0.0"
+dependencies = [
+ "hex",
+ "httparse",
+ "ipnet",
+ "landlock",
+ "nucleus-decision-protocol",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.23",
+]
+
+[[package]]
 name = "nucleus-envelope"
 version = "1.0.0"
 dependencies = [
@@ -7308,6 +7323,7 @@ version = "1.0.0"
 name = "nucleus-node"
 version = "1.0.0"
 dependencies = [
+ "async-trait",
  "axum",
  "base64 0.23.1",
  "bollard",

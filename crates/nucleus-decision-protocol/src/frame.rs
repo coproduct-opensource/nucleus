@@ -258,19 +258,29 @@ pub enum DenyReason {
     /// The approval presented was never issued on this channel, or was already
     /// redeemed.
     ApprovalUnknown,
+    /// The host egress proxy (ADR 0015 §2) asked about an origin the
+    /// operator's upstream registry does not hold, or that this pod did not
+    /// select. Never sent on the guest's decision channel.
+    NotRegistered,
+    /// The origin is registered, but its registry entry does not admit this
+    /// method or path (ADR 0015 §2). Never sent on the guest's decision
+    /// channel.
+    RouteRefused,
 }
 
 impl DenyReason {
     /// Every reason. The decoder searches this list, so a reason missing from
     /// it is refused on the wire rather than misread (fail-closed); the
     /// `every_enum_value_round_trips` test catches the omission.
-    pub const ALL: [DenyReason; 6] = [
+    pub const ALL: [DenyReason; 8] = [
         DenyReason::NotGranted,
         DenyReason::FlowRefused,
         DenyReason::BudgetExhausted,
         DenyReason::ApprovalRefused,
         DenyReason::ApprovalExpired,
         DenyReason::ApprovalUnknown,
+        DenyReason::NotRegistered,
+        DenyReason::RouteRefused,
     ];
 }
 

@@ -33,6 +33,28 @@ use crate::tier2_artifacts::GuestUse;
 /// The label a pod spec names its isolation profile in.
 pub const PROFILE_LABEL: &str = "isolation.coproduct.one/profile";
 
+/// The names the guest's tool-proxy reads its declassification governor keys and their k-of-n
+/// threshold from. Declared once (ADR 0007 G-1): the guest reads them, and the node refuses an
+/// eval cell whose spec names one (ADR 0013 rule 8).
+pub const GOVERNOR_KEY_ENV: [&str; 2] = [
+    "NUCLEUS_DECLASSIFY_TRUSTED_KEYS",
+    "NUCLEUS_DECLASSIFY_THRESHOLD",
+];
+
+/// Whether a guest may hold the governor keys that verify a declassification.
+///
+/// A key the guest holds is a key guest root holds (ADR 0014 §3): guest root can replace the
+/// trusted set and sign its own tokens. So an eval cell's guest holds none, and refuses every
+/// declassification until the host verifies them (ADR 0013 rule 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuestGovernor {
+    /// The guest verifies with the keys the node provisioned; none provisioned refuses every
+    /// declassification (fail-closed).
+    FromNode,
+    /// The guest holds no governor key whatever it was given, and refuses by name.
+    Withheld,
+}
+
 /// The isolation profiles this build knows. Matched exhaustively everywhere a
 /// profile decides something (ADR 0007 E-2), so a new profile does not compile
 /// until each decider says what it requires.
@@ -104,6 +126,18 @@ impl IsolationProfile {
         match self {
             IsolationProfile::Standard => &[],
             IsolationProfile::EvalCell => &[GuestUse::EvalCell],
+        }
+    }
+}
+
+impl IsolationProfile {
+    /// Whether this profile's guest may hold declassification governor keys. Exhaustive, no `_`
+    /// arm (ADR 0007 E-2): a new profile says what its guest may verify.
+    #[must_use]
+    pub const fn guest_governor(self) -> GuestGovernor {
+        match self {
+            IsolationProfile::Standard => GuestGovernor::FromNode,
+            IsolationProfile::EvalCell => GuestGovernor::Withheld,
         }
     }
 }

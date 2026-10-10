@@ -52,7 +52,8 @@ Status vocabulary (the `Status` column, machine-stable):
   (`crates/nucleus-node/src/net.rs:385` `apply_default_deny`), which is now
   **proven applied on boot** by the in-guest egress probe
   (`scripts/check-egress-probe.sh`, the x86_64 boot gate: an off-allowlist
-  connect from inside the live guest returns `ENETUNREACH`; C6 phase 2).
+  connect from inside the live guest fails with `connection timed out`, the
+  chain's DROP, in every live-boot bundle read for ADR 0015; C6 phase 2).
 - **`partial`** — some frames on the transport are mediated, the rest rest on a
   structural property (peer-CID pin, identity refusal) rather than a token.
 - **`open-hole`** — a known unmediated path with no fence beyond "tracked open".
@@ -149,6 +150,7 @@ listens on `1027` and the flag is gone.
 | Standard SPIFFE Workload API (gRPC) | `spiffe_workload_api` | `vsock:15013` | `refused` | `vsock_transport` | `crates/nucleus-node/src/workload_api_vsock.rs` `spawn_spiffe_listener` |
 | Credential broker | `credential_broker` | `vsock:1027` | `refused` | `vsock_transport` | `crates/nucleus-node/src/broker_transport.rs` `BrokerListener::start` |
 | Decision channel (host-decide shadow, #2702) | `decision_channel` | `vsock:1028` | `refused` | `vsock_transport` | `crates/nucleus-node/src/host_decide.rs` `DecideListener::start` |
+| Host egress proxy (ADR 0015), one `nucleus-egress-proxy` process per eval cell; no guest dials it before E4 | `egress_proxy` | `vsock:1029` | `filtered` | `in_shell_egress` | `crates/nucleus-egress-proxy/src/serve.rs` `serve` |
 | Per-pod DNS forwarder (`dnsmasq`, `no-resolv`), only when the pod names a DNS allowlist | `pod_dns` | `gateway:53` | `filtered` | `dns` | `crates/nucleus-node/src/net.rs` `start_dns_proxy` / `dnsmasq_config` |
 | Whatever the pod's `network.allow` admits | `allowlisted_egress` | `allowlist` | `filtered` | `netns_raw_socket` | `crates/nucleus-node/src/net.rs` netns iptables |
 

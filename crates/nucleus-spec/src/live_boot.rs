@@ -97,6 +97,20 @@ pub struct Files {
     /// status it got ([`CoverageCall`]). Its presence is what says a run had a
     /// coverage pod, so the reader holds the run to the coverage set.
     pub coverage_calls: String,
+    /// The execution pod's filter table (`iptables-save -c` in its network
+    /// namespace), taken after its workload exited and before teardown. Read by
+    /// [`crate::egress_fence::read`].
+    pub fence_execution: String,
+    /// The effect pod's filter table, after its request and before teardown.
+    pub fence_effect: String,
+    /// The eval-cell pod's spec, as requested (ADR 0015 E1).
+    pub eval_cell_spec: String,
+    /// What became of the eval-cell pod: an [`EvalCellRun`].
+    pub eval_cell: String,
+    /// The eval-cell pod's guest console. Present only when it was admitted.
+    pub eval_cell_console: String,
+    /// The eval-cell pod's filter table. Present only when it was admitted.
+    pub fence_eval_cell: String,
 }
 
 impl Files {
@@ -122,6 +136,12 @@ impl Files {
             host_decide_disagreements: s(crate::host_decide_telemetry::DISAGREEMENT_LOG),
             coverage_console: s("coverage-console.log"),
             coverage_calls: s(COVERAGE_CALLS_FILE),
+            fence_execution: s("fence-execution.iptables"),
+            fence_effect: s("fence-effect.iptables"),
+            eval_cell_spec: s("eval-cell-spec.json"),
+            eval_cell: s("eval-cell.json"),
+            eval_cell_console: s("eval-cell-console.log"),
+            fence_eval_cell: s("fence-eval-cell.iptables"),
         }
     }
 }
@@ -150,6 +170,35 @@ pub struct CoverageCall {
     pub intent: CoverageIntent,
     /// The HTTP status the proxy answered with.
     pub status: u16,
+}
+
+/// What became of the live boot's eval-cell pod (ADR 0015 E1): an honest pod
+/// admitted under the `eval-cell` profile, whose workload makes no egress.
+///
+/// A refusal at admission is recorded, not hidden and not a collection failure:
+/// the node's eval-cell rules decide whether this node may host one, and the
+/// reader (`cargo xtask egress-census`) reports a refused cell as "could not
+/// measure", never as a cell that sent nothing. Any other failure (an admitted
+/// cell that does not boot or exit) fails the collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum EvalCellRun {
+    /// The node admitted the pod and its workload exited; its console and
+    /// filter table are in the bundle under [`Files::eval_cell_console`] and
+    /// [`Files::fence_eval_cell`].
+    Admitted {
+        /// The pod.
+        pod: String,
+        /// The workload's exit code; `None` when it did not exit normally.
+        exit_code: Option<i32>,
+    },
+    /// The node refused to create the pod.
+    Refused {
+        /// The HTTP status the node answered with.
+        status: u16,
+        /// The node's answer, verbatim.
+        reason: String,
+    },
 }
 
 /// One node binary as it ran.
@@ -262,5 +311,29 @@ mod tests {
         json["surprise"] = true.into();
         assert!(serde_json::from_value::<Collection>(json).is_err());
         assert_eq!(artifact_bytes("n"), "live-boot-evidence n\n");
+    }
+
+    #[test]
+    fn an_eval_cell_run_round_trips_and_refuses_unknown_shapes() {
+        for run in [
+            EvalCellRun::Admitted {
+                pod: "p".into(),
+                exit_code: Some(0),
+            },
+            EvalCellRun::Refused {
+                status: 400,
+                reason: "no".into(),
+            },
+        ] {
+            let json = serde_json::to_value(&run).unwrap();
+            assert_eq!(serde_json::from_value::<EvalCellRun>(json).unwrap(), run);
+        }
+        assert!(serde_json::from_str::<EvalCellRun>(r#"{"booted":{"pod":"p"}}"#).is_err());
+        assert!(
+            serde_json::from_str::<EvalCellRun>(
+                r#"{"admitted":{"pod":"p","exit_code":0,"drops":0}}"#
+            )
+            .is_err()
+        );
     }
 }
