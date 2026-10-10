@@ -108,6 +108,79 @@ pub struct FederationRule {
     pub scope_requires: Option<BTreeMap<String, Vec<String>>>,
 }
 
+/// Where an outside issuer's verification keys come from.
+///
+/// ```toml
+/// jwks = "discovery"                              # <issuer>/.well-known/openid-configuration
+/// jwks = { uri = "https://idp.example/keys" }     # a fixed JWKS URL
+/// ```
+///
+/// Discovery pins the document's `issuer` to the binding's byte for byte
+/// (OpenID Connect Discovery §4.3), so it is the safer default; there is no
+/// default, because which one an operator meant is not ours to guess.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum OutsideJwks {
+    Discovery,
+    Uri(String),
+}
+
+/// An issuer nucleus does not run, whose tokens the OP accepts as
+/// `subject_token` — and the ONE SPIFFE ID such a token becomes.
+///
+/// The OP's own subject tokens are SPIFFE JWT-SVIDs whose `sub` already is the
+/// identity. An outside issuer's `sub` is in its own namespace, so the binding
+/// states the identity instead: a token from `issuer` that carries every
+/// `required_claims` value exactly is exchanged AS `spiffe_id`, and from there
+/// it meets the same federation rules — audience, grant, lifetime, scope
+/// ceiling — as any other subject. The binding grants an identity, never an
+/// audience or a scope; the rules do that.
+///
+/// ```toml
+/// [[outside_issuer]]
+/// id = "build-runners"
+/// issuer = "https://idp.example/tenant-a"
+/// algs = ["RS256"]
+/// jwks = "discovery"
+/// max_lifetime_secs = 3600
+/// spiffe_id = "spiffe://example.org/ns/ci/sa/runner"
+/// [outside_issuer.required_claims]
+/// tenant = "tenant-a"
+/// workload = "runner"
+/// ```
+///
+/// What the token must also satisfy, without being configurable: its `aud` is
+/// THIS OP's issuer URL (the same confused-deputy rule the SPIFFE path
+/// applies), its algorithm is in `algs` and fits its key (no `none`, no HMAC,
+/// no EdDSA — `nucleus_federation::VerifyAlg` has no such variant), and it
+/// has not been presented before. Those checks are
+/// `nucleus_federation::ExternalIssuerValidator`'s, the same ones the node's
+/// federation ingress applies (#3022).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OutsideIssuerBinding {
+    /// Stable identifier for audit logs.
+    pub id: String,
+    /// Exact `iss`. Dispatch is by this string, before any key work.
+    pub issuer: String,
+    /// JOSE names of the algorithms accepted, e.g. `["RS256"]`.
+    pub algs: Vec<String>,
+    /// Where the keys are.
+    pub jwks: OutsideJwks,
+    /// Largest `exp − iat` accepted, 1 s to 24 h.
+    pub max_lifetime_secs: u64,
+    /// Clock-skew allowance on `exp`/`iat`/`nbf`, at most 60 s. Required:
+    /// leeway widens what is accepted, so it is stated, never defaulted.
+    pub leeway_secs: u64,
+    /// Claims that must be present as exactly these strings. Must be
+    /// non-empty: an issuer usually serves many workloads, and a binding that
+    /// named none of them would make every one of them `spiffe_id`.
+    pub required_claims: BTreeMap<String, String>,
+    /// The identity a token that passes becomes. A full, canonical SPIFFE ID
+    /// — never a prefix.
+    pub spiffe_id: String,
+}
+
 /// The on-disk + in-memory rules document. Wrapper so the TOML root
 /// is a table with a `rule` array (idiomatic TOML).
 #[derive(Debug, Clone, Deserialize, Serialize, Default, PartialEq, Eq)]
@@ -115,6 +188,11 @@ pub struct FederationRule {
 pub struct FederationRules {
     #[serde(default)]
     pub rule: Vec<FederationRule>,
+    /// Outside issuers whose tokens are accepted as `subject_token`. Read once
+    /// at start-up (`crate::outside::OutsideIssuers`): each holds a key cache
+    /// and a replay cache that a rule reload must not reset.
+    #[serde(default)]
+    pub outside_issuer: Vec<OutsideIssuerBinding>,
 }
 
 impl FederationRules {
@@ -197,6 +275,7 @@ impl FederationRules {
                 )));
             }
         }
+        validate_outside_issuers(&rules.outside_issuer)?;
         Ok(rules)
     }
 
@@ -207,6 +286,74 @@ impl FederationRules {
             .map_err(|e| FederationError::Io(format!("read {path:?}: {e}")))?;
         Self::parse_toml(&s)
     }
+}
+
+/// The checks an outside-issuer binding can fail without knowing the OP's own
+/// issuer URL. `OutsideIssuers::build` adds the rest (audience, transport).
+pub(crate) fn validate_outside_issuers(
+    bindings: &[OutsideIssuerBinding],
+) -> Result<(), FederationError> {
+    let bad = |id: &str, why: String| {
+        FederationError::InvalidRule(format!("outside_issuer {id:?}: {why}"))
+    };
+    let mut ids = std::collections::BTreeSet::new();
+    let mut issuers = std::collections::BTreeSet::new();
+    for b in bindings {
+        if b.id.trim().is_empty() {
+            return Err(FederationError::InvalidRule(
+                "outside_issuer.id must be non-empty".to_string(),
+            ));
+        }
+        if !ids.insert(b.id.as_str()) {
+            return Err(bad(&b.id, "duplicate id".into()));
+        }
+        // One binding per issuer: dispatch is by exact `iss`, and two
+        // bindings for one issuer would make which identity a token gets
+        // depend on file order.
+        if !issuers.insert(b.issuer.as_str()) {
+            return Err(bad(&b.id, format!("issuer {:?} is bound twice", b.issuer)));
+        }
+        if b.algs.is_empty() {
+            return Err(bad(&b.id, "algs must list at least one algorithm".into()));
+        }
+        for a in &b.algs {
+            a.parse::<nucleus_federation::VerifyAlg>().map_err(|_| {
+                bad(
+                    &b.id,
+                    format!("algorithm {a:?} is not one an outside issuer may be verified with"),
+                )
+            })?;
+        }
+        if b.required_claims.is_empty() {
+            return Err(bad(
+                &b.id,
+                "required_claims must name at least one claim — an issuer serves many \
+                 workloads, and a binding naming none would grant spiffe_id to all of them"
+                    .into(),
+            ));
+        }
+        if b.required_claims
+            .iter()
+            .any(|(k, v)| k.trim().is_empty() || v.is_empty())
+        {
+            return Err(bad(
+                &b.id,
+                "required_claims keys and values must be non-empty".into(),
+            ));
+        }
+        if b.spiffe_id.contains('*')
+            || nucleus_lineage::CallSpiffeId::parse(b.spiffe_id.as_str()).is_err()
+        {
+            return Err(bad(
+                &b.id,
+                format!(
+                    "spiffe_id must be a canonical SPIFFE ID, got {:?}",
+                    b.spiffe_id
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Error)]
@@ -397,6 +544,7 @@ mod tests {
     #[test]
     fn exact_subject_match_allows() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule(
                 "r1",
                 "spiffe://prod/ns/agents/sa/coder",
@@ -429,6 +577,7 @@ mod tests {
     #[test]
     fn evaluate_audience_match_is_case_sensitive() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule(
                 "r-strict",
                 "spiffe://prod/ns/agents/sa/coder",
@@ -458,6 +607,7 @@ mod tests {
     #[test]
     fn wildcard_suffix_prefix_match_allows() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule(
                 "wild",
                 "spiffe://prod/ns/agents/*",
@@ -477,6 +627,7 @@ mod tests {
     #[test]
     fn wildcard_does_not_match_outside_prefix() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule(
                 "wild",
                 "spiffe://prod/ns/agents/*",
@@ -492,6 +643,7 @@ mod tests {
     #[test]
     fn wrong_audience_denies_no_match() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule(
                 "r1",
                 "spiffe://prod/ns/agents/sa/coder",
@@ -511,6 +663,7 @@ mod tests {
     #[test]
     fn matched_rule_with_wrong_grant_returns_grant_not_allowed() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule(
                 "r1",
                 "spiffe://prod/ns/agents/sa/coder",
@@ -541,6 +694,7 @@ mod tests {
     #[test]
     fn first_matching_rule_wins() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![
                 rule(
                     "narrow",
@@ -757,6 +911,7 @@ mod tests {
 
         // Reload: one allow rule.
         let next = FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule("r1", "spiffe://x/*", "https://rp/", &[GRANT_TX], 300)],
         };
         let count = reg.reload(next);
@@ -772,6 +927,7 @@ mod tests {
     #[test]
     fn snapshot_taken_before_reload_keeps_old_rules() {
         let reg = FederationRegistry::new(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule("old", "spiffe://*", "https://rp/", &[GRANT_TX], 300)],
         });
 
@@ -780,6 +936,7 @@ mod tests {
 
         // Reload to a different rule set.
         reg.reload(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule("new", "spiffe://*", "https://rp/", &[GRANT_TX], 999)],
         });
 
@@ -797,6 +954,7 @@ mod tests {
         let reg = FederationRegistry::empty();
         assert_eq!(reg.rule_count(), 0);
         reg.reload(FederationRules {
+            outside_issuer: Vec::new(),
             rule: vec![rule("a", "spiffe://*", "https://rp/", &[GRANT_TX], 300)],
         });
         assert_eq!(reg.rule_count(), 1);

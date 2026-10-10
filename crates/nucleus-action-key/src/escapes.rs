@@ -82,7 +82,7 @@
 use crate::closure::{WORKSPACE_WIDE, Workspace};
 use anyhow::{Context, Result};
 use proc_macro2::{TokenStream, TokenTree};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 use std::str::FromStr;
 
@@ -141,51 +141,108 @@ impl Scan {
 /// `tracked` is the repository's tracked-file list, passed in for the same
 /// reason [`crate::closure::Workspace::read_set`] takes it: `git ls-files` over
 /// a large tree is not free, and this is called once per crate.
+///
+/// A caller scanning more than one crate should hold a [`Lexer`] and call
+/// [`Lexer::scan`]: this function lexes every file of the closure afresh.
 pub fn scan(ws: &Workspace, root: &Path, tracked: &[String], crate_name: &str) -> Result<Scan> {
-    let Some(members) = ws.closures.get(crate_name) else {
-        anyhow::bail!("{crate_name} is not a workspace crate");
-    };
-    let prefixes: Vec<String> = members
-        .iter()
-        .filter_map(|m| ws.dirs.get(m))
-        .map(|d| format!("{d}/"))
-        .collect();
-    let tracked_set: BTreeSet<&str> = tracked.iter().map(String::as_str).collect();
+    Lexer::new(root).scan(ws, tracked, crate_name)
+}
 
-    let mut scan = Scan::default();
-    for f in tracked {
-        if !f.ends_with(".rs") {
-            continue;
-        }
-        if !prefixes.iter().any(|p| f.starts_with(p.as_str())) {
-            continue;
-        }
-        let source = std::fs::read_to_string(root.join(f))
-            .with_context(|| format!("reading {f} to scan its compile-time reads"))?;
-        // A file that does not lex is not a file with no reads. Rust source
-        // that the compiler accepts and `proc_macro2` rejects would be a bug in
-        // one of them, and reporting it as "nothing found" is the vacuity this
-        // whole crate is written against.
-        let stream =
-            TokenStream::from_str(&source).map_err(|e| anyhow::anyhow!("lexing {f}: {e}"))?;
+/// One reading-macro call as the lexer found it, before any closure is applied.
+///
+/// Everything here is a function of the file alone. Whether the read is
+/// covered depends on whose closure is asking, so that is decided per scan.
+#[derive(Debug, Clone)]
+struct Site {
+    macro_name: String,
+    read: SiteRead,
+}
 
-        let dir = Path::new(f).parent().unwrap_or(Path::new(""));
-        walk(&stream, f, dir, &prefixes, &tracked_set, &mut scan);
+#[derive(Debug, Clone)]
+enum SiteRead {
+    /// A literal path, resolved repo-relative against the file holding it.
+    Target(String),
+    /// An argument a token walk cannot settle, as a person should read it.
+    Unresolvable(String),
+}
+
+/// Files lexed once and kept, so a crate shared by many closures is tokenized
+/// once rather than once per closure that holds it.
+///
+/// Measured 2026-10-08 (nucleus `docs/findings/live-path-gates-critical-path.md`):
+/// `cargo xtask test-shards --check` scans all ~90 members, each lexing its
+/// whole closure, and the re-lexing was nearly all of the gate's time. The
+/// gate of gates runs it seven times per merge-queue group.
+pub struct Lexer {
+    root: std::path::PathBuf,
+    files: BTreeMap<String, Vec<Site>>,
+}
+
+impl Lexer {
+    /// An empty cache over the tree at `root`.
+    #[must_use]
+    pub fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            files: BTreeMap::new(),
+        }
     }
-    scan.escapes.sort();
-    scan.unresolvable.sort();
-    Ok(scan)
+
+    /// The reading-macro sites of one tracked file, lexing it on first use.
+    fn sites(&mut self, f: &str) -> Result<&[Site]> {
+        if !self.files.contains_key(f) {
+            let source = std::fs::read_to_string(self.root.join(f))
+                .with_context(|| format!("reading {f} to scan its compile-time reads"))?;
+            // A file that does not lex is not a file with no reads. Rust source
+            // that the compiler accepts and `proc_macro2` rejects would be a bug in
+            // one of them, and reporting it as "nothing found" is the vacuity this
+            // whole crate is written against.
+            let stream =
+                TokenStream::from_str(&source).map_err(|e| anyhow::anyhow!("lexing {f}: {e}"))?;
+            let dir = Path::new(f).parent().unwrap_or(Path::new(""));
+            let mut sites = Vec::new();
+            walk(&stream, dir, &mut sites);
+            self.files.insert(f.to_string(), sites);
+        }
+        Ok(self.files.get(f).map_or(&[], Vec::as_slice))
+    }
+
+    /// Scan one crate's closure, reusing every file an earlier scan lexed.
+    ///
+    /// The answer is [`scan`]'s exactly: the same files are visited, in the
+    /// same order, and a file that does not lex is the same error.
+    pub fn scan(&mut self, ws: &Workspace, tracked: &[String], crate_name: &str) -> Result<Scan> {
+        let Some(members) = ws.closures.get(crate_name) else {
+            anyhow::bail!("{crate_name} is not a workspace crate");
+        };
+        let prefixes: Vec<String> = members
+            .iter()
+            .filter_map(|m| ws.dirs.get(m))
+            .map(|d| format!("{d}/"))
+            .collect();
+        let tracked_set: BTreeSet<&str> = tracked.iter().map(String::as_str).collect();
+
+        let mut scan = Scan::default();
+        for f in tracked {
+            if !f.ends_with(".rs") {
+                continue;
+            }
+            if !prefixes.iter().any(|p| f.starts_with(p.as_str())) {
+                continue;
+            }
+            for site in self.sites(f)? {
+                scan.sites_examined = scan.sites_examined.saturating_add(1);
+                classify(site, f, &prefixes, &tracked_set, &mut scan);
+            }
+        }
+        scan.escapes.sort();
+        scan.unresolvable.sort();
+        Ok(scan)
+    }
 }
 
 /// Walk a token stream looking for `<macro>!( <literal> )`.
-fn walk(
-    stream: &TokenStream,
-    site: &str,
-    dir: &Path,
-    prefixes: &[String],
-    tracked: &BTreeSet<&str>,
-    out: &mut Scan,
-) {
+fn walk(stream: &TokenStream, dir: &Path, out: &mut Vec<Site>) {
     // `Ident Punct('!') Group` is the whole shape. Keeping the last two idents
     // rather than collecting the stream avoids allocating a Vec per file.
     let mut prev_ident: Option<String> = None;
@@ -203,8 +260,10 @@ fn walk(
             TokenTree::Group(ref g) => {
                 if let Some(name) = bang_after.take() {
                     if READING_MACROS.contains(&name.as_str()) {
-                        out.sites_examined = out.sites_examined.saturating_add(1);
-                        classify(&g.stream(), site, &name, dir, prefixes, tracked, out);
+                        out.push(Site {
+                            read: resolve(&g.stream(), dir),
+                            macro_name: name,
+                        });
                         // The argument was handled; do not also descend into it.
                         prev_ident = None;
                         continue;
@@ -212,7 +271,7 @@ fn walk(
                 }
                 // Not a reading macro: descend, since a call can nest inside any
                 // group — a function body, a `vec![]`, an attribute's tokens.
-                walk(&g.stream(), site, dir, prefixes, tracked, out);
+                walk(&g.stream(), dir, out);
                 prev_ident = None;
             }
             _ => {
@@ -223,16 +282,8 @@ fn walk(
     }
 }
 
-/// Decide what one reading-macro call's argument is, and record it.
-fn classify(
-    args: &TokenStream,
-    site: &str,
-    macro_name: &str,
-    dir: &Path,
-    prefixes: &[String],
-    tracked: &BTreeSet<&str>,
-    out: &mut Scan,
-) {
+/// What one reading-macro call's argument names, relative to no closure.
+fn resolve(args: &TokenStream, dir: &Path) -> SiteRead {
     let tokens: Vec<TokenTree> = args.clone().into_iter().collect();
     // `include_str!("p")` and `include_str!("p",)` are the only shapes with a
     // literal path. Anything else goes to `Unresolvable` by construction.
@@ -242,36 +293,47 @@ fn classify(
         _ => None,
     };
     let Some(raw) = literal.as_deref().and_then(string_literal_value) else {
-        out.unresolvable.push(Unresolvable {
-            site: site.to_string(),
-            macro_name: macro_name.to_string(),
-            argument: args.to_string(),
-        });
-        return;
+        return SiteRead::Unresolvable(args.to_string());
     };
 
     // `include_str!` resolves relative to the file holding it.
-    let Some(target) = normalize(&dir.join(&raw)) else {
+    match normalize(&dir.join(&raw)) {
+        Some(target) => SiteRead::Target(target),
         // A path climbing above the repository root. Not an escape from the
         // closure — an escape from the tree — and a person has to look.
-        out.unresolvable.push(Unresolvable {
-            site: site.to_string(),
-            macro_name: macro_name.to_string(),
-            argument: raw,
-        });
-        return;
-    };
+        None => SiteRead::Unresolvable(raw),
+    }
+}
 
+/// Decide what one site is to the closure asking, and record it.
+fn classify(
+    site: &Site,
+    file: &str,
+    prefixes: &[String],
+    tracked: &BTreeSet<&str>,
+    out: &mut Scan,
+) {
+    let target = match &site.read {
+        SiteRead::Unresolvable(argument) => {
+            out.unresolvable.push(Unresolvable {
+                site: file.to_string(),
+                macro_name: site.macro_name.clone(),
+                argument: argument.clone(),
+            });
+            return;
+        }
+        SiteRead::Target(target) => target,
+    };
     let covered =
         WORKSPACE_WIDE.contains(&target.as_str()) || prefixes.iter().any(|p| target.starts_with(p));
     if covered {
         return;
     }
     out.escapes.push(Escape {
-        site: site.to_string(),
-        macro_name: macro_name.to_string(),
+        site: file.to_string(),
+        macro_name: site.macro_name.clone(),
         tracked: tracked.contains(target.as_str()),
-        target,
+        target: target.clone(),
     });
 }
 
