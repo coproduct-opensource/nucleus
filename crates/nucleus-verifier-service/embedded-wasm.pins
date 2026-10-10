@@ -164,5 +164,10 @@
 # No function the wasm exports changed behaviour, and the cause of the byte move was not
 # isolated further. The digest is from CI's Clippy run of this PR's head (a1a73ccb8), and
 # `f2b7954f…` is REPLACED, on the rule above. The .js shim did not move: no export changed.
-7e5755cfcf705027852194435d2ec3038ce2f1a8fa64838e6a0e491ce46201e2  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-10-09: standalone security updates (Rustls 0.23.45, DER 0.8.2).
+# Measured with Rust 1.96.1 / wasm-pack 0.13.1 on Linux x86_64 at the canonical
+# /data/work/nucleus/nucleus path and /home/runner/.cargo. This same builder
+# reproduced the preceding 7e5755cf pin before updating dependencies. The
+# source commit was 0afd7450a; no exports changed, so the JS digest stays fixed.
+c569797a3eba1dc16325b3c0145e15678c32d7286428d505363c871e70d61d5c  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js

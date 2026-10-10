@@ -94,6 +94,18 @@ nucleus lockdown --reason "suspicious activity detected"
 nucleus lockdown --restore
 ```
 
+Both commands require the operator identity provisioned by `nucleus setup` and
+an HTTPS node gRPC endpoint (`--node-addr https://127.0.0.1:9180` by default).
+Connection or authorization failures are errors; there is no local-file fallback.
+Legacy `lockdown.json` files can latch a local lock, but deleting or rewriting
+them cannot restore permissions. An operator restore delivered by the authenticated
+node stream clears local and circuit-breaker locks for the selected pods.
+Remove legacy lock files before restoring; a file still requesting lockdown
+will latch the lock again on the next watcher tick.
+Proxies without a node stream require an operator-controlled restart to clear a
+latched local lock. Remove the legacy lock file before restarting.
+
+
 ### 4. Compliance export
 
 ```bash
