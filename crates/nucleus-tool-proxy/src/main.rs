@@ -1051,12 +1051,14 @@ async fn main() -> Result<(), ApiError> {
         eprintln!("FATAL: {why}");
         std::process::exit(78);
     }
+    // On stderr, like the other startup notices: it must reach the boot log
+    // whatever the tracing filter is.
     if let Some(notice) = sandbox_proof::retired_token_notice(
         std::env::var(sandbox_proof::RETIRED_SANDBOX_TOKEN_ENV)
             .ok()
             .as_deref(),
     ) {
-        warn!("{notice}");
+        eprintln!("WARNING: {notice}");
     }
     // Move B: requests to nucleus-node (pod management HTTP, lockdown gRPC)
     // now authenticate over mTLS with this pod's own SVID — there is no

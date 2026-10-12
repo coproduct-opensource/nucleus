@@ -1094,17 +1094,19 @@ mod tests {
         assert!(HostLock::acquire(dir.path(), Duration::from_secs(5)).is_ok());
     }
 
+    /// The env file is private and written once. It used to carry per-install
+    /// proxy secrets; #2446 step 3 retired them, so it now carries none, and
+    /// the image's baked development values are gone with them.
     #[test]
-    fn node_secrets_are_per_install_and_private() {
+    fn the_node_env_file_is_private_and_holds_no_secret() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("node.env");
         write_private(&path, node_env("nucleus.local").as_bytes()).expect("write");
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).expect("meta").permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-        assert_ne!(node_env("x"), node_env("x"));
-        // The image's baked development value must never survive.
-        assert!(!node_env("x").contains("00000000000000000000"));
+        assert_eq!(node_env("x"), "NUCLEUS_IDENTITY_TRUST_DOMAIN=x\n");
+        assert!(!node_env("x").contains("SECRET"));
         assert!(
             write_private(&path, b"again").is_err(),
             "must not overwrite"
