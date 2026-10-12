@@ -38,7 +38,7 @@ async fn request_proof_real_tls_exchange_then_mtls_api() {
         .timeout(Duration::from_secs(5))
         .build()
         .unwrap();
-    let csr = nucleus_identity::CsrOptions::new(&principal_a("alice"))
+    let csr = nucleus_identity::CsrOptions::new(principal_a("alice"))
         .generate()
         .unwrap();
     let key = rcgen::KeyPair::from_pem(csr.private_key())
@@ -177,7 +177,7 @@ async fn request_proof_exchange_checks_issuer_csr_key_and_http_proof() {
     };
     f.st.request_proofs =
         crate::request_proof::RequestProofs::open(&args, f._dir.path(), false).unwrap();
-    let csr = nucleus_identity::CsrOptions::new(&principal_a("alice"))
+    let csr = nucleus_identity::CsrOptions::new(principal_a("alice"))
         .generate()
         .unwrap();
     let (_, pem) = x509_parser::pem::parse_x509_pem(csr.private_key().as_bytes()).unwrap();

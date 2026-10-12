@@ -53,6 +53,10 @@ fn open(config: &Provision, path: &Path) -> Result<Gate, ApiError> {
         expires: config.expires,
     })
 }
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216 exempt: runtime-owned proof key provisioning outside the workload tree, not agent I/O"
+)]
 pub(crate) fn provision_runtime(
     spec: &PodSpec,
     directory: &Path,
@@ -90,6 +94,10 @@ pub(crate) fn provision_runtime(
     provision(spec, &directory.join("replay.olog"))
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "#1216 exempt: runtime-owned proof key provisioning outside the workload tree, not agent I/O"
+)]
 fn provision(spec: &PodSpec, replay: &Path) -> Result<Option<Gate>, ApiError> {
     let Some(workload) = spec.spec.workload.as_ref() else {
         return Ok(None);

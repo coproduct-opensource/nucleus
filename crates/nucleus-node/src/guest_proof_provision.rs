@@ -228,7 +228,7 @@ impl Signer {
         body: &[u8],
     ) -> Result<String, std::io::Error> {
         use sha2::{Digest, Sha256};
-        if u64::try_from(crate::now_unix()).unwrap_or(0) >= self.expires
+        if crate::now_unix() >= self.expires
             || !path.starts_with('/')
             || path.starts_with("//")
             || path.contains(['?', '#'])

@@ -37,7 +37,6 @@
 // The tests below still exercise `diagnose` on every platform.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
-use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -479,7 +478,7 @@ mod tests {
 
     /// An address nothing listens on: what the node's probe met for thirty
     /// seconds in #2904, after the guest had died.
-    async fn refused_addr() -> SocketAddr {
+    async fn refused_addr() -> std::net::SocketAddr {
         let l = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind");
