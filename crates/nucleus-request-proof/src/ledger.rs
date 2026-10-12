@@ -39,10 +39,13 @@ impl Batch {
     }
 }
 
+/// Key/value rows, in key order.
+pub(crate) type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// Durable, single-writer key/value storage for spent proofs and assertions.
 pub(crate) trait ReplayLedger: Send {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Error>;
-    fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error>;
+    fn scan_prefix(&self, prefix: &[u8]) -> Result<Rows, Error>;
     fn is_empty(&self) -> Result<bool, Error>;
     /// Commit `batch` atomically on behalf of `principal`.
     fn commit(&mut self, principal: &str, batch: Batch) -> Result<(), Error>;
@@ -126,7 +129,7 @@ mod volatile {
             Ok(rows.get(key).cloned())
         }
 
-        fn scan_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Error> {
+        fn scan_prefix(&self, prefix: &[u8]) -> Result<super::Rows, Error> {
             let rows = self.rows.lock().map_err(|_| Error::Unavailable)?;
             Ok(rows
                 .range(prefix.to_vec()..)
