@@ -126,4 +126,10 @@ ignore = [
     # migrates off the 0.7 API. Drops if rust_decimal bumps or the lock stops
     # recording the unused optional dep. REVISIT with rust_decimal updates.
     "RUSTSEC-2026-0235",
+    # unsafe-libyaml unmaintained (RUSTSEC-2024-0449) -- an unmaintained-only
+    # notice, no vulnerability. Transitive via serde_yaml 0.9 (itself deprecated),
+    # used by 13 workspace crates (ci-spec, ck-types, xtask, ...) to parse
+    # workflow, policy and config YAML. Same unmaintained-only class as the ignores
+    # above. Drops when the workspace migrates off serde_yaml (2026-10-12).
+    "RUSTSEC-2024-0449",
 ]
