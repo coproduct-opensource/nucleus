@@ -7360,6 +7360,7 @@ dependencies = [
  "nucleus-provenance-memory",
  "nucleus-receipt",
  "nucleus-recompute",
+ "nucleus-request-proof",
  "nucleus-spec",
  "oid-registry",
  "portcullis",
@@ -7710,6 +7711,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-request-proof"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hex",
+ "nucleus-identity",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.21",
+ "url",
+ "x509-parser",
+]
+
+[[package]]
 name = "nucleus-rubric"
 version = "1.0.0"
 dependencies = [
@@ -7839,10 +7857,12 @@ dependencies = [
  "nucleus-proto",
  "nucleus-provenance-memory",
  "nucleus-recompute",
+ "nucleus-request-proof",
  "nucleus-spec",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "p256",
  "pem 4.0.0",
  "portcullis",
  "portcullis-core",

@@ -50,7 +50,18 @@ async fn serve(
     stream: Stream,
 ) -> Result<Response, ApiError> {
     let (claim, address) = observe_claim(&state, &caller, id).await?;
-    let bytes = fetch(&state.http_client, &address, &stream, stream.digest(&claim)).await?;
+    let pod = crate::pod_api::get_pod_for_caller(&state, id, &caller).await?;
+    let path = format!("/v1/workload/logs/{}", stream.name());
+    let proof =
+        super::observation_proof(&pod, &address, &path, state.request_proofs.is_some()).await?;
+    let bytes = fetch(
+        &state.http_client,
+        &address,
+        &stream,
+        stream.digest(&claim),
+        proof.as_deref(),
+    )
+    .await?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream"),
@@ -67,14 +78,20 @@ async fn fetch(
     address: &str,
     stream: &Stream,
     digest: &str,
+    proof: Option<&str>,
 ) -> Result<Vec<u8>, ApiError> {
-    let mut response = client
+    let request = client
         .get(format!(
             "{}/v1/workload/logs/{}",
             address.trim_end_matches('/'),
             stream.name()
         ))
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(std::time::Duration::from_secs(60));
+    let request = match proof {
+        Some(proof) => request.header("dpop", proof),
+        None => request,
+    };
+    let mut response = request
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
@@ -133,6 +150,7 @@ mod tests {
             &format!("http://{address}"),
             &Stream::Stdout,
             digest,
+            None,
         )
         .await;
         task.abort();

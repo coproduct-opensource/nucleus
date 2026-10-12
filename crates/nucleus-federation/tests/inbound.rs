@@ -112,6 +112,38 @@ async fn a_valid_es256_token_is_accepted() {
 use sha2::Digest as _;
 
 #[tokio::test]
+async fn dropping_checked_claims_does_not_spend_an_assertion() {
+    let (k, v) = fixture();
+    let token = sign(es256_header("k1"), claims(), &k);
+    let checked = v.check(&token, NOW).await.unwrap();
+    assert_eq!(checked.claims()["sub"], "agent-session-1");
+    assert_eq!(checked.expires_at(), NOW + 300);
+    drop(checked); // e.g. the sender failed its DPoP challenge
+    v.validate(&token, NOW)
+        .await
+        .expect("legitimate sender retains its assertion");
+    assert_eq!(reason(&v, &token).await, RefusalReason::Replayed);
+}
+
+#[tokio::test]
+async fn pending_assertions_recheck_expiry_and_still_consume_only_once() {
+    let (k, v) = fixture();
+    let token = sign(es256_header("k1"), claims(), &k);
+    let checked = v.check(&token, NOW).await.unwrap();
+    assert_eq!(
+        checked.consume(NOW + 1000).unwrap_err().reason(),
+        RefusalReason::Expired
+    );
+    let first = v.check(&token, NOW).await.unwrap();
+    let competing = v.check(&token, NOW).await.unwrap();
+    first.consume(NOW).unwrap();
+    assert_eq!(
+        competing.consume(NOW).unwrap_err().reason(),
+        RefusalReason::Replayed
+    );
+}
+
+#[tokio::test]
 async fn an_audience_array_containing_ours_is_accepted() {
     let (k, v) = fixture();
     let mut c = claims();

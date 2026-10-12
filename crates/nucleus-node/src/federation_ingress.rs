@@ -149,6 +149,18 @@ const MIN_SVID_TTL_SECS: u64 = 5;
 /// the node's `Args`) rather than into `main.rs`.
 #[derive(clap::Args, Debug, Clone)]
 pub(crate) struct FederationArgs {
+    /// Require DPoP on HTTP API requests, pinned to this external HTTPS origin.
+    #[arg(
+        long = "request-proof-api-origin",
+        env = "NUCLEUS_REQUEST_PROOF_API_ORIGIN"
+    )]
+    pub request_proof_api_origin: Option<String>,
+    /// Require DPoP federation exchange proofs at this external HTTPS origin.
+    #[arg(
+        long = "request-proof-exchange-origin",
+        env = "NUCLEUS_REQUEST_PROOF_EXCHANGE_ORIGIN"
+    )]
+    pub request_proof_exchange_origin: Option<String>,
     /// Address for the federation exchange listener (`POST
     /// /v1/federation/exchange`), served over server-authenticated TLS with the
     /// node's own certificate and NO client certificate. Unset, the exchange is
@@ -180,6 +192,8 @@ pub(crate) struct FederationArgs {
 impl Default for FederationArgs {
     fn default() -> Self {
         Self {
+            request_proof_api_origin: None,
+            request_proof_exchange_origin: None,
             federation_listen: None,
             federation_max_concurrent: 16,
             federation_tls_cert: None,
@@ -498,6 +512,8 @@ pub(crate) struct ExchangeResponse {
     pub delegation_cert: String,
     /// Unix seconds after which neither credential is valid.
     pub expires_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cnf: Option<serde_json::Value>,
 }
 
 /// Why an exchange was refused. The status is what the caller sees; the
@@ -550,6 +566,7 @@ impl IntoResponse for Refusal {
 /// with), the CA that signs SVIDs, and the concurrency gate.
 #[derive(Clone)]
 pub(crate) struct IngressState {
+    pub request_proofs: Option<Arc<crate::request_proof::RequestProofs>>,
     pub authority: Arc<crate::pod_authority::PodAuthority>,
     pub identity: crate::identity::IdentityManager,
     pub gate: Arc<Semaphore>,
@@ -599,6 +616,7 @@ fn pem_encode(label: &str, der: &[u8]) -> String {
 pub(crate) async fn exchange(
     st: &IngressState,
     authorization: Option<&str>,
+    proof: Option<&str>,
     body: &[u8],
     now: u64,
 ) -> Result<ExchangeResponse, Refusal> {
@@ -606,7 +624,13 @@ pub(crate) async fn exchange(
         serde_json::from_slice(body).map_err(|_| Refusal::BadRequest("body does not parse"))?;
 
     let token = authorization
-        .and_then(|h| h.strip_prefix("Bearer "))
+        .and_then(|h| {
+            h.strip_prefix(if st.request_proofs.is_some() {
+                "DPoP "
+            } else {
+                "Bearer "
+            })
+        })
         .map(str::trim)
         .filter(|t| !t.is_empty() && t.len() <= MAX_TOKEN_BYTES)
         .ok_or(Refusal::Unauthorized("no bearer token"))?;
@@ -617,7 +641,7 @@ pub(crate) async fn exchange(
         .and_then(|iss| bindings.by_issuer(&iss))
         .ok_or(Refusal::Unauthorized("token names no configured issuer"))?;
 
-    let caller = binding.validator.validate(token, now).await.map_err(|e| {
+    let refused = |e: InboundError| {
         // Which check failed is logged here, where it is still in hand, and
         // goes no further: the caller gets the status alone.
         tracing::warn!(binding = %binding.label, check = ?e.reason(), "federated token refused");
@@ -625,7 +649,44 @@ pub(crate) async fn exchange(
             InboundError::Refused(_) => Refusal::Unauthorized("token refused by its binding"),
             InboundError::Unavailable(_) => Refusal::Unavailable("issuer keys unavailable"),
         }
-    })?;
+    };
+    // Do not spend a copied assertion before its sender proves key possession.
+    let checked = binding.validator.check(token, now).await.map_err(refused)?;
+
+    let cnf = if let Some(proofs) = &st.request_proofs {
+        let jkt = checked
+            .claims()
+            .get("cnf")
+            .and_then(|v| v.get("jkt"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or(Refusal::Unauthorized("missing issuer key binding"))?;
+        let csr = csr_pem(&request.csr).ok_or(Refusal::BadRequest("invalid CSR"))?;
+        let key = nucleus_request_proof::csr_key(&csr, jkt)
+            .map_err(|_| Refusal::Unauthorized("CSR key binding refused"))?;
+        let verified = proofs
+            .exchange
+            .verify_assertion(
+                proof.ok_or(Refusal::Unauthorized("request proof required"))?,
+                "/v1/federation/exchange",
+                token,
+                &key,
+                checked.expires_at().saturating_add(60),
+            )
+            .map_err(|e| match e {
+                nucleus_request_proof::Error::Refused => {
+                    Refusal::Unauthorized("request proof refused")
+                }
+                nucleus_request_proof::Error::Unavailable
+                | nucleus_request_proof::Error::Configuration
+                | nucleus_request_proof::Error::NoDurableLedger => {
+                    Refusal::Unavailable("request proof verifier unavailable")
+                }
+            })?;
+        Some(serde_json::json!({"jkt":verified.into_thumbprint()}))
+    } else {
+        None
+    };
+    let caller = checked.consume(now).map_err(refused)?;
 
     let principal = binding
         .principal(&caller.sub)
@@ -696,6 +757,7 @@ pub(crate) async fn exchange(
         trust_bundle_pem,
         delegation_cert,
         expires_at: not_after_unix,
+        cnf,
     })
 }
 
@@ -710,14 +772,19 @@ async fn exchange_route(
         tracing::warn!("federation exchange refused: at the concurrency bound");
         return Refusal::Unavailable("at the concurrency bound").into_response();
     };
-    let authorization = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok());
+    let authorization = match crate::request_proof::one(&headers, "authorization") {
+        Ok(v) => v,
+        Err(_) => return Refusal::Unauthorized("duplicate authorization").into_response(),
+    };
+    let proof = match crate::request_proof::one(&headers, "dpop") {
+        Ok(v) => v,
+        Err(_) => return Refusal::Unauthorized("duplicate proof").into_response(),
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    match exchange(&st, authorization, &body, now).await {
+    match exchange(&st, authorization, proof, &body, now).await {
         Ok(resp) => Json(resp).into_response(),
         Err(refusal) => {
             tracing::warn!(
@@ -774,6 +841,7 @@ pub(crate) async fn spawn(
     let tcp = tokio::net::TcpListener::bind(listen).await?;
     let addr = tcp.local_addr()?;
     let app = router(IngressState {
+        request_proofs: state.request_proofs.clone(),
         authority: state.authority.clone(),
         identity,
         gate: Arc::new(Semaphore::new(args.federation_max_concurrent.max(1))),
@@ -941,6 +1009,7 @@ ceiling = {{ profile = "read_only" }}
             crate::identity::IdentityManager::new(NODE_TD, Duration::from_secs(3600)).unwrap();
         Fixture {
             st: IngressState {
+                request_proofs: None,
                 authority,
                 identity,
                 gate: Arc::new(Semaphore::new(4)),
@@ -972,7 +1041,7 @@ ceiling = {{ profile = "read_only" }}
     }
 
     async fn run(f: &Fixture, token: &str, body: &[u8]) -> Result<ExchangeResponse, Refusal> {
-        exchange(&f.st, Some(&format!("Bearer {token}")), body, now()).await
+        exchange(&f.st, Some(&format!("Bearer {token}")), None, body, now()).await
     }
 
     fn principal_a(sub: &str) -> String {
@@ -1541,4 +1610,5 @@ ceiling = {{ profile = "read_only" }}
             assert!(!v[field].is_null(), "{field}");
         }
     }
+    include!("federation_proof_tests.rs");
 }

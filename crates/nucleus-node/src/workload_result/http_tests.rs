@@ -3,6 +3,73 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::get;
 
+#[tokio::test]
+async fn result_fetch_requires_fresh_proxy_observation_authority() {
+    use crate::signed_proxy::{ProxyProofConfig, SignedProxy};
+    use base64::Engine;
+    use nucleus_identity::dpop::{DpopHeader, DpopProofBuilder};
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let key = nucleus_identity::CsrOptions::new("spiffe://test/ns/client/sa/tool")
+        .generate()
+        .unwrap();
+    let (_, pem) = x509_parser::pem::parse_x509_pem(key.private_key().as_bytes()).unwrap();
+    let sample = DpopProofBuilder::new("GET", "http://127.0.0.1:1/v1/read")
+        .build(&pem.contents)
+        .unwrap();
+    let header: DpopHeader = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(sample.split('.').next().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let app = axum::Router::new().route(
+        "/v1/workload/result",
+        get(|| async { r#"{"state":"running"}"# }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let proxy = SignedProxy::start_with_proof(
+        address,
+        std::sync::Arc::new(vec![1; 32]),
+        None,
+        None,
+        None,
+        Some(ProxyProofConfig {
+            guest: None,
+            key: header.jwk,
+            replay_path: dir.path().join("replay"),
+            expires: chrono::Utc::now().timestamp() as u64 + 300,
+        }),
+    )
+    .await
+    .unwrap();
+    let address = format!("http://{}", proxy.listen_addr());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(fetch(&client, &address, None).await.is_err());
+    let observer = proxy.observation_endpoint();
+    let proof = observer
+        .proof(&address, "/v1/workload/result")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        fetch(&client, &address, Some(&proof)).await.unwrap(),
+        WorkloadResult::Running
+    ));
+    assert!(fetch(&client, &address, Some(&proof)).await.is_err());
+    let fresh = observer
+        .proof(&address, "/v1/workload/result")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        fetch(&client, &address, Some(&fresh)).await.unwrap(),
+        WorkloadResult::Running
+    ));
+    proxy.shutdown().await;
+    server.abort();
+}
+
 async fn probe(status: StatusCode, body: &str) -> Result<WorkloadResult, ApiError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -13,7 +80,7 @@ async fn probe(status: StatusCode, body: &str) -> Result<WorkloadResult, ApiErro
         get(move || async move { (status, body) }),
     );
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
-    let result = fetch(&reqwest::Client::new(), &format!("http://{address}")).await;
+    let result = fetch(&reqwest::Client::new(), &format!("http://{address}"), None).await;
     server.abort();
     result
 }
@@ -68,7 +135,7 @@ async fn supervisor_transport_timeout_is_reported_as_unavailable() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let started = tokio::time::Instant::now();
-    let error = fetch(&reqwest::Client::new(), &format!("http://{address}"))
+    let error = fetch(&reqwest::Client::new(), &format!("http://{address}"), None)
         .await
         .unwrap_err();
     let waited = started.elapsed();

@@ -342,6 +342,44 @@ pub struct ValidatedCaller {
     pub exp: u64,
 }
 
+/// Signature/claim evidence awaiting replay consumption, not caller authority.
+/// Sender-constrained protocols check proof-of-possession against these claims
+/// before consuming the assertion. C-4: consumption takes this witness by value.
+#[must_use = "check sender binding, then consume replay before granting authority"]
+pub struct PendingCaller<'a> {
+    validator: &'a ExternalIssuerValidator,
+    caller: ValidatedCaller,
+    replay_key: [u8; 32],
+}
+
+impl PendingCaller<'_> {
+    /// Verified claims for sender-binding checks; no replay right is consumed.
+    pub fn claims(&self) -> &Map<String, Value> {
+        &self.caller.claims
+    }
+
+    /// Assertion expiry for a durable protocol-specific replay boundary.
+    pub fn expires_at(&self) -> u64 {
+        self.caller.exp
+    }
+
+    /// Complete validation once the protocol's sender binding has succeeded.
+    /// Recheck freshness rather than extending a checked assertion's lifetime.
+    pub fn consume(self, now_unix: u64) -> Result<ValidatedCaller, InboundError> {
+        self.validator.check_claims(&self.caller.claims, now_unix)?;
+        let retain_until = self
+            .caller
+            .exp
+            .saturating_add(self.validator.cfg.leeway.as_secs());
+        self.validator
+            .replay
+            .lock()
+            .map_err(|_| InboundError::Unavailable(RefusalReason::ReplayCacheFull))?
+            .admit(self.replay_key, retain_until, now_unix)?;
+        Ok(self.caller)
+    }
+}
+
 /// What a key is, as far as matching it to an algorithm needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KeyShape {
@@ -565,6 +603,17 @@ impl ExternalIssuerValidator {
         token: &str,
         now_unix: u64,
     ) -> Result<ValidatedCaller, InboundError> {
+        self.check(token, now_unix).await?.consume(now_unix)
+    }
+
+    /// Verify the issuer signature and claims without consuming replay. Callers
+    /// must finish sender constraints and consume the returned witness before
+    /// granting authority. Dropping it cannot spend another holder's assertion.
+    pub async fn check(
+        &self,
+        token: &str,
+        now_unix: u64,
+    ) -> Result<PendingCaller<'_>, InboundError> {
         if token.len() > MAX_TOKEN_BYTES {
             return Err(refused(RefusalReason::Malformed));
         }
@@ -625,22 +674,20 @@ impl ExternalIssuerValidator {
         let claims = decode_object(p64)?;
         let (sub, exp) = self.check_claims(&claims, now_unix)?;
 
-        // 6. Replay, only for a token that passed everything else. Keyed on
+        // 6. Prepare replay consumption only after all cryptographic checks. Keyed on
         //    what was signed, so a re-encoded signature (ECDSA's `n − s`) is
         //    the same token, not a new one.
         let replay_key: [u8; 32] = Sha256::digest(signing_input.as_bytes()).into();
         let token_hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
-        let retain_until = exp.saturating_add(self.cfg.leeway.as_secs());
-        self.replay
-            .lock()
-            .map_err(|_| InboundError::Unavailable(RefusalReason::ReplayCacheFull))?
-            .admit(replay_key, retain_until, now_unix)?;
-
-        Ok(ValidatedCaller {
-            sub,
-            claims,
-            token_hash,
-            exp,
+        Ok(PendingCaller {
+            validator: self,
+            replay_key,
+            caller: ValidatedCaller {
+                sub,
+                claims,
+                token_hash,
+                exp,
+            },
         })
     }
 

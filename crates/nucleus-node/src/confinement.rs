@@ -257,7 +257,7 @@ async fn report_workload_filesystem(pod_dir: &Path, pod_id: &str) -> WorkloadFil
 /// without confinement by forgetting the second call, which is exactly how the
 /// original gap would grow back.
 pub(crate) async fn gate(
-    addr: std::net::SocketAddr,
+    addr: crate::signed_proxy::ProxyHealth,
     pod_dir: &Path,
     spec: &PodSpec,
     pod_id: uuid::Uuid,

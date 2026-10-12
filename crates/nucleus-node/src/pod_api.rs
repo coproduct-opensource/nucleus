@@ -1217,6 +1217,7 @@ pub(crate) mod handler_tests {
         let authority =
             Arc::new(crate::pod_authority::PodAuthority::from_args(&a).expect("authority"));
         NodeState {
+            request_proofs: None,
             pods: Arc::new(Mutex::new(HashMap::new())),
             intake: crate::node_drain::Intake::open(),
             state_dir: a.state_dir.clone(),
