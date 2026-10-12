@@ -192,9 +192,9 @@ struct Args {
         default_value = "/var/log/nucleus/audit.log"
     )]
     audit_log: PathBuf,
-    /// HMAC secret for the Article 12 log and its shipper. It no longer keys
-    /// the audit log at `--audit-log`: that log is signed with an Ed25519 key
-    /// this process generates and holds (`audit_log`, #3293).
+    /// HMAC secret for the Article 12 shipper's channel to the host. It keys
+    /// neither log: the audit log (#3293) and the Article 12 log (#3309) are
+    /// signed with an Ed25519 key this process generates and holds (`audit_log`).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
     /// Path for the EU AI Act Article 12 record-keeping log (JSONL, hash-chained).
@@ -1511,13 +1511,8 @@ async fn main() -> Result<(), ApiError> {
     // are made against a chain that is missing it.
     let art12_log = match args.art12_log.as_ref() {
         Some(path) => Some(
-            art12_sink::open_log(
-                path,
-                args.audit_secret.as_deref(),
-                &spec.spec.work_dir,
-                &session_id,
-            )
-            .map_err(ApiError::Spec)?,
+            art12_sink::open_log(path, audit.signer(), &spec.spec.work_dir, &session_id)
+                .map_err(ApiError::Spec)?,
         ),
         None => None,
     };

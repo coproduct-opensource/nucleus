@@ -18,6 +18,15 @@
 //! `nucleus-audit verify` use, is declared once in
 //! [`nucleus_spec::tool_proxy_audit`].
 //!
+//! # The Article 12 log is signed by the same key (#3309)
+//!
+//! [`AuditLog::signer`] hands the same signer to the Article 12 log
+//! (`art12::Art12Log`), which seals each decision record with
+//! [`AuditSigner::seal_art12`]. One key, printed once as
+//! `NUCLEUS-AUDIT-SIGNER`, pins both logs; the two signed preimages carry
+//! different domain tags, so a signature over one kind of record is never a
+//! valid signature over the other.
+//!
 //! # How a verifier learns the key
 //!
 //! - Every record names its signer, inside the signed bytes and so inside the
@@ -43,13 +52,18 @@ use std::time::Duration;
 
 use ed25519_dalek::{Signer, SigningKey};
 use nucleus_spec::tool_proxy_audit::{AuditEvent, AuditRecord};
+use portcullis::art12_record::Art12Record;
+use portcullis::signed_record::FormError;
 use tracing::info;
 
 use crate::{ApiError, Args};
 
-/// The key this proxy signs its audit records with. Not `Clone`, no
-/// `Default`, no constructor from bytes outside tests: the only way to get one
-/// in production is [`AuditSigner::generate`].
+/// The key this proxy signs its audit records and its Article 12 records with.
+/// Not `Clone`, no `Default`, no constructor from bytes outside tests: the only
+/// way to get one in production is [`AuditSigner::generate`]. Shared between
+/// the two logs behind an `Arc`, never copied. It signs only the two record
+/// kinds, through [`AuditSigner::seal_audit`] and [`AuditSigner::seal_art12`],
+/// never caller-chosen bytes (ADR 0007 C-2).
 pub(crate) struct AuditSigner {
     key: SigningKey,
     public_hex: String,
@@ -100,6 +114,21 @@ impl AuditSigner {
         hex::encode(self.key.sign(bytes).to_bytes())
     }
 
+    /// Sign an audit record this key's public half is named in.
+    fn seal_audit(&self, unsigned: AuditRecord) -> Result<AuditRecord, FormError> {
+        let bytes = unsigned.signed_bytes()?;
+        unsigned.with_signature(self.sign(&bytes))
+    }
+
+    /// Sign an Article 12 record draft whose chain fields (`schema_version`,
+    /// `seq`, `prev_hash`) are assigned: it names this key as its signer and
+    /// comes back with its signature and chain hash (#3309).
+    pub(crate) fn seal_art12(&self, draft: Art12Record) -> Result<Art12Record, FormError> {
+        let unsigned = draft.to_be_signed_by(self.public_hex.clone());
+        let bytes = unsigned.signed_bytes()?;
+        unsigned.with_signature(self.sign(&bytes))
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(seed: u8) -> Self {
         Self::from_seed([seed; 32])
@@ -108,7 +137,7 @@ impl AuditSigner {
 
 pub(crate) struct AuditLog {
     pub(crate) path: PathBuf,
-    signer: AuditSigner,
+    signer: Arc<AuditSigner>,
     last_hash: Mutex<String>,
     /// Serialises extending the chain with writing the entry. See `log`.
     append_order: tokio::sync::Mutex<()>,
@@ -260,7 +289,7 @@ impl AuditLog {
         let last_hash = load_last_hash(&path).unwrap_or_default();
         Self {
             path,
-            signer,
+            signer: Arc::new(signer),
             last_hash: Mutex::new(last_hash),
             append_order: tokio::sync::Mutex::new(()),
             entry_count: std::sync::atomic::AtomicU64::new(0),
@@ -269,6 +298,11 @@ impl AuditLog {
             #[cfg(feature = "remote-audit")]
             s3_sink: None,
         }
+    }
+
+    /// The key this log signs with, for the Article 12 log to sign with too.
+    pub(crate) fn signer(&self) -> Arc<AuditSigner> {
+        Arc::clone(&self.signer)
     }
 
     /// Append `event`, signed and chained.
@@ -295,12 +329,8 @@ impl AuditLog {
             let prev_hash = self.last_hash.lock().unwrap().clone();
             let unsigned =
                 event.unsigned(prev_hash, drand_round, self.signer.public_hex().to_string());
-            let bytes = unsigned
-                .signed_bytes()
-                .map_err(|e| ApiError::Spec(format!("audit record: {e}")))?;
-            let signature = self.signer.sign(&bytes);
-            unsigned
-                .with_signature(signature)
+            self.signer
+                .seal_audit(unsigned)
                 .map_err(|e| ApiError::Spec(format!("audit record: {e}")))?
         };
 

@@ -2,30 +2,43 @@
 //!
 //! # What the log is
 //!
-//! `nucleus-tool-proxy --art12-log` appends one hash-chained, HMAC-signed
-//! [`Art12Record`] per kernel decision — allows, refusals and deferrals alike.
-//! This reads that file back and checks it, using the SAME
-//! `canonical_preimage()` the writer used, reconstructed from each record's own
-//! fields rather than by re-serialising (JSON key order and escaping are not
-//! stable across serde versions, and a verifier that re-serialises to check a
-//! hash is checking its own serialiser).
+//! `nucleus-tool-proxy --art12-log` appends one hash-chained [`Art12Record`]
+//! per kernel decision — allows, refusals and deferrals alike — each signed with
+//! Ed25519 by the tool-proxy's audit signer, the key that signs its audit log
+//! (#3309). This reads that file back and checks it through the same
+//! declaration the writer used (`portcullis::art12_record`), reconstructing each
+//! preimage from the record's own fields rather than by re-serialising (JSON key
+//! order and escaping are not stable across serde versions, and a verifier that
+//! re-serialises to check a hash is checking its own serialiser).
 //!
-//! # What verification proves, and what it does not
+//! # What a pass means
 //!
-//! Article 12 is enforced from August 2026 and requires automatic recording over
-//! the system's lifetime, identification of the persons involved, and retention.
+//! The per-record check is [`crate::signed_chain`]'s, the one `verify` uses for
+//! the audit log (ADR 0007 G-1):
+//!
+//! - A **signed** record passes only under a signer the caller pinned:
+//!   `--signer-pubkey` (the `NUCLEUS-AUDIT-SIGNER` key the proxy printed at
+//!   boot), or an executor attestation (`--attestation` with
+//!   `--executor-pubkey`), whose signed chain head commits to every record's
+//!   signer. A record signed by a key nothing pins is refused.
+//! - A **legacy** record (an HMAC, written before #3309) passes only against a
+//!   non-empty `--secret`, and is counted as legacy. With no secret, or an empty
+//!   one, it is refused by name (`LegacyMacUnkeyed`): before #3376 a pod with no
+//!   operator key MAC'd its log under a key derived from the public session id,
+//!   which anyone can compute. A legacy record after a signed one is a
+//!   downgrade and is refused.
+//!
+//! # What verification does not prove
+//!
 //! A verifier that answered only "valid / invalid" would let a reader infer far
 //! more than was checked, so the report carries its limitations as data and the
 //! CLI prints them. Specifically:
 //!
-//! * A passing chain shows **no party lacking the secret** altered the file. It
-//!   does not show a holder of the secret did not rewrite history. Only a
-//!   signature over the chain head by a key the pod does not possess can do
-//!   that.
-//! * If the pod derived its own signing secret (no operator `--audit-secret`),
-//!   the pod can re-sign any history it likes, and the log is not evidence
-//!   against the pod at all. The log cannot reveal which case it is in — the
-//!   operator knows — so the limitation is reported unconditionally.
+//! * A passing chain shows **no party lacking the signing key** altered the
+//!   file. The key is the tool-proxy's own, generated in the pod, so it does not
+//!   show the key's holder did not rewrite history. Only a signature over the
+//!   chain head by a key the pod does not possess (the executor attestation)
+//!   can do that.
 //! * Completeness is not verifiable from the artifact. A chain proves the
 //!   records present are consecutive and unaltered; it cannot prove the process
 //!   was running, or that it recorded every decision it made. `dropped` on the
@@ -33,13 +46,70 @@
 //!   live outside this file.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, VerifyingKey};
 use portcullis::art12_record::{ART12_SCHEMA_VERSION, Art12Attestation, Art12Record};
 use serde::Serialize;
 
 use crate::AuditError;
+use crate::signed_chain::{Pins, Tally};
+
+#[derive(clap::Subcommand, Debug)]
+pub(crate) enum Command {
+    /// Verify an EU AI Act Article 12 record-keeping log.
+    ///
+    /// Checks sequence continuity, hash chaining, and each record's Ed25519
+    /// signature under a pinned signer (#3309); legacy HMAC records verify only
+    /// against a non-empty secret. Prints what was established AND what was not
+    /// — a chain proves no party lacking the signing key altered the file, not
+    /// that the log is complete or that the key's holder did not rewrite it.
+    #[command(mut_args = |a| a.hide_env_values(true))]
+    VerifyArt12 {
+        /// Path to the JSONL Article 12 log.
+        #[arg(long)]
+        log: PathBuf,
+        /// A key the log may be signed by (64 hex characters): what the proxy
+        /// printed as `NUCLEUS-AUDIT-SIGNER` at boot. Repeat it for a log that a
+        /// restarted proxy continued under a new key.
+        #[arg(long = "signer-pubkey")]
+        signer_pubkeys: Vec<String>,
+        /// Secret for LEGACY records only (written before #3309), which carry
+        /// an HMAC. An empty secret is refused: it authenticates nothing.
+        #[arg(long, env = "NUCLEUS_ART12_SECRET")]
+        secret: Option<String>,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Executor attestation JSON, as sent with the session-complete receipt.
+        ///
+        /// Supplying it (with --executor-pubkey) pins the chain head, and with
+        /// it every record's signer, under a key the pod never holds: that is
+        /// what turns "no third party altered this file" into evidence about
+        /// the pod.
+        #[arg(long, requires = "executor_pubkey")]
+        attestation: Option<PathBuf>,
+        /// The executor's Ed25519 public key, hex-encoded (32 bytes).
+        #[arg(long, requires = "attestation")]
+        executor_pubkey: Option<String>,
+        /// Require every record to be decided under this certificate fingerprint
+        /// (hex): the pod's `fingerprint` in the node's `authority.json` (#2437).
+        #[arg(long)]
+        authority_fingerprint: Option<String>,
+    },
+}
+
+/// The flags that pin this log's signer, named when none was given.
+const HOW_TO_PIN: &str = "--signer-pubkey (the NUCLEUS-AUDIT-SIGNER key the proxy printed at \
+                          boot) or --attestation with --executor-pubkey (the node's signature \
+                          over the chain head)";
+
+/// The limitation an executor attestation lifts. One constant, so the report
+/// that states it and the CLI that lifts it name the same text.
+pub(crate) const KEY_HOLDER_LIMITATION: &str = "A valid chain shows no party WITHOUT the signing key altered this file. The key is the \
+     tool-proxy's own, generated in the pod, so it does not show that the key's holder (the \
+     proxy, or root in its pod) did not rewrite history. Supply --attestation and \
+     --executor-pubkey to close that: the executor key is one the pod never holds.";
 
 /// What a verification run established.
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -58,8 +128,15 @@ pub struct Art12Report {
     pub identified_actors: u64,
     /// Count per verdict (`allow`, `deny`, `requires_approval`, `error`).
     pub verdicts: BTreeMap<String, u64>,
-    /// Whether signatures were checked at all.
+    /// Whether any signature was checked. Every record's is, or the run fails,
+    /// so this is false only for an empty log.
     pub signatures_checked: bool,
+    /// Records Ed25519-signed under a pinned signer.
+    pub signed: u64,
+    /// Legacy HMAC records, checked against the given secret.
+    pub legacy: u64,
+    /// The distinct signers named, in first-seen order.
+    pub signers: Vec<String>,
     /// Whether an executor attestation was checked against the computed head.
     pub attestation_checked: bool,
     /// How many records name the certificate they were decided under
@@ -73,28 +150,39 @@ pub struct Art12Report {
     pub limitations: Vec<String>,
 }
 
-/// Check an executor attestation against the head this verifier computed.
+/// What the caller trusts for this log: signer keys, the head an executor
+/// attestation vouched for (already checked by [`attested_head`]), and a
+/// secret for legacy records.
+///
+/// # Errors
+/// A signer that is not a 32-byte hex Ed25519 key.
+pub(crate) fn pins(
+    signers: &[String],
+    attested_head: Option<String>,
+    legacy_secret: Option<String>,
+) -> Result<Pins, AuditError> {
+    Pins::parse(signers, attested_head, legacy_secret, HOW_TO_PIN)
+}
+
+/// Check an executor attestation's own signature, and return the chain head it
+/// vouches for, to pin with [`pins`].
 ///
 /// # What this closes
 ///
-/// Without it, a passing chain means "no party lacking the HMAC secret altered
-/// this file" — which says nothing about a pod that holds its own secret. The
-/// executor key lives on the node and the pod never sees it, so a pod that
-/// rewrites its log produces a different head and cannot forge a signature over
-/// the new one.
-///
-/// The signature is checked over the attestation's OWN preimage, then the head
-/// it names is compared to the head computed from the log. Both halves are
-/// required: a valid signature over a head that is not this log's proves only
-/// that some other log was attested.
+/// A passing chain means "no party lacking the signing key altered this file",
+/// which says nothing about the pod that holds the key. The executor key lives
+/// on the node and the pod never sees it, so a pod that rewrites its log
+/// produces a different head and cannot forge a signature over the new one. The
+/// head this returns is compared to the head computed from the log by
+/// [`verify_art12_log`]: a valid signature over a head that is not this log's
+/// proves only that some other log was attested.
 ///
 /// # Errors
-/// If the signature does not verify, or the attested head is not the computed one.
-pub fn check_attestation(
+/// An unknown attestation kind, or a signature that does not verify.
+pub fn attested_head(
     att: &Art12Attestation,
-    computed_head: &str,
     executor_pubkey: &VerifyingKey,
-) -> Result<(), AuditError> {
+) -> Result<String, AuditError> {
     if att.kind != portcullis::art12_record::ART12_ATTESTATION_KIND {
         return Err(AuditError::Invalid {
             line: 0,
@@ -125,57 +213,30 @@ pub fn check_attestation(
             message: "attestation signature does not verify under the executor public key"
                 .to_string(),
         })?;
-
-    if att.chain_head != computed_head {
-        return Err(AuditError::Invalid {
-            line: 0,
-            message: format!(
-                "the executor attested chain head {} but this log computes {computed_head} -- \
-                 the log was rewritten after it was attested",
-                att.chain_head
-            ),
-        });
-    }
-    Ok(())
+    Ok(att.chain_head.clone())
 }
 
 /// The limitations that hold for every run, stated as data so a consumer cannot
 /// render a report without them.
-fn base_limitations(signatures_checked: bool) -> Vec<String> {
-    let mut v = vec![
-        "A valid chain shows no party WITHOUT the signing secret altered this file. It does not \
-         show that a holder of the secret did not rewrite history. Supply --attestation and \
-         --executor-pubkey to close that: the executor key is one the pod never holds."
-            .to_string(),
-        "If the pod derived its own signing secret (no operator-supplied --audit-secret), the pod \
-         could re-sign any history; the log is then not evidence against the pod UNLESS an \
-         executor attestation was checked. This file alone cannot reveal which case applies."
-            .to_string(),
+fn base_limitations() -> Vec<String> {
+    vec![
+        KEY_HOLDER_LIMITATION.to_string(),
         "Completeness is not verifiable from this artifact: the chain shows the records present \
          are consecutive and unaltered, not that every decision made was recorded."
             .to_string(),
-    ];
-    if !signatures_checked {
-        v.push(
-            "No secret was supplied, so signatures were NOT checked. Only the hash chain was \
-             verified, which detects accidental corruption but not deliberate rewriting."
-                .to_string(),
-        );
-    }
-    v
+    ]
 }
 
-/// Verify a JSONL Article 12 log.
-///
-/// `secret` absent means hashes and chaining are checked but signatures are not,
-/// and the report says so.
+/// Verify a JSONL Article 12 log against `pins`.
 ///
 /// # Errors
-/// The first record that fails to parse, chain, or verify, naming its line.
-pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Report, AuditError> {
+/// The first record that fails to parse, chain, or verify, naming its line;
+/// and a log that does not end at the head `pins` names.
+pub(crate) fn verify_art12_log(path: &Path, pins: &Pins) -> Result<Art12Report, AuditError> {
     let mut lines = crate::record_lines::open(path)?;
 
     let mut prev_hash: Option<String> = None;
+    let mut tally = Tally::default();
     let mut report = Art12Report {
         records: 0,
         chain_head: String::new(),
@@ -183,76 +244,65 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
         last_timestamp: None,
         identified_actors: 0,
         verdicts: BTreeMap::new(),
-        signatures_checked: secret.is_some(),
+        signatures_checked: false,
+        signed: 0,
+        legacy: 0,
+        signers: Vec::new(),
         attestation_checked: false,
         authority_bound: 0,
         authority_fingerprints: Vec::new(),
-        limitations: base_limitations(secret.is_some()),
+        limitations: base_limitations(),
     };
 
     // The sequence number each record must carry, counted from 1.
     for (expected_seq, item) in (1_u64..).zip(&mut lines) {
         let (line_no, line) = item?;
         let rec: Art12Record = crate::record_lines::parse(line_no, &line)?;
+        let invalid = |message: String| AuditError::Invalid {
+            line: line_no,
+            message,
+        };
 
         if rec.schema_version != ART12_SCHEMA_VERSION {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: format!(
-                    "schema version {} but this verifier understands {ART12_SCHEMA_VERSION}; \
-                     refusing rather than checking fields that may have moved",
-                    rec.schema_version
-                ),
-            });
+            return Err(invalid(format!(
+                "schema version {} but this verifier understands {ART12_SCHEMA_VERSION}; \
+                 refusing rather than checking fields that may have moved",
+                rec.schema_version
+            )));
         }
 
         if rec.seq != expected_seq {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: format!(
-                    "sequence gap: expected {expected_seq}, got {}. A gap means records are \
-                     missing or reordered, which is the failure an Article 12 log exists to make \
-                     visible",
-                    rec.seq
-                ),
-            });
+            return Err(invalid(format!(
+                "sequence gap: expected {expected_seq}, got {}. A gap means records are \
+                 missing or reordered, which is the failure an Article 12 log exists to make \
+                 visible",
+                rec.seq
+            )));
         }
 
         // The first record chains from the writer's genesis anchor, which this
-        // verifier does not know; from the second on, the chain is checked.
+        // verifier does not know (it is inside the first record's signed bytes);
+        // from the second on, the chain is checked.
         if let Some(prev) = &prev_hash
             && &rec.prev_hash != prev
         {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: format!(
-                    "prev_hash mismatch (expected {prev}, got {}) -- the chain is broken here",
-                    rec.prev_hash
-                ),
-            });
+            return Err(invalid(format!(
+                "prev_hash mismatch (expected {prev}, got {}) -- the chain is broken here",
+                rec.prev_hash
+            )));
         }
 
         // Recompute from the record's OWN fields. Any tampered field changes the
         // preimage and so the hash.
-        let preimage = rec.canonical_preimage();
-        let computed = crate::sha256_hex(&preimage);
+        let form = rec.form().map_err(|e| invalid(e.to_string()))?;
+        let computed = rec.chain_hash().map_err(|e| invalid(e.to_string()))?;
         if computed != rec.hash {
-            return Err(AuditError::Invalid {
-                line: line_no,
-                message: "hash does not match the record's fields -- this record was modified"
-                    .to_string(),
-            });
+            return Err(invalid(
+                "hash does not match the record's fields -- this record was modified".to_string(),
+            ));
         }
-
-        if let Some(secret) = secret {
-            let sig = crate::sign_message(secret, preimage.as_bytes());
-            if sig != rec.signature {
-                return Err(AuditError::Invalid {
-                    line: line_no,
-                    message: "signature mismatch under the supplied secret".to_string(),
-                });
-            }
-        }
+        let bytes = rec.signed_bytes().map_err(|e| invalid(e.to_string()))?;
+        pins.check(line_no, form, &bytes, &rec.signature, &mut tally)?;
 
         report.records += 1;
         if let Some(fp) = rec.authority_fingerprint() {
@@ -273,6 +323,19 @@ pub fn verify_art12_log(path: &Path, secret: Option<&[u8]>) -> Result<Art12Repor
     lines.finish(usize::try_from(report.records).unwrap_or(usize::MAX))?;
 
     report.chain_head = prev_hash.unwrap_or_default();
+    pins.check_head(&report.chain_head, "the executor attestation")?;
+    report.signatures_checked = report.records > 0;
+    report.signed = u64::try_from(tally.signed).unwrap_or(u64::MAX);
+    report.legacy = u64::try_from(tally.legacy).unwrap_or(u64::MAX);
+    report.signers = tally.signers;
+    if report.legacy > 0 {
+        report.limitations.push(format!(
+            "{} of {} records are legacy HMAC records (written before #3309). A MAC shows only \
+             that no party WITHOUT that secret altered them, and a pod that derived its own \
+             secret, or held one the workload could read, could have written them.",
+            report.legacy, report.records
+        ));
+    }
     if report.authority_bound < report.records {
         report.limitations.push(format!(
             "{} of {} records name no authority (no `authority.fingerprint`): they cannot be tied \
@@ -362,17 +425,110 @@ pub fn apply_authority_requirement(
         .retain(|l| !l.contains("name no authority"));
     Ok(())
 }
+
+impl Command {
+    pub(crate) fn run(self) -> Result<(), AuditError> {
+        let Self::VerifyArt12 {
+            log,
+            signer_pubkeys,
+            secret,
+            json,
+            attestation,
+            executor_pubkey,
+            authority_fingerprint,
+        } = self;
+        // The attestation's own signature first: the head it vouches for is a
+        // pin only once a key the pod never held is known to have signed it.
+        let attested = match (attestation, executor_pubkey) {
+            (Some(att_path), Some(pubkey_hex)) => {
+                let att: Art12Attestation =
+                    serde_json::from_str(&std::fs::read_to_string(&att_path)?)
+                        .map_err(|e| AuditError::Json { line: 0, source: e })?;
+                Some(attested_head(
+                    &att,
+                    &executor_pubkey_from_hex(&pubkey_hex)?,
+                )?)
+            }
+            _ => None,
+        };
+        let attestation_checked = attested.is_some();
+        let pins = pins(&signer_pubkeys, attested, secret)?;
+        let mut report = verify_art12_log(&log, &pins)?;
+        apply_authority_requirement(&mut report, authority_fingerprint.as_deref())?;
+        if attestation_checked {
+            report.attestation_checked = true;
+            report.limitations.retain(|l| l != KEY_HOLDER_LIMITATION);
+            report.limitations.push(
+                "The executor attestation binds this log's HEAD, not its content: a pod that \
+                 recorded nothing would export a validly signed empty log."
+                    .to_string(),
+            );
+        }
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report)
+                    .map_err(|e| AuditError::Json { line: 0, source: e })?
+            );
+            return Ok(());
+        }
+        let yes_no = |b: bool| if b { "yes" } else { "NO" };
+        println!("Article 12 log: {}", log.display());
+        println!("  records:            {}", report.records);
+        println!("  chain head:         {}", report.chain_head);
+        println!(
+            "  signatures checked: {} ({} signed, {} legacy)",
+            yes_no(report.signatures_checked),
+            report.signed,
+            report.legacy
+        );
+        for s in &report.signers {
+            println!("  signer:             {s}");
+        }
+        println!(
+            "  identified actors:  {} of {}",
+            report.identified_actors, report.records
+        );
+        println!(
+            "  executor attested:  {}",
+            yes_no(report.attestation_checked)
+        );
+        for (verdict, n) in &report.verdicts {
+            println!("  verdict {verdict:<18} {n}");
+        }
+        // Printed, not appended as a footnote a reader may skip: the point of
+        // the list is that "verified" is narrower than it sounds.
+        println!("\n  This run did NOT establish:");
+        for l in &report.limitations {
+            println!("    - {l}");
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use portcullis::art12_record::{Actor, DenyInfo};
+    use ed25519_dalek::{Signer as _, SigningKey};
+    use hmac::{Hmac, Mac, digest::KeyInit};
+    use portcullis::art12_record::{
+        ART12_ATTESTATION_KIND, Actor, DenyInfo, art12_attestation_preimage,
+    };
     use std::fs::File;
     use std::io::Write;
 
     const SECRET: &[u8] = b"operator-held-secret";
 
-    fn record(seq: u64, prev_hash: &str, verdict: &str) -> Art12Record {
-        let mut rec = Art12Record {
+    fn key() -> SigningKey {
+        SigningKey::from_bytes(&[1; 32])
+    }
+
+    fn hex_key(k: &SigningKey) -> String {
+        hex::encode(k.verifying_key().to_bytes())
+    }
+
+    fn draft(seq: u64, prev_hash: &str, verdict: &str) -> Art12Record {
+        Art12Record {
             schema_version: ART12_SCHEMA_VERSION,
             seq,
             timestamp_unix: 1_700_000_000 + seq,
@@ -403,12 +559,34 @@ mod tests {
             prev_hash: prev_hash.to_string(),
             hash: String::new(),
             signature: String::new(),
-        };
-        // Sign exactly as the writer does.
-        let preimage = rec.canonical_preimage();
-        rec.signature = crate::sign_message(SECRET, preimage.as_bytes());
-        rec.hash = crate::sha256_hex(&preimage);
-        rec
+            sig_alg: None,
+            signer: None,
+        }
+    }
+
+    /// A record signed by `k` exactly as the writer seals one.
+    fn signed_by(k: &SigningKey, seq: u64, prev_hash: &str, verdict: &str) -> Art12Record {
+        let unsigned = draft(seq, prev_hash, verdict).to_be_signed_by(hex_key(k));
+        let sig = hex::encode(k.sign(&unsigned.signed_bytes().unwrap()).to_bytes());
+        unsigned.with_signature(sig).unwrap()
+    }
+
+    fn record(seq: u64, prev_hash: &str, verdict: &str) -> Art12Record {
+        signed_by(&key(), seq, prev_hash, verdict)
+    }
+
+    /// A legacy record exactly as the pre-#3309 writer made it: HMAC over the
+    /// canonical preimage under `secret`, hash over the preimage.
+    fn legacy(secret: &[u8], seq: u64, prev_hash: &str, verdict: &str) -> Art12Record {
+        let rec = draft(seq, prev_hash, verdict);
+        let mut mac = Hmac::<sha2::Sha256>::new_from_slice(secret).unwrap();
+        mac.update(rec.canonical_preimage().as_bytes());
+        rec.with_signature(hex::encode(mac.finalize().into_bytes()))
+            .unwrap()
+    }
+
+    fn pinned() -> Pins {
+        pins(&[hex_key(&key())], None, None).unwrap()
     }
 
     /// Write a valid two-record log and return its path.
@@ -442,7 +620,7 @@ mod tests {
         );
         let torn = &l2[..l2.len() / 2];
         std::fs::write(&path, format!("{l1}\n{torn}")).unwrap();
-        let err = verify_art12_log(&path, Some(SECRET)).unwrap_err();
+        let err = verify_art12_log(&path, &pinned()).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -454,7 +632,7 @@ mod tests {
             "got: {err}"
         );
         std::fs::write(&path, format!("{l1}\n{torn}\n{l2}\n")).unwrap();
-        let err = verify_art12_log(&path, Some(SECRET)).unwrap_err();
+        let err = verify_art12_log(&path, &pinned()).unwrap_err();
         assert!(
             matches!(err, AuditError::NotARecord { line: 2, .. }),
             "got: {err}"
@@ -464,9 +642,11 @@ mod tests {
     #[test]
     fn a_well_formed_log_verifies_and_reports_what_it_saw() {
         let dir = tempfile::tempdir().unwrap();
-        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).expect("should verify");
+        let report = verify_art12_log(&valid_log(&dir), &pinned()).expect("should verify");
         assert_eq!(report.records, 2);
         assert!(report.signatures_checked);
+        assert_eq!((report.signed, report.legacy), (2, 0));
+        assert_eq!(report.signers, vec![hex_key(&key())]);
         assert_eq!(report.identified_actors, 2);
         assert_eq!(report.verdicts.get("allow"), Some(&1));
         assert_eq!(report.verdicts.get("deny"), Some(&1));
@@ -480,17 +660,13 @@ mod tests {
     #[test]
     fn a_passing_report_still_carries_its_limitations() {
         let dir = tempfile::tempdir().unwrap();
-        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
-        assert!(
-            !report.limitations.is_empty(),
-            "a passing verification must still say what it did not establish"
-        );
+        let report = verify_art12_log(&valid_log(&dir), &pinned()).unwrap();
         assert!(
             report
                 .limitations
                 .iter()
-                .any(|l| l.contains("holder of the secret")),
-            "the secret-holder limitation is the one that matters most; it must be present"
+                .any(|l| l == KEY_HOLDER_LIMITATION),
+            "the key-holder limitation is the one that matters most; it must be present"
         );
         assert!(
             report
@@ -501,25 +677,96 @@ mod tests {
         );
     }
 
-    /// Without a secret, hashes still chain but signatures are unchecked — and
-    /// the report must not let that pass as the same thing.
+    /// #3309, A-19: a record forged by a party holding NO key is rejected in
+    /// every shape it can take. Under the MAC scheme each of these verified:
+    /// the forger computed the MAC under the key it could derive (the public
+    /// session id before #3376) or the empty key, and a verifier given that key
+    /// — or no key at all, which checked only the hash chain — reported the log
+    /// verified.
     #[test]
-    fn verifying_without_a_secret_says_signatures_were_not_checked() {
+    fn a_record_forged_without_the_key_is_rejected() {
+        let forger = SigningKey::from_bytes(&[66; 32]);
         let dir = tempfile::tempdir().unwrap();
-        let report = verify_art12_log(&valid_log(&dir), None).expect("hash chain should verify");
-        assert!(!report.signatures_checked);
+        let first = record(1, "art12-genesis:sess", "deny");
+
+        // A whole log MAC'd under a key anyone can compute, with no secret
+        // given (the old hash-chain-only mode), or the empty one.
+        let a = legacy(b"art12:sess", 1, "art12-genesis:sess", "allow");
+        let b = legacy(b"art12:sess", 2, &a.hash, "allow");
+        let path = write_log(&dir, &[a, b]);
+        for secret in [None, Some(""), Some("  ")] {
+            let err =
+                verify_art12_log(&path, &pins(&[], None, secret.map(str::to_string)).unwrap())
+                    .unwrap_err();
+            assert!(
+                matches!(err, AuditError::LegacyMacUnkeyed { line: 1, .. }),
+                "{err}"
+            );
+        }
+
+        // A legacy record appended after a signed one: a downgrade, refused
+        // even when the verifier holds the legacy secret the forger used.
+        let downgrade = legacy(SECRET, 2, &first.hash, "allow");
+        let path = write_log(&dir, &[first.clone(), downgrade]);
+        let s = String::from_utf8(SECRET.to_vec()).unwrap();
+        let err =
+            verify_art12_log(&path, &pins(&[hex_key(&key())], None, Some(s)).unwrap()).unwrap_err();
+        assert!(err.to_string().contains("downgrade"), "{err}");
+
+        // A record claiming the pinned signer, signed by the forger.
+        let claims_key = {
+            let mut rec = signed_by(&forger, 2, &first.hash, "allow");
+            rec.signer = first.signer.clone();
+            let forged = std::mem::take(&mut rec.signature);
+            rec.with_signature(forged).unwrap()
+        };
+        let path = write_log(&dir, &[first.clone(), claims_key]);
+        let err = verify_art12_log(&path, &pinned()).unwrap_err();
+        assert!(err.to_string().contains("does not verify"), "{err}");
+
+        // A record signed under the forger's own key, named honestly.
+        let own_key = signed_by(&forger, 2, &first.hash, "allow");
+        let path = write_log(&dir, &[first.clone(), own_key]);
+        let err = verify_art12_log(&path, &pinned()).unwrap_err();
+        assert!(err.to_string().contains("not a pinned"), "{err}");
+        // Pinned by the executor-attested head instead: the forged record moved it.
+        let by_head = pins(&[], Some(first.hash.clone()), None).unwrap();
+        let err = verify_art12_log(&path, &by_head).unwrap_err();
+        assert!(err.to_string().contains("rewritten after"), "{err}");
+        // And with nothing pinned, the forger's own key is not trusted.
+        let err = verify_art12_log(&path, &pins(&[], None, None).unwrap()).unwrap_err();
         assert!(
-            report
-                .limitations
-                .iter()
-                .any(|l| l.contains("signatures were NOT checked")),
-            "an unsigned verification must say so in the artifact, not only in the exit code"
+            matches!(err, AuditError::UnpinnedSigner { line: 1, .. }),
+            "{err}"
+        );
+
+        let path = write_log(&dir, &[first]);
+        assert_eq!(verify_art12_log(&path, &pinned()).unwrap().signed, 1);
+    }
+
+    /// A legacy log with a real secret still verifies, counted as legacy and
+    /// with the limitation that says what a MAC does not show; a signed segment
+    /// may follow it.
+    #[test]
+    fn a_legacy_log_with_its_secret_verifies_as_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = legacy(SECRET, 1, "art12-genesis:sess", "allow");
+        let b = legacy(SECRET, 2, &a.hash, "deny");
+        let c = record(3, &b.hash, "allow");
+        let path = write_log(&dir, &[a, b, c]);
+        let s = String::from_utf8(SECRET.to_vec()).unwrap();
+        let report =
+            verify_art12_log(&path, &pins(&[hex_key(&key())], None, Some(s)).unwrap()).unwrap();
+        assert_eq!((report.legacy, report.signed), (2, 1));
+        assert!(
+            report.limitations.iter().any(|l| l.contains("legacy HMAC")),
+            "{:?}",
+            report.limitations
         );
     }
 
-    /// **The tamper sweep.** Every field folded into the canonical preimage must
-    /// break verification when changed. A field that does not appear here is one
-    /// an attacker can rewrite for free.
+    /// **The tamper sweep.** Every field must break verification when changed.
+    /// A field that does not appear here is one an attacker can rewrite for free.
     /// A named single-field edit to a record.
     type Tamper = (&'static str, fn(&mut Art12Record));
 
@@ -546,6 +793,8 @@ mod tests {
             ("extensions", |r| {
                 r.extensions.insert("k".into(), "v".into());
             }),
+            ("prev_hash", |r| r.prev_hash = "elsewhere".into()),
+            ("signer", |r| r.signer = Some("cd".repeat(32))),
         ];
 
         for (field, mutate) in mutations {
@@ -554,11 +803,18 @@ mod tests {
             mutate(&mut r1);
             // Hash and signature deliberately NOT recomputed: this is tampering,
             // not authoring.
-            let path = write_log(&dir, &[r1]);
-            let err = verify_art12_log(&path, Some(SECRET));
+            let path = write_log(&dir, &[r1.clone()]);
             assert!(
-                err.is_err(),
-                "tampering with `{field}` was not detected -- it is outside the signed preimage"
+                verify_art12_log(&path, &pinned()).is_err(),
+                "tampering with `{field}` was not detected"
+            );
+            // Nor when the tamperer recomputes the hash: only the signature,
+            // which they cannot make, stops it.
+            let rehashed = r1.clone().with_signature(r1.signature.clone()).unwrap();
+            let path = write_log(&dir, &[rehashed]);
+            assert!(
+                verify_art12_log(&path, &pinned()).is_err(),
+                "tampering with `{field}` and re-hashing was not detected -- it is unsigned"
             );
         }
     }
@@ -570,7 +826,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let r1 = record(1, "art12-genesis:sess", "deny");
         let path = write_log(&dir, &[r1]);
-        assert!(verify_art12_log(&path, Some(SECRET)).is_ok());
+        assert!(verify_art12_log(&path, &pinned()).is_ok());
     }
 
     /// A removed record is the attack an Article 12 log exists to make visible:
@@ -583,7 +839,7 @@ mod tests {
         let r3 = record(3, &r2.hash, "allow");
         // Drop r2 — the refusal.
         let path = write_log(&dir, &[r1, r3]);
-        let err = verify_art12_log(&path, Some(SECRET)).unwrap_err();
+        let err = verify_art12_log(&path, &pinned()).unwrap_err();
         assert!(
             format!("{err}").contains("sequence gap"),
             "a removed record must be reported as a gap, got: {err}"
@@ -591,18 +847,20 @@ mod tests {
     }
 
     /// Re-chaining after a deletion still fails, because the surviving records'
-    /// `prev_hash` cannot be repaired without re-signing them.
+    /// `seq` and `prev_hash` cannot be repaired without re-signing them.
     #[test]
-    fn a_rechained_deletion_still_fails_without_the_secret() {
+    fn a_rechained_deletion_still_fails_without_the_key() {
         let dir = tempfile::tempdir().unwrap();
         let r1 = record(1, "art12-genesis:sess", "allow");
         let r2 = record(2, &r1.hash, "deny");
         let mut r3 = record(3, &r2.hash, "allow");
-        // Attacker renumbers r3 to seq 2 and points it at r1, but cannot re-sign.
+        // Attacker renumbers r3 to seq 2, points it at r1 and re-hashes, but
+        // cannot re-sign.
         r3.seq = 2;
         r3.prev_hash = r1.hash.clone();
+        let r3 = r3.clone().with_signature(r3.signature.clone()).unwrap();
         let path = write_log(&dir, &[r1, r3]);
-        assert!(verify_art12_log(&path, Some(SECRET)).is_err());
+        assert!(verify_art12_log(&path, &pinned()).is_err());
     }
 
     /// A schema the verifier does not understand is refused rather than checked
@@ -613,7 +871,7 @@ mod tests {
         let mut r1 = record(1, "art12-genesis:sess", "allow");
         r1.schema_version = ART12_SCHEMA_VERSION + 1;
         let path = write_log(&dir, &[r1]);
-        let err = verify_art12_log(&path, Some(SECRET)).unwrap_err();
+        let err = verify_art12_log(&path, &pinned()).unwrap_err();
         assert!(format!("{err}").contains("schema version"), "got: {err}");
     }
 
@@ -623,15 +881,13 @@ mod tests {
     fn an_empty_log_reports_zero_rather_than_success() {
         let dir = tempfile::tempdir().unwrap();
         let path = write_log(&dir, &[]);
-        let report = verify_art12_log(&path, Some(SECRET)).unwrap();
+        let report = verify_art12_log(&path, &pinned()).unwrap();
         assert_eq!(report.records, 0);
+        assert!(!report.signatures_checked);
         assert!(report.chain_head.is_empty());
     }
 
     // ── executor attestation ────────────────────────────────────────────────
-
-    use ed25519_dalek::{Signer as _, SigningKey};
-    use portcullis::art12_record::{ART12_ATTESTATION_KIND, art12_attestation_preimage};
 
     fn attest(chain_head: &str, key: &SigningKey) -> Art12Attestation {
         let preimage = art12_attestation_preimage("sess", chain_head, 2, 0, "exec-1");
@@ -648,20 +904,17 @@ mod tests {
         }
     }
 
-    /// The happy path: the executor attested the head this log actually computes.
+    /// The happy path: the executor attested the head this log actually
+    /// computes, and that alone pins the signer.
     #[test]
-    fn an_attestation_over_the_computed_head_checks_out() {
+    fn an_attestation_over_the_computed_head_pins_the_log() {
         let dir = tempfile::tempdir().unwrap();
-        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
-        let key = SigningKey::from_bytes(&[3u8; 32]);
-        assert!(
-            check_attestation(
-                &attest(&report.chain_head, &key),
-                &report.chain_head,
-                &key.verifying_key()
-            )
-            .is_ok()
-        );
+        let path = valid_log(&dir);
+        let head = verify_art12_log(&path, &pinned()).unwrap().chain_head;
+        let exec = SigningKey::from_bytes(&[3u8; 32]);
+        let attested = attested_head(&attest(&head, &exec), &exec.verifying_key()).unwrap();
+        let report = verify_art12_log(&path, &pins(&[], Some(attested), None).unwrap()).unwrap();
+        assert_eq!(report.signed, 2);
     }
 
     /// **The property the export exists for.** A pod that rewrites its log after
@@ -669,32 +922,25 @@ mod tests {
     #[test]
     fn a_log_rewritten_after_attestation_is_caught() {
         let dir = tempfile::tempdir().unwrap();
-        let key = SigningKey::from_bytes(&[3u8; 32]);
+        let exec = SigningKey::from_bytes(&[3u8; 32]);
         // Attested when the log ended at some earlier head.
-        let att = attest("the-head-that-was-attested", &key);
-
-        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
-        let err = check_attestation(&att, &report.chain_head, &key.verifying_key()).unwrap_err();
-        assert!(
-            format!("{err}").contains("rewritten after it was attested"),
-            "got: {err}"
-        );
+        let attested = attested_head(
+            &attest("the-head-that-was-attested", &exec),
+            &exec.verifying_key(),
+        )
+        .unwrap();
+        let err = verify_art12_log(&valid_log(&dir), &pins(&[], Some(attested), None).unwrap())
+            .unwrap_err();
+        assert!(format!("{err}").contains("rewritten after"), "got: {err}");
     }
 
     /// A signature from the wrong key must not pass — otherwise the attestation
     /// proves only that SOMEONE signed, which is what the pod can already do.
     #[test]
     fn an_attestation_from_another_key_is_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = verify_art12_log(&valid_log(&dir), Some(SECRET)).unwrap();
         let real = SigningKey::from_bytes(&[3u8; 32]);
         let impostor = SigningKey::from_bytes(&[4u8; 32]);
-        let err = check_attestation(
-            &attest(&report.chain_head, &impostor),
-            &report.chain_head,
-            &real.verifying_key(),
-        )
-        .unwrap_err();
+        let err = attested_head(&attest("h", &impostor), &real.verifying_key()).unwrap_err();
         assert!(format!("{err}").contains("does not verify"), "got: {err}");
     }
 
@@ -702,23 +948,24 @@ mod tests {
     /// not pass for this one — that is the substitution attack.
     #[test]
     fn a_valid_signature_over_a_different_log_does_not_pass() {
-        let key = SigningKey::from_bytes(&[3u8; 32]);
-        let att = attest("head-of-some-other-session", &key);
+        let dir = tempfile::tempdir().unwrap();
+        let exec = SigningKey::from_bytes(&[3u8; 32]);
+        let other = record(1, "art12-genesis:other", "allow");
         // The signature itself is perfectly valid...
-        assert!(
-            check_attestation(&att, "head-of-some-other-session", &key.verifying_key()).is_ok()
-        );
+        let attested = attested_head(&attest(&other.hash, &exec), &exec.verifying_key()).unwrap();
         // ...but not for this log.
-        assert!(check_attestation(&att, "this-logs-head", &key.verifying_key()).is_err());
+        assert!(
+            verify_art12_log(&valid_log(&dir), &pins(&[], Some(attested), None).unwrap()).is_err()
+        );
     }
 
     /// An unknown attestation kind is refused rather than field-guessed.
     #[test]
     fn an_unknown_attestation_kind_is_refused() {
-        let key = SigningKey::from_bytes(&[3u8; 32]);
-        let mut att = attest("h", &key);
+        let exec = SigningKey::from_bytes(&[3u8; 32]);
+        let mut att = attest("h", &exec);
         att.kind = "something-else-v9".into();
-        let err = check_attestation(&att, "h", &key.verifying_key()).unwrap_err();
+        let err = attested_head(&att, &exec.verifying_key()).unwrap_err();
         assert!(
             format!("{err}").contains("unknown attestation kind"),
             "got: {err}"
@@ -734,6 +981,9 @@ mod tests {
             identified_actors: 0,
             verdicts: BTreeMap::new(),
             signatures_checked: false,
+            signed: 0,
+            legacy: 0,
+            signers: Vec::new(),
             attestation_checked: false,
             authority_bound: bound,
             authority_fingerprints: fingerprints.iter().map(|s| s.to_string()).collect(),

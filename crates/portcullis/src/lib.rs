@@ -146,6 +146,12 @@ pub mod uninhabitable_state;
 /// `nucleus-audit`) enable the feature.
 #[cfg(feature = "serde")]
 pub mod art12_record;
+/// The signing scheme the tool-proxy's audit log and Article 12 log share
+/// (#3293, #3309): the `sig_alg`/`signer` fields, the rule that tells a
+/// signed record from a legacy MAC'd one, and the signed-preimage encoding.
+/// Gated on `serde` with [`art12_record`], which uses it.
+#[cfg(feature = "serde")]
+pub mod signed_record;
 // Mediation receipt: a portable proof of one agent↔tool crossing (crypto-gated).
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
