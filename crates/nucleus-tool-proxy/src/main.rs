@@ -1140,7 +1140,7 @@ async fn main() -> Result<(), ApiError> {
         .timed("spec_read", tokio::fs::read_to_string(&args.spec))
         .await?;
     let mut spec: PodSpec =
-        serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+        nucleus_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
 
     // This pod's certificate of authority: verified ONCE, against the pinned
     // anchor (never the token's own embedded key). Present-but-invalid is

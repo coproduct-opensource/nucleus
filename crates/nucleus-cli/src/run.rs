@@ -1102,7 +1102,7 @@ fn build_pod_spec(
 }
 
 fn write_pod_spec(spec_path: &Path, spec: &SpecPodSpec) -> Result<()> {
-    let yaml = serde_yaml::to_string(spec)?;
+    let yaml = nucleus_yaml::to_string(spec)?;
     fs::write(spec_path, yaml)?;
     Ok(())
 }
@@ -1127,7 +1127,7 @@ async fn create_pod_via_node(
     client: &reqwest::Client,
 ) -> Result<CreatePodResponse> {
     let url = format!("{}/v1/pods", node_url.trim_end_matches('/'));
-    let body = serde_yaml::to_string(spec)?;
+    let body = nucleus_yaml::to_string(spec)?;
 
     let response = client
         .post(&url)
@@ -2061,7 +2061,7 @@ mod tests {
         });
 
         let spec: SpecPodSpec =
-            serde_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n")
+            nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n")
                 .unwrap();
         let created_pod = create_pod_via_node(&format!("https://{addr}"), &spec, &client)
             .await
@@ -2102,7 +2102,7 @@ mod tests {
 
         let created = server_handle.await.unwrap();
         let body = &created[created.find("\r\n\r\n").unwrap() + 4..];
-        let sent: SpecPodSpec = serde_yaml::from_str(body).unwrap();
+        let sent: SpecPodSpec = nucleus_yaml::from_str(body).unwrap();
         let workload = sent.spec.workload.expect("the agent is the pod's workload");
         assert_eq!(workload.command, "/opt/agent");
         assert!(workload.env.is_empty());

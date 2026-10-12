@@ -288,7 +288,7 @@ async fn enforced_host_spec_withholds_values_but_preserves_the_workload() {
         let response = ask(dir.path(), b"FETCH_POD_SPEC\n").await;
         let value: serde_json::Value = serde_json::from_str(&response).unwrap();
         let served: nucleus_spec::PodSpec =
-            serde_yaml::from_str(value["spec"].as_str().expect("spec served")).unwrap();
+            nucleus_yaml::from_str(value["spec"].as_str().expect("spec served")).unwrap();
         let credentials = served.spec.credentials.unwrap();
         if enforcing {
             assert!(

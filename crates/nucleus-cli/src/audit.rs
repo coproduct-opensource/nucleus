@@ -408,7 +408,7 @@ fn scan_podspecs(root: &Path) -> Vec<Finding> {
         };
 
         // Try to parse as PodSpec YAML
-        let parsed: serde_json::Value = match serde_yaml::from_str(&content) {
+        let parsed: serde_json::Value = match nucleus_yaml::from_str(&content) {
             Ok(v) => v,
             Err(_) => {
                 findings.push(Finding {

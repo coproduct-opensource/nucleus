@@ -67,4 +67,39 @@ disallowed-methods = [
     { path = "reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_hostnames", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
     { path = "reqwest::blocking::ClientBuilder::danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
     { path = "reqwest::blocking::ClientBuilder::tls_danger_accept_invalid_certs", reason = "ADR 0007 B-6: build node TLS with nucleus_identity::node_tls" },
+
+    # G-1 -- one YAML reader and writer. `nucleus_yaml` is where strict booleans,
+    # duplicate- and merge-key refusal, unknown-tag refusal, the ambiguous-scalar
+    # check, snippet-free errors, the budget and the writer's shape are chosen
+    # (2026-10, the move off serde_yaml/unsafe-libyaml, RUSTSEC-2024-0449). A
+    # direct call reads YAML under serde-saphyr's looser defaults (`yes` is true,
+    # `<<` merges). `serde_yaml` is listed (allow-invalid: it is in no graph) so it cannot come back unnoticed.
+    # Measured when wired: 0 occurrences outside `crates/nucleus-yaml`.
+    { path = "serde_saphyr::from_str", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_str_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_slice", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_slice_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_reader", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_reader_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_multiple", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_multiple_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_slice_multiple", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::from_slice_multiple_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::read", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::read_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_string", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_string_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_string_multiple", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_string_multiple_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_fmt_writer", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_fmt_writer_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_io_writer", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_saphyr::to_io_writer_with_options", reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::from_str", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::from_slice", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::from_reader", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::from_value", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::to_string", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::to_writer", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
+    { path = "serde_yaml::to_value", allow-invalid = true, reason = "ADR 0007 G-1: read and write YAML through nucleus_yaml, which pins the parser and writer settings" },
 ]

@@ -1236,7 +1236,9 @@ impl GuestFacing for NodePod {
             }
             Ok(_) => Probe::Admitted("guest report promoted beyond guest provenance".into()),
             Err(ReceiptError::Malformed(why)) => Probe::Refused(format!("malformed report: {why}")),
-            Err(ReceiptError::NotExited) | Err(ReceiptError::NoExitReport(_)) => {
+            Err(ReceiptError::NotExited)
+            | Err(ReceiptError::NoExitReport(_))
+            | Err(ReceiptError::Unhashable(_)) => {
                 Probe::Inconclusive("parser answered a different question".into())
             }
         }

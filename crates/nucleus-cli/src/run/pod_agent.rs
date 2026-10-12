@@ -285,7 +285,7 @@ mod tests {
         .expect("built");
         let spec = super::super::build_pod_spec(&args, &policy, "/kernel", "/rootfs", Some(w))
             .expect("spec");
-        let yaml = serde_yaml::to_string(&spec).expect("yaml");
+        let yaml = nucleus_yaml::to_string(&spec).expect("yaml");
         assert!(yaml.contains("/opt/agent"), "the agent is the workload");
         assert!(
             !yaml.contains("test-token-123"),

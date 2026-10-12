@@ -13,6 +13,7 @@ pub mod host_effect_approval;
 pub mod identity;
 pub mod isolation_profile;
 pub mod live_boot;
+pub mod manifest_hash;
 pub mod microvm_host;
 mod rootfs_source;
 pub mod tier2_artifacts;
@@ -30,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use egress_budget::{EgressBudgetSpec, EgressRateSpec};
+pub use manifest_hash::{MANIFEST_HASH_DOMAIN, ManifestHash, ManifestHashError};
 /// The operator's effect table an upstream entry carries (#3229), re-exported
 /// so a caller building a spec need not name the protocol crate.
 pub use nucleus_cred_protocol::egress::{
@@ -1706,7 +1708,7 @@ mod tests {
     fn test_credentials_spec_yaml_serialization() {
         let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "test-token");
 
-        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+        let yaml = nucleus_yaml::to_string(&creds).expect("should serialize");
 
         // YAML should contain the actual value (for transmission to nucleus-node)
         assert!(yaml.contains("test-token"));
@@ -1762,8 +1764,8 @@ mod tests {
     fn test_credentials_spec_workload_identity_yaml_roundtrip() {
         let creds = CredentialsSpec::new().with_workload_identity(sample_workload_identity());
 
-        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
-        let parsed: CredentialsSpec = serde_yaml::from_str(&yaml).expect("should parse");
+        let yaml = nucleus_yaml::to_string(&creds).expect("should serialize");
+        let parsed: CredentialsSpec = nucleus_yaml::from_str(&yaml).expect("should parse");
 
         assert_eq!(parsed.workload_identity.len(), 1);
         assert_eq!(parsed.workload_identity[0], sample_workload_identity());
@@ -1774,7 +1776,7 @@ mod tests {
         // Backwards compat: existing CredentialsSpec YAML without
         // workload_identity should serialize without the field.
         let creds = CredentialsSpec::new().with_env("LLM_API_TOKEN", "x");
-        let yaml = serde_yaml::to_string(&creds).expect("should serialize");
+        let yaml = nucleus_yaml::to_string(&creds).expect("should serialize");
         assert!(
             !yaml.contains("workload_identity"),
             "empty workload_identity should be skipped: {yaml}"
@@ -1785,7 +1787,7 @@ mod tests {
     fn test_credentials_spec_legacy_yaml_still_parses() {
         // YAML written before this field existed must continue to parse.
         let yaml = "env:\n  LLM_API_TOKEN: secret\n";
-        let creds: CredentialsSpec = serde_yaml::from_str(yaml).expect("legacy YAML must parse");
+        let creds: CredentialsSpec = nucleus_yaml::from_str(yaml).expect("legacy YAML must parse");
         assert_eq!(creds.env.get("LLM_API_TOKEN"), Some(&"secret".to_string()));
         assert!(creds.workload_identity.is_empty());
     }
@@ -1813,7 +1815,7 @@ spec:
           type: spiffe
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
         let creds = spec
             .spec
             .credentials
@@ -1839,7 +1841,7 @@ source:
   kubelet_audience: sts.amazonaws.com
   expiration_seconds: 3600
 "#;
-        let wi: WorkloadIdentitySpec = serde_yaml::from_str(yaml).expect("should parse");
+        let wi: WorkloadIdentitySpec = nucleus_yaml::from_str(yaml).expect("should parse");
         match wi.source {
             IdentitySource::KubernetesProjected {
                 kubelet_audience,
@@ -1863,7 +1865,7 @@ source:
   type: static_file
   path: /etc/test/jwt
 "#;
-        let wi: WorkloadIdentitySpec = serde_yaml::from_str(yaml).expect("should parse");
+        let wi: WorkloadIdentitySpec = nucleus_yaml::from_str(yaml).expect("should parse");
         match wi.source {
             IdentitySource::StaticFile { path } => {
                 assert_eq!(path, PathBuf::from("/etc/test/jwt"));
@@ -1917,7 +1919,7 @@ spec:
       REGISTRY_TOKEN: "test-registry-token"
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
 
         // Credentials should be parsed
         assert!(spec.spec.credentials.is_some());
@@ -1946,7 +1948,7 @@ spec:
     name: default
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
 
         // Credentials should be None when not specified
         assert!(spec.spec.credentials.is_none());
@@ -1971,7 +1973,7 @@ spec:
       REGISTRY_TOKEN: "test-registry-supersecret"
 "#;
 
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("should parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("should parse");
 
         // Debug format the entire PodSpec
         let debug_output = format!("{:?}", spec);
@@ -2014,7 +2016,7 @@ spec:
     name: default
 "#;
         let spec: PodSpec =
-            serde_yaml::from_str(yaml_no_ns).expect("should parse without namespace");
+            nucleus_yaml::from_str(yaml_no_ns).expect("should parse without namespace");
         assert!(spec.metadata.namespace.is_none());
         assert_eq!(spec.metadata.name.as_deref(), Some("test-pod"));
 
@@ -2032,7 +2034,7 @@ spec:
     name: default
 "#;
         let spec: PodSpec =
-            serde_yaml::from_str(yaml_with_ns).expect("should parse with namespace");
+            nucleus_yaml::from_str(yaml_with_ns).expect("should parse with namespace");
         assert_eq!(spec.metadata.namespace.as_deref(), Some("agents"));
         assert_eq!(spec.metadata.name.as_deref(), Some("coder-alpha"));
     }
@@ -2087,14 +2089,14 @@ spec:
     #[test]
     fn metadata_task_grant_id_round_trips_and_is_absent_by_default() {
         let bare = Metadata::default();
-        let yaml = serde_yaml::to_string(&bare).expect("serialize");
+        let yaml = nucleus_yaml::to_string(&bare).expect("serialize");
         assert!(!yaml.contains("task_grant_id"), "{yaml}");
         let with = Metadata {
             task_grant_id: Some("6f1c0000-0000-0000-0000-000000000001".into()),
             ..Default::default()
         };
-        let yaml = serde_yaml::to_string(&with).expect("serialize");
-        let back: Metadata = serde_yaml::from_str(&yaml).expect("parse");
+        let yaml = nucleus_yaml::to_string(&with).expect("serialize");
+        let back: Metadata = nucleus_yaml::from_str(&yaml).expect("parse");
         assert_eq!(
             back.task_grant_id.as_deref(),
             Some("6f1c0000-0000-0000-0000-000000000001")
@@ -2118,10 +2120,10 @@ spec:
             ..Default::default()
         };
 
-        let yaml = serde_yaml::to_string(&metadata).expect("should serialize");
+        let yaml = nucleus_yaml::to_string(&metadata).expect("should serialize");
         assert!(yaml.contains("namespace: agents"));
 
-        let parsed: Metadata = serde_yaml::from_str(&yaml).expect("should deserialize");
+        let parsed: Metadata = nucleus_yaml::from_str(&yaml).expect("should deserialize");
         assert_eq!(parsed.namespace.as_deref(), Some("agents"));
         assert_eq!(parsed.name.as_deref(), Some("test-agent"));
     }
@@ -2317,7 +2319,7 @@ spec:
     deny: ["*"]
 "#;
         let err =
-            serde_yaml::from_str::<PodSpec>(yaml).expect_err("a misspelled key must not parse");
+            nucleus_yaml::from_str::<PodSpec>(yaml).expect_err("a misspelled key must not parse");
         let msg = err.to_string();
         assert!(
             msg.contains("netwrok"),
@@ -2337,7 +2339,7 @@ spec:
   network:
     deny: ["*"]
 "#;
-        let spec: PodSpec = serde_yaml::from_str(yaml).expect("valid spec must parse");
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("valid spec must parse");
         assert!(
             spec.spec.network.is_some(),
             "the field must actually land, or the strictness is meaningless"
@@ -2348,7 +2350,7 @@ spec:
     fn an_unknown_kind_is_rejected() {
         let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec: {}\n";
         assert!(
-            serde_yaml::from_str::<PodSpec>(yaml).is_err(),
+            nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "`kind: Podd` used to parse because nothing compared it to anything"
         );
     }
@@ -2357,7 +2359,7 @@ spec:
     fn an_unknown_api_version_is_rejected() {
         let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec: {}\n";
         assert!(
-            serde_yaml::from_str::<PodSpec>(yaml).is_err(),
+            nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "an unrecognised apiVersion must not silently parse as v1"
         );
     }

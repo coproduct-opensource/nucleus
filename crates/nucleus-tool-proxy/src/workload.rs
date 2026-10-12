@@ -999,7 +999,7 @@ mod tests {
     #[test]
     fn the_rlimit_policy_is_derived_from_the_pod_spec() {
         let pod = |extra: &str| -> nucleus_spec::PodSpec {
-            serde_yaml::from_str(&format!(
+            nucleus_yaml::from_str(&format!(
                 "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
                  timeout_seconds: 60\n{extra}"
             ))
@@ -1022,7 +1022,7 @@ mod tests {
     #[test]
     fn the_seccomp_policy_is_derived_from_the_pod_spec() {
         let canonical = |extra: &str| {
-            let spec: nucleus_spec::PodSpec = serde_yaml::from_str(&format!(
+            let spec: nucleus_spec::PodSpec = nucleus_yaml::from_str(&format!(
                 "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
                  timeout_seconds: 60\n{extra}"
             ))
