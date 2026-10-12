@@ -95,8 +95,18 @@ fn run_bridge(
     env: &[(&str, &str)],
     requests: &[Value],
 ) -> (Vec<Value>, std::process::ExitStatus, String) {
+    run_bridge_with_args(&[], env, requests)
+}
+
+/// [`run_bridge`] with command-line `args` as well.
+fn run_bridge_with_args(
+    args: &[&str],
+    env: &[(&str, &str)],
+    requests: &[Value],
+) -> (Vec<Value>, std::process::ExitStatus, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nucleus-mcp"));
-    cmd.env_clear()
+    cmd.args(args)
+        .env_clear()
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -207,4 +217,47 @@ fn a_tcp_proxy_without_auth_is_refused_at_startup() {
     );
     assert!(!status.success(), "started unauthenticated: {lines:?}");
     assert!(stderr.contains("--auth-secret"), "{stderr}");
+}
+
+/// #2446 step 3c: `NUCLEUS_MCP_SANDBOX_TOKEN` is set by nothing since the
+/// tier-3 token stopped being minted, and the bridge never read it. A caller
+/// still setting it is refused at startup by name, not ignored, even with an
+/// otherwise good door configuration. Red before: the bridge started and
+/// answered.
+#[test]
+fn a_retired_sandbox_token_variable_is_refused_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("workload.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let url = format!("unix://{}", socket.display());
+
+    for value in ["test-token-123", ""] {
+        let (lines, status, stderr) = run_bridge(
+            &[
+                ("NUCLEUS_TOOL_PROXY_URL", &url),
+                ("NUCLEUS_MCP_SANDBOX_TOKEN", value),
+            ],
+            &[rpc(1, "tools/list", json!({}))],
+        );
+        assert!(!status.success(), "started with it set: {lines:?}");
+        assert!(lines.is_empty(), "answered with it set: {lines:?}");
+        assert!(stderr.contains("NUCLEUS_MCP_SANDBOX_TOKEN"), "{stderr}");
+    }
+}
+
+/// The flag itself is refused by clap, by name. Red before: it parsed.
+#[test]
+fn a_retired_sandbox_token_flag_is_refused_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("workload.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let url = format!("unix://{}", socket.display());
+
+    let (lines, status, stderr) = run_bridge_with_args(
+        &["--sandbox-token", "test-token-123"],
+        &[("NUCLEUS_TOOL_PROXY_URL", &url)],
+        &[rpc(1, "tools/list", json!({}))],
+    );
+    assert!(!status.success(), "started with the flag: {lines:?}");
+    assert!(stderr.contains("--sandbox-token"), "{stderr}");
 }
