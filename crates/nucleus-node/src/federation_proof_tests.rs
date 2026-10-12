@@ -33,6 +33,9 @@ async fn request_proof_real_tls_exchange_then_mtls_api() {
     crate::tls_ingress::serve_tls(exchange_tcp, config, router(f.st.clone()), "proof-test");
     let http = reqwest::Client::builder()
         .no_proxy()
+        // The certificate names localhost; pin it to the listener rather than
+        // trusting the test host's resolver, which a gate sandbox may not have.
+        .resolve("localhost", exchange_addr)
         .https_only(true)
         .add_root_certificate(reqwest::Certificate::from_pem(tls_cert.pem().as_bytes()).unwrap())
         .timeout(Duration::from_secs(5))
