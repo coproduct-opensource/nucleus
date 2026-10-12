@@ -25,6 +25,7 @@ local-driver = []
 otel = ["dep:nucleus-otel-bootstrap"]
 
 [dependencies]
+nucleus-request-proof = { path = "../nucleus-request-proof" }
 nucleus-jsonl = { path = "../nucleus-jsonl", version = "1.0.0", features = ["async"] }
 # Recomputing a shipped ClearingReceipt (#2988 follow-up): the host verifies the
 # evidence a spend receipt names by RE-DERIVING it, not by trusting a signature.

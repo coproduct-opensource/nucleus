@@ -34,8 +34,14 @@ pub fn extract_ec_p256_jwk(cert: &Certificate) -> Result<JsonWebKey> {
     let (_, parsed) = x509_parser::parse_x509_certificate(cert.der())
         .map_err(|e| Error::Certificate(format!("failed to parse certificate: {e}")))?;
 
-    let spki = &parsed.tbs_certificate.subject_pki;
+    ec_p256_jwk_from_spki(&parsed.tbs_certificate.subject_pki)
+}
 
+/// Extract a canonical P-256 key from an already parsed certificate or CSR SPKI.
+/// Parsing a key is not validation of its issuer, ownership or permissions.
+pub fn ec_p256_jwk_from_spki(
+    spki: &x509_parser::x509::SubjectPublicKeyInfo<'_>,
+) -> Result<JsonWebKey> {
     // Validate this is an EC key on P-256
     let ec_oid = x509_parser::oid_registry::asn1_rs::oid!(1.2.840.10045.2.1);
     let p256_oid = x509_parser::oid_registry::asn1_rs::oid!(1.2.840.10045.3.1.7);

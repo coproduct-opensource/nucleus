@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "crates/nucleus-request-proof",
+    "vendor/olog-store",
+    "vendor/olog-ledger",
     "crates/nucleus-escape-canary", # In-guest Gatehouse confinement evidence
     "crates/nucleus-perf",  # Dev-only: pod concurrency + start-latency measurement
     "crates/portcullis",  # Policy: quotient lattice types

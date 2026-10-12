@@ -67,9 +67,10 @@ impl CanonicalEffectKind {
         match op {
             Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => Self::FsRead,
             Operation::WriteFiles | Operation::EditFiles => Self::FsWrite,
-            Operation::WebFetch | Operation::WebSearch | Operation::GitPush | Operation::CreatePr => {
-                Self::NetEgress
-            }
+            Operation::WebFetch
+            | Operation::WebSearch
+            | Operation::GitPush
+            | Operation::CreatePr => Self::NetEgress,
             Operation::RunBash | Operation::GitCommit => Self::ProcExec,
             Operation::SpawnAgent | Operation::ManagePods => Self::AgentSpawn,
         }

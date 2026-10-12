@@ -12,8 +12,8 @@ pub use portcullis_core::canonical::{
 
 use crate::authority::Authority;
 use crate::{
-    AgentSpawnEffect, EffectError, FileEffect, GitEffect, PolicyEnforced, ShellEffect,
-    ShellOutput, WebEffect,
+    AgentSpawnEffect, EffectError, FileEffect, GitEffect, PolicyEnforced, ShellEffect, ShellOutput,
+    WebEffect,
 };
 
 /// Output produced by evaluating a [`CanonicalAct`].
@@ -169,13 +169,16 @@ impl CanonicalEffectHandler for crate::DenyAllEffects {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::authority::Authority;
     use crate::doubles::RecordingEffects;
     use portcullis_core::discharge::test_helpers::bundle_for;
     use portcullis_core::{CapabilityLattice, CapabilityLevel, Operation, SinkClass};
+    use std::sync::Arc;
 
-    fn make_test_handler(policy: CapabilityLattice, recording: RecordingEffects) -> PolicyEnforced<RecordingEffects> {
+    fn make_test_handler(
+        policy: CapabilityLattice,
+        recording: RecordingEffects,
+    ) -> PolicyEnforced<RecordingEffects> {
         PolicyEnforced {
             inner: recording,
             receipts: Arc::new(crate::receipt::ReceiptLog::new()),
@@ -185,7 +188,8 @@ mod tests {
 
     #[test]
     fn test_canonical_perform_fs_read() {
-        let recording = RecordingEffects::new().with_file_content(b"hello canonical world".to_vec());
+        let recording =
+            RecordingEffects::new().with_file_content(b"hello canonical world".to_vec());
         let policy = CapabilityLattice {
             read_files: CapabilityLevel::Always,
             ..CapabilityLattice::bottom()
@@ -195,7 +199,9 @@ mod tests {
         let authority = Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
         let act = CanonicalAct::read_file("test.txt");
 
-        let output = handler.perform(act, authority).expect("perform should succeed");
+        let output = handler
+            .perform(act, authority)
+            .expect("perform should succeed");
         assert_eq!(output.as_bytes(), Some(b"hello canonical world".as_slice()));
     }
 
@@ -208,10 +214,13 @@ mod tests {
         };
         let handler = make_test_handler(policy, recording);
 
-        let authority = Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
+        let authority =
+            Authority::new(bundle_for(Operation::WriteFiles, SinkClass::WorkspaceWrite));
         let act = CanonicalAct::write_file("output.txt", b"new content");
 
-        let output = handler.perform(act, authority).expect("perform should succeed");
+        let output = handler
+            .perform(act, authority)
+            .expect("perform should succeed");
         assert!(output.is_empty());
     }
 
@@ -232,7 +241,9 @@ mod tests {
         ));
         let act = CanonicalAct::run_argv(vec!["echo".to_string(), "hi".to_string()]);
 
-        let output = handler.perform(act, authority).expect("perform should succeed");
+        let output = handler
+            .perform(act, authority)
+            .expect("perform should succeed");
         assert!(output.as_process().is_some());
     }
 
@@ -245,7 +256,9 @@ mod tests {
         let authority = Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
         let act = CanonicalAct::read_file("secret.txt");
 
-        let err = handler.perform(act, authority).expect_err("should be denied by policy");
+        let err = handler
+            .perform(act, authority)
+            .expect_err("should be denied by policy");
         assert!(matches!(err, EffectError::PolicyDenied(_)));
     }
 
@@ -253,7 +266,9 @@ mod tests {
     fn test_canonical_deny_all_handler() {
         let authority = Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
         let act = CanonicalAct::read_file("test.txt");
-        let err = crate::DenyAllEffects.perform(act, authority).expect_err("deny all");
+        let err = crate::DenyAllEffects
+            .perform(act, authority)
+            .expect_err("deny all");
         assert!(matches!(err, EffectError::PolicyDenied(_)));
     }
 }

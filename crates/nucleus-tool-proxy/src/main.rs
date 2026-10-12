@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
+mod guest_request_proof;
+mod workload_request_proof;
 mod api_error;
 mod approval;
 mod art12;
@@ -192,6 +194,11 @@ struct Args {
         default_value = "/var/log/nucleus/audit.log"
     )]
     audit_log: PathBuf,
+    /// Privileged workload proof state, outside the workload tree. The default
+    /// survives proxy restarts within a guest boot; use a private persistent
+    /// mount when recovery across guest boots is required.
+    #[arg(long, env = "NUCLEUS_WORKLOAD_PROOF_STATE", default_value = "/run/nucleus-workload-proof")]
+    workload_proof_state: PathBuf,
     /// HMAC secret for the Article 12 log and its shipper. It no longer keys
     /// the audit log at `--audit-log`: that log is signed with an Ed25519 key
     /// this process generates and holds (`audit_log`, #3293).
@@ -518,6 +525,8 @@ struct Args {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    guest_proof: Option<Arc<guest_request_proof::Gate>>,
+    workload_proof: Option<Arc<workload_request_proof::Gate>>,
     pub(crate) runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
     audit: Arc<AuditLog>,
@@ -1142,6 +1151,9 @@ async fn main() -> Result<(), ApiError> {
     let mut spec: PodSpec =
         serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
 
+    let guest_proof_config = guest_request_proof::Config::from_spec(&spec)?;
+    let guest_proof_path = args.audit_log.with_extension("request-proofs.olog");
+
     // This pod's certificate of authority: verified ONCE, against the pinned
     // anchor (never the token's own embedded key). Present-but-invalid is
     // fatal (EX_CONFIG); absent leaves the spec's policy as the ceiling.
@@ -1666,7 +1678,11 @@ async fn main() -> Result<(), ApiError> {
     });
 
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
+    let guest_proof = guest_proof_config.map(|c| c.open(&guest_proof_path).map(Arc::new)).transpose()?;
+    let workload_proof = workload_request_proof::provision_runtime(&spec, &args.workload_proof_state)?.map(Arc::new);
     let state = AppState {
+        guest_proof,
+        workload_proof,
         receipts: Arc::clone(&receipts),
         path_provenance: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         dlc_provisioned,
@@ -2113,6 +2129,19 @@ async fn auth_middleware(
     let bytes = to_bytes(body, MAX_AUTH_BODY_BYTES)
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
+
+    if let Some(gate) = &state.guest_proof {
+        let evidence = attestation::TransportEvidence::of(&parts.extensions)
+            .map_err(ApiError::AttestationFailed)?;
+        // Only the sealed workload-door admission distinguishes local workload
+        // requests. No caller-controlled header can bypass the host proof gate.
+        if matches!(evidence.ingress(), auth::Ingress::WorkloadDoor { .. }) {
+            state.workload_proof.as_ref().ok_or(ApiError::Auth(auth::AuthError::InvalidHeader("dpop")))?
+                .verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
+        } else {
+            gate.verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
+        }
+    }
 
     // Skip attestation check for health endpoint
     if parts.uri.path() == HEALTH_PATH {

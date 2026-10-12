@@ -2,15 +2,15 @@
 //! proxy bridge. Pod lineage is checked before revealing or contacting it.
 //! This response does not itself assert a sandbox tier or carry a signature.
 
-use axum::Json;
 use axum::extract::{Extension, Path, State};
+use axum::Json;
 use nucleus_ci_verdict::execution::{Backend, ExecutionClaim, ExecutionSchema};
 use nucleus_receipt::{Receipt, Session};
 use nucleus_spec::workload_result::WorkloadResult;
 use nucleus_spec::workload_result::{ProgramBinding, WorkloadIsolation};
 use uuid::Uuid;
 
-use crate::{ApiError, DriverState, NodeState, pod_api};
+use crate::{pod_api, ApiError, DriverState, NodeState};
 
 mod admission;
 mod logs;
@@ -38,7 +38,16 @@ pub(crate) async fn get(
         pod.proxy_addr.lock().await.clone().ok_or_else(|| {
             ApiError::SupervisorUnavailable("proxy address is not ready".to_string())
         })?;
-    fetch(&state.http_client, &address).await.map(Json)
+    let proof = observation_proof(
+        &pod,
+        &address,
+        "/v1/workload/result",
+        state.request_proofs.is_some(),
+    )
+    .await?;
+    fetch(&state.http_client, &address, proof.as_deref())
+        .await
+        .map(Json)
 }
 
 /// Sign only the protected supervisor's completed observation, using the
@@ -71,7 +80,14 @@ pub(crate) async fn observe_claim(
         .await
         .clone()
         .ok_or_else(|| ApiError::SupervisorUnavailable("proxy address is not ready".into()))?;
-    let observed = fetch(&state.http_client, &address).await?;
+    let proof = observation_proof(
+        &pod,
+        &address,
+        "/v1/workload/result",
+        state.request_proofs.is_some(),
+    )
+    .await?;
+    let observed = fetch(&state.http_client, &address, proof.as_deref()).await?;
     let claim = completed_claim(
         &pod.spec,
         id,
@@ -215,13 +231,53 @@ fn require_image_pins(spec: &nucleus_spec::PodSpec) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn fetch(client: &reqwest::Client, address: &str) -> Result<WorkloadResult, ApiError> {
-    let mut response = client
+async fn observation_proof(
+    pod: &crate::PodHandle,
+    address: &str,
+    path: &str,
+    required: bool,
+) -> Result<Option<String>, ApiError> {
+    let holder = match &pod.driver_state {
+        #[cfg(feature = "local-driver")]
+        DriverState::Local(driver) => &driver.signed_proxy,
+        DriverState::Container(driver) => &driver.signed_proxy,
+        DriverState::Firecracker(driver) => &driver.signed_proxy,
+    };
+    let endpoint = holder
+        .lock()
+        .await
+        .as_ref()
+        .map(|proxy| proxy.observation_endpoint());
+    let proof = match endpoint {
+        Some(endpoint) => endpoint
+            .proof(address, path)
+            .map_err(|e| ApiError::Driver(format!("supervisor observation proof: {e}")))?,
+        None => None,
+    };
+    if required && proof.is_none() {
+        return Err(ApiError::Driver(
+            "supervisor observation authority unavailable".into(),
+        ));
+    }
+    Ok(proof)
+}
+
+async fn fetch(
+    client: &reqwest::Client,
+    address: &str,
+    proof: Option<&str>,
+) -> Result<WorkloadResult, ApiError> {
+    let request = client
         .get(format!(
             "{}/v1/workload/result",
             address.trim_end_matches('/')
         ))
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(10));
+    let request = match proof {
+        Some(proof) => request.header("dpop", proof),
+        None => request,
+    };
+    let mut response = request
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
@@ -339,16 +395,14 @@ mod tests {
                 digest: "another program".into(),
             };
         }
-        assert!(
-            completed_claim(
-                &spec,
-                Uuid::nil(),
-                Backend::Local,
-                observation,
-                unattested()
-            )
-            .is_err()
-        );
+        assert!(completed_claim(
+            &spec,
+            Uuid::nil(),
+            Backend::Local,
+            observation,
+            unattested()
+        )
+        .is_err());
     }
 
     #[test]
@@ -385,7 +439,7 @@ mod tests {
             get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
         );
         let task = tokio::spawn(async move { axum::serve(listener, app).await });
-        let result = fetch(&reqwest::Client::new(), &format!("http://{address}")).await;
+        let result = fetch(&reqwest::Client::new(), &format!("http://{address}"), None).await;
         task.abort();
         assert!(result.is_err());
     }
