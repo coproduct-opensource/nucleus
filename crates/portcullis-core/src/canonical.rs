@@ -67,9 +67,10 @@ impl CanonicalEffectKind {
         match op {
             Operation::ReadFiles | Operation::GlobSearch | Operation::GrepSearch => Self::FsRead,
             Operation::WriteFiles | Operation::EditFiles => Self::FsWrite,
-            Operation::WebFetch | Operation::WebSearch | Operation::GitPush | Operation::CreatePr => {
-                Self::NetEgress
-            }
+            Operation::WebFetch
+            | Operation::WebSearch
+            | Operation::GitPush
+            | Operation::CreatePr => Self::NetEgress,
             Operation::RunBash | Operation::GitCommit => Self::ProcExec,
             Operation::SpawnAgent | Operation::ManagePods => Self::AgentSpawn,
         }
@@ -197,8 +198,11 @@ pub enum CanonicalAct {
     FsWrite {
         /// Target filesystem path.
         path: FilePath,
-        /// Payload content to write, if any.
-        content: Vec<u8>,
+        /// Payload to write. `None` when the action was classified from an
+        /// [`Act`], which carries no payload: such an action names a write but
+        /// cannot perform one, and a handler must refuse it rather than write
+        /// an empty file in its place.
+        content: Option<Vec<u8>>,
         /// Write kind and destination sink.
         kind: WriteKind,
     },
@@ -348,7 +352,7 @@ impl CanonicalAct {
     pub fn write_file(path: impl Into<String>, content: impl Into<Vec<u8>>) -> Self {
         Self::FsWrite {
             path: FilePath::new(path),
-            content: content.into(),
+            content: Some(content.into()),
             kind: WriteKind::Write(WriteSink::Workspace),
         }
     }
@@ -396,12 +400,12 @@ impl From<&Act> for CanonicalAct {
             },
             Act::Write { path, sink } => Self::FsWrite {
                 path: path.clone(),
-                content: Vec::new(),
+                content: None,
                 kind: WriteKind::Write(*sink),
             },
             Act::Edit { path, sink } => Self::FsWrite {
                 path: path.clone(),
-                content: Vec::new(),
+                content: None,
                 kind: WriteKind::Edit(*sink),
             },
             Act::Run { argv } => Self::ProcExec {
