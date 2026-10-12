@@ -16,6 +16,7 @@
 - [Split-Trust Deployment](split-trust.md)
 - [Federated Upstream Profile](federated-upstream-profile.md)
 - [The SPIFFE Taxonomy](spiffe-taxonomy.md)
+  - [Migrating did:web identifiers](did-web-identifier-migration.md)
 - [Architecture](architecture/overview.md)
   - [A Command Grammar](design/command-grammar.md)
   - [A Command Walk](design/command-walk.md)
