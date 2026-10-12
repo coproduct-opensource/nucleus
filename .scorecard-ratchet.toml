@@ -604,9 +604,12 @@ population_floor = 23
 # 2026-10-08 (eval cell M2): ci-scope appends its one `relevant=` line to the runner's
 # GITHUB_OUTPUT, a step-output file and not a record log, under a reasoned #[expect] of the
 # append ban. 32/147 = 21.76%; both pins follow the tree.
-floor_bp = 2176
+# 2026-10-12 (request proofs): the tool-proxy's per-pod proof key provisioning
+# reads and writes key files outside the workload tree under two reasoned
+# #[expect]s of the #1216 file-I/O ban. 34/149 = 22.81%; both pins follow the tree.
+floor_bp = 2281
 floor_set = "measurement"
-population_floor = 147
+population_floor = 149
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
