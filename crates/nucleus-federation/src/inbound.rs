@@ -350,6 +350,10 @@ pub struct PendingCaller<'a> {
     validator: &'a ExternalIssuerValidator,
     caller: ValidatedCaller,
     replay_key: [u8; 32],
+    /// The token's `exp` plus the validator's leeway, fixed when the check
+    /// passed: the last instant `consume` can succeed, and how long the replay
+    /// key is retained once it does.
+    valid_until: u64,
 }
 
 impl PendingCaller<'_> {
@@ -367,15 +371,11 @@ impl PendingCaller<'_> {
     /// Recheck freshness rather than extending a checked assertion's lifetime.
     pub fn consume(self, now_unix: u64) -> Result<ValidatedCaller, InboundError> {
         self.validator.check_claims(&self.caller.claims, now_unix)?;
-        let retain_until = self
-            .caller
-            .exp
-            .saturating_add(self.validator.cfg.leeway.as_secs());
         self.validator
             .replay
             .lock()
             .map_err(|_| InboundError::Unavailable(RefusalReason::ReplayCacheFull))?
-            .admit(self.replay_key, retain_until, now_unix)?;
+            .admit(self.replay_key, self.valid_until, now_unix)?;
         Ok(self.caller)
     }
 }
@@ -682,6 +682,7 @@ impl ExternalIssuerValidator {
         Ok(PendingCaller {
             validator: self,
             replay_key,
+            valid_until: exp.saturating_add(self.cfg.leeway.as_secs()),
             caller: ValidatedCaller {
                 sub,
                 claims,

@@ -54,7 +54,9 @@ impl RequestProofs {
             .api
             .verify(proof, parts.method.as_str(), path, token, &key)
             .map_err(map)?;
-        let _verified_key = verified.into_thumbprint();
+        let _verified_key = verified
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .map_err(map)?;
         Ok(())
     }
 }

@@ -25,7 +25,7 @@ fn observation_key_is_separate_scoped_and_replay_protected() {
     let (secret, observer) = material();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("proof");
-    let expiry = chrono::Utc::now().timestamp() as u64 + 300;
+    let expiry = crate::unix_now() + 300;
     assert!(
         LoopbackGate::open(
             "http://127.0.0.1:1234",
@@ -75,11 +75,11 @@ fn observation_key_is_separate_scoped_and_replay_protected() {
         "/v1/workload/logs/stderr",
     ] {
         let proof = sign(&secret, "GET", path, b"");
-        assert!(gate.verify(&proof, "GET", path, b"").is_ok());
-        assert!(gate.verify(&proof, "GET", path, b"").is_err());
+        assert!(gate.verify_request(&proof, "GET", path, b"").is_ok());
+        assert!(gate.verify_request(&proof, "GET", path, b"").is_err());
         for other in [&client_secret, &health_secret] {
             assert!(
-                gate.verify(&sign(other, "GET", path, b""), "GET", path, b"")
+                gate.verify_request(&sign(other, "GET", path, b""), "GET", path, b"")
                     .is_err()
             );
         }
@@ -94,17 +94,17 @@ fn observation_key_is_separate_scoped_and_replay_protected() {
         ("POST", "/v1/write", b"{}".as_slice()),
     ] {
         assert!(
-            gate.verify(&sign(&secret, method, path, body), method, path, body)
+            gate.verify_request(&sign(&secret, method, path, body), method, path, body)
                 .is_err()
         );
     }
     let proof = sign(&secret, "GET", "/v1/workload/result", b"");
     assert!(
-        gate.verify(&proof, "GET", "/v1/workload/logs/stdout", b"")
+        gate.verify_request(&proof, "GET", "/v1/workload/logs/stdout", b"")
             .is_err()
     );
     assert!(
-        gate.verify(&proof, "GET", "/v1/workload/result", b"")
+        gate.verify_request(&proof, "GET", "/v1/workload/result", b"")
             .is_ok()
     );
     drop(gate);
@@ -115,7 +115,7 @@ fn observation_key_is_separate_scoped_and_replay_protected() {
         .with_observation_key(observer)
         .unwrap();
     assert!(
-        gate.verify(&proof, "GET", "/v1/workload/result", b"")
+        gate.verify_request(&proof, "GET", "/v1/workload/result", b"")
             .is_err()
     );
 }

@@ -51,7 +51,7 @@ impl Config {
         {
             return Err(refused());
         }
-        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let now = nucleus_request_proof::unix_now();
         if config.expires <= now || config.expires - now > 3600 {
             return Err(refused());
         }
@@ -77,7 +77,7 @@ impl Gate {
         body: &[u8],
     ) -> Result<(), ApiError> {
         use sha2::{Digest, Sha256};
-        if chrono::Utc::now().timestamp().max(0) as u64 >= self.expires || uri.query().is_some() {
+        if nucleus_request_proof::unix_now() >= self.expires || uri.query().is_some() {
             return Err(refused());
         }
         if headers.get_all("dpop").iter().count() != 1 {
@@ -91,8 +91,9 @@ impl Gate {
         self.gate
             .verify(proof, method, uri.path(), Some(&digest), &self.key)
             .map_err(|_| refused())?
-            .into_thumbprint();
-        if chrono::Utc::now().timestamp().max(0) as u64 >= self.expires {
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .map_err(|_| refused())?;
+        if nucleus_request_proof::unix_now() >= self.expires {
             return Err(refused());
         }
         Ok(())

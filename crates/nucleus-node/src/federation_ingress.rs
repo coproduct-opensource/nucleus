@@ -682,7 +682,10 @@ pub(crate) async fn exchange(
                     Refusal::Unavailable("request proof verifier unavailable")
                 }
             })?;
-        Some(serde_json::json!({"jkt":verified.into_thumbprint()}))
+        let jkt = verified
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .map_err(|_| Refusal::Unauthorized("request proof refused"))?;
+        Some(serde_json::json!({ "jkt": jkt }))
     } else {
         None
     };

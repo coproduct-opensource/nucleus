@@ -3,6 +3,18 @@
 //! The public build ships no durable ledger, so opening a gate refuses with
 //! [`Error::NoDurableLedger`].
 #![forbid(unsafe_code)]
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use ledger::{Batch, ReplayLedger};
 use nucleus_identity::{did::JsonWebKey, dpop::DpopVerifier};
@@ -25,6 +37,12 @@ pub enum Error {
 }
 
 mod ledger;
+
+/// Seconds since the Unix epoch, clamped to zero for a clock set before it.
+#[must_use]
+pub fn unix_now() -> u64 {
+    u64::try_from(chrono::Utc::now().timestamp()).unwrap_or(0)
+}
 
 /// Whether this build has a replay ledger. When it does not, every
 /// [`ProofGate`] and [`LoopbackGate`] open fails with
@@ -63,10 +81,17 @@ struct Claims {
 #[must_use]
 pub struct VerifiedRequest {
     thumbprint: String,
+    /// When the proof stops being fresh. The request must be authorized
+    /// before then.
+    expires_at: u64,
 }
 impl VerifiedRequest {
-    pub fn into_thumbprint(self) -> String {
-        self.thumbprint
+    /// The verified key's thumbprint, refused once the proof has expired.
+    pub fn into_thumbprint(self, now: u64) -> Result<String> {
+        if now > self.expires_at {
+            return Err(Error::Refused);
+        }
+        Ok(self.thumbprint)
     }
 }
 struct Replay {
@@ -90,7 +115,7 @@ pub struct LoopbackGate {
 }
 impl LoopbackGate {
     pub fn open(origin: &str, path: &Path, key: JsonWebKey, expires: u64) -> Result<Self> {
-        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let now = crate::unix_now();
         if expires <= now || expires.saturating_sub(now) > 3600 {
             return Err(Error::Configuration);
         }
@@ -141,14 +166,14 @@ impl LoopbackGate {
         Ok(self)
     }
 
-    pub fn verify(
+    pub fn verify_request(
         &self,
         proof: &str,
         method: &str,
         path: &str,
         body: &[u8],
     ) -> Result<VerifiedRequest> {
-        if chrono::Utc::now().timestamp().max(0) as u64 >= self.expires {
+        if crate::unix_now() >= self.expires {
             return Err(Error::Refused);
         }
         let binding = hex::encode(Sha256::digest(body));
@@ -160,7 +185,7 @@ impl LoopbackGate {
             &self.key
         };
         let verified = self.gate.verify(proof, method, path, Some(&binding), key)?;
-        if chrono::Utc::now().timestamp().max(0) as u64 >= self.expires {
+        if crate::unix_now() >= self.expires {
             return Err(Error::Refused);
         }
         Ok(verified)
@@ -288,14 +313,14 @@ impl ProofGate {
         }
         let target = format!("{}{}", target.origin().ascii_serialization(), target.path());
         let parts: Vec<_> = proof.split('.').collect();
-        if parts.len() != 3 {
+        let [header, claims, _signature] = parts.as_slice() else {
             return Err(Error::Refused);
-        }
+        };
         let header: Header =
-            serde_json::from_slice(&B64.decode(parts[0]).map_err(|_| Error::Refused)?)
+            serde_json::from_slice(&B64.decode(header).map_err(|_| Error::Refused)?)
                 .map_err(|_| Error::Refused)?;
         let claims: Claims =
-            serde_json::from_slice(&B64.decode(parts[1]).map_err(|_| Error::Refused)?)
+            serde_json::from_slice(&B64.decode(claims).map_err(|_| Error::Refused)?)
                 .map_err(|_| Error::Refused)?;
         if header.typ != "dpop+jwt"
             || header.alg != "ES256"
@@ -369,10 +394,14 @@ impl ProofGate {
             if expiry < now {
                 batch.delete(&k);
             } else {
-                live += 1;
+                live = live.saturating_add(1);
             }
         }
-        if live + 1 + usize::from(assertion_key.is_some()) > 4096 {
+        if live
+            .saturating_add(1)
+            .saturating_add(usize::from(assertion_key.is_some()))
+            > 4096
+        {
             return Err(Error::Unavailable);
         }
         if let Some((k, expiry)) = assertion_key {
@@ -389,7 +418,10 @@ impl ProofGate {
             replay.poisoned = true;
             return Err(Error::Unavailable);
         }
-        Ok(VerifiedRequest { thumbprint })
+        Ok(VerifiedRequest {
+            thumbprint,
+            expires_at: expires,
+        })
     }
 }
 pub fn thumbprint(key: &JsonWebKey) -> Result<String> {
@@ -512,7 +544,8 @@ mod tests {
                 &key
             )
             .unwrap()
-            .into_thumbprint(),
+            .into_thumbprint(crate::unix_now())
+            .unwrap(),
             thumbprint(&key).unwrap()
         );
         drop(gate);
@@ -592,11 +625,12 @@ mod assertion_tests {
             serde_json::from_slice(&B64.decode(proof.split('.').next().unwrap()).unwrap()).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("replay");
-        let expiry = chrono::Utc::now().timestamp() as u64 + 300;
+        let expiry = crate::unix_now() + 300;
         let gate = ProofGate::open("https://node.test", &path).unwrap();
         gate.verify_assertion(&proof, "/exchange", token, &header.jwk, expiry)
             .unwrap()
-            .into_thumbprint();
+            .into_thumbprint(crate::unix_now())
+            .unwrap();
         drop(gate);
         let gate = ProofGate::open("https://node.test", &path).unwrap();
         assert!(
@@ -641,7 +675,7 @@ mod strict_tests {
             "http://127.0.0.1:1234",
             &dir.path().join("proof"),
             client,
-            chrono::Utc::now().timestamp() as u64 + 300,
+            crate::unix_now() + 300,
         )
         .unwrap()
         .with_health_key(health)
@@ -657,10 +691,13 @@ mod strict_tests {
                 .with_access_token(&hex::encode(Sha256::digest(body.as_bytes())))
                 .build(&secret)
                 .unwrap();
-            let result = gate.verify(&proof, method, path, body.as_bytes());
+            let result = gate.verify_request(&proof, method, path, body.as_bytes());
             if method == "GET" && body.is_empty() {
-                result.unwrap().into_thumbprint();
-                assert!(gate.verify(&proof, method, path, body.as_bytes()).is_err());
+                result.unwrap().into_thumbprint(crate::unix_now()).unwrap();
+                assert!(
+                    gate.verify_request(&proof, method, path, body.as_bytes())
+                        .is_err()
+                );
             } else {
                 assert!(result.is_err());
             }
@@ -685,7 +722,7 @@ mod strict_tests {
         let header: nucleus_identity::dpop::DpopHeader =
             serde_json::from_slice(&B64.decode(proof.split('.').next().unwrap()).unwrap()).unwrap();
         let dir = tempfile::tempdir().unwrap();
-        let now = chrono::Utc::now().timestamp() as u64;
+        let now = crate::unix_now();
         for expires in [now, now + 3601] {
             assert!(
                 LoopbackGate::open(
@@ -704,12 +741,22 @@ mod strict_tests {
             now + 300,
         )
         .unwrap();
-        assert!(gate.verify(&proof, "POST", "/v1/read", b"changed").is_err());
-        assert!(gate.verify(&proof, "POST", "/v1/write", body).is_err());
-        gate.verify(&proof, "POST", "/v1/read", body)
+        assert!(
+            gate.verify_request(&proof, "POST", "/v1/read", b"changed")
+                .is_err()
+        );
+        assert!(
+            gate.verify_request(&proof, "POST", "/v1/write", body)
+                .is_err()
+        );
+        gate.verify_request(&proof, "POST", "/v1/read", body)
             .unwrap()
-            .into_thumbprint();
-        assert!(gate.verify(&proof, "POST", "/v1/read", body).is_err());
+            .into_thumbprint(crate::unix_now())
+            .unwrap();
+        assert!(
+            gate.verify_request(&proof, "POST", "/v1/read", body)
+                .is_err()
+        );
     }
 
     #[test]
@@ -750,7 +797,8 @@ mod strict_tests {
         let gate = ProofGate::open_loopback("http://127.0.0.1:1234", &path).unwrap();
         gate.verify(&proof, "POST", "/v1/read", None, &header.jwk)
             .unwrap()
-            .into_thumbprint();
+            .into_thumbprint(crate::unix_now())
+            .unwrap();
         drop(gate);
         let gate = ProofGate::open_loopback("http://127.0.0.1:1234", &path).unwrap();
         assert!(

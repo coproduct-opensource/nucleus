@@ -31,7 +31,7 @@ fn refused() -> ApiError {
     ApiError::Auth(crate::auth::AuthError::InvalidHeader("dpop"))
 }
 fn now() -> u64 {
-    chrono::Utc::now().timestamp().max(0) as u64
+    nucleus_request_proof::unix_now()
 }
 fn key(config: &Provision) -> Result<SigningKey, ApiError> {
     let bytes = STANDARD
@@ -229,7 +229,8 @@ impl Gate {
                 &self.key,
             )
             .map_err(|_| refused())?
-            .into_thumbprint();
+            .into_thumbprint(now())
+            .map_err(|_| refused())?;
         if now() >= self.expires {
             return Err(refused());
         }

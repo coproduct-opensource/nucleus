@@ -40,7 +40,7 @@ async fn result_fetch_requires_fresh_proxy_observation_authority() {
             guest: None,
             key: header.jwk,
             replay_path: dir.path().join("replay"),
-            expires: chrono::Utc::now().timestamp() as u64 + 300,
+            expires: nucleus_request_proof::unix_now() + 300,
         }),
     )
     .await

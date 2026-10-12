@@ -412,9 +412,11 @@ async fn proxy_handler(
                 proxy_error(StatusCode::UNAUTHORIZED, "request proof required".into())
             })?;
         let verified = gate
-            .verify(proof, parts.method.as_str(), parts.uri.path(), &body_bytes)
+            .verify_request(proof, parts.method.as_str(), parts.uri.path(), &body_bytes)
             .map_err(|_| proxy_error(StatusCode::UNAUTHORIZED, "request proof refused".into()))?;
-        let _key = verified.into_thumbprint();
+        let _key = verified
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .map_err(|_| proxy_error(StatusCode::UNAUTHORIZED, "request proof expired".into()))?;
     }
 
     let actor = extract_actor(&parts.headers, state.default_actor.as_deref());
@@ -743,7 +745,8 @@ mod tests {
                     &public,
                 )
                 .unwrap()
-                .into_thumbprint();
+                .into_thumbprint(nucleus_request_proof::unix_now())
+                .unwrap();
                 count.fetch_add(1, Ordering::SeqCst);
                 "forwarded"
             }
@@ -759,7 +762,7 @@ mod tests {
                 guest,
                 key: header.jwk,
                 replay_path: dir.path().join("proofs"),
-                expires: now_unix() as u64 + 300,
+                expires: u64::try_from(now_unix()).unwrap_or(0) + 300,
             }),
         )
         .await

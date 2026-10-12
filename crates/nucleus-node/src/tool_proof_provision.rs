@@ -42,7 +42,7 @@ fn parse(spec: &PodSpec, required: bool) -> Result<Option<(JsonWebKey, u64)>, Ap
         return Err(refuse());
     }
     let config: Config = serde_json::from_str(raw).map_err(|_| refuse())?;
-    let now = crate::now_unix().max(0) as u64;
+    let now = u64::try_from(crate::now_unix()).unwrap_or(0);
     if config.key.kty != "EC"
         || config.key.crv != "P-256"
         || config.expires <= now
@@ -83,7 +83,7 @@ mod tests {
         .unwrap();
         assert!(admit(&spec, true).is_err());
         assert!(admit(&spec, false).is_ok());
-        let now = crate::now_unix() as u64;
+        let now = u64::try_from(crate::now_unix()).unwrap_or(0);
         use base64::Engine;
         let csr = nucleus_identity::CsrOptions::new("spiffe://test/ns/client/sa/tools")
             .generate()

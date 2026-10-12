@@ -130,7 +130,8 @@ mod tests {
         );
         gate.verify(&proof, "POST", "/v1/read", Some(&digest), &public)
             .unwrap()
-            .into_thumbprint();
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .unwrap();
         assert!(
             gate.verify(&proof, "POST", "/v1/read", Some(&digest), &public)
                 .is_err()
@@ -227,7 +228,7 @@ impl Signer {
         body: &[u8],
     ) -> Result<String, std::io::Error> {
         use sha2::{Digest, Sha256};
-        if crate::now_unix().max(0) as u64 >= self.expires
+        if u64::try_from(crate::now_unix()).unwrap_or(0) >= self.expires
             || !path.starts_with('/')
             || path.starts_with("//")
             || path.contains(['?', '#'])

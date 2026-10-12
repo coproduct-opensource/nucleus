@@ -260,9 +260,12 @@ population_floor = 278
 # 2026-10-08 (ADR 0015 E2): new crate nucleus-egress-proxy, the host egress proxy's
 # guest-facing parser -- every byte guest root writes toward the network -- declares all
 # seven from its first commit; a panic is a proxy the guest can stop. 39 of 96 = 40.62%.
-floor_bp = 4062
+# 2026-10-12: new crate nucleus-request-proof parses DPoP proofs from any client
+# before authority is granted; it declares all seven from its first commit. A panic
+# on a crafted proof would take down the listener it guards. 40 of 97 = 41.23%.
+floor_bp = 4123
 floor_set = "measurement"
-population_floor = 96
+population_floor = 97
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -389,9 +392,13 @@ population_floor = 96
 # 2026-10-04: EgressUploadHold carries the original ledger id/epoch directly;
 # pace admission and settlement check that binding. The new affine right is
 # bounded, bringing life from 13/20 to 14/21 (66.66%).
-floor_bp = 6666
+# 2026-10-12: two new affine rights carry their interval from the first commit.
+# VerifiedRequest (a DPoP proof that passed replay) refuses into_thumbprint after
+# the proof's expiry; PendingCaller (an issuer assertion awaiting replay) fixes
+# exp + leeway when its check passes. 16 of 23 = 69.56%.
+floor_bp = 6956
 floor_set = "measurement"
-population_floor = 21
+population_floor = 23
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
