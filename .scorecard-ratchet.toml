@@ -260,9 +260,12 @@ population_floor = 278
 # 2026-10-08 (ADR 0015 E2): new crate nucleus-egress-proxy, the host egress proxy's
 # guest-facing parser -- every byte guest root writes toward the network -- declares all
 # seven from its first commit; a panic is a proxy the guest can stop. 39 of 96 = 40.62%.
-floor_bp = 4062
+# 2026-10-12 (off serde_yaml): new crate nucleus-yaml, the one YAML reader every spec,
+# profile and workflow goes through, declares all seven from its first commit -- a reader
+# that panics on hostile YAML is a denial of service on every caller. 40 of 97 = 41.23%.
+floor_bp = 4123
 floor_set = "measurement"
-population_floor = 96
+population_floor = 97
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -597,9 +600,12 @@ population_floor = 23
 # 2026-10-08 (eval cell M2): ci-scope appends its one `relevant=` line to the runner's
 # GITHUB_OUTPUT, a step-output file and not a record log, under a reasoned #[expect] of the
 # append ban. 32/147 = 21.76%; both pins follow the tree.
-floor_bp = 2176
+# 2026-10-12 (off serde_yaml): nucleus-yaml's reader and writer are the one place a direct
+# serde_saphyr call is allowed (the G-1 disallowed-methods entries), each under a reasoned
+# #[expect]. 34/149 = 22.81%; both pins follow the tree.
+floor_bp = 2281
 floor_set = "measurement"
-population_floor = 147
+population_floor = 149
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

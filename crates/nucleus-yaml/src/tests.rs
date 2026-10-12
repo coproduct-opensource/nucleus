@@ -7,7 +7,6 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct Flag {
     enabled: bool,
 }
@@ -148,6 +147,26 @@ fn ambiguous_scalars_are_refused_in_every_target_type() {
     }
 }
 
+/// Strings that merely start like a number are not numbers, and are read as the
+/// strings they are: a UUID beginning `05`, a word beginning `0X`.
+#[test]
+fn number_shaped_prefixes_are_not_refused() {
+    for text in [
+        "05a3f2c1-1111-4111-8111-111111111111",
+        "0Xylophone",
+        "0Bravo",
+        "1_a",
+        "0x",
+        "00:00",
+        "0.5x",
+    ] {
+        let doc = format!("x: {text}\n");
+        let v: BTreeMap<String, String> =
+            from_str(&doc).unwrap_or_else(|e| panic!("`{text}` refused: {e}"));
+        assert_eq!(v["x"], text);
+    }
+}
+
 #[test]
 fn unambiguous_numbers_read_as_both_libraries_read_them() {
     let v: Value = from_str(
@@ -245,6 +264,11 @@ fn every_string_the_writer_emits_reads_back_unchanged() {
         "a\r\nb",
         "caf\u{e9}",
         "<<",
+        "05a3f2c1-1111-4111-8111-111111111111",
+        "0Xylophone",
+        "1_a",
+        "0x",
+        "0b2",
     ];
     let map: BTreeMap<String, String> = tricky
         .iter()

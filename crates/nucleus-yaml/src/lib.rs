@@ -44,6 +44,21 @@
 //! pod manifest's hash is `nucleus_spec::PodSpec::manifest_hash`, over RFC 8785
 //! JSON.
 
+// The shipped build cannot panic (the `tot` family): a reader that panics on
+// hostile YAML is a denial of service on every caller.
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
+
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_saphyr::granit_parser::{Event, Parser, ScalarStyle};
@@ -248,7 +263,7 @@ fn refuse_ambiguous(text: &str) -> Result<(), Error> {
             continue;
         };
         let line = span.start.line();
-        let column = span.start.col() + 1;
+        let column = span.start.col().saturating_add(1);
         match tag {
             Some(tag) if tag.handle() == "tag:yaml.org,2002:" && tag.suffix() == "binary" => {
                 return Err(Error::BinaryTag { line, column });
@@ -275,22 +290,33 @@ fn refuse_ambiguous(text: &str) -> Result<(), Error> {
 fn ambiguity(text: &str) -> Option<Ambiguity> {
     let negative = text.starts_with('-');
     let body = text.strip_prefix(['+', '-']).unwrap_or(text);
-    let bytes = body.as_bytes();
-    if let [b'0', next, ..] = bytes {
-        if next.is_ascii_digit() || *next == b'_' {
+    let digits_in =
+        |s: &str, radix: u32| !s.is_empty() && s.chars().all(|c| c == '_' || c.is_digit(radix));
+    // Only tokens made of digits are numbers: `05a3f2c1-…` (a UUID) and
+    // `0Xylophone` are strings to both libraries and are not refused.
+    if let Some(rest) = body.strip_prefix('0') {
+        if digits_in(rest, 10) {
             return Some(Ambiguity::LeadingZero);
         }
-        if matches!(next, b'X' | b'O' | b'B') {
-            return Some(Ambiguity::UppercaseRadixPrefix);
+        for (prefix, radix) in [('X', 16), ('O', 8), ('B', 2)] {
+            if rest
+                .strip_prefix(prefix)
+                .is_some_and(|r| digits_in(r, radix))
+            {
+                return Some(Ambiguity::UppercaseRadixPrefix);
+            }
         }
     }
-    let (digits, radix) = match body.get(..2) {
-        Some("0x") => (&body[2..], 16),
-        Some("0o") => (&body[2..], 8),
-        Some("0b") => (&body[2..], 2),
-        _ => (body, 10),
+    let (digits, radix) = if let Some(hex) = body.strip_prefix("0x") {
+        (hex, 16)
+    } else if let Some(oct) = body.strip_prefix("0o") {
+        (oct, 8)
+    } else if let Some(bin) = body.strip_prefix("0b") {
+        (bin, 2)
+    } else {
+        (body, 10)
     };
-    if digits.is_empty() || !digits.chars().all(|c| c == '_' || c.is_digit(radix)) {
+    if !digits_in(digits, radix) {
         return None;
     }
     if digits.contains('_') {

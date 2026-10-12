@@ -18,9 +18,9 @@ use crate::model::{
 };
 
 /// Look a key up in a mapping. A workflow's `on:` key is the string `"on"`:
-/// `nucleus_yaml` reads YAML 1.1's boolean words as strings (strict booleans),
-/// which is pinned by a test there and by `on_key_is_read_as_triggers` here, so
-/// there is no second spelling to try.
+/// the document is read into `serde_json::Value`, whose object keys are always
+/// strings, so the YAML 1.1 reading of `on` as `true` has nowhere to land and
+/// there is no second spelling to try. `on_key_is_read_as_triggers` pins it.
 fn get<'a>(map: &'a Value, key: &str) -> Option<&'a Value> {
     map.as_object()?.get(key)
 }
