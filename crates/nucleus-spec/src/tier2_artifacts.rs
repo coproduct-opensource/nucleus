@@ -338,13 +338,6 @@ pub enum GuestCapability {
     /// nothing in the log; `nucleus-audit verify` refuses an older guest's
     /// keyless log by name rather than report it verified.
     SignedAuditLog,
-    /// The tool-proxy's shared-secret (HMAC) tier carries no authority: it
-    /// admits only `/v1/health`, which is answered before authentication
-    /// (#2446 step 2). [`Demand::Optional`]: nothing the node does needs the
-    /// tier gone. It is the one thing the deprecated
-    /// `--container-proxy-transport tcp-hmac` cannot work with, so the node
-    /// refuses that transport, by name, for an image whose release has it.
-    SharedSecretTierRetired,
     /// The tool-proxy prints its shadow telemetry on the guest console
     /// (`nucleus_spec::host_decide_telemetry::GuestTelemetry`, prefixed
     /// `NUCLEUS-HOST-DECIDE-TELEMETRY`): its own tally, every
@@ -437,7 +430,6 @@ impl GuestCapability {
         GuestCapability::WorkloadSyscallPolicy,
         GuestCapability::HostVerifiedProxySocket,
         GuestCapability::SignedAuditLog,
-        GuestCapability::SharedSecretTierRetired,
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
     ];
@@ -474,9 +466,6 @@ impl GuestCapability {
             // Read by a verifier, never by the node: an older guest's log is
             // refused by `nucleus-audit verify`, by name, not by the node.
             GuestCapability::SignedAuditLog => Demand::Optional,
-            // The node needs nothing from it; `container_transport::admit_image`
-            // reads it to refuse `tcp-hmac`, not to admit a guest.
-            GuestCapability::SharedSecretTierRetired => Demand::Optional,
             // Read by `cargo xtask host-decide-agreement`, never by the node.
             GuestCapability::HostDecideTelemetry => Demand::Optional,
             GuestCapability::HostApprovalRedeem => Demand::Optional,
@@ -544,7 +533,6 @@ impl GuestCapability {
             // published 2.6.0 tool-proxy MACs its audit log and still grants
             // authority on the shared-secret tier.
             GuestCapability::SignedAuditLog => FirstShipped::Release("2.7.0"),
-            GuestCapability::SharedSecretTierRetired => FirstShipped::Release("2.7.0"),
             // ADR 0014 S1: in this tree and in no release yet.
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
@@ -654,12 +642,6 @@ impl GuestCapability {
                  and name the key in every record; an older proxy MACs the log with its auth \
                  secret, empty on vsock and on the peer-verified socket, so `nucleus-audit \
                  verify` refuses that log by name (the node does not require it)"
-            }
-            GuestCapability::SharedSecretTierRetired => {
-                "#2446 (step 2) left the tool-proxy's shared-secret tier no authority: it \
-                 admits only /v1/health. An older proxy still serves HMAC-signed requests, \
-                 which is all the deprecated tcp-hmac container transport speaks (the node \
-                 does not require it, and refuses tcp-hmac for an image that has it)"
             }
             GuestCapability::HostDecideTelemetry => {
                 "ADR 0014 (S1) has the tool-proxy print its shadow tally, every HostUnavailable \
@@ -824,9 +806,7 @@ fn skew_against(
 /// filter from the pod's lattice (#2907, #3285), signs its audit log with a key
 /// the workload cannot reach (#3293), and grants no authority on the
 /// shared-secret tier (#2446 step 2). The node requires none of them, so it
-/// still serves a 2.6.0 guest; only a container pod on the deprecated
-/// `tcp-hmac` transport refuses a 2.7.0 image, because that transport speaks
-/// nothing else. `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
+/// still serves a 2.6.0 guest. `2.6.0` is the first release whose tool-proxy decides a push's bodiless ref
 /// advertisement as a read (#3266), and confines the workload's and every
 /// command's filesystem with Landlock (#2696 P3c), which the guest kernel
 /// pinned since #3270 supports. The node requires neither, so it still serves
@@ -1267,8 +1247,7 @@ mod tests {
                 GuestCapability::PushAdvertisementIsRead => GuestCapability::WorkloadSyscallPolicy,
                 GuestCapability::WorkloadSyscallPolicy => GuestCapability::HostVerifiedProxySocket,
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
-                GuestCapability::SignedAuditLog => GuestCapability::SharedSecretTierRetired,
-                GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
+                GuestCapability::SignedAuditLog => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
                 GuestCapability::HostApprovalRedeem => GuestCapability::CaBundle,
             };

@@ -170,7 +170,7 @@ This section catalogs publicly disclosed attacks against production AI coding ag
 
 **Attack**: Opening a malicious repository triggers workspace configuration files (e.g., `.claude/settings.json` or `.mcp.json`) to execute project hooks or redirect `ANTHROPIC_BASE_URL` to an attacker-controlled endpoint, leaking API keys before any trust prompt appears to the user.
 
-**Nucleus defense**: Sandbox proof requirement — tool-proxy will not start without proving it is running inside a managed sandbox (attested SVID, SPIRE workload identity, or orchestrator token). There is no "open untrusted repo and start executing" scenario. Credentials live in process environment variables delivered via vsock, not in any config file on the filesystem. SPIFFE-based policies determine which tools run, not workspace configuration files. MCP tools are defined at build time in Rust source, not loaded from `.mcp.json`.
+**Nucleus defense**: Sandbox proof requirement — tool-proxy will not start without proving it is running inside a managed sandbox (attested SVID, or an SVID from identity files or SPIRE; the HMAC orchestrator token was deleted in #2446). There is no "open untrusted repo and start executing" scenario. Credentials live in process environment variables delivered via vsock, not in any config file on the filesystem. SPIFFE-based policies determine which tools run, not workspace configuration files. MCP tools are defined at build time in Rust source, not loaded from `.mcp.json`.
 
 **Residual risk**: None identified for this attack class.
 

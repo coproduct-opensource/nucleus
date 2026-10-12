@@ -35,21 +35,11 @@ mod tests {
     #[test]
     fn cli_rejects_unsafe_values() {
         use clap::Parser;
-        let err = crate::Args::try_parse_from([
-            "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
-            "--jailer-uid=0",
-        ])
-        .unwrap_err()
-        .to_string();
+        let err = crate::Args::try_parse_from(["nucleus-node", "--jailer-uid=0"])
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("JailerRootUid"), "{err}");
-        let result = crate::Args::try_parse_from([
-            "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
-            "--firecracker-jailer=false",
-        ]);
+        let result = crate::Args::try_parse_from(["nucleus-node", "--firecracker-jailer=false"]);
         if cfg!(feature = "local-driver") {
             assert!(!result.unwrap().firecracker_jailer);
         } else {

@@ -296,29 +296,12 @@ mod tests {
             .provision(request, "spiffe://test/owner-a")
             .unwrap()
             .unwrap();
-        let env = crate::container_env(
-            &state,
-            &spec,
-            uuid::Uuid::new_v4(),
-            "fixture-token",
-            "",
-            None,
-            Some(&grant),
-        )
-        .await;
+        let env =
+            crate::container_env(&state, &spec, uuid::Uuid::new_v4(), "", None, Some(&grant)).await;
         for expected in grant.container_env() {
             assert!(env.contains(&expected));
         }
-        let empty = crate::container_env(
-            &state,
-            &spec,
-            uuid::Uuid::new_v4(),
-            "fixture-token",
-            "",
-            None,
-            None,
-        )
-        .await;
+        let empty = crate::container_env(&state, &spec, uuid::Uuid::new_v4(), "", None, None).await;
         assert!(
             !empty
                 .iter()

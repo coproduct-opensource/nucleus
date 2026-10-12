@@ -142,9 +142,6 @@ RUST_LOG=info,nucleus_node=debug \
   cargo run -p nucleus-node --release -- \
     --driver container \
     --listen "${NODE_ADDR}" \
-    --auth-secret "${AUTH_SECRET}" \
-    --proxy-auth-secret "${PROXY_AUTH_SECRET}" \
-    --proxy-approval-secret "${APPROVAL_SECRET}" \
     --container-image "${TEST_IMAGE}" \
     --container-mediation unmediated \
     --container-network bridge \

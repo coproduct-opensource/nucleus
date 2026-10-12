@@ -9,20 +9,20 @@ pub(crate) async fn container_env(
     state: &NodeState,
     spec: &PodSpec,
     id: Uuid,
-    sandbox_token: &str,
     spec_yaml: &str,
     audit: Option<&audit_sink::credentials::AuditGrant>,
     memory: Option<&memory_provisioning::Grant>,
 ) -> Vec<String> {
-    let mut env: Vec<String> = vec![format!("NUCLEUS_SANDBOX_TOKEN={sandbox_token}")];
+    // No sandbox token: the tier-3 proof it carried is deleted (#2446 step 3), and the
+    // proxy's proof is the identity files `spawn_container_pod` provisions.
+    let mut env: Vec<String> = Vec::new();
     let proxy_mode = state.container_mediation.runs_tool_proxy();
 
     if proxy_mode {
         if let Some(grant) = memory {
             env.extend(grant.container_env());
         }
-        // The transport's entries, approval authority included: a public key on the socket,
-        // the shared secret only on the deprecated `tcp-hmac` transport.
+        // The socket transport's entries, approval authority included: the node's public key.
         env.extend(container_transport::proxy_env(state));
         env.push("NUCLEUS_TOOL_PROXY_AUDIT_LOG=/data/pod/audit.log".to_string());
         art12_collector::provision_container_env(&mut env);

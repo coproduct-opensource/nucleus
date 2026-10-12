@@ -357,12 +357,7 @@ fn a_spec_without_host_paths_is_untouched() {
 #[test]
 fn the_default_artifacts_root_is_the_provisioned_one() {
     use clap::Parser;
-    let args = crate::Args::try_parse_from([
-        "nucleus-node",
-        "--proxy-auth-secret=test",
-        "--proxy-approval-secret=test",
-    ])
-    .expect("defaults parse");
+    let args = crate::Args::try_parse_from(["nucleus-node"]).expect("defaults parse");
     assert_eq!(
         args.host_paths.artifacts_root,
         Path::new(nucleus_spec::tier2_artifacts::HOST_ARTIFACTS_DIR)

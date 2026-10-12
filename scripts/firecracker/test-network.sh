@@ -85,7 +85,6 @@ echo "starting nucleus-node..."
 RUST_LOG=info cargo run -p nucleus-node -- \
   --driver firecracker \
   --listen "${NODE_ADDR}" \
-  --proxy-auth-secret test-secret \
   --artifacts-root ./build/firecracker \
   --scratch-root ./build/firecracker \
   --firecracker-netns >/tmp/nucleus-node-net.log 2>&1 &

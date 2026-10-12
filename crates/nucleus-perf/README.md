@@ -16,7 +16,7 @@ direction.
     cargo run -p nucleus-perf -- podburst \
         --spec examples/openclaw-demo/firecracker-pod.yaml \
         --counts 1,5,10,25,50 \
-        --auth-secret "$SECRET"
+        --tls-cert <client.pem> --tls-key <client.key> --trust-bundle <bundle.pem>
 
 ## symmetry
 

@@ -21,42 +21,32 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
-use crate::auth::sign_message;
-
 const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
 const HEADER_SIGNATURE: &str = "x-nucleus-signature";
 const HEADER_ACTOR: &str = "x-nucleus-actor";
 const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
 const MAX_PROXY_BODY_BYTES: usize = 10 * 1024 * 1024;
 
-/// How this proxy signs `/v1/approve` requests.
+/// The key this proxy signs `/v1/approve` with: the node's Ed25519 approval
+/// key. Every pod verifies approvals against its PUBLIC half
+/// (`nucleus.approval_pubkeys`, `NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS`).
 ///
-/// One enum rather than two `Option`s: a proxy holding both an approval
-/// secret and an approval key would have two ways to sign the same request,
-/// and which one the guest accepts is a property of how the POD was
-/// provisioned — the launch path that started this proxy knows, so it picks.
-#[derive(Clone)]
-pub enum ApprovalSigning {
-    /// Shared-secret HMAC — pods provisioned with `approval_secret` (the
-    /// local driver, and the container driver's deprecated `tcp-hmac`
-    /// transport).
-    Hmac(Arc<Vec<u8>>),
-    /// Ed25519 with the node's approval signing key — Firecracker pods and
-    /// container pods on the peer-verified socket (#2446), which verify against
-    /// the PUBLIC half (`nucleus.approval_pubkeys`,
-    /// `NUCLEUS_TOOL_PROXY_APPROVAL_PUBKEYS`) and hold no approval secret.
-    Ed25519(Arc<ed25519_dalek::SigningKey>),
-}
+/// Until #2446 step 3 this was an enum with an `Hmac` arm for pods provisioned
+/// an approval secret (the container driver's `tcp-hmac` transport), and every
+/// other request was HMAC'd with the node's `proxy_auth_secret`. Both are
+/// deleted: approvals are signed with this key, and nothing else is signed,
+/// because every transport this proxy forwards over authenticates the node
+/// itself (the vsock bridge, the peer-verified socket).
+pub type ApprovalKey = Arc<ed25519_dalek::SigningKey>;
 
 /// Where the pod's tool proxy is reached from the host.
 ///
-/// `Tcp` is the local driver's path and the container driver's deprecated
-/// `tcp-hmac` transport: the node's requests carry an HMAC the proxy checks.
-/// `Unix` is the container driver's default (#2446): the proxy inside the container listens on a
-/// socket in the pod directory the node bind-mounts, and admits the node by
-/// kernel-reported peer credentials (`nucleus-tool-proxy --listen-unix`), so
-/// the HMAC this proxy still attaches is not what authenticates the node
-/// there — the transport is.
+/// `Tcp` is the loopback end of a Firecracker pod's vsock bridge, which reaches
+/// a listener that admits only the host. `Unix` is the peer-verified socket of
+/// a container or local pod (#2446): the proxy admits the node by
+/// kernel-reported peer credentials (`nucleus-tool-proxy --listen-unix`).
+/// Either way the transport is what authenticates the node, not anything this
+/// proxy attaches.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProxyTarget {
     Tcp(SocketAddr),
@@ -93,8 +83,7 @@ impl std::fmt::Display for ProxyTarget {
 #[derive(Clone)]
 struct SignedProxyState {
     target: ProxyTarget,
-    secret: Arc<Vec<u8>>,
-    approval: Option<ApprovalSigning>,
+    approval: ApprovalKey,
     default_actor: Option<String>,
     /// Drand client for anchoring approval signatures.
     drand_client: Option<Arc<DrandClient>>,
@@ -122,18 +111,17 @@ impl SignedProxy {
     #[allow(dead_code)]
     pub async fn start(
         target: impl Into<ProxyTarget>,
-        secret: Arc<Vec<u8>>,
-        approval: Option<ApprovalSigning>,
+        approval: ApprovalKey,
         default_actor: Option<String>,
     ) -> std::io::Result<Self> {
-        Self::start_with_drand(target, secret, approval, default_actor, None).await
+        Self::start_with_drand(target, approval, default_actor, None).await
     }
 
     /// Start the signed proxy with optional drand anchoring for approval requests.
     ///
     /// When `drand_config` is provided and enabled, approval requests (`/v1/approve`)
     /// will include a drand round number in the signature. This prevents pre-computation
-    /// attacks even if the HMAC secret is compromised.
+    /// of an approval signature.
     ///
     /// # Drand Anchoring
     ///
@@ -141,12 +129,13 @@ impl SignedProxy {
     /// - Message format: `"{round}.{timestamp}.{actor}.{body}"`
     /// - Adds header: `x-nucleus-drand-round: <round>`
     ///
-    /// Without drand anchoring (or for non-approval requests):
+    /// Without drand anchoring:
     /// - Message format: `"{timestamp}.{actor}.{body}"`
+    ///
+    /// Any other request is forwarded with no signature at all.
     pub async fn start_with_drand(
         target: impl Into<ProxyTarget>,
-        secret: Arc<Vec<u8>>,
-        approval: Option<ApprovalSigning>,
+        approval: ApprovalKey,
         default_actor: Option<String>,
         drand_config: Option<DrandConfig>,
     ) -> std::io::Result<Self> {
@@ -176,7 +165,6 @@ impl SignedProxy {
 
         let state = SignedProxyState {
             target: target.into(),
-            secret,
             approval,
             default_actor,
             drand_client,
@@ -228,24 +216,15 @@ async fn proxy_handler(
 
     let is_approval = path == "/v1/approve";
 
-    // Sign an approval with the approval AUTHORITY — Ed25519 when the pod
-    // verifies against public keys, HMAC when it was provisioned a secret,
-    // the plain auth secret when no approval authority was configured. The
-    // message bytes are identical across primitives (see `build_message`), so
-    // the guest-side verifier changed only its primitive, not its framing.
+    // Sign an approval with the node's Ed25519 approval key, which every pod
+    // verifies against the public half (see `build_message` for the bytes).
     let sign_approval = |round: Option<u64>| -> String {
+        use ed25519_dalek::Signer as _;
         let message = build_message(round, timestamp, actor.as_deref(), &body_bytes);
-        match state.approval {
-            Some(ApprovalSigning::Ed25519(ref key)) => {
-                use ed25519_dalek::Signer as _;
-                hex::encode(key.sign(&message).to_bytes())
-            }
-            Some(ApprovalSigning::Hmac(ref secret)) => sign_message(secret, &message),
-            None => sign_message(&state.secret, &message),
-        }
+        hex::encode(state.approval.sign(&message).to_bytes())
     };
 
-    // For approval requests, try to anchor with drand
+    // For approval requests, try to anchor with drand. Nothing else is signed.
     let (signature, drand_round) = if is_approval {
         if let Some(ref drand_client) = state.drand_client {
             match drand_client.current_round().await {
@@ -279,11 +258,9 @@ async fn proxy_handler(
             (sign_approval(None), None)
         }
     } else {
-        // Non-approval requests use standard signing with the plain auth secret.
-        (
-            sign_request(&state.secret, timestamp, actor.as_deref(), &body_bytes),
-            None,
-        )
+        // The transport authenticates the node (#2446 step 3): the shared
+        // secret that used to sign these is deleted.
+        (String::new(), None)
     };
 
     let uri = build_target_uri(&state.target, parts.uri.path_and_query())
@@ -300,16 +277,18 @@ async fn proxy_handler(
         HeaderValue::from_str(&body_bytes.len().to_string())
             .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad length: {e}")))?,
     );
-    headers.insert(
-        HEADER_TIMESTAMP,
-        HeaderValue::from_str(&timestamp.to_string())
-            .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad timestamp: {e}")))?,
-    );
-    headers.insert(
-        HEADER_SIGNATURE,
-        HeaderValue::from_str(&signature)
-            .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad signature: {e}")))?,
-    );
+    if is_approval {
+        headers.insert(
+            HEADER_TIMESTAMP,
+            HeaderValue::from_str(&timestamp.to_string())
+                .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad timestamp: {e}")))?,
+        );
+        headers.insert(
+            HEADER_SIGNATURE,
+            HeaderValue::from_str(&signature)
+                .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad signature: {e}")))?,
+        );
+    }
     if let Some(actor_value) = actor.as_ref() {
         headers.insert(
             HEADER_ACTOR,
@@ -404,10 +383,6 @@ fn build_message(round: Option<u64>, timestamp: i64, actor: Option<&str>, body: 
     message
 }
 
-fn sign_request(secret: &[u8], timestamp: i64, actor: Option<&str>, body: &[u8]) -> String {
-    sign_message(secret, &build_message(None, timestamp, actor, body))
-}
-
 async fn forward_request(
     target: &ProxyTarget,
     request: Request<Full<axum::body::Bytes>>,
@@ -419,7 +394,7 @@ async fn forward_request(
 }
 
 /// One HTTP/1 exchange over an already-connected stream, whatever it is
-/// (TCP to an env-provisioned container, Unix socket to a host-verified one).
+/// (TCP to a vsock bridge, Unix socket to a peer-verified proxy).
 async fn send_over<S>(
     stream: S,
     request: Request<Full<axum::body::Bytes>>,
@@ -472,9 +447,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let backend = Router::new().route("/echo", post(|body: String| async move { body }));
         let server = tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
-        let proxy = SignedProxy::start(address, Arc::new(b"test-secret".to_vec()), None, None)
-            .await
-            .unwrap();
+        let proxy = SignedProxy::start(address, test_key(), None).await.unwrap();
         let mut stream = TcpStream::connect(proxy.listen_addr()).await.unwrap();
         stream.write_all(b"POST /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n3\r\none\r\n3\r\ntwo\r\n0\r\n\r\n").await.unwrap();
         let mut reply = Vec::new();
@@ -512,9 +485,7 @@ mod tests {
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
-        let proxy = SignedProxy::start(address, Arc::new(b"test-secret".to_vec()), None, None)
-            .await
-            .unwrap();
+        let proxy = SignedProxy::start(address, test_key(), None).await.unwrap();
         let request = Request::builder()
             .uri(format!("http://{}/reply", proxy.listen_addr()))
             .header(axum::http::header::HOST, proxy.listen_addr().to_string())
@@ -549,16 +520,17 @@ mod tests {
         assert_eq!(build_message(None, 1000, None, b"B"), b"1000..B".to_vec());
     }
 
-    /// An Ed25519 approval signature produced the way the handler produces it
-    /// verifies under `verify_strict` with the public half — the check the
-    /// guest performs against `nucleus.approval_pubkeys`.
     /// The signed proxy forwards over a Unix socket exactly as over TCP: the
-    /// request reaches the socket's server with the node's signature headers
-    /// attached, and the reply comes back through. Pinned against a real
-    /// bound socket so a regression in `forward_request`'s Unix arm cannot
-    /// hide behind the TCP path that every other test exercises.
+    /// request reaches the socket's server and the reply comes back through.
+    /// Pinned against a real bound socket so a regression in
+    /// `forward_request`'s Unix arm cannot hide behind the TCP path that every
+    /// other test exercises.
+    ///
+    /// #2446 step 3: an ordinary request carries NO signature and no
+    /// timestamp. The shared secret that signed it is deleted; the socket
+    /// authenticates the node. Red before: both headers were attached.
     #[tokio::test]
-    async fn a_unix_target_is_reached_and_signed() {
+    async fn a_unix_target_is_reached_with_no_shared_secret_signature() {
         use axum::routing::get;
         use std::sync::Mutex;
 
@@ -583,8 +555,7 @@ mod tests {
 
         let proxy = SignedProxy::start(
             ProxyTarget::Unix(sock.clone()),
-            Arc::new(b"test-secret".to_vec()),
-            None,
+            test_key(),
             Some("node".to_string()),
         )
         .await
@@ -611,10 +582,10 @@ mod tests {
             .clone()
             .expect("backend saw the request");
         assert!(
-            headers.contains_key(HEADER_SIGNATURE),
-            "signature attached: {headers:?}"
+            !headers.contains_key(HEADER_SIGNATURE),
+            "no shared-secret signature: {headers:?}"
         );
-        assert!(headers.contains_key(HEADER_TIMESTAMP));
+        assert!(!headers.contains_key(HEADER_TIMESTAMP), "{headers:?}");
         assert_eq!(headers.get(HEADER_ACTOR).unwrap(), "node");
         assert_eq!(headers.get(axum::http::header::HOST).unwrap(), "localhost");
 
@@ -622,6 +593,70 @@ mod tests {
         server.abort();
     }
 
+    fn test_key() -> ApprovalKey {
+        Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]))
+    }
+
+    /// An approval is the one request still signed, with the node's Ed25519
+    /// key, and the signature verifies under the public half over the bytes
+    /// the guest rebuilds from the forwarded headers.
+    #[tokio::test]
+    async fn an_approval_is_signed_with_the_ed25519_key() {
+        use axum::routing::post;
+        use std::sync::Mutex;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen: Arc<Mutex<Option<HeaderMap>>> = Arc::new(Mutex::new(None));
+        let seen_in = Arc::clone(&seen);
+        let backend = Router::new().route(
+            "/v1/approve",
+            post(move |headers: HeaderMap| {
+                let seen_in = Arc::clone(&seen_in);
+                async move {
+                    *seen_in.lock().unwrap() = Some(headers);
+                    "ok"
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, backend).await.unwrap() });
+        let key = test_key();
+        let proxy = SignedProxy::start(address, Arc::clone(&key), Some("node".to_string()))
+            .await
+            .unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("http://{}/v1/approve", proxy.listen_addr()))
+            .header(axum::http::header::HOST, proxy.listen_addr().to_string())
+            .body(Full::new(axum::body::Bytes::from_static(b"{}")))
+            .unwrap();
+        let stream = TcpStream::connect(proxy.listen_addr()).await.unwrap();
+        let response = send_over(stream, request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        proxy.shutdown().await;
+        server.abort();
+
+        let headers = seen.lock().unwrap().clone().expect("backend saw it");
+        let timestamp: i64 = headers
+            .get(HEADER_TIMESTAMP)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .expect("an approval carries its timestamp");
+        let sig: [u8; 64] = hex::decode(headers.get(HEADER_SIGNATURE).unwrap().to_str().unwrap())
+            .unwrap()
+            .try_into()
+            .expect("an Ed25519 signature is 64 bytes");
+        let message = build_message(None, timestamp, Some("node"), b"{}");
+        assert!(
+            key.verifying_key()
+                .verify_strict(&message, &ed25519_dalek::Signature::from_bytes(&sig))
+                .is_ok()
+        );
+    }
+
+    /// An Ed25519 approval signature produced the way the handler produces it
+    /// verifies under `verify_strict` with the public half — the check the
+    /// guest performs against `nucleus.approval_pubkeys`.
     #[test]
     fn an_approval_signature_round_trips_to_the_public_key() {
         use ed25519_dalek::Signer as _;

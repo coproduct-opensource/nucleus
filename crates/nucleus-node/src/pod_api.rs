@@ -241,7 +241,7 @@ fn scope_to_caller<T: Lineage + Clone>(items: &[T], caller: &CallerScope) -> Vec
 /// that owns the vsock socket the request arrived on — the socket authenticates
 /// it, so nothing the guest says is trusted.
 ///
-/// It carries NONE of the node's secrets (`caller_secret`, `proxy_auth_secret`,
+/// It carries NONE of the node's secrets (`caller_secret` and
 /// the signing keys live on `NodeState`, not here), and exposes only
 /// `scoped_infos`. A pod reaching it learns exactly the `PodInfo`s its own
 /// lineage already entitles it to over `/v1/pods` — its own row and its direct
@@ -1166,8 +1166,7 @@ pub(crate) mod handler_tests {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    /// The arguments an operator running the local driver would get, with only
-    /// the two that have no default supplied.
+    /// The arguments an operator running the local driver would get.
     fn args(state_dir: &std::path::Path) -> crate::Args {
         <crate::Args as clap::Parser>::parse_from([
             "nucleus-node",
@@ -1176,10 +1175,6 @@ pub(crate) mod handler_tests {
             "--driver",
             "local",
             "--allow-local-driver",
-            "--proxy-auth-secret",
-            "test-auth-secret",
-            "--proxy-approval-secret",
-            "test-approval-secret",
         ])
     }
 
@@ -1249,9 +1244,7 @@ pub(crate) mod handler_tests {
             sealed_rootfs: None,
             network_allocator: Arc::new(crate::net::NetworkAllocator::new()),
             listen_addr: a.listen.clone(),
-            proxy_auth_secret: a.proxy_auth_secret.clone(),
             caller_secret: Arc::new([7u8; 32]),
-            proxy_approval_secret: a.proxy_approval_secret.clone(),
             approval_signer: Arc::new(
                 crate::keys::load_or_create_approval_signing_key(
                     &a.state_dir,
@@ -1290,7 +1283,6 @@ pub(crate) mod handler_tests {
             container_image: a.container_image.clone(),
             container_mediation: a.container_mediation,
             container_network: a.container_network.clone(),
-            container_proxy: a.container_proxy_transport,
             container_pool: None,
             docker: None,
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(
@@ -1470,8 +1462,7 @@ pub(crate) mod handler_tests {
         let target: std::net::SocketAddr = "127.0.0.1:9".parse().expect("addr");
         let proxy = crate::signed_proxy::SignedProxy::start(
             target,
-            Arc::new(b"test-secret".to_vec()),
-            None,
+            Arc::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             None,
         )
         .await
