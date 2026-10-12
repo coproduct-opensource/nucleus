@@ -104,5 +104,8 @@
 # 2026-10-08: ADR 0016 S1, the eval-cell launch check: three new sites taking a
 # `LaunchAttestation`, all bound. Net D=200, B=199, dropped=1 (still CaClient),
 # the same 199/200 the scorecard's bound family pins.
-floor_bp = 9950
-declared_floor = 200
+# 2026-10-08: ADR 0016 D5. CaClient's three extension-carrying defaults refuse
+# rather than sign a weaker certificate, so they perform no act: the last dropped
+# site is paid (inert manifest row now N, INERT_TOTAL 35). Measured 198/198.
+floor_bp = 10000
+declared_floor = 198

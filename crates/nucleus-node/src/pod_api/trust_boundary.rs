@@ -90,6 +90,10 @@ enum Property {
     /// P5b (#3255): the approval that declassified one tainted push is spent
     /// by it; the next push from the same session is held again.
     ReusedDeclassificationRefused,
+    /// P7 (ADR 0014 S4): a guest-performed call the operator approved on the
+    /// host is released once. Redeemed again after the guest reconnects, by
+    /// the old approval or a fresh one for the same call, it is refused.
+    GuestLocalApprovalReuseRefused,
     /// P6 (ADR 0014 S3): a pod whose workspace the host put in untrusted, and
     /// whose guest reports nothing (no `Observe`), has its outbound effect
     /// withheld by the host. The guest's silence is not evidence (A-2).
@@ -107,6 +111,7 @@ const ALL: &[Property] = &[
     Property::TaintedPushRequiresApproval,
     Property::ReusedDeclassificationRefused,
     Property::UnobservedTaintHeld,
+    Property::GuestLocalApprovalReuseRefused,
 ];
 
 impl Property {
@@ -121,6 +126,7 @@ impl Property {
             Property::TaintedPushRequiresApproval => "P2b",
             Property::ReusedDeclassificationRefused => "P5b",
             Property::UnobservedTaintHeld => "P6",
+            Property::GuestLocalApprovalReuseRefused => "P7",
         }
     }
 }
@@ -137,6 +143,7 @@ fn expected(p: Property) -> Expected {
         Property::TaintedPushRequiresApproval => Expected::Holds,
         Property::ReusedDeclassificationRefused => Expected::Holds,
         Property::UnobservedTaintHeld => Expected::Holds,
+        Property::GuestLocalApprovalReuseRefused => Expected::Holds,
     }
 }
 
@@ -214,6 +221,12 @@ trait GuestFacing {
     /// The exit report a guest leaves behind, as the host reads it at teardown.
     fn leave_exit_report(&mut self, json: &str) -> Probe;
     async fn perform(&mut self, req: &PerformRequest) -> Probe;
+    /// P7: over the decision channel, have the operator grant one held
+    /// guest-performed `GitCommit` on the host, redeem it, reconnect, and
+    /// redeem it again. `Admitted` if the second release happens, or if the
+    /// host holds no approval for the call at all (the guest's own grant is
+    /// then the only release, and the host cannot refuse its reuse).
+    async fn redeem_across_reconnect(&mut self) -> Probe;
 }
 
 /// The upstream every scenario PERFORMs against, configured by the operator.
@@ -667,6 +680,15 @@ async fn measure<H: Host>(host: &H, control: &Result<String, String>, p: Propert
             let w = witness_tainted_push(&s, "a second tainted GitPush on one approval");
             (w, probe_broker(host, control, s).await)
         }
+        Property::GuestLocalApprovalReuseRefused => {
+            let s = scenario_reuse();
+            let witness = witness_reuse(&s);
+            let probe = match boot_live(host, approval_gated(), &[], Workspace::Clean).await {
+                Ok(mut pod) => pod.redeem_across_reconnect().await,
+                Err(p) => p,
+            };
+            (witness, probe)
+        }
         Property::UnobservedTaintHeld => {
             let s = scenario_unobserved_taint(Workspace::Untrusted);
             let witness = witness_unobserved_taint(&s);
@@ -739,6 +761,7 @@ struct NodePod {
     /// Every upstream call the host made for this pod.
     calls: Arc<Mutex<Vec<UpstreamCall>>>,
     host_pubkey: String,
+    pod: uuid::Uuid,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     _prepared: crate::pod_boot_identity::PreparedIdentity,
     _dir: tempfile::TempDir,
@@ -908,6 +931,7 @@ impl Host for Node {
             Err(e) => Err(format!("FETCH_BROKER_SECRET: {e}")),
         };
         Ok(NodePod {
+            pod: id,
             host_policy,
             host_pubkey: st.authority.root_pubkey_hex(),
             approvals: approvals.iter().copied().collect(),
@@ -952,7 +976,189 @@ fn refusal_in(reply: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// One guest frame through a channel, and the host's reply decoded.
+fn exchange_frame(
+    channel: &mut crate::host_decide::Channel,
+    frame: nucleus_decision_protocol::GuestFrame,
+) -> Result<nucleus_decision_protocol::HostFrame, String> {
+    let step = channel.step(frame).map_err(|e| format!("{e:?}"))?;
+    nucleus_decision_protocol::HostFrame::decode_body(
+        &step.reply[nucleus_decision_protocol::LEN_PREFIX..],
+    )
+    .map_err(|e| format!("{e:?}"))
+}
+
+/// A held call's approval id, twice: the guest keeps a copy of every id it is
+/// sent, so a compromised one can present it again after a reconnect.
+fn approval_ids(
+    channel: &mut crate::host_decide::Channel,
+    seq: nucleus_decision_protocol::Seq,
+) -> Result<
+    (
+        nucleus_decision_protocol::ApprovalId,
+        nucleus_decision_protocol::ApprovalId,
+    ),
+    String,
+> {
+    use nucleus_decision_protocol::{GuestFrame, HostFrame, Subject, Verdict};
+    let subject = Subject::new("commit").map_err(|e| format!("{e:?}"))?;
+    let frame = GuestFrame::Decide {
+        seq,
+        op: Operation::GitCommit,
+        args_digest: nucleus_decision_protocol::kernel::args_digest(Operation::GitCommit, &subject),
+        subject,
+    };
+    let step = channel.step(frame).map_err(|e| format!("{e:?}"))?;
+    let body = &step.reply[nucleus_decision_protocol::LEN_PREFIX..];
+    let id = |b: &[u8]| match HostFrame::decode_body(b) {
+        Ok(HostFrame::Verdict {
+            seq: _,
+            verdict: Verdict::ApprovalRequired { approval_id },
+        }) => Ok(approval_id),
+        other => Err(format!("the host did not hold the commit: {other:?}")),
+    };
+    Ok((id(body)?, id(body)?))
+}
+
 impl GuestFacing for NodePod {
+    async fn redeem_across_reconnect(&mut self) -> Probe {
+        use nucleus_decision_protocol::{DenyReason, GuestFrame, HostFrame, Outcome, Seq, Verdict};
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|t| t.as_secs())
+            .unwrap_or(0);
+        let mut first =
+            crate::host_decide::Channel::with_policy(self.pod, Arc::clone(&self.host_policy), 1);
+        let decided = Seq::FIRST;
+        let (id, kept) = match approval_ids(&mut first, decided) {
+            Ok(ids) => ids,
+            Err(e) => return Probe::Inconclusive(e),
+        };
+        // The operator, on the host.
+        let held = {
+            let Ok(mut policy) = self.host_policy.lock() else {
+                return Probe::Inconclusive("host policy poisoned".into());
+            };
+            let Ok(operator) = crate::host_decide::effects::Operator::authenticate("op", "op")
+            else {
+                return Probe::Inconclusive("no operator".into());
+            };
+            policy
+                .list_effect_approvals(operator, now)
+                .into_iter()
+                .find(|a| a.operation == "git_commit" && a.subject == "commit")
+        };
+        let Some(held) = held else {
+            return Probe::Admitted(
+                "the host holds no approval for the guest-performed commit: only the guest's                  own grant can release it, and the host cannot refuse that grant's reuse"
+                    .into(),
+            );
+        };
+        {
+            let Ok(mut policy) = self.host_policy.lock() else {
+                return Probe::Inconclusive("host policy poisoned".into());
+            };
+            let Ok(operator) = crate::host_decide::effects::Operator::authenticate("op", "op")
+            else {
+                return Probe::Inconclusive("no operator".into());
+            };
+            if let Err(e) = policy.settle_effect_approval(operator, held.id, true, now) {
+                return Probe::Inconclusive(format!("the operator could not grant: {e}"));
+            }
+        }
+        // The positive control: the grant releases the call once.
+        let Some(redeem) = decided.next() else {
+            return Probe::Inconclusive("sequence".into());
+        };
+        match exchange_frame(
+            &mut first,
+            GuestFrame::Redeem {
+                seq: redeem,
+                approval_id: id,
+            },
+        ) {
+            Ok(HostFrame::Verdict {
+                seq: _,
+                verdict: Verdict::Allowed { decision_id: _ },
+            }) => {}
+            other => {
+                return Probe::Inconclusive(format!(
+                    "the operator's grant did not release the call once: {other:?}"
+                ));
+            }
+        }
+        let Some(shadow) = redeem.next() else {
+            return Probe::Inconclusive("sequence".into());
+        };
+        if let Err(e) = exchange_frame(
+            &mut first,
+            GuestFrame::Shadow {
+                seq: shadow,
+                decided,
+                local: Outcome::ApprovalRequired,
+            },
+        ) {
+            return Probe::Inconclusive(format!("the first report was refused: {e}"));
+        }
+        drop(first);
+        // The guest reconnects and presents what it kept.
+        let mut second =
+            crate::host_decide::Channel::with_policy(self.pod, Arc::clone(&self.host_policy), 2);
+        match exchange_frame(
+            &mut second,
+            GuestFrame::Redeem {
+                seq: Seq::FIRST,
+                approval_id: kept,
+            },
+        ) {
+            Ok(HostFrame::Verdict {
+                seq: _,
+                verdict: Verdict::Allowed { decision_id: _ },
+            }) => {
+                return Probe::Admitted("the old approval released the call again".into());
+            }
+            Ok(HostFrame::Verdict {
+                seq: _,
+                verdict: Verdict::Denied { reason: _ } | Verdict::ApprovalRequired { .. },
+            }) => {}
+            other => return Probe::Inconclusive(format!("old approval: {other:?}")),
+        }
+        // And asks again for the same call.
+        let Some(again) = Seq::FIRST.next() else {
+            return Probe::Inconclusive("sequence".into());
+        };
+        let (fresh, _) = match approval_ids(&mut second, again) {
+            Ok(ids) => ids,
+            Err(e) => return Probe::Inconclusive(e),
+        };
+        let Some(redeem) = again.next() else {
+            return Probe::Inconclusive("sequence".into());
+        };
+        match exchange_frame(
+            &mut second,
+            GuestFrame::Redeem {
+                seq: redeem,
+                approval_id: fresh,
+            },
+        ) {
+            Ok(HostFrame::Verdict {
+                seq: _,
+                verdict: Verdict::Allowed { decision_id: _ },
+            }) => Probe::Admitted("a spent grant released the same call again".into()),
+            Ok(HostFrame::Verdict {
+                seq: _,
+                verdict:
+                    Verdict::ApprovalRequired { approval_id: _ }
+                    | Verdict::Denied {
+                        reason: DenyReason::ApprovalUnknown | DenyReason::ApprovalRefused,
+                    },
+            }) => Probe::Refused(
+                "after a reconnect the spent grant released nothing: the call is held again".into(),
+            ),
+            other => Probe::Inconclusive(format!("fresh approval: {other:?}")),
+        }
+    }
+
     async fn legitimate_fetch(&mut self) -> Probe {
         match ask(&self.api, "FETCH_POD_SPEC").await {
             Ok(reply) if reply.contains(POD_NAME) => {
@@ -1246,6 +1452,10 @@ impl Host for Enforcing {
 }
 
 impl GuestFacing for EnforcingPod {
+    async fn redeem_across_reconnect(&mut self) -> Probe {
+        Probe::Refused("one host grant, one release".into())
+    }
+
     async fn legitimate_fetch(&mut self) -> Probe {
         Probe::Admitted("served".into())
     }
@@ -1337,6 +1547,10 @@ impl Host for Disconnected {
 }
 
 impl GuestFacing for DeadPod {
+    async fn redeem_across_reconnect(&mut self) -> Probe {
+        Probe::Inconclusive("connection refused".into())
+    }
+
     async fn legitimate_fetch(&mut self) -> Probe {
         Probe::Inconclusive("connection refused".into())
     }

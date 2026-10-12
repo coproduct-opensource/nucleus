@@ -119,7 +119,7 @@ impl PodIdentityFiles {
 pub fn issue_ephemeral(pod_dir: &Path, pod_id: &str, ttl: Duration) -> Result<PodIdentityFiles> {
     let ca = SelfSignedCa::new(HOST_TIER_TRUST_DOMAIN)?;
     let identity = Identity::try_new(HOST_TIER_TRUST_DOMAIN, POD_NAMESPACE, pod_id)?;
-    let certificate = ca.issue(&identity, ttl)?;
+    let certificate = ca.issue_unmeasured(&identity, ttl, crate::UnmeasuredTier::Host)?;
     let files = PodIdentityFiles::at(pod_dir);
     files.write(&certificate, ca.trust_bundle())?;
     Ok(files)
@@ -135,7 +135,8 @@ mod tests {
     }
 
     /// The minted identity names the pod, chains to the root written beside
-    /// it, and makes no launch claim: it is tier 2, never a forged tier 1.
+    /// it, and makes no measured launch claim: it is tier 2, never a forged tier 1.
+    /// It says so: the unmeasured-launch extension names the host tier.
     #[test]
     fn an_ephemeral_identity_names_the_pod_and_chains_to_its_root() {
         let dir = tempfile::tempdir().unwrap();
@@ -151,6 +152,20 @@ mod tests {
         let bundle = TrustBundle::from_pem(&read(&files, "NUCLEUS_IDENTITY_TRUST_BUNDLE")).unwrap();
         crate::verify_svid_chain(certificate.leaf(), &bundle).unwrap();
         assert!(crate::extract_launch_attestation(certificate.leaf().der()).is_none());
+        // It states that the host tier did not measure the launch (ADR 0016 D5),
+        // and a verifier that requires a measured launch refuses it by that name.
+        assert_eq!(
+            crate::extract_unmeasured_launch(certificate.leaf().der()).unwrap(),
+            Some(crate::UnmeasuredTier::Host)
+        );
+        let err = crate::verify_attested_svid(
+            &cert,
+            &bundle,
+            &crate::AttestationRequirements::any(),
+            true,
+        )
+        .expect_err("an unmeasured launch is not a measured one");
+        assert!(err.to_string().contains("`host` tier"), "{err}");
     }
 
     /// The key is private to its owner, and a second launch into the same

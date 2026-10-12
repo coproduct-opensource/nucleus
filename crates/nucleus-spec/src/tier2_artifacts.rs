@@ -354,6 +354,15 @@ pub enum GuestCapability {
     /// reads it, and reports a console without one as "guest telemetry
     /// absent", never as zero.
     HostDecideTelemetry,
+    /// When the tool-proxy's own grant releases a call its kernel held for
+    /// approval, its shadow client also sends `Redeem` for the approval the
+    /// host answered with, so the host sees the release and refuses its reuse
+    /// once the operator's host grant is spent (ADR 0014 §4, S4).
+    /// [`Demand::Optional`]: nothing is enforced from it before S6, so a guest
+    /// without it runs no weaker than its record; the host simply never sees
+    /// the guest-local release. S6's `HostDecides` is the row that makes the
+    /// host's answer load-bearing for an eval cell.
+    HostApprovalRedeem,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -409,7 +418,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 20] = [
+    pub const ALL: [GuestCapability; 21] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -430,6 +439,7 @@ impl GuestCapability {
         GuestCapability::SignedAuditLog,
         GuestCapability::SharedSecretTierRetired,
         GuestCapability::HostDecideTelemetry,
+        GuestCapability::HostApprovalRedeem,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -469,6 +479,7 @@ impl GuestCapability {
             GuestCapability::SharedSecretTierRetired => Demand::Optional,
             // Read by `cargo xtask host-decide-agreement`, never by the node.
             GuestCapability::HostDecideTelemetry => Demand::Optional,
+            GuestCapability::HostApprovalRedeem => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -536,6 +547,7 @@ impl GuestCapability {
             GuestCapability::SharedSecretTierRetired => FirstShipped::Release("2.7.0"),
             // ADR 0014 S1: in this tree and in no release yet.
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
+            GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
         }
     }
 
@@ -654,6 +666,11 @@ impl GuestCapability {
                  by kind and its Decide round-trip p50/p99 on the guest console; an older guest \
                  prints none, so the agreement reader reports its telemetry as absent (the node \
                  does not require it)"
+            }
+            GuestCapability::HostApprovalRedeem => {
+                "ADR 0014 (S4) has the tool-proxy redeem, on the host, the approval of a call its \
+                 own grant released; an older guest never does, so the host never sees that \
+                 release (the node does not require it)"
             }
         }
     }
@@ -1073,7 +1090,10 @@ mod tests {
         // tree's node and CLI know of is in the pinned release, except the
         // ones that landed after it, named here. The change that moves the
         // pin empties this list, and the assertion fails until it does.
-        let after_the_pin = [GuestCapability::HostDecideTelemetry];
+        let after_the_pin = [
+            GuestCapability::HostDecideTelemetry,
+            GuestCapability::HostApprovalRedeem,
+        ];
         for cap in GuestCapability::ALL {
             assert_eq!(
                 cap.first_shipped() == FirstShipped::NotYet,
@@ -1249,7 +1269,8 @@ mod tests {
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
                 GuestCapability::SignedAuditLog => GuestCapability::SharedSecretTierRetired,
                 GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
-                GuestCapability::HostDecideTelemetry => GuestCapability::CaBundle,
+                GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
+                GuestCapability::HostApprovalRedeem => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

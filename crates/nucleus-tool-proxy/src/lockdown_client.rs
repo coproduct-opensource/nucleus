@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use nucleus_identity::tls::{SpiffeServerCertVerifier, root_store_from_trust_bundle};
+use nucleus_identity::tls::root_store_from_trust_bundle;
 use nucleus_identity::{TrustBundle, WorkloadCertificate};
 use nucleus_proto::nucleus_node::node_service_client::NodeServiceClient;
 use nucleus_proto::nucleus_node::{LockdownAck, LockdownCommand};
@@ -46,7 +46,11 @@ pub struct LockdownWatcherConfig {
 ///
 /// IMPORTANT: backoff is NOT reset on clean disconnect. This prevents an
 /// adversary from cycling connections to avoid lockdown propagation.
-pub async fn run_lockdown_watcher(config: LockdownWatcherConfig, flag: Arc<AtomicBool>) {
+pub async fn run_lockdown_watcher(
+    config: LockdownWatcherConfig,
+    flag: Arc<AtomicBool>,
+    local_locks: Vec<Arc<AtomicBool>>,
+) {
     let mut backoff = Duration::from_secs(1);
     let max_backoff = Duration::from_secs(30);
 
@@ -57,7 +61,7 @@ pub async fn run_lockdown_watcher(config: LockdownWatcherConfig, flag: Arc<Atomi
             "connecting to node lockdown stream"
         );
 
-        match connect_and_watch(&config, flag.clone()).await {
+        match connect_and_watch(&config, flag.clone(), &local_locks).await {
             Ok(()) => {
                 tracing::warn!("lockdown stream ended cleanly — reconnecting");
                 // No backoff reset on clean disconnect (prevents evasion)
@@ -81,24 +85,25 @@ pub async fn run_lockdown_watcher(config: LockdownWatcherConfig, flag: Arc<Atomi
 /// Uses tonic's `tls_config_with_verifier` escape hatch rather than the
 /// default WebPKI verifier: the node's SVID carries a SPIFFE URI SAN, never
 /// a DNS name, so standard hostname verification would always reject it.
-/// `SpiffeServerCertVerifier` is the SAME verifier `nucleus-identity`'s own
-/// `TlsClientConfig` uses for every other SPIFFE mTLS client in this
-/// codebase — promoted to `pub` (see its doc comment) rather than
-/// reimplemented here, so this is one verifier with many callers instead of
-/// two verifiers that can quietly drift apart.
+/// `NodeServerVerifier` checks the exact node SVID, so another server-capable
+/// peer in the same trust domain cannot issue restore commands.
 async fn connect(
     config: &LockdownWatcherConfig,
 ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    if reqwest::Url::parse(&config.node_grpc_url)?.scheme() != "https" {
+        return Err("lockdown stream requires HTTPS".into());
+    }
 
     let client_cert =
         WorkloadCertificate::from_pem(&config.client_cert_pem, &config.client_key_pem)?;
     let trust_bundle = TrustBundle::from_pem(&config.trust_bundle_pem)?;
     let roots = root_store_from_trust_bundle(&trust_bundle)?;
-    let verifier: Arc<dyn ServerCertVerifier> = Arc::new(SpiffeServerCertVerifier::new(
-        Arc::new(roots),
-        config.trust_domain.clone(),
-    ));
+    let verifier: Arc<dyn ServerCertVerifier> =
+        Arc::new(nucleus_identity::node_tls::NodeServerVerifier::new(
+            Arc::new(roots),
+            &nucleus_identity::Identity::node(&config.trust_domain)?,
+        )?);
 
     let identity = Identity::from_pem(client_cert.chain_pem(), client_cert.private_key_pem());
     let tls_config = ClientTlsConfig::new().identity(identity);
@@ -115,6 +120,7 @@ async fn connect(
 async fn connect_and_watch(
     config: &LockdownWatcherConfig,
     flag: Arc<AtomicBool>,
+    local_locks: &[Arc<AtomicBool>],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let channel = connect(config).await?;
     let mut client = NodeServiceClient::new(channel);
@@ -130,7 +136,15 @@ async fn connect_and_watch(
     let pod_id = config.pod_id.clone();
 
     while let Some(cmd) = stream.message().await? {
-        apply_lockdown_command(&cmd, &flag, &proxy_id, pod_id.as_deref(), &ack_tx).await;
+        apply_lockdown_command(
+            &cmd,
+            &flag,
+            &proxy_id,
+            pod_id.as_deref(),
+            &ack_tx,
+            local_locks,
+        )
+        .await;
     }
 
     Ok(())
@@ -143,10 +157,17 @@ async fn apply_lockdown_command(
     proxy_id: &str,
     pod_id: Option<&str>,
     ack_tx: &tokio::sync::mpsc::Sender<LockdownAck>,
+    local_locks: &[Arc<AtomicBool>],
 ) {
-    let applies = apply_scope(&cmd.scope, pod_id);
+    let applies =
+        apply_scope(&cmd.scope, pod_id) && (cmd.active || restore_scope(&cmd.scope, pod_id));
 
     if applies {
+        if !cmd.active {
+            for lock in local_locks {
+                lock.store(false, Ordering::SeqCst);
+            }
+        }
         let was = flag.swap(cmd.active, Ordering::SeqCst);
         if was != cmd.active {
             if cmd.active {
@@ -188,6 +209,16 @@ async fn apply_lockdown_command(
     }
 }
 
+/// Unknown scopes can conservatively lock, but may never widen permissions.
+fn restore_scope(scope: &str, pod_id: Option<&str>) -> bool {
+    scope == "all"
+        || scope.starts_with("label:")
+        || scope
+            .strip_prefix("pod:")
+            .zip(pod_id)
+            .is_some_and(|(target, own)| target == own)
+}
+
 /// Determine whether a lockdown scope applies to this proxy.
 ///
 /// Conservative: locks on unknown scopes and label selectors
@@ -219,6 +250,42 @@ fn apply_scope(scope: &str, pod_id: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_matching_node_restores_clear_local_locks() {
+        for (scope, expected) in [
+            ("all", false),
+            ("pod:mine", false),
+            ("pod:other", true),
+            ("unknown", true),
+            ("", true),
+        ] {
+            let stream = Arc::new(AtomicBool::new(true));
+            let file = Arc::new(AtomicBool::new(true));
+            let breaker = Arc::new(AtomicBool::new(true));
+            let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+            let cmd = LockdownCommand {
+                active: false,
+                scope: scope.into(),
+                reason: "operator restore".into(),
+                operator_id: "operator".into(),
+                timestamp_unix: 1,
+            };
+            apply_lockdown_command(
+                &cmd,
+                &stream,
+                "proxy",
+                Some("mine"),
+                &tx,
+                &[file.clone(), breaker.clone()],
+            )
+            .await;
+            assert_eq!(stream.load(Ordering::Acquire), expected, "{scope}");
+            assert_eq!(file.load(Ordering::Acquire), expected, "{scope}");
+            assert_eq!(breaker.load(Ordering::Acquire), expected, "{scope}");
+            assert_eq!(rx.recv().await.unwrap().applied, !expected);
+        }
+    }
 
     #[test]
     fn test_apply_scope_all() {
@@ -296,7 +363,9 @@ mod mtls_tests {
     /// Serves exactly one RPC: `watch_lockdown`, which sends a single
     /// `LockdownCommand` and then closes its half of the stream. Every other
     /// method is unreachable from this test and left `unimplemented!()`.
-    struct OneShotLockdown;
+    struct OneShotLockdown {
+        active: bool,
+    }
 
     #[tonic::async_trait]
     impl NodeService for OneShotLockdown {
@@ -369,7 +438,7 @@ mod mtls_tests {
 
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tx.send(Ok(proto::LockdownCommand {
-                active: true,
+                active: self.active,
                 scope: "all".to_string(),
                 reason: "mtls integration test".to_string(),
                 operator_id: "test".to_string(),
@@ -384,8 +453,7 @@ mod mtls_tests {
         }
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn connect_and_watch_completes_a_real_mtls_handshake_and_receives_a_command() {
+    async fn round_trip(active: bool) {
         // The server task's TLS accept races `connect()`'s own install — do
         // it here too so whichever runs first doesn't leave the other
         // without a provider.
@@ -423,7 +491,7 @@ mod mtls_tests {
             tonic::transport::Server::builder()
                 .tls_config(server_tls)
                 .unwrap()
-                .add_service(NodeServiceServer::new(OneShotLockdown))
+                .add_service(NodeServiceServer::new(OneShotLockdown { active }))
                 .serve_with_incoming(TcpListenerStream::new(listener))
                 .await
                 .unwrap();
@@ -443,21 +511,35 @@ mod mtls_tests {
             proxy_id: "test-proxy".to_string(),
             pod_id: None,
         };
-        let flag = Arc::new(AtomicBool::new(false));
+        let flag = Arc::new(AtomicBool::new(!active));
+        let local_locks = vec![
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(AtomicBool::new(true)),
+        ];
 
         tokio::time::timeout(
             Duration::from_secs(10),
-            connect_and_watch(&config, flag.clone()),
+            connect_and_watch(&config, flag.clone(), &local_locks),
         )
         .await
         .expect("connect_and_watch should complete, not hang")
         .expect("a real mTLS handshake against the SAME CA must succeed");
 
-        assert!(
-            flag.load(Ordering::SeqCst),
-            "the LockdownCommand sent over the mTLS stream must have flipped the flag"
-        );
+        assert_eq!(flag.load(Ordering::SeqCst), active);
+        for lock in local_locks {
+            assert_eq!(lock.load(Ordering::SeqCst), active);
+        }
 
         server_handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn connect_and_watch_completes_a_real_mtls_handshake_and_receives_a_command() {
+        round_trip(true).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authenticated_node_restore_clears_local_and_breaker_locks() {
+        round_trip(false).await;
     }
 }

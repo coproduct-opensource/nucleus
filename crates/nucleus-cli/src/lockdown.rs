@@ -6,13 +6,12 @@
 //!
 //! # How it works
 //!
-//! 1. Tries gRPC `NodeService::Lockdown` on the configured node address
-//! 2. Falls back to writing a local signal file if gRPC is unavailable
-//! 3. Both paths result in tool-proxy blocking all tool calls
+//! Uses the operator-authenticated mTLS `NodeService::Lockdown` RPC.
+//! An unavailable node is an error, never a downgrade to a local signal file.
 
 use anyhow::{Result, bail};
 use clap::Args;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Emergency lockdown — drop all agents to read-only
 #[derive(Args, Debug)]
@@ -34,43 +33,12 @@ pub struct LockdownArgs {
     pub reason: String,
 
     /// Node gRPC address
-    #[arg(long, default_value = "http://127.0.0.1:9180")]
+    #[arg(long, default_value = "https://127.0.0.1:9180")]
     pub node_addr: String,
 
     /// Skip confirmation prompt
     #[arg(long)]
     pub yes: bool,
-}
-
-/// Lockdown signal file path — stored in a user-owned directory, not /tmp.
-/// Red team finding: /tmp is world-writable, any local process could fake a lockdown.
-fn lockdown_signal_path() -> std::path::PathBuf {
-    let dir = dirs::runtime_dir()
-        .or_else(dirs::data_local_dir)
-        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
-        .join("nucleus");
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("lockdown.json")
-}
-
-/// Compute HMAC-SHA256 over the signal body using a machine-local key.
-/// The key is derived from the machine ID + a fixed salt — not a secret,
-/// but sufficient to prevent casual tampering by other local users.
-fn signal_hmac(body: &[u8]) -> String {
-    use hmac::{Hmac, Mac, digest::KeyInit};
-    use sha2::Sha256;
-
-    // Machine-local key: hostname + uid — prevents cross-user forgery
-    let key_material = format!(
-        "nucleus-lockdown-{}:{}",
-        whoami::hostname().unwrap_or_else(|_| "unknown".to_string()),
-        whoami::username().unwrap_or_else(|_| "unknown".to_string()),
-    );
-
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(key_material.as_bytes()).expect("hmac accepts any key");
-    mac.update(body);
-    hex::encode(mac.finalize().into_bytes())
 }
 
 /// Execute the lockdown command.
@@ -97,23 +65,11 @@ pub async fn execute(args: LockdownArgs) -> Result<()> {
     let action = if args.restore { "restore" } else { "lockdown" };
     info!(scope = %scope, reason = %args.reason, action = action, "Lockdown command");
 
-    // Try gRPC first, fall back to local signal file
-    match try_grpc_lockdown(&args, &scope).await {
-        Ok(response) => {
-            if args.restore {
-                eprintln!("Lockdown lifted via gRPC.");
-            } else {
-                eprintln!(
-                    "Lockdown initiated via gRPC — {} pods affected, {} audit entries.",
-                    response.affected_pods, response.audit_entries_created
-                );
-            }
-        }
-        Err(e) => {
-            warn!(error = %e, "gRPC lockdown failed — falling back to local signal file");
-            write_signal_file(&args, &scope)?;
-        }
-    }
+    let response = try_grpc_lockdown(&args, &scope).await?;
+    eprintln!(
+        "Lockdown {action} accepted by node: {} pods affected, {} audit entries.",
+        response.affected_pods, response.audit_entries_created
+    );
 
     Ok(())
 }
@@ -125,9 +81,7 @@ async fn try_grpc_lockdown(
 ) -> Result<nucleus_proto::nucleus_node::LockdownResponse> {
     use nucleus_proto::nucleus_node::node_service_client::NodeServiceClient;
 
-    let mut client = NodeServiceClient::connect(args.node_addr.clone())
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to connect to {}: {}", args.node_addr, e))?;
+    let mut client = NodeServiceClient::new(operator_channel(&args.node_addr).await?);
 
     let request = nucleus_proto::nucleus_node::LockdownRequest {
         reason: args.reason.clone(),
@@ -152,50 +106,44 @@ async fn try_grpc_lockdown(
     Ok(response.into_inner())
 }
 
-/// Fallback: write a local signal file for the tool-proxy watcher.
-fn write_signal_file(args: &LockdownArgs, scope: &str) -> Result<()> {
-    let signal_path = lockdown_signal_path();
-
-    if args.restore {
-        if signal_path.exists() {
-            std::fs::remove_file(&signal_path)?;
-            eprintln!("Lockdown lifted (signal file removed).");
-        } else {
-            eprintln!("No active lockdown found.");
-        }
-        return Ok(());
+/// Present the provisioned operator SVID and accept only the node's SVID.
+async fn operator_channel(url: &str) -> Result<tonic::transport::Channel> {
+    use nucleus_identity::node_tls::NodeServerVerifier;
+    use nucleus_identity::tls::root_store_from_trust_bundle;
+    use nucleus_identity::{TrustBundle, WorkloadCertificate};
+    use std::sync::Arc;
+    use tonic::transport::{Channel, ClientTlsConfig, Identity};
+    if reqwest::Url::parse(url)?.scheme() != "https" {
+        bail!("lockdown requires an https:// node endpoint and an operator mTLS identity");
     }
-
-    let body = serde_json::json!({
-        "action": "lockdown",
-        "scope": scope,
-        "reason": args.reason,
-        "timestamp": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        "restore": false,
-    });
-    let body_bytes = serde_json::to_string_pretty(&body)?;
-    let hmac = signal_hmac(body_bytes.as_bytes());
-
-    // Write signal with HMAC envelope
-    let envelope = serde_json::json!({
-        "signal": body,
-        "hmac": hmac,
-    });
-    std::fs::write(&signal_path, serde_json::to_string_pretty(&envelope)?)?;
-
-    eprintln!("Lockdown initiated via local signal file.");
-    eprintln!("   Signal: {}", signal_path.display());
-    eprintln!("   Use `nucleus lockdown --restore` to lift.");
-
-    Ok(())
+    let dir = crate::config::Config::identity_dir()?;
+    let cert = std::fs::read_to_string(dir.join("cli-cert.pem"))?;
+    let key = std::fs::read_to_string(dir.join("cli-key.pem"))?;
+    let bundle = TrustBundle::from_pem(&std::fs::read_to_string(dir.join("trust-bundle.pem"))?)?;
+    let own = WorkloadCertificate::from_pem(&cert, &key)?;
+    let node = nucleus_identity::Identity::node(own.identity().trust_domain())?;
+    let verifier =
+        NodeServerVerifier::new(Arc::new(root_store_from_trust_bundle(&bundle)?), &node)?;
+    Ok(Channel::from_shared(url.to_string())?
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(30))
+        .tls_config_with_verifier(
+            ClientTlsConfig::new().identity(Identity::from_pem(cert, key)),
+            Arc::new(verifier),
+        )?
+        .connect()
+        .await?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn plaintext_lockdown_cannot_fall_back_to_a_file() {
+        let error = operator_channel("http://127.0.0.1:9180").await.unwrap_err();
+        assert!(error.to_string().contains("https://"));
+    }
 
     #[test]
     fn test_scope_formatting() {
@@ -204,7 +152,7 @@ mod tests {
             pod: None,
             selector: None,
             reason: "test".to_string(),
-            node_addr: "http://127.0.0.1:9180".to_string(),
+            node_addr: "https://127.0.0.1:9180".to_string(),
             yes: true,
         };
         let scope = match (&args.pod, &args.selector) {

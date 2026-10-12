@@ -105,6 +105,7 @@ mod driver;
 mod effect_footprint;
 mod egress_link;
 mod egress_meter;
+mod egress_proxy;
 mod envelope_frame;
 mod eval_cell;
 mod federated_credential;
@@ -277,6 +278,19 @@ struct Args {
     /// Unprivileged gid the jailed VMM drops to.
     #[arg(long, env = nucleus_microvm_host::jail_user::GID_ENV, default_value_t = 100)]
     jailer_gid: u32,
+    /// The host egress proxy (`nucleus-egress-proxy`, ADR 0015 E2), started once per
+    /// eval-cell pod in its own network namespace. Unset: none is started, which no guest
+    /// notices before E4 puts the proxy on its path. Set: an eval cell whose proxy cannot be
+    /// started and verified confined is refused.
+    #[arg(long, env = "NUCLEUS_EGRESS_PROXY_BIN")]
+    egress_proxy_bin: Option<PathBuf>,
+    /// The uid the egress proxy runs as. Not the jailer's: a compromised proxy should hold
+    /// nothing a VMM holds.
+    #[arg(long, env = "NUCLEUS_EGRESS_PROXY_UID", default_value = "65534")]
+    egress_proxy_uid: production_confinement::NonRootUid,
+    /// The gid the egress proxy runs as. Never 0.
+    #[arg(long, env = "NUCLEUS_EGRESS_PROXY_GID", default_value_t = 65534)]
+    egress_proxy_gid: u32,
     /// Seal each pinned read-only rootfs once per node life and boot every pod from a reflink
     /// clone of it, instead of reading the whole file before each boot (`sealed_rootfs.rs`).
     /// Needs reflink on the jailer chroot base's filesystem; without it pods are read as before.
@@ -474,6 +488,9 @@ struct NodeState {
     jailer_uid: production_confinement::NonRootUid,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_gid: u32,
+    /// Whether, and as whom, each eval cell gets a host egress proxy.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    egress_proxy: egress_proxy::ProxyConfig,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     jailer_limits: jailer_limits::JailerLimits,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -667,6 +684,9 @@ struct FirecrackerPod {
     /// The shadow decision service for this pod (#2702, P8), owned for the same
     /// reason the broker is: its socket path is derived from the pod's vsock path.
     decide: Mutex<Option<host_decide::DecideListener>>,
+    /// The host egress proxy for an eval cell (ADR 0015 E2), owned so teardown kills it and
+    /// unlinks its socket, which is derived from the pod's vsock path like the others.
+    egress_proxy: Mutex<Option<egress_proxy::EgressProxy>>,
     /// The jail this pod runs in, when launched via the jailer. Held so teardown
     /// can remove it — a jail left behind leaks disk and, because writable drives
     /// are hard-linked in, keeps a reference to the caller's image alive.
@@ -851,7 +871,9 @@ async fn main() -> Result<(), ApiError> {
         &args.state_dir,
         &custody,
     )
-    .map_err(ApiError::Driver)?;
+    .map_err(ApiError::Driver)?
+    // The node's own NUCLEUS_DLC_*, read once: the admitted DLC of a pod whose labels ask for none.
+    .with_node_dlc(DlcProvisioning::from_env(|name| std::env::var(name).ok()));
 
     // A zero bound is refused at start-up, not discovered as a refusal of
     // every streamed call later (ADR 0007 B).
@@ -917,6 +939,11 @@ async fn main() -> Result<(), ApiError> {
         jailer_chroot_base: args.jailer_chroot_base.clone(),
         jailer_uid: args.jailer_uid,
         jailer_gid: args.jailer_gid,
+        egress_proxy: egress_proxy::ProxyConfig::from_flags(
+            args.egress_proxy_bin.clone(),
+            args.egress_proxy_uid.get(),
+            args.egress_proxy_gid,
+        ),
         jailer_limits: args.jailer_limits.limits(),
         sealed_rootfs: sealed_rootfs::from_flags(
             args.seal_pinned_rootfs && args.firecracker_jailer,
@@ -1409,6 +1436,19 @@ impl LocalPod {
     }
 }
 
+/// The local tool-proxy's DLC-D environment: exactly the provisioning the pod was admitted under
+/// (`PodAuthority::dlc`), the value the host's kernel decides with. Every `NUCLEUS_DLC_*` name is
+/// removed first, so nothing reaches the proxy by inheritance from the node (ADR 0007 G-1).
+#[cfg(feature = "local-driver")]
+pub(crate) fn provision_local_dlc_env(command: &mut Command, admitted: Option<&DlcProvisioning>) {
+    for field in nucleus_spec::dlc_admission::DlcField::ALL {
+        command.env_remove(field.env());
+    }
+    if let Some(dlc) = admitted {
+        command.envs(dlc.env());
+    }
+}
+
 /// The local tool-proxy's audit uploader environment (#3131, #3160).
 ///
 /// The tool-proxy inherits the node's environment (`Command` does not `env_clear`), so every name
@@ -1526,17 +1566,10 @@ async fn spawn_local_pod(
         command.env(key, value);
     }
 
-    // DLC-D verified admission: pod-scoped provisioning via PodSpec labels,
-    // forwarded verbatim as the NUCLEUS_DLC_* env the tool-proxy reads. The
-    // label->env mapping is `nucleus_spec::dlc_admission`'s, the same one the
-    // container driver and the Firecracker workload API use. Node-global env
-    // still inherits (Command does not env_clear); labels let a single pod —
-    // e.g. `nucleus verify --tier2`'s — run under admission without touching
-    // host config. Values are NOT validated here: the proxy's parser owns that
-    // and fails CLOSED (partial/garbage config provisions deny-all).
-    if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
-        command.envs(dlc.env());
-    }
+    // DLC-D verified admission: the provisioning admission recorded (the labels', else the
+    // node's own), the value the host's kernel decides with. Values are NOT validated here: the
+    // proxy's parser owns that and fails CLOSED (partial/garbage config provisions deny-all).
+    provision_local_dlc_env(&mut command, state.authority.dlc(id).await.as_ref());
 
     // Detect orchestrator pod: inject pod management env vars
     let enable_pod_mgmt = spec
@@ -2126,6 +2159,7 @@ async fn spawn_firecracker_pod(
             netns_baseline: Option<String>,
             config: firecracker_config::FirecrackerConfig,
             workload_filesystem: net::confinement::WorkloadFilesystem,
+            egress_proxy: Option<egress_proxy::EgressProxy>,
         }
 
         // From here every resource the launch acquires is moved into one handle the moment it
@@ -2417,6 +2451,19 @@ async fn spawn_firecracker_pod(
                         .await
                 }
                 .await?;
+                // Before the VMM: an eval cell whose proxy cannot be started confined never
+                // boots. A failure later in this body drops it, and dropping kills it.
+                let egress_proxy = egress_proxy::start_for_pod(
+                    state,
+                    spec,
+                    id,
+                    &vsock_path,
+                    pod_dir,
+                    jail_layout
+                        .as_ref()
+                        .map(|_| (state.jailer_uid.get(), state.jailer_gid)),
+                )
+                .await?;
                 command.stdout(log_stdout).stderr(log_stderr);
                 let vmm = launch.start(|command| prepared_pod.spawn(command)).await?;
                 let pid = vmm.pid();
@@ -2566,6 +2613,7 @@ async fn spawn_firecracker_pod(
                     netns_baseline,
                     config,
                     workload_filesystem,
+                    egress_proxy,
                 })
             })
             .await?;
@@ -2576,6 +2624,7 @@ async fn spawn_firecracker_pod(
             netns_baseline,
             config,
             workload_filesystem,
+            egress_proxy,
         } = booted;
         let launch_resources::Committed {
             permit,
@@ -2675,6 +2724,7 @@ async fn spawn_firecracker_pod(
             workload_api_bridge: Mutex::new(workload_api_bridge),
             broker: Mutex::new(broker),
             decide: Mutex::new(decide),
+            egress_proxy: Mutex::new(egress_proxy),
             snapshot: verdict.found().map(|v| config.snapshot_inputs(v)),
         };
 

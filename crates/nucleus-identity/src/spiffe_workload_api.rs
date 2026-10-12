@@ -109,7 +109,7 @@ impl<C: CaClient + 'static> SpiffeWorkloadApiService<C> {
     async fn build_response(&self) -> Result<X509svidResponse, Status> {
         let cert = self
             .manager
-            .fetch_certificate(&self.identity)
+            .fetch_launch_certificate(&self.identity)
             .await
             .map_err(|e| Status::internal(format!("could not obtain an SVID: {e}")))?;
 

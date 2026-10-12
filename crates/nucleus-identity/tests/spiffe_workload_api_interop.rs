@@ -20,6 +20,19 @@ async fn start_server(sock: &std::path::Path) -> Identity {
     let bundle = ca.trust_bundle().clone();
     let identity = Identity::new("nucleus.local", "default", "interop");
     let manager = SecretManager::new(ca, Duration::from_secs(3600));
+    // A workload is served only the SVID of a registered launch (ADR 0016 D5).
+    manager
+        .issue_for_launch(
+            &identity,
+            nucleus_identity::Launch::Measured {
+                attestation: nucleus_identity::LaunchAttestation::from_hashes(
+                    [1; 32], [2; 32], [3; 32],
+                ),
+                mediator_key_sha256: None,
+            },
+        )
+        .await
+        .unwrap();
     let svc = SpiffeWorkloadApiService::new(manager, identity.clone(), bundle);
 
     let path = sock.to_path_buf();

@@ -715,51 +715,37 @@ pub fn perturb_bound_dropped_witness(_: &Path, t: &str) -> Perturbed {
 /// The perturbation SCALES WITH THE FAMILY: k witnesses take d/p to (d+k)/(p+k), and crossing
 /// one basis point needs k >= ((F+1)p - 10000d) / (9999-F). F and p are read from the pin in
 /// `.scorecard-ratchet.toml`, and d is what a tight pin implies, ceil(F*p/10000).
-pub fn perturb_scorecard_slack(root: &Path, t: &str) -> Perturbed {
-    let pin = fs::read_to_string(root.join(".scorecard-ratchet.toml")).unwrap_or_default();
-    let k = slack_witnesses(&pin);
+pub fn perturb_scorecard_slack(_: &Path, t: &str) -> Perturbed {
+    // A-19: create genuine Slack even when the bound family already measures 100%.
+    // Lower the temporary pin, never the committed floor or the measured population.
+    let Some(section) = t.find("[family.bound]\n") else {
+        return moved(t.to_string(), "bound family is absent");
+    };
+    let end = t[section..].find("\n[").map_or(t.len(), |n| section + n);
+    let pattern = rx(r"(?m)^floor_bp = (\d+)");
+    let Some(captures) = pattern.captures(&t[section..end]) else {
+        return moved(t.to_string(), "bound floor is absent");
+    };
+    let Some(floor) = captures[1]
+        .parse::<u32>()
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+    else {
+        return moved(t.to_string(), "bound floor cannot be lowered");
+    };
+    if floor == 0 {
+        return moved(
+            t.to_string(),
+            "a zero pin would fail parsing, not the Slack decision",
+        );
+    }
+    let value = captures.get(1).expect("matched floor");
     let mut out = t.to_string();
-    for i in 0..k {
-        out.push_str(&format!(
-            "fn _gate_of_gates_scorecard_{i}(authority: {WITNESS}) {{}}\n"
-        ));
-    }
+    out.replace_range(
+        section + value.start()..section + value.end(),
+        &floor.to_string(),
+    );
     ok(out)
-}
-
-/// awk's `a[2] + 0` for the integers this file pins: the leading digits after `=`, or 0.
-fn awk_number(s: &str) -> i64 {
-    let s = s.trim_start();
-    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
-    s[..end].parse().unwrap_or(0)
-}
-
-fn slack_witnesses(pin: &str) -> i64 {
-    let (mut f, mut p) = (0_i64, 0_i64);
-    let mut in_bound = false;
-    for line in pin.lines() {
-        if line.starts_with("[family.bound]") {
-            in_bound = true;
-            continue;
-        }
-        if line.starts_with('[') {
-            in_bound = false;
-        }
-        if in_bound && line.starts_with("floor_bp") {
-            f = awk_number(line.split('=').nth(1).unwrap_or(""));
-        }
-        if in_bound && line.starts_with("population_floor") {
-            p = awk_number(line.split('=').nth(1).unwrap_or(""));
-        }
-    }
-    if f <= 0 || p <= 0 || f >= 9999 {
-        return 1;
-    }
-    let d = (f * p + 9999) / 10000;
-    let need = (f + 1) * p - 10000 * d;
-    let den = 9999 - f;
-    let k = if need <= 0 { 1 } else { (need + den - 1) / den };
-    k.max(1)
 }
 
 pub fn perturb_scorecard_undischarged_law(_: &Path, t: &str) -> Perturbed {
@@ -822,14 +808,41 @@ mod tests {
     }
 
     #[test]
-    fn the_slack_count_tracks_the_family() {
-        // 9941/172 asked for one witness; 9942/174 asks for two (the comment's own figures).
-        let pin = |f: u32, p: u32| {
-            format!("[family.bound]\nfloor_bp = {f}\npopulation_floor = {p}\n[family.x]\n")
-        };
-        assert_eq!(slack_witnesses(&pin(9941, 172)), 1);
-        assert_eq!(slack_witnesses(&pin(9942, 174)), 2);
-        assert_eq!(slack_witnesses(""), 1);
+    fn a_slack_pin_is_rejected_including_at_a_complete_family() {
+        use crate::scorecard::{Census, Finding, decide, parse_ratchet};
+        for (discharged, population) in [(173, 174), (198, 198)] {
+            let census = Census {
+                discharged,
+                population,
+                undeclared: 0,
+            };
+            let original = format!(
+                "[family.bound]\nfloor_bp = {}\npopulation_floor = {population}\nfloor_set = \"measurement\"\n",
+                census.basis_points()
+            );
+            let card = vec![("bound".to_string(), census)];
+            assert!(decide(&parse_ratchet(&original).unwrap(), &card).is_empty());
+            let changed = perturb_scorecard_slack(Path::new("."), &original);
+            assert!(changed.complaint.is_none());
+            assert!(
+                matches!(decide(&parse_ratchet(&changed.text).unwrap(), &card).as_slice(),
+                [Finding::Slack { family, .. }] if family == "bound")
+            );
+            assert!(decide(&parse_ratchet(&original).unwrap(), &card).is_empty());
+        }
+    }
+
+    #[test]
+    fn a_slack_probe_refuses_a_missing_or_unlowerable_pin() {
+        for text in [
+            "",
+            "[family.bound]\nfloor_bp = 0\n",
+            "[family.bound]\nfloor_bp = 1\n",
+        ] {
+            let changed = perturb_scorecard_slack(Path::new("."), text);
+            assert!(changed.complaint.is_some());
+            assert_eq!(changed.text, text);
+        }
     }
 
     #[test]

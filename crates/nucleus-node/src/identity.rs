@@ -19,7 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Identity manager for the node daemon.
@@ -479,6 +479,19 @@ impl IdentityManager {
             .map_err(|e| format!("failed to fetch certificate: {e}"))
     }
 
+    /// The certificate of a launched pod, refused when no launch is registered
+    /// for `identity`: the path that serves a pod its SVID never mints a plain
+    /// one (ADR 0016 D5).
+    pub async fn fetch_launch_certificate(
+        &self,
+        identity: &Identity,
+    ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
+        self.secret_manager
+            .fetch_launch_certificate(identity)
+            .await
+            .map_err(|e| format!("failed to fetch certificate: {e}"))
+    }
+
     /// Forgets a certificate for the given identity.
     ///
     /// Called when a pod is terminated to clean up cached certificates.
@@ -600,12 +613,14 @@ impl IdentityManager {
         }
     }
 
-    /// Fetches an attested certificate for the given identity and pod.
+    /// Issues the attested certificate for the given identity and pod, and
+    /// registers its launch so every later issue states the same measurement.
     ///
-    /// If attestation exists for the pod, it will be embedded in the certificate as
-    /// an X.509 extension, and the result is written into the shared certificate
-    /// cache so the served `FETCH_SVID` path returns the *attested* cert rather than
-    /// a plain one. If no attestation is registered, falls back to a standard cert.
+    /// # Errors
+    ///
+    /// No measurement is registered for the pod, or the CA cannot embed it. Each
+    /// used to fall back to a plain certificate, an SVID that read like one
+    /// nobody asked to check. Nothing is issued in its place (ADR 0016 D5).
     #[tracing::instrument(skip_all, fields(boot.stage = "cert.issue"))]
     // Reached only from the Firecracker spawn path, which is `cfg(target_os = "linux")`.
     // On other hosts it is genuinely dead, and CI builds release binaries with
@@ -617,73 +632,55 @@ impl IdentityManager {
         identity: &Identity,
         pod_id: &str,
     ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
-        // Check if we have attestation for this pod
         let attestation = {
             let registry = self.attestation_registry.read().await;
             registry.get(pod_id).cloned()
         };
-
-        match attestation {
-            Some(att) => {
-                info!(
-                    "fetching attested certificate for {} (pod {})",
-                    identity, pod_id
-                );
-
-                // Generate CSR
-                let csr_options = nucleus_identity::CsrOptions::new(identity.to_spiffe_uri());
-                let cert_sign = csr_options
-                    .generate()
-                    .map_err(|e| format!("CSR generation failed: {e}"))?;
-
-                // Sign with attestation using configured TTL. When the pod has a
-                // minted mediation key, ALSO bind it into the SVID (OID .1.4) so a
-                // relying party can require the pod's receipts to be signed by that
-                // exact key; otherwise a plain attested SVID.
-                let cert = match self.mediation_binding_for(pod_id) {
-                    Some(binding) => {
-                        info!("binding mediation key into attested SVID for pod {pod_id}");
-                        self.ca
-                            .sign_attested_and_bound_csr(
-                                cert_sign.csr(),
-                                cert_sign.private_key(),
-                                identity,
-                                self.cert_ttl,
-                                &att,
-                                &binding,
-                            )
-                            .await
-                    }
-                    None => {
-                        self.ca
-                            .sign_attested_csr(
-                                cert_sign.csr(),
-                                cert_sign.private_key(),
-                                identity,
-                                self.cert_ttl,
-                                &att,
-                            )
-                            .await
-                    }
-                }
-                .map_err(|e| format!("attested signing failed: {e}"))?;
-
-                // Warm the cache so the served FETCH_SVID fast-path returns THIS
-                // attested cert (carrying the measurement), not the plain one.
-                let cert = std::sync::Arc::new(cert);
-                self.secret_manager
-                    .cache_certificate(identity, cert.clone())
-                    .await;
-                Ok(cert)
-            }
-            None => {
-                warn!(
-                    "no attestation found for pod {}, using standard certificate",
-                    pod_id
-                );
-                self.fetch_certificate(identity).await
-            }
+        let Some(attestation) = attestation else {
+            return Err(format!(
+                "no launch measurement is registered for pod {pod_id}; a plain certificate is \
+                 never issued in its place"
+            ));
+        };
+        info!("issuing attested certificate for {identity} (pod {pod_id})");
+        // When the pod has a minted mediation key, ALSO bind it into the SVID (OID
+        // .1.4) so a relying party can require the pod's receipts to be signed by
+        // that exact key.
+        let mediator_key_sha256 = self.mediation_binding_for(pod_id);
+        if mediator_key_sha256.is_some() {
+            info!("binding mediation key into attested SVID for pod {pod_id}");
         }
+        // Registered, not merely cached: the refresh loop and every expiry re-issue
+        // the same launch, where they used to re-sign a plain certificate.
+        self.secret_manager
+            .issue_for_launch(
+                identity,
+                nucleus_identity::Launch::Measured {
+                    attestation,
+                    mediator_key_sha256,
+                },
+            )
+            .await
+            .map_err(|e| format!("attested signing failed: {e}"))
+    }
+
+    /// Issues a pod on a tier that cannot measure its launch a certificate that
+    /// says so, naming `tier`, and registers that launch for every later issue
+    /// (ADR 0016 D5). It replaces a plain certificate that looked like the
+    /// absence of a check.
+    ///
+    /// # Errors
+    ///
+    /// The CA cannot state an unmeasured launch, or signing fails.
+    pub async fn issue_unmeasured_certificate(
+        &self,
+        identity: &Identity,
+        tier: nucleus_identity::UnmeasuredTier,
+    ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
+        self.secret_manager
+            .issue_for_launch(identity, nucleus_identity::Launch::Unmeasured(tier))
+            .await
+            .map_err(|e| format!("unmeasured-launch signing failed: {e}"))
     }
 }
 
@@ -1389,13 +1386,60 @@ mod tests {
         let identity = Identity::new("test.local", "default", "non-attested-service");
         let pod_id = "no-attestation-pod";
 
-        // Should still work, just without attestation extension
-        let cert = manager
+        // ADR 0016 D5: a pod with no registered measurement is refused, by name.
+        // This used to return a PLAIN certificate, an SVID that read like one
+        // nobody asked to check.
+        let err = manager
             .fetch_attested_certificate(&identity, pod_id)
             .await
-            .unwrap();
+            .expect_err("no measurement, no certificate");
+        assert!(err.contains("no launch measurement is registered"), "{err}");
+        assert!(err.contains("never issued in its place"), "{err}");
+        // And nothing was cached that a later FETCH_SVID could serve.
+        assert!(manager.fetch_launch_certificate(&identity).await.is_err());
+    }
 
-        assert_eq!(cert.identity(), &identity);
+    /// ADR 0016 D5: the launch is registered, not merely cached, so a refresh
+    /// (expiry, the refresh loop) re-issues the SAME launch. Before, the attested
+    /// certificate was cached once and every re-issue was a plain `sign_csr`.
+    #[tokio::test]
+    async fn a_refreshed_attested_svid_still_carries_its_launch() {
+        use std::io::Write;
+        let manager = IdentityManager::new("test.local", Duration::from_secs(3600)).unwrap();
+        let mut kernel = tempfile::NamedTempFile::new().unwrap();
+        kernel.write_all(b"k").unwrap();
+        let mut rootfs = tempfile::NamedTempFile::new().unwrap();
+        rootfs.write_all(b"r").unwrap();
+        let pod = Uuid::new_v4();
+        let identity = manager.pod_identity(pod);
+        let att = manager
+            .compute_attestation(
+                &pod.to_string(),
+                kernel.path(),
+                rootfs.path(),
+                b"{}",
+                crate::image_identity::Measured::default(),
+            )
+            .await
+            .unwrap();
+        manager
+            .fetch_attested_certificate(&identity, &pod.to_string())
+            .await
+            .unwrap();
+        let refreshed = manager
+            .secret_manager()
+            .refresh_certificate(&identity)
+            .await
+            .unwrap();
+        let carried = nucleus_identity::extract_launch_attestation(refreshed.leaf().der())
+            .expect("a refreshed attested SVID still carries its launch");
+        nucleus_identity::AttestationRequirements::exact(
+            *att.kernel_hash(),
+            *att.rootfs_hash(),
+            *att.config_hash(),
+        )
+        .verify(&carried)
+        .unwrap();
     }
 
     /// **Track-1 live-embed.** When the pod has a minted mediation key (recorded

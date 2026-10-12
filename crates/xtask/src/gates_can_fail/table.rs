@@ -126,7 +126,7 @@ pub fn probes() -> Vec<Probe> {
         // rather than the scorecard's own decision procedure.
         Probe {
             family: xtask("scorecard"),
-            target: "crates/nucleus-tool-proxy/src/run_gate.rs",
+            target: ".scorecard-ratchet.toml",
             desc: "a family's pin gone slack under it",
             perturb: pert!(perturb_scorecard_slack),
         },

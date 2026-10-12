@@ -46,12 +46,13 @@ pub(crate) async fn container_env(
         for (key, value) in state.authority.boot_env(id).await {
             env.push(format!("{key}={value}"));
         }
-        // DLC-D verified admission from the PodSpec labels, through the same
-        // declaration the local driver and the Firecracker workload API use.
+        // DLC-D verified admission as admission recorded it (the labels', else the
+        // node's own), the value the host's kernel decides with; the same record
+        // the local driver and the Firecracker workload API deliver.
         // This driver used to have no copy of the mapping at all, so a
         // container pod's dlc_* labels were accepted, listed by `nucleus node
         // pods`, and never reached the tool-proxy that enforces them (#2903).
-        if let Some(dlc) = DlcProvisioning::from_labels(&spec.metadata.labels) {
+        if let Some(dlc) = state.authority.dlc(id).await {
             env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
         }
     }

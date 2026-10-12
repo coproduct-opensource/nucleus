@@ -275,10 +275,9 @@ pub(crate) fn reject_workspace_path(path: &Path, work_dir: &Path) -> Result<(), 
 /// about evidence, and splitting them across a long `main` is how one of them
 /// gets edited without the others.
 ///
-/// The secret defaults to a session-derived value when no audit secret is
-/// configured. That is weaker than an operator-held secret — a pod that derives
-/// its own signing key can re-sign a rewritten chain — and is reported as a
-/// limitation by the verifier rather than passed off as tamper-evidence.
+/// An absent operator key gets a fresh process-private key from the OS RNG.
+/// Explicit empty keys are refused. No key is derived from public session data.
+/// Asymmetric signed-record migration remains tracked in #3309.
 pub(crate) fn open_log(
     path: &Path,
     audit_secret: Option<&str>,
@@ -286,10 +285,7 @@ pub(crate) fn open_log(
     session_id: &str,
 ) -> Result<Arc<Art12Log>, String> {
     reject_workspace_path(path, work_dir).map_err(|e| e.to_string())?;
-    let secret = audit_secret.map_or_else(
-        || format!("art12:{session_id}").into_bytes(),
-        |s| s.as_bytes().to_vec(),
-    );
+    let secret = session_mac_key(audit_secret)?;
     // A dedicated genesis string rather than a borrowed hash: the audit log is
     // constructed later in startup, and reaching for a value that does not exist
     // yet is how an anchor silently becomes the empty string.
@@ -297,6 +293,22 @@ pub(crate) fn open_log(
     let log = Art12Log::open(path, secret, genesis, false)
         .map_err(|e| format!("failed to open Article 12 log: {e:?}"))?;
     Ok(Arc::new(log))
+}
+
+/// One key decision for startup; no public session identifier is an input.
+fn session_mac_key(configured: Option<&str>) -> Result<Vec<u8>, String> {
+    match configured {
+        Some("") => Err("Article 12 logging refuses an empty audit secret".into()),
+        Some(secret) => Ok(secret.as_bytes().to_vec()),
+        None => {
+            use ring::rand::SecureRandom;
+            let mut secret = vec![0u8; 32];
+            ring::rand::SystemRandom::new()
+                .fill(&mut secret)
+                .map_err(|_| "OS RNG failed to generate Article 12 MAC key".to_string())?;
+            Ok(secret)
+        }
+    }
 }
 
 /// Derive where the full signed MediationReceipts are persisted for offline
@@ -695,6 +707,40 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn startup_refuses_empty_keys_and_supports_secret_free_guests() {
+        let dir = TempDir::new().unwrap();
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let path = dir.path().join("private/art12.jsonl");
+        let result = super::open_log(&path, Some(""), &workspace, "session-123");
+        assert!(matches!(result, Err(ref error) if error.contains("empty audit secret")));
+        assert!(!path.exists(), "refusal must not create a log");
+        for (name, secret) in [("guest", None), ("operator", Some("operator-test-key"))] {
+            let path = dir.path().join(format!("{name}.jsonl"));
+            let log = super::open_log(&path, secret, &workspace, "session-123").unwrap();
+            assert_eq!(log.head().unwrap(), ("art12-genesis:session-123".into(), 0));
+            assert!(path.is_file());
+        }
+    }
+
+    #[test]
+    fn unprovisioned_sessions_have_independent_private_mac_keys() {
+        let first = super::session_mac_key(None).unwrap();
+        let second = super::session_mac_key(None).unwrap();
+        assert_eq!(first.len(), 32);
+        assert_eq!(second.len(), 32);
+        assert_ne!(first, second);
+        assert_ne!(
+            crate::auth::sign_message(&first, b"record"),
+            crate::auth::sign_message(&second, b"record")
+        );
+        assert_eq!(
+            super::session_mac_key(Some("operator-key")).unwrap(),
+            b"operator-key"
+        );
     }
 
     fn open_log(dir: &TempDir) -> Arc<Art12Log> {

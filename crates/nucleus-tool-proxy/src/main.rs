@@ -1736,21 +1736,20 @@ async fn main() -> Result<(), ApiError> {
     }
 
     // Lockdown signal watcher: polls the signal file every 500ms.
-    // Verifies HMAC before acting — prevents privilege escalation via
-    // world-writable signal file (red team finding).
+    // Legacy files can only latch a lock; restoration requires the node stream.
     {
         let lockdown_flag = state.file_lockdown.clone();
         let breaker_flag = state.breaker_lockdown.clone();
         tokio::spawn(async move {
-            // Same path logic as the CLI
+            // The legacy CLI signal location (new CLI commands use mTLS).
             let signal_path = dirs::runtime_dir()
                 .or_else(dirs::data_local_dir)
                 .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
                 .join("nucleus")
                 .join("lockdown.json");
 
-            // Fail-closed: only a verified signal changes the file's lock, and only a
-            // verified RESTORE lifts the circuit breaker's (see `lockdown_signal`).
+            // Files only latch the local lock. Only the authenticated node
+            // stream can restore permissions (see `lockdown_client`).
             loop {
                 let signal = if signal_path.exists() {
                     Some(tokio::fs::read_to_string(&signal_path).await)
@@ -1793,8 +1792,9 @@ async fn main() -> Result<(), ApiError> {
             ),
             pod_id: std::env::var("NUCLEUS_POD_ID").ok(),
         };
+        let local_locks = vec![state.file_lockdown.clone(), state.breaker_lockdown.clone()];
         tokio::spawn(async move {
-            lockdown_client::run_lockdown_watcher(config, stream_flag).await;
+            lockdown_client::run_lockdown_watcher(config, stream_flag, local_locks).await;
         });
     }
 

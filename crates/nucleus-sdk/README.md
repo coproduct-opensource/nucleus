@@ -83,3 +83,14 @@ agent gets exactly the capabilities its task needs and no more:
 ## License
 
 MIT
+
+### Transport security
+
+Use HTTPS for remote TCP endpoints and whenever configuring mTLS. Plain HTTP is
+accepted only for literal loopback addresses (`127.0.0.1` or `::1`) without mTLS;
+use a Unix socket for the workload door. Redirects are disabled so signed requests
+cannot be forwarded to a different endpoint. Local HTTP bypasses environment proxies.
+
+For custom connection settings, use `ProxyClient::with_client_builder`, which
+requires HTTPS and applies the redirect policy before building. It replaces
+`with_client`: an already-built client's redirect policy cannot be verified.

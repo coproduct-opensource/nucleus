@@ -7,10 +7,9 @@
 //! # Trust Elevation
 //!
 //! - No fingerprint: trust from policy engine or delegation cert (standard path)
-//! - Fingerprint + matching delegation cert: Platform trust tier (CA-attested binding)
-//! - Fingerprint + mismatched delegation cert: logged warning, no elevation
+//! - Fingerprint + matching delegation cert: CA-attested identity/permission binding
+//! - Fingerprint + mismatched delegation cert: logged warning, no verified binding
 
-use nucleus_permission_market::PermissionGrant;
 use portcullis::certificate::VerifiedPermissions;
 
 /// Result of fused identity verification.
@@ -47,8 +46,8 @@ pub fn extract_fused_identity(client_cert_der: &[u8], spiffe_id: &str) -> Option
 
 /// Verify that a delegation certificate's fingerprint matches the one embedded in X.509.
 ///
-/// If they match, the trust tier is elevated to Platform (CA-attested binding)
-/// and the market cost drops to zero.
+/// A match attests the identity/permission binding only. Pricing remains the
+/// permission market's decision; identity evidence cannot waive a charge.
 pub fn verify_delegation_against_fingerprint(
     fused: &mut FusedIdentity,
     cert: &portcullis::LatticeCertificate,
@@ -63,7 +62,7 @@ pub fn verify_delegation_against_fingerprint(
             spiffe_id = %fused.spiffe_id,
             fingerprint = %hex::encode(&fused.permission_fingerprint[..8]),
             event = "fused_identity_verified",
-            "delegation cert fingerprint matches X.509 extension — elevated to Platform trust"
+            "delegation cert fingerprint matches X.509 extension"
         );
         true
     } else {
@@ -78,34 +77,9 @@ pub fn verify_delegation_against_fingerprint(
     }
 }
 
-/// Override a permission grant for CA-attested bindings: zero market cost.
-///
-/// When the CA has cryptographically bound identity to permissions, the market
-/// cost is waived — the CA's signature is the ultimate authority.
-pub fn elevate_grant_trust(grant: &PermissionGrant) -> PermissionGrant {
-    PermissionGrant {
-        granted: grant.granted.clone(),
-        denied: grant.denied.clone(),
-        total_cost_micro: 0,
-        expires_at: grant.expires_at,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_elevate_grant_trust_zeroes_cost() {
-        let grant = PermissionGrant {
-            granted: vec![],
-            denied: vec![],
-            total_cost_micro: 42,
-            expires_at: None,
-        };
-        let elevated = elevate_grant_trust(&grant);
-        assert_eq!(elevated.total_cost_micro, 0);
-    }
 
     #[test]
     fn test_extract_fused_identity_returns_none_without_extension() {

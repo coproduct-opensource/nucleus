@@ -242,11 +242,10 @@ pub(crate) fn evaluate_request_cert(
 
     let bid = nucleus_permission_market::PermissionBid::from_verified(&verified);
     let market = state.permission_market.lock().unwrap();
-    let mut grant = market.evaluate_bid(&bid);
-    if let Some(ref mut fi) = fused
-        && identity_fusion::verify_delegation_against_fingerprint(fi, &cert, &verified)
-    {
-        grant = identity_fusion::elevate_grant_trust(&grant);
+    let grant = market.evaluate_bid(&bid);
+    // Identity binding is evidence, not a second pricing authority (ADR G-1).
+    if let Some(ref mut fi) = fused {
+        identity_fusion::verify_delegation_against_fingerprint(fi, &cert, &verified);
     }
     let effective = cert_bridge::intersect_grant_with_certificate(&grant, &verified);
 

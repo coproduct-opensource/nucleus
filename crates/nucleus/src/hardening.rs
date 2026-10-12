@@ -203,6 +203,24 @@ enum Posture {
     Restricted(SyscallFilter),
     /// Drop to this uid (and gid), then self-restrict.
     DropTo(u32, SyscallFilter, FilesystemConfinement),
+    /// A host service the runtime starts for one pod (the egress proxy, ADR
+    /// 0015 §7): enter a fresh, empty network namespace, THEN drop to `uid`
+    /// and `gid`, then self-restrict under the workload denylist. The drop is
+    /// done in the hook rather than declared on the command, because std
+    /// drops before any hook runs and `unshare(CLONE_NEWNET)` needs the
+    /// privilege the drop takes away.
+    Isolated { uid: u32, gid: u32 },
+}
+
+/// What the hook does before it restricts: nothing, or enter a fresh network
+/// namespace and drop to a uid/gid. Two named cases, not an `Option` (ADR
+/// 0007 B-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Isolation {
+    /// The uid, if it changes, was dropped by std before the hook.
+    None,
+    /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`.
+    NetnsThenDrop { uid: u32, gid: u32 },
 }
 
 /// How a confined child's filesystem is held (#2696 P3c). Decided per
@@ -412,6 +430,38 @@ impl ChildConfinement {
         }
     }
 
+    /// The confinement of a host service the runtime starts for one pod: the
+    /// egress proxy (ADR 0015 §7). The child enters a fresh, empty network
+    /// namespace, drops to `uid`:`gid` with no supplementary groups and no
+    /// capabilities, sets `no_new_privs` and the resource limits, and installs
+    /// the workload denylist (which, among the rest, refuses any further
+    /// namespace). Its filesystem is the child's own to give up (the proxy
+    /// applies Landlock itself, before it serves): this posture compiles no
+    /// guest-layout ruleset.
+    ///
+    /// # Errors
+    /// * [`NucleusError::ChildSeparationUnavailable`] when the runtime is not
+    ///   root: neither the namespace nor the drop is possible.
+    /// * [`NucleusError::ChildSharesRuntimeUid`] when `uid` or `gid` is 0.
+    pub fn isolated_service(uid: u32, gid: u32) -> Result<Self> {
+        Self::decide_isolated(runtime_uid(), uid, gid)
+    }
+
+    pub(crate) fn decide_isolated(runtime_uid: u32, uid: u32, gid: u32) -> Result<Self> {
+        if runtime_uid != 0 {
+            return Err(NucleusError::ChildSeparationUnavailable {
+                runtime_uid,
+                child_uid: uid,
+            });
+        }
+        if uid == 0 || gid == 0 {
+            return Err(NucleusError::ChildSharesRuntimeUid { uid: 0 });
+        }
+        Ok(Self {
+            posture: Posture::Isolated { uid, gid },
+        })
+    }
+
     /// The confinement of a pod workload under `mode` that asked for
     /// `requested` (`workload.uid`; `None` = the default,
     /// [`DEFAULT_CHILD_UID`]), with the operator's `opt_in` to the bare tier.
@@ -556,7 +606,7 @@ impl ChildConfinement {
     #[must_use]
     pub fn child_uid(&self) -> ChildUid {
         match self.posture {
-            Posture::DropTo(uid, ..) => ChildUid::Distinct(uid),
+            Posture::DropTo(uid, ..) | Posture::Isolated { uid, gid: _ } => ChildUid::Distinct(uid),
             Posture::Unsandboxed | Posture::Restricted(_) => ChildUid::SharedWithRuntime,
         }
     }
@@ -567,6 +617,7 @@ impl ChildConfinement {
         match self.posture {
             Posture::Unsandboxed => SyscallFilter::Unfiltered,
             Posture::Restricted(filter) | Posture::DropTo(_, filter, _) => filter,
+            Posture::Isolated { uid: _, gid: _ } => SyscallFilter::WorkloadDenylist,
         }
     }
 
@@ -575,7 +626,9 @@ impl ChildConfinement {
     pub fn filesystem(&self) -> FilesystemConfinement {
         match self.posture {
             Posture::DropTo(_, _, fs) => fs,
-            Posture::Unsandboxed | Posture::Restricted(_) => FilesystemConfinement::NotApplied,
+            Posture::Unsandboxed
+            | Posture::Restricted(_)
+            | Posture::Isolated { uid: _, gid: _ } => FilesystemConfinement::NotApplied,
         }
     }
 
@@ -617,7 +670,9 @@ impl ChildConfinement {
     pub fn is_unsandboxed(&self) -> bool {
         match self.posture {
             Posture::Unsandboxed => true,
-            Posture::Restricted(_) | Posture::DropTo(..) => false,
+            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
+                false
+            }
         }
     }
 
@@ -625,7 +680,9 @@ impl ChildConfinement {
     #[must_use]
     pub fn restricts(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) => true,
+            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
+                true
+            }
             Posture::Unsandboxed => false,
         }
     }
@@ -634,7 +691,9 @@ impl ChildConfinement {
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
-            Posture::Restricted(_) | Posture::DropTo(..) => true,
+            Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
+                true
+            }
             Posture::Unsandboxed => false,
         }
     }
@@ -691,6 +750,7 @@ impl ChildConfinement {
             Posture::Unsandboxed => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
             Posture::Restricted(filter) => Self::restrict(
                 cmd,
+                Isolation::None,
                 filter,
                 FilesystemConfinement::NotApplied,
                 rlimits,
@@ -698,8 +758,16 @@ impl ChildConfinement {
             ),
             Posture::DropTo(uid, filter, filesystem) => {
                 imp::drop_to(cmd, uid);
-                Self::restrict(cmd, filter, filesystem, rlimits, syscalls)
+                Self::restrict(cmd, Isolation::None, filter, filesystem, rlimits, syscalls)
             }
+            Posture::Isolated { uid, gid } => Self::restrict(
+                cmd,
+                Isolation::NetnsThenDrop { uid, gid },
+                SyscallFilter::WorkloadDenylist,
+                FilesystemConfinement::NotApplied,
+                rlimits,
+                syscalls,
+            ),
         }
     }
 
@@ -707,6 +775,7 @@ impl ChildConfinement {
     /// [`Hardened`] is minted.
     fn restrict(
         cmd: &mut std::process::Command,
+        isolation: Isolation,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
         rlimits: AppliedRlimits,
@@ -720,7 +789,7 @@ impl ChildConfinement {
             }
             SyscallFilter::Unfiltered => InstalledFilter::Unfiltered,
         };
-        match imp::install(cmd, filter, filesystem, rlimits, syscalls) {
+        match imp::install(cmd, isolation, filter, filesystem, rlimits, syscalls) {
             Hook::Installed => SpawnHardening::Hardened(Hardened {
                 rlimits,
                 syscalls: installed,
@@ -934,7 +1003,9 @@ mod imp {
     use super::landlock::Ruleset;
     use super::seccomp::Program;
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
-    use super::{AppliedRlimits, FilesystemConfinement, Hook, RlimitVector, SyscallFilter};
+    use super::{
+        AppliedRlimits, FilesystemConfinement, Hook, Isolation, RlimitVector, SyscallFilter,
+    };
 
     // `setrlimit` takes `__rlimit_resource_t` on glibc but plain `c_int` on
     // musl (the guest rootfs).
@@ -1025,6 +1096,7 @@ mod imp {
     /// before exec. MUST be async-signal-safe: raw syscalls only, no
     /// allocation, no locks. Any `Err` fails the spawn (the child never execs).
     fn harden_child(
+        isolation: Isolation,
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
         limits: &HookLimits,
@@ -1036,6 +1108,23 @@ mod imp {
         // closure owns; none allocates or takes a lock, satisfying the
         // `pre_exec` contract.
         unsafe {
+            // A host service's own network namespace, entered while the
+            // child is still root, and only then the drop (std did not drop:
+            // `Isolated` declares no uid on the command). `setresuid` from
+            // root to a non-root uid clears every capability set, ambient
+            // included, because the hook never sets `SECBIT_KEEP_CAPS`.
+            match isolation {
+                Isolation::None => {}
+                Isolation::NetnsThenDrop { uid, gid } => {
+                    if libc::unshare(libc::CLONE_NEWNET) != 0
+                        || libc::setgroups(0, std::ptr::null()) != 0
+                        || libc::setresgid(gid, gid, gid) != 0
+                        || libc::setresuid(uid, uid, uid) != 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
+            }
             // Mark every fd from 3 up close-on-exec rather than closing it
             // HERE: std still owns a CLOEXEC status pipe in this window, used
             // to report a failed later step back to the parent. Closing it now
@@ -1151,6 +1240,7 @@ mod imp {
     /// converted and any exec pin opened here, in the parent.
     pub(super) fn install(
         cmd: &mut std::process::Command,
+        isolation: Isolation,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
         rlimits: AppliedRlimits,
@@ -1191,7 +1281,7 @@ mod imp {
             }
         };
         super::hook::pre_exec(cmd, move || {
-            harden_child(&mut seccomp, &mut landlock, &limits, &start)
+            harden_child(isolation, &mut seccomp, &mut landlock, &limits, &start)
         });
         Hook::Installed
     }
@@ -1223,7 +1313,7 @@ mod imp {
     use portcullis::SeccompPolicy;
 
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
-    use super::{AppliedRlimits, FilesystemConfinement, Hook, SyscallFilter};
+    use super::{AppliedRlimits, FilesystemConfinement, Hook, Isolation, SyscallFilter};
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
@@ -1239,6 +1329,7 @@ mod imp {
     /// dropped either.
     pub(super) fn install(
         cmd: &mut std::process::Command,
+        isolation: Isolation,
         filter: SyscallFilter,
         filesystem: FilesystemConfinement,
         _rlimits: AppliedRlimits,
@@ -1248,7 +1339,13 @@ mod imp {
             FilesystemConfinement::Landlock { .. } => true,
             FilesystemConfinement::Waived { .. } | FilesystemConfinement::NotApplied => false,
         };
-        match (filter, landlock_required) {
+        // A network namespace exists only on Linux: an isolated service is
+        // refused here like a filter is.
+        let isolated = match isolation {
+            Isolation::None => false,
+            Isolation::NetnsThenDrop { uid: _, gid: _ } => true,
+        };
+        match (filter, landlock_required || isolated) {
             (SyscallFilter::Unfiltered, false) => {}
             (SyscallFilter::WorkloadDenylist, _) | (SyscallFilter::Unfiltered, true) => {
                 // std transports a pre_exec error by errno; a bare ErrorKind loses
@@ -1270,6 +1367,28 @@ mod tests {
     /// that is not about Landlock runs under.
     const LL: LandlockSupport = LandlockSupport::Abi(MIN_LANDLOCK_ABI);
     const NO: LandlockWaiver = LandlockWaiver::Absent;
+
+    /// An isolated host service (the egress proxy) is separated or refused:
+    /// a non-root runtime cannot make the namespace or the drop, and a uid or
+    /// gid of 0 is no drop at all.
+    #[test]
+    fn an_isolated_service_is_separated_or_refused() {
+        let c = ChildConfinement::decide_isolated(0, 4242, 4243).expect("root can isolate");
+        assert_eq!(c.child_uid(), ChildUid::Distinct(4242));
+        assert_eq!(c.syscall_filter(), SyscallFilter::WorkloadDenylist);
+        assert_eq!(c.filesystem(), FilesystemConfinement::NotApplied);
+        assert!(c.restricts() && c.closes_inherited_fds() && !c.is_unsandboxed());
+        assert!(matches!(
+            ChildConfinement::decide_isolated(1000, 4242, 4243),
+            Err(NucleusError::ChildSeparationUnavailable { .. })
+        ));
+        for (uid, gid) in [(0, 4243), (4242, 0)] {
+            assert!(matches!(
+                ChildConfinement::decide_isolated(0, uid, gid),
+                Err(NucleusError::ChildSharesRuntimeUid { .. })
+            ));
+        }
+    }
 
     /// The derived policy that adds nothing to the denylist.
     #[cfg(all(unix, not(target_os = "linux")))]

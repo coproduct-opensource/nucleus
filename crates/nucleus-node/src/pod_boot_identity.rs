@@ -192,6 +192,17 @@ pub(crate) struct Inputs<'a> {
     pub measured: crate::image_identity::Measured,
 }
 
+/// A Firecracker pod whose launch the node cannot attest is not started, whatever
+/// its profile. It used to boot with a PLAIN SVID, which read like a launch nobody
+/// asked to check rather than one whose check failed (ADR 0016 D5).
+fn not_attested(id: uuid::Uuid, why: &str) -> ApiError {
+    ApiError::Driver(format!(
+        "pod {id} was not started: {why}. A Firecracker pod is served only an SVID that \
+         carries its launch measurement; a plain certificate is never issued in its place \
+         (ADR 0016)"
+    ))
+}
+
 pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiError> {
     let Inputs {
         state,
@@ -262,8 +273,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                     id,
                     attestation.to_hex_summary()
                 );
-                // Cache the attested cert so the served FETCH_SVID carries the measurement;
-                // else the pod serves a plain SVID an attesting relying party refuses.
+                // Issue and register the attested cert: the served FETCH_SVID, and
+                // every re-issue after it, carries the measurement.
                 match manager
                     .fetch_attested_certificate(&identity, &pod_id_str)
                     .await
@@ -277,13 +288,15 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                         },
                     )?,
                     Err(e) => {
+                        // An eval cell is refused under its own name first.
                         crate::eval_cell::require_verified_launch(
                             profile,
                             crate::eval_cell::LaunchIdentity::NotIssued(e.clone()),
                         )?;
-                        tracing::warn!(
-                            "pod {id} serves a PLAIN (unattested) SVID; attesting relying parties refuse it: {e}"
-                        );
+                        return Err(not_attested(
+                            id,
+                            &format!("its SVID could not be issued: {e}"),
+                        ));
                     }
                 }
             }
@@ -292,15 +305,10 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                     profile,
                     crate::eval_cell::LaunchIdentity::NotMeasured(e.to_string()),
                 )?;
-                tracing::warn!(
-                    "failed to compute attestation for pod {}, using standard certificate: {}",
+                return Err(not_attested(
                     id,
-                    e
-                );
-                // Fall back to standard certificate without attestation
-                if let Err(e) = manager.prefetch_certificate(&identity).await {
-                    tracing::warn!("failed to prefetch certificate for pod {}: {}", id, e);
-                }
+                    &format!("its launch could not be measured: {e}"),
+                ));
             }
         }
 
@@ -320,10 +328,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 pod_certificate,
                 // No caller token: a Firecracker guest cannot reach the HTTP
                 // listener that reads one (see `handle_fetch_pod_caller_token`).
-                // Pod-scoped DLC-D admission provisioning (PodSpec labels).
-                dlc_admission: nucleus_spec::dlc_admission::DlcProvisioning::from_labels(
-                    &spec.metadata.labels,
-                ),
+                // The DLC-D provisioning admission recorded: the labels', else the node's own.
+                dlc_admission: state.authority.dlc(id).await,
                 // The broker capability, minted per pod and served ONCE. See
                 // `handle_fetch_broker_secret`: this is what lets the host
                 // tell the mediating proxy from every other guest process.
@@ -392,6 +398,10 @@ impl FirecrackerPod {
 
         if let Some(listener) = self.decide.lock().await.take() {
             crate::host_decide::log_teardown(&self.pod_dir, listener.shutdown().await);
+        }
+
+        if let Some(proxy) = self.egress_proxy.lock().await.take() {
+            proxy.shutdown().await;
         }
 
         // A let-chain (edition 2024) rather than a tuple of Options: it says the

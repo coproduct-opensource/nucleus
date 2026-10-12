@@ -1299,3 +1299,92 @@ async fn a_dlc_labelled_pod_is_decided_by_the_same_admission_on_both_sides() {
     assert_eq!(report.tally.disagree, 0);
     assert_eq!(report.tally.agree, 4);
 }
+
+/// A local pod whose labels ask for no DLC admission, on a node whose own environment provisions
+/// it. The local tool-proxy used to inherit the node's `NUCLEUS_DLC_*` (`Command` does not
+/// `env_clear`) while the host read the pod's labels only, so the guest refused what the host
+/// allowed: guest-stricter, the class §10 bounds at zero. Now the node reads its environment once,
+/// admission records the result (`DlcProvisioning::admitted`), the host's kernel is provisioned
+/// from that record, and the local child receives exactly it, every inherited name removed.
+///
+/// The guest double reads what the child process would: the command's own settings over the
+/// node environment it inherits. Red on #3363's head (labels only, inherited env): the host
+/// allowed `glob_search` and the guest refused it.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn a_local_pod_under_the_nodes_own_dlc_is_decided_alike_on_both_sides() {
+    use nucleus_spec::dlc_admission::{DlcField, DlcProvisioning};
+    use portcullis::says_admission::{DlcAdmission, mint_credential};
+
+    let (issuer, read) = mint_credential(&[29u8; 32], "read_files");
+    let node_env: std::collections::BTreeMap<&str, String> = [
+        (DlcField::TrustedKeys.env(), hex::encode(issuer)),
+        (DlcField::Issuer.env(), hex::encode(issuer)),
+        (
+            DlcField::Credentials.env(),
+            format!("read_files={}", hex::encode(read.bytes)),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let args = AuthorityArgs {
+        root_minter_spiffe_id: None,
+        cert_trust_anchors: Vec::new(),
+        max_children_per_pod: 64,
+        upstreams: None,
+        federation_issuer: None,
+        ingress: Default::default(),
+        approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
+    };
+    let auth = Arc::new(
+        PodAuthority::new(&args, TD, dir.path(), &crate::pod_authority::NO_TPM)
+            .expect("authority builds")
+            .with_node_dlc(DlcProvisioning::from_env(|name| {
+                node_env.get(name).cloned()
+            })),
+    );
+    // No labels: the pod asks for nothing, so it runs under the node's own.
+    let pod = admit(&auth, PermissionLattice::permissive()).await;
+
+    let mut command = tokio::process::Command::new("nucleus-tool-proxy");
+    crate::provision_local_dlc_env(&mut command, auth.dlc(pod).await.as_ref());
+    let sees = |field: DlcField| -> String {
+        match command.as_std().get_envs().find(|(k, _)| *k == field.env()) {
+            Some((_, Some(value))) => value.to_string_lossy().into_owned(),
+            Some((_, None)) => String::new(),
+            None => node_env.get(field.env()).cloned().unwrap_or_default(),
+        }
+    };
+    let mut kernel = guest_kernel(&auth, pod).await;
+    kernel.set_dlc_admission(
+        DlcAdmission::provision(
+            &sees(DlcField::TrustedKeys),
+            &sees(DlcField::Issuer),
+            &sees(DlcField::Credentials),
+        )
+        .expect("the node's trust anchors reach the local proxy"),
+    );
+    let epochs = Arc::new(EpochSource::starting_at(1));
+    let listener = listen(dir.path(), &auth, pod, &epochs).await;
+    let mut guest = Guest::new(kernel, connect(&listener).await);
+
+    let admitted = guest.decide(Operation::ReadFiles, "src/main.rs").await;
+    assert_eq!(admitted.guest, Outcome::Allowed);
+    assert_eq!(admitted.host, Outcome::Allowed, "credentialed: both admit");
+    for op in [Operation::GlobSearch, Operation::WriteFiles] {
+        let refused = guest.decide(op, "src/main.rs").await;
+        assert!(
+            matches!(refused.guest, Outcome::Denied { .. }),
+            "{op:?}: the node's DLC gate reaches the guest"
+        );
+        assert_eq!(
+            refused.host, refused.guest,
+            "{op:?}: the host decides from the same admitted DLC"
+        );
+        assert_eq!(refused.agreement, Agreement::Agree, "{op:?}");
+    }
+    let report = listener.shutdown().await;
+    assert_eq!(report.tally.disagree, 0);
+    assert_eq!(report.tally.agree, 3);
+}

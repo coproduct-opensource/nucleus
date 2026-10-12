@@ -358,6 +358,36 @@ impl SelfSignedCa {
         self.sign_csr_with_key_now(&csr, &private_key, identity, ttl)
     }
 
+    /// [`Self::issue`] for a launch the tier cannot measure: the leaf states it,
+    /// naming `tier` (OID `.1.6`, ADR 0016 D5). What a host tier issues a pod in
+    /// place of a plain certificate that read like the absence of a check.
+    pub fn issue_unmeasured(
+        &self,
+        identity: &Identity,
+        ttl: Duration,
+        tier: crate::attestation::UnmeasuredTier,
+    ) -> Result<WorkloadCertificate> {
+        let (csr, private_key) = crate::CsrOptions::new(identity.to_spiffe_uri())
+            .generate()?
+            .into_parts();
+        let ext = Self::create_unmeasured_extension(tier)?;
+        self.sign_csr_with_extensions_now(&csr, &private_key, identity, ttl, vec![ext])
+    }
+
+    /// The unmeasured-launch extension naming `tier`. Non-critical, like the
+    /// launch attestation: a relying party that does not read it sees no launch
+    /// claim, which is what an unmeasured launch is.
+    fn create_unmeasured_extension(
+        tier: crate::attestation::UnmeasuredTier,
+    ) -> Result<CustomExtension> {
+        let mut ext = CustomExtension::from_oid_content(
+            oid::OID_NUCLEUS_UNMEASURED_LAUNCH_TUPLE,
+            tier.extension_value()?,
+        );
+        ext.set_criticality(false);
+        Ok(ext)
+    }
+
     /// The body of [`Self::sign_csr_with_key`]: nothing in it awaits.
     fn sign_csr_with_key_now(
         &self,
@@ -365,6 +395,18 @@ impl SelfSignedCa {
         private_key_pem: &str,
         identity: &Identity,
         ttl: Duration,
+    ) -> Result<WorkloadCertificate> {
+        self.sign_csr_with_extensions_now(csr_pem, private_key_pem, identity, ttl, vec![])
+    }
+
+    /// [`Self::sign_csr_with_key_now`] with `extensions` on the leaf.
+    fn sign_csr_with_extensions_now(
+        &self,
+        csr_pem: &str,
+        private_key_pem: &str,
+        identity: &Identity,
+        ttl: Duration,
+        extensions: Vec<CustomExtension>,
     ) -> Result<WorkloadCertificate> {
         // Validate the CSR and extract the SPIFFE URI
         let csr_spiffe_uri = self.validate_csr(csr_pem)?;
@@ -392,7 +434,7 @@ impl SelfSignedCa {
             .map_err(|e| Error::CaSigning(format!("failed to load private key: {e}")))?;
 
         // Sign the certificate using the workload's key pair
-        let chain = self.sign_with_keypair(&key_pair, identity, ttl)?;
+        let chain = self.sign_with_keypair_and_extensions(&key_pair, identity, ttl, extensions)?;
 
         let expiry = chain[0].not_after()?;
         let private_key = PrivateKey::from_pem(private_key_pem)?;
@@ -406,6 +448,7 @@ impl SelfSignedCa {
     }
 
     /// Signs a certificate using the provided key pair.
+    #[cfg(test)]
     fn sign_with_keypair(
         &self,
         key_pair: &KeyPair,
@@ -783,6 +826,18 @@ impl CaClient for SelfSignedCa {
             expiry,
             identity.clone(),
         ))
+    }
+
+    async fn sign_unmeasured_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        tier: crate::attestation::UnmeasuredTier,
+    ) -> Result<WorkloadCertificate> {
+        let ext = Self::create_unmeasured_extension(tier)?;
+        self.sign_csr_with_extensions_now(csr, private_key, identity, ttl, vec![ext])
     }
 
     async fn sign_fused_csr(

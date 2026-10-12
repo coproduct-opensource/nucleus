@@ -1103,16 +1103,19 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
             .contains_key(DlcField::TrustedKeys.label())
     );
 
-    let proxy = container_env(
-        &state,
-        &spec,
-        Uuid::new_v4(),
-        "test-token-123",
-        "",
-        None,
-        None,
-    )
-    .await;
+    // Admitted as every pod is: the env carries what admission recorded.
+    let id = Uuid::new_v4();
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: state.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    state
+        .authority
+        .admit_kept(&root, &spec, id)
+        .await
+        .expect("the root minter admits the pod");
+    let proxy = container_env(&state, &spec, id, "test-token-123", "", None, None).await;
     for (key, value) in dlc.env() {
         let want = format!("{key}={value}");
         assert!(
@@ -1129,16 +1132,7 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
     // credentials stay out of the workload's environment.
     let mut direct_state = state.clone();
     direct_state.container_mediation = crate::container_mediation::ContainerMediation::Unmediated;
-    let direct = container_env(
-        &direct_state,
-        &spec,
-        Uuid::new_v4(),
-        "test-token-123",
-        "",
-        None,
-        None,
-    )
-    .await;
+    let direct = container_env(&direct_state, &spec, id, "test-token-123", "", None, None).await;
     assert!(
         !direct.iter().any(|e| e.starts_with(ENV_PREFIX)),
         "a direct-mode container is the workload itself and must not hold DLC credentials"

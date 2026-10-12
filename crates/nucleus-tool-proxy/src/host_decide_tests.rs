@@ -22,6 +22,7 @@ use super::*;
 enum Sent {
     Observe,
     Decide(Operation),
+    Redeem,
     Shadow,
 }
 
@@ -96,7 +97,17 @@ async fn double(mut io: DuplexStream, rule: HostRule, seen: Arc<Seen>) {
                     agreement: Agreement::of(host, local),
                 }
             }
-            GuestFrame::Redeem { .. } => panic!("the shadow client never redeems"),
+            GuestFrame::Redeem { seq, approval_id } => {
+                seen.frames.lock().unwrap().push(Sent::Redeem);
+                // No operator here: the approval is still pending.
+                let verdict = match ledger.redeem(approval_id).unwrap() {
+                    nucleus_decision_protocol::host::Redemption::Pending(approval_id) => {
+                        Verdict::ApprovalRequired { approval_id }
+                    }
+                    other => panic!("nothing settled it: {other:?}"),
+                };
+                HostFrame::Verdict { seq, verdict }
+            }
         };
         io.write_all(&reply.encode().unwrap()).await.unwrap();
     }
@@ -125,6 +136,50 @@ fn no_commands(op: Operation) -> Outcome {
         },
         _ => Outcome::Allowed,
     }
+}
+
+/// A host that holds every call for an operator's approval.
+fn approval_for_all(_: Operation) -> Outcome {
+    Outcome::ApprovalRequired
+}
+
+/// ADR 0014 S4: a call this proxy's own grant released is redeemed on the
+/// host, between its `Decide` and its `Shadow`; one nothing here released is
+/// not. Red before S4: the client never sent `Redeem` (the double panicked on
+/// one), so the host never saw a guest-local release.
+#[tokio::test]
+async fn a_guest_released_call_is_redeemed_on_the_host() {
+    let seen = Arc::new(Seen::default());
+    let hd = HostDecide::start(dialer(
+        HostRule::Decide(approval_for_all),
+        Arc::clone(&seen),
+    ));
+    let k = permissive_kernel();
+    let g = FlowGraph::new();
+    let held = KernelVerdict::RequiresApproval;
+    hd.submit_released(
+        &k,
+        &g,
+        Operation::GitCommit,
+        "a",
+        &held,
+        Released::ByGuestGrant,
+    );
+    hd.submit_released(&k, &g, Operation::GitCommit, "b", &held, Released::No);
+    hd.flush().await;
+    let s = hd.snapshot().expect("on");
+    assert_eq!((s.agree, s.disagree, s.unavailable), (2, 0, 0));
+    assert_eq!(
+        *seen.frames.lock().unwrap(),
+        vec![
+            Sent::Observe,
+            Sent::Decide(Operation::GitCommit),
+            Sent::Redeem,
+            Sent::Shadow,
+            Sent::Decide(Operation::GitCommit),
+            Sent::Shadow,
+        ]
+    );
 }
 
 fn decide(kernel: &mut Kernel, graph: &FlowGraph, op: Operation, subject: &str) -> KernelVerdict {

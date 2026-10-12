@@ -450,6 +450,14 @@ fn walk(provision: Provision, ops: &[Op]) -> Result<(), String> {
         let manager = IdentityManager::new("walk.local", std::time::Duration::from_secs(3600))
             .map_err(|e| format!("identity manager: {e}"))?;
         let pod_id = uuid::Uuid::new_v4();
+        // A served SVID is the certificate of a registered launch (ADR 0016 D5).
+        manager
+            .issue_unmeasured_certificate(
+                &manager.pod_identity(pod_id),
+                nucleus_identity::UnmeasuredTier::Local,
+            )
+            .await
+            .map_err(|e| format!("launch: {e}"))?;
         let material = material_for(provision, receipts.path());
         let mut model = Model::new(provision);
 

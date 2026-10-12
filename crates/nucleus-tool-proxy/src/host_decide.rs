@@ -159,6 +159,17 @@ pub(crate) type Dialer = Arc<dyn Fn() -> Dialled + Send + Sync>;
 pub(crate) type Printer = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// One decision, as the worker will put it to the host.
+/// Whether this proxy's own grant released the call its kernel held for
+/// approval (ADR 0014 §4, S4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Released {
+    /// A grant this proxy holds released it: the shadow client redeems the
+    /// host's approval for it, so the host sees the release.
+    ByGuestGrant,
+    /// Nothing here released it.
+    No,
+}
+
 #[derive(Debug)]
 pub(crate) struct Question {
     session: Uuid,
@@ -166,6 +177,7 @@ pub(crate) struct Question {
     subject: Subject,
     local: Outcome,
     taint: LabelRaise,
+    released: Released,
 }
 
 pub(crate) enum Work {
@@ -229,6 +241,9 @@ impl HostDecide {
     /// Takes what the decision point holds — its kernel (for the session), its
     /// graph (for the taint report) and the verdict — so a decision point
     /// cannot report a verdict without the state it was decided against.
+    /// [`Self::submit_released`] for a decision nothing here released: a
+    /// broker submission (the host releases it) or an MCP call (no approval
+    /// channel).
     pub(crate) fn submit(
         &self,
         kernel: &Kernel,
@@ -236,6 +251,21 @@ impl HostDecide {
         op: Operation,
         subject: &str,
         verdict: &KernelVerdict,
+    ) {
+        self.submit_released(kernel, graph, op, subject, verdict, Released::No);
+    }
+
+    /// Put one decision to the host. `released` says whether this proxy's own
+    /// grant released a call its kernel held (ADR 0014 S4): if so, the client
+    /// also redeems the host's approval for it.
+    pub(crate) fn submit_released(
+        &self,
+        kernel: &Kernel,
+        graph: &FlowGraph,
+        op: Operation,
+        subject: &str,
+        verdict: &KernelVerdict,
+        released: Released,
     ) {
         let HostDecide::On { queue, tally } = self else {
             return;
@@ -253,6 +283,7 @@ impl HostDecide {
             subject,
             local: outcome_of(verdict),
             taint: taint_report(graph),
+            released,
         };
         match queue.try_send(Work::Ask(q)) {
             Ok(()) => {}
@@ -385,6 +416,7 @@ impl Channel {
             subject,
             local,
             taint,
+            released,
         } = q;
         if self.reported != Some(taint) {
             let seq = self.seq()?;
@@ -417,10 +449,28 @@ impl Channel {
         let round_trip = asked.elapsed();
         // Shadow mode: the host's ids are not acted on. Dropped on purpose; the
         // host retires them when it reads the report below.
-        match verdict {
-            Verdict::Allowed { decision_id } => drop(decision_id),
-            Verdict::ApprovalRequired { approval_id } => drop(approval_id),
-            Verdict::Denied { reason: _ } => {}
+        match (verdict, released) {
+            (Verdict::Allowed { decision_id }, Released::ByGuestGrant | Released::No) => {
+                drop(decision_id)
+            }
+            // The guest's own grant released a call the host held: redeem the
+            // host's approval for it (S4). The answer is the host's; this
+            // proxy still enforces its own (shadow).
+            (Verdict::ApprovalRequired { approval_id }, Released::ByGuestGrant) => {
+                let seq = self.seq()?;
+                match self.ask(GuestFrame::Redeem { seq, approval_id }).await? {
+                    HostFrame::Verdict {
+                        seq: s,
+                        verdict:
+                            Verdict::Allowed { decision_id: _ }
+                            | Verdict::ApprovalRequired { approval_id: _ }
+                            | Verdict::Denied { reason: _ },
+                    } if s == seq => {}
+                    _ => return Err(HostUnavailable::Protocol),
+                }
+            }
+            (Verdict::ApprovalRequired { approval_id }, Released::No) => drop(approval_id),
+            (Verdict::Denied { reason: _ }, Released::ByGuestGrant | Released::No) => {}
         }
         let seq = self.seq()?;
         match self

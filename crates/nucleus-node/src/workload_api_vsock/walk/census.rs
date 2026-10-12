@@ -372,6 +372,15 @@ struct Census {
 async fn take_census() -> Census {
     let manager = IdentityManager::new("census.local", std::time::Duration::from_secs(3600))
         .expect("identity manager");
+    // The pod every run serves (`Uuid::nil`): a served SVID is the certificate of a
+    // registered launch (ADR 0016 D5).
+    manager
+        .issue_unmeasured_certificate(
+            &manager.pod_identity(uuid::Uuid::nil()),
+            nucleus_identity::UnmeasuredTier::Local,
+        )
+        .await
+        .expect("launch");
     let letters = Letter::all();
     let mut census = Census::default();
 

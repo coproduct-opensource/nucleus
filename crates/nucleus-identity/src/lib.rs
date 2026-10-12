@@ -63,8 +63,8 @@ pub use assurance::{
     VerifiedAttestation,
 };
 pub use attestation::{
-    AttestationRequirements, LaunchAttestation, VerifiedLaunch, extract_launch_attestation,
-    verify_attested_svid,
+    AttestationRequirements, LaunchAttestation, UnmeasuredTier, VerifiedLaunch,
+    extract_launch_attestation, extract_unmeasured_launch, verify_attested_svid,
 };
 pub use ca::{CaClient, SelfSignedCa};
 #[cfg(feature = "spire")]
@@ -94,7 +94,7 @@ pub use ifc_extension::{
     ExtensionError, NUCLEUS_IFC_OID, OID_NUCLEUS_IFC_BYTES, OID_NUCLEUS_IFC_TUPLE,
     decode_ifc_extension, default_peer_label, encode_ifc_extension, extract_peer_ifc,
 };
-pub use manager::SecretManager;
+pub use manager::{Launch, SecretManager};
 pub use session::{SessionId, SessionIdentity};
 pub use tls::{TlsClientConfig, TlsServerConfig};
 pub use verifier::{IdentityVerifier, TrustDomainVerifier};
