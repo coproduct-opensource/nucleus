@@ -387,7 +387,7 @@ impl ProofGate {
             None
         };
         let rows = replay.db.scan_prefix(b"seen/")?;
-        let mut live = 0;
+        let mut live: usize = 0;
         let mut batch = Batch::new();
         for (k, v) in rows {
             let expiry: u64 = serde_json::from_slice(&v).map_err(|_| Error::Unavailable)?;
