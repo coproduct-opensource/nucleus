@@ -14,8 +14,8 @@ use portcullis_core::act::PodSink;
 
 use crate::authority::Authority;
 use crate::{
-    AgentSpawnEffect, EffectError, FileEffect, GitEffect, PolicyEnforced, ShellEffect, ShellOutput,
-    WebEffect,
+    AgentSpawnEffect, DenyAllEffects, EffectError, FileEffect, GitEffect, PolicyEnforced,
+    ShellEffect, ShellOutput, WebEffect,
 };
 
 /// Output produced by evaluating a [`CanonicalAct`].
@@ -188,7 +188,7 @@ fn unperformable(authority: Authority, what: &'static str) -> EffectError {
     EffectError::NotImplemented(what)
 }
 
-impl CanonicalEffectHandler for crate::DenyAllEffects {
+impl CanonicalEffectHandler for DenyAllEffects {
     fn perform(
         &self,
         _act: CanonicalAct,
@@ -332,8 +332,9 @@ mod tests {
             let err = handler
                 .perform(act.clone(), authority)
                 .expect_err("an unperformable act must be refused");
+            // Refused as unperformable, not by policy: the policy allows it.
             assert!(
-                matches!(err, EffectError::NotImplemented(_)),
+                err.to_string().starts_with("not implemented: "),
                 "{act:?} refused for the wrong reason: {err:?}"
             );
             assert!(
@@ -381,7 +382,7 @@ mod tests {
     fn test_canonical_deny_all_handler() {
         let authority = Authority::new(bundle_for(Operation::ReadFiles, SinkClass::AuditLogAppend));
         let act = CanonicalAct::read_file("test.txt");
-        let err = crate::DenyAllEffects
+        let err = DenyAllEffects
             .perform(act, authority)
             .expect_err("deny all");
         assert!(matches!(err, EffectError::PolicyDenied(_)));
