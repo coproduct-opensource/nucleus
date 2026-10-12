@@ -175,7 +175,6 @@
 //! and nothing outside this branch ever wrote one.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -561,20 +560,6 @@ pub(crate) struct UpstreamRegistry {
 }
 
 impl UpstreamRegistry {
-    /// Load and validate the registry at `path`.
-    ///
-    /// # Errors
-    /// An unreadable file, malformed TOML, or an entry [`Self::from_toml_str`]
-    /// refuses. The node refuses to START on any of these: a registry that
-    /// half-loaded would be a smaller ceiling than the operator wrote, which is
-    /// safe, but silently so, and "my upstream is refused" is a worse way to
-    /// learn about a typo than "the node will not start".
-    pub fn load(path: &Path) -> Result<Self, String> {
-        let text = std::fs::read_to_string(path)
-            .map_err(|e| format!("upstream registry {}: {e}", path.display()))?;
-        Self::from_toml_str(&text).map_err(|e| format!("upstream registry {}: {e}", path.display()))
-    }
-
     /// Parse and validate a registry.
     ///
     /// Names must be unique, because the broker's store and `PerformRequest.target`

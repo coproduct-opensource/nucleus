@@ -811,6 +811,7 @@ fn node(dir: &tempfile::TempDir) -> Node {
         cert_trust_anchors: vec![hex::encode(ext_root.public_key().as_ref())],
         max_children_per_pod: FAN_OUT,
         upstreams: Some(registry),
+        upstreams_poll_secs: 0,
         federation_issuer: None,
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,

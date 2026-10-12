@@ -1149,6 +1149,10 @@ async fn main() -> Result<(), ApiError> {
     let reaped = start_pod_reaper(state.clone());
 
     federation_ingress::spawn(&state, &args.authority.ingress).await?;
+    pod_authority::registry::spawn(
+        state.authority.clone(),
+        Duration::from_secs(args.authority.upstreams_poll_secs),
+    );
     public_evidence::spawn(&state, &args.node_evidence.public).await?;
     // Serve until a stop signal, then drain. Leaving the select drops the listener, so no new
     // connection is accepted; the drain's intake gate is what refuses new pods on connections
@@ -1169,8 +1173,8 @@ async fn main() -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+async fn health(State(state): State<NodeState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({"status": "ok", "registry": state.authority.registry_health()}))
 }
 
 async fn create_pod(

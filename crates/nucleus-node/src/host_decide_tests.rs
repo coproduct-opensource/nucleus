@@ -45,6 +45,7 @@ fn authority(dir: &Path) -> Arc<PodAuthority> {
         cert_trust_anchors: Vec::new(),
         max_children_per_pod: 64,
         upstreams: None,
+        upstreams_poll_secs: 0,
         federation_issuer: None,
         ingress: Default::default(),
         approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
