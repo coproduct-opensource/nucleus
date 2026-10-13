@@ -58,6 +58,14 @@ impl From<nucleus_node::PodInfo> for PodInfo {
 ///
 /// New fields in v2+ go into `extensions` or as named fields with schema
 /// version bumps.
+///
+/// `manifest_hash` changed meaning at **v3**: it is
+/// [`nucleus_spec::PodSpec::manifest_hash`] (SHA-256 over a domain tag and the
+/// spec's RFC 8785 JSON). v1 and v2 receipts hashed the node's serde_yaml
+/// rendering of the spec; they are still accepted as issued history (their
+/// signature covers the version and the hash, so it verifies as before), but
+/// this SDK cannot recompute their hash. [`ExecutionReceipt::check_manifest`]
+/// says which case a receipt is in.
 #[derive(Debug, Clone)]
 pub struct ExecutionReceipt {
     // === v1.0 FROZEN ===
@@ -71,14 +79,16 @@ pub struct ExecutionReceipt {
     pub audit_entry_count: u64,
     /// Unix timestamp when the report was generated.
     pub timestamp_unix: u64,
-    /// SHA-256 hash of the serialized PodSpec manifest.
+    /// The PodSpec's manifest hash. Its rule depends on `version`; see
+    /// [`ExecutionReceipt::check_manifest`].
     pub manifest_hash: String,
     /// Sandbox proof tier (e.g., "attested", "spiffe_identity").
     pub sandbox_tier: String,
     /// SPIFFE ID of the pod's workload identity.
     pub spiffe_id: String,
     // === v1.0 versioning ===
-    /// Schema version. v2 binds report provenance.
+    /// Schema version. v2 binds report provenance; v3 moves `manifest_hash`
+    /// to canonical JSON.
     pub version: u32,
     /// "guest_reported" means guest/supervisor assertions. Empty is unspecified.
     pub report_provenance: String,
@@ -112,6 +122,64 @@ impl From<nucleus_node::ExecutionReceipt> for ExecutionReceipt {
             scratch_export: r.scratch_export,
             v1_content_hash: r.v1_content_hash,
             extensions: r.extensions.into_iter().collect(),
+        }
+    }
+}
+
+/// What a receipt's `manifest_hash` says about a given spec.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManifestBinding {
+    /// v3: the receipt's hash is this spec's hash.
+    Matches,
+    /// v3: the receipt is about a different spec.
+    Differs,
+    /// v1/v2: the hash was taken over the issuing node's serde_yaml rendering
+    /// of the spec, which this SDK no longer has. Accepted as issued history;
+    /// the binding cannot be rechecked here. Never read this as `Matches`.
+    LegacyNotRecomputable {
+        /// The receipt's version.
+        version: u32,
+    },
+}
+
+/// Why a receipt's manifest binding could not be checked at all.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ManifestCheckError {
+    /// A receipt version this SDK does not know. Refused by name rather than
+    /// guessed at.
+    #[error("receipt version {0} is not one this SDK understands")]
+    UnknownVersion(u32),
+    /// The spec has no canonical form, so it has no hash to compare.
+    #[error("{0}")]
+    SpecUnhashable(String),
+}
+
+impl ExecutionReceipt {
+    /// Check this receipt's `manifest_hash` against `spec`, by the rule its
+    /// `version` names. Does not verify the signature; pin the host key for that.
+    ///
+    /// # Errors
+    ///
+    /// [`ManifestCheckError`] for an unknown version or an unhashable spec.
+    pub fn check_manifest(
+        &self,
+        spec: &nucleus_spec::PodSpec,
+    ) -> Result<ManifestBinding, ManifestCheckError> {
+        match self.version {
+            1 | 2 => Ok(ManifestBinding::LegacyNotRecomputable {
+                version: self.version,
+            }),
+            3 => {
+                let ours = spec
+                    .manifest_hash()
+                    .map_err(|e| ManifestCheckError::SpecUnhashable(e.to_string()))?;
+                Ok(if ours.as_str() == self.manifest_hash {
+                    ManifestBinding::Matches
+                } else {
+                    ManifestBinding::Differs
+                })
+            }
+            other => Err(ManifestCheckError::UnknownVersion(other)),
         }
     }
 }
@@ -208,7 +276,7 @@ impl NodeClient {
         &self,
         spec: &nucleus_spec::PodSpec,
     ) -> Result<CreatePodResponse, Error> {
-        let yaml = serde_yaml::to_string(spec)
+        let yaml = nucleus_yaml::to_string(spec)
             .map_err(|e| Error::Spec(format!("failed to serialize PodSpec: {}", e)))?;
         let request = CreatePodRequest { yaml };
         let response = self.inner.clone().create_pod(request).await?;
@@ -322,9 +390,55 @@ mod receipt_provenance_tests {
         assert_eq!(receipt.signature, "signed-claims");
         assert_eq!(receipt.signer_pubkey, "claimed-key");
         let legacy = ExecutionReceipt::from(nucleus_node::ExecutionReceipt::default());
+        assert_eq!(
+            legacy.check_manifest(&spec()),
+            Err(ManifestCheckError::UnknownVersion(0)),
+            "an unversioned receipt is refused by name"
+        );
         assert!(
             legacy.report_provenance.is_empty(),
             "missing provenance must not become host evidence"
+        );
+    }
+
+    fn spec() -> nucleus_spec::PodSpec {
+        nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /w\n")
+            .expect("spec")
+    }
+
+    fn receipt(version: u32, manifest_hash: String) -> ExecutionReceipt {
+        ExecutionReceipt::from(nucleus_node::ExecutionReceipt {
+            version,
+            manifest_hash,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn v3_manifest_hash_is_checked_against_the_spec() {
+        let ours = spec().manifest_hash().unwrap().into_string();
+        assert_eq!(
+            receipt(3, ours).check_manifest(&spec()),
+            Ok(ManifestBinding::Matches)
+        );
+        assert_eq!(
+            receipt(3, "00".repeat(32)).check_manifest(&spec()),
+            Ok(ManifestBinding::Differs)
+        );
+    }
+
+    #[test]
+    fn v2_receipts_are_history_not_a_match() {
+        // Even a v2 receipt that happens to carry the v3 value is not a match:
+        // the rule is chosen by version, never by trying both.
+        let ours = spec().manifest_hash().unwrap().into_string();
+        assert_eq!(
+            receipt(2, ours).check_manifest(&spec()),
+            Ok(ManifestBinding::LegacyNotRecomputable { version: 2 })
+        );
+        assert_eq!(
+            receipt(4, String::new()).check_manifest(&spec()),
+            Err(ManifestCheckError::UnknownVersion(4))
         );
     }
 }

@@ -202,7 +202,7 @@ pub mod manifest_enforcement;
 /// MCP mediation: classify and gate arbitrary MCP tool calls against the
 /// permission lattice with exposure tracking.
 ///
-/// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
+/// Requires the `spec` feature (includes `serde`, `nucleus-yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod manifest_registry;
 #[cfg(feature = "spec")]
@@ -211,12 +211,12 @@ pub mod mcp_mediation;
 pub mod mediation_receipt;
 /// Progressive discovery: observe agent behavior and generate minimal policies.
 ///
-/// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
+/// Requires the `spec` feature (includes `serde`, `nucleus-yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod observe;
 /// Declarative profile specification and canonical profile registry.
 ///
-/// Requires the `spec` feature (includes `serde`, `cel`, `serde_yaml`, `toml`).
+/// Requires the `spec` feature (includes `serde`, `cel`, `nucleus-yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod policy;
 #[cfg(feature = "spec")]

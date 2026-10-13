@@ -1153,7 +1153,7 @@ async fn main() -> Result<(), ApiError> {
         .timed("spec_read", tokio::fs::read_to_string(&args.spec))
         .await?;
     let mut spec: PodSpec =
-        serde_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+        nucleus_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
 
     let guest_proof_config = guest_request_proof::Config::from_spec(&spec)?;
     let guest_proof_path = args.audit_log.with_extension("request-proofs.olog");

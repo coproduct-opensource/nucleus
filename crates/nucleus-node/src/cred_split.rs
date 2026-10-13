@@ -25,14 +25,14 @@ pub(crate) struct Withheld(());
 pub(crate) fn guest_spec_yaml(
     spec: &PodSpec,
     withhold: bool,
-) -> Result<(String, Option<Withheld>), serde_yaml::Error> {
+) -> Result<(String, Option<Withheld>), nucleus_yaml::Error> {
     let mut guest = spec.clone();
     if withhold {
         // The operator registry remains the broker's credential authority.
         drop(split_credentials(&mut guest));
     }
     Ok((
-        serde_yaml::to_string(&guest)?,
+        nucleus_yaml::to_string(&guest)?,
         withhold.then_some(Withheld(())),
     ))
 }
@@ -90,7 +90,7 @@ mod tests {
     const NOW: u64 = 1_700_000_000;
 
     fn spec_with_credentials() -> PodSpec {
-        serde_yaml::from_str(
+        nucleus_yaml::from_str(
             r#"
 apiVersion: nucleus/v1
 kind: Pod
@@ -119,7 +119,7 @@ spec:
         let mut spec = spec_with_credentials();
         let _store = split_credentials(&mut spec);
 
-        let yaml = serde_yaml::to_string(&spec).expect("spec serialises");
+        let yaml = nucleus_yaml::to_string(&spec).expect("spec serialises");
         assert!(
             !yaml.contains("super-secret-token-value"),
             "the guest spec still carries a credential value:\n{yaml}"
@@ -137,7 +137,7 @@ spec:
     fn the_credential_names_survive_the_split() {
         let mut spec = spec_with_credentials();
         let _store = split_credentials(&mut spec);
-        let yaml = serde_yaml::to_string(&spec).expect("spec serialises");
+        let yaml = nucleus_yaml::to_string(&spec).expect("spec serialises");
         assert!(
             yaml.contains("LLM_API_TOKEN"),
             "names must survive:\n{yaml}"
@@ -171,7 +171,7 @@ spec:
         let mut spec = spec_with_credentials();
         let _first = split_credentials(&mut spec);
         let second = split_credentials(&mut spec);
-        let yaml = serde_yaml::to_string(&spec).expect("spec serialises");
+        let yaml = nucleus_yaml::to_string(&spec).expect("spec serialises");
         assert!(!yaml.contains("super-secret-token-value"));
         // The second store is empty — every value was already taken.
         use nucleus_cred_broker::{AuthorizedRequest, PodIdentity};
@@ -193,7 +193,7 @@ spec:
     /// A spec with no credentials is handled without ceremony.
     #[test]
     fn a_spec_without_credentials_splits_to_nothing() {
-        let mut spec: PodSpec = serde_yaml::from_str(
+        let mut spec: PodSpec = nucleus_yaml::from_str(
             r#"
 apiVersion: nucleus/v1
 kind: Pod

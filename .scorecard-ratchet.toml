@@ -260,12 +260,15 @@ population_floor = 278
 # 2026-10-08 (ADR 0015 E2): new crate nucleus-egress-proxy, the host egress proxy's
 # guest-facing parser -- every byte guest root writes toward the network -- declares all
 # seven from its first commit; a panic is a proxy the guest can stop. 39 of 96 = 40.62%.
-# 2026-10-12: new crate nucleus-request-proof parses DPoP proofs from any client
-# before authority is granted; it declares all seven from its first commit. A panic
-# on a crafted proof would take down the listener it guards. 40 of 97 = 41.23%.
-floor_bp = 4123
+# 2026-10-12 (off serde_yaml): new crate nucleus-yaml, the one YAML reader every spec,
+# profile and workflow goes through, declares all seven from its first commit -- a reader
+# that panics on hostile YAML is a denial of service on every caller. 40 of 97 = 41.23%.
+# 2026-10-12 (request proofs, merged with the above): nucleus-request-proof parses DPoP
+# proofs from any client before authority is granted and declares all seven from its first
+# commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
+floor_bp = 4183
 floor_set = "measurement"
-population_floor = 97
+population_floor = 98
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -604,12 +607,15 @@ population_floor = 23
 # 2026-10-08 (eval cell M2): ci-scope appends its one `relevant=` line to the runner's
 # GITHUB_OUTPUT, a step-output file and not a record log, under a reasoned #[expect] of the
 # append ban. 32/147 = 21.76%; both pins follow the tree.
-# 2026-10-12 (request proofs): the tool-proxy's per-pod proof key provisioning
-# reads and writes key files outside the workload tree under two reasoned
-# #[expect]s of the #1216 file-I/O ban. 34/149 = 22.81%; both pins follow the tree.
-floor_bp = 2281
+# 2026-10-12 (off serde_yaml): nucleus-yaml's reader and writer are the one place a direct
+# serde_saphyr call is allowed (the G-1 disallowed-methods entries), each under a reasoned
+# #[expect]. 34/149 = 22.81%; both pins follow the tree.
+# 2026-10-12 (request proofs, merged with the above): the tool-proxy's per-pod proof key
+# provisioning reads and writes key files outside the workload tree under two reasoned
+# #[expect]s of the #1216 file-I/O ban. 36/151 = 23.84%; both pins follow the tree.
+floor_bp = 2384
 floor_set = "measurement"
-population_floor = 149
+population_floor = 151
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

@@ -22,7 +22,7 @@ pub fn scan_pod_spec(
     audit_log_path: Option<&Path>,
 ) -> Result<ScanReport, AuditError> {
     let yaml = std::fs::read_to_string(pod_spec_path)?;
-    let spec: nucleus_spec::PodSpec = serde_yaml::from_str(&yaml)
+    let spec: nucleus_spec::PodSpec = nucleus_yaml::from_str(&yaml)
         .map_err(|e| AuditError::Backend(format!("failed to parse PodSpec: {}", e)))?;
 
     let lattice = spec

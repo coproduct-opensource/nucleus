@@ -67,7 +67,7 @@ pub(crate) async fn container_env(
     // In direct mode, extract the task from the raw YAML (task is not in the typed
     // PodSpec struct — it's a free-form field that the tool-proxy/agent reads from YAML).
     if !proxy_mode
-        && let Ok(raw) = serde_yaml::from_str::<serde_json::Value>(spec_yaml)
+        && let Ok(raw) = nucleus_yaml::from_str::<serde_json::Value>(spec_yaml)
         && let Some(task) = raw
             .get("spec")
             .and_then(|s| s.get("task"))

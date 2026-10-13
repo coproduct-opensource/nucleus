@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde_yaml::Value;
+use serde_json::Value;
 use syn::visit::Visit;
 
 /// One `#[kani::proof]` function. `key` is `<file>::<name>`, the form
@@ -175,13 +175,13 @@ fn disabled(value: &Value) -> bool {
 fn workflow_lanes(path: &str, workflow: &Value) -> Result<Vec<Lane>> {
     let mut lanes = Vec::new();
     let jobs = workflow["jobs"]
-        .as_mapping()
+        .as_object()
         .context("workflow has no jobs")?;
     for (id, job) in jobs {
         if disabled(job) {
             continue;
         }
-        let Some(steps) = job["steps"].as_sequence() else {
+        let Some(steps) = job["steps"].as_array() else {
             continue;
         };
         for step in steps {
@@ -203,7 +203,7 @@ fn workflow_lanes(path: &str, workflow: &Value) -> Result<Vec<Lane>> {
             let args = step["with"]["args"]
                 .as_str()
                 .context("Kani action has no args")?;
-            let label = format!("{path}::{}", id.as_str().context("job id is not text")?);
+            let label = format!("{path}::{id}");
             if args.contains("${{ matrix.harness }}") {
                 if !job["strategy"]["matrix"]["include"].is_null()
                     || !job["strategy"]["matrix"]["exclude"].is_null()
@@ -211,7 +211,7 @@ fn workflow_lanes(path: &str, workflow: &Value) -> Result<Vec<Lane>> {
                     bail!("{label}: matrix include/exclude needs explicit inventory support");
                 }
                 let matrix = job["strategy"]["matrix"]["harness"]
-                    .as_sequence()
+                    .as_array()
                     .context("Kani harness matrix is not explicit")?;
                 for value in matrix {
                     lanes.push(lane(
@@ -268,7 +268,7 @@ pub(crate) fn lanes(root: &Path) -> Result<Vec<Lane>> {
         if !path.extension().is_some_and(|s| s == "yml" || s == "yaml") {
             continue;
         }
-        let workflow: Value = serde_yaml::from_str(&std::fs::read_to_string(&path)?)?;
+        let workflow: Value = nucleus_yaml::from_str(&std::fs::read_to_string(&path)?)?;
         lanes.extend(workflow_lanes(
             &path.strip_prefix(root)?.display().to_string(),
             &workflow,
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn matrix_entries_are_concrete_and_disabled_jobs_do_not_cover() {
-        let yaml: Value = serde_yaml::from_str("jobs:\n  proof:\n    strategy:\n      matrix:\n        harness: [proof_a, proof_b]\n    steps:\n      - uses: model-checking/kani-github-action@pin\n        with:\n          args: '-p core --harness ${{ matrix.harness }}'\n").unwrap();
+        let yaml: Value = nucleus_yaml::from_str("jobs:\n  proof:\n    strategy:\n      matrix:\n        harness: [proof_a, proof_b]\n    steps:\n      - uses: model-checking/kani-github-action@pin\n        with:\n          args: '-p core --harness ${{ matrix.harness }}'\n").unwrap();
         let lanes = workflow_lanes("ci", &yaml).unwrap();
         assert_eq!(lanes.len(), 2);
         assert_eq!(lanes[1].selectors, ["proof_b"]);

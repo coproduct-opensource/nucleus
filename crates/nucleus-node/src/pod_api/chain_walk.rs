@@ -792,7 +792,7 @@ fn spec_yaml(work: &std::path::Path, policy: PermissionLattice, ups: u8) -> Stri
     spec.spec.policy = nucleus_spec::PolicySpec::Inline {
         lattice: Box::new(policy),
     };
-    serde_yaml::to_string(&spec).expect("spec serializes")
+    nucleus_yaml::to_string(&spec).expect("spec serializes")
 }
 
 fn key() -> Ed25519KeyPair {

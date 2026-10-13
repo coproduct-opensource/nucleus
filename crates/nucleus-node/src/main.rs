@@ -1206,15 +1206,15 @@ async fn create_pod(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Json<CreatePodResponse>, ApiError> {
-    let spec = match serde_yaml::from_slice::<PodSpec>(&body) {
+    let spec = match nucleus_yaml::from_slice::<PodSpec>(&body) {
         Ok(spec) => spec,
         Err(_) => {
-            let request: CreatePodRequest =
-                serde_yaml::from_slice(&body).map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
+            let request: CreatePodRequest = nucleus_yaml::from_slice(&body)
+                .map_err(|e| ApiError::InvalidSpec(e.to_string()))?;
             if let Some(spec) = request.spec {
                 spec
             } else if let Some(yaml) = request.yaml {
-                serde_yaml::from_str(&yaml).map_err(|e| ApiError::InvalidSpec(e.to_string()))?
+                nucleus_yaml::from_str(&yaml).map_err(|e| ApiError::InvalidSpec(e.to_string()))?
             } else {
                 return Err(ApiError::InvalidSpec("missing spec".to_string()));
             }
@@ -1494,7 +1494,7 @@ async fn spawn_local_pod(
     let announce_path = pod_dir.join("proxy.addr");
     let socket = local_transport::socket(pod_dir)?;
 
-    let spec_yaml = serde_yaml::to_string(spec).map_err(ApiError::Serde)?;
+    let spec_yaml = nucleus_yaml::to_string(spec).map_err(ApiError::Serde)?;
     tokio::fs::write(&spec_path, spec_yaml).await?;
 
     if spec.spec.network.is_some() {
@@ -2956,7 +2956,7 @@ impl NodeService for GrpcService {
             return Err(Status::invalid_argument("missing pod spec yaml"));
         }
 
-        let spec: PodSpec = serde_yaml::from_str(&yaml)
+        let spec: PodSpec = nucleus_yaml::from_str(&yaml)
             .map_err(|e| Status::invalid_argument(format!("invalid yaml: {e}")))?;
         let (id, proxy_addr) = pod_launch::create(
             &self.state,
@@ -3139,7 +3139,8 @@ impl NodeService for GrpcService {
             .map_err(|e| match e {
                 pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
                 pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
-                pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
+                pod_receipt::ReceiptError::Malformed(_)
+                | pod_receipt::ReceiptError::Unhashable(_) => Status::internal(e.to_string()),
             })?;
         // The outward-facing report stays on this transport only; see `pod_receipt`'s module docs
         // for why the HTTP route deliberately does not inherit it.

@@ -27,7 +27,7 @@ fn env_naming_the_governor() -> String {
 }
 
 fn pod(labels: &str) -> nucleus_spec::PodSpec {
-    serde_yaml::from_str(&format!(
+    nucleus_yaml::from_str(&format!(
         "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\n{labels}spec:\n  \
          timeout_seconds: 60\n"
     ))

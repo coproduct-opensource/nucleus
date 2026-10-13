@@ -1,6 +1,6 @@
 //! Read explicit Lean-action build inputs for the library-coverage gate.
 use anyhow::{Context, Result, bail};
-use serde_yaml::Value;
+use serde_json::Value;
 
 /// What one `leanprover/lean-action` step builds.
 #[derive(Debug, PartialEq, Eq)]
@@ -35,14 +35,14 @@ fn builds(workflow: &Value) -> Result<Vec<(String, String)>> {
 /// no reader of this function could check.
 pub fn steps(workflow: &Value) -> Result<Vec<LeanBuild>> {
     let mut out = Vec::new();
-    let Some(jobs) = workflow["jobs"].as_mapping() else {
+    let Some(jobs) = workflow["jobs"].as_object() else {
         return Ok(out);
     };
     for job in jobs.values() {
         if job["if"] == Value::Bool(false) {
             continue;
         }
-        let Some(steps) = job["steps"].as_sequence() else {
+        let Some(steps) = job["steps"].as_array() else {
             continue;
         };
         for step in steps {
@@ -115,7 +115,7 @@ pub fn run(workflow: Option<&std::path::Path>) -> Result<()> {
         if !path.extension().is_some_and(|s| s == "yml" || s == "yaml") {
             continue;
         }
-        let yaml: Value = serde_yaml::from_str(&std::fs::read_to_string(&path)?)?;
+        let yaml: Value = nucleus_yaml::from_str(&std::fs::read_to_string(&path)?)?;
         for (kind, value) in builds(&yaml).with_context(|| path.display().to_string())? {
             println!("{kind}\t{value}");
         }
@@ -128,7 +128,7 @@ mod tests {
     use super::*;
     #[test]
     fn reads_folded_targets_and_rejects_dynamic_builds() {
-        let mut yaml: Value = serde_yaml::from_str("jobs:\n  proof:\n    steps:\n      - uses: leanprover/lean-action@pin\n        with:\n          build: 'true'\n          lake-package-directory: ci/lean\n          build-args: >-\n            CiSpec\n            CiSpecBite\n").unwrap();
+        let mut yaml: Value = nucleus_yaml::from_str("jobs:\n  proof:\n    steps:\n      - uses: leanprover/lean-action@pin\n        with:\n          build: 'true'\n          lake-package-directory: ci/lean\n          build-args: >-\n            CiSpec\n            CiSpecBite\n").unwrap();
         assert_eq!(
             builds(&yaml).unwrap(),
             [
