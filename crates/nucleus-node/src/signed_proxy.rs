@@ -385,7 +385,10 @@ impl SignedProxy {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        let _ = self.task.await;
+        // Graceful shutdown waits for in-flight requests, and `forward_request`
+        // has no timeout of its own; this carries no identity, so it is bounded.
+        crate::teardown_bound::join("signed proxy", &mut self.task, std::time::Duration::from_secs(5))
+            .await;
     }
 }
 

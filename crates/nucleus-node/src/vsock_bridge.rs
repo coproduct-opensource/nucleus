@@ -138,7 +138,9 @@ impl VsockBridge {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        let _ = self.task.await;
+        // Runs before the pod's capacity is released, so it is bounded too.
+        crate::teardown_bound::join("vsock bridge", &mut self.task, std::time::Duration::from_secs(5))
+            .await;
     }
 }
 

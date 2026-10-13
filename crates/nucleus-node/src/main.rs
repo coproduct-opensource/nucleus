@@ -31,6 +31,7 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod api_error;
+mod teardown_bound;
 mod art12_collector;
 mod audit_sink;
 mod auth;
@@ -2971,7 +2972,7 @@ impl NodeService for GrpcService {
 
         let (md, ext, req) = request.into_parts();
         let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
-        pod.cancel()
+        pod.cancel_detached()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(GrpcResponse::new(proto::CancelPodResponse {
