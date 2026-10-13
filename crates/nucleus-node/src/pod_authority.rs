@@ -315,6 +315,10 @@ pub(crate) struct IssuedAuthority {
 pub(crate) struct AdmittedPodPlan {
     id: Uuid,
     spec: PodSpec,
+    /// `spec` as the driver hands it to the guest, and its manifest hash: derived here, from the
+    /// applied spec, so the bytes a driver delivers and the hash a receipt carries cannot come
+    /// from different specs (G-1, `delivered_spec`).
+    delivered: crate::delivered_spec::DeliveredSpec,
     chain_depth: usize,
     owner: String,
 }
@@ -338,6 +342,12 @@ impl AdmittedPodPlan {
     /// The spec as admitted: the issued lattice and upstreams in place of what was requested.
     pub(crate) fn spec(&self) -> &PodSpec {
         &self.spec
+    }
+
+    /// The admitted spec as the driver delivers it to the guest. Its manifest hash is the pod's:
+    /// the receipt carries it and an approval binds it.
+    pub(crate) fn delivered(&self) -> &crate::delivered_spec::DeliveredSpec {
+        &self.delivered
     }
 
     /// Chain depth of the issued certificate.
@@ -1546,14 +1556,24 @@ impl PodAuthority {
         mut spec: PodSpec,
         id: Uuid,
         starting: crate::host_decide::StartingLabel,
+        delivery: crate::delivered_spec::Delivery<'_>,
     ) -> Result<(AdmittedPodPlan, Reservation), ApiError> {
         let issued = self.admit_as(admission, &spec, id, starting).await?;
         let chain_depth = issued.chain_depth;
         let owner = issued.root_identity.clone();
         let reservation = issued.apply_to(&mut spec);
+        // From the applied spec, never the request: what the guest reads is what was issued.
+        let delivered = match crate::delivered_spec::DeliveredSpec::of(&spec, delivery) {
+            Ok(delivered) => delivered,
+            Err(refused) => {
+                reservation.release().await;
+                return Err(refused);
+            }
+        };
         let plan = AdmittedPodPlan {
             id,
             spec,
+            delivered,
             chain_depth,
             owner,
         };

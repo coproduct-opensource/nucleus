@@ -267,7 +267,7 @@ mod tests {
             .find("driver::clamp_isolation_to_backend(&state.driver, &mut spec)?")
             .expect("the clamp is called from main.rs, with the node's own driver, and its refusal propagated");
         let admit = main
-            .find(".admit_pod(&admission, spec, id, starting)")
+            .find(".admit_pod(&admission, spec, id, starting, delivery)")
             .expect("admission is called from main.rs");
         assert!(clamp < admit, "the clamp must run before admission");
         let indent = main[..clamp].rsplit('\n').next().unwrap_or("");

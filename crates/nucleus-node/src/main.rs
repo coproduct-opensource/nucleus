@@ -104,6 +104,7 @@ mod container_mediation;
 mod container_transport;
 use container_env::container_env;
 mod cred_split;
+mod delivered_spec;
 mod driver;
 #[cfg(test)]
 mod effect_footprint;
@@ -596,7 +597,11 @@ struct NodeState {
 #[derive(Debug)]
 struct PodHandle {
     id: Uuid,
+    /// The node's record of the admitted spec: credential values included, host paths untranslated.
     spec: PodSpec,
+    /// The pod's manifest hash: of the spec as delivered to its guest (`delivered_spec`), the
+    /// hash its receipt carries and an approval bundle binds. Never recomputed from `spec`.
+    manifest_hash: nucleus_spec::ManifestHash,
     created_at: u64,
     execution_deadline: tokio::time::Instant,
     log_path: PathBuf,
@@ -1351,14 +1356,24 @@ async fn create_pod_internal(
     // puts into the cell, an eval cell untrusted whatever it carries (ADR 0014 §3).
     let starting =
         host_decide::StartingLabel::of(profile, &workspace_scan::sources(&spec, &state.driver));
+    // How this node's driver hands the guest its spec, decided once: the plan derives the
+    // delivered bytes and the pod's manifest hash from the applied spec (`delivered_spec`, G-1).
+    let delivery = delivered_spec::Delivery::for_driver(
+        &state.driver,
+        state.broker_enforcing,
+        state.container_mediation,
+        raw_yaml.as_deref(),
+    );
     let (plan, reservation) = state
         .authority
-        .admit_pod(&admission, spec, id, starting)
+        .admit_pod(&admission, spec, id, starting, delivery)
         .await?;
     tracing::Span::current().record("chain_depth", plan.chain_depth());
     let owner = plan.owner().to_string();
     // The registry's record of the spec; the plan, not this copy, is what launches.
     let spec = plan.spec().clone();
+    // What the receipt carries: the hash of the spec the guest is handed, not of `spec` (#3395).
+    let manifest_hash = plan.delivered().manifest_hash().clone();
     let memory = match state.memory.provision(requested_memory, &owner) {
         Ok(memory) => memory,
         Err(error) => {
@@ -1398,7 +1413,6 @@ async fn create_pod_internal(
                 &pod_dir,
                 plan,
                 container_launch::Inputs {
-                    raw_yaml: raw_yaml.as_deref(),
                     audit: audit.as_ref(),
                     memory: memory.as_ref(),
                     deadline: execution_deadline,
@@ -1430,6 +1444,7 @@ async fn create_pod_internal(
     let handle = Arc::new(PodHandle {
         id,
         spec,
+        manifest_hash,
         created_at,
         execution_deadline,
         log_path,
@@ -1519,8 +1534,7 @@ async fn spawn_local_pod(
     let announce_path = pod_dir.join("proxy.addr");
     let socket = local_transport::socket(pod_dir)?;
 
-    let spec_yaml = nucleus_yaml::to_string(spec).map_err(ApiError::Serde)?;
-    tokio::fs::write(&spec_path, spec_yaml).await?;
+    tokio::fs::write(&spec_path, plan.delivered().yaml()).await?;
 
     if spec.spec.network.is_some() {
         return Err(ApiError::Driver(
@@ -1704,7 +1718,6 @@ async fn spawn_container_pod(
     // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
     let (spec, id) = (plan.spec(), plan.id());
     let container_launch::Inputs {
-        raw_yaml,
         audit,
         memory,
         deadline,
@@ -1747,14 +1760,15 @@ async fn spawn_container_pod(
     let announce_path = pod_dir.join("proxy.addr");
     let audit_path = pod_dir.join("audit.log");
 
-    // Keep extension fields while translating the host checkout to its container mount.
-    let spec_yaml = container_mediation::pod_yaml(spec, raw_yaml)?;
-    tokio::fs::write(&spec_path, &spec_yaml).await?;
+    // The admitted spec under the container's workspace mount; an unmediated container's file
+    // keeps the caller's extension fields (`delivered_spec`).
+    let spec_yaml = plan.delivered().yaml();
+    tokio::fs::write(&spec_path, spec_yaml).await?;
 
     // Mediation and image are the node's (#3133); `spec_posture::admit` refused a spec naming them.
     let mediation = state.container_mediation;
     let proxy_mode = mediation.runs_tool_proxy();
-    let mut env = container_env(state, spec, id, &spec_yaml, audit, memory).await;
+    let mut env = container_env(state, spec, id, spec_yaml, audit, memory).await;
     // The identity files are the proxy's sandbox proof (tier 2); the HMAC'd
     // token that used to stand in for them is deleted (#2446 step 3).
     if proxy_mode {
@@ -2462,6 +2476,7 @@ async fn spawn_firecracker_pod(
                         state,
                         pod_dir,
                         spec,
+                        delivered: plan.delivered(),
                         image,
                         id,
                         grant: &identity_grant,
@@ -3156,8 +3171,7 @@ impl NodeService for GrpcService {
             .map_err(|e| match e {
                 pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),
                 pod_receipt::ReceiptError::NoExitReport(_) => Status::not_found(e.to_string()),
-                pod_receipt::ReceiptError::Malformed(_)
-                | pod_receipt::ReceiptError::Unhashable(_) => Status::internal(e.to_string()),
+                pod_receipt::ReceiptError::Malformed(_) => Status::internal(e.to_string()),
             })?;
         // The outward-facing report stays on this transport only; see `pod_receipt`'s module docs
         // for why the HTTP route deliberately does not inherit it.

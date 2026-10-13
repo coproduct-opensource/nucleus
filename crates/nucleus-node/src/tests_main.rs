@@ -1020,10 +1020,12 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
     // Non-vacuity: it was running, so the cancel had something to stop.
     assert!(matches!(pod.status().await, PodState::Running));
 
+    let spec: PodSpec = serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
+        .expect("minimal spec");
     let handle = PodHandle {
         id: uuid::Uuid::new_v4(),
-        spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
-            .expect("minimal spec"),
+        manifest_hash: crate::delivered_spec::fixture_hash(&spec),
+        spec,
         created_at: 1_757_000_000,
         execution_deadline: tokio::time::Instant::now() + Duration::from_secs(3600),
         log_path: std::env::temp_dir().join("container-cancel-test.log"),
