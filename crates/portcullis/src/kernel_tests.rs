@@ -2154,6 +2154,16 @@ fn scope_is_checked_before_currency() {
 //   commands, egress, sink scope, rules) is held passing: a denial for any
 //   reason but capability fails the test as outside the modelled space, not
 //   as a parity failure.
+//
+// One divergence is real, and pinned rather than modelled away: the kernel's
+// exposure gate projects `RunBash` as OMNIBUS (`exposure_core::project_exposure`:
+// a shell can read private data as well as send it), while `decide_pure`
+// projects only its `ExfilVector`. So after untrusted content and with no
+// private read yet, the kernel holds `RunBash` and `decide_pure` allows it —
+// the shipping decider is the stricter one, and the proof target does not
+// state its rule. For `RunBash` the kernel must equal `decide_pure` on the
+// omnibus exposure; the divergence is required to be REACHED, so a change
+// that makes the two agree (either side) reds here and this pin is revisited.
 mod decider_parity {
     use super::*;
     use crate::guard::ExposureLabel as GuardLabel;
@@ -2172,6 +2182,14 @@ mod decider_parity {
         DenyCapability,
         RequiresApproval,
         GateExfil,
+    }
+
+    /// What the runs reached: every (operation, verdict) pair, and how often
+    /// the pinned `RunBash` divergence was the deciding difference.
+    #[derive(Default)]
+    struct Reached {
+        pairs: BTreeSet<(Operation, Class)>,
+        omnibus_divergences: usize,
     }
 
     fn pure_class(v: PureVerdict) -> Class {
@@ -2288,24 +2306,44 @@ mod decider_parity {
         }
     }
 
-    /// Run one policy and one sequence through all four deciders, and record
-    /// which (operation, verdict) pairs were reached.
-    fn run(
-        levels: &[CapabilityLevel; 13],
-        sequence: &[Operation],
-        seen: &mut BTreeSet<(Operation, Class)>,
-    ) {
+    /// What the kernel must answer, from `decide_pure`: on the exposure as it
+    /// stands, except `RunBash`, which is decided on the omnibus exposure (see
+    /// the module comment). Returns the verdict and whether the omnibus
+    /// projection is what made the difference.
+    fn expected(level: CapabilityLevel, exposure: CoreExposure, op: Operation) -> (Class, bool) {
+        let plain = pure_class(decide_pure(level, &exposure, op));
+        match op {
+            Operation::RunBash => {
+                let mut omnibus = exposure;
+                omnibus.set(CoreLabel::PrivateData);
+                let omnibus = pure_class(decide_pure(level, &omnibus, op));
+                (omnibus, omnibus != plain)
+            }
+            Operation::ReadFiles
+            | Operation::WriteFiles
+            | Operation::EditFiles
+            | Operation::GlobSearch
+            | Operation::GrepSearch
+            | Operation::WebSearch
+            | Operation::WebFetch
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods
+            | Operation::SpawnAgent => (plain, false),
+        }
+    }
+
+    /// Run one policy and one sequence through all four deciders.
+    fn run(levels: &[CapabilityLevel; 13], sequence: &[Operation], reached: &mut Reached) {
         let policy = policy(levels);
         let mut by_op = Kernel::new(policy.clone());
         let mut by_term = Kernel::new(policy.clone());
         let mut by_flow = Kernel::new(policy.clone());
         for &op in sequence {
             let subject = subject_for(op);
-            let pure = pure_class(decide_pure(
-                pure_level(&policy, op),
-                &core_exposure(by_op.exposure()),
-                op,
-            ));
+            let (want, omnibus) =
+                expected(pure_level(&policy, op), core_exposure(by_op.exposure()), op);
             let (d_op, _) = by_op.decide(op, subject);
             let (d_term, _) = by_term.decide_term(crate::ActionTerm::from_operation(op, subject));
             let (d_flow, _) = by_flow
@@ -2320,7 +2358,7 @@ mod decider_parity {
             ];
             assert_eq!(
                 got,
-                [pure; 3],
+                [want; 3],
                 "{op:?} at {:?} after {sequence:?}: decide / decide_term / \
                  decide_term_with_flow against decide_pure",
                 policy.capabilities.level_for(op)
@@ -2335,7 +2373,8 @@ mod decider_parity {
                 by_flow.exposure(),
                 "{op:?}: exposure drift"
             );
-            seen.insert((op, pure));
+            reached.pairs.insert((op, want));
+            reached.omnibus_divergences += usize::from(omnibus);
         }
     }
 
@@ -2348,14 +2387,41 @@ mod decider_parity {
     }
 
     /// Generated policies and sequences; every case ends with a sweep of all
-    /// 13 operations, so each is decided under every generated policy.
+    /// 13 operations, so each is decided under every generated policy. The
+    /// runner is seeded, so the cases (and the coverage asserted below) are
+    /// the same on every run.
     #[test]
     fn decide_decide_term_decide_term_with_flow_and_decide_pure_agree() {
-        let seen = RefCell::new(BTreeSet::new());
-        let mut runner = TestRunner::new(Config {
-            cases: 512,
-            ..Config::default()
-        });
+        let reached = RefCell::new(Reached::default());
+
+        // The divergence, at the minimal case the generator first shrank to:
+        // `RunBash` and `WebSearch` granted, nothing else; search, then shell.
+        let mut minimal = [CapabilityLevel::Never; 13];
+        for (slot, op) in minimal.iter_mut().zip(Operation::ALL) {
+            if matches!(op, Operation::RunBash | Operation::WebSearch) {
+                *slot = CapabilityLevel::Always;
+            }
+        }
+        run(
+            &minimal,
+            &[Operation::WebSearch, Operation::RunBash],
+            &mut reached.borrow_mut(),
+        );
+        assert_eq!(
+            reached.borrow().omnibus_divergences,
+            1,
+            "after untrusted content, decide_pure allows RunBash and the kernel holds it"
+        );
+
+        let mut runner = TestRunner::new_with_rng(
+            Config {
+                cases: 512,
+                ..Config::default()
+            },
+            proptest::test_runner::TestRng::deterministic_rng(
+                proptest::test_runner::RngAlgorithm::ChaCha,
+            ),
+        );
         let ops = proptest::sample::select(Operation::ALL.to_vec());
         runner
             .run(
@@ -2366,7 +2432,7 @@ mod decider_parity {
                 |(levels, prefix)| {
                     let sequence: Vec<Operation> =
                         prefix.into_iter().chain(Operation::ALL).collect();
-                    run(&levels, &sequence, &mut seen.borrow_mut());
+                    run(&levels, &sequence, &mut reached.borrow_mut());
                     Ok(())
                 },
             )
@@ -2375,17 +2441,17 @@ mod decider_parity {
         // Non-vacuity: every operation reached allow, capability denial and
         // static approval, and the exposure gate fired on some operation. A
         // parity check over a space where everything is denied agrees too.
-        let seen = seen.into_inner();
+        let reached = reached.into_inner();
         for op in Operation::ALL {
             for class in [Class::Allow, Class::DenyCapability, Class::RequiresApproval] {
                 assert!(
-                    seen.contains(&(op, class)),
+                    reached.pairs.contains(&(op, class)),
                     "{op:?} never reached {class:?}"
                 );
             }
         }
         assert!(
-            seen.iter().any(|(_, c)| *c == Class::GateExfil),
+            reached.pairs.iter().any(|(_, c)| *c == Class::GateExfil),
             "the exposure gate never fired"
         );
     }
