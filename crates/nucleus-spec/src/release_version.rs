@@ -51,7 +51,7 @@ pub struct BuildInputs<'a> {
     pub ref_type: Option<&'a str>,
     /// `GITHUB_REF_NAME`: the tag or branch name.
     pub ref_name: Option<&'a str>,
-    /// `git describe --tags --match 'v[0-9]*' --dirty`, from `build.rs`.
+    /// `git describe --tags --match 'v[0-9]*.[0-9]*.[0-9]*' --dirty`, from `build.rs`.
     pub git_describe: Option<&'a str>,
 }
 
@@ -73,18 +73,25 @@ pub fn decide(inputs: BuildInputs<'_>) -> ReportedVersion {
 }
 
 /// `v2.7.0` → `2.7.0`, and `nucleus-node-v2.7.0` likewise (the release workflow
-/// strips both prefixes when it names its tarballs). `None` for anything that
-/// does not then start with a digit, or carries a character no version has —
-/// a branch-like tag name is not a version, and is not reported as one.
+/// strips both prefixes when it names its tarballs). The rest must be a full
+/// `MAJOR.MINOR.PATCH`, optionally followed by a `-`/`+` suffix of version
+/// characters; anything else is `None`. That refuses a branch-like tag name,
+/// and the floating major tag `v2` the release workflow moves to each release:
+/// `git describe` finds it as readily as `v2.7.0` and would report `2-82-g…`.
 fn version_from_tag(tag: &str) -> Option<&str> {
     let v = tag
         .strip_prefix("nucleus-node-v")
         .or_else(|| tag.strip_prefix('v'))?;
-    let starts_with_digit = v.chars().next().is_some_and(|c| c.is_ascii_digit());
-    let version_chars = v
+    let (core, suffix) = v.split_at(v.find(['-', '+']).unwrap_or(v.len()));
+    let numbers: Vec<&str> = core.split('.').collect();
+    let three_numbers = numbers.len() == 3
+        && numbers
+            .iter()
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let suffix_chars = suffix
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
-    (starts_with_digit && version_chars).then_some(v)
+    (three_numbers && suffix_chars).then_some(v)
 }
 
 /// The version string for the calling binary, decided from ITS build inputs.
@@ -164,13 +171,37 @@ mod tests {
 
     #[test]
     fn a_tag_that_is_not_a_version_is_not_reported() {
-        for tag in ["latest", "v", "vnext", "v2.7.0 ", "v2.7.0/../x", ""] {
+        let not_versions = [
+            "latest",
+            "v",
+            "vnext",
+            "v2",
+            "v2.7",
+            "v2.7.0.1",
+            "v2..0",
+            "v2.7.x",
+            "v2.7.0 ",
+            "v2.7.0/../x",
+            "",
+        ];
+        for tag in not_versions {
             assert_eq!(
                 decide(inputs(Some("tag"), Some(tag), None)),
                 ReportedVersion::Untagged("1.0.0".into()),
                 "{tag:?}"
             );
         }
+    }
+
+    /// Measured on a real checkout: without a full-version `--match`, `git
+    /// describe` finds the floating major tag `v2` on the release commit and
+    /// says `v2-82-g24e6c937`. That is not a version and must not be reported.
+    #[test]
+    fn a_describe_off_the_floating_major_tag_is_not_a_version() {
+        assert_eq!(
+            decide(inputs(None, None, Some("v2-82-g24e6c937"))),
+            ReportedVersion::Untagged("1.0.0".into())
+        );
     }
 
     #[test]

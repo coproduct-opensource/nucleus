@@ -37,7 +37,10 @@ fn main() {
             }
         }
     }
-    if let Some(describe) = git(&["describe", "--tags", "--match", "v[0-9]*", "--dirty"]) {
+    // Full `vX.Y.Z` tags only: the floating major tag `v2` sits on the same
+    // commit as the latest release and would otherwise be found instead.
+    let release_tags = "v[0-9]*.[0-9]*.[0-9]*";
+    if let Some(describe) = git(&["describe", "--tags", "--match", release_tags, "--dirty"]) {
         println!("cargo:rustc-env=NUCLEUS_GIT_DESCRIBE={describe}");
     }
 }
