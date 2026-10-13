@@ -172,12 +172,16 @@ enum Command {
         #[arg(long)]
         new_parser: String,
     },
-    /// Verify C2PA content credentials — cross-check sidecar with receipt chain (#1018).
+    /// Inspect a provenance output's header and cross-check it with the
+    /// receipt chain (#1018).
     ///
-    /// Reads provenance-output.json and its companion .c2pa manifest,
-    /// extracts the nucleus.witness_digest assertion, and verifies it
-    /// matches the receipt chain head hash.
-    VerifyC2pa {
+    /// Reads provenance-output.json, reports its header and field
+    /// derivations, and checks the header's chain head against the last
+    /// receipt. C2PA support was removed from nucleus: a companion `.c2pa`
+    /// sidecar is reported as NOT VERIFIED, never silently skipped.
+    /// `verify-c2pa` is kept as an alias so existing callers learn that.
+    #[command(alias = "verify-c2pa")]
+    InspectProvenance {
         /// Provenance output JSON file.
         #[arg(long)]
         output: PathBuf,
@@ -406,8 +410,8 @@ fn main() -> Result<(), AuditError> {
         Command::ProvenanceLog { output } => {
             provenance_log(&output)?;
         }
-        Command::VerifyC2pa { output, receipts } => {
-            verify_c2pa(&output, receipts.as_deref())?;
+        Command::InspectProvenance { output, receipts } => {
+            inspect_provenance(&output, receipts.as_deref())?;
         }
         Command::DiffProvenance { old, new } => {
             diff_provenance(&old, &new)?;
@@ -1602,8 +1606,8 @@ fn provenance_log(output_path: &Path) -> Result<(), AuditError> {
     Ok(())
 }
 
-/// Diff two provenance outputs (#1001).
-fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), AuditError> {
+/// Inspect a provenance output header and cross-check it with the receipt chain (#1018).
+fn inspect_provenance(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), AuditError> {
     let prov_str = std::fs::read_to_string(output_path)
         .map_err(|e| AuditError::Backend(format!("{}: {e}", output_path.display())))?;
     let prov: serde_json::Value = serde_json::from_str(&prov_str)
@@ -1645,48 +1649,25 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
 
     let mut had_failure = false;
 
-    println!("C2PA Provenance Inspection");
-    println!("==========================");
+    println!("Provenance Inspection");
+    println!("=====================");
     println!("Source:          {}", output_path.display());
     println!("Schema hash:     {schema_hash}");
     println!("Chain head:      {chain_head}");
     println!("Contains AI:     {contains_ai}");
     println!("Fields:          {det_count} deterministic, {ai_count} AI-derived");
 
-    // Check for .c2pa sidecar and verify if c2pa-verify feature is enabled.
+    // C2PA support was removed from nucleus. A `.c2pa` sidecar beside the
+    // output means someone expected it checked, and nothing here can check
+    // it — so say exactly that rather than pass over it (A-1). It is not a
+    // failure of THIS inspection, whose verdict covers the header and the
+    // receipt chain only.
     let sidecar_path = output_path.with_extension("c2pa");
     if sidecar_path.exists() {
-        let sidecar_size = std::fs::metadata(&sidecar_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if sidecar_size == 0 {
-            println!("C2PA sidecar:    EMPTY (0 bytes) — invalid");
-            had_failure = true;
-        } else {
-            #[cfg(feature = "c2pa-verify")]
-            {
-                match verify_c2pa_sidecar(output_path) {
-                    Ok(info) => {
-                        println!("C2PA sidecar:    VERIFIED ({} bytes)", sidecar_size);
-                        println!("  Assertions:    {}", info.assertion_count);
-                        println!("  Validation:    {:?}", info.validation_state);
-                    }
-                    Err(e) => {
-                        println!("C2PA sidecar:    FAILED — {e}");
-                        had_failure = true;
-                    }
-                }
-            }
-            #[cfg(not(feature = "c2pa-verify"))]
-            {
-                println!(
-                    "C2PA sidecar:    present ({} bytes, build with --features c2pa-verify to verify signature)",
-                    sidecar_size
-                );
-            }
-        }
-    } else {
-        println!("C2PA sidecar:    not found (run with NUCLEUS_C2PA_CERT to generate)");
+        println!(
+            "C2PA sidecar:    {} — NOT VERIFIED: C2PA support was removed from nucleus",
+            sidecar_path.display()
+        );
     }
 
     // Cross-check receipt chain head — use exact equality, not substring match.
@@ -1743,41 +1724,15 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
 
     if had_failure {
         println!("\nresult: FAIL — issues found (see above)");
-        return Err(AuditError::Backend("C2PA verification found issues".into()));
+        return Err(AuditError::Backend(
+            "provenance inspection found issues".into(),
+        ));
     }
-    println!(
-        "\nresult: ok — provenance inspection complete (note: C2PA signature not yet verified)"
-    );
+    println!("\nresult: ok — provenance header and receipt chain inspected");
     Ok(())
 }
 
-#[cfg(feature = "c2pa-verify")]
-struct C2paVerifyInfo {
-    assertion_count: usize,
-    validation_state: String,
-}
-
-#[cfg(feature = "c2pa-verify")]
-fn verify_c2pa_sidecar(output_path: &Path) -> Result<C2paVerifyInfo, String> {
-    // c2pa 0.82 deprecated `Reader::from_file` in favor of an explicit
-    // Context (instead of thread-local settings).
-    let reader: c2pa::Reader = c2pa::Reader::from_context(c2pa::Context::new())
-        .with_file(output_path)
-        .map_err(|e| format!("{e}"))?;
-
-    let validation_state = format!("{:?}", reader.validation_state());
-
-    let assertion_count = reader
-        .active_manifest()
-        .map(|m: &c2pa::Manifest| m.assertions().len())
-        .unwrap_or(0);
-
-    Ok(C2paVerifyInfo {
-        assertion_count,
-        validation_state,
-    })
-}
-
+/// Diff two provenance outputs (#1001).
 fn diff_provenance(old_path: &Path, new_path: &Path) -> Result<(), AuditError> {
     let old_str = std::fs::read_to_string(old_path)
         .map_err(|e| AuditError::Backend(format!("{}: {e}", old_path.display())))?;

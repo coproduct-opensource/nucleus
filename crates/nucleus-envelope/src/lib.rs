@@ -69,14 +69,10 @@
 
 pub mod binding;
 pub mod bundle;
-#[cfg(feature = "c2pa")]
-pub mod c2pa_export;
 pub mod extract;
 pub mod interop;
 pub mod verify;
 
-#[cfg(feature = "c2pa")]
-pub use c2pa_export::{C2paExportError, NUCLEUS_C2PA_ASSERTION_LABEL};
 pub use interop::in_toto::{
     DSSE_INTOTO_PAYLOAD_TYPE, DsseEnvelope, DsseSignature, IN_TOTO_STATEMENT_TYPE, InTotoError,
     NUCLEUS_PREDICATE_TYPE, NUCLEUS_SUBJECT_NAME, ResourceDescriptor, Statement,

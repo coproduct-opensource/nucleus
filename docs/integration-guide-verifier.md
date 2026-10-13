@@ -423,9 +423,10 @@ versions you haven't validated against.
 
 ## What this guide does NOT cover
 
-- **C2PA / in-toto / SLSA export** — see the
-  [eu-ai-act-article-50.md](./eu-ai-act-article-50.md) doc + the
-  envelope crate's `interop` module.
+- **in-toto / SLSA / Sigstore export** — `nucleus envelope-export` and
+  `GET /v1/jobs/{id}/attestation`; see
+  [eu-ai-act-article-50.md](./eu-ai-act-article-50.md) and the envelope
+  crate's `interop` module. Nucleus emits no C2PA.
 - **Webhook delivery** of bundle-ready events — task #77 ships
   this on the control-plane-server.
 - **SSE event stream** during a job — task #76 completes this.
