@@ -387,6 +387,7 @@ var = "SEARCH_API_TOKEN"
             env: BTreeMap::new(),
             artifacts: BTreeMap::new(),
             uid: None,
+            companion: None,
         }
     }
 
