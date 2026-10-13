@@ -24,8 +24,10 @@
 //!
 //! These measurements were taken when the image carried the 2.2.0 release. The image now
 //! carries 2.7.0 (2.6.0, 2.5.0, 2.4.0 and 2.3.0 before it), whose release node is mTLS-only like a source-built one,
-//! so the HMAC path `node_auth` selects for the release node describes the measured 2.2.0
-//! image only; this harness has not been re-run against the 2.3.0, 2.4.0, 2.5.0, 2.6.0 or 2.7.0 image.
+//! so the harness speaks mTLS to either node. The shared-secret (HMAC) path the 2.2.0 release
+//! node took is gone: the tier was deleted (#2446 step 3b) and a node refuses it by name, so
+//! the harness no longer chooses it for any node source (#3198). It has not been re-run
+//! against the 2.3.0, 2.4.0, 2.5.0, 2.6.0 or 2.7.0 image.
 //!
 //! Safety: everything this creates is named `nucleus-spike-*`, and [`remove`]
 //! refuses any other name. It never changes a system-wide `container` property;
@@ -302,39 +304,11 @@ extendedKeyUsage=clientAuth\\nbasicConstraints=CA:FALSE\\n' > cli.ext; \
     )
 }
 
-/// How the node in the image authenticates its API callers.
-///
-/// A node built from this tree is mTLS-only (Move B). The GUEST_RELEASE 2.2.0
-/// node (`NODE_SOURCE=release`) predates that: plaintext HTTP with the
-/// `x-nucleus-*` HMAC headers over `"{ts}.{actor}.{body}"`.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NodeAuth {
-    Mtls,
-    Hmac,
-}
-
-fn node_auth() -> NodeAuth {
-    match std::env::var("NUCLEUS_SPIKE_NODE_SOURCE").as_deref() {
-        Ok("source") => NodeAuth::Mtls,
-        _ => NodeAuth::Hmac,
-    }
-}
-
-/// The dev node API secret the image once baked in. Only the spike's legacy
-/// HMAC mode uses it; a node past Move B reads no such secret (#3294).
-const NODE_SECRET: &str = "00000000000000000000000000000000000000000000000000000000000000a1";
-
-fn hmac_hex(message: &[u8]) -> String {
-    use hmac::{KeyInit, Mac};
-    let mut mac =
-        hmac::Hmac::<Sha256>::new_from_slice(NODE_SECRET.as_bytes()).expect("any key length");
-    mac.update(message);
-    hex::encode(mac.finalize().into_bytes())
-}
-
-/// `curl` the node API from inside the container. Under mTLS `-k` is used
-/// because the node's server certificate carries a SPIFFE URI SAN, not an IP
-/// SAN; the client certificate is still presented and checked by the node.
+/// `curl` the node API from inside the container, over mTLS: the only API
+/// authentication a node accepts, whichever `NODE_SOURCE` built it (#3198).
+/// `-k` is used because the node's server certificate carries a SPIFFE URI
+/// SAN, not an IP SAN; the client certificate is still presented and checked
+/// by the node.
 fn node_api(name: &str, method: &str, path: &str, body: Option<&str>) -> (u16, String) {
     let mut argv: Vec<String> = [
         "curl",
@@ -349,31 +323,8 @@ fn node_api(name: &str, method: &str, path: &str, body: Option<&str>) -> (u16, S
     .iter()
     .map(|s| s.to_string())
     .collect();
-    let url = match node_auth() {
-        NodeAuth::Mtls => {
-            argv.extend(
-                ["--cert", "/srv/cli.pem", "--key", "/srv/cli-key.pem"].map(str::to_string),
-            );
-            format!("{NODE}{path}")
-        }
-        NodeAuth::Hmac => {
-            let ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock after epoch")
-                .as_secs()
-                .to_string();
-            let sig = hmac_hex(format!("{ts}.spike.{}", body.unwrap_or("")).as_bytes());
-            argv.extend([
-                "-H".to_string(),
-                format!("x-nucleus-timestamp: {ts}"),
-                "-H".to_string(),
-                "x-nucleus-actor: spike".to_string(),
-                "-H".to_string(),
-                format!("x-nucleus-signature: {sig}"),
-            ]);
-            format!("http://127.0.0.1:8080{path}")
-        }
-    };
+    argv.extend(["--cert", "/srv/cli.pem", "--key", "/srv/cli-key.pem"].map(str::to_string));
+    let url = format!("{NODE}{path}");
     if let Some(b) = body {
         argv.extend(
             ["-H", "content-type: application/json", "--data-binary", b].map(str::to_string),
@@ -410,10 +361,7 @@ fn wait_node_healthy(name: &str, timeout: Duration) -> Result<Duration, String> 
     let started = Instant::now();
     let mut last = String::new();
     while started.elapsed() < timeout {
-        let m = match node_auth() {
-            NodeAuth::Mtls => mint_client_cert(name),
-            NodeAuth::Hmac => sh(name, "true"),
-        };
+        let m = mint_client_cert(name);
         if m.ok() {
             let (code, body) = node_api(name, "GET", "/v1/health", None);
             if code == 200 {

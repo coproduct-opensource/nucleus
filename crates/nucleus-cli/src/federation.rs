@@ -772,8 +772,14 @@ var = "SEARCH_API_TOKEN"
         serde_json::from_slice(bytes).expect("stdout is JSON")
     }
 
+    /// A node state directory, owner-only as the node creates one. A bare
+    /// `tempfile::tempdir()` takes the runner's umask, and `KeyDir` refuses
+    /// the 0775 one umask 002 gives it (#3190).
     fn node_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().unwrap();
+        let mut builder = tempfile::Builder::new();
+        #[cfg(unix)]
+        builder.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        let dir = builder.tempdir().unwrap();
         KeyDir::new(dir.path())
             .create_current(&nucleus_federation::KeyCustody::File(
                 nucleus_federation::FileCustody::NoTpmConfigured,

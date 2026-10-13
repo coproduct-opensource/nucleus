@@ -741,7 +741,7 @@ async fn main() -> Result<(), ApiError> {
             "host-spec enforcement resolved"
         ),
     }
-    tokio::fs::create_dir_all(&args.state_dir).await?;
+    state_lock::create(&args.state_dir)?;
     let _state_lock = state_lock::acquire(&args.state_dir)?;
     #[cfg(feature = "local-driver")]
     if matches!(args.driver, DriverKind::Local) && !args.allow_local_driver {
