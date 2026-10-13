@@ -1021,7 +1021,7 @@ mod tests {
     /// signed with and not silently converted (ADR 0012).
     #[test]
     fn a_file_key_on_a_tpm_node_is_refused_without_the_waiver() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap();
         let tpm = nucleus_federation::KeyCustody::Tpm(nucleus_federation::TpmCustody::new(
             nucleus_federation::TpmEndpoint::Device(dir.path().join("no-such-tpm")),
@@ -1050,7 +1050,7 @@ mod tests {
     /// registered this node's JWKS depends on.
     #[test]
     fn the_federation_issuer_key_persists_read_only_with_a_stable_kid() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         let first = signing_kid(
             load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).expect("generates"),
         );
@@ -1067,7 +1067,7 @@ mod tests {
         assert_eq!(first, restarted, "the kid changed across a restart");
 
         // And it is its own key, not one of the Ed25519 role keys' files.
-        let other = tempfile::tempdir().unwrap();
+        let other = crate::state_lock::state_tempdir();
         let elsewhere =
             signing_kid(load_or_create_jwt_svid_signing_key(other.path(), &NO_TPM).unwrap());
         assert_ne!(first, elsewhere, "two nodes share a federation key");
@@ -1080,7 +1080,7 @@ mod tests {
     fn the_running_node_signs_with_a_promoted_key_without_restart() {
         use nucleus_federation::CurrentSigner as _;
         use nucleus_federation::keyring::{KeyDir, RotationPolicy};
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         let node =
             std::sync::Arc::new(load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap());
         let old = std::sync::Arc::clone(&node)
@@ -1116,7 +1116,7 @@ mod tests {
     #[test]
     fn a_federation_key_readable_by_others_stops_the_node() {
         use std::os::unix::fs::PermissionsExt as _;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = crate::state_lock::state_tempdir();
         load_or_create_jwt_svid_signing_key(dir.path(), &NO_TPM).unwrap();
         let path = dir.path().join(JWT_SVID_P256_KEY_FILE);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();

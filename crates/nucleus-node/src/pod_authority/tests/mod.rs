@@ -902,7 +902,7 @@ fn federated_args(dir: &Path, issuer: Option<&str>) -> AuthorityArgs {
 /// call — so it does not start. Nor does one with a cleartext issuer.
 #[test]
 fn a_federated_registry_without_an_issuer_refuses_to_start() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::state_lock::state_tempdir();
     let err = PodAuthority::new(
         &federated_args(dir.path(), None),
         TD,
@@ -943,7 +943,7 @@ fn a_federated_registry_without_an_issuer_refuses_to_start() {
 /// identity that disagrees with the certificate gets nothing.
 #[tokio::test]
 async fn the_federation_subject_comes_from_the_issued_certificate() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = crate::state_lock::state_tempdir();
     let auth = PodAuthority::new(
         &federated_args(dir.path(), Some("https://federation.example.invalid")),
         TD,

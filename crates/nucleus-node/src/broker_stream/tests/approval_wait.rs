@@ -28,6 +28,37 @@ async fn pending(pod: &Pod) -> uuid::Uuid {
     .await
     .expect("a pending host approval")
 }
+/// The pending approval's id, once the stream has attached its review.
+///
+/// `preflight_effect` lists the approval BEFORE `capture_review` reads the
+/// staged body back (an async file read on the blocking pool) and attaches
+/// it, so an operator acting on the listing alone can find "request payload
+/// unavailable". A fixed sleep only made that unlikely (#3232). This waits for
+/// the state the operator needs instead of for an amount of time. It polls on
+/// the stream's own task (`tokio::join!`), and the stream goes from attaching
+/// the review into its wait without yielding, so the first poll that sees the
+/// review sees the stream already waiting.
+async fn reviewable(pod: &Pod) -> uuid::Uuid {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            {
+                let mut policy = pod.host_policy.lock().unwrap();
+                let listed = policy
+                    .list_effect_approvals(operator(), now())
+                    .first()
+                    .map(|approval| approval.id);
+                if let Some(id) = listed
+                    && policy.effect_review(operator(), id, now()).is_ok()
+                {
+                    return id;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("a pending host approval with its review attached")
+}
 fn gated(base: &str) -> Pod {
     let mut pod = Pod::new(base, 1 << 30, StreamLimits::DEFAULT);
     pod.policy
@@ -51,9 +82,8 @@ async fn original_stream_waits_for_operator_and_resumes_exactly_once() {
         request.require_approval = guest_required;
         let body = mebibyte();
         let control = async {
-            let id = pending(&pod).await;
+            let id = reviewable(&pod).await;
             assert!(seen.lock().unwrap().is_empty());
-            tokio::time::sleep(Duration::from_millis(20)).await;
             let mut policy = pod.host_policy.lock().unwrap();
             let review = policy.effect_review(operator(), id, now()).unwrap();
             assert_eq!(review.request.require_approval, guest_required);

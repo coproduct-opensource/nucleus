@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use uuid::Uuid;
 
+const SENTINEL: &str = "NUCLEUS_PODLIST_PROBE: ";
 const PASS: &str = "NUCLEUS_PODLIST_PROBE: PASS ids=";
 const FAIL: &str = "NUCLEUS_PODLIST_PROBE: FAIL";
 
@@ -45,27 +46,67 @@ const FAIL: &str = "NUCLEUS_PODLIST_PROBE: FAIL";
 #[derive(Debug)]
 enum Reported {
     Ids(BTreeSet<Uuid>),
+    /// The probe's own FAIL verdict.
     Failed(String),
+    /// A sentinel was on the console but no whole record was: a line still
+    /// being written when the log was read, one split by another console
+    /// writer, or whole copies that disagree. It is neither a pass nor the
+    /// probe's FAIL: the harness could not read the verdict (ADR 0007 A-2).
+    Torn(String),
 }
 
-/// Parse the last probe sentinel from a pod's console log.
-fn reported(log: &str) -> Option<Reported> {
-    let last = log
-        .lines()
-        .rfind(|l| l.contains(PASS) || l.contains(FAIL))?;
-    if let Some((_, ids)) = last.split_once(PASS) {
-        let ids = ids
-            .trim()
-            .split(',')
-            .filter(|s| !s.is_empty())
-            .map(|s| Uuid::parse_str(s.trim()))
-            .collect::<Result<BTreeSet<_>, _>>();
-        return Some(match ids {
-            Ok(ids) => Reported::Ids(ids),
-            Err(e) => Reported::Failed(format!("unparseable ids: {e}: {last}")),
-        });
+/// The ids of one PASS record, if it is whole: newline-terminated, and
+/// nothing but a non-empty, comma-separated list of hyphenated UUIDs after
+/// `ids=`. Anything else is a fragment, never a shorter list.
+fn whole_pass(record: &str, terminated: bool) -> Option<Vec<Uuid>> {
+    let ids = record.strip_prefix(PASS)?.trim_end();
+    if !terminated || ids.is_empty() {
+        return None;
     }
-    Some(Reported::Failed(last.trim().to_string()))
+    ids.split(',')
+        .map(|id| Uuid::parse_str(id).ok().filter(|_| id.len() == 36))
+        .collect()
+}
+
+/// Read the probe's verdict from a pod's console log.
+///
+/// The serial console has more than one writer (#3403): the probe's line can
+/// be read before it is fully written, or have a kernel or guest-init message
+/// spliced into it. So every sentinel is a candidate, wherever it starts in a
+/// line; a record runs to the next sentinel or the end of its line, and only a
+/// newline-terminated record that parses whole counts. The probe prints its
+/// line twice (stdout and stderr), so one torn copy beside a whole one still
+/// reads. Whole copies must agree, except that one may be a prefix of the
+/// longest (cut at a comma by a spliced newline); the longest is taken, so a
+/// cut never removes an id the probe reported.
+fn reported(log: &str) -> Option<Reported> {
+    let mut whole: Vec<Vec<Uuid>> = Vec::new();
+    let mut torn: Option<String> = None;
+    for line in log.split_inclusive('\n') {
+        let terminated = line.ends_with('\n');
+        let starts: Vec<usize> = line.match_indices(SENTINEL).map(|(at, _)| at).collect();
+        for (n, &start) in starts.iter().enumerate() {
+            let next = starts.get(n + 1).copied();
+            let record = &line[start..next.unwrap_or(line.len())];
+            if record.starts_with(FAIL) {
+                return Some(Reported::Failed(record.trim().to_string()));
+            }
+            match whole_pass(record, terminated && next.is_none()) {
+                Some(ids) => whole.push(ids),
+                None => torn = Some(record.trim_end().to_string()),
+            }
+        }
+    }
+    let Some(longest) = whole.iter().max_by_key(|ids| ids.len()) else {
+        return torn.map(Reported::Torn);
+    };
+    if whole.iter().all(|ids| longest.starts_with(ids)) {
+        Some(Reported::Ids(longest.iter().copied().collect()))
+    } else {
+        Some(Reported::Torn(format!(
+            "the probe's whole console records disagree: {whole:?}"
+        )))
+    }
 }
 
 fn spec(name: &str, kernel: &Path, rootfs: &Path) -> serde_json::Value {
@@ -133,9 +174,12 @@ fn console_logs(root: &Path, pod: Uuid, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Wait for `pod`'s probe to report, up to `within`.
+/// Wait for `pod`'s probe to report, up to `within`. A torn record is read
+/// again on the next poll, since the line may still be being written; it is
+/// returned only if nothing whole arrives by the deadline.
 async fn wait_reported(node: &Node, pod: Uuid, within: Duration) -> Result<Reported> {
     let deadline = tokio::time::Instant::now() + within;
+    let mut torn = None;
     loop {
         let mut logs = Vec::new();
         console_logs(&node.state, pod, &mut logs);
@@ -143,11 +187,16 @@ async fn wait_reported(node: &Node, pod: Uuid, within: Duration) -> Result<Repor
         for log in &logs {
             let text =
                 String::from_utf8_lossy(&std::fs::read(log).unwrap_or_default()).into_owned();
-            if let Some(r) = reported(&text) {
-                return Ok(r);
+            match reported(&text) {
+                Some(Reported::Torn(record)) => torn = Some(record),
+                Some(r) => return Ok(r),
+                None => {}
             }
         }
         if tokio::time::Instant::now() >= deadline {
+            if let Some(record) = torn {
+                return Ok(Reported::Torn(record));
+            }
             bail!(
                 "pod {pod}'s probe never reported within {within:?} (searched {} console log(s))",
                 logs.len()
@@ -163,6 +212,10 @@ fn view(name: &str, r: Reported) -> Result<BTreeSet<Uuid>> {
         Reported::Failed(why) => {
             bail!("{name}'s probe did not settle on a scoped listing over its vsock: {why}")
         }
+        Reported::Torn(record) => bail!(
+            "{name}'s probe verdict is torn or unreadable on the console \
+             (neither a pass nor the probe's FAIL): {record}"
+        ),
     }
 }
 
@@ -379,7 +432,7 @@ mod judge_tests {
         );
     }
 
-    /// The sentinel parser takes the last report and refuses a FAIL.
+    /// The sentinel parser reads a whole report and refuses a FAIL.
     #[test]
     fn the_console_report_is_parsed() {
         let (a, _, c) = ids();
@@ -393,5 +446,88 @@ mod judge_tests {
             Some(Reported::Failed(_))
         ));
         assert!(reported("nothing here").is_none());
+    }
+
+    // #3403, from run 38330748070: pod A = 1168f421-…-bbe15e840084, child
+    // C = a71ac778-…-a8e0f9d0ff6f. The harness read the console while the
+    // probe's line was still arriving and reported "unparseable ids" as the
+    // probe failing; the node's own diagnostics later showed the same line
+    // grown to `…084,` and still unterminated.
+    const RUN_A: &str = "1168f421-2d04-4ddb-b593-bbe15e840084";
+    const RUN_C: &str = "a71ac778-5a55-4ece-ac89-a8e0f9d0ff6f";
+    const RUN_PREFIX: &str = "[    1.071710] NUCLEUS-HOST-DECIDE-TELEMETRY {\"agree\":0}\n";
+
+    fn run_ids() -> BTreeSet<Uuid> {
+        [RUN_A, RUN_C].map(|id| Uuid::parse_str(id).unwrap()).into()
+    }
+
+    /// The two reads CI took of the line while it was being written are torn,
+    /// not a FAIL and not a shorter listing.
+    #[test]
+    fn a_line_still_being_written_is_torn() {
+        for read in [
+            format!("{RUN_PREFIX}{PASS}1168f421-2d04-4ddb-b593-bbe"),
+            format!("{RUN_PREFIX}{PASS}{RUN_A},"),
+            // Cut exactly after an id: still not whole without its newline.
+            format!("{RUN_PREFIX}{PASS}{RUN_A}"),
+        ] {
+            assert!(
+                matches!(reported(&read), Some(Reported::Torn(_))),
+                "{read:?} read as {:?}",
+                reported(&read)
+            );
+        }
+        // Once the line is finished, the same log reads whole.
+        let finished = format!("{RUN_PREFIX}{PASS}{RUN_A},{RUN_C}\r\n");
+        assert!(matches!(reported(&finished), Some(Reported::Ids(ids)) if ids == run_ids()));
+    }
+
+    /// Another writer splicing into the record makes that copy torn; the
+    /// probe's second copy (stdout, then stderr) still reads whole.
+    #[test]
+    fn a_spliced_copy_is_torn_and_the_whole_copy_reads() {
+        let spliced = format!(
+            "{PASS}1168f421-2d04-4ddb-b593-bbe[    1.2] random: crng init done\n\
+             15e840084,{RUN_C}\r\n"
+        );
+        assert!(matches!(reported(&spliced), Some(Reported::Torn(_))));
+        let both = format!("{spliced}{PASS}{RUN_A},{RUN_C}\r\n");
+        assert!(matches!(reported(&both), Some(Reported::Ids(ids)) if ids == run_ids()));
+        // The two copies glued on one line, the first cut short.
+        let glued = format!("{PASS}1168f421-2d04{PASS}{RUN_A},{RUN_C}\r\n");
+        assert!(matches!(reported(&glued), Some(Reported::Ids(ids)) if ids == run_ids()));
+    }
+
+    /// A sentinel that starts mid-line, after another writer's unterminated
+    /// output, is still found.
+    #[test]
+    fn a_sentinel_mid_line_is_found() {
+        let log = format!("nucleus-startup-phase vsock_bind=0ms{PASS}{RUN_A},{RUN_C}\n");
+        assert!(matches!(reported(&log), Some(Reported::Ids(ids)) if ids == run_ids()));
+    }
+
+    /// A copy cut at a comma by a spliced newline reads as a shorter whole
+    /// list. Beside the full copy, the longest is taken, so the cut never
+    /// drops an id the probe printed (a dropped id could hide a leak).
+    #[test]
+    fn a_copy_cut_at_a_comma_never_shortens_the_view() {
+        let log = format!("{PASS}{RUN_A}\n[    1.3] message\n{RUN_C}\n{PASS}{RUN_A},{RUN_C}\n");
+        assert!(matches!(reported(&log), Some(Reported::Ids(ids)) if ids == run_ids()));
+    }
+
+    /// Whole copies that disagree are torn: the harness cannot tell which is
+    /// the probe's.
+    #[test]
+    fn whole_copies_that_disagree_are_torn() {
+        let log = format!("{PASS}{RUN_C}\n{PASS}{RUN_A},{RUN_C}\n");
+        assert!(matches!(reported(&log), Some(Reported::Torn(_))));
+    }
+
+    /// A torn record is reported as torn by name, never as the probe's FAIL.
+    #[test]
+    fn a_torn_view_is_named_torn() {
+        let err = view("A", Reported::Torn(format!("{PASS}{RUN_A},"))).unwrap_err();
+        assert!(err.to_string().contains("torn or unreadable"), "{err}");
+        assert!(!err.to_string().contains("did not settle"), "{err}");
     }
 }
