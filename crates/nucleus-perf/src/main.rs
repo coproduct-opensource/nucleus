@@ -143,8 +143,10 @@ struct ToolCall {
     /// `<state_dir>/approval_signing_key.der`.
     ///
     /// Supplying it lets the harness act as the human approver for operations
-    /// the profile rates `LowRisk`. Without it, an approval-gated call is
-    /// reported as refused rather than silently skipped.
+    /// the policy obligates (its obligation set: declared obligations plus any
+    /// the uninhabitable-state rule adds). A `LowRisk` level alone does not
+    /// require approval. Without it, an approval-gated call is reported as
+    /// refused rather than silently skipped.
     #[arg(long)]
     approval_key: Option<String>,
 }

@@ -66,7 +66,7 @@ more restrictive.
 |---|---|---|
 | ρ_dimension | 1.75 | The profile holds 1.75× the core dimensions the run used. Coarse by construction — 13 buckets. |
 | ρ_effect | *undefined* | **Not measured.** This pod ran under a *profile*; ρ over effects needs a compiled grant to divide by. `nucleus run --goal` produces one; a profile does not. Reported as null rather than 1.0, which would claim perfect precision for a quantity nobody computed. |
-| C(T) | 4 | Four authorization decisions for five tasks. `codegen` rates writes, edits and shell `low_risk`, so each defers once. |
+| C(T) | 4 | Four authorization decisions for five tasks, as recorded. *Not* explained by the profile: see the correction below. |
 | denials inside the grant | 7 of 8 | Of these, **5 are deferrals** — the system asking a person, exactly as designed. Two are genuine refusals inside a granted dimension. |
 | residual risk | Medium | Two of three uninhabitable-state components present at autonomous levels. |
 
@@ -106,10 +106,11 @@ on a measured number.
 **C(T) = 1, against 4 under the profile.** This is the sharpest difference
 between the two readings and it is the ADR 0004 claim, measured: one
 confirmation before the run — a person reading Can / Cannot / Limits / Risk once
-and accepting — and **zero** authorization decisions during it. Under the
-`codegen` profile the same five tasks cost four in-run approvals, because the
-profile rates writes, edits and shell `low_risk` and defers each one. The grant
-is not free; it is one decision instead of four, made before anything ran rather
+and accepting — and **zero** authorization decisions during it. In the recorded
+`codegen` profile reading the same five tasks cost four in-run approvals. (An
+earlier version of this page said that was because the profile rates writes,
+edits and shell `low_risk` and so defers each one; that explanation is wrong —
+see the correction below.) The grant is not free; it is one decision instead of four, made before anything ran rather
 than four times while a person waited.
 
 ### The two readings side by side
@@ -130,8 +131,9 @@ quarter of the human decisions and with the precision figure finally defined.
 
 **A containment check had to be replaced to get this reading, and the mechanism
 caught it rather than the reading being quietly wrong.** `refuses-unapproved-write`
-asserted that an unapproved write is *deferred* — true under the `codegen`
-profile, false under a compiled grant for the same work, which authorises writes
+asserted that an unapproved write is *deferred* — which held in that run but is
+not a property of the `codegen` profile (see the correction below), and was
+false under a compiled grant for the same work, which authorises writes
 outright and says so (`no approval prompts expected`). So the write landed, the
 check reported a breach, and the report refused to be quoted. It was the check
 that was wrong: it encoded a property of one profile rather than an invariant.
@@ -141,6 +143,28 @@ reading may be quoted, so a check that depends on which grant is in force can
 void a perfectly good measurement — and because the validity property did its
 job in the direction nobody designs for: catching a defect in the suite rather
 than in the runtime.
+
+### Correction (2026-10-13): `low_risk` does not defer
+
+The Tier 2 numbers above are left exactly as recorded in the artifact. The
+*explanation* first given for them was wrong. A capability level is permission,
+not consent: the shipping kernel (`Kernel::decide`) holds an operation for
+approval only when the policy's **obligations** name it, and `low_risk` on its
+own is allowed outright. The YAML `codegen` profile
+(`crates/portcullis/profiles/codegen.yaml`) declares no obligations, and the
+uninhabitable-state rule adds none (it has no web access, so it never has all
+three components), so its effective obligation set is **empty**: under that
+profile alone, writes, edits, shell commands and commits run without approval.
+
+So "`codegen` rates writes, edits and shell `low_risk`, so each defers once" does
+not describe the policy. The recorded C(T) = 4 and five deferrals are what that
+run measured, but they are not attributable to the profile's levels, and nothing
+here establishes where they came from. Until the Tier 2 reading is re-taken on
+the current runtime, treat the C(T) column of the side-by-side table — and the
+"a quarter of the human decisions" comparison drawn from it — as unexplained,
+not as a property of `codegen`. A later release makes consent an explicit
+per-operation declaration, so a profile states "autonomous" or "requires
+approval" rather than leaving it to be inferred from the level.
 
 ## What this reading does not establish
 

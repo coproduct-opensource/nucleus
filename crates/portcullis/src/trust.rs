@@ -220,7 +220,10 @@ impl TrustProfile {
             if score >= threshold + 0.1 {
                 CapabilityLevel::Always
             } else if score >= threshold {
-                CapabilityLevel::LowRisk // Approval gate in the transition zone
+                // Permitted in the transition zone. A level is permission,
+                // not consent: an approval gate here comes only from the
+                // policy's obligations, not from `LowRisk` itself.
+                CapabilityLevel::LowRisk
             } else {
                 CapabilityLevel::Never
             }

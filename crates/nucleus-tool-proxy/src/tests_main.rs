@@ -1553,14 +1553,6 @@ mod approval_grants_2406 {
         }
     }
 
-    /// A lattice shaped like the one the live pod ran under: `write_files` is
-    /// `LowRisk`, which is what makes the kernel defer rather than allow or
-    /// deny. Built explicitly rather than by profile name — `codegen` resolves
-    /// through the YAML registry in production and through a legacy hardcoded
-    /// constructor in `PermissionLattice::codegen()`, and only the first of
-    /// those is `low_risk` (`crates/portcullis/profiles/codegen.yaml:19`). A
-    /// fixture that disagreed with the live path is exactly how this defect
-    /// stayed invisible to unit tests for as long as it did.
     /// A kernel that defers `WriteFiles` to a person, by the mechanism the live
     /// pod defers by: an approval **obligation** on the lattice
     /// (`Kernel::decide` step 7 — `self.effective.requires_approval(op)`).
@@ -1579,7 +1571,7 @@ mod approval_grants_2406 {
     /// The key both sides agree on, built the way the mapping builds it.
     const WRITE_KEY: &str = "WriteFiles notes.txt";
 
-    /// PRECONDITION for everything below. If `codegen` ever stops deferring on
+    /// PRECONDITION for everything below. If the fixture ever stops deferring on
     /// `write_files` these tests would pass vacuously — the grant would be
     /// irrelevant because the operation was allowed outright.
     #[test]

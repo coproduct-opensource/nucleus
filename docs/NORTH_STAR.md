@@ -181,9 +181,20 @@ for months; the numbers below are recomputed from the tree
 | Metric | Count | Where |
 |---|---|---|
 | Kani BMC harnesses | 121 | portcullis 71, portcullis-core 26, ck-kernel 17, nucleus-ifc-kernel 6, nucleus-econ-kernels 1 (`scripts/formal-numbers.sh`) |
-| Lean 4 theorems over **extracted** Rust | ~280 in the security core | IFC noninterference family, `decide_pure`, ck-policy gate, `chain_effective_authority`, certificate-chain monotonicity (`chain_attenuates`, #2451) |
+| Lean 4 theorems over **extracted** Rust | ~280 in the security core | IFC noninterference family, ck-policy gate, `chain_effective_authority`, certificate-chain monotonicity (`chain_attenuates`, #2451) |
 | Open `sorry` holes | 23 across 10 files | research tier only (`CONJECTURES.md`); the proven tier is `sorry`-free and CI-gated |
 | Budget conservation | Kani E1/E2 over the shipped `LedgerCore` | `Σ child allocations + consumed ≤ max` |
+
+**`decide_pure` is not in the extracted row.** Its 11 theorems
+(`DecidePureProofs.lean`) are over a **hand-written** Lean model of the function,
+not over extracted Rust: an Aeneas extraction exists
+(`crates/portcullis-core/lean/generated-decide/`), but no proof file imports it.
+Nor is `decide_pure` on the shipping path: no production code calls it (only
+tests do), and the shipping kernel (`Kernel::decide`) holds a `LowRisk`
+operation only when the policy's obligations name it, where the model holds every
+`LowRisk` operation. Closing both gaps (consent as an explicit input, the proofs
+moved onto the extraction, the kernel calling the proved function) is planned
+work, not a current result.
 
 **A harness is not a result.** The first row counts harnesses *defined*, and for
 `ck-kernel` only 5 of its 17 have ever completed: every harness that constructs a
