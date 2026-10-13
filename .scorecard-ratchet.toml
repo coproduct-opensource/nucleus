@@ -625,9 +625,12 @@ population_floor = 23
 # five undischarged #[allow(dead_code)]s with the code they excused (151 -> 146). The ratio
 # rises because the denominator shrank, not because anything was discharged; pinned at
 # the measurement so it does not read as progress. 36/146 = 24.65%.
-floor_bp = 2465
+# 2026-10-13 (ADR 0016 S3): the secret manager's TPM-quoting signer takes the CSR, its
+# key, the identity, the TTL and the three launch claims, under a reasoned #[expect] of
+# clippy::too_many_arguments. 37/147 = 25.17%; both pins follow the tree.
+floor_bp = 2517
 floor_set = "measurement"
-population_floor = 146
+population_floor = 147
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
