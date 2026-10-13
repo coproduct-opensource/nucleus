@@ -915,6 +915,101 @@ mod tests {
         assert!(result.is_allowed(), "got {result:?}");
     }
 
+    /// #3313: the six scoped preflights, each driven through the same four
+    /// cases on a clean session, so the only thing that differs between them
+    /// is the operation each one binds:
+    ///
+    /// 1. no verified scope ⇒ denied by `InScopeWithTask`;
+    /// 2. a verified scope naming every OTHER operation here ⇒ denied by
+    ///    `InScopeWithTask` (a grant for one effect is not spendable on another);
+    /// 3. a policy that requests more than the certificate's ceiling ⇒ denied
+    ///    by `WithinDelegationCeiling`;
+    /// 4. a scope naming exactly its operation, honest levels ⇒ the bundle is
+    ///    minted. This is the non-vacuity case: the three denials above are
+    ///    the obligations firing, not a gate that refuses everything.
+    #[test]
+    fn every_scoped_preflight_mints_only_for_its_own_in_scope_operation() {
+        type Gate = fn(Option<&TokenScope>, GateLevels, &str, &FlowGraph) -> PreflightResult;
+        let gates: [(Operation, &str, Gate); 8] = [
+            (Operation::RunBash, "cargo test", |s, l, x, f| {
+                preflight_runbash(s, l, x, f)
+            }),
+            (Operation::WebFetch, "https://api.example", |s, l, x, f| {
+                preflight_web(Operation::WebFetch, s, l, x, f)
+            }),
+            (Operation::WebSearch, "https://api.example", |s, l, x, f| {
+                preflight_web(Operation::WebSearch, s, l, x, f)
+            }),
+            (Operation::WriteFiles, "/workspace/out.txt", |s, l, x, f| {
+                preflight_fs(Operation::WriteFiles, s, l, x, f)
+            }),
+            (Operation::EditFiles, "/workspace/out.txt", |s, l, x, f| {
+                preflight_fs(Operation::EditFiles, s, l, x, f)
+            }),
+            (
+                Operation::ReadFiles,
+                "/workspace/notes.txt",
+                |s, l, x, f| preflight_read_fs(s, l, x, f),
+            ),
+            (Operation::GrepSearch, "src/lib.rs", |s, l, x, f| {
+                preflight_grep_fs(s, l, x, f)
+            }),
+            (Operation::GlobSearch, "**/*.rs", |s, l, x, f| {
+                preflight_glob_fs(s, l, x, f)
+            }),
+        ];
+        let flow = FlowGraph::new();
+        let honest = GateLevels::honest(FS_CEILING);
+        let widened = GateLevels {
+            ceiling: CapabilityLevel::Never,
+            requested: CapabilityLevel::LowRisk,
+        };
+        let paths = vec!["/workspace/**".to_string()];
+        for (op, subject, gate) in gates {
+            let denied_by = |result: PreflightResult, obligation: &str, case: &str| {
+                assert!(result.is_denied(), "{op:?} {case}: got {result:?}");
+                let reason = result.denial_reason().unwrap();
+                assert!(
+                    reason.contains(obligation),
+                    "{op:?} {case}: denied by `{reason}`, not {obligation}"
+                );
+            };
+
+            denied_by(
+                gate(None, honest, subject, &flow),
+                "InScopeWithTask",
+                "without a verified scope",
+            );
+
+            let others = TokenScope::new(
+                gates.iter().map(|g| g.0).filter(|o| *o != op).collect(),
+                paths.clone(),
+            );
+            denied_by(
+                gate(Some(&others), honest, subject, &flow),
+                "InScopeWithTask",
+                "with every other operation in scope",
+            );
+
+            let own = TokenScope::new(vec![op], paths.clone());
+            denied_by(
+                gate(Some(&own), widened, subject, &flow),
+                "DelegationCeiling",
+                "requesting above the certificate's ceiling",
+            );
+
+            let minted = gate(Some(&own), honest, subject, &flow);
+            assert!(
+                minted.is_allowed(),
+                "{op:?} in scope at honest levels must mint, got {minted:?}"
+            );
+            assert!(
+                discharge_witness(&minted.unwrap_bundle()).contains("in_scope_with_task"),
+                "{op:?}: the bundle must carry the InScopeWithTask witness"
+            );
+        }
+    }
+
     /// The certificate-ceiling middleware now sees both memory routes: they
     /// were `_ => None` in `endpoint_operation`, so no ceiling applied to them.
     #[test]
