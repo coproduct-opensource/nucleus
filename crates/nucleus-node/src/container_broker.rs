@@ -179,9 +179,16 @@ impl Prepared {
 
     /// Admit the container's init, by the host pid the runtime reported, and
     /// hand the listener to the pod that owns it.
-    pub(crate) fn arm(self, pid: u32) -> BrokerListener {
-        self.arm.arm(pid);
-        self.listener
+    ///
+    /// # Errors
+    /// The arming window closed first: the broker would admit nobody.
+    pub(crate) fn arm(self, pid: u32) -> Result<BrokerListener, ApiError> {
+        self.arm.arm(pid).map_err(|refused| {
+            ApiError::Driver(format!(
+                "container pod's credential broker was not armed: {refused}"
+            ))
+        })?;
+        Ok(self.listener)
     }
 }
 
@@ -218,7 +225,9 @@ pub(crate) async fn prepare(
             ))
         })?;
     let (serve, verify) = crate::broker_launch::BrokerCapability::mint(id);
-    let (arm, init) = crate::broker_transport::peer::container_init();
+    let (arm, init) = crate::broker_transport::peer::container_init(
+        std::time::Instant::now() + crate::broker_transport::peer::ARM_WINDOW,
+    );
     let listener = crate::broker_launch::start_broker_for_pod(crate::broker_launch::BrokerInputs {
         state,
         spec,
@@ -284,7 +293,7 @@ pub(crate) async fn arm(
                  broker could admit no peer"
             ))
         })?;
-    Ok(Some(prepared.arm(pid)))
+    prepared.arm(pid).map(Some)
 }
 
 #[cfg(test)]

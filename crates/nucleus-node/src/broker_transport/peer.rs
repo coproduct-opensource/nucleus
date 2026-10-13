@@ -56,27 +56,48 @@ pub struct ContainerInit {
     pid: tokio::sync::watch::Receiver<Option<u32>>,
 }
 
-/// The arming half. Consumed by [`Self::arm`]; dropping it unarmed leaves the
-/// rule refusing every peer.
+/// How long after the listener is bound the launch path may name the
+/// container's init. Docker's create, start and inspect take well under a
+/// second; the bound is there so the right to choose who the broker admits
+/// cannot be exercised long after the launch that minted it.
+pub const ARM_WINDOW: Duration = Duration::from_secs(120);
+
+/// The arming half: the one-shot right to name who this broker admits.
+/// Consumed by [`Self::arm`]; dropping it unarmed, or arming it after
+/// `not_after`, leaves the rule refusing every peer.
 #[must_use = "an unarmed container broker admits nobody"]
 pub struct ArmContainerInit {
     pid: tokio::sync::watch::Sender<Option<u32>>,
+    /// Past this, the right is spent without effect.
+    not_after: std::time::Instant,
 }
 
 impl ArmContainerInit {
     /// Admit the process the container runtime reported as this container's
     /// init, and only it, for the listener's whole life.
-    pub fn arm(self, pid: u32) {
+    ///
+    /// # Errors
+    /// [`PeerRefused::ArmExpired`] past `not_after`: the broker then admits
+    /// nobody, and the launch that asked fails by name.
+    pub fn arm(self, pid: u32) -> Result<(), PeerRefused> {
+        if std::time::Instant::now() > self.not_after {
+            return Err(PeerRefused::ArmExpired);
+        }
         // Receivers keep the last value after the sender is dropped, so a
         // connection that checks after this returns still sees the pid.
         let _ = self.pid.send(Some(pid));
+        Ok(())
     }
 }
 
-/// A container's peer rule, unarmed, and the one way to arm it.
-pub fn container_init() -> (ArmContainerInit, ContainerInit) {
+/// A container's peer rule, unarmed, and the one way to arm it, valid until
+/// `not_after`.
+pub fn container_init(not_after: std::time::Instant) -> (ArmContainerInit, ContainerInit) {
     let (tx, rx) = tokio::sync::watch::channel(None);
-    (ArmContainerInit { pid: tx }, ContainerInit { pid: rx })
+    (
+        ArmContainerInit { pid: tx, not_after },
+        ContainerInit { pid: rx },
+    )
 }
 
 /// Why a peer was refused. Logged by the node; the peer itself is answered with
@@ -86,6 +107,12 @@ pub enum PeerRefused {
     /// The launch path never reported the container's init.
     #[error("the container's init process was never reported, so no peer can be admitted")]
     NotArmed,
+    /// The launch path named the container's init after the arming window.
+    #[error(
+        "the container's init process was reported after the arming window closed, so no peer \
+         will be admitted"
+    )]
+    ArmExpired,
     /// The kernel could not name the peer, or named it as pid 0: it is outside
     /// the node's pid namespace.
     #[error(
@@ -169,6 +196,10 @@ mod tests {
         tokio::net::UnixStream::pair().expect("socketpair")
     }
 
+    fn fresh() -> (ArmContainerInit, ContainerInit) {
+        container_init(std::time::Instant::now() + ARM_WINDOW)
+    }
+
     fn own_pid() -> u32 {
         std::process::id()
     }
@@ -178,14 +209,14 @@ mod tests {
     #[tokio::test]
     async fn the_kernel_names_the_peer() {
         let (served, _peer) = pair();
-        let (arm, init) = container_init();
-        arm.arm(own_pid());
+        let (arm, init) = fresh();
+        arm.arm(own_pid()).expect("armed in time");
         let rule = PeerRule::ContainerInit(init);
         assert_eq!(rule.admit(&served, Duration::from_secs(1)).await, Ok(()));
 
-        let (arm, init) = container_init();
+        let (arm, init) = fresh();
         let other = own_pid().wrapping_add(1).max(2);
-        arm.arm(other);
+        arm.arm(other).expect("armed in time");
         assert_eq!(
             PeerRule::ContainerInit(init)
                 .admit(&served, Duration::from_secs(1))
@@ -202,7 +233,7 @@ mod tests {
     #[tokio::test]
     async fn an_unarmed_rule_admits_nobody() {
         let (served, _peer) = pair();
-        let (arm, init) = container_init();
+        let (arm, init) = fresh();
         drop(arm);
         assert_eq!(
             PeerRule::ContainerInit(init)
@@ -211,7 +242,7 @@ mod tests {
             Err(PeerRefused::NotArmed)
         );
 
-        let (_kept, init) = container_init();
+        let (_kept, init) = fresh();
         assert_eq!(
             PeerRule::ContainerInit(init)
                 .admit(&served, Duration::from_millis(50))
@@ -225,11 +256,29 @@ mod tests {
     #[tokio::test]
     async fn an_early_peer_waits_for_the_arming() {
         let (served, _peer) = pair();
-        let (arm, init) = container_init();
+        let (arm, init) = fresh();
         let rule = PeerRule::ContainerInit(init);
         let admit = tokio::spawn(async move { rule.admit(&served, Duration::from_secs(5)).await });
         tokio::time::sleep(Duration::from_millis(20)).await;
-        arm.arm(own_pid());
+        arm.arm(own_pid()).expect("armed in time");
         assert_eq!(admit.await.expect("join"), Ok(()));
+    }
+
+    /// The right to name the init expires: armed after its window, it arms
+    /// nothing, says so, and the rule refuses even the pid it was given.
+    #[tokio::test]
+    async fn an_arm_used_after_its_window_admits_nobody() {
+        let (served, _peer) = pair();
+        let past = std::time::Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .expect("a second ago");
+        let (arm, init) = container_init(past);
+        assert_eq!(arm.arm(own_pid()), Err(PeerRefused::ArmExpired));
+        assert_eq!(
+            PeerRule::ContainerInit(init)
+                .admit(&served, Duration::from_secs(1))
+                .await,
+            Err(PeerRefused::NotArmed)
+        );
     }
 }

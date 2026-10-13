@@ -392,9 +392,16 @@ population_floor = 97
 # 2026-10-04: EgressUploadHold carries the original ledger id/epoch directly;
 # pace admission and settlement check that binding. The new affine right is
 # bounded, bringing life from 13/20 to 14/21 (66.66%).
-floor_bp = 6666
+# 2026-10-13 (#2906): broker_transport::peer::ArmContainerInit, the one-shot
+# right to name the only process a container pod's credential broker admits,
+# entered as an affine right. Unbounded it reddened CI at 14/22 (63.63%), and the
+# gap was real: the right was minted when the listener was bound and could name
+# a pid at any later time. It now carries not_after (ARM_WINDOW after the bind),
+# and arm() past it arms nothing and fails the launch by name
+# (PeerRefused::ArmExpired, an_arm_used_after_its_window_admits_nobody). 15/22.
+floor_bp = 6818
 floor_set = "measurement"
-population_floor = 21
+population_floor = 22
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

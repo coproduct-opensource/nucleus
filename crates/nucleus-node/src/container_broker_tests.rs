@@ -330,7 +330,7 @@ mod live {
         )));
         let secret = secret_of(&env);
         // This test process plays the container's init.
-        let listener = prepared.arm(std::process::id());
+        let listener = prepared.arm(std::process::id()).expect("armed in time");
         let socket = host_socket(&pod.pod_dir);
         assert_eq!(listener.socket_path(), socket);
 
@@ -365,7 +365,7 @@ mod live {
             .expect("prepares")
             .expect("served");
         let secret = secret_of(prepared.env());
-        let listener = prepared.arm(std::process::id());
+        let listener = prepared.arm(std::process::id()).expect("armed in time");
         let reply = perform(&host_socket(&pod.pod_dir), &secret, "other-api").await;
         assert!(reply.contains("\"granted\":false"), "reply: {reply}");
         upstream.verify().await;
@@ -393,7 +393,9 @@ mod live {
             .expect("served");
         let secret = secret_of(prepared.env());
         // Armed with some other process: this test process is now "the workload".
-        let listener = prepared.arm(std::process::id().wrapping_add(1).max(2));
+        let listener = prepared
+            .arm(std::process::id().wrapping_add(1).max(2))
+            .expect("armed in time");
         let reply = perform(&host_socket(&pod.pod_dir), &secret, "model-api").await;
         assert!(reply.contains("\"granted\":false"), "reply: {reply}");
         upstream.verify().await;
@@ -414,7 +416,7 @@ mod live {
             .await
             .expect("prepares")
             .expect("served");
-        let listener = prepared.arm(std::process::id());
+        let listener = prepared.arm(std::process::id()).expect("armed in time");
         let socket = host_socket(&pod.pod_dir);
         assert!(socket.exists(), "served while the pod runs");
 
