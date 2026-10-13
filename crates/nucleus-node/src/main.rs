@@ -151,9 +151,14 @@ pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
+/// What `--version` prints: the release tag this binary was built for, else
+/// `git describe`, else the Cargo version marked `+dev` (#3208).
+static VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
+
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
-#[command(version, about = "Node daemon (kubelet analogue) for nucleus pods")]
+#[command(version = VERSION.as_str(), about ="Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
     #[arg(long, env = "NUCLEUS_NODE_LISTEN", default_value = "127.0.0.1:8080")]

@@ -17,6 +17,7 @@ pub mod manifest_hash;
 pub mod microvm_host;
 #[cfg(test)]
 mod policy_required_tests;
+pub mod release_version;
 mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod tool_proxy_audit;

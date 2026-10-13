@@ -1,0 +1,6 @@
+# `cross` builds the release musl binaries in a container that sees only the
+# environment it is told to pass. The release tag is how `nucleus --version`
+# and `nucleus-node --version` report the release they belong to (#3208,
+# `nucleus_spec::release_version`), so the runner's ref goes through.
+[build.env]
+passthrough = ["GITHUB_REF_TYPE", "GITHUB_REF_NAME"]
