@@ -613,7 +613,9 @@ pub(crate) async fn get_receipt(
         // from lookup's NotFound; neither is the same as a still-running pod.
         Err(e @ ReceiptError::NotExited) => Err(ApiError::Driver(e.to_string())),
         Err(ReceiptError::NoExitReport(_)) => Err(ApiError::ExitReportUnavailable),
-        Err(e @ ReceiptError::Malformed(_)) => Err(ApiError::Driver(e.to_string())),
+        Err(e @ (ReceiptError::Malformed(_) | ReceiptError::Unhashable(_))) => {
+            Err(ApiError::Driver(e.to_string()))
+        }
     }
 }
 

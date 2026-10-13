@@ -26,7 +26,7 @@ crypto = ["dep:ring", "dep:ed25519-dalek"]
 cel = ["dep:cel-interpreter"]
 
 # Policy specification loading (YAML/TOML)
-spec = ["dep:serde_yaml", "dep:toml", "serde", "cel"]
+spec = ["dep:nucleus-yaml", "dep:toml", "serde", "cel"]
 
 # Webhook audit backend for SIEM delivery
 webhook = ["dep:reqwest", "dep:tokio", "serde"]
@@ -95,7 +95,7 @@ cel-interpreter = { version = "0.10", optional = true }
 cedar-policy = { version = "4", optional = true }
 
 # Policy specification parsing (optional)
-serde_yaml = { workspace = true, optional = true }
+nucleus-yaml = { path = "../nucleus-yaml", version = "1.0.0", optional = true }
 toml = { workspace = true, optional = true }
 
 # Webhook audit backend (optional)
@@ -150,4 +150,5 @@ required-features = ["spec"]
 [build-dependencies]
 # The profile provider validates profiles/*.yaml at BUILD time, so a malformed
 # built-in profile fails `cargo build` instead of panicking in a booting pod.
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml", version = "1.0.0" }
+serde_json = { workspace = true }

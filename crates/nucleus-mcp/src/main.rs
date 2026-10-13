@@ -820,7 +820,7 @@ fn main() -> Result<()> {
 fn load_policy(path: &Path) -> Result<PermissionLattice> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read pod spec from {}", path.display()))?;
-    let spec: PodSpec = serde_yaml::from_str(&contents)
+    let spec: PodSpec = nucleus_yaml::from_str(&contents)
         .with_context(|| format!("failed to parse pod spec {}", path.display()))?;
     let policy = spec
         .spec

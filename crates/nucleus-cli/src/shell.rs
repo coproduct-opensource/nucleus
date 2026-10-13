@@ -163,7 +163,7 @@ pub async fn execute(mut args: ShellArgs, global_config_path: &str) -> Result<()
     // Build PodSpec
     let spec_path = tmp_dir.join("pod.yaml");
     let pod_spec = build_shell_pod_spec(&args, &policy, &work_dir)?;
-    let yaml = serde_yaml::to_string(&pod_spec)?;
+    let yaml = nucleus_yaml::to_string(&pod_spec)?;
     fs::write(&spec_path, &yaml)?;
 
     let announce_path = tmp_dir.join("proxy.addr");

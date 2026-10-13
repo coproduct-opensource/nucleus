@@ -846,7 +846,7 @@ fn prepare_local_proxy(cfg: &LocalProxyConfig<'_>) -> Result<PreparedProxy> {
             "network": cfg.network,
         }
     });
-    std::fs::write(&spec_path, serde_yaml::to_string(&spec)?)
+    std::fs::write(&spec_path, nucleus_yaml::to_string(&spec)?)
         .with_context(|| format!("writing {}", spec_path.display()))?;
 
     // The proxy needs an approval authority to start. The PUBLIC half of a key

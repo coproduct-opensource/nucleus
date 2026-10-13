@@ -392,7 +392,7 @@ fn the_repositorys_example_specs_are_admitted_under_their_documented_flags() {
     let mut admitted = 0;
     for yaml in yamls {
         let text = std::fs::read_to_string(&yaml).expect("read");
-        let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
+        let Ok(doc) = nucleus_yaml::from_str::<serde_json::Value>(&text) else {
             continue;
         };
         let Some(img) = doc.get("spec").and_then(|s| s.get("image")) else {

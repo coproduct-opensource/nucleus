@@ -16,8 +16,11 @@ workspace = true
 anyhow = { workspace = true }
 clap = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
-serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+# `preserve_order`: workflow YAML is read into `serde_json::Value`, and job and matrix
+# declaration order is meaning here (check-run names, line recovery). Explicit, so it does
+# not depend on which other crate happens to share the build.
+serde_json = { workspace = true, features = ["preserve_order"] }
+nucleus-yaml = { path = "../nucleus-yaml" }
 # Constitutional gate: run ck-kernel admission on PolicyManifest amendments.
 ck-kernel = { path = "../ck-kernel" }
 ck-types = { path = "../ck-types" }

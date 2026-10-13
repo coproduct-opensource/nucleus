@@ -91,20 +91,18 @@ fn generate_profile_names() {
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
 
         // 1. It must be YAML at all. This is the bad-indent case, and the error
-        //    carries serde_yaml's line/column.
-        let value: serde_yaml::Value = serde_yaml::from_str(&text)
+        //    carries the reader's line/column.
+        let value: serde_json::Value = nucleus_yaml::from_str(&text)
             .unwrap_or_else(|e| panic!("{}: not valid YAML: {e}", path.display()));
 
         let map = value
-            .as_mapping()
+            .as_object()
             .unwrap_or_else(|| panic!("{}: a profile must be a mapping", path.display()));
 
         // 2. No key ProfileSpec would silently ignore.
         let known: BTreeSet<&str> = KNOWN_KEYS.iter().copied().collect();
-        for k in map.keys() {
-            let key = k
-                .as_str()
-                .unwrap_or_else(|| panic!("{}: non-string key", path.display()));
+        for key in map.keys() {
+            let key = key.as_str();
             if !known.contains(key) {
                 panic!(
                     "{}: unknown key `{key}` — a profile accepts only {:?}. \
@@ -118,7 +116,7 @@ fn generate_profile_names() {
         // 3. The declared name must match the filename, or `ProfileName::Codegen`
         //    would resolve to a file called something else.
         let declared = map
-            .get(serde_yaml::Value::from("name"))
+            .get("name")
             .and_then(|v| v.as_str())
             .unwrap_or_else(|| panic!("{}: missing required `name`", path.display()));
         if declared != stem {

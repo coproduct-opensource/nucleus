@@ -320,7 +320,7 @@ fn forge_outcome(pod_receipt: &Result<Value, String>) -> (String, bool) {
 fn read_spec(path: &Path) -> Result<Value> {
     let raw =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    serde_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
+    nucleus_yaml::from_str(&raw).with_context(|| format!("parsing {}", path.display()))
 }
 
 fn one_run(node: &Node, a: &Args, spec: &Value) -> Result<Run> {
