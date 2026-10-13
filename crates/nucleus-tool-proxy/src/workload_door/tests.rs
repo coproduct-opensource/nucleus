@@ -518,7 +518,7 @@ async fn a_tcp_request_without_a_cert_is_refused() {
     );
 
     let open = serve_tcp(tcp_app(AttestationVerifier::new(
-        AttestationConfig::default(),
+        AttestationConfig::not_required(),
         LaunchRoots::Absent,
     )))
     .await;
@@ -651,7 +651,7 @@ fn the_requirement_over_each_evidence() {
             .admit(&TransportEvidence::ClientCert(&[0x30, 0x00]))
             .is_err()
     );
-    let open = AttestationVerifier::new(AttestationConfig::default(), LaunchRoots::Absent);
+    let open = AttestationVerifier::new(AttestationConfig::not_required(), LaunchRoots::Absent);
     assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
 }
 
