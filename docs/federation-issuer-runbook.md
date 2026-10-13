@@ -63,6 +63,18 @@ the statements at `node-evidence/federation-keys.json` (also `GET /v1/node/feder
 
 ## 1. Publish the issuer
 
+**Before the node's first run with an issuer**, the state directory has no key, and `issuer --jwks`
+and `issuer --export` fail with `no current key`. Create the first one, as the node's user, with
+the same generation and file the node's start-up uses:
+
+```bash
+nucleus federation rotate --state-dir /var/lib/nucleus-node --init
+# on a node that will run with --node-evidence-tpm: add --tpm /dev/tpmrm0
+```
+
+`--init` refuses a state directory that already holds any issuer key, and names the file: it
+never replaces a key a provider may have registered. To change a key, rotate it (section 3).
+
 Pick one. A provider that supports discovery or a JWKS URL should get one of those: an inline
 JWKS has to be re-registered by hand at two points in every rotation.
 

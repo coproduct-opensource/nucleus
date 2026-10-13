@@ -91,7 +91,7 @@ The demo runs five scenarios. A prompt-injection write is **denied by adversaria
   ✓ Write ALLOWED — clean ancestry
 ```
 
-**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Lean 4 + Kani-backed verdicts). Hosted at **https://nucleus-ctf.fly.dev**; point an LLM at its JSON/MCP API and watch it fail too.
+**`just vault`** launches [**The Vault**](crates/ctf-engine/README.md) — a browser CTF where you try to exfiltrate a secret past a formally-verified permission lattice (Lean 4 + Kani-backed verdicts). Run `ctf-server` locally (`cargo run -p ctf-server`) and point an LLM at its JSON/MCP API to watch it fail too.
 
 ---
 

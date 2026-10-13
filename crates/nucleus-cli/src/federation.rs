@@ -51,7 +51,8 @@ pub enum FederationCommand {
     /// Publish the issuer's discovery document and JWKS, or print the claims a
     /// provider rule should require.
     Issuer(IssuerArgs),
-    /// Rotate the assertion-signing key: stage, promote, retire.
+    /// Create the first assertion-signing key, or rotate it: init, stage,
+    /// promote, retire.
     Rotate(RotateArgs),
     /// Mint a short-lived assertion as the operator's own SPIFFE identity, for
     /// a relying party that federates it (run on demand as its credential
@@ -209,11 +210,16 @@ pub struct IssuerArgs {
 }
 
 #[derive(Args)]
-#[command(group(ArgGroup::new("step").required(true).args(["stage", "promote", "retire", "status"])))]
+#[command(group(ArgGroup::new("step").required(true).args(["init", "stage", "promote", "retire", "status"])))]
 pub struct RotateArgs {
     /// The node's state directory (where its issuer key lives).
     #[arg(long, env = "NUCLEUS_NODE_STATE_DIR", hide_env_values = true)]
     state_dir: PathBuf,
+    /// Create the first key, so its JWKS can be registered at a provider
+    /// before the node runs with an issuer. Refused if the state directory
+    /// already holds an issuer key: it never replaces one.
+    #[arg(long)]
+    init: bool,
     /// Generate the next key and publish it beside the current one.
     #[arg(long)]
     stage: bool,
@@ -242,7 +248,9 @@ pub struct RotateArgs {
     /// With `--stage` on a node whose key is TPM-resident (ADR 0012): the TPM
     /// device to create the next key in, the node's `--node-evidence-tpm`.
     /// Required there, refused for a file-custody directory: a rotation
-    /// never changes where the key lives.
+    /// never changes where the key lives. With `--init`: create the first key
+    /// in this TPM (pass it exactly when the node will run with
+    /// `--node-evidence-tpm`).
     #[arg(long, value_name = "DEVICE")]
     tpm: Option<PathBuf>,
 }
@@ -586,20 +594,20 @@ fn rotate(a: RotateArgs, now: u64, out: &mut dyn Write, err: &mut dyn Write) -> 
         }
     }
     let keys = KeyDir::new(&a.state_dir);
-    let (step, transition) = if a.stage {
-        // The next key is made where the current one lives; `--tpm` names
-        // that TPM, and its absence means this operator has none to offer.
-        let custody = match &a.tpm {
-            Some(device) => {
-                nucleus_federation::KeyCustody::Tpm(nucleus_federation::TpmCustody::new(
-                    nucleus_federation::TpmEndpoint::Device(device.clone()),
-                ))
-            }
-            None => nucleus_federation::KeyCustody::File(
-                nucleus_federation::FileCustody::NoTpmConfigured,
-            ),
-        };
-        ("stage", Some(keys.stage(now, &custody)?))
+    // A new key is made where the issuer's keys live; `--tpm` names that TPM,
+    // and its absence means this operator has none to offer.
+    let custody = || match &a.tpm {
+        Some(device) => nucleus_federation::KeyCustody::Tpm(nucleus_federation::TpmCustody::new(
+            nucleus_federation::TpmEndpoint::Device(device.clone()),
+        )),
+        None => {
+            nucleus_federation::KeyCustody::File(nucleus_federation::FileCustody::NoTpmConfigured)
+        }
+    };
+    let (step, transition) = if a.init {
+        ("init", Some(keys.init(now, &custody())?))
+    } else if a.stage {
+        ("stage", Some(keys.stage(now, &custody())?))
     } else if a.promote {
         ("promote", Some(keys.promote(now, &policy)?))
     } else if a.retire {
@@ -999,6 +1007,46 @@ var = "SEARCH_API_TOKEN"
         assert!(r.is_err());
         let (out, _) = ok(&["rotate", "--state-dir", state, "--retire"], at + window);
         assert_eq!(json(&out)["jwks_removed"], serde_json::json!([prev]));
+    }
+
+    /// #3215: on a fresh state directory `issuer --jwks` has nothing to
+    /// publish; `rotate --init` creates the first key, and the JWKS then
+    /// carries exactly it.
+    #[test]
+    fn init_creates_the_first_key_and_the_jwks_publishes_it() {
+        let node = tempfile::tempdir().unwrap();
+        let state = node.path().to_str().unwrap();
+        let (r, _, _) = cli(&["issuer", "--state-dir", state, "--jwks"], T0);
+        assert!(format!("{:#}", r.unwrap_err()).contains("rotate --init"));
+
+        let (out, err) = ok(&["rotate", "--state-dir", state, "--init"], T0);
+        let init = json(&out);
+        assert_eq!(init["step"], "init");
+        let kid = init["current"].as_str().unwrap().to_string();
+        assert_eq!(init["jwks_added"], serde_json::json!([kid]));
+        assert!(
+            String::from_utf8(err)
+                .unwrap()
+                .contains(&format!("+ {kid}"))
+        );
+
+        let (out, _) = ok(&["issuer", "--state-dir", state, "--jwks"], T0);
+        assert_eq!(kids(&json(&out)), vec![kid]);
+    }
+
+    /// `rotate --init` on a directory with a key is refused, says so by name,
+    /// and leaves the key that is there.
+    #[test]
+    fn init_refuses_when_a_key_exists() {
+        let node = node_dir();
+        let state = node.path().to_str().unwrap();
+        let (before, _) = ok(&["rotate", "--state-dir", state, "--status"], T0);
+        let (r, out, _) = cli(&["rotate", "--state-dir", state, "--init"], T0);
+        let msg = format!("{:#}", r.unwrap_err());
+        assert!(msg.contains("already holds the issuer key"), "{msg}");
+        assert!(out.is_empty());
+        let (after, _) = ok(&["rotate", "--state-dir", state, "--status"], T0);
+        assert_eq!(json(&before)["current"], json(&after)["current"]);
     }
 
     #[test]

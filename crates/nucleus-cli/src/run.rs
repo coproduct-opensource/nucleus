@@ -50,20 +50,11 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         return Ok(None);
     }
 
-    // Node URL: args > config > error
-    let node_url = if let Some(ref url) = args.node_url {
-        if !url.is_empty() {
-            url.clone()
-        } else {
-            config.node.url.clone()
-        }
-    } else if !config.node.url.is_empty() {
-        config.node.url.clone()
-    } else {
-        return Err(anyhow!(
-            "missing --node-url (NUCLEUS_NODE_URL). Use --local for CI mode."
-        ));
-    };
+    let NodeTarget {
+        node_url,
+        kernel_path,
+        rootfs_path,
+    } = node_target(args, config)?;
 
     // The identity `nucleus setup` provisions (Move A step 6), used
     // automatically when present — see `node.rs`'s
@@ -77,6 +68,39 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
                  it reads no shared secret. Use --local for CI mode."
             )
         })?,
+    };
+
+    Ok(Some(ResolvedConfig {
+        node_url,
+        node_mtls_client,
+        kernel_path,
+        rootfs_path,
+    }))
+}
+
+/// Where a pod run goes: the node URL and the guest paths, args > config.
+/// Reads no identity, no secret and no stdin, so `--dry-run` can show it
+/// (#3267); [`resolve_config`] adds the node identity on top.
+struct NodeTarget {
+    node_url: String,
+    kernel_path: String,
+    rootfs_path: String,
+}
+
+fn node_target(args: &RunArgs, config: &Config) -> Result<NodeTarget> {
+    // Node URL: args > config > error
+    let node_url = if let Some(ref url) = args.node_url {
+        if !url.is_empty() {
+            url.clone()
+        } else {
+            config.node.url.clone()
+        }
+    } else if !config.node.url.is_empty() {
+        config.node.url.clone()
+    } else {
+        return Err(anyhow!(
+            "missing --node-url (NUCLEUS_NODE_URL). Use --local for CI mode."
+        ));
     };
 
     // Kernel path: args > config
@@ -93,12 +117,11 @@ pub(crate) fn resolve_config(args: &RunArgs, config: &Config) -> Result<Option<R
         config.rootfs_path()?.display().to_string()
     };
 
-    Ok(Some(ResolvedConfig {
+    Ok(NodeTarget {
         node_url,
-        node_mtls_client,
         kernel_path,
         rootfs_path,
-    }))
+    })
 }
 
 /// Run a task with tool-level enforcement.
@@ -363,27 +386,31 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
         return crate::goal::execute_grant(args, global_config_path).await;
     }
 
-    // Resolve secrets and paths from config/keychain/env
+    // A dry run reads nothing it would only need to launch: no node identity
+    // and no stdin, so it returns at once with no node configured and no
+    // input attached (#3267).
+    if args.dry_run {
+        return dry_run(&args, &global_config);
+    }
+
+    // Resolve the node and its identity from args/config
     let resolved = resolve_config(&args, &global_config)?;
 
     // Read prompt from stdin if "-"
-    let prompt = match args.prompt.as_deref() {
-        Some("-") => {
+    let prompt = match PromptSource::of(&args)? {
+        PromptSource::Stdin => {
             let mut buffer = String::new();
             io::stdin().read_to_string(&mut buffer)?;
             buffer.trim().to_string()
         }
-        Some(p) => p.to_string(),
-        None => String::new(),
+        PromptSource::Given(p) => p.to_string(),
     };
 
     if prompt.is_empty() {
         bail!("Prompt cannot be empty");
     }
 
-    // Resolve working directory
-    let work_dir = shellexpand::tilde(&args.dir).to_string();
-    let work_dir = PathBuf::from(&work_dir).canonicalize()?;
+    let work_dir = run_work_dir(&args)?;
 
     info!(
         prompt_len = prompt.len(),
@@ -392,7 +419,34 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
         "Starting nucleus execution"
     );
 
-    // Build permission lattice
+    let policy = run_policy(&args)?;
+    dispatch(&args, resolved, &policy, &work_dir, &prompt).await
+}
+
+/// Where the prompt comes from. `-` is stdin, read only by a real run.
+enum PromptSource<'a> {
+    Stdin,
+    Given(&'a str),
+}
+
+impl<'a> PromptSource<'a> {
+    fn of(args: &'a RunArgs) -> Result<Self> {
+        match args.prompt.as_deref() {
+            Some("-") => Ok(Self::Stdin),
+            Some(p) if !p.trim().is_empty() => Ok(Self::Given(p)),
+            Some(_) | None => bail!("Prompt cannot be empty"),
+        }
+    }
+}
+
+/// The working directory a run uses, canonical.
+fn run_work_dir(args: &RunArgs) -> Result<PathBuf> {
+    let work_dir = shellexpand::tilde(&args.dir).to_string();
+    Ok(PathBuf::from(&work_dir).canonicalize()?)
+}
+
+/// The permission lattice a profile run is held to.
+fn run_policy(args: &RunArgs) -> Result<PermissionLattice> {
     let policy = if let Some(ref config_path) = args.config {
         // Load custom config
         load_permission_config(config_path)?
@@ -412,54 +466,70 @@ pub async fn execute(mut args: RunArgs, global_config_path: &str) -> Result<()> 
     if let Some(max_cost) = args.max_cost {
         policy.budget.max_cost_usd = Decimal::try_from(max_cost).unwrap_or(Decimal::from(5));
     }
-    let policy = policy.normalize();
+    Ok(policy.normalize())
+}
 
-    if args.dry_run {
-        println!("Dry run - would execute with:");
-        println!("  Working directory: {}", work_dir.display());
-        println!("  Profile: {}", args.profile);
-        println!(
-            "  Mode: {}",
-            if args.hook {
-                "hook (agent on this host; needs --unsandboxed)"
-            } else if args.local {
-                "local (agent on this host; needs --unsandboxed)"
-            } else {
-                "microVM pod (agent inside the guest)"
-            }
-        );
-        println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
-        println!("  Timeout: {}s", args.timeout);
-        match named_agent(&args) {
-            Ok(agent) => println!("  Agent: {}", agent.display()),
-            Err(_) => println!("  Agent: (none named; --agent is required to run)"),
+/// `run --dry-run`: show what a run would do. Reads the config file, the
+/// permission profile and (with `--apple-host-config`) the host configuration;
+/// never the node identity, never stdin, never the network (#3267).
+fn dry_run(args: &RunArgs, global_config: &Config) -> Result<()> {
+    let prompt = PromptSource::of(args)?;
+    let work_dir = run_work_dir(args)?;
+    let policy = run_policy(args)?;
+    println!("Dry run - would execute with:");
+    println!("  Working directory: {}", work_dir.display());
+    if let PromptSource::Stdin = prompt {
+        println!("  Prompt: from stdin (not read in a dry run)");
+    }
+    println!("  Profile: {}", args.profile);
+    println!(
+        "  Mode: {}",
+        if args.hook {
+            "hook (agent on this host; needs --unsandboxed)"
+        } else if args.local {
+            "local (agent on this host; needs --unsandboxed)"
+        } else {
+            "microVM pod (agent inside the guest)"
         }
-        println!(
-            "   UninhabitableState constraint: {}",
-            policy.is_uninhabitable_enforced()
-        );
-        if let Some(ref resolved) = resolved {
-            println!("  Node URL: {}", resolved.node_url);
-            println!("  Kernel: {}", resolved.kernel_path);
-            println!("  Rootfs: {}", resolved.rootfs_path);
-            println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
-            println!("  Rootfs read-only: {}", args.rootfs_read_only);
-        }
+    );
+    println!("  Budget: ${:.2}", policy.budget.max_cost_usd);
+    println!("  Timeout: {}s", args.timeout);
+    match named_agent(args) {
+        Ok(agent) => println!("  Agent: {}", agent.display()),
+        Err(_) => println!("  Agent: (none named; --agent is required to run)"),
+    }
+    println!(
+        "   UninhabitableState constraint: {}",
+        policy.is_uninhabitable_enforced()
+    );
+    // The same selection `resolve_config` makes, minus the identity: a
+    // missing node is shown, not refused, since nothing is launched.
+    if !args.local {
         if let Some(path) = &args.apple_host_config {
+            apple_host::configuration(path)?;
             println!(
                 "  Apple host configuration: {} (not started)",
                 path.display()
             );
+        } else {
+            match node_target(args, global_config) {
+                Ok(target) => {
+                    println!("  Node URL: {}", target.node_url);
+                    println!("  Kernel: {}", target.kernel_path);
+                    println!("  Rootfs: {}", target.rootfs_path);
+                }
+                Err(e) => println!("  Node: (not configured: {e})"),
+            }
+            println!("  Vsock: cid={} port={}", args.vsock_cid, args.vsock_port);
+            println!("  Rootfs read-only: {}", args.rootfs_read_only);
         }
-        println!();
-        print!(
-            "{}",
-            portcullis::render_capabilities(&policy, "Capabilities:")
-        );
-        return Ok(());
     }
-
-    dispatch(&args, resolved, &policy, &work_dir, &prompt).await
+    println!();
+    print!(
+        "{}",
+        portcullis::render_capabilities(&policy, "Capabilities:")
+    );
+    Ok(())
 }
 
 /// The agent this run launches: `--agent` / `NUCLEUS_AGENT`, or the config

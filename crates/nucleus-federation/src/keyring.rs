@@ -201,8 +201,19 @@ pub enum KeyringError {
     #[error("{} is not a P-256 PKCS#8 key", path.display())]
     Key { path: PathBuf },
     /// There is no current key.
-    #[error("no current key at {}", path.display())]
+    #[error(
+        "no current key at {}; create the first one with `nucleus federation rotate --init`",
+        path.display()
+    )]
     NoCurrent { path: PathBuf },
+    /// `init` on a directory that already holds issuer keys: the first key is
+    /// created once, and only rotation ever changes it.
+    #[error(
+        "{} already holds the issuer key; `rotate --init` creates only the first key \
+         and never replaces one (use `rotate --stage` to change it)",
+        path.display()
+    )]
+    AlreadyInitialized { path: PathBuf },
     /// Promote with nothing staged.
     #[error("no key is staged; run `rotate --stage` first")]
     NotStaged,
@@ -515,6 +526,15 @@ struct Snapshot {
     changed: bool,
 }
 
+/// How a finished key file takes its name.
+#[derive(Clone, Copy)]
+enum Placement {
+    /// Renamed over whatever is there (start-up replacement, rotation).
+    Replace,
+    /// Only where nothing is ([`KeyDir::init`]); an existing file is refused.
+    CreateNew,
+}
+
 /// Removes the rotation lock when a step ends, however it ends.
 struct Lock(PathBuf);
 
@@ -757,6 +777,37 @@ impl KeyDir {
         Ok(key.public_jwk())
     }
 
+    /// Create the FIRST key, in `custody`, for an operator who needs the
+    /// issuer's JWKS before the node has ever run with an issuer (#3215).
+    /// The same generation and file the node's start-up uses, under the
+    /// rotation lock.
+    ///
+    /// # Errors
+    /// The directory already holds any issuer key file, current, staged or
+    /// previous, of either custody ([`KeyringError::AlreadyInitialized`]):
+    /// `init` never replaces a key, since a key some provider registered
+    /// would then be refused. That includes a key that appears between the
+    /// check and the write: the file is linked into place, never renamed.
+    pub fn init(&self, now: u64, custody: &KeyCustody) -> Result<Transition, KeyringError> {
+        let _lock = self.lock()?;
+        if let Some(kind) = self.custody_on_disk()? {
+            return Err(KeyringError::AlreadyInitialized {
+                path: self.path(layout_of(kind).current),
+            });
+        }
+        let (bytes, _key) = self.generate(custody)?;
+        let wiped = Zeroizing::new(bytes);
+        self.write_placed(
+            layout_of(custody.kind()).current,
+            &wiped,
+            Placement::CreateNew,
+        )?;
+        Ok(Transition {
+            before: Vec::new(),
+            after: self.state(now)?,
+        })
+    }
+
     /// Write `bytes` to `name`: a `0400` temporary beside it, fsynced, owner
     /// checked, renamed over the target, directory fsynced.
     ///
@@ -767,6 +818,17 @@ impl KeyDir {
     /// service user), the node could not read the key it will be asked to
     /// sign with, so the write is abandoned before the rename.
     fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<(), KeyringError> {
+        self.write_placed(name, bytes, Placement::Replace)
+    }
+
+    /// [`Self::write_atomic`], with how the finished temporary takes the
+    /// target's name: renamed over it, or linked only where nothing is.
+    fn write_placed(
+        &self,
+        name: &str,
+        bytes: &[u8],
+        placement: Placement,
+    ) -> Result<(), KeyringError> {
         self.check_dir()?;
         let target = self.path(name);
         let tmp = self.path(&format!(".{name}.tmp-{}", std::process::id()));
@@ -803,9 +865,28 @@ impl KeyDir {
             let _ = fs::remove_file(&tmp);
             return Err(e);
         }
-        if let Err(e) = fs::rename(&tmp, &target) {
+        let placed = match placement {
+            Placement::Replace => fs::rename(&tmp, &target).map_err(|e| Self::io(&target, &e)),
+            // A hard link fails with `AlreadyExists` instead of replacing: the
+            // check and the write are one syscall, so a key that appears
+            // between `init`'s look and its write is never overwritten.
+            Placement::CreateNew => {
+                let linked = match fs::hard_link(&tmp, &target) {
+                    Ok(()) => Ok(()),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        Err(KeyringError::AlreadyInitialized {
+                            path: target.clone(),
+                        })
+                    }
+                    Err(e) => Err(Self::io(&target, &e)),
+                };
+                let _ = fs::remove_file(&tmp);
+                linked
+            }
+        };
+        if let Err(e) = placed {
             let _ = fs::remove_file(&tmp);
-            return Err(Self::io(&target, &e));
+            return Err(e);
         }
         self.sync_dir();
         Ok(())
@@ -946,6 +1027,16 @@ impl KeyDir {
     /// Take the lock, check the directory, load and reconcile, and persist the
     /// reconciled record if it changed.
     fn begin(&self, now: u64) -> Result<(Lock, Snapshot), KeyringError> {
+        let lock = self.lock()?;
+        let snap = self.snapshot(now)?;
+        if snap.changed {
+            self.write_record(&snap.record)?;
+        }
+        Ok((lock, snap))
+    }
+
+    /// Check the directory and take the rotation lock.
+    fn lock(&self) -> Result<Lock, KeyringError> {
         self.check_dir()?;
         let lock_path = self.path(LOCK_FILE);
         let mut opts = OpenOptions::new();
@@ -962,12 +1053,7 @@ impl KeyDir {
             }
             Err(e) => return Err(Self::io(&lock_path, &e)),
         }
-        let lock = Lock(lock_path);
-        let snap = self.snapshot(now)?;
-        if snap.changed {
-            self.write_record(&snap.record)?;
-        }
-        Ok((lock, snap))
+        Ok(Lock(lock_path))
     }
 
     /// Stage a next key, generated in `custody`, if none is staged.
@@ -1692,5 +1778,73 @@ mod tests {
         assert!(held.iter().all(|(_, h)| matches!(h, Held::File)));
         let kids: Vec<String> = held.into_iter().map(|(j, _)| j.kid).collect();
         assert_eq!(kids, self::kids(&keys.state(T0).unwrap().published()));
+    }
+
+    /// #3215: an operator can create the first key before the node has run,
+    /// and gets exactly what the node would then sign with and publish.
+    #[test]
+    fn init_creates_the_first_key_in_an_empty_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = KeyDir::new(dir.path());
+        assert!(matches!(
+            keys.state(T0),
+            Err(KeyringError::NoCurrent { .. })
+        ));
+        let t = keys.init(T0, &FILE).expect("first key");
+        assert!(t.before.is_empty());
+        assert_eq!(t.added(), vec![t.after.current.kid.clone()]);
+        assert!(t.after.next.is_none() && t.after.prev.is_none());
+        match keys.load_current().unwrap() {
+            Some(key @ StoredKey::File(_)) => assert_eq!(key.kid(), t.after.current.kid),
+            _ => panic!("init wrote no file-custody current key"),
+        }
+        assert!(!dir.path().join(LOCK_FILE).exists(), "the lock is released");
+    }
+
+    /// `init` never replaces: a current key, or only a staged one, is refused
+    /// by name, and the key on disk is untouched.
+    #[test]
+    fn init_refuses_a_directory_that_holds_a_key() {
+        let (dir, keys) = fresh();
+        let before = std::fs::read(dir.path().join(CURRENT_KEY_FILE)).unwrap();
+        let err = keys.init(T0, &FILE).unwrap_err();
+        assert!(
+            matches!(&err, KeyringError::AlreadyInitialized { path }
+                if path == &dir.path().join(CURRENT_KEY_FILE)),
+            "{err}"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join(CURRENT_KEY_FILE)).unwrap(),
+            before
+        );
+
+        let staged_only = tempfile::tempdir().unwrap();
+        let keys = KeyDir::new(staged_only.path());
+        keys.write_atomic(NEXT_KEY_FILE, b"staged").unwrap();
+        assert!(matches!(
+            keys.init(T0, &FILE),
+            Err(KeyringError::AlreadyInitialized { .. })
+        ));
+        assert!(!staged_only.path().join(CURRENT_KEY_FILE).exists());
+    }
+
+    /// The write itself refuses an existing target, so a key that appears
+    /// after `init` looked (a node starting at the same moment) survives.
+    #[test]
+    fn a_create_new_write_never_replaces_a_file() {
+        let (dir, keys) = fresh();
+        let path = dir.path().join(CURRENT_KEY_FILE);
+        let before = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            keys.write_placed(CURRENT_KEY_FILE, b"other", Placement::CreateNew),
+            Err(KeyringError::AlreadyInitialized { .. })
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "the temporary is removed");
     }
 }
