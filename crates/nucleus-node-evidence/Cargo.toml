@@ -40,7 +40,7 @@ p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8
 # The bignum under src/rsa_pkcs1.rs: runtime-sized `modpow`, pure Rust, no_std
 # capable, already in the lockfile. Public inputs only, so it need not be
 # constant time.
-num-bigint = { version = "0.4", default-features = false }
+num-bigint = { version = "0.5", default-features = false }
 # Parsing only: the workspace entry enables `verify` (ring). Signatures over the
 # AK certificate chain are checked here with the RustCrypto crates above.
 x509-parser = { version = "0.18", default-features = false }
