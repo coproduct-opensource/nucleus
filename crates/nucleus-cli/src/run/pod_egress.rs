@@ -28,10 +28,13 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail};
 use nucleus_spec::guest_layout::GuestBinary;
-use nucleus_spec::tier2_artifacts::{self, GuestSkew, GuestUse};
+use nucleus_spec::guest_release::LOCAL_BUILD;
+use nucleus_spec::tier2_artifacts::GuestUse;
 use nucleus_spec::{CredentialedEgressSpec, WorkloadSpec};
 use portcullis::profile::ProfileRegistry;
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
+
+use super::guest_release::GuestBasis;
 
 /// The operator's `--egress*` flags, before they are checked.
 pub(super) struct EgressFlags<'a> {
@@ -174,13 +177,13 @@ impl PodEgress {
     /// when a declared upstream carries one. Known only once the registry is
     /// read, so after [`declare`]; an upstream with no table demands nothing
     /// beyond [`refuse_guest_skew`]. The 2.4.0 guest predates the table, so
-    /// `--guest-release 2.4.0` refuses by name rather than letting the pod fail
-    /// on a spec its guest cannot parse; the pin (2.7.0) ships it.
+    /// a 2.4.0 guest refuses by name rather than letting the pod fail on a
+    /// spec its guest cannot parse; the pin (2.7.0) ships it.
     ///
     /// # Errors
     /// When a declared upstream has an effect table and the guest lacks
     /// `EgressEffectTable`, or its release cannot be ordered.
-    pub(super) fn refuse_guest_skew(&self, guest: Option<&str>) -> Result<()> {
+    pub(super) fn refuse_guest_skew(&self, guest: &GuestBasis) -> Result<()> {
         if self.specs.iter().all(|s| s.effects.is_unclassified()) {
             return Ok(());
         }
@@ -213,28 +216,19 @@ impl PodEgress {
     }
 }
 
-/// What `--guest-release` takes for a guest built from this checkout.
-pub(super) const GUEST_FROM_THIS_TREE: &str = "local";
-
 /// Refuse, before anything is started, a run that declares an upstream when the
 /// guest it boots cannot start the agent under the egress adapter that way.
 ///
-/// `guest` is `--guest-release`: `None` for the pinned release `setup`
-/// installs, [`GUEST_FROM_THIS_TREE`] for a guest built from this checkout
-/// (which carries every capability this build depends on), or a release
-/// version. The decision is `guest_skew_for`, the one decider for guest skew
-/// (#3075); this only names it for `--egress`. Without `--egress` nothing is
-/// checked: the capability is demanded only for that use.
-///
-/// The pinned release (2.7.0) ships the adapter (#3211, since 2.4.0), so a run on the pin
-/// passes. `--guest-release` remains a user assertion the CLI cannot verify,
-/// since the node does not report which guest it boots (#3223); this checks
-/// the claim, not the guest.
+/// `guest` is the guest the run boots: as the node reports it, or as
+/// `--guest-release` states it (`guest_release::reconcile`). The decision is
+/// `guest_skew_for`, the one decider for guest skew (#3075); this only names
+/// it for `--egress`. Without `--egress` nothing is checked: the capability is
+/// demanded only for that use.
 ///
 /// # Errors
 /// When `upstreams` is non-empty and the guest lacks a capability the use
 /// demands, or its release cannot be ordered.
-pub(super) fn refuse_guest_skew(upstreams: &[String], guest: Option<&str>) -> Result<()> {
+pub(super) fn refuse_guest_skew(upstreams: &[String], guest: &GuestBasis) -> Result<()> {
     if upstreams.is_empty() {
         return Ok(());
     }
@@ -242,24 +236,17 @@ pub(super) fn refuse_guest_skew(upstreams: &[String], guest: Option<&str>) -> Re
 }
 
 /// The one guest-skew refusal for `--egress`, for the `uses` a run makes.
-fn refuse_skew_for(guest: Option<&str>, uses: &[GuestUse]) -> Result<()> {
-    let (release, which) = match guest {
-        None => (tier2_artifacts::GUEST_RELEASE, "the pinned guest release"),
-        Some(GUEST_FROM_THIS_TREE) => return Ok(()),
-        Some(release) => (release, "guest release"),
-    };
-    tier2_artifacts::guest_skew_for(release, uses).map_err(|skew| {
-        let cause = match &skew {
-            GuestSkew::Lacks { missing, .. } => {
-                let names: Vec<String> = missing.iter().map(|c| format!("{c:?}")).collect();
-                format!("{which} does not ship {}", names.join(", "))
-            }
-            GuestSkew::Unorderable { .. } => format!("{which} cannot be checked"),
+fn refuse_skew_for(guest: &GuestBasis, uses: &[GuestUse]) -> Result<()> {
+    guest.skew_for(uses).map_err(|refused| {
+        let hint = if refused.asserted() {
+            format!(
+                "\nIf the node boots a guest built from this checkout, pass --guest-release \
+                 {LOCAL_BUILD}."
+            )
+        } else {
+            String::new()
         };
-        anyhow!(
-            "--egress: {cause}; {skew}\nIf the node boots a guest built from this checkout, \
-             pass --guest-release {GUEST_FROM_THIS_TREE}."
-        )
+        anyhow!("--egress: {refused}{hint}")
     })
 }
 
@@ -343,6 +330,18 @@ pub(super) fn refuse_unreachable(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    /// A guest the run states with `--guest-release`.
+    fn claimed(flag: &str) -> GuestBasis {
+        GuestBasis::asserted(Some(flag)).expect("a flag was given")
+    }
+
+    /// The pinned release, as a node that boots it reports it.
+    fn node_pin() -> GuestBasis {
+        GuestBasis::Reported(nucleus_spec::guest_release::GuestOrigin::Release {
+            version: nucleus_spec::tier2_artifacts::GUEST_RELEASE.into(),
+        })
+    }
 
     /// The node's own documented example (`nucleus-node/src/upstreams.rs`),
     /// trimmed: one federated entry and one env entry.
@@ -517,15 +516,15 @@ var = "SEARCH_API_TOKEN"
              operation = \"create_pr\" }]",
         );
         let err = with_table
-            .refuse_guest_skew(Some("2.4.0"))
+            .refuse_guest_skew(&claimed("2.4.0"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("does not ship EgressEffectTable"), "{err}");
-        with_table.refuse_guest_skew(None).unwrap();
-        with_table
-            .refuse_guest_skew(Some(GUEST_FROM_THIS_TREE))
+        with_table.refuse_guest_skew(&node_pin()).unwrap();
+        with_table.refuse_guest_skew(&claimed(LOCAL_BUILD)).unwrap();
+        declared_forge("")
+            .refuse_guest_skew(&claimed("2.4.0"))
             .unwrap();
-        declared_forge("").refuse_guest_skew(Some("2.4.0")).unwrap();
         let err = forge(r#"[{ method = "POST", path = "repos/*x", operation = "create_pr" }]"#)
             .unwrap_err();
         assert!(format!("{err:#}").contains("forge-api"), "{err:#}");
@@ -618,15 +617,16 @@ var = "SEARCH_API_TOKEN"
         assert!(err.contains("web_fetch: never"), "{err}");
     }
 
-    /// The guest check for `--egress`: the pin (2.7.0) ships the adapter and
-    /// is accepted, 2.3.0 is refused by name, a guest built from this checkout
-    /// is accepted, a named release is checked as given, and a run declaring
-    /// nothing is never checked.
+    /// The guest check for `--egress`: the pin (2.7.0), as a node reports it,
+    /// ships the adapter and is accepted, a stated 2.3.0 is refused by name
+    /// (with the hint to state a local build), a guest built from this
+    /// checkout is accepted, a named release is checked as given, and a run
+    /// declaring nothing is never checked.
     #[test]
     fn the_guest_is_checked_for_the_adapter_only_when_egress_is_declared() {
         let ups = strings(&["model-api"]);
-        refuse_guest_skew(&ups, None).unwrap();
-        let err = refuse_guest_skew(&ups, Some("2.3.0"))
+        refuse_guest_skew(&ups, &node_pin()).unwrap();
+        let err = refuse_guest_skew(&ups, &claimed("2.3.0"))
             .unwrap_err()
             .to_string();
         assert!(
@@ -635,16 +635,16 @@ var = "SEARCH_API_TOKEN"
         );
         assert!(err.contains("#3211"), "{err}");
         assert!(err.contains("--guest-release local"), "{err}");
-        refuse_guest_skew(&ups, Some(GUEST_FROM_THIS_TREE)).unwrap();
-        let err = refuse_guest_skew(&ups, Some("2.2.0"))
+        refuse_guest_skew(&ups, &claimed(LOCAL_BUILD)).unwrap();
+        let err = refuse_guest_skew(&ups, &claimed("2.2.0"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("guest release does not ship"), "{err}");
-        let err = refuse_guest_skew(&ups, Some("latest"))
+        let err = refuse_guest_skew(&ups, &claimed("latest"))
             .unwrap_err()
             .to_string();
         assert!(err.contains("cannot be checked"), "{err}");
-        refuse_guest_skew(&[], None).unwrap();
+        refuse_guest_skew(&[], &node_pin()).unwrap();
     }
 
     #[test]

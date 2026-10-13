@@ -7,6 +7,7 @@ pub mod egress_budget;
 pub mod egress_fence;
 pub mod exit_report_auth;
 pub mod guest_layout;
+pub mod guest_release;
 pub mod host_decide_telemetry;
 pub mod host_effect;
 pub mod host_effect_approval;

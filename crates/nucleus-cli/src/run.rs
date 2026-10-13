@@ -23,6 +23,7 @@ use crate::profiles;
 mod agent_process;
 mod apple_host;
 mod eval_cell;
+mod guest_release;
 mod pod_agent;
 mod pod_egress;
 mod pod_session;
@@ -350,20 +351,19 @@ pub struct RunArgs {
     #[arg(long = "egress-placeholder", value_name = "VAR", requires = "egress")]
     pub egress_placeholders: Vec<String>,
 
-    /// The guest the node boots, checked for what `--egress` needs before
-    /// anything starts: a release version, or `local` for a guest built from
-    /// this checkout (`setup --artifacts local`). Default: the pinned release
-    /// `setup` installs (2.4.0 and later ship the adapter `--egress` needs).
-    /// This is the user's assertion about the node's guest, which the CLI
-    /// cannot verify: the node does not yet report the release it boots
-    /// (#3223).
+    /// The guest the node boots, as you state it: a release version, or
+    /// `local` for a guest built from a working tree (`setup --artifacts
+    /// local`). The node reports which guest it boots (#3223), and the run is
+    /// judged against that report; this is a cross-check of it, and a run
+    /// whose statement disagrees with the node is refused. Needed only when
+    /// the node cannot say (its rootfs has no record from `nucleus setup`).
     #[arg(long, value_name = "VERSION|local", requires = "guest_uses")]
     pub guest_release: Option<String>,
 
     /// The isolation profile the pod is held to: `standard`, or `eval-cell`
     /// (ADR 0013: Firecracker only, egress listed host by host, the guest's
     /// Landlock and derived syscall filter required). Refused on `--local` and
-    /// `--hook`, and checked against `--guest-release`; the node decides the rest.
+    /// `--hook`, and checked against the guest the node reports; the node decides the rest.
     #[arg(long, value_name = "PROFILE", default_value = "standard", value_parser = eval_cell::parse)]
     pub isolation_profile: nucleus_spec::isolation_profile::IsolationProfile,
 }
@@ -574,10 +574,14 @@ pub(crate) async fn dispatch(
     // never call is a contradiction the operator should hear now, not from the
     // agent's first model call inside the pod (#3218).
     pod_egress::refuse_unreachable(&args.egress, policy, &policy_source(args))?;
-    // And a guest that cannot start the agent the way --egress does (#3075's
-    // table, demanded only for this use).
-    pod_egress::refuse_guest_skew(&args.egress, args.guest_release.as_deref())?;
-    eval_cell::refuse_guest_skew(args.isolation_profile, args.guest_release.as_deref())?;
+    // And a guest the run states with --guest-release that cannot start the
+    // agent the way --egress does (#3075's table, demanded only for this use),
+    // before a host starts. Without the flag, the guest is the one the node
+    // reports, judged in `run_in_pod` once the node can be asked (#3223).
+    if let Some(guest) = guest_release::GuestBasis::asserted(args.guest_release.as_deref()) {
+        pod_egress::refuse_guest_skew(&args.egress, &guest)?;
+        eval_cell::refuse_guest_skew(args.isolation_profile, &guest)?;
+    }
     if let Some(path) = &args.apple_host_config {
         let (resolved, host) = apple_host::ready(path, args).await?;
         run_in_pod(
@@ -1024,10 +1028,23 @@ async fn run_in_pod(
         exports: &args.egress_exports,
         placeholders: &args.egress_placeholders,
     })?;
-    // An upstream with an effect table needs a guest that reads one (#3229);
+    // The guest the node boots, from the node (#3223), with --guest-release as
+    // a cross-check of it; judged for every use this run makes of it. An
+    // upstream with an effect table needs a guest that reads one (#3229), and
     // only the registry says whether a declared upstream has one.
-    if let Some(egress) = &egress {
-        egress.refuse_guest_skew(args.guest_release.as_deref())?;
+    let answer = guest_release::ask(client, &resolved.node_url).await;
+    let needs_guest = !args.egress.is_empty() || !args.isolation_profile.guest_uses().is_empty();
+    if let Some(guest) = guest_release::reconcile(
+        &answer,
+        Path::new(&resolved.rootfs_path),
+        args.guest_release.as_deref(),
+        needs_guest,
+    )? {
+        pod_egress::refuse_guest_skew(&args.egress, &guest)?;
+        eval_cell::refuse_guest_skew(args.isolation_profile, &guest)?;
+        if let Some(egress) = &egress {
+            egress.refuse_guest_skew(&guest)?;
+        }
     }
     let (workload, credentialed_egress) = match egress {
         Some(egress) => egress.wrap(workload),
@@ -1790,8 +1807,9 @@ mod tests {
     ///
     /// The same for a guest that cannot start the agent under the egress
     /// adapter the way `--egress` does (the `GuestCapability` table): a 2.3.0
-    /// guest is refused by name for `--egress`, and only for it; the pin ships
-    /// the adapter.
+    /// guest stated with `--guest-release` is refused by name for `--egress`,
+    /// and only for it. Without the flag nothing is judged before the node is
+    /// asked which guest it boots (#3223).
     #[tokio::test]
     async fn egress_under_a_profile_that_cannot_call_is_refused_before_any_pod() {
         let dir = std::env::temp_dir();
@@ -1841,8 +1859,8 @@ mod tests {
         assert!(skewed.contains("#3211"), "{skewed}");
 
         // Both checks pass: the run stops only at the missing node, so the
-        // refusals above are the checks', not this. The pinned release (2.7.0)
-        // ships the adapter, so no --guest-release is needed on the pin.
+        // refusals above are the checks', not this. Without --guest-release
+        // the guest is the node's to report, so nothing refuses before it.
         let admitted = run("safe-pr-fixer", EGRESS_LOCAL_GUEST).await;
         assert!(admitted.contains("node config required"), "{admitted}");
         let pinned = run("safe-pr-fixer", EGRESS).await;
