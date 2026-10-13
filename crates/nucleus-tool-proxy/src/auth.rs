@@ -1,25 +1,20 @@
 //! Request authentication and signature verification.
 //!
-//! This module provides multiple authentication modes for tool-proxy requests:
+//! A request is authenticated by what carried it, never by a shared secret
+//! (#2446 step 3 deleted the shared-secret tier and its `--auth-secret`):
 //!
-//! 1. **HMAC-based auth**: Traditional shared-secret signatures with optional
-//!    drand anchoring to prevent pre-computation attacks.
+//! 1. **Transport**: a host-verified vsock listener or peer-verified Unix
+//!    socket, whose peer the kernel identifies ([`AuthTier::HostVsock`],
+//!    [`AuthTier::PodPeer`]), or the workload door.
+//! 2. **SPIFFE mTLS**: the caller's identity comes from its certificate's
+//!    SPIFFE URI SAN, attested by the CA.
+//! 3. **Approvals**: `/v1/approve` needs an approver's signature, Ed25519
+//!    against configured public keys (or, for a pod provisioned that way, the
+//!    legacy drand-anchored approval HMAC).
 //!
-//! 2. **SPIFFE mTLS auth**: Zero-secret authentication using SPIFFE workload
-//!    identity certificates. The client's identity is derived from their
-//!    X.509 certificate's SPIFFE URI SAN, not from static secrets.
-//!
-//! # Security Model
-//!
-//! - **HMAC mode**: Requires shared secrets, vulnerable to secret extraction
-//! - **mTLS mode**: No secrets to extract; identity is attested by CA
-//! - **Drand anchoring**: Limits HMAC attack window to ~60 seconds
-//!
-//! The recommended configuration is mTLS mode with SPIFFE certificates,
-//! which eliminates static secrets entirely.
+//! A request that arrives by none of these ([`AuthTier::Unproven`]) is refused.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::http::HeaderMap;
@@ -31,90 +26,12 @@ const HEADER_TIMESTAMP: &str = "x-nucleus-timestamp";
 const HEADER_SIGNATURE: &str = "x-nucleus-signature";
 const HEADER_ACTOR: &str = "x-nucleus-actor";
 const HEADER_DRAND_ROUND: &str = "x-nucleus-drand-round";
-/// Per-request uniqueness token that `nucleus_client::sign_http_headers` sends
-/// and binds into the signed message (#2375). It is part of the signed bytes,
-/// so it cannot be stripped: removing the header changes the message the
-/// verifier reconstructs and the signature stops verifying.
-const HEADER_NONCE: &str = "x-nucleus-nonce";
-
-/// Default bound on remembered signatures. Far above what a real client
-/// produces inside one skew window; reaching it means something is flooding,
-/// and [`ReplayCache::remember`] refuses rather than evicting.
-const DEFAULT_REPLAY_CAPACITY: usize = 8192;
-
-/// Remembers recently-accepted HMAC signatures so a captured request cannot be
-/// sent again inside the timestamp window. Same design as the node's cache from
-/// #2375, which left with the node's HMAC path in #2454; this is the verifier
-/// that still accepts a shared-secret signature.
-///
-/// # Why the key is the signature
-///
-/// A replay is byte-identical to the original, so it reproduces the identical
-/// signature and collides here. A legitimate repeat carrying a fresh
-/// `x-nucleus-nonce` signs different bytes, so it does not. A signer that sends
-/// no nonce still gets replay protection -- it merely cannot repeat a
-/// byte-identical request inside the window, which is indistinguishable from a
-/// replay anyway.
-///
-/// # Why it is not a plain LRU
-///
-/// An LRU evicts the oldest entry to make room, which reopens the hole: flood
-/// the cache with fresh signatures, push a captured one out while its timestamp
-/// is still inside the window, replay it. So an entry is dropped only once it
-/// has expired -- once `ensure_skew` would refuse its timestamp anyway. A cache
-/// full of live entries refuses the request instead.
-#[derive(Debug)]
-pub struct ReplayCache {
-    seen: Mutex<HashMap<String, i64>>,
-    capacity: usize,
-}
-
-impl ReplayCache {
-    pub fn new(capacity: usize) -> Self {
-        Self {
-            seen: Mutex::new(HashMap::new()),
-            capacity,
-        }
-    }
-
-    /// Record a signature as used; `Err(AuthError::Replay)` if already seen
-    /// inside the window.
-    ///
-    /// Callers MUST verify the signature first. Remembering unverified
-    /// signatures would let anyone fill the cache with garbage and trip the
-    /// capacity refusal -- turning a replay defence into a denial of service.
-    fn remember(&self, signature: &str, timestamp: i64, window: Duration) -> Result<(), AuthError> {
-        let now = now_secs();
-        let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
-
-        // Anything `ensure_skew` would already refuse can never be replayed, so
-        // dropping it is free. `abs` because the window is two-sided.
-        let window = window.as_secs();
-        seen.retain(|_, ts| (now - *ts).unsigned_abs() <= window);
-
-        if seen.contains_key(signature) {
-            return Err(AuthError::Replay);
-        }
-        if seen.len() >= self.capacity {
-            return Err(AuthError::ReplayCapacity);
-        }
-        seen.insert(signature.to_string(), timestamp);
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn len(&self) -> usize {
-        self.seen.lock().unwrap_or_else(|e| e.into_inner()).len()
-    }
-}
-
 /// Configuration for request authentication.
 #[derive(Clone, Debug)]
 pub struct AuthConfig {
     secret: Arc<Vec<u8>>,
     max_skew: Duration,
     drand_config: Option<DrandConfig>,
-    replay: Arc<ReplayCache>,
 }
 
 impl AuthConfig {
@@ -124,14 +41,7 @@ impl AuthConfig {
             secret: Arc::new(secret.as_ref().to_vec()),
             max_skew,
             drand_config: None,
-            replay: Arc::new(ReplayCache::new(DEFAULT_REPLAY_CAPACITY)),
         }
-    }
-
-    #[cfg(test)]
-    fn with_replay_capacity(mut self, capacity: usize) -> Self {
-        self.replay = Arc::new(ReplayCache::new(capacity));
-        self
     }
 
     /// Add drand configuration for anchored signature verification.
@@ -282,98 +192,17 @@ pub enum AuthError {
     #[error("drand anchoring required but no round provided")]
     DrandRequired,
 
-    /// This exact signature was already accepted inside the skew window.
-    #[error("request replayed")]
-    Replay,
-
-    /// The replay cache is full of still-live entries. Refused rather than
-    /// evicting, because eviction is what would let a flood push a captured
-    /// signature out early.
-    #[error("replay cache is full of live entries; retry after the skew window")]
-    ReplayCapacity,
-
-    /// The request authenticated on the shared-secret tier, which carries no
-    /// authority since #2446 step 2: it admits only `/v1/health`, and that
-    /// route is answered before authentication.
+    /// The request arrived on a transport that proves nothing about its
+    /// caller ([`AuthTier::Unproven`]). The shared-secret tier that used to
+    /// take these was deleted in #2446 step 3, so nothing here can admit it;
+    /// `/v1/health` is answered before authentication.
     #[error(
-        "the shared-secret (HMAC) tier carries no authority since #2446: it admits only \
-         /v1/health. Reach this proxy over its peer-verified Unix socket (--listen-unix), \
-         vsock, or mTLS; a node reaching a container over --container-proxy-transport \
-         tcp-hmac needs a tool-proxy image older than SharedSecretTierRetired"
+        "this request came by a transport that proves nothing about its caller, and the \
+         shared-secret (HMAC) tier that took such requests is deleted (#2446). Reach this \
+         proxy over its peer-verified Unix socket (--listen-unix), vsock, or mTLS; only \
+         /v1/health is answered here"
     )]
-    SharedSecretTierRetired,
-}
-
-/// Verify an HTTP request with standard timestamp-based authentication.
-///
-/// Message format: `"{timestamp}.{actor}.{nonce}.{body}"` when the signer sent
-/// `x-nucleus-nonce` (every `nucleus_client::sign_http_headers` caller does),
-/// else `"{timestamp}.{actor}.{body}"` -- the same framing
-/// `nucleus_client::build_message` produces. A verified signature is then
-/// recorded so the identical request cannot be accepted twice.
-pub fn verify_http(
-    headers: &HeaderMap,
-    body: &[u8],
-    auth: &AuthConfig,
-) -> Result<AuthContext, AuthError> {
-    let ts = header_value(headers, HEADER_TIMESTAMP)?;
-    let sig = header_value(headers, HEADER_SIGNATURE)?;
-    let actor = headers
-        .get(HEADER_ACTOR)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
-    let actor_value = actor.clone().unwrap_or_default();
-    let nonce = match headers.get(HEADER_NONCE) {
-        Some(v) => Some(
-            v.to_str()
-                .map_err(|_| AuthError::InvalidHeader(HEADER_NONCE))?,
-        ),
-        None => None,
-    };
-
-    let timestamp = parse_timestamp(ts)?;
-    ensure_skew(timestamp, auth.max_skew())?;
-
-    let nonce_len = nonce.map_or(0, |n| n.len() + 1);
-    let mut message = Vec::with_capacity(ts.len() + actor_value.len() + nonce_len + 2 + body.len());
-    message.extend_from_slice(ts.as_bytes());
-    message.push(b'.');
-    message.extend_from_slice(actor_value.as_bytes());
-    message.push(b'.');
-    if let Some(nonce) = nonce {
-        message.extend_from_slice(nonce.as_bytes());
-        message.push(b'.');
-    }
-    message.extend_from_slice(body);
-
-    verify_signature(auth.secret(), &message, sig)?;
-    // Only after verification: see `ReplayCache::remember`.
-    auth.replay.remember(sig, timestamp, auth.max_skew())?;
-
-    Ok(AuthContext {
-        actor,
-        timestamp,
-        drand_round: None,
-        spiffe_id: None,
-        auth_method: AuthMethod::Hmac,
-        identity_binding: IdentityBinding::PolicyOnly,
-    })
-}
-
-/// What the shared-secret tier ([`AuthTier::Hmac`]) does with a request: refuse
-/// it (#2446 step 2).
-///
-/// The return type is the ceiling. It is an [`AuthError`] and never an
-/// [`AuthContext`], so no request authenticated by the shared secret can reach
-/// a handler with any authority at all. The signature is still checked first,
-/// so a caller learns whether its credential was wrong or merely powerless.
-/// The only route the tier could admit, `/v1/health`, is answered before
-/// authentication and never reaches here. Step 3 deletes the tier.
-pub fn refuse_shared_secret(headers: &HeaderMap, body: &[u8], auth: &AuthConfig) -> AuthError {
-    match verify_http(headers, body, auth) {
-        Ok(_powerless) => AuthError::SharedSecretTierRetired,
-        Err(e) => e,
-    }
+    UnprovenTransport,
 }
 
 /// Verify an HTTP request with optional drand anchoring.
@@ -787,8 +616,9 @@ pub fn verify_spiffe_mtls(spiffe_id: &str) -> AuthContext {
 ///
 /// Extracted from the request handler so the PRECEDENCE is unit-testable. The
 /// order is security-critical and easy to get wrong invisibly: if
-/// [`AuthTier::HostVsock`] were consulted after the HMAC fallback it would be
-/// dead code, and every request would still need a key the agent can read.
+/// [`AuthTier::HostVsock`] were consulted after the [`AuthTier::Unproven`]
+/// fallback it would be dead code, and every request from the host would be
+/// refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AuthTier {
     /// A client certificate was presented — the strongest proof of WHO is
@@ -812,11 +642,11 @@ pub enum AuthTier {
     PodPeer,
     /// The transport already proved the peer is the host.
     HostVsock,
-    /// Shared-secret HMAC, the residual path for transports that prove nothing.
-    /// Its authority ceiling is ZERO since #2446 step 2: [`refuse_shared_secret`]
-    /// is all it reaches, and the only route it could admit, `/v1/health`, is
-    /// answered before authentication.
-    Hmac,
+    /// A transport that proves nothing about the caller: plain TCP with no
+    /// client certificate. Refused ([`AuthError::UnprovenTransport`]); it has
+    /// no credential to check. Until #2446 step 3 this was the shared-secret
+    /// HMAC tier, whose authority step 2 had already set to zero.
+    Unproven,
     /// The request came through the workload door from a peer the kernel
     /// reported as running under `uid`, the workload's. It outranks every other
     /// tier: on the door the caller is the workload whatever else is true, so
@@ -890,7 +720,7 @@ pub fn select_auth_tier(
     } else if host_verified_transport {
         AuthTier::HostVsock
     } else {
-        AuthTier::Hmac
+        AuthTier::Unproven
     }
 }
 
@@ -987,28 +817,6 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64
-    }
-
-    #[test]
-    fn test_verify_http_success() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-
-        let message = format!("{}.{}.{}", ts, actor, String::from_utf8_lossy(body));
-        let signature = sign_message(secret, message.as_bytes());
-
-        let headers = make_headers(ts, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60));
-
-        let result = verify_http(&headers, body, &auth);
-        assert!(result.is_ok());
-
-        let ctx = result.unwrap();
-        assert_eq!(ctx.actor, Some("test-actor".to_string()));
-        assert_eq!(ctx.timestamp, ts);
-        assert!(ctx.drand_round.is_none());
     }
 
     #[test]
@@ -1159,24 +967,6 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_http_returns_hmac_auth_method() {
-        let secret = b"test-secret";
-        let body = b"test body";
-        let ts = current_timestamp();
-        let actor = "test-actor";
-
-        let message = format!("{}.{}.{}", ts, actor, String::from_utf8_lossy(body));
-        let signature = sign_message(secret, message.as_bytes());
-
-        let headers = make_headers(ts, &signature, Some(actor));
-        let auth = AuthConfig::new(secret, Duration::from_secs(60));
-
-        let ctx = verify_http(&headers, body, &auth).unwrap();
-        assert_eq!(ctx.auth_method, AuthMethod::Hmac);
-        assert!(ctx.spiffe_id.is_none());
-    }
-
-    #[test]
     fn test_verify_http_with_drand_returns_hmac_drand_auth_method() {
         let secret = b"test-secret";
         let body = b"test body";
@@ -1296,14 +1086,14 @@ mod auth_tier_precedence_tests {
     }
 
     /// THE ORDERING PROPERTY. On a host-verified transport, a plain request
-    /// must reach `HostVsock` and NOT fall through to the shared-secret HMAC.
+    /// must reach `HostVsock` and NOT fall through to the refusal.
     /// If the tiers were reordered, this is what fails.
     #[test]
-    fn a_host_verified_transport_skips_the_shared_secret_hmac() {
+    fn a_host_verified_transport_is_not_the_unproven_tier() {
         assert_eq!(
             select_auth_tier(false, false, false, true, false),
             AuthTier::HostVsock,
-            "a request on a host-only vsock listener must not need the HMAC key"
+            "a request on a host-only vsock listener is the host's"
         );
     }
 
@@ -1335,14 +1125,14 @@ mod auth_tier_precedence_tests {
         );
     }
 
-    /// Without a host-verified transport the HMAC tier is still the one
-    /// SELECTED, and since #2446 step 2 it refuses every request it receives
-    /// (`refuse_shared_secret`): selection is not authority.
+    /// Without a host-verified transport or a certificate, nothing proves the
+    /// caller, and the tier says so rather than naming a credential that no
+    /// longer exists (#2446 step 3).
     #[test]
-    fn other_transports_still_require_the_hmac() {
+    fn other_transports_are_unproven() {
         assert_eq!(
             select_auth_tier(false, false, false, false, false),
-            AuthTier::Hmac
+            AuthTier::Unproven
         );
     }
 
@@ -1425,19 +1215,19 @@ mod auth_tier_precedence_tests {
         );
         assert_eq!(
             select_auth_tier(false, false, true, false, false),
-            AuthTier::Hmac
+            AuthTier::Unproven
         );
     }
 
     /// Exhaustive over all thirty-two inputs, so no combination is
     /// unconsidered. An in-pod peer replaces exactly the two transport tiers
-    /// (`Hmac`, `HostVsock`); every identity and approval tier outranks it.
+    /// (`Unproven`, `HostVsock`); every identity and approval tier outranks it.
     #[test]
     fn every_combination_is_pinned() {
         let cases = [
-            ((false, false, false, false), AuthTier::Hmac),
+            ((false, false, false, false), AuthTier::Unproven),
             ((false, false, false, true), AuthTier::HostVsock),
-            ((false, false, true, false), AuthTier::Hmac),
+            ((false, false, true, false), AuthTier::Unproven),
             ((false, false, true, true), AuthTier::HostVsock),
             ((false, true, false, false), AuthTier::ApprovalHmacDrand),
             ((false, true, false, true), AuthTier::ApprovalHmacDrand),
@@ -1459,7 +1249,7 @@ mod auth_tier_precedence_tests {
                 "spiffe={spiffe} approval={approval} pubkeys={pubkeys} host_verified={host}"
             );
             let with_peer = match expected {
-                AuthTier::Hmac | AuthTier::HostVsock => AuthTier::PodPeer,
+                AuthTier::Unproven | AuthTier::HostVsock => AuthTier::PodPeer,
                 other => other,
             };
             assert_eq!(
@@ -1639,179 +1429,6 @@ mod ed25519_approval_tests {
         assert!(
             ApprovalVerifier::from_hex_list("  ", Duration::from_secs(60), None).is_err(),
             "an empty list is not a verifier"
-        );
-    }
-}
-
-#[cfg(test)]
-mod hmac_nonce_and_replay_tests {
-    use super::*;
-    use axum::http::{HeaderMap, HeaderName, HeaderValue};
-
-    /// Long enough for `nucleus_client`'s key-quality floor.
-    const SECRET: &[u8] = b"0123456789abcdef0123456789abcdef";
-
-    fn headers_from(signed: &nucleus_client::SignedHeaders) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        for (k, v) in &signed.headers {
-            h.insert(
-                HeaderName::from_bytes(k.as_bytes()).expect("static header name"),
-                HeaderValue::from_str(v).expect("ascii header value"),
-            );
-        }
-        h
-    }
-
-    /// #2446 step 2: the shared-secret tier's ceiling is zero. A request the
-    /// secret signs correctly is refused as powerless, and one it does not sign
-    /// is refused for its credential, so the two stay distinguishable.
-    #[test]
-    fn the_shared_secret_tier_carries_no_authority() {
-        let body = br#"{"path":"notes.txt"}"#;
-        let signed = nucleus_client::sign_http_headers(SECRET, None, body);
-        assert!(matches!(
-            refuse_shared_secret(&headers_from(&signed), body, &auth()),
-            AuthError::SharedSecretTierRetired
-        ));
-        let wrong =
-            nucleus_client::sign_http_headers(b"another-secret-of-enough-length!", None, body);
-        assert!(matches!(
-            refuse_shared_secret(&headers_from(&wrong), body, &auth()),
-            AuthError::InvalidSignature
-        ));
-    }
-
-    fn auth() -> AuthConfig {
-        AuthConfig::new(SECRET, Duration::from_secs(60))
-    }
-
-    /// THE REGRESSION. What `nucleus-mcp` sends -- a request signed by the real
-    /// `nucleus_client::sign_http_headers`, nonce and all -- must pass the real
-    /// verifier. #2375 changed the signer and not this verifier, and every
-    /// mediated tool call became a 401; a test built from the two real
-    /// functions is what notices the next time they drift.
-    #[test]
-    fn the_client_http_signer_satisfies_this_verifier() {
-        let body = br#"{"path":"notes.md"}"#;
-        let signed = nucleus_client::sign_http_headers(SECRET, Some("nucleus-mcp"), body);
-        assert!(
-            signed.headers.iter().any(|(k, _)| k == HEADER_NONCE),
-            "precondition: the client signs a nonce, or this test proves nothing"
-        );
-        let ctx = verify_http(&headers_from(&signed), body, &auth())
-            .expect("the client's signature must verify");
-        assert_eq!(ctx.actor.as_deref(), Some("nucleus-mcp"));
-        assert_eq!(ctx.auth_method, AuthMethod::Hmac);
-    }
-
-    /// The nonce is bound, not decorative: stripping the header must break the
-    /// signature rather than downgrade to the nonce-less form.
-    #[test]
-    fn stripping_the_nonce_breaks_the_signature() {
-        let body = b"body";
-        let signed = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
-        let mut headers = headers_from(&signed);
-        headers.remove(HEADER_NONCE);
-        assert!(matches!(
-            verify_http(&headers, body, &auth()),
-            Err(AuthError::InvalidSignature)
-        ));
-    }
-
-    /// A captured request sent again verbatim is refused. The first send is
-    /// asserted to SUCCEED, so the refusal cannot pass vacuously on a request
-    /// that was never valid.
-    #[test]
-    fn a_verbatim_replay_is_refused() {
-        let body = b"body";
-        let auth = auth();
-        let headers = headers_from(&nucleus_client::sign_http_headers(SECRET, Some("a"), body));
-        verify_http(&headers, body, &auth).expect("first send is legitimate");
-        assert!(matches!(
-            verify_http(&headers, body, &auth),
-            Err(AuthError::Replay)
-        ));
-    }
-
-    /// The same request signed again carries a fresh nonce, so it is a
-    /// different signature and is not mistaken for a replay -- polling one
-    /// endpoint twice a second is normal.
-    #[test]
-    fn a_legitimate_repeat_with_a_fresh_nonce_is_accepted() {
-        let body = b"body";
-        let auth = auth();
-        for _ in 0..3 {
-            let signed = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
-            verify_http(&headers_from(&signed), body, &auth).expect("fresh nonce each time");
-        }
-    }
-
-    /// A signer that sends no nonce still verifies (the pre-#2375 framing), and
-    /// still gets replay protection.
-    #[test]
-    fn a_nonceless_signature_verifies_once() {
-        let body = b"body";
-        let ts = now_secs();
-        let sig = sign_message(SECRET, format!("{ts}.a.body").as_bytes());
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            HEADER_TIMESTAMP,
-            HeaderValue::from_str(&ts.to_string()).unwrap(),
-        );
-        headers.insert(HEADER_SIGNATURE, HeaderValue::from_str(&sig).unwrap());
-        headers.insert(HEADER_ACTOR, HeaderValue::from_static("a"));
-        let auth = auth();
-        verify_http(&headers, body, &auth).expect("legacy framing still verifies");
-        assert!(matches!(
-            verify_http(&headers, body, &auth),
-            Err(AuthError::Replay)
-        ));
-    }
-
-    /// Unverified signatures are never remembered: a flood of garbage must not
-    /// fill the cache and lock legitimate callers out.
-    #[test]
-    fn a_bad_signature_is_not_remembered() {
-        let auth = auth().with_replay_capacity(1);
-        let body = b"body";
-        for _ in 0..10 {
-            let signed = nucleus_client::sign_http_headers(
-                b"wrong-secret-wrong-secret-wrong!",
-                Some("a"),
-                body,
-            );
-            assert!(matches!(
-                verify_http(&headers_from(&signed), body, &auth),
-                Err(AuthError::InvalidSignature)
-            ));
-        }
-        assert_eq!(auth.replay.len(), 0);
-        let good = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
-        verify_http(&headers_from(&good), body, &auth).expect("the cache still has room");
-    }
-
-    /// Full of live entries, the cache refuses rather than evicting. Evicting
-    /// is what would let a flood push a captured signature out early.
-    #[test]
-    fn a_full_cache_refuses_instead_of_evicting() {
-        let auth = auth().with_replay_capacity(2);
-        let body = b"body";
-        let first = headers_from(&nucleus_client::sign_http_headers(SECRET, Some("a"), body));
-        verify_http(&first, body, &auth).unwrap();
-        verify_http(
-            &headers_from(&nucleus_client::sign_http_headers(SECRET, Some("a"), body)),
-            body,
-            &auth,
-        )
-        .unwrap();
-        let third = nucleus_client::sign_http_headers(SECRET, Some("a"), body);
-        assert!(matches!(
-            verify_http(&headers_from(&third), body, &auth),
-            Err(AuthError::ReplayCapacity)
-        ));
-        assert!(
-            matches!(verify_http(&first, body, &auth), Err(AuthError::Replay)),
-            "the first signature must still be remembered, not evicted"
         );
     }
 }

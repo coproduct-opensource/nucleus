@@ -16,10 +16,14 @@
 //!
 //! The lib is compiled twice:
 //! 1. For the host (x86_64/aarch64): run via `cargo test`.
-//! 2. For the RISC-V guest: compiled by `risc0-build` and embedded as an ELF.
+//! 2. For the RISC-V guest: compiled by `risc0-build` into an ELF. No crate in
+//!    the root workspace builds or embeds that ELF (risc0 was taken out of the
+//!    root workspace on 2026-10-12).
 //!
 //! Using `wasmi` (not `wasmtime`) because wasmi is portable across targets
 //! and has no JIT/signal-handler dependencies that would fail in the zkVM.
+
+pub mod receipt;
 
 use sha2::{Digest, Sha256};
 use wasmi::{Engine, Error as WasmiError, Linker, Module, Store};

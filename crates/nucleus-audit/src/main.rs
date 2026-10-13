@@ -1992,9 +1992,9 @@ fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(
 /// }
 /// ```
 ///
-/// Hash-only verification is always performed (no network, no risc0 runtime).
-/// Full cryptographic proof verification requires the risc0-zkvm feature and
-/// a running RISC Zero verifier — flagged as an offline-only limitation.
+/// Only hash shape is checked: this build has no zkVM backend (risc0 left the root
+/// workspace 2026-10-12), so a receipt claiming proof bytes is a FAILED check by
+/// name, never a pass it could not earn (ADR 0007 A-2). Hash-only is informational.
 fn check_zkvm_receipt(
     output: &serde_json::Value,
     checks_passed: &mut u32,
@@ -2042,10 +2042,8 @@ fn check_zkvm_receipt(
         .unwrap_or(false);
 
     if has_proof {
-        println!(
-            "  \u{2713} zkVM receipt: proof bytes present (full verification requires risc0-zkvm)"
-        );
-        *checks_passed += 1;
+        println!("  \u{2717} zkVM receipt: proof claimed, built without the zkVM backend: refused");
+        *checks_failed += 1;
     } else {
         println!(
             "  \u{2139}\u{fe0f}  zkVM receipt: no proof bytes — hash-only receipt (weak guarantee)"
@@ -2247,7 +2245,7 @@ spec:
     }
 
     #[test]
-    fn test_zkvm_receipt_valid_with_proof() {
+    fn test_zkvm_receipt_with_proof_is_refused_without_backend() {
         let hash = "a".repeat(64);
         let output = serde_json::json!({
             "_provenance": {
@@ -2262,8 +2260,8 @@ spec:
         let mut passed = 0u32;
         let mut failed = 0u32;
         check_zkvm_receipt(&output, &mut passed, &mut failed);
-        assert_eq!(failed, 0, "valid receipt must have no failures");
-        assert!(passed >= 2, "should record at least 2 checks");
+        assert_eq!(passed, 1, "only the hash-shape check may pass");
+        assert_eq!(failed, 1, "an unverifiable proof claim must be refused");
     }
 
     #[test]

@@ -663,13 +663,13 @@ fn check_tier2_components() -> bool {
             "nucleus-node",
             "test -x /usr/local/bin/nucleus-node".to_string(),
         ),
-        // The secret the node refuses to start without. Not the node API
-        // secret: the node stopped reading that with Move B, and the CLI
-        // reaches the node with its mTLS identity, checked below (#3294).
+        // The env file `setup` writes. It holds no shared secret: the node's
+        // API is mTLS-only (#3294), checked below, and the proxy secrets went
+        // with #2446 step 3.
         (
-            "Node secrets",
+            "Node env",
             format!(
-                "test -s {} && grep -q '^NUCLEUS_NODE_PROXY_AUTH_SECRET=' {}",
+                "test -s {} && grep -q '^NUCLEUS_NODE_DRIVER=' {}",
                 provision::NODE_ENV_PATH,
                 provision::NODE_ENV_PATH
             ),

@@ -1,16 +1,20 @@
-//! #2446 step 2, driven through the real binary: the shared-secret (HMAC) tier
-//! admits only `/v1/health`, and the peer-verified socket that replaced it for
-//! every host-side caller serves the same request.
+//! #2446 step 3, driven through the real binary: the shared-secret tier, the
+//! tier-3 orchestrator token and the `--auth-secret` that keyed both are
+//! deleted, and what a launcher used to pass for them is refused by name.
 //!
-//! Red before step 2: a request signed with the shared secret was admitted
-//! under the pod's whole policy, so the read below returned the file.
+//! Red before step 3 (the binary from main, as `NUCLEUS_TEST_PROXY_BIN`):
+//! - the old container launch (token + secret, no identity) started at sandbox
+//!   proof tier 3;
+//! - a leftover token beside a minted identity was read silently;
+//! - plain TCP without mTLS exited for want of a secret, never for want of a
+//!   transport that proves a caller.
 #![expect(
     clippy::disallowed_methods,
-    reason = "integration fixture owns temporary files, child processes, and loopback HTTP"
+    reason = "integration fixture owns temporary files and child processes"
 )]
 #![expect(
     clippy::disallowed_types,
-    reason = "integration fixture launches the proxy and calls its loopback API directly"
+    reason = "integration fixture launches the proxy and calls its socket API directly"
 )]
 
 use std::path::{Path, PathBuf};
@@ -18,18 +22,16 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::SigningKey;
+use hmac::{Mac, digest::KeyInit};
 use nucleus_ifc_kernel::Operation;
 use nucleus_provenance_memory::{SignedTaskRef, TokenScope};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 const SECRET: &str = "shared-secret-tier-fixture-32-bytes!";
-const CONTENTS: &str = "read me through the tier that may";
 
 struct Proxy {
     child: Child,
-    /// What the proxy announced: `host:port`, or `unix:///…`.
-    announced: String,
+    log: PathBuf,
 }
 
 impl Drop for Proxy {
@@ -39,20 +41,43 @@ impl Drop for Proxy {
     }
 }
 
-/// The transport the proxy is started on.
-enum Listen {
-    /// Loopback TCP, where the shared-secret tier is the one selected.
-    Tcp,
-    /// The peer-verified socket at this path.
-    Unix(PathBuf),
+/// How the fixture starts the proxy. Each field is one input a launcher
+/// either passed before step 3 or passes now.
+struct Launch {
+    /// `--listen-unix <root>/p.sock`; otherwise loopback TCP.
+    socket: bool,
+    /// The run's minted identity (`pod_files::issue_ephemeral`), the proof
+    /// every launcher now writes.
+    identity: bool,
+    /// `--auth-secret`, the retired key.
+    secret: bool,
+    /// `NUCLEUS_SANDBOX_TOKEN`, the retired tier-3 token, HMAC'd as the node
+    /// used to mint it.
+    token: bool,
 }
 
-fn workspace(root: &Path) -> PathBuf {
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// The token exactly as `nucleus_client::generate_sandbox_token` minted it
+/// before step 3 deleted it: `sandbox-proof.{pod}.{spec_hash}.{ts}.{hmac}`.
+fn old_token() -> String {
+    let message = format!("sandbox-proof.secret-tier.{}.{}", "ab".repeat(32), now());
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(SECRET.as_bytes()).unwrap();
+    mac.update(message.as_bytes());
+    format!("{message}.{}", hex::encode(mac.finalize().into_bytes()))
+}
+
+fn start(root: &Path, launch: &Launch) -> Proxy {
     let ws = root.join("workspace");
     std::fs::create_dir_all(&ws).unwrap();
-    std::fs::write(ws.join("notes.txt"), CONTENTS).unwrap();
+    let spec_path = root.join("pod.json");
     std::fs::write(
-        root.join("pod.json"),
+        &spec_path,
         serde_json::to_vec(&json!({
             "apiVersion":"nucleus/v1", "kind":"Pod", "metadata":{"name":"secret-tier"},
             "spec":{"work_dir":ws,"policy":{"type":"profile","name":"permissive"}}
@@ -60,175 +85,191 @@ fn workspace(root: &Path) -> PathBuf {
         .unwrap(),
     )
     .unwrap();
-    ws
-}
-
-async fn launch(root: &Path, listen: Listen) -> Proxy {
-    let spec_path = root.join("pod.json");
-    let spec = std::fs::read(&spec_path).unwrap();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
     let key = SigningKey::from_bytes(&[42; 32]);
     let nonce = [7; 16];
-    let token = SignedTaskRef::issue(
+    let task = SignedTaskRef::issue(
         "secret-tier",
         TokenScope::new(vec![Operation::ReadFiles], Vec::new()),
         nonce,
-        now,
+        now(),
         600,
         &key,
     );
-    let announce = root.join("announce");
-    let _ = std::fs::remove_file(&announce);
-    let log_path = root.join("proxy.log");
-    let log = std::fs::File::create(&log_path).unwrap();
+    let approver = SigningKey::from_bytes(&[9; 32]);
+    let log = root.join("proxy.log");
     let binary = std::env::var_os("NUCLEUS_TEST_PROXY_BIN")
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_nucleus-tool-proxy").into());
     let mut command = Command::new(binary);
-    match &listen {
-        Listen::Tcp => {}
-        Listen::Unix(path) => {
-            command.arg("--listen-unix").arg(path);
-        }
-    }
-    let child = command
+    command
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
-        .env(
-            "NUCLEUS_SANDBOX_TOKEN",
-            nucleus_client::generate_sandbox_token(
-                SECRET.as_bytes(),
-                "secret-tier",
-                &hex::encode(Sha256::digest(&spec)),
-            ),
-        )
-        .env("NUCLEUS_TASK_TOKEN", serde_json::to_string(&token).unwrap())
+        .env("NUCLEUS_TASK_TOKEN", serde_json::to_string(&task).unwrap())
         .env("NUCLEUS_TASK_TOKEN_NONCE", hex::encode(nonce))
         .env(
             "NUCLEUS_TASK_TOKEN_ISSUER",
             hex::encode(key.verifying_key().to_bytes()),
         )
         .env("NUCLEUS_TOOL_PROXY_DRAND_ENABLED", "false")
-        .arg("--spec")
-        .arg(spec_path)
         .arg("--unsandboxed")
-        .arg("--auth-secret")
-        .arg(SECRET)
-        .arg("--approval-secret")
-        .arg("separate-fixture-approval-secret")
+        .arg("--spec")
+        .arg(&spec_path)
+        .arg("--approval-pubkeys")
+        .arg(hex::encode(approver.verifying_key().to_bytes()))
         .arg("--audit-log")
         .arg(root.join("audit.jsonl"))
         .arg("--announce-path")
-        .arg(&announce)
+        .arg(root.join("announce"));
+    if launch.socket {
+        command.arg("--listen-unix").arg(root.join("p.sock"));
+    } else {
+        command.arg("--listen").arg("127.0.0.1:0");
+    }
+    if launch.identity {
+        let files = nucleus_identity::pod_files::issue_ephemeral(
+            root,
+            "secret-tier",
+            Duration::from_secs(600),
+        )
+        .unwrap();
+        command.envs(files.env());
+    }
+    if launch.secret {
+        command.arg("--auth-secret").arg(SECRET);
+    }
+    if launch.token {
+        command.env("NUCLEUS_SANDBOX_TOKEN", old_token());
+    }
+    let file = std::fs::File::create(&log).unwrap();
+    let child = command
         .stdin(Stdio::null())
-        .stdout(log.try_clone().unwrap())
-        .stderr(log)
+        .stdout(file.try_clone().unwrap())
+        .stderr(file)
         .spawn()
         .unwrap();
-    let mut proxy = Proxy {
-        child,
-        announced: String::new(),
-    };
+    Proxy { child, log }
+}
+
+/// Wait for the proxy to exit, and return its code and log. Panics if it is
+/// still serving: every caller here expects a refusal.
+async fn refused(root: &Path, proxy: &mut Proxy) -> (Option<i32>, String) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     loop {
-        if let Ok(address) = std::fs::read_to_string(&announce)
-            && !address.trim().is_empty()
-        {
-            proxy.announced = address.trim().to_string();
-            return proxy;
+        if let Some(status) = proxy.child.try_wait().unwrap() {
+            return (status.code(), std::fs::read_to_string(&proxy.log).unwrap());
         }
+        let announced = std::fs::read_to_string(root.join("announce")).unwrap_or_default();
         assert!(
-            proxy.child.try_wait().unwrap().is_none(),
-            "proxy exited: {}",
-            std::fs::read_to_string(&log_path).unwrap()
+            announced.trim().is_empty(),
+            "the proxy started and announced {announced:?}: {}",
+            std::fs::read_to_string(&proxy.log).unwrap()
         );
         assert!(
             tokio::time::Instant::now() < deadline,
-            "startup timed out: {}",
-            std::fs::read_to_string(&log_path).unwrap()
+            "neither started nor refused: {}",
+            std::fs::read_to_string(&proxy.log).unwrap()
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
 }
 
-async fn read_notes(client: &reqwest::Client, base: &str, signed: bool) -> (u16, Value) {
-    let bytes = serde_json::to_vec(&json!({"path": "notes.txt"})).unwrap();
-    let mut request = client
-        .post(format!("{base}/v1/read"))
-        .timeout(Duration::from_secs(10))
-        .header("content-type", "application/json");
-    if signed {
-        for (key, value) in
-            nucleus_client::sign_http_headers(SECRET.as_bytes(), None, &bytes).headers
-        {
-            request = request.header(key, value);
-        }
+/// The container driver's old `tcp-hmac` launch, minus the TCP: a token the
+/// shared secret signs, the secret itself, and no identity. It used to start
+/// at sandbox proof tier 3. It is refused, naming the flag.
+#[tokio::test]
+async fn the_old_token_and_secret_launch_is_refused_by_name() {
+    let root = tempfile::tempdir().unwrap();
+    let mut proxy = start(
+        root.path(),
+        &Launch {
+            socket: true,
+            identity: false,
+            secret: true,
+            token: true,
+        },
+    );
+    let (code, log) = refused(root.path(), &mut proxy).await;
+    assert_eq!(code, Some(78), "{log}");
+    for needle in ["--auth-secret", "#2446", "retired"] {
+        assert!(log.contains(needle), "missing {needle:?} in: {log}");
     }
-    let response = request.body(bytes).send().await.unwrap();
-    let status = response.status().as_u16();
-    let text = response.text().await.unwrap();
-    (
-        status,
-        serde_json::from_str(&text).unwrap_or(Value::String(text)),
-    )
 }
 
-/// A request the shared secret signs correctly is refused, by name, on every
-/// route but `/v1/health`.
+/// A node from before step 3 still sets the token beside the identity files.
+/// The identity is the proof (tier 2), and the token is named as ignored,
+/// never read.
 #[tokio::test]
-async fn the_shared_secret_tier_admits_only_health() {
+async fn a_leftover_token_is_named_and_the_identity_is_the_proof() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let root = tempfile::tempdir().unwrap();
-    workspace(root.path());
-    let proxy = launch(root.path(), Listen::Tcp).await;
-    let base = format!("http://{}", proxy.announced);
-    let client = reqwest::Client::new();
-
-    let health = client
-        .get(format!("{base}/v1/health"))
+    let proxy = start(
+        root.path(),
+        &Launch {
+            socket: true,
+            identity: true,
+            secret: false,
+            token: true,
+        },
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut proxy = proxy;
+    while std::fs::read_to_string(root.path().join("announce"))
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
+        if let Some(status) = proxy.child.try_wait().unwrap() {
+            panic!(
+                "proxy exited {status}: {}",
+                std::fs::read_to_string(&proxy.log).unwrap()
+            );
+        }
+        assert!(tokio::time::Instant::now() < deadline, "startup timed out");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let client = reqwest::Client::builder()
+        .unix_socket(root.path().join("p.sock"))
+        .build()
+        .unwrap();
+    let health: Value = client
+        .get("http://localhost/v1/health")
         .timeout(Duration::from_secs(10))
         .send()
         .await
+        .unwrap()
+        .json()
+        .await
         .unwrap();
-    assert_eq!(health.status().as_u16(), 200, "health stays answerable");
-
-    let (status, body) = read_notes(&client, &base, true).await;
     assert_eq!(
-        status, 401,
-        "a shared-secret request must be refused: {body}"
+        health["sandbox_proof"],
+        json!({"tier": 2, "label": "spiffe-identity"}),
+        "{health}"
     );
+    let log = std::fs::read_to_string(&proxy.log).unwrap();
     assert!(
-        body.to_string().contains("carries no authority"),
-        "the refusal names the retired tier: {body}"
-    );
-    assert!(
-        !body.to_string().contains(CONTENTS),
-        "nothing was read: {body}"
+        log.contains("NUCLEUS_SANDBOX_TOKEN is set") && log.contains("ignored"),
+        "the leftover token is named: {log}"
     );
 }
 
-/// The peer-verified socket every host-side caller moved to serves the same
-/// read with no secret at all.
+/// Plain TCP without mTLS proves no caller. With the shared-secret tier gone
+/// it would answer only `/v1/health`, so it is refused at startup, naming the
+/// transports that work, rather than for want of a secret.
 #[tokio::test]
-async fn the_peer_verified_socket_serves_what_the_secret_no_longer_can() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+async fn plain_tcp_without_mtls_is_refused_by_name() {
     let root = tempfile::tempdir().unwrap();
-    workspace(root.path());
-    let socket = root.path().join("p.sock");
-    let proxy = launch(root.path(), Listen::Unix(socket.clone())).await;
-    assert!(
-        proxy.announced.starts_with("unix://"),
-        "the socket is what is announced: {}",
-        proxy.announced
+    let mut proxy = start(
+        root.path(),
+        &Launch {
+            socket: false,
+            identity: true,
+            secret: false,
+            token: false,
+        },
     );
-    let client = reqwest::Client::builder()
-        .unix_socket(socket)
-        .build()
-        .unwrap();
-    let (status, body) = read_notes(&client, "http://localhost", false).await;
-    assert_eq!(status, 200, "{body}");
-    assert!(body.to_string().contains(CONTENTS), "{body}");
+    let (code, log) = refused(root.path(), &mut proxy).await;
+    assert_eq!(code, Some(78), "{log}");
+    for needle in ["--mtls", "--listen-unix", "#2446"] {
+        assert!(log.contains(needle), "missing {needle:?} in: {log}");
+    }
 }

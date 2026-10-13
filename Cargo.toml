@@ -107,7 +107,7 @@ exclude = [
     "crates/exposure-web",       # WASM-only (wasm32-unknown-unknown)
     "crates/nucleus-marketplace-dashboard-frontend", # Leptos CSR (wasm32); build with: cd … && trunk build
     "crates/portcullis-python",  # Python bindings (requires maturin)
-    "crates/portcullis-zkvm-guest", # RISC-V zkVM guest (compiled separately by risc0-build)
+    "crates/portcullis-zkvm-guest", # RISC-V zkVM guest + host receipt type; own Cargo.lock. risc0 is kept OUT of the root lock (2026-10-12)
     # NOT a deliberate exclusion like the four above, and listed here so the state is on the
     # record rather than implicit: crates/nucleus-policy holds a Cargo.toml and NOTHING ELSE --
     # no src/, no lib.rs, nothing depends on it, and one commit has ever touched it (a repo-wide
@@ -279,9 +279,6 @@ aws-sdk-s3 = { version = "1.134", default-features = false, features = [
     "rt-tokio",
 ] }
 aws-config = { version = "1.8", features = ["behavior-version-latest"] }
-
-# zkVM (verifiable computation receipts)
-risc0-zkvm = "3.0"
 
 # Build
 tonic-prost-build = "0.14"
