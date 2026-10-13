@@ -1054,6 +1054,47 @@ mod tests {
         assert_eq!(canonical(&profile("demo")), "none");
     }
 
+    /// #2907, A-19: the socket classes are narrowed to the address family the
+    /// pod declares. An all-IPv4 allowlist, a DNS name (pinned to IPv4 by the
+    /// node) or a credentialed upstream (an IPv4 loopback adapter) gives back
+    /// `AF_INET` and keeps `AF_INET6` denied. An IPv6 entry, or one that is
+    /// not an IPv4 address, gives back both. Red on a rule that reads only
+    /// "is anything declared": every declared case derives `exec` there.
+    #[test]
+    fn the_socket_classes_are_narrowed_to_the_declared_family() {
+        let canonical = |network: &str| {
+            let spec: nucleus_spec::PodSpec = nucleus_yaml::from_str(&format!(
+                "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
+                 timeout_seconds: 60\n  policy:\n    type: profile\n    name: untrusted-model\n\
+                 {network}"
+            ))
+            .expect("spec parses");
+            seccomp_policy(&spec.spec)
+                .unwrap_or_else(|e| panic!("{network}: {e}"))
+                .canonical()
+        };
+        let allow = |entries: &str| format!("  network:\n    allow: [{entries}]\n");
+        for v4 in [
+            allow("\"10.0.0.1\""),
+            allow("\"10.0.0.1:443\""),
+            allow("\"10.0.0.0/8\", \"192.0.2.7/32:8443\""),
+            "  network:\n    dns_allow: [\"example.com\"]\n".to_string(),
+            "  credentialed_egress:\n  - name: model-api\n    upstream: https://model-api.invalid/v1\n    header: authorization\n"
+                .to_string(),
+        ] {
+            assert_eq!(canonical(&v4), "exec,inet6_socket", "{v4}");
+        }
+        for both in [
+            allow("\"[2001:db8::1]:443\""),
+            allow("\"2001:db8::/32\""),
+            allow("\"10.0.0.1\", \"2001:db8::1\""),
+            allow("\"example.com:443\""),
+            allow("\"10.0.0.0/33\""),
+        ] {
+            assert_eq!(canonical(&both), "exec", "{both}");
+        }
+    }
+
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {
         WorkloadSpec {
             command: "agent".into(),
