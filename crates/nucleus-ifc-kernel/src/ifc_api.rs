@@ -193,7 +193,10 @@ pub enum SafetyCheck {
     Safe,
     /// The action would use data with adversarial integrity.
     AdversarialAncestry {
-        /// The node that introduced the adversarial taint.
+        /// The checked node whose label carries adversarial integrity.
+        ///
+        /// Labels are joined over ancestry at observation time, so this is
+        /// where the taint was *detected*, not necessarily where it entered.
         tainted_node: u64,
     },
     /// The action would use data with insufficient authority.
