@@ -11,7 +11,14 @@
 # Regenerate with `cargo xtask ci-spec inline-gates > ci/inline-gates.txt`
 # (annotations are carried forward).
 #
-# UNCOVERED_CEILING = 91
+# UNCOVERED_CEILING = 90
+#
+# 2026-10-13: 91 → 90. `Ratchet down` (clippy-ratchet.yml) is no longer an
+# inline gate: its branching, arithmetic and operand guard moved to
+# `cargo xtask clippy-ratchet-down`, where the operands are typed `u32`s parsed
+# from the TOML (a missing or non-integer field is a parse error, never 0) and
+# the decision and publication paths have unit tests. The entry the 2026-09-12
+# note below added is removed with it.
 #
 # 2026-10-05: 93 → 91. The two quickstart guest-signing receipt steps moved
 # to `cargo xtask host-evidence-live`, which verifies host-issued journals from
@@ -108,7 +115,6 @@ ci.yml::declassify-governor-keys-sealed::Report | UNCOVERED: no falsifier yet
 ck-policy-aeneas.yml::ck-policy-aeneas::Verify generated Lean matches committed (drift gate) | UNCOVERED: no falsifier yet
 ck-policy-aeneas.yml::ck-policy-aeneas::Ban sorry / admit / native_decide in our proof file | UNCOVERED: no falsifier yet
 ck-policy-lean.yml::ck-policy-lean::Ban sorry / admit / native_decide / sorryAx in ck-policy Lean | UNCOVERED: no falsifier yet
-clippy-ratchet.yml::ratchet-down::Ratchet down | UNCOVERED: `if:`-gated to push on main, so no probe can invoke it
 clippy-ratchet.yml::ratchet-falsifier::RED on a ceiling below actual, GREEN when restored | UNCOVERED: no falsifier yet
 coverage-matrix.yml::mutants::The gate reads the machine report, not the console (#2562) | UNCOVERED: no falsifier yet
 crates-publish.yml::publish::Publish in dependency order (idempotent) | UNCOVERED: no falsifier yet

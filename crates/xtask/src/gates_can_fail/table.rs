@@ -315,7 +315,10 @@ pub fn probes() -> Vec<Probe> {
         },
         Probe {
             family: xtask("push-auth"),
-            target: ".github/workflows/clippy-ratchet.yml",
+            // Was clippy-ratchet.yml until its push moved into `cargo xtask
+            // clippy-ratchet-down` (Rust, with the same explicit credential), leaving no
+            // `git push` in that workflow for this probe to strip the credential from.
+            target: ".github/workflows/aeneas-decide-pure.yml",
             desc: "a CI push relying on the checkout's ambient credential",
             perturb: pert!(perturb_push_auth_strip),
         },
