@@ -2539,8 +2539,25 @@ pub(crate) fn ingest_content_hash(bytes: &[u8]) -> nucleus_ifc_kernel::ContentHa
 /// as its certificate grants them (`runtime.policy()` is checked equal to the certificate at
 /// start). Read-only, for an in-pod executor to apply before it spawns; every effect is still
 /// decided here and by the node.
-pub(crate) async fn pod_policy(State(state): State<AppState>) -> Json<serde_json::Value> {
+pub(crate) async fn pod_policy(
+    State(state): State<AppState>,
+    body: Option<Json<serde_json::Value>>,
+) -> Json<serde_json::Value> {
     let policy = state.runtime.policy();
+    // `{"argv": [..]}` asks whether that command may run, decided by the certified
+    // `CommandLattice` itself (`can_execute`), so an in-pod executor applies exactly this
+    // proxy's rule rather than a copy of it. An argv that is not a list of strings is refused.
+    let verdict = body.and_then(|Json(b)| b.get("argv").cloned()).map(|argv| {
+        argv.as_array()
+            .and_then(|a| {
+                a.iter()
+                    .map(|v| v.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .is_some_and(|words| {
+                !words.is_empty() && policy.commands.can_execute(&shell_words::join(&words))
+            })
+    });
     let compartments: Vec<String> = portcullis::cert_compartment::named_of(&policy.capabilities)
         .into_iter()
         .map(|k| k.0)
@@ -2549,6 +2566,7 @@ pub(crate) async fn pod_policy(State(state): State<AppState>) -> Json<serde_json
         "commands": policy.commands,
         "paths": policy.paths,
         "compartments": compartments,
+        "allowed": verdict,
     }))
 }
 
