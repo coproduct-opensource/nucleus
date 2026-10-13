@@ -1337,7 +1337,9 @@ mod tests {
             hex::encode(ak.spki_sha256())
         };
         let dir = tempfile::tempdir().unwrap();
-        let none = || Expect::NotChecked("software TPM: no firmware, no IMA".into());
+        fn none<T>() -> Expect<T> {
+            Expect::NotChecked("software TPM: no firmware, no IMA".into())
+        }
         let reference = ReferenceManifest {
             profile: REFERENCE_PROFILE.into(),
             tag_id: "swtpm-node".into(),
