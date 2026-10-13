@@ -57,7 +57,10 @@ macro_rules! census {
     ($( $(#[$cfg:meta])* $field:ident => $surface:ident, $why:literal; )*) => {
         // One `push` per entry is what lets each carry its field's `#[cfg]`: an
         // attribute may sit on a statement, not on an array element.
-        #[allow(clippy::vec_init_then_push)]
+        #[expect(
+            clippy::vec_init_then_push,
+            reason = "each push carries its field's #[cfg]; vec![..] cannot"
+        )]
         fn census() -> Vec<Entry> {
             // Exhaustive, no `..` (E-1): the compiler is the census. Never
             // called; the pattern alone is the check.

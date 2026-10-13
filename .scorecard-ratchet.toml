@@ -625,9 +625,12 @@ population_floor = 23
 # five undischarged #[allow(dead_code)]s with the code they excused (151 -> 146). The ratio
 # rises because the denominator shrank, not because anything was discharged; pinned at
 # the measurement so it does not read as progress. 36/146 = 24.65%.
-floor_bp = 2465
+# 2026-10-13 (#3433, C2 census): the NodeState census builds its list one cfg-carrying
+# push at a time under a reasoned #[expect] of vec_init_then_push. 37/147 = 25.17%;
+# both pins follow the tree.
+floor_bp = 2517
 floor_set = "measurement"
-population_floor = 146
+population_floor = 147
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
