@@ -179,10 +179,7 @@ impl EgressMeter {
             EgressRefusal::LedgerFault => "egress_ledger_fault",
         };
         tracing::warn!(pod = %self.pod_id, dimension = refusal.dimension(), "{refusal}");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = crate::lifecycle::now_unix();
         let record = EgressRecord::signed(&self.signer, now, event, &self.pod_id, refusal);
         crate::lifecycle::write_lifecycle_record(&self.pod_dir, &record).await;
     }

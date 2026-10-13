@@ -59,7 +59,8 @@ pub(crate) async fn write_lifecycle_record<T: serde::Serialize>(pod_dir: &Path, 
     }
 }
 
-fn now_unix() -> u64 {
+/// The lifecycle log's clock: seconds since the epoch, 0 before it.
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
