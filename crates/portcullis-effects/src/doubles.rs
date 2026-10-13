@@ -28,7 +28,7 @@ use crate::{
 // `NetEffect` is implemented here only under `cfg(test)` — building a
 // `reqwest::Response` from nothing needs `http`, which is a dev-dependency —
 // so the import is gated the same way.
-#[cfg(test)]
+#[cfg(all(test, feature = "net"))]
 use crate::{NetCapability, NetEffect};
 
 #[cfg(feature = "async")]

@@ -20,6 +20,6 @@
     "mediation_drift": 0,
     "bypass_sites": 1,
     "disallow_sites": 1,
-    "effect_stubs": 9
+    "effect_stubs": 10
   }
 }
