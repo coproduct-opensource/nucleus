@@ -1,6 +1,6 @@
 # The pod view relation (cross-pod NI, Phase X-1)
 
-**Status: design, not yet mechanised.** This document produces the relation and
+**Status: partly mechanised (pod registry view, served identity).** This document produces the relation and
 its justification *before* any theorem uses it, which is the whole point of the
 phase. Nelson & Bornholt's survey of verified systems is explicit that the
 view-partitioning relation is the hard, auditable part, and that verified systems
@@ -80,6 +80,14 @@ asserting it. Worth copying that standard.
 
 ## Method
 
+> **The counts in this section are historical (2026-08, 38 fields).**
+> `NodeState` has 55 fields on main at `3a240d912`, and the census is now a
+> compile error: `crates/nucleus-node/src/node_state_census.rs` destructures every
+> field with no `..` and classifies each one, so a new field cannot merge
+> unclassified. It leaves 2 `Unclassified` (`request_proofs`, `authority`) and
+> classes `memory` as tenant-shared (see the C2 note in `north-star.md`). Read
+> that test, not the lists below, for the current classification.
+
 `HostState` is `NodeState`, whose 38 fields were **derived from the source**
 rather than listed by hand — a hand-maintained enumeration standing in for a
 computable one is how a field goes missing:
@@ -124,7 +132,7 @@ state is inert, which is why a cross-pod theorem is tractable at all.
 | `proxy_auth_secret` | **Shared with every proxy.** So it is observable to all pods equally — which is precisely why it cannot distinguish them, and precisely why ownership enforcement had to move node-side (#2199). Not a cross-pod channel; it is a *reason* the node cannot trust the proxy. |
 | `proxy_approval_secret` | As above. |
 
-### Shared-mutable — 8 of 38, and the entire subject
+### Shared-mutable — 8 of 38 in 2026-08 (now 55 fields; see the census), and the entire subject
 
 | Field | Written by | Cross-pod flow? |
 | --- | --- | --- |

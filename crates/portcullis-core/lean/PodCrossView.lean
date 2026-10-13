@@ -15,9 +15,11 @@
     * local-respect (upper bound): anything another pod's action writes is
       EXCLUDED from the view — else the relation is too fine.
 
-  Scope of THIS increment. The design classifies all 38 `NodeState` fields: 27
-  structural (constants, no pod-distinguishing content), 3 secret (never reach a
-  pod), 8 shared-mutable (the subject). It mechanizes the ONE shared-mutable field
+  Scope of THIS increment. The design classified the 38 `NodeState` fields of
+  2026-08: 27 structural (constants, no pod-distinguishing content), 3 secret
+  (never reach a pod), 8 shared-mutable (the subject). `NodeState` now has 55
+  fields; the current classification is the compile-checked census in
+  `crates/nucleus-node/src/node_state_census.rs`, which supersedes these counts. It mechanizes the ONE shared-mutable field
   introduced first — `pods` — "because it is the only shared-mutable field
   mediated by design" (server-side lineage filter, #2199). The structural 27 fold
   to a shared constant (omitted here); the secret 3 are absent by construction

@@ -128,6 +128,8 @@ use pod_reaper::start_pod_reaper;
 mod guest_proof_provision;
 mod memory_provisioning;
 mod net;
+#[cfg(test)]
+mod node_state_census;
 mod posture;
 mod session_mint;
 mod signed_proxy;
