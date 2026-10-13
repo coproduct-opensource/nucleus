@@ -389,70 +389,97 @@ kind = "missing"
 status = "allowlisted"
 tracking = "#3312"
 
+# #3313: the six scoped preflights share one test. Each is driven through the same four cases
+# (no scope, every other operation in scope, a request above the certificate's ceiling, and the
+# in-scope honest case that mints), so a preflight that binds the wrong operation, or refuses
+# everything, is red.
+
 [[obligation]]
 function = "nucleus_tool_proxy::run_gate::preflight_runbash"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/run_gate.rs::every_scoped_preflight_mints_only_for_its_own_in_scope_operation"
+status = "proved"
 tracking = "#3313"
 
 [[obligation]]
 function = "nucleus_tool_proxy::run_gate::preflight_web"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/run_gate.rs::every_scoped_preflight_mints_only_for_its_own_in_scope_operation"
+status = "proved"
 tracking = "#3313"
 
 [[obligation]]
 function = "nucleus_tool_proxy::run_gate::preflight_fs"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/run_gate.rs::every_scoped_preflight_mints_only_for_its_own_in_scope_operation"
+status = "proved"
 tracking = "#3313"
 
 [[obligation]]
 function = "nucleus_tool_proxy::run_gate::preflight_read_fs"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/run_gate.rs::every_scoped_preflight_mints_only_for_its_own_in_scope_operation"
+status = "proved"
 tracking = "#3313"
 
 [[obligation]]
 function = "nucleus_tool_proxy::run_gate::preflight_grep_fs"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/run_gate.rs::every_scoped_preflight_mints_only_for_its_own_in_scope_operation"
+status = "proved"
 tracking = "#3313"
 
 [[obligation]]
 function = "nucleus_tool_proxy::run_gate::preflight_glob_fs"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/run_gate.rs::every_scoped_preflight_mints_only_for_its_own_in_scope_operation"
+status = "proved"
 tracking = "#3313"
+
+# #3314: the pinned anchor, not the token's own key, is the trust decision (refusal), and an
+# issued certificate verifies against it (admission): one row each.
+[[obligation]]
+function = "nucleus_tool_proxy::pod_cert::resolve_pod_certificate"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/pod_cert.rs::the_embedded_root_key_is_not_the_trust_decision"
+status = "proved"
+tracking = "#3314"
 
 [[obligation]]
 function = "nucleus_tool_proxy::pod_cert::resolve_pod_certificate"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/pod_cert.rs::absent_is_none_and_a_valid_certificate_verifies"
+status = "proved"
 tracking = "#3314"
 
+# Exhaustive over every AuthMethod: exactly SPIFFE mTLS binds an identity.
 [[obligation]]
 function = "nucleus_tool_proxy::pod_cert::delegation_authority"
-kind = "missing"
-status = "allowlisted"
+kind = "parity"
+artifact = "crates/nucleus-tool-proxy/src/pod_cert.rs::only_spiffe_mtls_carries_delegation_authority"
+status = "proved"
 tracking = "#3314"
 
+# Still open: needs an AppState fixture to drive the request path.
 [[obligation]]
 function = "nucleus_tool_proxy::pod_cert::evaluate_request_cert"
 kind = "missing"
 status = "allowlisted"
 tracking = "#3314"
 
+# All 32 input combinations pinned against the precedence table.
 [[obligation]]
 function = "nucleus_tool_proxy::auth::select_auth_tier"
-kind = "missing"
-status = "allowlisted"
+kind = "parity"
+artifact = "crates/nucleus-tool-proxy/src/auth.rs::every_combination_is_pinned"
+status = "proved"
 tracking = "#3315"
 
 [[obligation]]
 function = "nucleus_tool_proxy::session_token::VerifiedSessionToken::verify"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-tool-proxy/src/session_token.rs::verify_admits_only_the_honest_token_for_this_pod"
+status = "proved"
 tracking = "#3316"
 
 [[obligation]]
@@ -469,39 +496,73 @@ tracking = "#3317"
 
 [[obligation]]
 function = "nucleus_envelope::verify::verify_bundle"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-envelope/tests/integration.rs::verify_bundle_admits_the_anchored_bundle_and_refuses_each_forgery"
+status = "proved"
 tracking = "#3318"
+
+# Receipt::verify, one row per binding it checks: the signature (an honest key verifies, a
+# small-order forgery does not), the canonical body, and the version the signature covers.
+[[obligation]]
+function = "nucleus_receipt::Receipt::verify"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-receipt/src/lib.rs::small_order_key_is_rejected_by_verify_strict"
+status = "proved"
+tracking = "#3319"
 
 [[obligation]]
 function = "nucleus_receipt::Receipt::verify"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-receipt/src/lib.rs::tampered_session_fails_verify"
+status = "proved"
+tracking = "#3319"
+
+[[obligation]]
+function = "nucleus_receipt::Receipt::verify"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-receipt/src/lib.rs::a_version_other_than_the_signed_one_is_refused"
+status = "proved"
 tracking = "#3319"
 
 [[obligation]]
 function = "nucleus_lineage::verify::verify_chain"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-lineage/tests/verify_chain_refuses_every_break.rs::verify_chain_admits_the_signed_chain_and_refuses_every_break"
+status = "proved"
 tracking = "#3320"
+
+# #3321: an unlogged binding builds no store and the honest pipeline does; one unproven binding
+# federates nothing, its proven sibling included.
+[[obligation]]
+function = "nucleus_trust_registry::federation::build_federation_store"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-trust-registry/tests/enrollment_e2e.rs::neg_store_refuses_binding_absent_from_cosigned_log"
+status = "proved"
+tracking = "#3321"
 
 [[obligation]]
 function = "nucleus_trust_registry::federation::build_federation_store"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-trust-registry/tests/enrollment_e2e.rs::positive_full_pipeline_enrolls_and_validates_svid"
+status = "proved"
 tracking = "#3321"
 
 [[obligation]]
 function = "nucleus_trust_registry::federation::apply_to_store"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus-trust-registry/tests/enrollment_e2e.rs::neg_one_unproven_binding_federates_nothing"
+status = "proved"
 tracking = "#3321"
 
 [[obligation]]
 function = "nucleus::command::Executor::spawn_checked"
-kind = "missing"
-status = "allowlisted"
+kind = "typestate-fault-injection"
+artifact = "crates/nucleus/src/tests/command.rs::spawn_checked_refuses_an_unconfined_spawn_and_reverts_a_watched_write"
+status = "proved"
 tracking = "#3322"
+
+# Still open: the function remounts the live root, so a test that calls it either does nothing
+# (non-Linux, unprivileged) or makes the test host read-only; it needs an injectable mount seam.
 
 [[obligation]]
 function = "nucleus_guest_init::remount_root_ro"
