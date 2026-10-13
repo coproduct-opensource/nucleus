@@ -92,6 +92,7 @@ pub mod c2pa_assertions;
 pub mod c2pa_manifest;
 #[cfg(feature = "c2pa-manifest")]
 pub mod c2pa_signer;
+pub mod canonical;
 pub mod capability_traits;
 pub mod category;
 pub mod certchain;

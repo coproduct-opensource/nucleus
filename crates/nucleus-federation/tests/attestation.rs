@@ -69,6 +69,7 @@ fn source() -> String {
 
 fn anchors(pinned: bool) -> AnchorPolicy {
     AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: if pinned {
             vec![OperatorPin {

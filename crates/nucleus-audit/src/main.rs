@@ -6,6 +6,7 @@ mod sarif;
 mod scan_agent_settings;
 mod scan_mcp_config;
 mod scan_podspec;
+mod signed_chain;
 mod suggest;
 mod tool_pattern;
 mod verify_art12;
@@ -43,6 +44,8 @@ enum Command {
     HostEffects(verify_host_effects::Command),
     #[command(flatten)]
     Execution(verify_execution::Command),
+    #[command(flatten)]
+    Art12(verify_art12::Command),
     /// Verify a tool-proxy JSONL audit log: Ed25519 signatures under a pinned
     /// signer and the hash chain (#3293). Legacy shared-secret records verify
     /// only against a non-empty secret.
@@ -253,38 +256,6 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
     },
-    /// Verify an EU AI Act Article 12 record-keeping log.
-    ///
-    /// Checks sequence continuity, hash chaining, and (with a secret) the HMAC
-    /// over each record's canonical preimage. Prints what was established AND
-    /// what was not — a chain proves no party lacking the secret altered the
-    /// file, not that the log is complete or that its signer is trustworthy.
-    #[command(mut_args = |a| a.hide_env_values(true))]
-    VerifyArt12 {
-        /// Path to the JSONL Article 12 log.
-        #[arg(long)]
-        log: PathBuf,
-        /// Signing secret. Without it, only the hash chain is checked.
-        #[arg(long, env = "NUCLEUS_ART12_SECRET")]
-        secret: Option<String>,
-        /// Emit the report as JSON instead of text.
-        #[arg(long)]
-        json: bool,
-        /// Executor attestation JSON, as sent with the session-complete receipt.
-        ///
-        /// Supplying it (with --executor-pubkey) is what turns "no third party
-        /// altered this file" into evidence about the pod: the executor key
-        /// lives on the node and the pod never holds it.
-        #[arg(long, requires = "executor_pubkey")]
-        attestation: Option<PathBuf>,
-        /// The executor's Ed25519 public key, hex-encoded (32 bytes).
-        #[arg(long, requires = "attestation")]
-        executor_pubkey: Option<String>,
-        /// Require every record to be decided under this certificate fingerprint
-        /// (hex): the pod's `fingerprint` in the node's `authority.json` (#2437).
-        #[arg(long)]
-        authority_fingerprint: Option<String>,
-    },
     /// Verify a log of signed MediationReceipts and render a scoreboard.
     ///
     /// Distinct from `verify-receipts` (the receipt-hook chain): a
@@ -358,21 +329,21 @@ pub enum AuditError {
     TornTail { line: usize, verified: usize },
     #[error("invalid audit log at line {line}: {message}")]
     Invalid { line: usize, message: String },
-    /// A legacy (pre-#3293) record, and no key that could authenticate it.
+    /// A legacy record (an audit record from before #3293, an Article 12
+    /// record from before #3309), and no key that could authenticate it.
     #[error(
-        "line {line} is a legacy shared-secret MAC record (written before #3293) and {why}. \
-         On vsock and Unix-socket pods that MAC was keyed with an EMPTY secret, which anyone \
-         can compute, so it is refused rather than reported as verified"
+        "line {line} is a legacy shared-secret MAC record (written before the log was signed, \
+         #3293/#3309) and {why}. Such a MAC was keyed with an EMPTY secret on vsock and \
+         Unix-socket pods, or with one derived from the session id, which anyone can compute, \
+         so it is refused rather than reported as verified"
     )]
     LegacyMacUnkeyed { line: usize, why: &'static str },
     /// A signed record, and nothing the caller trusts that names its signer.
     #[error(
-        "line {line} is signed, but nothing pins its signer: pass --signer-pubkey (the \
-         NUCLEUS-AUDIT-SIGNER key the proxy printed at boot) or --tail-hash (the pod \
-         receipt's audit_tail_hash). A signature under a key the log names for itself proves \
-         nothing about who wrote it"
+        "line {line} is signed, but nothing pins its signer: pass {how}. A signature under a \
+         key the log names for itself proves nothing about who wrote it"
     )]
-    UnpinnedSigner { line: usize },
+    UnpinnedSigner { line: usize, how: &'static str },
     #[error("error: {0}")]
     Backend(String),
 }
@@ -383,6 +354,7 @@ fn main() -> Result<(), AuditError> {
     match cli.command {
         Command::HostEffects(command) => command.run()?,
         Command::Execution(command) => command.run()?,
+        Command::Art12(command) => command.run()?,
         Command::Verify {
             log,
             signer_pubkeys,
@@ -396,7 +368,7 @@ fn main() -> Result<(), AuditError> {
                 secret_file.as_deref(),
                 auth_secret.as_deref(),
             )?;
-            let pins = verify_tool_proxy::Pins::parse(&signer_pubkeys, tail_hash, legacy)?;
+            let pins = verify_tool_proxy::pins(&signer_pubkeys, tail_hash, legacy)?;
             verify_tool_proxy_log(&log, &pins)?.print();
         }
         Command::VerifyChain { log, secret } => {
@@ -671,79 +643,6 @@ fn main() -> Result<(), AuditError> {
                 .unwrap_or(Severity::Info);
             if worst <= Severity::High {
                 std::process::exit(1);
-            }
-        }
-        Command::VerifyArt12 {
-            log,
-            secret,
-            json,
-            attestation,
-            executor_pubkey,
-            authority_fingerprint,
-        } => {
-            let mut report =
-                verify_art12::verify_art12_log(&log, secret.as_ref().map(|s| s.as_bytes()))?;
-            verify_art12::apply_authority_requirement(
-                &mut report,
-                authority_fingerprint.as_deref(),
-            )?;
-
-            if let (Some(att_path), Some(pubkey_hex)) = (attestation, executor_pubkey) {
-                let att: portcullis::art12_record::Art12Attestation =
-                    serde_json::from_str(&std::fs::read_to_string(&att_path)?)
-                        .map_err(|e| AuditError::Json { line: 0, source: e })?;
-                let key = verify_art12::executor_pubkey_from_hex(&pubkey_hex)?;
-                verify_art12::check_attestation(&att, &report.chain_head, &key)?;
-                report.attestation_checked = true;
-                report
-                    .limitations
-                    .retain(|l| !l.contains("holder of the secret"));
-                report.limitations.push(
-                    "The executor attestation binds this log's HEAD, not its content: a pod that \
-                     recorded nothing would export a validly signed empty log."
-                        .to_string(),
-                );
-            }
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report)
-                        .map_err(|e| AuditError::Json { line: 0, source: e })?
-                );
-            } else {
-                println!("Article 12 log: {}", log.display());
-                println!("  records:            {}", report.records);
-                println!("  chain head:         {}", report.chain_head);
-                println!(
-                    "  signatures checked: {}",
-                    if report.signatures_checked {
-                        "yes"
-                    } else {
-                        "NO"
-                    }
-                );
-                println!(
-                    "  identified actors:  {} of {}",
-                    report.identified_actors, report.records
-                );
-                println!(
-                    "  executor attested:  {}",
-                    if report.attestation_checked {
-                        "yes"
-                    } else {
-                        "NO"
-                    }
-                );
-                for (verdict, n) in &report.verdicts {
-                    println!("  verdict {verdict:<18} {n}");
-                }
-                // Printed, not appended as a footnote a reader may skip: the
-                // point of the list is that "verified" is narrower than it
-                // sounds.
-                println!("\n  This run did NOT establish:");
-                for l in &report.limitations {
-                    println!("    - {l}");
-                }
             }
         }
         Command::VerifyMediationReceipts {

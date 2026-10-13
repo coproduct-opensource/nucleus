@@ -271,44 +271,29 @@ pub(crate) fn reject_workspace_path(path: &Path, work_dir: &Path) -> Result<(), 
 /// Open the Article 12 log for a session, refusing a workspace-local path.
 ///
 /// Lives here rather than in `main.rs` so the startup sequence is one call: the
-/// path check, the secret choice and the genesis anchor are a single decision
-/// about evidence, and splitting them across a long `main` is how one of them
-/// gets edited without the others.
+/// path check, the signer and the genesis anchor are a single decision about
+/// evidence, and splitting them across a long `main` is how one of them gets
+/// edited without the others.
 ///
-/// An absent operator key gets a fresh process-private key from the OS RNG.
-/// Explicit empty keys are refused. No key is derived from public session data.
-/// Asymmetric signed-record migration remains tracked in #3309.
+/// Records are signed by `signer`, the audit log's own key (#3309): generated
+/// from the OS RNG at startup, held only in this process's memory, and printed
+/// once as `NUCLEUS-AUDIT-SIGNER`. No configured secret keys this log any more,
+/// so there is no MAC key to leave empty, derive from the session id, or share
+/// with the workload.
 pub(crate) fn open_log(
     path: &Path,
-    audit_secret: Option<&str>,
+    signer: Arc<crate::audit_log::AuditSigner>,
     work_dir: &Path,
     session_id: &str,
 ) -> Result<Arc<Art12Log>, String> {
     reject_workspace_path(path, work_dir).map_err(|e| e.to_string())?;
-    let secret = session_mac_key(audit_secret)?;
     // A dedicated genesis string rather than a borrowed hash: the audit log is
     // constructed later in startup, and reaching for a value that does not exist
     // yet is how an anchor silently becomes the empty string.
     let genesis = format!("art12-genesis:{session_id}");
-    let log = Art12Log::open(path, secret, genesis, false)
+    let log = Art12Log::open(path, signer, genesis, false)
         .map_err(|e| format!("failed to open Article 12 log: {e:?}"))?;
     Ok(Arc::new(log))
-}
-
-/// One key decision for startup; no public session identifier is an input.
-fn session_mac_key(configured: Option<&str>) -> Result<Vec<u8>, String> {
-    match configured {
-        Some("") => Err("Article 12 logging refuses an empty audit secret".into()),
-        Some(secret) => Ok(secret.as_bytes().to_vec()),
-        None => {
-            use ring::rand::SecureRandom;
-            let mut secret = vec![0u8; 32];
-            ring::rand::SystemRandom::new()
-                .fill(&mut secret)
-                .map_err(|_| "OS RNG failed to generate Article 12 MAC key".to_string())?;
-            Ok(secret)
-        }
-    }
 }
 
 /// Derive where the full signed MediationReceipts are persisted for offline
@@ -502,6 +487,8 @@ impl Art12Sink {
             prev_hash: String::new(),
             hash: String::new(),
             signature: String::new(),
+            sig_alg: None,
+            signer: None,
 
             timestamp_unix: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -709,45 +696,32 @@ mod tests {
         )
     }
 
+    /// A secret-free guest opens the log with no key configured at all: the
+    /// signer is the audit log's, and records name it.
     #[test]
-    fn startup_refuses_empty_keys_and_supports_secret_free_guests() {
+    fn startup_signs_with_the_audit_signer_and_needs_no_secret() {
         let dir = TempDir::new().unwrap();
         let workspace = dir.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let path = dir.path().join("private/art12.jsonl");
-        let result = super::open_log(&path, Some(""), &workspace, "session-123");
-        assert!(matches!(result, Err(ref error) if error.contains("empty audit secret")));
-        assert!(!path.exists(), "refusal must not create a log");
-        for (name, secret) in [("guest", None), ("operator", Some("operator-test-key"))] {
-            let path = dir.path().join(format!("{name}.jsonl"));
-            let log = super::open_log(&path, secret, &workspace, "session-123").unwrap();
-            assert_eq!(log.head().unwrap(), ("art12-genesis:session-123".into(), 0));
-            assert!(path.is_file());
-        }
-    }
-
-    #[test]
-    fn unprovisioned_sessions_have_independent_private_mac_keys() {
-        let first = super::session_mac_key(None).unwrap();
-        let second = super::session_mac_key(None).unwrap();
-        assert_eq!(first.len(), 32);
-        assert_eq!(second.len(), 32);
-        assert_ne!(first, second);
-        assert_ne!(
-            crate::auth::sign_message(&first, b"record"),
-            crate::auth::sign_message(&second, b"record")
-        );
-        assert_eq!(
-            super::session_mac_key(Some("operator-key")).unwrap(),
-            b"operator-key"
-        );
+        let path = dir.path().join("guest.jsonl");
+        let signer = Arc::new(crate::audit_log::AuditSigner::for_test(3));
+        let public = signer.public_hex().to_string();
+        let log = super::open_log(&path, signer, &workspace, "session-123").unwrap();
+        assert_eq!(log.head().unwrap(), ("art12-genesis:session-123".into(), 0));
+        assert!(path.is_file());
+        let sink = sink_with(log);
+        sink.record(ctx(VerdictOutcome::Allow, &[])).unwrap();
+        let line = std::fs::read_to_string(&path).unwrap();
+        let rec: Art12Record = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(rec.signer.as_deref(), Some(public.as_str()));
+        assert_eq!(rec.chain_hash().unwrap(), rec.hash);
     }
 
     fn open_log(dir: &TempDir) -> Arc<Art12Log> {
         Arc::new(
             Art12Log::open(
                 &dir.path().join("a12.jsonl"),
-                b"k".to_vec(),
+                Arc::new(crate::audit_log::AuditSigner::for_test(4)),
                 "g".into(),
                 false,
             )
@@ -1059,9 +1033,14 @@ mod tests {
             rec.extensions.get(EXT_AUTHORITY_ROOT).map(String::as_str),
             Some("spiffe://td/ns/system/sa/cli")
         );
+        let signed = rec
+            .clone()
+            .to_be_signed_by("ab".repeat(32))
+            .signed_bytes()
+            .unwrap();
+        let fingerprint = authority.fingerprint_hex.as_bytes();
         assert!(
-            rec.canonical_preimage()
-                .contains(&authority.fingerprint_hex),
+            signed.windows(fingerprint.len()).any(|w| w == fingerprint),
             "the binding is inside the signed preimage"
         );
 

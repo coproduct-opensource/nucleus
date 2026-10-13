@@ -122,6 +122,9 @@ x509-parser = { workspace = true }
 # `nucleus image` tests: an in-process fake registry, and layers built in-test.
 axum = { workspace = true }
 tar = { version = "0.4", default-features = false }
+# The live boot's software TPM (live_boot_evidence/software_tpm.rs): the same
+# attester the node quotes with, to measure into the swtpm and read its AK.
+nucleus-node-evidence = { path = "../nucleus-node-evidence", features = ["attester"] }
 
 [lints]
 workspace = true

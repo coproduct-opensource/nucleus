@@ -74,6 +74,7 @@ fn reference() -> ReferenceManifest {
 fn pin_for(ak_public: &[u8]) -> AnchorPolicy {
     let ak = AkPublic::from_tpm2b_public(ak_public).unwrap();
     AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![OperatorPin {
             source: SOURCE.into(),
@@ -204,4 +205,85 @@ fn an_nv_template_yields_the_same_ak_as_the_template_itself() {
         pcrs.keys().copied().collect::<BTreeSet<_>>(),
         default_pcrs()
     );
+}
+
+/// The software measurer standing in for the kernel's IMA: what it measured
+/// into PCR 10 replays, a reference naming those bytes is `Attested` under a
+/// software-TPM pin and labelled so, and a reference naming other bytes is
+/// `Contested`. PCR 10 must start at zero, so this needs a FRESH swtpm.
+#[test]
+#[ignore = "needs a FRESH swtpm at NUCLEUS_SWTPM_ADDR (PCR 10 never extended)"]
+fn software_measurements_replay_and_are_appraised_against_the_reference() {
+    use nucleus_node_evidence::attester::measure_into_pcr10;
+    use nucleus_node_evidence::{ImaReference, ImaScope};
+
+    let dir = std::env::temp_dir().join(format!("swtpm-ima-{}", std::process::id()));
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let node = bin.join("nucleus-node");
+    std::fs::write(&node, b"the node binary").unwrap();
+    let logs = dir.join("logs");
+    let mut t = tpm();
+    let measured = measure_into_pcr10(&mut t, &logs, std::slice::from_ref(&node)).unwrap();
+    assert_eq!(measured.len(), 1);
+
+    let mut a = Attester::new(
+        t,
+        AkTemplate::DefaultEccP256,
+        [10u8].into_iter().collect::<BTreeSet<_>>(),
+        LogSources::under(&logs),
+        AkAnchorClaim::SoftwareTpm {
+            source: SOURCE.into(),
+        },
+    );
+    let ak_public = a.ak_public().unwrap();
+    let nonce = Nonce::new(vec![0x79; 32]).unwrap();
+    let e = a
+        .attest(
+            &binding(),
+            Freshness::Challenge {
+                eat_nonce: nonce.clone(),
+            },
+        )
+        .unwrap();
+    assert!(matches!(e.ima_log, ImaLog::Attached { .. }));
+    let label = node.to_str().unwrap().to_string();
+    let with_digest = |digest: String| {
+        let mut r = reference();
+        r.reference_values.ima = Expect::Required(ImaReference {
+            scope: ImaScope::PathPrefixes([bin.to_str().unwrap().to_string()].into()),
+            allowlist: [(label.clone(), [digest].into())].into(),
+            required: [label.clone()].into(),
+        });
+        r
+    };
+    let b = binding();
+    let mut anchors = pin_for(&ak_public);
+    anchors.software_tpm_pins = std::mem::take(&mut anchors.operator_pins);
+    let judge = |r: &ReferenceManifest| {
+        appraise(
+            &e,
+            &AppraisalPolicy {
+                expected_binding: &b,
+                freshness: FreshnessExpectation::Challenge {
+                    sent: nonce.clone(),
+                },
+                reference: r,
+                anchors: &anchors,
+                now: 1_791_000_000,
+            },
+        )
+        .unwrap()
+    };
+    let matching = judge(&with_digest(measured[0].digest.clone()));
+    assert_eq!(matching.tier(), &Tier::Attested);
+    assert_eq!(
+        matching.anchor(),
+        &AkAnchor::SoftwareTpm {
+            source: SOURCE.into()
+        }
+    );
+    let other = judge(&with_digest(hex::encode([0u8; 32])));
+    assert_eq!(other.tier(), &Tier::Contested);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -21,19 +21,20 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use nucleus_spec::PodSpec;
 use portcullis::kernel::{Decision, DenyReason, Kernel, Verdict};
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use portcullis_core::flow::NodeKind;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use spec::SpecSource;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use transport::{ProxyTransport, TcpAuth, TransportConfig};
 use uuid::Uuid;
 
+mod spec;
 mod transport;
 
 #[derive(Parser, Debug)]
@@ -59,9 +60,16 @@ struct Args {
     /// Actor this bridge names (`x-nucleus-actor`) for a signing upstream.
     #[arg(long, env = "NUCLEUS_MCP_ACTOR", default_value = "nucleus-mcp")]
     actor: String,
-    /// Optional pod spec for filtering visible tools.
+    /// The pod spec whose policy decides which tools are offered and what the
+    /// kernel allows. Required, as a file here or as a document in
+    /// `--spec-yaml`: there is no default policy (ADR 0007 B-2).
     #[arg(long, env = "NUCLEUS_MCP_SPEC")]
     spec: Option<PathBuf>,
+    /// The pod spec as a YAML document rather than a path, for a caller with
+    /// no file the bridge can read (an agent in a pod, whose uid may not read
+    /// the guest's own spec). Exclusive with `--spec`.
+    #[arg(long, env = "NUCLEUS_MCP_SPEC_YAML")]
+    spec_yaml: Option<String>,
     /// RETIRED with `--auth-secret` (#2446 step 2): a bridge that holds an
     /// approval secret lets the agent behind it approve its own operations.
     #[arg(long, env = "NUCLEUS_MCP_APPROVAL_SECRET")]
@@ -78,10 +86,34 @@ struct Args {
     /// A summary line is written on session close.
     #[arg(long, env = "NUCLEUS_MCP_KERNEL_TRACE")]
     kernel_trace: Option<PathBuf>,
-    /// Sandbox token for authenticating with the tool proxy.
-    /// Proves this MCP bridge is running inside a managed sandbox.
-    #[arg(long, env = "NUCLEUS_MCP_SANDBOX_TOKEN")]
-    sandbox_token: Option<String>,
+}
+
+/// Environment variables of flags this bridge no longer has, each with why.
+///
+/// Once a flag is deleted, clap refuses it on the command line by name
+/// (`unexpected argument '--sandbox-token'`). Its variable is another matter:
+/// clap never looks at an environment variable it was not told about, so a
+/// caller still setting one would be ignored silently and believe the bridge
+/// was carrying it. Each is refused at startup by name instead (ADR 0007 B-2,
+/// fail closed; A-1, "not read" is not "read and fine").
+const RETIRED_ENV: &[(&str, &str)] = &[(
+    "NUCLEUS_MCP_SANDBOX_TOKEN",
+    "--sandbox-token was retired with the tool-proxy's tier-3 orchestrator token (#2446 \
+     step 3c); this bridge never sent it, and nothing mints one",
+)];
+
+/// Refuses the first retired variable that `is_set` reports, naming it.
+///
+/// # Errors
+///
+/// When any variable in [`RETIRED_ENV`] is set, empty or not.
+fn refuse_retired_env(is_set: impl Fn(&str) -> bool) -> Result<()> {
+    for (var, why) in RETIRED_ENV {
+        if is_set(var) {
+            anyhow::bail!("{var} is set, but {why}. Unset {var}.");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -695,11 +727,9 @@ fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let args = Args::parse();
-    let policy = match args.spec.as_ref() {
-        Some(path) => Some(load_policy(path)?),
-        None => None,
-    };
-    let tools = build_tool_defs(policy.as_ref());
+    refuse_retired_env(|var| std::env::var_os(var).is_some())?;
+    let policy = SpecSource::from_args(&args)?.load_policy()?;
+    let tools = build_tool_defs(&policy);
     let tool_proxy_url = std::env::var("NUCLEUS_TOOL_PROXY_URL").ok();
     let transport = ProxyTransport::resolve(&TransportConfig {
         proxy_url: args.proxy_url.as_deref(),
@@ -709,11 +739,9 @@ fn main() -> Result<()> {
         signed_upstream: args.signed_upstream,
     })?;
     let client = ProxyClient::new(transport, Some(args.actor.clone()), args.session_id.clone());
-    // Initialize the kernel decision engine.
-    // If a policy is loaded (--spec), the kernel enforces it with monotone session
-    // state. Otherwise, use a permissive lattice (proxy handles enforcement).
-    let kernel_lattice = policy.clone().unwrap_or_else(PermissionLattice::permissive);
-    let mut kernel = Kernel::new(kernel_lattice);
+    // The kernel enforces the spec's policy with monotone session state. There
+    // is no other lattice it could start from: absence was refused above.
+    let mut kernel = Kernel::new(policy);
 
     // Track the last flow graph node ID for causal chaining.
     // Each allowed operation produces an observation node; the next operation's
@@ -817,52 +845,23 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn load_policy(path: &Path) -> Result<PermissionLattice> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read pod spec from {}", path.display()))?;
-    let spec: PodSpec = nucleus_yaml::from_str(&contents)
-        .with_context(|| format!("failed to parse pod spec {}", path.display()))?;
-    let policy = spec
-        .spec
-        .resolve_policy()
-        .map_err(|e| anyhow!("policy resolve failed: {e}"))?;
-    Ok(policy)
-}
-
-fn build_tool_defs(policy: Option<&PermissionLattice>) -> Vec<ToolDefinition> {
+/// The tools `policy` grants, and only those. It takes the lattice, not an
+/// `Option`: there is no "no policy" to default from (ADR 0007 B-2).
+fn build_tool_defs(policy: &PermissionLattice) -> Vec<ToolDefinition> {
     let mut tools = Vec::new();
-    let allow_read = policy
-        .map(|p| p.capabilities.read_files >= CapabilityLevel::LowRisk)
-        .unwrap_or(true);
-    let allow_write = policy
-        .map(|p| {
-            p.capabilities.write_files >= CapabilityLevel::LowRisk
-                || p.capabilities.edit_files >= CapabilityLevel::LowRisk
-        })
-        .unwrap_or(true);
-    let allow_run = policy
-        .map(|p| {
-            p.capabilities.run_bash >= CapabilityLevel::LowRisk
-                || p.capabilities.git_commit >= CapabilityLevel::LowRisk
-                || p.capabilities.git_push >= CapabilityLevel::LowRisk
-                || p.capabilities.create_pr >= CapabilityLevel::LowRisk
-        })
-        .unwrap_or(true);
-    let allow_web_fetch = policy
-        .map(|p| p.capabilities.web_fetch >= CapabilityLevel::LowRisk)
-        .unwrap_or(true);
-    let allow_glob = policy
-        .map(|p| p.capabilities.glob_search >= CapabilityLevel::LowRisk)
-        .unwrap_or(true);
-    let allow_grep = policy
-        .map(|p| p.capabilities.grep_search >= CapabilityLevel::LowRisk)
-        .unwrap_or(true);
-    let allow_web_search = policy
-        .map(|p| p.capabilities.web_search >= CapabilityLevel::LowRisk)
-        .unwrap_or(false);
-    let allow_manage_pods = policy
-        .map(|p| p.capabilities.manage_pods >= CapabilityLevel::LowRisk)
-        .unwrap_or(false);
+    let caps = &policy.capabilities;
+    let allow_read = caps.read_files >= CapabilityLevel::LowRisk;
+    let allow_write =
+        caps.write_files >= CapabilityLevel::LowRisk || caps.edit_files >= CapabilityLevel::LowRisk;
+    let allow_run = caps.run_bash >= CapabilityLevel::LowRisk
+        || caps.git_commit >= CapabilityLevel::LowRisk
+        || caps.git_push >= CapabilityLevel::LowRisk
+        || caps.create_pr >= CapabilityLevel::LowRisk;
+    let allow_web_fetch = caps.web_fetch >= CapabilityLevel::LowRisk;
+    let allow_glob = caps.glob_search >= CapabilityLevel::LowRisk;
+    let allow_grep = caps.grep_search >= CapabilityLevel::LowRisk;
+    let allow_web_search = caps.web_search >= CapabilityLevel::LowRisk;
+    let allow_manage_pods = caps.manage_pods >= CapabilityLevel::LowRisk;
 
     if allow_read {
         tools.push(ToolDefinition {
@@ -1447,6 +1446,34 @@ fn write_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: &
 mod tests {
     use super::*;
 
+    /// #2446 step 3c: `--sandbox-token` is gone, so clap refuses the flag by
+    /// name. Red before: the flag parsed into a field nothing read.
+    #[test]
+    fn the_sandbox_token_flag_is_refused_by_name() {
+        let err = Args::try_parse_from([
+            "nucleus-mcp",
+            "--proxy-url",
+            "unix:///run/nucleus-door/workload.sock",
+            "--sandbox-token",
+            "test-token-123",
+        ])
+        .expect_err("--sandbox-token is retired");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(err.to_string().contains("--sandbox-token"), "{err}");
+    }
+
+    /// The flag's variable, which clap no longer looks at, is refused by name
+    /// when set at all (an empty value included), and nothing else is.
+    #[test]
+    fn the_sandbox_token_variable_is_refused_by_name() {
+        let err = refuse_retired_env(|var| var == "NUCLEUS_MCP_SANDBOX_TOKEN")
+            .expect_err("a retired variable is refused")
+            .to_string();
+        assert!(err.contains("NUCLEUS_MCP_SANDBOX_TOKEN"), "{err}");
+        assert!(err.contains("#2446"), "{err}");
+        refuse_retired_env(|var| var == "NUCLEUS_MCP_PROXY_URL").expect("a live variable");
+    }
+
     /// Read one whole HTTP/1.1 request (head and `content-length` body) from
     /// `stream`, answer it with `status` and a JSON `body`, and return the
     /// request as text so a test can see what was sent.
@@ -1746,21 +1773,6 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tool_defs_permissive() {
-        let tools = build_tool_defs(None);
-        // No policy = defaults: read, write, run, web_fetch, glob, grep (web_search defaults off)
-        assert_eq!(tools.len(), 6);
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"read"));
-        assert!(names.contains(&"write"));
-        assert!(names.contains(&"run"));
-        assert!(names.contains(&"web_fetch"));
-        assert!(names.contains(&"glob"));
-        assert!(names.contains(&"grep"));
-        assert!(!names.contains(&"web_search")); // defaults to false
-    }
-
-    #[test]
     fn test_write_result_format() {
         let mut output = Vec::new();
         write_result(&mut output, Some(json!(1)), json!({"status": "ok"})).unwrap();
@@ -1837,7 +1849,7 @@ mod tests {
     #[test]
     fn test_build_tool_defs_orchestrator() {
         let policy = PermissionLattice::orchestrator();
-        let tools = build_tool_defs(Some(&policy));
+        let tools = build_tool_defs(&policy);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         // Orchestrator has read/glob/grep (LowRisk) but no write/run/web
         assert!(names.contains(&"read"));
@@ -1853,20 +1865,12 @@ mod tests {
     }
 
     #[test]
-    fn test_build_tool_defs_no_pod_mgmt_by_default() {
-        // Without a policy, manage_pods defaults to false
-        let tools = build_tool_defs(None);
-        let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
-        assert!(!names.contains(&"create_pod"));
-    }
-
-    #[test]
     fn test_build_tool_defs_search_tools_with_policy() {
         // Restrictive already has read/glob/grep at Always, so add web_search
         let mut policy = PermissionLattice::restrictive();
         policy.capabilities.web_search = CapabilityLevel::LowRisk;
 
-        let tools = build_tool_defs(Some(&policy));
+        let tools = build_tool_defs(&policy);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(names.contains(&"glob"));
         assert!(names.contains(&"grep"));
@@ -1885,7 +1889,7 @@ mod tests {
         policy.capabilities.glob_search = CapabilityLevel::Never;
         policy.capabilities.grep_search = CapabilityLevel::Never;
         policy.capabilities.web_search = CapabilityLevel::Never;
-        let tools = build_tool_defs(Some(&policy));
+        let tools = build_tool_defs(&policy);
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
         assert!(!names.contains(&"glob"));
         assert!(!names.contains(&"grep"));

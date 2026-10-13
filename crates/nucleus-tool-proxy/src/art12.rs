@@ -36,12 +36,18 @@
 //!
 //! # What tamper-evidence here does and does not mean
 //!
-//! The chain is HMAC'd with the audit secret. That detects modification by any
-//! party who does not hold the secret. It does **not** protect against a holder
-//! of the secret rewriting history — only a signature over the chain head by a
-//! key the pod does not possess can do that, which is why the export attaches
-//! one. Both properties are asserted by tests, including the one that
-//! deliberately demonstrates the HMAC limit.
+//! Each record is signed with Ed25519 by the proxy's audit signer
+//! ([`AuditSigner`]), the key that signs its audit log (#3293), and names that
+//! key inside its signed bytes (#3309). The key is generated from the OS RNG at
+//! startup and held only in this process's memory, so a party that does not
+//! hold it, including the workload wherever the runtime drops its uid, cannot
+//! forge or alter a record. It used to be an HMAC under the audit secret, and
+//! with no operator secret that key was derived from the public session id
+//! (before #3376), so anyone could compute it.
+//!
+//! It does **not** protect against the key's holder (this process, or root in
+//! its pod) rewriting history: only a signature over the chain head by a key the
+//! pod does not possess can do that, which is why the export attaches one.
 //!
 //! # Wired
 //!
@@ -59,18 +65,23 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 // The record TYPE and its canonical preimage live in `portcullis` so the writer
 // here and the verifier in `nucleus-audit` share one definition.
 use portcullis::art12_record::{ART12_SCHEMA_VERSION, Art12Record};
+use portcullis::signed_record::FormError;
+
+use crate::audit_log::AuditSigner;
 
 /// What went wrong writing a record.
 #[derive(Debug)]
 pub enum Art12Error {
     /// The record could not be serialized.
     Serialize(serde_json::Error),
+    /// The record could not be signed (it was in neither signed-record form).
+    Sign(FormError),
     /// The record could not be written or flushed.
     Io(std::io::Error),
     /// The log's mutex was poisoned by a panic in another thread.
@@ -81,6 +92,7 @@ impl std::fmt::Display for Art12Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Art12Error::Serialize(e) => write!(f, "serialize art12 record: {e}"),
+            Art12Error::Sign(e) => write!(f, "sign art12 record: {e}"),
             Art12Error::Io(e) => write!(f, "write art12 record: {e}"),
             Art12Error::Poisoned => write!(f, "art12 log mutex poisoned"),
         }
@@ -92,7 +104,8 @@ impl std::error::Error for Art12Error {}
 /// The synchronous, chained writer.
 pub struct Art12Log {
     inner: Mutex<Inner>,
-    secret: Vec<u8>,
+    /// The audit log's signer, shared, never copied (#3309).
+    signer: Arc<AuditSigner>,
     /// Latched once a write fails. Consulted by `preflight` so the NEXT
     /// operation is denied before it executes — bounding evidence loss without
     /// failing calls whose effect already happened.
@@ -120,9 +133,9 @@ impl Art12Log {
         clippy::disallowed_methods,
         reason = "#1216: writes the proxy's own Article 12 record, not agent-directed I/O. ADR 0007 G-1: a record log with ONE writer serialised by a mutex; a candidate for RecordLog"
     )]
-    pub fn open(
+    pub(crate) fn open(
         path: &Path,
-        secret: Vec<u8>,
+        signer: Arc<AuditSigner>,
         genesis_prev_hash: String,
         console_mirror: bool,
     ) -> Result<Self, Art12Error> {
@@ -142,7 +155,7 @@ impl Art12Log {
                 last_hash: genesis_prev_hash,
                 seq: 0,
             }),
-            secret,
+            signer,
             degraded: AtomicBool::new(false),
             dropped: AtomicU64::new(0),
             console_mirror,
@@ -197,9 +210,9 @@ impl Art12Log {
     /// identity a [`MediationReceipt`](portcullis::mediation_receipt::MediationReceipt)
     /// binds as its `art12_record_hash`. Returned from under the same lock that
     /// assigned it, so it is race-free with concurrent appends.
-    pub fn append(&self, mut draft: Art12Record) -> Result<(String, u64), Art12Error> {
-        match self.append_inner(&mut draft) {
-            Ok(()) => Ok((draft.hash, draft.seq)),
+    pub fn append(&self, draft: Art12Record) -> Result<(String, u64), Art12Error> {
+        match self.append_inner(draft) {
+            Ok(record) => Ok((record.hash, record.seq)),
             Err(e) => {
                 self.degraded.store(true, Ordering::Release);
                 self.dropped.fetch_add(1, Ordering::AcqRel);
@@ -208,16 +221,13 @@ impl Art12Log {
         }
     }
 
-    fn append_inner(&self, draft: &mut Art12Record) -> Result<(), Art12Error> {
+    fn append_inner(&self, mut draft: Art12Record) -> Result<Art12Record, Art12Error> {
         let mut inner = self.inner.lock().map_err(|_| Art12Error::Poisoned)?;
 
         draft.schema_version = ART12_SCHEMA_VERSION;
         draft.seq = inner.seq + 1;
         draft.prev_hash = inner.last_hash.clone();
-
-        let preimage = draft.canonical_preimage();
-        draft.signature = crate::auth::sign_message(&self.secret, preimage.as_bytes());
-        draft.hash = sha256_hex(&preimage);
+        let draft = self.signer.seal_art12(draft).map_err(Art12Error::Sign)?;
 
         let line = serde_json::to_string(&draft).map_err(Art12Error::Serialize)?;
         inner
@@ -243,19 +253,8 @@ impl Art12Log {
 
         inner.last_hash = draft.hash.clone();
         inner.seq = draft.seq;
-        Ok(())
+        Ok(draft)
     }
-}
-
-/// SHA-256 of a string, hex-encoded.
-///
-/// Lives here rather than in `main.rs` because this is where the hashing it
-/// serves lives.
-pub fn sha256_hex(message: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(message.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 #[cfg(test)]
@@ -289,7 +288,13 @@ mod tests {
             prev_hash: String::new(), // overwritten
             hash: String::new(),      // overwritten
             signature: String::new(), // overwritten
+            sig_alg: None,            // overwritten
+            signer: None,             // overwritten
         }
+    }
+
+    fn signer() -> Arc<AuditSigner> {
+        Arc::new(AuditSigner::for_test(5))
     }
 
     fn read_records(path: &Path) -> Vec<Art12Record> {
@@ -305,7 +310,7 @@ mod tests {
     fn append_writes_exactly_one_parseable_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"s".to_vec(), "genesis".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "genesis".to_string(), false).unwrap();
         log.append(draft("read_files", "allow", "none")).unwrap();
 
         let recs = read_records(&path);
@@ -320,7 +325,7 @@ mod tests {
     fn two_appends_chain() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"s".to_vec(), "genesis".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "genesis".to_string(), false).unwrap();
         log.append(draft("read_files", "allow", "none")).unwrap();
         log.append(draft("run_bash", "deny", "admission")).unwrap();
 
@@ -336,8 +341,7 @@ mod tests {
     fn genesis_prev_hash_is_the_supplied_boot_hash() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log =
-            Art12Log::open(&path, b"s".to_vec(), "boot-report-hash".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "boot-report-hash".to_string(), false).unwrap();
         log.append(draft("read_files", "allow", "none")).unwrap();
         assert_eq!(read_records(&path)[0].prev_hash, "boot-report-hash");
     }
@@ -348,15 +352,11 @@ mod tests {
     fn hash_recomputes_from_the_record_alone() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"secret".to_vec(), "g".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
         log.append(draft("read_files", "allow", "none")).unwrap();
 
         let rec = &read_records(&path)[0];
-        assert_eq!(sha256_hex(&rec.canonical_preimage()), rec.hash);
-        assert_eq!(
-            crate::auth::sign_message(b"secret", rec.canonical_preimage().as_bytes()),
-            rec.signature
-        );
+        assert_eq!(rec.chain_hash().unwrap(), rec.hash);
     }
 
     /// ★ Tampering must be detectable: change one field and the stored hash no
@@ -365,17 +365,55 @@ mod tests {
     fn tampering_breaks_the_recomputed_hash() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"secret".to_vec(), "g".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
         log.append(draft("run_bash", "deny", "admission")).unwrap();
 
         let mut rec = read_records(&path).remove(0);
-        assert_eq!(sha256_hex(&rec.canonical_preimage()), rec.hash);
+        assert_eq!(rec.chain_hash().unwrap(), rec.hash);
         rec.verdict = "allow".to_string(); // the edit an attacker wants
         assert_ne!(
-            sha256_hex(&rec.canonical_preimage()),
+            rec.chain_hash().unwrap(),
             rec.hash,
             "flipping deny→allow must invalidate the hash"
         );
+    }
+
+    /// #3309, the writer half of A-19. A record used to carry an HMAC under the
+    /// audit secret, so whoever could compute that key could forge one: with no
+    /// operator key that was a key derived from the public session id, and on
+    /// the secret-free transports the empty key. A record must now be signed by
+    /// the audit signer, name it, and verify under its public half, and no
+    /// keyless MAC over the record's bytes may be its signature.
+    #[test]
+    fn no_party_without_the_key_can_compute_a_records_signature() {
+        use ed25519_dalek::{Signature, VerifyingKey};
+        use hmac::{Hmac, KeyInit, Mac};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("art12.jsonl");
+        let signer = signer();
+        let public = signer.public_hex().to_string();
+        let log = Art12Log::open(&path, Arc::clone(&signer), "g".to_string(), false).unwrap();
+        log.append(draft("run_bash", "deny", "admission")).unwrap();
+
+        let rec = read_records(&path).remove(0);
+        assert_eq!(rec.signer.as_deref(), Some(public.as_str()));
+        let bytes = rec.signed_bytes().expect("a form");
+        for keyless in [&b""[..], b"art12:sess-1"] {
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(keyless).expect("any key length");
+            mac.update(&bytes);
+            assert_ne!(
+                rec.signature,
+                hex::encode(mac.finalize().into_bytes()),
+                "the record's signature is a MAC under a key a forger can compute"
+            );
+        }
+        let key: [u8; 32] = hex::decode(&public).unwrap().try_into().unwrap();
+        let sig: [u8; 64] = hex::decode(&rec.signature).unwrap().try_into().unwrap();
+        VerifyingKey::from_bytes(&key)
+            .unwrap()
+            .verify_strict(&bytes, &Signature::from_bytes(&sig))
+            .expect("the record verifies under the audit signer's key");
     }
 
     /// A write failure latches `degraded` and counts the loss, so the gap is
@@ -384,7 +422,7 @@ mod tests {
     fn write_failure_latches_degraded_and_counts() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"s".to_vec(), "g".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
         assert!(!log.is_degraded() && log.dropped() == 0);
 
         // Poison the mutex to force the failure path deterministically, without
@@ -405,7 +443,7 @@ mod tests {
     fn head_tracks_the_last_record() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"s".to_vec(), "g".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
         assert_eq!(log.head().unwrap(), ("g".to_string(), 0));
 
         log.append(draft("read_files", "allow", "none")).unwrap();
@@ -422,7 +460,7 @@ mod tests {
     fn deny_records_carry_their_reason_code() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
-        let log = Art12Log::open(&path, b"s".to_vec(), "g".to_string(), false).unwrap();
+        let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
 
         let mut d = draft("run_bash", "deny", "admission");
         d.deny_reason = Some(DenyInfo {
@@ -437,6 +475,6 @@ mod tests {
             .as_ref()
             .expect("deny record carries a reason");
         assert_eq!(reason.code, "dlc_admission_denied");
-        assert_eq!(sha256_hex(&rec.canonical_preimage()), rec.hash);
+        assert_eq!(rec.chain_hash().unwrap(), rec.hash);
     }
 }
