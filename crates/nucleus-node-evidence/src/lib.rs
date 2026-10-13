@@ -71,6 +71,7 @@ pub mod ima;
 pub mod key_attestation;
 pub mod reference;
 pub mod relying_party;
+mod rsa_pkcs1;
 pub mod tpm;
 #[cfg(feature = "attester")]
 pub mod tpm_key;
