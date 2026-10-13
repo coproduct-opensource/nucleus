@@ -79,15 +79,26 @@ assert!(safe.requires_approval(Operation::GitPush));
 
 ## Capability Levels
 
-Permissions use a three-level lattice for autonomous capability:
+Permissions use a three-level lattice for capability (permission):
 
 | Level | Value | Description |
 |-------|-------|-------------|
 | `Never` | 0 | Never allow |
-| `LowRisk` | 1 | Auto-approve for low-risk operations |
-| `Always` | 2 | Always auto-approve |
+| `LowRisk` | 1 | Permitted |
+| `Always` | 2 | Permitted |
 
-Approval requirements are modeled separately as **Obligations**. The meet operation
+A level is **permission, not consent**. `Kernel::decide` reads the level only to
+tell `Never` from permitted; `LowRisk` and `Always` differ in the lattice order
+(meet, join, delegation), not in whether a person is asked.
+
+Approval requirements are modeled separately as **Obligations**: an operation in
+the obligation set is held until a matching approval exists, and an operation
+outside it runs without approval even at `LowRisk`. Normalization adds
+obligations (never removes them) for each permitted `GitPush`, `CreatePr` and
+`RunBash` when private-data access, untrusted content and an exfiltration
+channel are all present. A later release makes consent an explicit
+per-operation declaration (autonomous or requires approval); until then an
+unobligated permitted operation is autonomous by omission. The meet operation
 takes the **minimum** of two capability levels (most restrictive).
 
 ## Lattice Properties

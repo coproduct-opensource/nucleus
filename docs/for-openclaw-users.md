@@ -31,19 +31,28 @@ Nucleus replaces the YAML policy file with a **permission lattice** — a mathem
 Instead of a flat allow/deny list, Nucleus uses a 12-dimensional **capability lattice**:
 
 ```
-read_files:  Always      (can read anything)
-write_files: LowRisk     (auto-approved for safe paths)
-edit_files:  LowRisk     (auto-approved for safe edits)
+read_files:  Always      (permitted)
+write_files: LowRisk     (permitted, within allowed paths)
+edit_files:  LowRisk     (permitted, within allowed paths)
 run_bash:    Never        (blocked entirely)
-glob_search: Always      (can search file names)
-grep_search: Always      (can search file contents)
-web_search:  LowRisk     (auto-approved)
-web_fetch:   LowRisk     (auto-approved for allowed domains)
-git_commit:  LowRisk     (auto-approved)
+glob_search: Always      (permitted)
+grep_search: Always      (permitted)
+web_search:  LowRisk     (permitted)
+web_fetch:   LowRisk     (permitted, for allowed domains)
+git_commit:  LowRisk     (permitted)
 git_push:    Never        (blocked entirely)
-create_pr:   LowRisk     (auto-approved)
+create_pr:   LowRisk     (permitted)
 manage_pods: Never        (blocked entirely)
 ```
+
+A level is permission, not consent: `LowRisk` and `Always` both permit the
+operation, and neither means "asks first". Whether a person must approve is
+the policy's separate **obligations** set — an operation listed there is held
+until approved, and one not listed runs without approval. Nucleus adds
+obligations automatically (for each permitted `git_push`, `create_pr`,
+`run_bash`) when private-data access, untrusted content and an exfiltration
+channel are all present. A later release makes this consent choice an explicit
+per-operation declaration.
 
 The lattice has three operations that are formally verified:
 

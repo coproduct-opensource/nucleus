@@ -1030,9 +1030,10 @@ impl PermissionLattice {
     /// - Web fetch allowed (docs lookup), but no broad web search
     ///
     /// ** UninhabitableState Analysis**: private data (read=Always) + untrusted content
-    /// (web_fetch=LowRisk) present, but exfiltration absent (git_push=Never,
-    /// create_pr=Never, run_bash=LowRisk but constrained). Two of three
-    /// components → no approval escalation needed.
+    /// (web_fetch=LowRisk) + exfiltration via `run_bash=LowRisk` (shell counts as an
+    /// exfil channel; git_push=Never, create_pr=Never). All three components are
+    /// present, so `normalize()` adds an approval obligation on `RunBash` (and only
+    /// `RunBash`): shell commands need approval, writes/edits/commits do not.
     ///
     /// The key security invariant: the agent can fix code and commit, but
     /// only the trusted CI wrapper script can push the branch and open a PR.

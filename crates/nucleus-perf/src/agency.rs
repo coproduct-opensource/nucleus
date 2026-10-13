@@ -347,10 +347,14 @@ fn refuses_uncredentialed_egress(ctx: &Ctx<'_>) -> Result<Outcome> {
 ///
 /// This replaced a check that asserted an unapproved write is DEFERRED, and the
 /// replacement is worth explaining because the old one failing is what exposed
-/// it. Under the `codegen` profile writes are `low_risk`, so they defer and the
-/// check passed. Under a compiled grant for the same work they are authorised
-/// outright — `nucleus run --goal` says so in as many words, "no approval
-/// prompts expected" — so the write landed and the check reported a breach.
+/// it. In the recorded `codegen` profile run the write deferred and the check
+/// passed. (That was not because writes are `low_risk`: a level is permission,
+/// not consent, and the kernel defers only operations the policy obligates.
+/// The YAML `codegen` profile's effective obligation set is empty — see
+/// `docs/agency-frontier.md`.) Under a compiled grant for the same work writes
+/// are authorised outright — `nucleus run --goal` says so in as many words, "no
+/// approval prompts expected" — so the write landed and the check reported a
+/// breach.
 ///
 /// It was the check that was wrong. It encoded a property of one profile rather
 /// than an invariant, and containment checks decide whether a whole reading may
