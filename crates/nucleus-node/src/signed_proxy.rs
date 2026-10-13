@@ -3,16 +3,16 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::body::{to_bytes, Body};
+use axum::Router;
+use axum::body::{Body, to_bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::response::{IntoResponse, Response as AxumResponse};
 use axum::routing::any;
-use axum::Router;
 use http_body_util::{BodyExt, Full};
+use hyper::Request;
 use hyper::body::Incoming;
 use hyper::client::conn::http1;
-use hyper::Request;
 use hyper_util::rt::TokioIo;
 use nucleus_client::drand::{DrandClient, DrandConfig, DrandFailMode};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -387,8 +387,12 @@ impl SignedProxy {
         }
         // Graceful shutdown waits for in-flight requests, and `forward_request`
         // has no timeout of its own; this carries no identity, so it is bounded.
-        crate::teardown_bound::join("signed proxy", &mut self.task, std::time::Duration::from_secs(5))
-            .await;
+        crate::teardown_bound::join(
+            "signed proxy",
+            &mut self.task,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
     }
 }
 
@@ -852,9 +856,11 @@ mod tests {
         assert_eq!(received.load(Ordering::SeqCst), 2);
         let observer = proxy.observation_endpoint();
         let origin = format!("http://{}", proxy.listen_addr());
-        assert!(observer
-            .proof("http://127.0.0.1:1", "/v1/workload/result")
-            .is_err());
+        assert!(
+            observer
+                .proof("http://127.0.0.1:1", "/v1/workload/result")
+                .is_err()
+        );
         for forbidden in ["/v1/health", "/v1/read", "/v1/workload/result?extra=1"] {
             assert!(observer.proof(&origin, forbidden).is_err());
         }
@@ -1071,9 +1077,10 @@ mod tests {
         let sig_hex = hex::encode(key.sign(&message).to_bytes());
         let sig_bytes: [u8; 64] = hex::decode(&sig_hex).unwrap().try_into().unwrap();
         let signature = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-        assert!(key
-            .verifying_key()
-            .verify_strict(&message, &signature)
-            .is_ok());
+        assert!(
+            key.verifying_key()
+                .verify_strict(&message, &signature)
+                .is_ok()
+        );
     }
 }

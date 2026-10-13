@@ -1231,21 +1231,47 @@ var = "LLM_API_TOKEN"
         let identity = who();
         let context = ctx(&policy, &credentials, &pinned, &ledger, &identity);
         let net = Upstream::default();
-        for (n, path) in ["/models/large:generate", "/datasets", "/models/small:generate/x", "/messages"]
-            .into_iter()
-            .enumerate()
+        for (n, path) in [
+            "/models/large:generate",
+            "/datasets",
+            "/models/small:generate/x",
+            "/messages",
+        ]
+        .into_iter()
+        .enumerate()
         {
-            let asked = PerformRequest { path: path.into(), idempotency_key: format!("off-{n}"), ..request() };
-            assert!(!handle_perform(&asked, &context, NOW, net.caller()).await.granted, "{path}");
+            let asked = PerformRequest {
+                path: path.into(),
+                idempotency_key: format!("off-{n}"),
+                ..request()
+            };
+            assert!(
+                !handle_perform(&asked, &context, NOW, net.caller())
+                    .await
+                    .granted,
+                "{path}"
+            );
         }
         assert_eq!(net.count(), 0);
-        let asked = PerformRequest { path: "/models/small:generate".into(), ..request() };
-        assert!(handle_perform(&asked, &context, NOW, net.caller()).await.granted);
+        let asked = PerformRequest {
+            path: "/models/small:generate".into(),
+            ..request()
+        };
+        assert!(
+            handle_perform(&asked, &context, NOW, net.caller())
+                .await
+                .granted
+        );
         assert_eq!(net.count(), 1);
         // A listed path must be absolute, plain and exact.
         for bad in ["models/x", "/a/*", "/a?b", "/a/../b", ""] {
-            let text = format!("[[upstream]]\nname='x'\nbase_url='https://a.invalid'\nheader='h'\npaths=['{bad}']\n[upstream.credential.env]\nvar='V'\n");
-            assert!(crate::upstreams::UpstreamRegistry::from_toml_str(&text).is_err(), "{bad:?}");
+            let text = format!(
+                "[[upstream]]\nname='x'\nbase_url='https://a.invalid'\nheader='h'\npaths=['{bad}']\n[upstream.credential.env]\nvar='V'\n"
+            );
+            assert!(
+                crate::upstreams::UpstreamRegistry::from_toml_str(&text).is_err(),
+                "{bad:?}"
+            );
         }
     }
 

@@ -236,6 +236,21 @@ pub(crate) struct CallerFile {
     svid_ttl_secs: Option<u64>,
     #[serde(default)]
     max_cost_usd_per_day: Option<rust_decimal::Decimal>,
+    /// A `[[compartment]]` of this file the binding's delegations are confined to.
+    #[serde(default)]
+    compartment: Option<String>,
+}
+
+/// One `[[compartment]]` table: an operator-defined ceiling, by name. A binding that names
+/// it has its ceiling met with this one (its own extension keys kept) and carries the signed
+/// key `compartment@<name>:<digest>` (`portcullis::cert_compartment::named_key`), which no
+/// hop below may drop. The digest identifies the definition, so a pod's certificate says
+/// exactly which ceiling it was minted under.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CompartmentFile {
+    name: String,
+    ceiling: CeilingSpec,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -255,6 +270,33 @@ enum JwksFile {
 pub(crate) enum CeilingSpec {
     Profile(String),
     Inline(Box<PermissionLattice>),
+}
+
+/// The registry's `[[compartment]]` tables, resolved: each name's ceiling and the digest of its
+/// definition (the lattice's `program_checksum`, so the validity window is not part of it).
+fn compartments(
+    registry: &UpstreamRegistry,
+) -> Result<BTreeMap<String, (PermissionLattice, String)>, String> {
+    let mut out = BTreeMap::new();
+    for c in registry.compartments() {
+        let at = |what: &str| format!("[[compartment]] {:?}: {what}", c.name);
+        let name_ok = (1..=63).contains(&c.name.len())
+            && c.name
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+        if !name_ok {
+            return Err(at("name must be 1-63 bytes of [a-z0-9-]"));
+        }
+        let lattice = c
+            .ceiling
+            .resolve()
+            .map_err(|e| at(&format!("ceiling: {e}")))?;
+        let digest = lattice.program_checksum();
+        if out.insert(c.name.clone(), (lattice, digest)).is_some() {
+            return Err(at("defined twice"));
+        }
+    }
+    Ok(out)
 }
 
 impl CeilingSpec {
@@ -283,6 +325,8 @@ pub(crate) struct CallerBinding {
     /// `max_cost_usd_per_day`, in micro-USD rounded down as a ledger's ceiling
     /// is. `None`: no day dimension (the ceiling still bounds the total).
     daily_max_micro: Option<u64>,
+    /// The named compartment key every delegation carries, if the binding names one.
+    compartment: Option<portcullis::ExtensionOperation>,
 }
 
 impl std::fmt::Debug for CallerBinding {
@@ -395,6 +439,7 @@ impl CallerBindings {
         }
         let http = nucleus_federation::default_client()
             .map_err(|e| format!("federation HTTP client: {e}"))?;
+        let compartments = compartments(registry)?;
         let (mut labels, mut issuers, mut domains) =
             (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         let mut bindings = Vec::with_capacity(files.len());
@@ -460,10 +505,36 @@ impl CallerBindings {
                 before.map(|b| &b.validator),
             )
             .map_err(|e| at(&format!("issuer settings: {e}")))?;
-            let ceiling = f
+            let mut ceiling = f
                 .ceiling
                 .resolve()
                 .map_err(|e| at(&format!("ceiling: {e}")))?;
+            let compartment = match &f.compartment {
+                None => None,
+                Some(name) => {
+                    let (def, digest) = compartments.get(name).ok_or_else(|| {
+                        at(&format!("compartment {name:?} is not in [[compartment]]"))
+                    })?;
+                    // The definition bounds every named dimension, the commands, paths, budget
+                    // and obligations; the binding's own extension keys (its tool surface) are
+                    // kept, as the built-in compartments' clamp keeps them.
+                    // Nor does it govern time: the binding's window (renewed by its operator) is
+                    // kept, since a profile-resolved definition would bring a window of its own.
+                    let (extensions, time) = (
+                        ceiling.capabilities.extensions.clone(),
+                        ceiling.time.clone(),
+                    );
+                    ceiling = ceiling.meet(def);
+                    ceiling.capabilities.extensions = extensions;
+                    ceiling.time = time;
+                    portcullis::cert_compartment::set_named(
+                        &mut ceiling.capabilities,
+                        name,
+                        digest,
+                    );
+                    Some(portcullis::cert_compartment::named_key(name, digest))
+                }
+            };
             let mut upstreams = Vec::with_capacity(f.upstreams.len());
             for name in &f.upstreams {
                 let entry = registry
@@ -495,6 +566,7 @@ impl CallerBindings {
                 upstreams,
                 svid_ttl,
                 daily_max_micro,
+                compartment,
             });
         }
         Ok(Self { bindings })
@@ -762,6 +834,14 @@ pub(crate) async fn exchange(
             binding.ceiling.meet(&asked)
         }
     };
+    // A request may narrow the binding, never leave its compartment: a plain meet with a
+    // request that omits the compartment keys used to drop them (named or built-in), and the
+    // delegation then carried no compartment at all.
+    let mut ceiling = ceiling;
+    portcullis::cert_compartment::inherit_compartment(
+        &mut ceiling.capabilities,
+        &binding.ceiling.capabilities,
+    );
 
     // The SVID lives no longer than the token that vouched for it, nor the
     // binding's cap. One second is held back for the CA's clock running on
@@ -1008,6 +1088,11 @@ mod tests {
     /// Two bindings on one node. A may reach `model-api` only; B nothing. A's
     /// ceiling is `codegen` (budget 5); B's `read_only`.
     fn fixture_with(extra_caller: &str) -> Fixture {
+        fixture_parts("", extra_caller)
+    }
+
+    /// As `fixture_with`, with `a_extra` added to runtime-a's own `[[caller]]` table.
+    fn fixture_parts(a_extra: &str, extra_caller: &str) -> Fixture {
         let _ = rustls::crypto::ring::default_provider().install_default();
         let (a, b) = (Issuer::new(ISS_A, "key-a"), Issuer::new(ISS_B, "key-b"));
         let dir = tempfile::tempdir().unwrap();
@@ -1040,6 +1125,7 @@ required_claims = {{ org = "example-org-0001" }}
 ceiling = {{ profile = "codegen" }}
 upstreams = ["model-api"]
 svid_ttl_secs = 600
+{a_extra}
 
 [[caller]]
 label = "runtime-b"
@@ -1287,6 +1373,56 @@ ceiling = {{ profile = "read_only" }}
             .not_after
             .timestamp();
         assert!(u64::try_from(cert_not_after).unwrap() <= svid_not_after);
+    }
+
+    /// A binding that names a compartment: every delegation it mints carries the
+    /// compartment's signed key and sits under its ceiling, whatever the request asked, and a
+    /// request that leaves the key out cannot shed it (the exchange was a plain meet).
+    #[tokio::test]
+    async fn a_named_compartment_rides_every_delegation_and_is_never_shed() {
+        let f = fixture_parts(
+            "compartment = \"pilot\"",
+            "[[compartment]]\nname = \"pilot\"\nceiling = { profile = \"read_only\" }\n",
+        );
+        let t = now();
+        let csr = || csr_for(&principal_a("alice"));
+        let effective =
+            |resp: ExchangeResponse| cert_of(&resp).certificate().effective_permissions().clone();
+        let unasked = effective(
+            run(&f, &f.a.token("alice", t), &body(&csr(), None))
+                .await
+                .unwrap(),
+        );
+        let asked = effective(
+            run(
+                &f,
+                &f.a.token("alice", t + 1),
+                &body(&csr(), Some(json!({"profile": "codegen"}))),
+            )
+            .await
+            .unwrap(),
+        );
+        for (what, lattice) in [("unasked", &unasked), ("asked without the key", &asked)] {
+            let named = portcullis::cert_compartment::named_of(&lattice.capabilities);
+            assert_eq!(named.len(), 1, "{what}: {named:?}");
+            assert!(named[0].0.starts_with("compartment@pilot:"), "{what}");
+            assert_eq!(
+                lattice.capabilities.write_files,
+                portcullis::CapabilityLevel::Never,
+                "{what}: under read_only"
+            );
+            assert_eq!(
+                lattice.capabilities.run_bash,
+                portcullis::CapabilityLevel::Never,
+                "{what}"
+            );
+        }
+        // A binding naming a compartment the file does not define is refused at load.
+        let refused = std::panic::catch_unwind(|| fixture_parts("compartment = \"absent\"", ""));
+        assert!(
+            refused.is_err(),
+            "an undefined compartment must refuse the registry"
+        );
     }
 
     #[tokio::test]

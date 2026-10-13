@@ -1517,8 +1517,12 @@ impl BrokerListener {
             self.task.abort();
             // The abort lands at the task's next await; a task stuck in a
             // synchronous call must not hold teardown here either.
-            crate::teardown_bound::join("credential broker after abort", &mut self.task, Duration::from_secs(2))
-                .await;
+            crate::teardown_bound::join(
+                "credential broker after abort",
+                &mut self.task,
+                Duration::from_secs(2),
+            )
+            .await;
             ShutdownOutcome::Aborted
         } else {
             ShutdownOutcome::Stopped

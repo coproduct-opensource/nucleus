@@ -1,6 +1,6 @@
 //! Raw output remains a supervisor observation, independent of console rendering
 //! and guest-writable files. Check lineage and the completed claim before reads.
-use super::{observe_claim, supervisor_error, ApiError, NodeState};
+use super::{ApiError, NodeState, observe_claim, supervisor_error};
 use axum::extract::{Extension, Path, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
@@ -129,10 +129,10 @@ async fn fetch(
 mod tests {
     use super::*;
     use axum::{
+        Router,
         body::{Body, Bytes},
         http::StatusCode,
         routing::get,
-        Router,
     };
 
     async fn read(body: Body, status: StatusCode, digest: &str) -> Result<Vec<u8>, ApiError> {
@@ -167,14 +167,18 @@ mod tests {
                 .unwrap(),
             bytes
         );
-        assert!(read(Body::from("changed"), StatusCode::OK, &digest)
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("differs from supervisor"));
-        assert!(read(Body::empty(), StatusCode::PAYLOAD_TOO_LARGE, &digest)
-            .await
-            .is_err());
+        assert!(
+            read(Body::from("changed"), StatusCode::OK, &digest)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("differs from supervisor")
+        );
+        assert!(
+            read(Body::empty(), StatusCode::PAYLOAD_TOO_LARGE, &digest)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

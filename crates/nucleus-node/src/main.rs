@@ -31,7 +31,6 @@ use tracing::{error, info};
 use uuid::Uuid;
 
 mod api_error;
-mod teardown_bound;
 mod art12_collector;
 mod audit_sink;
 mod auth;
@@ -73,6 +72,7 @@ mod sealed_rootfs;
 mod spec_posture;
 mod spend_receipt_collector;
 mod state_lock;
+mod teardown_bound;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -123,13 +123,12 @@ mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
+mod guest_proof_provision;
 mod memory_provisioning;
 mod net;
 mod posture;
 mod session_mint;
 mod signed_proxy;
-mod tool_proof_provision;
-mod guest_proof_provision;
 mod snapshot;
 mod snapshot_restore;
 mod snapshot_store;
@@ -137,6 +136,7 @@ mod snapshot_vmm;
 #[cfg(test)]
 mod spiffe_walk;
 mod tls_ingress;
+mod tool_proof_provision;
 mod trust_gate;
 mod upstreams;
 mod vmm_process;
@@ -1630,8 +1630,16 @@ async fn spawn_local_pod(
             ))),
             state.proxy_actor.clone(),
             state.drand_config.clone(),
-            tool_proof_provision::for_listener(spec, state.request_proofs.is_some(), pod_dir,
-                guest_proof_provision::Signer::load(spec, &state.state_dir.join("host-tool-keys"), id)?)?,
+            tool_proof_provision::for_listener(
+                spec,
+                state.request_proofs.is_some(),
+                pod_dir,
+                guest_proof_provision::Signer::load(
+                    spec,
+                    &state.state_dir.join("host-tool-keys"),
+                    id,
+                )?,
+            )?,
         )
         .await
         .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;

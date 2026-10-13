@@ -196,6 +196,10 @@ struct RegistryFile {
     /// statement of what this node offers in both directions.
     #[serde(default)]
     caller: Vec<crate::federation_ingress::CallerFile>,
+    /// Named compartments (`federation_ingress::CompartmentFile`): operator-defined ceilings a
+    /// `[[caller]]` may name, carried into every certificate the binding mints.
+    #[serde(default)]
+    compartment: Vec<crate::federation_ingress::CompartmentFile>,
 }
 
 #[derive(Deserialize)]
@@ -506,7 +510,10 @@ impl RegistryEntry {
     /// Whether the guest may call `path` on this upstream: any path when the operator listed
     /// none, otherwise exactly a listed one (a leading `/` is not significant).
     pub fn admits_path(&self, path: &str) -> bool {
-        self.paths.is_empty() || self.paths.contains(&format!("/{}", path.trim_start_matches('/')))
+        self.paths.is_empty()
+            || self
+                .paths
+                .contains(&format!("/{}", path.trim_start_matches('/')))
     }
 
     pub fn forwards_header(&self, name: &str) -> bool {
@@ -574,6 +581,8 @@ pub(crate) struct UpstreamRegistry {
     /// The file's `[[caller]]` tables, as written. Validated (against this
     /// registry) by `federation_ingress::CallerBindings::from_files`.
     callers: Vec<crate::federation_ingress::CallerFile>,
+    /// The file's `[[compartment]]` tables, validated with the callers.
+    compartments: Vec<crate::federation_ingress::CompartmentFile>,
 }
 
 impl UpstreamRegistry {
@@ -657,12 +666,18 @@ impl UpstreamRegistry {
             entries,
             specs,
             callers: file.caller,
+            compartments: file.compartment,
         })
     }
 
     /// The `[[caller]]` tables of this file, unvalidated.
     pub fn callers(&self) -> &[crate::federation_ingress::CallerFile] {
         &self.callers
+    }
+
+    /// The `[[compartment]]` tables of this file, unvalidated.
+    pub fn compartments(&self) -> &[crate::federation_ingress::CompartmentFile] {
+        &self.compartments
     }
 
     /// Every entry's projection, for admission to clamp against.
@@ -984,7 +999,9 @@ fn paths(name: &str, listed: Vec<String>) -> Result<BTreeSet<String>, String> {
             && !path.contains(['*', '?', '#', '%', '\\'])
             && !path.split('/').any(|s| s == ".." || s == ".");
         if !plain {
-            return Err(format!("upstream {name:?}: paths entry {path:?} must be an absolute, plain path"));
+            return Err(format!(
+                "upstream {name:?}: paths entry {path:?} must be an absolute, plain path"
+            ));
         }
         paths.insert(path);
     }
@@ -1534,4 +1551,3 @@ requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
         assert!(UpstreamRegistry::from_toml_str(&encoded(&max)).is_ok());
     }
 }
-

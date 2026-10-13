@@ -742,8 +742,12 @@ impl WorkloadApiVsockBridge {
         // is bounded and then aborted.
         if let Some((tx, mut task, path)) = self.spiffe.take() {
             let _ = tx.send(());
-            crate::teardown_bound::join("SPIFFE workload API", &mut task, std::time::Duration::from_secs(2))
-                .await;
+            crate::teardown_bound::join(
+                "SPIFFE workload API",
+                &mut task,
+                std::time::Duration::from_secs(2),
+            )
+            .await;
             let _ = tokio::fs::remove_file(&path).await;
         }
     }

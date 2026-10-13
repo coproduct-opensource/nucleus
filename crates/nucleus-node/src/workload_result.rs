@@ -2,15 +2,15 @@
 //! proxy bridge. Pod lineage is checked before revealing or contacting it.
 //! This response does not itself assert a sandbox tier or carry a signature.
 
-use axum::extract::{Extension, Path, State};
 use axum::Json;
+use axum::extract::{Extension, Path, State};
 use nucleus_ci_verdict::execution::{Backend, ExecutionClaim, ExecutionSchema};
 use nucleus_receipt::{Receipt, Session};
 use nucleus_spec::workload_result::WorkloadResult;
 use nucleus_spec::workload_result::{ProgramBinding, WorkloadIsolation};
 use uuid::Uuid;
 
-use crate::{pod_api, ApiError, DriverState, NodeState};
+use crate::{ApiError, DriverState, NodeState, pod_api};
 
 mod admission;
 mod logs;
@@ -395,14 +395,16 @@ mod tests {
                 digest: "another program".into(),
             };
         }
-        assert!(completed_claim(
-            &spec,
-            Uuid::nil(),
-            Backend::Local,
-            observation,
-            unattested()
-        )
-        .is_err());
+        assert!(
+            completed_claim(
+                &spec,
+                Uuid::nil(),
+                Backend::Local,
+                observation,
+                unattested()
+            )
+            .is_err()
+        );
     }
 
     #[test]

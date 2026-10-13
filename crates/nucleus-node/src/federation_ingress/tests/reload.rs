@@ -552,3 +552,65 @@ async fn a_raised_ceiling_applies_across_a_restart_too() {
         .expect("the registry's raised ceiling binds after a restart");
     assert_eq!(live.ledger_file()["ledger"]["consumed_micro"], 5_000_000);
 }
+
+/// A pod admitted under a binding that names a compartment has the compartment's key in its
+/// own certificate: it survives the re-root and the hop to the pod. A reload that changes the
+/// definition changes the digest the next pod carries, with no restart.
+#[tokio::test]
+async fn a_pod_under_a_named_compartment_carries_it_and_a_reload_moves_its_digest() {
+    let (from, until) = open_window();
+    let a_ceiling = ceiling(10, from, until);
+    let live = Live::new(&a_ceiling, None);
+    let with_compartment = |profile: &str| {
+        let mut doc: toml::Table =
+            toml::from_str(&registry(&live.a, &live.b, &a_ceiling, None, false)).unwrap();
+        doc["caller"].as_array_mut().unwrap()[0]
+            .as_table_mut()
+            .unwrap()
+            .insert("compartment".into(), "pilot".into());
+        let mut def = toml::Table::new();
+        def.insert("name".into(), "pilot".into());
+        let mut spec = toml::Table::new();
+        spec.insert("profile".into(), profile.into());
+        def.insert("ceiling".into(), toml::Value::Table(spec));
+        doc.insert(
+            "compartment".into(),
+            toml::Value::Array(vec![toml::Value::Table(def)]),
+        );
+        std::fs::write(&live.path, toml::to_string(&doc).unwrap()).unwrap();
+        assert_eq!(
+            live.st.authority.reload_registry(false),
+            ReloadOutcome::Applied
+        );
+    };
+    let named_of_pod = |pod: uuid::Uuid| {
+        let authority = live.st.authority.clone();
+        async move {
+            let boot = authority
+                .boot_certificate(pod)
+                .await
+                .expect("a certificate");
+            let token = portcullis::token::AttenuationToken::from_base64(&boot.token_b64).unwrap();
+            portcullis::cert_compartment::named_of(
+                &token.certificate().effective_permissions().capabilities,
+            )
+        }
+    };
+
+    with_compartment("codegen");
+    let who = live.exchange().await.unwrap();
+    let first = live
+        .admit(&who, 1)
+        .await
+        .expect("admitted under the compartment");
+    let first = named_of_pod(first).await;
+    assert_eq!(first.len(), 1, "{first:?}");
+    assert!(first[0].0.starts_with("compartment@pilot:"));
+
+    // (`read_only` would also do, but its $0 budget is a ceiling too: nothing could be admitted.)
+    with_compartment("release");
+    let who = live.exchange().await.unwrap();
+    let second = named_of_pod(live.admit(&who, 1).await.expect("admitted")).await;
+    assert_eq!(second.len(), 1);
+    assert_ne!(first, second, "a changed definition has a new digest");
+}

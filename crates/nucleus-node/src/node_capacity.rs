@@ -320,7 +320,11 @@ mod tests {
         let held = capacity.reserve(&spec()).unwrap();
         let refused = capacity.reserve(&spec()).unwrap_err().into_response();
         assert_eq!(refused.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
-        assert!(refused.headers().contains_key(axum::http::header::RETRY_AFTER));
+        assert!(
+            refused
+                .headers()
+                .contains_key(axum::http::header::RETRY_AFTER)
+        );
         drop(held);
     }
 }

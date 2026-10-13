@@ -73,7 +73,11 @@ impl IntoResponse for ApiError {
             error: self.to_string(),
         });
         if retry {
-            return (status, [(axum::http::header::RETRY_AFTER, CAPACITY_RETRY_SECONDS)], body)
+            return (
+                status,
+                [(axum::http::header::RETRY_AFTER, CAPACITY_RETRY_SECONDS)],
+                body,
+            )
                 .into_response();
         }
         (status, body).into_response()

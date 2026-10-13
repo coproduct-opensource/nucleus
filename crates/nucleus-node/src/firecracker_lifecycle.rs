@@ -185,9 +185,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (pod, pool) = fixture(dir.path()).await;
         let held = pod.broker.lock().await;
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), pod.teardown(Stop::Kill)).await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_secs(5), pod.teardown(Stop::Kill)).await;
         drop(held);
-        result.expect("teardown must not wait on a stuck drain").unwrap();
+        result
+            .expect("teardown must not wait on a stuck drain")
+            .unwrap();
         assert!(matches!(pod.status().await, PodState::Exited { .. }));
         assert_eq!(pool.available_permits(), 1);
     }
