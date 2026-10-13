@@ -287,6 +287,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                             measured: &attestation,
                             leaf_der: cert.leaf().der(),
                             trust_bundle: manager.trust_bundle(),
+                            quotes: state.node_platform.as_ref(),
                         },
                     )?,
                     Err(e) => {

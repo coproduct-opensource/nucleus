@@ -177,22 +177,116 @@ fn an_eval_cell_is_refused_on_a_node_whose_evidence_is_not_attested() {
     );
 }
 
-/// An attested launch for `measured` from `ca`, as the leaf DER the node serves.
-async fn attested_leaf(
+// ADR 0016 S3: an eval cell's launch must be rooted in the node's TPM. These run
+// against the quote a software TPM really took (`nucleus-identity`'s
+// `tests/fixtures/launch-quote/`; the capture recipe is in that crate's
+// `launch_quote_tests.rs`): the fixture's leaf key, its measurement
+// (kernel `0x11…`, rootfs `0x22…`, config `0x33…`), its executor key `0x5e…`
+// (not federated), its AK pin and the source it was pinned under.
+
+const LAUNCH_QUOTE_LEAF_KEY: &str =
+    include_str!("../../nucleus-identity/tests/fixtures/launch-quote/leaf-key.pem");
+const LAUNCH_QUOTE: &[u8] =
+    include_bytes!("../../nucleus-identity/tests/fixtures/launch-quote/quote.json");
+/// SHA-256 of the fixture swtpm AK's SubjectPublicKeyInfo.
+const LAUNCH_QUOTE_AK_PIN: &str =
+    "c973a42e47c26d950b76f3930f8abcdb5f3915ae2c1d1df767f776f7d1025b9a";
+/// A time inside the fixture's validity, Unix seconds.
+const LAUNCH_QUOTE_NOW: i64 = 1_791_000_000;
+
+fn quoted_measurement() -> nucleus_identity::LaunchAttestation {
+    nucleus_identity::LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32])
+}
+
+/// The fixture swtpm's node: its reference, its AK pinned as a software TPM,
+/// its binding, and the one launch quote it stored.
+struct FixtureTpmNode {
+    reference: nucleus_node_evidence::ReferenceManifest,
+    anchors: nucleus_node_evidence::AnchorPolicy,
+}
+
+impl FixtureTpmNode {
+    fn new() -> Self {
+        use nucleus_node_evidence::{Expect, REFERENCE_PROFILE, ReferenceValues};
+        fn none<T>() -> Expect<T> {
+            Expect::NotChecked("software TPM: no firmware, no IMA".into())
+        }
+        Self {
+            reference: nucleus_node_evidence::ReferenceManifest {
+                profile: REFERENCE_PROFILE.into(),
+                tag_id: "swtpm-fixture".into(),
+                reference_values: ReferenceValues {
+                    pcrs: Default::default(),
+                    secure_boot: none(),
+                    efi_applications: none(),
+                    boot_files: none(),
+                    kernel_cmdline: none(),
+                    ima: none(),
+                },
+            },
+            anchors: nucleus_node_evidence::AnchorPolicy {
+                trust_roots: Vec::new(),
+                operator_pins: Vec::new(),
+                software_tpm_pins: vec![nucleus_node_evidence::OperatorPin {
+                    source: "swtpm-fixture".into(),
+                    ak_spki_sha256: LAUNCH_QUOTE_AK_PIN.into(),
+                }],
+            },
+        }
+    }
+}
+
+impl OwnLaunchQuotes for FixtureTpmNode {
+    fn appraisal(&self) -> Result<OwnQuoteAppraisal<'_>, String> {
+        Ok(OwnQuoteAppraisal {
+            binding: nucleus_node_evidence::KeyBinding {
+                executor_key: nucleus_node_evidence::ExecutorKey::Ed25519([0x5e; 32]),
+                federation: nucleus_node_evidence::Federation::NotFederated,
+            },
+            reference: &self.reference,
+            anchors: &self.anchors,
+            now: LAUNCH_QUOTE_NOW,
+        })
+    }
+
+    fn document(&self, digest: &[u8; 32]) -> Result<Vec<u8>, String> {
+        if nucleus_node_evidence::evidence_digest(LAUNCH_QUOTE) == *digest {
+            Ok(LAUNCH_QUOTE.to_vec())
+        } else {
+            Err(format!(
+                "this node holds no launch quote {}",
+                hex::encode(digest)
+            ))
+        }
+    }
+}
+
+/// A leaf `ca` signs over `key_pem` for `measured`, naming the launch quote
+/// `quote` (OID `.1.7`) when given, as the node serves it.
+async fn launch_leaf(
     ca: &nucleus_identity::SelfSignedCa,
+    key_pem: &str,
     measured: &nucleus_identity::LaunchAttestation,
+    quote: Option<&[u8; 32]>,
 ) -> Vec<u8> {
     use nucleus_identity::CaClient;
     let identity = nucleus_identity::Identity::for_pod("test.local", "cell");
-    let cs = nucleus_identity::CsrOptions::new(identity.to_spiffe_uri())
-        .generate()
-        .unwrap();
-    ca.sign_attested_csr(
-        cs.csr(),
-        cs.private_key(),
+    let key = rcgen::KeyPair::from_pem(key_pem).unwrap();
+    let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+    params.subject_alt_names = vec![rcgen::SanType::URI(
+        rcgen::string::Ia5String::try_from(identity.to_spiffe_uri()).unwrap(),
+    )];
+    let csr = params.serialize_request(&key).unwrap().pem().unwrap();
+    ca.sign_measured_csr(
+        &csr,
+        key_pem,
         &identity,
         std::time::Duration::from_secs(3600),
-        measured,
+        &nucleus_identity::MeasuredClaims {
+            attestation: measured,
+            mediator_key_sha256: None,
+            launch_quote_sha256: quote,
+        },
     )
     .await
     .unwrap()
@@ -201,36 +295,48 @@ async fn attested_leaf(
     .to_vec()
 }
 
-/// ADR 0016 D3, the decider: an eval cell's launch verifies only when its leaf
-/// chains to the node's CA and carries exactly the measurement the node took.
-/// Each failure is refused by name; a standard pod is never checked.
+fn fixture_quote_digest() -> [u8; 32] {
+    nucleus_node_evidence::evidence_digest(LAUNCH_QUOTE)
+}
+
+/// ADR 0016 D3 and S3, the decider, positive: an eval cell whose leaf chains to
+/// the node's CA, names the launch quote the node's TPM took over its key and
+/// measurement, and carries exactly the measurement the node took, verifies.
+/// Every other launch is refused by name, and a standard pod is never checked.
 #[tokio::test]
-async fn an_eval_cell_launch_verifies_only_as_the_node_measured_it() {
+async fn an_eval_cell_launch_verifies_only_when_the_nodes_tpm_quoted_it() {
     use nucleus_identity::{CaClient, LaunchAttestation, SelfSignedCa};
+    let node = FixtureTpmNode::new();
     let ca = SelfSignedCa::new("test.local").unwrap();
-    let measured = LaunchAttestation::from_hashes([1; 32], [2; 32], [3; 32]);
-    let leaf = attested_leaf(&ca, &measured).await;
+    let measured = quoted_measurement();
+    let digest = fixture_quote_digest();
+    let leaf = launch_leaf(&ca, LAUNCH_QUOTE_LEAF_KEY, &measured, Some(&digest)).await;
     let issued = |leaf: &[u8], ca: &SelfSignedCa, m: &LaunchAttestation| {
-        let launch = LaunchIdentity::Issued {
-            measured: m,
-            leaf_der: leaf,
-            trust_bundle: ca.trust_bundle(),
-        };
-        require_verified_launch(IsolationProfile::EvalCell, launch)
+        require_verified_launch(
+            IsolationProfile::EvalCell,
+            LaunchIdentity::Issued {
+                measured: m,
+                leaf_der: leaf,
+                trust_bundle: ca.trust_bundle(),
+                quotes: &node,
+            },
+        )
     };
 
-    // Non-vacuous: the node's own launch verifies.
+    // Non-vacuous: the launch the TPM quoted verifies, rooted in the TPM.
     assert_eq!(issued(&leaf, &ca, &measured), Ok(()));
 
-    // Another launch's measurement.
-    let other = LaunchAttestation::from_hashes([1; 32], [2; 32], [4; 32]);
+    // The node measured another launch than the one the leaf carries and the TPM quoted.
+    let other = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x34; 32]);
     let e = issued(&leaf, &ca, &other).expect_err("measurement differs");
+    assert!(matches!(e, EvalCellRefused::LaunchUnverified(_)), "{e:?}");
     assert!(e.to_string().contains("but the node measured"), "{e}");
 
-    // A leaf from a CA that is not this node's, carrying the right measurement.
+    // A leaf from a CA that is not this node's, over the quoted key, measurement and quote.
     let foreign = SelfSignedCa::new("test.local").unwrap();
-    let forged = attested_leaf(&foreign, &measured).await;
+    let forged = launch_leaf(&foreign, LAUNCH_QUOTE_LEAF_KEY, &measured, Some(&digest)).await;
     let e = issued(&forged, &ca, &measured).expect_err("foreign issuer");
+    assert!(matches!(e, EvalCellRefused::LaunchUnverified(_)), "{e:?}");
     assert!(e.to_string().contains("not issued by a trusted CA"), "{e}");
 
     // Each fallback a standard pod keeps.
@@ -244,11 +350,13 @@ async fn an_eval_cell_launch_verifies_only_as_the_node_measured_it() {
         assert!(matches!(e, EvalCellRefused::LaunchUnverified(_)), "{e:?}");
     }
 
-    // A standard pod is not checked at all, even with a forged leaf.
+    // A standard pod is not checked at all, even with a forged leaf on a node with no TPM.
+    let no_tpm = crate::node_evidence::NodePlatformSource::Unattested("no TPM".into());
     let launch = LaunchIdentity::Issued {
         measured: &other,
         leaf_der: &forged,
         trust_bundle: ca.trust_bundle(),
+        quotes: &no_tpm,
     };
     assert_eq!(
         require_verified_launch(IsolationProfile::Standard, launch),
@@ -257,6 +365,87 @@ async fn an_eval_cell_launch_verifies_only_as_the_node_measured_it() {
     assert_eq!(
         require_verified_launch(IsolationProfile::Standard, LaunchIdentity::NoIdentity),
         Ok(())
+    );
+}
+
+/// ADR 0016 S3: a launch only the node CA vouches for is refused by name. On a
+/// node with no TPM (the node's own `NodePlatformSource`, so the production arm),
+/// with the very leaf that verifies on the TPM node; and on the TPM node, a leaf
+/// that names no launch quote (`.1.7` missing), and one naming a quote the node
+/// does not hold. Each of these leaves passes the CA-only check.
+#[tokio::test]
+async fn an_eval_cell_launch_rooted_in_the_ca_alone_is_refused() {
+    use nucleus_identity::{SelfSignedCa, VerifiedLaunch};
+    let ca = SelfSignedCa::new("test.local").unwrap();
+    let measured = quoted_measurement();
+    let digest = fixture_quote_digest();
+    let quoted = launch_leaf(&ca, LAUNCH_QUOTE_LEAF_KEY, &measured, Some(&digest)).await;
+    let unquoted = launch_leaf(&ca, LAUNCH_QUOTE_LEAF_KEY, &measured, None).await;
+    let mut elsewhere = digest;
+    elsewhere[0] ^= 0x01;
+    let unheld = launch_leaf(&ca, LAUNCH_QUOTE_LEAF_KEY, &measured, Some(&elsewhere)).await;
+    let ca_bundle = nucleus_identity::CaClient::trust_bundle(&ca);
+    for leaf in [&quoted, &unquoted, &unheld] {
+        VerifiedLaunch::verify(leaf, ca_bundle).expect("the node CA alone vouches for each");
+    }
+
+    let tpm = FixtureTpmNode::new();
+    let no_tpm = crate::node_evidence::NodePlatformSource::Unattested(
+        "no TPM attester configured (--node-evidence-tpm is unset)".into(),
+    );
+    let cases: [(&[u8], &dyn OwnLaunchQuotes, &str); 3] = [
+        (&quoted, &no_tpm, "this node has no TPM"),
+        (&unquoted, &tpm, "names no launch quote"),
+        (&unheld, &tpm, "holds no launch quote"),
+    ];
+    for (leaf, quotes, why) in cases {
+        let e = require_verified_launch(
+            IsolationProfile::EvalCell,
+            LaunchIdentity::Issued {
+                measured: &measured,
+                leaf_der: leaf,
+                trust_bundle: ca_bundle,
+                quotes,
+            },
+        )
+        .expect_err("a launch the CA alone roots");
+        assert!(matches!(e, EvalCellRefused::LaunchNotTpmRooted(_)), "{e:?}");
+        assert!(
+            e.to_string().contains("not rooted in this node's TPM"),
+            "{e}"
+        );
+        assert!(e.to_string().contains(why), "{why}: {e}");
+    }
+}
+
+/// ADR 0016 S3, the certificate swap: the same CA, measurement and `.1.7`, but
+/// another key. The node CA cannot tell it from the real leaf; the quote, taken
+/// over the real leaf's key, refuses it.
+#[tokio::test]
+async fn an_eval_cell_launch_quoted_over_another_key_is_refused() {
+    use nucleus_identity::{SelfSignedCa, VerifiedLaunch};
+    let ca = SelfSignedCa::new("test.local").unwrap();
+    let measured = quoted_measurement();
+    let other_key = rcgen::KeyPair::generate().unwrap().serialize_pem();
+    let swapped = launch_leaf(&ca, &other_key, &measured, Some(&fixture_quote_digest())).await;
+    let ca_bundle = nucleus_identity::CaClient::trust_bundle(&ca);
+    VerifiedLaunch::verify(&swapped, ca_bundle).expect("the CA-only root cannot see the swap");
+
+    let e = require_verified_launch(
+        IsolationProfile::EvalCell,
+        LaunchIdentity::Issued {
+            measured: &measured,
+            leaf_der: &swapped,
+            trust_bundle: ca_bundle,
+            quotes: &FixtureTpmNode::new(),
+        },
+    )
+    .expect_err("a quote over another key does not root this leaf");
+    assert!(matches!(e, EvalCellRefused::LaunchNotTpmRooted(_)), "{e:?}");
+    assert!(
+        e.to_string()
+            .contains("not taken over this leaf's key and measurement"),
+        "{e}"
     );
 }
 
