@@ -28,8 +28,8 @@
 |-----------|-----------------|
 | Access controls | Per-agent permission profiles |
 | Audit controls | Cryptographic log verification |
-| Integrity controls | Read-only rootfs, signed requests |
-| Transmission security | HMAC-SHA256 request signing |
+| Integrity controls | Read-only rootfs, authenticated transports |
+| Transmission security | SPIFFE mTLS; peer-verified local transports |
 
 ### NIST SP 800-57 (Key Management)
 

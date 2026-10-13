@@ -17,7 +17,7 @@ and invalidates Verus verification conditions.
 | **PodSpec** | `apiVersion: nucleus/v1`, field names, policy profile names | Integration tests |
 | **MCP Tools** | `read`, `write`, `run`, `glob`, `grep`, `web_fetch` | Tool-proxy tests |
 | **gRPC** | `nucleus.node.v1.NodeService` RPCs and message field numbers 1-8 | Proto compatibility |
-| **HMAC Protocol** | Header names (`x-nucleus-signature`, etc.), SHA-256 algorithm | Auth tests |
+| **Approval signature headers** | Header names (`x-nucleus-signature`, etc.); Ed25519, or HMAC-SHA256 for a legacy approval secret | Auth tests |
 | **Audit v1** | Entry fields (sequence through prev_hash), SHA-256 hash chain | Chain verification tests |
 | **Receipt v1** | Field set (pod_id through spiffe_id), `v1_content_hash` algorithm | Receipt verification |
 

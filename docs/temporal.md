@@ -37,16 +37,16 @@ workflow AgentFlow(input) {
 
 - Each activity has a short timeout + retry policy.
 - Workflow uses idempotent activities (CreatePod returns existing pod if retried).
-- Signals are authenticated (signature/HMAC) to prevent fake approvals.
+- Signals are authenticated (signature) to prevent fake approvals.
 - Use a per-pod workflow ID (pod UUID) for traceability.
 
 ## Minimal integration points
 
 - Activity stubs for `CreatePod`, `WaitReady`, `RunTool`, `Approve`, `FetchLogs`, `CancelPod`.
-- HTTP client that signs requests (HMAC headers) to node/proxy.
+- HTTP client that authenticates to node/proxy with an mTLS client certificate; approvals carry an Ed25519 signature.
 - Workflow state stores pod ID + proxy address.
 
 ## Signer helpers
 
-- Rust: `crates/nucleus-client` provides `sign_http_headers` / `sign_grpc_headers`.
+- Rust: `crates/nucleus-client` provides `sign_approval_headers_ed25519` for approvals; `sign_http_headers` / `sign_grpc_headers` remain only for a pod provisioned with a legacy approval secret.
 - TypeScript: `examples/sign_request.ts` contains a minimal signer.

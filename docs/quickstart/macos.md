@@ -76,9 +76,10 @@ name. If the probe says available, Tier 2 works, whatever else the output guesse
    Firecracker + jailer, the guest kernel (SHA-256 verified against a constant
    compiled into the binary), the nucleus rootfs, `nucleus-node`, and the Linux
    `nucleus` CLI.
-3. Generates three HMAC secrets in the macOS Keychain and writes them to a
-   root-owned `0600` `/etc/nucleus/node.env` in the VM, along with a systemd unit
-   that reads it.
+3. Writes a root-owned `0600` `/etc/nucleus/node.env` in the VM, which carries
+   no shared secret (the node's API is mTLS-only, and its pods are reached over
+   transports that authenticate the node), along with a systemd unit that reads
+   it.
 4. Boots a real pod and verifies it (below).
 
 The VM template names **no** artifact versions or URLs. Those live in one place

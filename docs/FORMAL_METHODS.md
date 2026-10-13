@@ -354,7 +354,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | **Execution receipts** | Tested | Cryptographic pod execution proof with token usage and cost tracking |
 | **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification |
-| **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink |
+| **Audit log verification** | Tested | Ed25519-signed records + SHA-256 chain; optional S3 append-only sink |
 | **PodSpec scanner** | Tested | Uninhabitable state, credentials, network, isolation, timeout checks |
 | **Claude Code scanner** | Tested | Uninhabitable state via allow/deny projection, Bash capability propagation |
 | **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection |
