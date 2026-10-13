@@ -466,6 +466,39 @@ impl TpmNode {
         serde_json::to_vec_pretty(&evidence).map_err(|e| e.to_string())
     }
 
+    /// Take a launch quote over `nonce` (ADR 0016 D2), store it by digest beside
+    /// the epoch evidence, and return the digest the pod's SVID names (OID
+    /// `.1.7`). The anonymous evidence listener serves it by that digest.
+    ///
+    /// Serialized with every other quote on the attester mutex; the time it
+    /// took is logged, so the per-launch cost is measured where it is paid, and
+    /// a quote over [`LAUNCH_QUOTE_BUDGET`] is a warning.
+    fn quote_launch(&self, nonce: [u8; 32]) -> Result<[u8; 32], String> {
+        let started = std::time::Instant::now();
+        let bytes = self.quote(Freshness::Challenge {
+            eat_nonce: Nonce::new(nonce.to_vec())?,
+        })?;
+        let digest = evidence_digest(&bytes);
+        write_atomic(
+            &self.store.join(format!("{}.json", hex::encode(digest))),
+            &bytes,
+        )?;
+        let elapsed = started.elapsed();
+        info!(
+            launch_quote_sha256 = %hex::encode(digest),
+            elapsed_ms = elapsed.as_millis(),
+            "launch quote taken"
+        );
+        if elapsed > LAUNCH_QUOTE_BUDGET {
+            warn!(
+                elapsed_ms = elapsed.as_millis(),
+                budget_ms = LAUNCH_QUOTE_BUDGET.as_millis(),
+                "launch quote over its budget: every launch on this node waits for it"
+            );
+        }
+        Ok(digest)
+    }
+
     /// Take the next epoch quote, store it, and make it the one in force.
     fn advance_epoch(&self) -> Result<Epoch, String> {
         let counter = self
@@ -603,7 +636,44 @@ impl TpmNode {
     }
 }
 
+/// What one launch quote may cost (ADR 0016 D2). Measured 2026-10-13 on the
+/// agent builder, quote + store + SVID issue together: p50 2.0 ms / max 2.3 ms on
+/// swtpm 0.7.3, and p50 75.6 ms / max 77.3 ms on a GCE Shielded VM's vTPM
+/// (`/dev/tpmrm0`), 20 launches each. The budget is about three times the
+/// vTPM's: a discrete TPM's ECC primary is slower than a virtual one's.
+const LAUNCH_QUOTE_BUDGET: Duration = Duration::from_millis(250);
+
+/// The node's TPM as the quoter of each launch it measures (ADR 0016 D2).
+struct TpmLaunchQuoter(Arc<TpmNode>);
+
+impl nucleus_identity::LaunchQuoter for TpmLaunchQuoter {
+    fn quote_launch(&self, nonce: [u8; 32]) -> nucleus_identity::launch_quote::QuoteFuture<'_> {
+        let node = Arc::clone(&self.0);
+        Box::pin(async move {
+            let quoted = tokio::task::spawn_blocking(move || node.quote_launch(nonce))
+                .await
+                .map_err(|e| {
+                    nucleus_identity::Error::Internal(format!("launch quote task: {e}"))
+                })?;
+            quoted.map_err(|e| nucleus_identity::Error::Internal(format!("launch quote: {e}")))
+        })
+    }
+}
+
 impl NodePlatformSource {
+    /// How this node roots the launches it measures: with a TPM, every issue of
+    /// a measured launch is also quoted by it and names the quote (`.1.7`); a
+    /// TPM quote that fails then issues nothing. Without one, the node CA's
+    /// signature is the only root, and the leaf says no more than that.
+    pub(crate) fn launch_rooting(&self) -> nucleus_identity::LaunchRooting {
+        match self {
+            Self::Unattested(_) => nucleus_identity::LaunchRooting::NodeCa,
+            Self::Tpm(node) => {
+                nucleus_identity::LaunchRooting::Tpm(Arc::new(TpmLaunchQuoter(Arc::clone(node))))
+            }
+        }
+    }
+
     /// Decide the source at startup. With a TPM configured, the first epoch
     /// quote is taken here, so a node that serves has evidence in force.
     pub(crate) fn start(
@@ -1245,6 +1315,196 @@ mod tests {
         let att = source.attestation_now(1_791_247_262);
         assert_eq!(att.tier(), nucleus_federation::ClaimedTier::Unattested);
         assert_eq!(att.evidence(), &nucleus_federation::EvidenceRef::NoEvidence);
+    }
+
+    /// ADR 0016 D2 in composition, against a TPM: a node started with a TPM
+    /// issues each measured launch an SVID naming a launch quote (`.1.7`); the
+    /// anonymous evidence listener serves that quote by the digest; and the
+    /// quote roots the leaf (`LaunchRoot::Tpm`, Attested) under the node's own
+    /// reference and pin. The issue latency of a quoted launch is printed: the
+    /// per-launch cost D2 budgets.
+    ///
+    /// Against swtpm:
+    /// `swtpm socket --tpm2 --tpmstate dir=$D --server type=tcp,port=2321
+    ///  --ctrl type=tcp,port=2322 --flags not-need-init,startup-clear &`
+    /// then `NUCLEUS_SWTPM_ADDR=127.0.0.1:2321 cargo nextest run -p nucleus-node
+    /// --run-ignored only a_tpm_node_quotes_each_launch --no-capture`. Against
+    /// a device instead, `NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE=/dev/tpmrm0` (as a
+    /// user that may open it and read securityfs).
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "needs a running swtpm at NUCLEUS_SWTPM_ADDR, or NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE"]
+    async fn a_tpm_node_quotes_each_launch_and_the_quote_roots_it() {
+        use nucleus_node_evidence::attester::Attester;
+        use nucleus_node_evidence::tpm::AkPublic;
+        use nucleus_node_evidence::{Expect, REFERENCE_PROFILE, ReferenceValues};
+        use std::io::Write as _;
+        use tower::ServiceExt as _;
+
+        let device = std::env::var("NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE").ok();
+        let endpoint = match &device {
+            Some(path) => TpmEndpoint::Device(path.into()),
+            None => TpmEndpoint::Socket(
+                std::env::var("NUCLEUS_SWTPM_ADDR").expect("NUCLEUS_SWTPM_ADDR"),
+            ),
+        };
+        // The AK the node will quote with, pinned as an operator would. swtpm
+        // serves one connection at a time, so this one is closed first.
+        let pin = {
+            let mut a = Attester::new(
+                endpoint.connect().unwrap(),
+                AkTemplate::DefaultEccP256,
+                default_pcrs(),
+                LogSources::linux(),
+                AkAnchorClaim::None,
+            );
+            let ak = AkPublic::from_tpm2b_public(&a.ak_public().unwrap()).unwrap();
+            hex::encode(ak.spki_sha256())
+        };
+        let dir = tempfile::tempdir().unwrap();
+        fn none<T>() -> Expect<T> {
+            Expect::NotChecked("software TPM: no firmware, no IMA".into())
+        }
+        let reference = ReferenceManifest {
+            profile: REFERENCE_PROFILE.into(),
+            tag_id: "swtpm-node".into(),
+            reference_values: ReferenceValues {
+                pcrs: Default::default(),
+                secure_boot: none(),
+                efi_applications: none(),
+                boot_files: none(),
+                kernel_cmdline: none(),
+                ima: none(),
+            },
+        };
+        let reference_path = dir.path().join("reference.json");
+        std::fs::write(&reference_path, serde_json::to_vec(&reference).unwrap()).unwrap();
+        // A software TPM gets no logs: the host's own event log speaks for the
+        // host's TPM, not this one. A device gets the kernel's.
+        let logs = dir.path().join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+        let (tpm, software_tpm, anchor, logs) = match endpoint {
+            TpmEndpoint::Device(path) => (Some(path), None, "operator:test-device", None),
+            TpmEndpoint::Socket(addr) => (None, Some(addr), "software-tpm:swtpm-node", Some(logs)),
+        };
+        let args = NodeEvidenceArgs {
+            node_evidence_tpm: tpm,
+            node_evidence_software_tpm: software_tpm,
+            node_evidence_ak_template: "default-ecc".into(),
+            node_evidence_anchor: anchor.into(),
+            node_evidence_epoch_secs: 300,
+            node_evidence_reference: Some(reference_path),
+            node_evidence_ak_pin: Some(pin),
+            node_evidence_logs: logs,
+            allow_federation_key_in_file: false,
+            allow_node_keys_in_file: false,
+            public: Default::default(),
+        };
+        let executor = [0x5e; 32];
+        let source = NodePlatformSource::start(&args, dir.path(), executor, false).unwrap();
+        let NodePlatformSource::Tpm(node) = &source else {
+            panic!("a software TPM node is a TPM node");
+        };
+        let manager =
+            crate::identity::IdentityManager::new("test.local", Duration::from_secs(3600))
+                .unwrap()
+                .with_launch_rooting(source.launch_rooting());
+        let public = crate::public_evidence::router(crate::public_evidence::PublicState::new(
+            source.evidence_store().into(),
+            executor,
+            1000,
+        ));
+
+        let mut kernel = tempfile::NamedTempFile::new().unwrap();
+        kernel.write_all(b"kernel").unwrap();
+        let mut rootfs = tempfile::NamedTempFile::new().unwrap();
+        rootfs.write_all(b"rootfs").unwrap();
+
+        let mut issue_ms = Vec::new();
+        for _ in 0..20 {
+            let pod = uuid::Uuid::new_v4();
+            let id = manager.identity_for_pod(pod, "default", "quoted");
+            let measured = manager
+                .compute_attestation(
+                    &pod.to_string(),
+                    kernel.path(),
+                    rootfs.path(),
+                    b"config",
+                    crate::image_identity::Measured::default(),
+                )
+                .await
+                .unwrap();
+            let started = std::time::Instant::now();
+            let cert = manager
+                .fetch_attested_certificate(&id, &pod.to_string())
+                .await
+                .expect("a quoted launch is issued");
+            issue_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            let leaf = cert.leaf().der();
+
+            let digest = nucleus_identity::extract_launch_quote_digest(leaf)
+                .unwrap()
+                .expect("a TPM node's SVID names its launch quote");
+            let resp = public
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/v1/evidence/{}", hex::encode(digest)))
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::OK,
+                "the quote is served publicly"
+            );
+            let document = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .unwrap();
+
+            let own = node.own_appraisal.as_ref().expect("configured");
+            let binding = node.binding().unwrap();
+            let verified = nucleus_identity::VerifiedLaunch::verify_tpm(
+                leaf,
+                manager.trust_bundle(),
+                &document,
+                &nucleus_identity::LaunchQuotePolicy {
+                    expected_binding: &binding,
+                    reference: &own.reference,
+                    anchors: &own.anchors,
+                    now: unix_now().unwrap(),
+                },
+            )
+            .expect("the served quote roots the served SVID");
+            assert!(matches!(
+                verified.root(),
+                nucleus_identity::LaunchRoot::Tpm(_)
+            ));
+            nucleus_identity::AttestationRequirements::exact(
+                *measured.kernel_hash(),
+                *measured.rootfs_hash(),
+                *measured.config_hash(),
+            )
+            .verify(verified.launch())
+            .unwrap();
+        }
+        issue_ms.sort_by(f64::total_cmp);
+        eprintln!(
+            "quoted launch issue latency ({}) over {} launches: p50 {:.1} ms, p90 {:.1} ms, \
+             max {:.1} ms",
+            device.as_deref().unwrap_or("swtpm"),
+            issue_ms.len(),
+            issue_ms[issue_ms.len() / 2],
+            issue_ms[issue_ms.len() * 9 / 10],
+            issue_ms[issue_ms.len() - 1],
+        );
+        let p90 = issue_ms[issue_ms.len() * 9 / 10];
+        assert!(
+            p90 < LAUNCH_QUOTE_BUDGET.as_secs_f64() * 1000.0,
+            "p90 {p90:.1} ms is over the {} ms launch-quote budget",
+            LAUNCH_QUOTE_BUDGET.as_millis()
+        );
     }
 
     #[test]

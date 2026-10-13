@@ -29,6 +29,7 @@ async fn start_server(sock: &std::path::Path) -> Identity {
                     [1; 32], [2; 32], [3; 32],
                 ),
                 mediator_key_sha256: None,
+                rooting: nucleus_identity::LaunchRooting::NodeCa,
             },
         )
         .await
