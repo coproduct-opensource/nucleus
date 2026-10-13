@@ -1301,33 +1301,41 @@ mod tests {
         assert_eq!(att.evidence(), &nucleus_federation::EvidenceRef::NoEvidence);
     }
 
-    /// ADR 0016 D2 in composition, against a software TPM: a node started with
-    /// a TPM issues each measured launch an SVID naming a launch quote (`.1.7`);
-    /// the anonymous evidence listener serves that quote by the digest; and the
+    /// ADR 0016 D2 in composition, against a TPM: a node started with a TPM
+    /// issues each measured launch an SVID naming a launch quote (`.1.7`); the
+    /// anonymous evidence listener serves that quote by the digest; and the
     /// quote roots the leaf (`LaunchRoot::Tpm`, Attested) under the node's own
     /// reference and pin. The issue latency of a quoted launch is printed: the
     /// per-launch cost D2 budgets.
     ///
-    /// Run on a host with swtpm:
+    /// Against swtpm:
     /// `swtpm socket --tpm2 --tpmstate dir=$D --server type=tcp,port=2321
     ///  --ctrl type=tcp,port=2322 --flags not-need-init,startup-clear &`
     /// then `NUCLEUS_SWTPM_ADDR=127.0.0.1:2321 cargo nextest run -p nucleus-node
-    /// --run-ignored only a_tpm_node_quotes_each_launch --no-capture`.
+    /// --run-ignored only a_tpm_node_quotes_each_launch --no-capture`. Against
+    /// a device instead, `NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE=/dev/tpmrm0` (as a
+    /// user that may open it and read securityfs).
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "needs a running swtpm at NUCLEUS_SWTPM_ADDR"]
+    #[ignore = "needs a running swtpm at NUCLEUS_SWTPM_ADDR, or NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE"]
     async fn a_tpm_node_quotes_each_launch_and_the_quote_roots_it() {
-        use nucleus_node_evidence::attester::{Attester, SocketTransport, Tpm};
+        use nucleus_node_evidence::attester::Attester;
         use nucleus_node_evidence::tpm::AkPublic;
         use nucleus_node_evidence::{Expect, REFERENCE_PROFILE, ReferenceValues};
         use std::io::Write as _;
         use tower::ServiceExt as _;
 
-        let addr = std::env::var("NUCLEUS_SWTPM_ADDR").expect("NUCLEUS_SWTPM_ADDR");
+        let device = std::env::var("NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE").ok();
+        let endpoint = match &device {
+            Some(path) => TpmEndpoint::Device(path.into()),
+            None => TpmEndpoint::Socket(
+                std::env::var("NUCLEUS_SWTPM_ADDR").expect("NUCLEUS_SWTPM_ADDR"),
+            ),
+        };
         // The AK the node will quote with, pinned as an operator would. swtpm
         // serves one connection at a time, so this one is closed first.
         let pin = {
             let mut a = Attester::new(
-                Tpm::new(SocketTransport::connect(&addr).unwrap()),
+                endpoint.connect().unwrap(),
                 AkTemplate::DefaultEccP256,
                 default_pcrs(),
                 LogSources::linux(),
@@ -1354,18 +1362,23 @@ mod tests {
         };
         let reference_path = dir.path().join("reference.json");
         std::fs::write(&reference_path, serde_json::to_vec(&reference).unwrap()).unwrap();
-        // No logs: the host's own event log speaks for its TPM, not this one.
+        // A software TPM gets no logs: the host's own event log speaks for the
+        // host's TPM, not this one. A device gets the kernel's.
         let logs = dir.path().join("logs");
         std::fs::create_dir_all(&logs).unwrap();
+        let (tpm, software_tpm, anchor, logs) = match endpoint {
+            TpmEndpoint::Device(path) => (Some(path), None, "operator:test-device", None),
+            TpmEndpoint::Socket(addr) => (None, Some(addr), "software-tpm:swtpm-node", Some(logs)),
+        };
         let args = NodeEvidenceArgs {
-            node_evidence_tpm: None,
-            node_evidence_software_tpm: Some(addr),
+            node_evidence_tpm: tpm,
+            node_evidence_software_tpm: software_tpm,
             node_evidence_ak_template: "default-ecc".into(),
-            node_evidence_anchor: "software-tpm:swtpm-node".into(),
+            node_evidence_anchor: anchor.into(),
             node_evidence_epoch_secs: 300,
             node_evidence_reference: Some(reference_path),
             node_evidence_ak_pin: Some(pin),
-            node_evidence_logs: Some(logs),
+            node_evidence_logs: logs,
             allow_federation_key_in_file: false,
             allow_node_keys_in_file: false,
             public: Default::default(),
@@ -1462,7 +1475,9 @@ mod tests {
         }
         issue_ms.sort_by(f64::total_cmp);
         eprintln!(
-            "quoted launch issue latency over {} launches: p50 {:.1} ms, p90 {:.1} ms, max {:.1} ms",
+            "quoted launch issue latency ({}) over {} launches: p50 {:.1} ms, p90 {:.1} ms, \
+             max {:.1} ms",
+            device.as_deref().unwrap_or("swtpm"),
             issue_ms.len(),
             issue_ms[issue_ms.len() / 2],
             issue_ms[issue_ms.len() * 9 / 10],
