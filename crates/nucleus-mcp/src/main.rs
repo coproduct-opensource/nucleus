@@ -78,10 +78,34 @@ struct Args {
     /// A summary line is written on session close.
     #[arg(long, env = "NUCLEUS_MCP_KERNEL_TRACE")]
     kernel_trace: Option<PathBuf>,
-    /// Sandbox token for authenticating with the tool proxy.
-    /// Proves this MCP bridge is running inside a managed sandbox.
-    #[arg(long, env = "NUCLEUS_MCP_SANDBOX_TOKEN")]
-    sandbox_token: Option<String>,
+}
+
+/// Environment variables of flags this bridge no longer has, each with why.
+///
+/// Once a flag is deleted, clap refuses it on the command line by name
+/// (`unexpected argument '--sandbox-token'`). Its variable is another matter:
+/// clap never looks at an environment variable it was not told about, so a
+/// caller still setting one would be ignored silently and believe the bridge
+/// was carrying it. Each is refused at startup by name instead (ADR 0007 B-2,
+/// fail closed; A-1, "not read" is not "read and fine").
+const RETIRED_ENV: &[(&str, &str)] = &[(
+    "NUCLEUS_MCP_SANDBOX_TOKEN",
+    "--sandbox-token was retired with the tool-proxy's tier-3 orchestrator token (#2446 \
+     step 3c); this bridge never sent it, and nothing mints one",
+)];
+
+/// Refuses the first retired variable that `is_set` reports, naming it.
+///
+/// # Errors
+///
+/// When any variable in [`RETIRED_ENV`] is set, empty or not.
+fn refuse_retired_env(is_set: impl Fn(&str) -> bool) -> Result<()> {
+    for (var, why) in RETIRED_ENV {
+        if is_set(var) {
+            anyhow::bail!("{var} is set, but {why}. Unset {var}.");
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -695,6 +719,7 @@ fn main() -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let args = Args::parse();
+    refuse_retired_env(|var| std::env::var_os(var).is_some())?;
     let policy = match args.spec.as_ref() {
         Some(path) => Some(load_policy(path)?),
         None => None,
@@ -1446,6 +1471,34 @@ fn write_error(stdout: &mut impl Write, id: Option<Value>, code: i64, message: &
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2446 step 3c: `--sandbox-token` is gone, so clap refuses the flag by
+    /// name. Red before: the flag parsed into a field nothing read.
+    #[test]
+    fn the_sandbox_token_flag_is_refused_by_name() {
+        let err = Args::try_parse_from([
+            "nucleus-mcp",
+            "--proxy-url",
+            "unix:///run/nucleus-door/workload.sock",
+            "--sandbox-token",
+            "test-token-123",
+        ])
+        .expect_err("--sandbox-token is retired");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(err.to_string().contains("--sandbox-token"), "{err}");
+    }
+
+    /// The flag's variable, which clap no longer looks at, is refused by name
+    /// when set at all (an empty value included), and nothing else is.
+    #[test]
+    fn the_sandbox_token_variable_is_refused_by_name() {
+        let err = refuse_retired_env(|var| var == "NUCLEUS_MCP_SANDBOX_TOKEN")
+            .expect_err("a retired variable is refused")
+            .to_string();
+        assert!(err.contains("NUCLEUS_MCP_SANDBOX_TOKEN"), "{err}");
+        assert!(err.contains("#2446"), "{err}");
+        refuse_retired_env(|var| var == "NUCLEUS_MCP_PROXY_URL").expect("a live variable");
+    }
 
     /// Read one whole HTTP/1.1 request (head and `content-length` body) from
     /// `stream`, answer it with `status` and a JSON `body`, and return the

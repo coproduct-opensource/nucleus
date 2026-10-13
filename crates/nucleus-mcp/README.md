@@ -42,6 +42,7 @@ nucleus-mcp \
 | `--spec` | `NUCLEUS_MCP_SPEC` | PodSpec used to filter visible tools |
 | `--session-id` | `NUCLEUS_MCP_SESSION_ID` | UUID v7 for audit correlation (auto if unset) |
 | `--kernel-trace` | `NUCLEUS_MCP_KERNEL_TRACE` | JSONL path for per-call kernel decisions |
+| ~~`--sandbox-token`~~ | `NUCLEUS_MCP_SANDBOX_TOKEN` | removed (#2446 step 3c): never sent, and nothing mints one; the flag is an unknown argument and the variable, set at all, is refused by name at startup |
 
 Run `nucleus-mcp --help` for the full list.
 
