@@ -80,7 +80,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
       - name: Is this change in scope?
@@ -112,7 +112,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
       - name: Is this change in scope?
@@ -223,7 +223,7 @@ jobs:
     runs-on: ${{ vars.ARM64_METAL_RUNNER }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           toolchain: stable
           targets: aarch64-unknown-linux-musl
@@ -291,7 +291,7 @@ jobs:
         with:
           fetch-depth: 0
           filter: blob:none
-      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+      - uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master
         with:
           # `toolchain` is REQUIRED when the action is pinned by SHA: the tag name
           # is what would otherwise supply it, and a SHA carries no tag.
