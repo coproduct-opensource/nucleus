@@ -237,6 +237,8 @@ mod tests {
             prev_hash: "00".into(),
             hash: format!("hash-of-{op}"),
             signature: "hmac".into(),
+            sig_alg: None,
+            signer: None,
         }
     }
 

@@ -197,14 +197,6 @@ impl Node {
             env: vec![
                 ("RUST_LOG", "info".into()),
                 ("NUCLEUS_RECEIPT_FIXTURE_TOKEN", token),
-                (
-                    "NUCLEUS_NODE_PROXY_AUTH_SECRET",
-                    uuid::Uuid::new_v4().to_string(),
-                ),
-                (
-                    "NUCLEUS_NODE_PROXY_APPROVAL_SECRET",
-                    uuid::Uuid::new_v4().to_string(),
-                ),
             ],
             state: state.clone(),
             address,

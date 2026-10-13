@@ -706,12 +706,16 @@ pub fn resolve_http_auth(
     state: &crate::NodeState,
     parts: &axum::http::request::Parts,
 ) -> Result<AuthContext, crate::ApiError> {
-    Ok(spiffe_context_for_request(
+    let context = spiffe_context_for_request(
         &state.authz_policy,
         &parts.method,
         parts.uri.path(),
         &parts.extensions,
-    )?)
+    )?;
+    if let Some(proofs) = &state.request_proofs {
+        proofs.api(parts)?;
+    }
+    Ok(context)
 }
 
 /// Which pod an HTTP caller acts as, for `auth_middleware`: its caller token

@@ -44,6 +44,7 @@ mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
+mod guest_request_proof;
 mod host_decide;
 mod host_socket;
 mod identity_fusion;
@@ -61,6 +62,7 @@ mod pod_cert;
 mod pod_mgmt;
 mod policy;
 mod proposal;
+mod retired;
 mod run_gate;
 mod sandbox_proof;
 mod session_token;
@@ -71,6 +73,7 @@ mod telemetry;
 mod unicode_audit;
 mod url_allow;
 mod validation;
+mod workload_request_proof;
 
 use crate::api_error::ApiError;
 mod artifact;
@@ -170,14 +173,12 @@ struct Args {
     /// Optional vsock port override.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_VSOCK_PORT")]
     vsock_port: Option<u32>,
-    /// Shared secret for HMAC request signing.
-    /// HMAC key for the shared-secret auth tier.
-    ///
-    /// Defaults to empty because a host-verified vsock listener does not use it
-    /// — see `enforce_hmac_key_quality`, which still refuses an empty key on
-    /// every transport that can actually select the HMAC tier.
-    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET", default_value = "")]
-    auth_secret: String,
+    /// RETIRED (#2446 step 3). It keyed the shared-secret tier and the tier-3
+    /// sandbox token, and both are deleted. Declared only so that a launcher
+    /// still passing it (flag or env) is refused by name at startup
+    /// (`retired::refuse_auth_secret`) instead of being silently ignored.
+    #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUTH_SECRET", hide = true)]
+    auth_secret: Option<String>,
     /// Maximum allowed clock skew (seconds) for signed requests.
     #[arg(
         long,
@@ -192,9 +193,18 @@ struct Args {
         default_value = "/var/log/nucleus/audit.log"
     )]
     audit_log: PathBuf,
-    /// HMAC secret for the Article 12 log and its shipper. It no longer keys
-    /// the audit log at `--audit-log`: that log is signed with an Ed25519 key
-    /// this process generates and holds (`audit_log`, #3293).
+    /// Privileged workload proof state, outside the workload tree. The default
+    /// survives proxy restarts within a guest boot; use a private persistent
+    /// mount when recovery across guest boots is required.
+    #[arg(
+        long,
+        env = "NUCLEUS_WORKLOAD_PROOF_STATE",
+        default_value = "/run/nucleus-workload-proof"
+    )]
+    workload_proof_state: PathBuf,
+    /// HMAC secret for the Article 12 shipper's channel to the host. It keys
+    /// neither log: the audit log (#3293) and the Article 12 log (#3309) are
+    /// signed with an Ed25519 key this process generates and holds (`audit_log`).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_AUDIT_SECRET")]
     audit_secret: Option<String>,
     /// Path for the EU AI Act Article 12 record-keeping log (JSONL, hash-chained).
@@ -518,6 +528,8 @@ struct Args {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
+    guest_proof: Option<Arc<guest_request_proof::Gate>>,
+    workload_proof: Option<Arc<workload_request_proof::Gate>>,
     pub(crate) runtime: Arc<PodRuntime>,
     approvals: Arc<ApprovalRegistry>,
     audit: Arc<AuditLog>,
@@ -536,7 +548,6 @@ pub(crate) struct AppState {
     /// expressible. It becomes real when the log gains durable backing. See
     /// `docs/production-delta.md`, "Receipt log resilience (FM-3)".
     receipts: Arc<portcullis_effects::receipt::ReceiptLog>,
-    auth: AuthConfig,
     approval_auth: AuthConfig,
     /// Approver PUBLIC keys for signature-based approvals. `Some` makes the
     /// Ed25519 tier the ONLY way into `/v1/approve` (the HMAC approval tier
@@ -749,50 +760,6 @@ pub(crate) fn core_capabilities(
 }
 
 /// Extract an ActorIdentity from the auth context for verdict recording.
-/// Refuse a world-known HMAC key — but only on transports that can select the
-/// HMAC tier.
-///
-/// An EMPTY `auth_secret` satisfies "present" while being a key anyone can
-/// compute: an attacker signs with `HMAC(∅, msg)` and every signed request and
-/// sandbox token becomes forgeable. That has always been fail-closed here.
-///
-/// What changed is that on a **host-verified vsock listener** the HMAC tier is
-/// unreachable — `auth::select_auth_tier` returns `HostVsock`, and the peer's
-/// identity comes from a CID the guest kernel sets and no guest process can
-/// forge. On that transport the key is not weak, it is *unused*, and demanding
-/// one would force a secret onto the kernel command line for nothing. That
-/// command line is world-readable inside the guest, which is the exposure this
-/// whole change exists to remove.
-///
-/// So: still fail closed wherever the key can be reached, and stay silent only
-/// where it provably cannot be.
-fn enforce_hmac_key_quality(auth_secret: &str, host_verified_transport: bool) {
-    if host_verified_transport {
-        if !auth_secret.trim().is_empty() {
-            warn!(
-                "an HMAC auth secret was supplied but this server is bound to a host-verified \
-                 listener, where the HMAC tier is unreachable; it keys only the tier-3 \
-                 sandbox token (#2446 step 3 removes both)"
-            );
-        }
-        return;
-    }
-    if auth_secret.trim().is_empty() {
-        error!(
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is empty — refusing to start: an empty HMAC key is \
-             world-known and makes sandbox tokens and request auth forgeable (fail-closed)"
-        );
-        std::process::exit(1);
-    }
-    if auth_secret.len() < nucleus_client::MIN_AUTH_SECRET_LEN {
-        warn!(
-            secret_len = auth_secret.len(),
-            min = nucleus_client::MIN_AUTH_SECRET_LEN,
-            "NUCLEUS_TOOL_PROXY_AUTH_SECRET is shorter than the recommended minimum — weak HMAC key"
-        );
-    }
-}
-
 /// Thin adapter from `Args`' individual path fields to `node_identity::require`,
 /// which takes plain paths so it can be unit-tested without a full `Args`.
 fn require_node_identity(args: &Args, flag_hint: &str) -> node_identity::NodeIdentityPem {
@@ -1089,19 +1056,23 @@ async fn main() -> Result<(), ApiError> {
     let args = Args::parse();
     st.mark("args_parse");
 
-    // === Auth-secret sanity (fail-closed on a world-known key) ===
-    // `auth_secret` is a required arg, but an EMPTY string satisfies "present"
-    // while being a world-known HMAC key — an empty key makes sandbox tokens and
-    // signed requests trivially forgeable (an attacker computes HMAC(∅, msg)).
-    // Refuse to start rather than authenticate against it. Legit deployments
-    // always provide a real secret, so this never affects them.
-    // `.trim().is_empty()` (matching nucleus-node) also rejects a whitespace-only
-    // secret, which is effectively unset.
-    // MOVED, not removed — see `enforce_hmac_key_quality` below. The check needs
-    // to know whether this server will be bound to a host-verified vsock
-    // listener, and that is only known once the spec is loaded. Refusing an
-    // empty key here would make the secretless vsock path impossible; refusing
-    // it nowhere would fail open on the transports that still need HMAC.
+    // === Retired shared secret (#2446 step 3) ===
+    // The shared-secret tier and the tier-3 token it keyed are deleted. A
+    // launcher still handing this process a secret is refused by name rather
+    // than started with a credential that does nothing.
+    if let Err(why) = retired::refuse_auth_secret(args.auth_secret.as_deref()) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
+    // On stderr, like the other startup notices: it must reach the boot log
+    // whatever the tracing filter is.
+    if let Some(notice) = sandbox_proof::retired_token_notice(
+        std::env::var(sandbox_proof::RETIRED_SANDBOX_TOKEN_ENV)
+            .ok()
+            .as_deref(),
+    ) {
+        eprintln!("WARNING: {notice}");
+    }
     // Move B: requests to nucleus-node (pod management HTTP, lockdown gRPC)
     // now authenticate over mTLS with this pod's own SVID — there is no
     // node-auth secret left to sanity-check here. See `load_node_identity`.
@@ -1118,8 +1089,6 @@ async fn main() -> Result<(), ApiError> {
             .spire_socket
             .clone()
             .or_else(|| std::env::var("SPIFFE_ENDPOINT_SOCKET").ok()),
-        sandbox_token: std::env::var("NUCLEUS_SANDBOX_TOKEN").ok(),
-        auth_secret: args.auth_secret.as_bytes().to_vec(),
     };
     let sandbox_proof = match st
         .timed(
@@ -1141,6 +1110,9 @@ async fn main() -> Result<(), ApiError> {
         .await?;
     let mut spec: PodSpec =
         nucleus_yaml::from_str(&spec_contents).map_err(|e| ApiError::Spec(e.to_string()))?;
+
+    let guest_proof_config = guest_request_proof::Config::from_spec(&spec)?;
+    let guest_proof_path = args.audit_log.with_extension("request-proofs.olog");
 
     // This pod's certificate of authority: verified ONCE, against the pinned
     // anchor (never the token's own embedded key). Present-but-invalid is
@@ -1245,11 +1217,6 @@ async fn main() -> Result<(), ApiError> {
         }
         None => (None, None, None),
     };
-
-    let auth = AuthConfig::new(
-        args.auth_secret.as_bytes(),
-        Duration::from_secs(args.auth_max_skew_secs),
-    );
 
     // Build drand config for approval signatures
     let drand_config = if args.drand_enabled {
@@ -1511,13 +1478,8 @@ async fn main() -> Result<(), ApiError> {
     // are made against a chain that is missing it.
     let art12_log = match args.art12_log.as_ref() {
         Some(path) => Some(
-            art12_sink::open_log(
-                path,
-                args.audit_secret.as_deref(),
-                &spec.spec.work_dir,
-                &session_id,
-            )
-            .map_err(ApiError::Spec)?,
+            art12_sink::open_log(path, audit.signer(), &spec.spec.work_dir, &session_id)
+                .map_err(ApiError::Spec)?,
         ),
         None => None,
     };
@@ -1644,8 +1606,14 @@ async fn main() -> Result<(), ApiError> {
     let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
-    // === Auth-secret sanity, transport-aware (fail-closed where it matters) ===
-    enforce_hmac_key_quality(&args.auth_secret, host_verified);
+    // === A transport that can authenticate something (#2446 step 3) ===
+    // With the shared-secret tier deleted, plain TCP without mTLS proves no
+    // caller: every route but /v1/health would be refused. Refuse to start
+    // instead, by name, rather than serve a proxy nothing can use.
+    if let Err(why) = retired::require_proven_transport(host_verified, args.mtls) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
 
     // The grant a person approved, so a denial can explain itself. Verified
     // against the same root the certificate is, and simply absent on any
@@ -1666,14 +1634,20 @@ async fn main() -> Result<(), ApiError> {
     });
 
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
+    let guest_proof = guest_proof_config
+        .map(|c| c.open(&guest_proof_path).map(Arc::new))
+        .transpose()?;
+    let workload_proof =
+        workload_request_proof::provision_runtime(&spec, &args.workload_proof_state)?.map(Arc::new);
     let state = AppState {
+        guest_proof,
+        workload_proof,
         receipts: Arc::clone(&receipts),
         path_provenance: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         dlc_provisioned,
         runtime: Arc::new(runtime),
         approvals,
         audit,
-        auth,
         approval_auth,
         approval_verifier,
         host_verified_transport: host_verified,
@@ -2114,6 +2088,22 @@ async fn auth_middleware(
         .await
         .map_err(|e| ApiError::Body(e.to_string()))?;
 
+    if let Some(gate) = &state.guest_proof {
+        let evidence = attestation::TransportEvidence::of(&parts.extensions)
+            .map_err(ApiError::AttestationFailed)?;
+        // Only the sealed workload-door admission distinguishes local workload
+        // requests. No caller-controlled header can bypass the host proof gate.
+        if matches!(evidence.ingress(), auth::Ingress::WorkloadDoor { .. }) {
+            state
+                .workload_proof
+                .as_ref()
+                .ok_or(ApiError::Auth(auth::AuthError::InvalidHeader("dpop")))?
+                .verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
+        } else {
+            gate.verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
+        }
+    }
+
     // Skip attestation check for health endpoint
     if parts.uri.path() == HEALTH_PATH {
         let req = axum::http::Request::from_parts(parts, Body::from(bytes));
@@ -2213,9 +2203,10 @@ async fn auth_middleware(
         // before the stream reached the router. The workload holds no secret;
         // being that uid on that socket is the authentication.
         (auth::AuthTier::WorkloadDoor { uid }, _) => auth::verify_workload_door(uid),
-        // Zero authority since #2446 step 2: authenticated or not, refused.
-        (auth::AuthTier::Hmac, _) => {
-            return Err(auth::refuse_shared_secret(&parts.headers, &bytes, &state.auth).into());
+        // Nothing proves this caller, and there is no secret left to ask
+        // for one (#2446 step 3): refused, by name.
+        (auth::AuthTier::Unproven, _) => {
+            return Err(auth::AuthError::UnprovenTransport.into());
         }
     };
 

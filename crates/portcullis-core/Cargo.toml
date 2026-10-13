@@ -27,10 +27,12 @@ serde = ["dep:serde", "dep:toml", "nucleus-ifc-kernel/serde"]
 test-helpers = ["nucleus-ifc-kernel/test-helpers"]
 attestation = ["dep:sha2"]
 artifact = ["dep:serde", "dep:serde_json", "dep:sha2"]
-c2pa-manifest = ["dep:c2pa", "artifact"]
 envelope = ["dep:sha2"]
 wasm-sandbox = ["dep:wasmtime", "dep:sha2"]
-zkvm = ["dep:risc0-zkvm", "dep:serde", "dep:serde_json", "dep:sha2"]
+# No `zkvm` feature (removed 2026-10-12): risc0 is not in the root workspace, so a build
+# asking for `portcullis-core/zkvm` is refused by cargo by name rather than given a
+# receipt type with no zkVM behind it. The receipt type lives in the excluded
+# crates/portcullis-zkvm-guest (own Cargo.lock, not run in CI).
 
 [dependencies]
 # The IFC admission core — carved out of this crate in MVK M3. Re-exported below
@@ -43,8 +45,6 @@ toml = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 wasmtime = { version = "48", optional = true }
-c2pa = { workspace = true, optional = true }
-risc0-zkvm = { workspace = true, optional = true }
 
 [dev-dependencies]
 wat = "1"

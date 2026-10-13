@@ -73,8 +73,10 @@ nucleus-audit scan --auto
 ### 2. Run your agent inside Nucleus
 
 ```bash
-# Start the tool-proxy (intercepts all tool calls)
-nucleus-tool-proxy --spec agent.yaml --auth-secret $SECRET
+# Start a tool-proxy for this directory (intercepts all tool calls). It mints
+# the run's identity and serves on a peer-verified Unix socket; there is no
+# shared secret to pass.
+nucleus shell --profile codegen --print-config
 
 # Your agent connects to the proxy instead of directly executing tools.
 # Every tool call is checked against the permission lattice.

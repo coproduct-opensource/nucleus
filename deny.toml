@@ -20,25 +20,12 @@ version = 2
 # See https://github.com/RustSec/advisory-db
 ignore = [
   # rsa Marvin Attack — no fix available upstream.
-  # Transitive via c2pa-rs. Not exploitable: we use c2pa for content
-  # credential assertions, not RSA key operations.
-  # Also a direct dependency of nucleus-node-evidence, which VERIFIES RSA
+  # A direct dependency of nucleus-node-evidence, which VERIFIES RSA
   # signatures (TPM quotes, AK certificate chains) with public keys only.
   # Marvin is a timing side channel on private-key decryption; that crate
-  # holds no RSA private key and decrypts nothing.
+  # holds no RSA private key and decrypts nothing. Its only path in the root
+  # lockfile (the c2pa-rs path is gone).
   "RUSTSEC-2023-0071",
-
-  # tracing-subscriber ANSI escape — transitive via risc0-zkvm → ark-relations.
-  # Feature-gated behind `zkvm`, not in default build.
-  "RUSTSEC-2025-0055",
-
-  # bincode 1.x is unmaintained (RUSTSEC-2025-0141) — informational, NOT a
-  # vulnerability. bincode 1.3.3 is pulled TRANSITIVELY via risc0-zkvm 3.0.5 →
-  # portcullis-core (behind the `zkvm` feature, surfaced under deny's
-  # `--all-features` scan); not removable without dropping risc0. Our own code
-  # does NOT depend on it — the nucleus-witness-gossip wire codec uses the
-  # maintained `postcard`. Sunset: drops when risc0-zkvm moves off bincode 1.
-  "RUSTSEC-2025-0141",
 ]
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"

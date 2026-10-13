@@ -6,6 +6,7 @@ mod sarif;
 mod scan_agent_settings;
 mod scan_mcp_config;
 mod scan_podspec;
+mod signed_chain;
 mod suggest;
 mod tool_pattern;
 mod verify_art12;
@@ -43,6 +44,8 @@ enum Command {
     HostEffects(verify_host_effects::Command),
     #[command(flatten)]
     Execution(verify_execution::Command),
+    #[command(flatten)]
+    Art12(verify_art12::Command),
     /// Verify a tool-proxy JSONL audit log: Ed25519 signatures under a pinned
     /// signer and the hash chain (#3293). Legacy shared-secret records verify
     /// only against a non-empty secret.
@@ -169,12 +172,16 @@ enum Command {
         #[arg(long)]
         new_parser: String,
     },
-    /// Verify C2PA content credentials — cross-check sidecar with receipt chain (#1018).
+    /// Inspect a provenance output's header and cross-check it with the
+    /// receipt chain (#1018).
     ///
-    /// Reads provenance-output.json and its companion .c2pa manifest,
-    /// extracts the nucleus.witness_digest assertion, and verifies it
-    /// matches the receipt chain head hash.
-    VerifyC2pa {
+    /// Reads provenance-output.json, reports its header and field
+    /// derivations, and checks the header's chain head against the last
+    /// receipt. C2PA support was removed from nucleus: a companion `.c2pa`
+    /// sidecar is reported as NOT VERIFIED, never silently skipped.
+    /// `verify-c2pa` is kept as an alias so existing callers learn that.
+    #[command(alias = "verify-c2pa")]
+    InspectProvenance {
         /// Provenance output JSON file.
         #[arg(long)]
         output: PathBuf,
@@ -253,38 +260,6 @@ enum Command {
         #[arg(long)]
         input: PathBuf,
     },
-    /// Verify an EU AI Act Article 12 record-keeping log.
-    ///
-    /// Checks sequence continuity, hash chaining, and (with a secret) the HMAC
-    /// over each record's canonical preimage. Prints what was established AND
-    /// what was not — a chain proves no party lacking the secret altered the
-    /// file, not that the log is complete or that its signer is trustworthy.
-    #[command(mut_args = |a| a.hide_env_values(true))]
-    VerifyArt12 {
-        /// Path to the JSONL Article 12 log.
-        #[arg(long)]
-        log: PathBuf,
-        /// Signing secret. Without it, only the hash chain is checked.
-        #[arg(long, env = "NUCLEUS_ART12_SECRET")]
-        secret: Option<String>,
-        /// Emit the report as JSON instead of text.
-        #[arg(long)]
-        json: bool,
-        /// Executor attestation JSON, as sent with the session-complete receipt.
-        ///
-        /// Supplying it (with --executor-pubkey) is what turns "no third party
-        /// altered this file" into evidence about the pod: the executor key
-        /// lives on the node and the pod never holds it.
-        #[arg(long, requires = "executor_pubkey")]
-        attestation: Option<PathBuf>,
-        /// The executor's Ed25519 public key, hex-encoded (32 bytes).
-        #[arg(long, requires = "attestation")]
-        executor_pubkey: Option<String>,
-        /// Require every record to be decided under this certificate fingerprint
-        /// (hex): the pod's `fingerprint` in the node's `authority.json` (#2437).
-        #[arg(long)]
-        authority_fingerprint: Option<String>,
-    },
     /// Verify a log of signed MediationReceipts and render a scoreboard.
     ///
     /// Distinct from `verify-receipts` (the receipt-hook chain): a
@@ -358,21 +333,21 @@ pub enum AuditError {
     TornTail { line: usize, verified: usize },
     #[error("invalid audit log at line {line}: {message}")]
     Invalid { line: usize, message: String },
-    /// A legacy (pre-#3293) record, and no key that could authenticate it.
+    /// A legacy record (an audit record from before #3293, an Article 12
+    /// record from before #3309), and no key that could authenticate it.
     #[error(
-        "line {line} is a legacy shared-secret MAC record (written before #3293) and {why}. \
-         On vsock and Unix-socket pods that MAC was keyed with an EMPTY secret, which anyone \
-         can compute, so it is refused rather than reported as verified"
+        "line {line} is a legacy shared-secret MAC record (written before the log was signed, \
+         #3293/#3309) and {why}. Such a MAC was keyed with an EMPTY secret on vsock and \
+         Unix-socket pods, or with one derived from the session id, which anyone can compute, \
+         so it is refused rather than reported as verified"
     )]
     LegacyMacUnkeyed { line: usize, why: &'static str },
     /// A signed record, and nothing the caller trusts that names its signer.
     #[error(
-        "line {line} is signed, but nothing pins its signer: pass --signer-pubkey (the \
-         NUCLEUS-AUDIT-SIGNER key the proxy printed at boot) or --tail-hash (the pod \
-         receipt's audit_tail_hash). A signature under a key the log names for itself proves \
-         nothing about who wrote it"
+        "line {line} is signed, but nothing pins its signer: pass {how}. A signature under a \
+         key the log names for itself proves nothing about who wrote it"
     )]
-    UnpinnedSigner { line: usize },
+    UnpinnedSigner { line: usize, how: &'static str },
     #[error("error: {0}")]
     Backend(String),
 }
@@ -383,6 +358,7 @@ fn main() -> Result<(), AuditError> {
     match cli.command {
         Command::HostEffects(command) => command.run()?,
         Command::Execution(command) => command.run()?,
+        Command::Art12(command) => command.run()?,
         Command::Verify {
             log,
             signer_pubkeys,
@@ -396,7 +372,7 @@ fn main() -> Result<(), AuditError> {
                 secret_file.as_deref(),
                 auth_secret.as_deref(),
             )?;
-            let pins = verify_tool_proxy::Pins::parse(&signer_pubkeys, tail_hash, legacy)?;
+            let pins = verify_tool_proxy::pins(&signer_pubkeys, tail_hash, legacy)?;
             verify_tool_proxy_log(&log, &pins)?.print();
         }
         Command::VerifyChain { log, secret } => {
@@ -434,8 +410,8 @@ fn main() -> Result<(), AuditError> {
         Command::ProvenanceLog { output } => {
             provenance_log(&output)?;
         }
-        Command::VerifyC2pa { output, receipts } => {
-            verify_c2pa(&output, receipts.as_deref())?;
+        Command::InspectProvenance { output, receipts } => {
+            inspect_provenance(&output, receipts.as_deref())?;
         }
         Command::DiffProvenance { old, new } => {
             diff_provenance(&old, &new)?;
@@ -671,79 +647,6 @@ fn main() -> Result<(), AuditError> {
                 .unwrap_or(Severity::Info);
             if worst <= Severity::High {
                 std::process::exit(1);
-            }
-        }
-        Command::VerifyArt12 {
-            log,
-            secret,
-            json,
-            attestation,
-            executor_pubkey,
-            authority_fingerprint,
-        } => {
-            let mut report =
-                verify_art12::verify_art12_log(&log, secret.as_ref().map(|s| s.as_bytes()))?;
-            verify_art12::apply_authority_requirement(
-                &mut report,
-                authority_fingerprint.as_deref(),
-            )?;
-
-            if let (Some(att_path), Some(pubkey_hex)) = (attestation, executor_pubkey) {
-                let att: portcullis::art12_record::Art12Attestation =
-                    serde_json::from_str(&std::fs::read_to_string(&att_path)?)
-                        .map_err(|e| AuditError::Json { line: 0, source: e })?;
-                let key = verify_art12::executor_pubkey_from_hex(&pubkey_hex)?;
-                verify_art12::check_attestation(&att, &report.chain_head, &key)?;
-                report.attestation_checked = true;
-                report
-                    .limitations
-                    .retain(|l| !l.contains("holder of the secret"));
-                report.limitations.push(
-                    "The executor attestation binds this log's HEAD, not its content: a pod that \
-                     recorded nothing would export a validly signed empty log."
-                        .to_string(),
-                );
-            }
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&report)
-                        .map_err(|e| AuditError::Json { line: 0, source: e })?
-                );
-            } else {
-                println!("Article 12 log: {}", log.display());
-                println!("  records:            {}", report.records);
-                println!("  chain head:         {}", report.chain_head);
-                println!(
-                    "  signatures checked: {}",
-                    if report.signatures_checked {
-                        "yes"
-                    } else {
-                        "NO"
-                    }
-                );
-                println!(
-                    "  identified actors:  {} of {}",
-                    report.identified_actors, report.records
-                );
-                println!(
-                    "  executor attested:  {}",
-                    if report.attestation_checked {
-                        "yes"
-                    } else {
-                        "NO"
-                    }
-                );
-                for (verdict, n) in &report.verdicts {
-                    println!("  verdict {verdict:<18} {n}");
-                }
-                // Printed, not appended as a footnote a reader may skip: the
-                // point of the list is that "verified" is narrower than it
-                // sounds.
-                println!("\n  This run did NOT establish:");
-                for l in &report.limitations {
-                    println!("    - {l}");
-                }
             }
         }
         Command::VerifyMediationReceipts {
@@ -1703,8 +1606,8 @@ fn provenance_log(output_path: &Path) -> Result<(), AuditError> {
     Ok(())
 }
 
-/// Diff two provenance outputs (#1001).
-fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), AuditError> {
+/// Inspect a provenance output header and cross-check it with the receipt chain (#1018).
+fn inspect_provenance(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), AuditError> {
     let prov_str = std::fs::read_to_string(output_path)
         .map_err(|e| AuditError::Backend(format!("{}: {e}", output_path.display())))?;
     let prov: serde_json::Value = serde_json::from_str(&prov_str)
@@ -1746,48 +1649,25 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
 
     let mut had_failure = false;
 
-    println!("C2PA Provenance Inspection");
-    println!("==========================");
+    println!("Provenance Inspection");
+    println!("=====================");
     println!("Source:          {}", output_path.display());
     println!("Schema hash:     {schema_hash}");
     println!("Chain head:      {chain_head}");
     println!("Contains AI:     {contains_ai}");
     println!("Fields:          {det_count} deterministic, {ai_count} AI-derived");
 
-    // Check for .c2pa sidecar and verify if c2pa-verify feature is enabled.
+    // C2PA support was removed from nucleus. A `.c2pa` sidecar beside the
+    // output means someone expected it checked, and nothing here can check
+    // it — so say exactly that rather than pass over it (A-1). It is not a
+    // failure of THIS inspection, whose verdict covers the header and the
+    // receipt chain only.
     let sidecar_path = output_path.with_extension("c2pa");
     if sidecar_path.exists() {
-        let sidecar_size = std::fs::metadata(&sidecar_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
-        if sidecar_size == 0 {
-            println!("C2PA sidecar:    EMPTY (0 bytes) — invalid");
-            had_failure = true;
-        } else {
-            #[cfg(feature = "c2pa-verify")]
-            {
-                match verify_c2pa_sidecar(output_path) {
-                    Ok(info) => {
-                        println!("C2PA sidecar:    VERIFIED ({} bytes)", sidecar_size);
-                        println!("  Assertions:    {}", info.assertion_count);
-                        println!("  Validation:    {:?}", info.validation_state);
-                    }
-                    Err(e) => {
-                        println!("C2PA sidecar:    FAILED — {e}");
-                        had_failure = true;
-                    }
-                }
-            }
-            #[cfg(not(feature = "c2pa-verify"))]
-            {
-                println!(
-                    "C2PA sidecar:    present ({} bytes, build with --features c2pa-verify to verify signature)",
-                    sidecar_size
-                );
-            }
-        }
-    } else {
-        println!("C2PA sidecar:    not found (run with NUCLEUS_C2PA_CERT to generate)");
+        println!(
+            "C2PA sidecar:    {} — NOT VERIFIED: C2PA support was removed from nucleus",
+            sidecar_path.display()
+        );
     }
 
     // Cross-check receipt chain head — use exact equality, not substring match.
@@ -1844,41 +1724,15 @@ fn verify_c2pa(output_path: &Path, receipts_path: Option<&Path>) -> Result<(), A
 
     if had_failure {
         println!("\nresult: FAIL — issues found (see above)");
-        return Err(AuditError::Backend("C2PA verification found issues".into()));
+        return Err(AuditError::Backend(
+            "provenance inspection found issues".into(),
+        ));
     }
-    println!(
-        "\nresult: ok — provenance inspection complete (note: C2PA signature not yet verified)"
-    );
+    println!("\nresult: ok — provenance header and receipt chain inspected");
     Ok(())
 }
 
-#[cfg(feature = "c2pa-verify")]
-struct C2paVerifyInfo {
-    assertion_count: usize,
-    validation_state: String,
-}
-
-#[cfg(feature = "c2pa-verify")]
-fn verify_c2pa_sidecar(output_path: &Path) -> Result<C2paVerifyInfo, String> {
-    // c2pa 0.82 deprecated `Reader::from_file` in favor of an explicit
-    // Context (instead of thread-local settings).
-    let reader: c2pa::Reader = c2pa::Reader::from_context(c2pa::Context::new())
-        .with_file(output_path)
-        .map_err(|e| format!("{e}"))?;
-
-    let validation_state = format!("{:?}", reader.validation_state());
-
-    let assertion_count = reader
-        .active_manifest()
-        .map(|m: &c2pa::Manifest| m.assertions().len())
-        .unwrap_or(0);
-
-    Ok(C2paVerifyInfo {
-        assertion_count,
-        validation_state,
-    })
-}
-
+/// Diff two provenance outputs (#1001).
 fn diff_provenance(old_path: &Path, new_path: &Path) -> Result<(), AuditError> {
     let old_str = std::fs::read_to_string(old_path)
         .map_err(|e| AuditError::Backend(format!("{}: {e}", old_path.display())))?;
@@ -2093,9 +1947,9 @@ fn verify_provenance(output_path: &Path, schema_path: Option<&Path>) -> Result<(
 /// }
 /// ```
 ///
-/// Hash-only verification is always performed (no network, no risc0 runtime).
-/// Full cryptographic proof verification requires the risc0-zkvm feature and
-/// a running RISC Zero verifier — flagged as an offline-only limitation.
+/// Only hash shape is checked: this build has no zkVM backend (risc0 left the root
+/// workspace 2026-10-12), so a receipt claiming proof bytes is a FAILED check by
+/// name, never a pass it could not earn (ADR 0007 A-2). Hash-only is informational.
 fn check_zkvm_receipt(
     output: &serde_json::Value,
     checks_passed: &mut u32,
@@ -2143,10 +1997,8 @@ fn check_zkvm_receipt(
         .unwrap_or(false);
 
     if has_proof {
-        println!(
-            "  \u{2713} zkVM receipt: proof bytes present (full verification requires risc0-zkvm)"
-        );
-        *checks_passed += 1;
+        println!("  \u{2717} zkVM receipt: proof claimed, built without the zkVM backend: refused");
+        *checks_failed += 1;
     } else {
         println!(
             "  \u{2139}\u{fe0f}  zkVM receipt: no proof bytes — hash-only receipt (weak guarantee)"
@@ -2348,7 +2200,7 @@ spec:
     }
 
     #[test]
-    fn test_zkvm_receipt_valid_with_proof() {
+    fn test_zkvm_receipt_with_proof_is_refused_without_backend() {
         let hash = "a".repeat(64);
         let output = serde_json::json!({
             "_provenance": {
@@ -2363,8 +2215,8 @@ spec:
         let mut passed = 0u32;
         let mut failed = 0u32;
         check_zkvm_receipt(&output, &mut passed, &mut failed);
-        assert_eq!(failed, 0, "valid receipt must have no failures");
-        assert!(passed >= 2, "should record at least 2 checks");
+        assert_eq!(passed, 1, "only the hash-shape check may pass");
+        assert_eq!(failed, 1, "an unverifiable proof claim must be refused");
     }
 
     #[test]

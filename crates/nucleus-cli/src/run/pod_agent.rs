@@ -30,6 +30,8 @@
 //!   is visible in the guest. It names only the guest's own bridge
 //!   (`guest_layout::MCP_BIN`), which finds the door through the
 //!   `NUCLEUS_TOOL_PROXY_URL` the runtime gave the workload; it holds no secret.
+//!   It carries the pod's policy for the bridge as a spec document
+//!   (`NUCLEUS_MCP_SPEC_YAML`), because the bridge refuses to start without one.
 //! - No `--settings` mediation hook. The hook is this host's binary, which the
 //!   guest does not have, and its job -- keeping the agent's built-in tools off
 //!   the operator's machine -- is done structurally in a pod: a built-in tool
@@ -50,18 +52,39 @@ use uuid::Uuid;
 use super::MediationGuard;
 
 /// The MCP configuration an agent in the pod is handed: the guest's own
-/// bridge, and nothing else. Built, not written by hand, so it is valid JSON
-/// by construction.
-pub(super) fn guest_mcp_config() -> String {
-    serde_json::json!({
+/// bridge, and the pod's policy for it. Built, not written by hand, so it is
+/// valid JSON by construction.
+///
+/// The bridge refuses to start without a spec (ADR 0007 B-2; it used to run on
+/// `PermissionLattice::permissive` and offer every tool). It runs as the
+/// workload's uid, which may not read the guest's own pod spec, so the spec
+/// travels as a document in `NUCLEUS_MCP_SPEC_YAML`: only the policy, the same
+/// lattice the pod is created with, and every other field at the spec's own
+/// serde default. An environment entry rather than an argument, so a guest
+/// whose bridge predates the variable ignores it rather than failing to start.
+///
+/// # Errors
+///
+/// The spec does not serialize.
+pub(super) fn guest_mcp_config(policy: &PermissionLattice) -> Result<String> {
+    let inner: nucleus_spec::PodSpecInner = serde_json::from_value(serde_json::json!({
+        "policy": nucleus_spec::PolicySpec::Inline {
+            lattice: Box::new(policy.clone()),
+        },
+    }))
+    .context("building the bridge's pod spec")?;
+    let spec = nucleus_yaml::to_string(&nucleus_spec::PodSpec::new(inner))
+        .context("serializing the bridge's pod spec")?;
+    Ok(serde_json::json!({
         "mcpServers": {
             "nucleus": {
                 "type": "stdio",
                 "command": nucleus_spec::guest_layout::MCP_BIN,
+                "env": { "NUCLEUS_MCP_SPEC_YAML": spec },
             }
         }
     })
-    .to_string()
+    .to_string())
 }
 
 /// The pod's workload: the named agent, confined, speaking the launch protocol
@@ -82,7 +105,7 @@ pub(super) fn workload(
     prompt: &str,
 ) -> Result<WorkloadSpec> {
     let (command, mut args) = agent.in_pod()?;
-    let config = guest_mcp_config();
+    let config = guest_mcp_config(policy)?;
     for arg in super::mcp_launch_protocol(model, config.as_ref(), guard, policy, prompt) {
         args.push(
             arg.into_string()
@@ -210,7 +233,7 @@ mod tests {
         assert_eq!(w.command, "/opt/agent");
         let tools = guard.allowed_tools().join(",");
         let budget = policy.budget.max_cost_usd.to_string();
-        let config = guest_mcp_config();
+        let config = guest_mcp_config(&policy).expect("config");
         let expected: Vec<&str> = vec![
             "--lead",
             "--setting-sources",
@@ -239,17 +262,50 @@ mod tests {
     }
 
     /// The configuration names only the guest's bridge, and carries no
-    /// secret or proxy coordinate of this host's.
+    /// secret or proxy coordinate of this host's: its one variable is the
+    /// bridge's spec.
     #[test]
     fn the_guest_mcp_config_names_only_the_guest_bridge() {
-        let v: serde_json::Value = serde_json::from_str(&guest_mcp_config()).expect("json");
+        let policy = PermissionLattice::codegen();
+        let v: serde_json::Value =
+            serde_json::from_str(&guest_mcp_config(&policy).expect("config")).expect("json");
         let servers = v["mcpServers"].as_object().expect("servers");
         assert_eq!(servers.len(), 1);
         assert_eq!(
             servers["nucleus"]["command"],
             nucleus_spec::guest_layout::MCP_BIN
         );
-        assert!(servers["nucleus"].get("env").is_none(), "{v}");
+        let env = servers["nucleus"]["env"].as_object().expect("env");
+        let keys: Vec<&str> = env.keys().map(String::as_str).collect();
+        assert_eq!(keys, ["NUCLEUS_MCP_SPEC_YAML"], "{v}");
+    }
+
+    /// ADR 0007 B-2: the guest's bridge refuses to start without a spec, so
+    /// the config must carry one, and it must be the pod's policy -- parsed
+    /// the way the bridge parses it (`PodSpec`, then `resolve_policy`). Red
+    /// before: the config carried no spec, and the bridge ran permissive.
+    #[test]
+    fn the_guest_bridge_is_given_the_pods_policy() {
+        for policy in [
+            PermissionLattice::codegen(),
+            PermissionLattice::read_only(),
+            PermissionLattice::permissive(),
+        ] {
+            let v: serde_json::Value =
+                serde_json::from_str(&guest_mcp_config(&policy).expect("config")).expect("json");
+            let doc = v["mcpServers"]["nucleus"]["env"]["NUCLEUS_MCP_SPEC_YAML"]
+                .as_str()
+                .expect("a spec document");
+            let spec: nucleus_spec::PodSpec = nucleus_yaml::from_str(doc).expect("a pod spec");
+            assert!(spec.spec.credentials.is_none(), "{doc}");
+            assert!(spec.spec.workload.is_none(), "{doc}");
+            let resolved = spec.spec.resolve_policy().expect("resolves");
+            assert_eq!(
+                serde_json::to_value(&resolved).unwrap(),
+                serde_json::to_value(policy.clone().normalize()).unwrap(),
+                "{doc}"
+            );
+        }
     }
 
     /// A-19 pair: a run carrying `--env` credentials and a pod spec built from

@@ -7,43 +7,45 @@ Test Nucleus permission enforcement locally without Kubernetes or Firecracker.
 - Rust toolchain (1.75+)
 - `curl` and `jq` for testing
 
-## 1. Build the Tool Proxy
+## 1. Build the CLI and the Tool Proxy
 
 ```bash
-cargo build -p nucleus-tool-proxy --release
+cargo build -p nucleus-cli -p nucleus-tool-proxy -p nucleus-mcp --release
+export PATH="$PWD/target/release:$PATH"
 ```
 
 ## 2. Start the Tool Proxy
 
+`nucleus shell --print-config` starts a tool proxy for the current directory and
+keeps it running until Ctrl+C. It mints a short-lived identity for the run (the
+proxy's sandbox proof) and serves on a peer-verified Unix socket, so there is no
+shared secret to choose or pass:
+
 ```bash
-./target/release/nucleus-tool-proxy \
-  --spec examples/openclaw-demo/pod.yaml \
-  --listen 127.0.0.1:8080 \
-  --auth-secret demo-secret \
-  --approval-secret approval-secret \
-  --audit-log /tmp/nucleus-demo-audit.log
+nucleus shell --profile demo --print-config
+# ...
+# Tool-proxy: unix:///tmp/nucleus-shell-<id>/p.sock
+# Audit log: ...
 ```
+
+Copy the socket path from the `Tool-proxy:` line. The proxy admits callers by the
+kernel-reported credentials of the connecting process; requests carry no
+signature.
 
 The `demo` profile includes the uninhabitable state (read + web + bash), so all bash commands require approval.
 
 ## 3. Test Permission Enforcement
 
-Create a helper function for signed requests:
+In another terminal, create a helper function:
 
 ```bash
+SOCK=/tmp/nucleus-shell-<id>/p.sock   # from the Tool-proxy: line
+
 nucleus_call() {
   local ENDPOINT=$1
   local BODY=$2
-  local TIMESTAMP=$(date +%s)
-  local ACTOR="test"
-  local MESSAGE="${TIMESTAMP}.${ACTOR}.${BODY}"
-  local SIGNATURE=$(echo -n "${MESSAGE}" | openssl dgst -sha256 -hmac "demo-secret" | awk '{print $2}')
-
-  curl -s -X POST "http://127.0.0.1:8080/v1/${ENDPOINT}" \
+  curl -s --unix-socket "${SOCK}" -X POST "http://localhost/v1/${ENDPOINT}" \
     -H "Content-Type: application/json" \
-    -H "X-Nucleus-Timestamp: ${TIMESTAMP}" \
-    -H "X-Nucleus-Actor: ${ACTOR}" \
-    -H "X-Nucleus-Signature: ${SIGNATURE}" \
     -d "${BODY}"
 }
 ```
@@ -76,13 +78,15 @@ nucleus_call "run" '{"command":"bash -c \"echo hi\""}' | jq '.kind'
 
 ## 4. Verify Audit Log
 
+Use the path from the `Audit log:` line:
+
 ```bash
-cat /tmp/nucleus-demo-audit.log | jq '{event, subject, result}'
+jq '{event, subject, result}' <audit-log-path>
 ```
 
 Each entry includes:
 - Hash-chained integrity (`prev_hash`, `hash`)
-- HMAC signature (`signature`)
+- An Ed25519 signature from a key only the proxy holds (`signature`)
 - Actor tracking
 
 ## Expected Results
@@ -109,27 +113,8 @@ This protects against prompt injection attacks that could steal secrets via web 
 
 For testing without uninhabitable state protection, use the `codegen` profile which has no web access:
 
-```yaml
-# codegen-pod.yaml
-apiVersion: nucleus/v1
-kind: Pod
-metadata:
-  name: codegen-test
-spec:
-  work_dir: .
-  timeout_seconds: 3600
-  policy:
-    type: profile
-    name: codegen
-```
-
 ```bash
-./target/release/nucleus-tool-proxy \
-  --spec codegen-pod.yaml \
-  --listen 127.0.0.1:8080 \
-  --auth-secret demo-secret \
-  --approval-secret approval-secret \
-  --audit-log /tmp/codegen-audit.log
+nucleus shell --profile codegen --print-config
 ```
 
 With `codegen`, bash commands will succeed without approval (no uninhabitable state because `web_fetch: Never`).

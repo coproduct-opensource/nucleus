@@ -389,11 +389,14 @@ pub struct WitnessBundle {
     /// has its own independent source → parser → output chain that can
     /// be verified independently. Prevents cross-field contamination.
     pub field_witnesses: std::collections::BTreeMap<String, FieldWitness>,
-    /// Optional zkVM receipt bytes proving parser execution (#1117).
-    /// When present, this is a serialized RISC Zero receipt that
-    /// cryptographically attests the parser execution. Use
-    /// `zkvm_receipt::ZkvmReceipt` (behind `zkvm` feature) to parse
-    /// and verify. Raw bytes stored here to avoid feature coupling.
+    /// Optional, UNVERIFIED zkVM receipt bytes for parser execution (#1117).
+    /// When present, this is meant to be a serialized RISC Zero receipt
+    /// attesting the parser execution. Nothing in the root workspace can
+    /// verify it: the zkVM backend is not built here, and the receipt type
+    /// (`portcullis_zkvm_guest::receipt::ZkvmReceipt`) lives in the excluded
+    /// `crates/portcullis-zkvm-guest`. The bytes are only bound into
+    /// [`Self::compute_digest`] for tamper evidence; their presence is not
+    /// evidence of anything.
     pub zkvm_receipt: Option<Vec<u8>>,
 }
 
@@ -474,7 +477,8 @@ impl WitnessBundle {
         hasher.finalize().into()
     }
 
-    /// Returns true if this bundle has a zkVM receipt attached.
+    /// Returns true if this bundle carries zkVM receipt bytes. Presence only:
+    /// the receipt is NOT verified anywhere in the root workspace.
     pub fn has_zkvm_receipt(&self) -> bool {
         self.zkvm_receipt.is_some()
     }

@@ -38,7 +38,6 @@ The verified type IS the production type -- `portcullis` re-exports `CapabilityL
 | `envelope` | sha2 | Field envelopes and witness bundles |
 | `attestation` | sha2 | Attestation hashing |
 | `wasm-sandbox` | wasmtime, sha2 | WASM parser execution |
-| `c2pa-manifest` | c2pa | C2PA content credential manifests |
 
 ## Verification Pipeline
 

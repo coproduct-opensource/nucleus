@@ -273,7 +273,13 @@ impl NodeAttestation {
             Ok(a) => Self {
                 tier: ClaimedTier::of(a.tier()),
                 evidence: named,
-                note: format!("appraised: {}", a.tier().ear_status()),
+                // The anchor is named beside the tier, so a software TPM's
+                // `attested` never reads as a hardware root.
+                note: format!(
+                    "appraised: {}, AK anchor {}",
+                    a.tier().ear_status(),
+                    serde_json::to_string(a.anchor()).unwrap_or_default()
+                ),
             },
             Err(refusal) => Self {
                 tier: ClaimedTier::Unattested,

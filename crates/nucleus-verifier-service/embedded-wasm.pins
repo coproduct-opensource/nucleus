@@ -169,5 +169,15 @@
 # /data/work/nucleus/nucleus path and /home/runner/.cargo. This same builder
 # reproduced the preceding 7e5755cf pin before updating dependencies. The
 # source commit was 0afd7450a; no exports changed, so the JS digest stays fixed.
-c569797a3eba1dc16325b3c0145e15678c32d7286428d505363c871e70d61d5c  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-10-12 (#3372): the .wasm moved because `nucleus-node-evidence`'s source did: the AK
+# anchor gained `SoftwareTpm` and the relying-party document `software_tpm_pins`, which the
+# wasm's node-evidence report parses. The digest is from CI's Clippy run of this PR's merge
+# with main (1074bff06, run 38309817891), and `c569797a…` is REPLACED, on the rule above.
+# The .js shim did not move.
+# 2026-10-13 (#3404): the .wasm moved because `nucleus-envelope`'s and `nucleus-lineage`'s
+# sources did: the in-toto/SLSA exports gained artifact subjects and the agent-provenance/v2
+# predicate, and `CallSpiffeId` gained `llm_provider`. No function the wasm exports changed
+# behaviour. The digest is from CI's Clippy run of this PR's head (4b83dcc9e, run
+# 38345190457), and `09264066…` is REPLACED, on the rule above. The .js shim did not move.
+76fe556aaac062ce9e69bd89b0838deb6e921542f5c8006684264a4cbca0b93a  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
