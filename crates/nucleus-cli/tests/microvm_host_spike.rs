@@ -1088,6 +1088,11 @@ fn mcp_roundtrip(pod: &Pod) -> Result<String, String> {
         .args([
             "exec",
             "-i",
+            // The bridge refuses to start without a spec (ADR 0007 B-2); this
+            // names the pod's own profile. A variable rather than a flag, so a
+            // host image carrying an older bridge ignores it.
+            "--env",
+            "NUCLEUS_MCP_SPEC_YAML=apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy:\n    type: profile\n    name: codegen\n",
             HOST,
             "nucleus-mcp",
             "--proxy-url",
