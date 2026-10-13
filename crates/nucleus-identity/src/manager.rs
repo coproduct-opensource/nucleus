@@ -622,7 +622,10 @@ impl<C: CaClient + 'static> SecretManager<C> {
     /// Sign a measured launch, quoting it first when it is TPM-rooted: the
     /// quote is taken over the key this CSR requests, so it binds this leaf and
     /// no other (ADR 0016 D2). A quote that cannot be taken issues nothing.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the CSR, its key, the identity and TTL, and the three launch claims: each is a distinct input to one signature"
+    )]
     async fn sign_measured(
         &self,
         csr: &str,

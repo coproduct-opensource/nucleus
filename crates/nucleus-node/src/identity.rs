@@ -72,7 +72,6 @@ pub struct IdentityManager {
     /// What roots each measured launch this node issues: the CA alone, or also
     /// the node's TPM, which quotes each issue's key and measurement (ADR 0016
     /// D2). Set from the node's platform evidence source at start-up.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     launch_rooting: nucleus_identity::LaunchRooting,
 }
 
@@ -703,6 +702,7 @@ impl std::fmt::Debug for IdentityManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityManager")
             .field("trust_domain", &self.trust_domain)
+            .field("launch_rooting", &self.launch_rooting)
             .finish()
     }
 }
