@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/nucleus-request-proof",
     "crates/nucleus-escape-canary", # In-guest Gatehouse confinement evidence
     "crates/nucleus-perf",  # Dev-only: pod concurrency + start-latency measurement
     "crates/portcullis",  # Policy: quotient lattice types
@@ -182,9 +183,6 @@ proc-macro2 = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
-
-# Content provenance (EU AI Act)
-c2pa = { version = "0.90", default-features = false, features = ["rust_native_crypto"] }
 
 # Error handling
 thiserror = "2.0"

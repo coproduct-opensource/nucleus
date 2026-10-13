@@ -119,7 +119,7 @@ impl PreparedPod {
 
     pub(crate) async fn gate(
         &self,
-        addr: SocketAddr,
+        addr: crate::signed_proxy::ProxyHealth,
         pod_dir: &Path,
         spec: &PodSpec,
         id: Uuid,
