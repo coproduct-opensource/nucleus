@@ -1756,10 +1756,51 @@ fn an_admission_refusal_carries_its_deny_code_to_the_wire() {
 mod approval_naming_parity {
     use super::*;
 
-    /// The key `mediation` hands the caller, built exactly as the
-    /// `Verdict::RequiresApproval` arm builds it.
+    struct NoopSink;
+    impl portcullis::verdict_sink::VerdictSink for NoopSink {
+        fn record(
+            &self,
+            _ctx: portcullis::verdict_sink::VerdictContext,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+        fn preflight(
+            &self,
+            _operation: Operation,
+        ) -> Result<(), portcullis::verdict_sink::SinkError> {
+            Ok(())
+        }
+    }
+
+    /// The key the reference monitor hands the caller, read off a REAL
+    /// deferral: a kernel obligated on `operation` is driven through
+    /// `mediation::decide_and_record` and the name in its `ApprovalRequired`
+    /// is returned. Not a restated `format!` — a copy of the rule here would
+    /// agree with itself whatever `mediation` did (ADR 0007 G-1).
     fn kernel_key(operation: Operation, subject: &str) -> String {
-        format!("{operation:?} {subject}")
+        let mut lattice = portcullis::PermissionLattice::permissive();
+        lattice.obligations.insert(operation);
+        let mut kernel = portcullis::kernel::Kernel::new(lattice);
+        let r = crate::mediation::decide_and_record(
+            crate::mediation::MediationEnv {
+                sink: &NoopSink,
+                actor: portcullis::verdict_sink::ActorIdentity::Unknown,
+                transport: "http",
+                grants: &crate::mediation::NoGrants,
+                shadow: &crate::host_decide::HostDecide::Off,
+            },
+            &mut kernel,
+            &portcullis::flow_graph::FlowGraph::new(),
+            operation,
+            subject,
+        )
+        .map_err(|d| d.error);
+        match r {
+            Err(ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation })) => {
+                operation
+            }
+            other => panic!("an obligated {operation:?} must defer, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1797,6 +1838,55 @@ mod approval_naming_parity {
                 "the command executor must ask by the same name as the kernel"
             );
         }
+        // The HANDLER-owned gates: fetch, search and the two listings check
+        // and spend in the handler itself, not in a sandbox. They used to
+        // spend `web_fetch {url}` / `glob {p}` / `grep {p}` / `web_search {q}`
+        // while the monitor peeked `WebFetch {url}` and so on (#3443), so the
+        // name a person was told to approve could never be the name spent.
+        for (operation, subject) in [
+            (Operation::WebFetch, "https://example.com/a?b=c"),
+            (Operation::WebSearch, "lattice meet join"),
+            (Operation::GlobSearch, "src/**/*.rs"),
+            (Operation::GrepSearch, "fn main"),
+        ] {
+            assert_eq!(
+                kernel_key(operation, subject),
+                nucleus::approval_key(operation, subject),
+                "the handler must spend the approval under the name the monitor asked for"
+            );
+        }
+        handlers_name_approvals_only_through_the_shared_rule();
+    }
+
+    /// `main.rs` and `mediation.rs` without `//` lines, so a comment naming a
+    /// pattern does not count as code using it.
+    fn code(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The other half of the parity above: a handler that formatted its own
+    /// approval name would agree with nothing the loop compares. So no
+    /// handler may build one, and none may spend one directly — every spend
+    /// goes through `ConsentHold`, which names the approval with
+    /// `nucleus::approval_key` and spends at the effect.
+    fn handlers_name_approvals_only_through_the_shared_rule() {
+        let main = code(include_str!("main.rs"));
+        let mediation = code(include_str!("mediation.rs"));
+        assert!(
+            !main.contains("approval_key = format!("),
+            "a handler formats its own approval name; use nucleus::approval_key"
+        );
+        assert!(
+            !mediation.contains("format!(\"{operation:?} {subject}\")"),
+            "the monitor restates the approval-name rule instead of calling it"
+        );
+        assert!(
+            !main.contains("state.approvals.consume("),
+            "a handler spends an approval directly, before its later checks have run"
+        );
     }
 
     /// Non-vacuity: the comparison above would hold trivially if the key
@@ -1816,6 +1906,132 @@ mod approval_naming_parity {
         );
         assert_ne!(write, edit, "operation must be part of the name");
         assert_ne!(write, other, "subject must be part of the name");
+    }
+}
+
+// ── #3443: an approval is spent only at the effect ─────────────────────────
+//
+// The handlers below check a grant early and perform the effect late. Spending
+// at the check meant every refusal in between (URL parse, host admission, the
+// per-effect gate, a failed re-discharge) left the person's consent spent and
+// the effect unperformed. These read the handler source because the handlers
+// need a full `AppState` to run, and what they pin is ORDER: the spend is the
+// last thing before the effect.
+mod consent_spent_at_the_effect {
+    /// The body of `async fn name(` in `main.rs`, up to the next handler, with
+    /// `//` lines removed.
+    fn handler(name: &str) -> String {
+        let src = include_str!("main.rs");
+        let head = format!("async fn {name}(");
+        let start = src.find(&head).unwrap_or_else(|| panic!("no `{head}`"));
+        let rest = &src[start + head.len()..];
+        // The next top-level item ends the handler.
+        let end = ["\nasync fn ", "\nfn ", "\npub(crate) fn ", "\n#["]
+            .iter()
+            .filter_map(|t| rest.find(t))
+            .min()
+            .unwrap_or(rest.len());
+        let body: String = rest[..end]
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !body.contains("async fn "),
+            "the `{name}` slice ran past its own handler"
+        );
+        body
+    }
+
+    fn at(body: &str, needle: &str, name: &str) -> usize {
+        body.find(needle)
+            .unwrap_or_else(|| panic!("`{name}` no longer contains `{needle}`"))
+    }
+
+    fn last_at(body: &str, needle: &str, name: &str) -> usize {
+        body.rfind(needle)
+            .unwrap_or_else(|| panic!("`{name}` no longer contains `{needle}`"))
+    }
+
+    /// `web_fetch` spends after every check that can refuse, and immediately
+    /// before the fetch.
+    #[test]
+    fn web_fetch_spends_only_after_every_refusal_point() {
+        let body = handler("web_fetch");
+        assert!(
+            !body.contains("approvals.consume("),
+            "web_fetch spends an approval at the point it checks it"
+        );
+        let spend = at(&body, ".spend(&state.approvals)", "web_fetch");
+        for check in [
+            "Url::parse(",
+            "admit_host(",
+            "check_url_allowlist(",
+            "admit_http_recorded(",
+            "preflight_web(",
+        ] {
+            assert!(
+                at(&body, check, "web_fetch") < spend,
+                "`{check}` can refuse after the approval is spent"
+            );
+        }
+        assert!(
+            spend < at(&body, ".fetch(", "web_fetch"),
+            "the spend must precede the effect it pays for"
+        );
+    }
+
+    /// `write_file`'s approved retry re-discharges BEFORE `request_approval`
+    /// (whose approver spends the grant), so a failed re-discharge leaves the
+    /// grant unspent.
+    #[test]
+    fn write_file_spends_only_after_the_re_discharge() {
+        let body = handler("write_file");
+        let spend = at(&body, "request_approval(", "write_file");
+        assert!(
+            last_at(&body, "preflight_fs(", "write_file") < spend,
+            "the approved write's re-discharge can refuse after the approval is spent"
+        );
+        assert!(
+            spend < at(&body, "write_approved(", "write_file"),
+            "the spend must precede the write it pays for"
+        );
+    }
+
+    /// The listings and search spend after every check that can refuse the
+    /// whole call, and before the effect.
+    #[test]
+    fn listings_and_search_spend_only_at_the_effect() {
+        for (name, checks, effect) in [
+            ("glob_search", &["preflight_glob_fs("][..], ".glob("),
+            (
+                "grep_search",
+                &["RegexBuilder::new(", "root_relative("][..],
+                "'outer: for",
+            ),
+            (
+                "web_search",
+                &["Url::parse(", "preflight_web("][..],
+                ".fetch(",
+            ),
+        ] {
+            let body = handler(name);
+            assert!(
+                !body.contains("approvals.consume("),
+                "{name} spends an approval at the point it checks it"
+            );
+            let spend = at(&body, ".spend(&state.approvals)", name);
+            for check in checks {
+                assert!(
+                    at(&body, check, name) < spend,
+                    "{name}: `{check}` can refuse after the approval is spent"
+                );
+            }
+            assert!(
+                spend < at(&body, effect, name),
+                "{name}: the spend must precede the effect it pays for"
+            );
+        }
     }
 }
 

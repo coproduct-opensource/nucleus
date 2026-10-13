@@ -213,7 +213,7 @@ fn decide_with_flow_mapped(
             // is also what the caller is handed back and feeds to `/v1/approve`
             // verbatim. One spelling, built once, so the layer that asks and the
             // layer that answers cannot disagree about what was approved.
-            let key = format!("{operation:?} {subject}");
+            let key = nucleus::approval_key(operation, subject);
             if grants.is_granted(&key) {
                 // A person already answered this deferral. Issuing the token is
                 // the whole point of `Kernel::issue_approved_token`, which

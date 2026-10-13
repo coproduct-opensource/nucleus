@@ -381,23 +381,53 @@ impl ApprovalRegistry {
 
     pub(crate) fn consume(&self, operation: &str) -> bool {
         let mut guard = self.approvals.lock().unwrap();
-        let Some(entry) = guard.get_mut(operation) else {
-            return false;
-        };
-        if is_expired(entry.expires_at_unix) {
-            guard.remove(operation);
+        if !Self::live(&mut guard, operation) {
             return false;
         }
+        Self::spend_one(&mut guard, operation);
+        true
+    }
+
+    /// Spend every key, all or none, under one lock. `Err` names the first
+    /// key that is no longer live; then nothing is spent.
+    fn consume_all(&self, keys: &[String]) -> Result<(), String> {
+        let mut guard = self.approvals.lock().unwrap();
+        if let Some(gone) = keys.iter().find(|k| !Self::live(&mut guard, k)) {
+            return Err(gone.clone());
+        }
+        for key in keys {
+            Self::spend_one(&mut guard, key);
+        }
+        Ok(())
+    }
+
+    /// Whether `key` has a live grant, purging it if it has expired.
+    fn live(guard: &mut HashMap<String, ApprovalEntry>, key: &str) -> bool {
+        match guard.get(key) {
+            Some(entry) if is_expired(entry.expires_at_unix) => {
+                guard.remove(key);
+                false
+            }
+            // Every stored count is non-zero by construction.
+            Some(_) => true,
+            None => false,
+        }
+    }
+
+    /// Spend one use of a grant [`Self::live`] just reported.
+    fn spend_one(guard: &mut HashMap<String, ApprovalEntry>, key: &str) {
+        let Some(entry) = guard.get_mut(key) else {
+            return;
+        };
         match entry.count {
             ApprovalCount::UntilExpiry => {}
             ApprovalCount::Bounded(n) => match NonZeroUsize::new(n.get() - 1) {
                 Some(rest) => entry.count = ApprovalCount::Bounded(rest),
                 None => {
-                    guard.remove(operation);
+                    guard.remove(key);
                 }
             },
         }
-        true
     }
 
     /// Whether a live grant exists for `operation`, WITHOUT spending it.
@@ -420,16 +450,93 @@ impl ApprovalRegistry {
     /// a peek cannot report a grant that a spend would then reject.
     pub(crate) fn is_granted(&self, operation: &str) -> bool {
         let mut guard = self.approvals.lock().unwrap();
-        match guard.get(operation) {
-            Some(entry) if is_expired(entry.expires_at_unix) => {
-                guard.remove(operation);
-                false
-            }
-            // Every stored count is non-zero by construction.
-            Some(_) => true,
-            None => false,
-        }
+        Self::live(&mut guard, operation)
     }
+}
+
+/// The approvals a handler has checked and will spend only at the effect
+/// (#3443).
+///
+/// A handler checks consent early and performs its effect late, and between
+/// the two sit checks that can refuse: URL parse, host admission, the URL
+/// allowlist, the per-effect gate, the discharge preflight. Spending at the
+/// check meant every one of those refusals left the person's approval spent
+/// and the effect unperformed.
+///
+/// So [`Self::require`] only PEEKS, and [`Self::spend`] — by value (ADR 0007
+/// C-4), all or none — is called immediately before the effect. A handler
+/// that returns early drops the hold, and a dropped hold spends nothing.
+#[derive(Debug)]
+pub(crate) struct ConsentHold {
+    keys: Vec<String>,
+}
+
+impl ConsentHold {
+    /// Nothing required yet.
+    pub(crate) fn empty() -> Self {
+        Self { keys: Vec::new() }
+    }
+
+    /// Require the approval for `operation` on `subject`, under the one name
+    /// the reference monitor also asks for it by (`nucleus::approval_key`).
+    /// Peeks; `Err` is that name, for the caller to approve.
+    pub(crate) fn require(
+        &mut self,
+        registry: &ApprovalRegistry,
+        operation: Operation,
+        subject: &str,
+    ) -> Result<(), String> {
+        self.require_named(registry, nucleus::approval_key(operation, subject))
+    }
+
+    /// Require an approval whose act is not an `(operation, subject)` pair —
+    /// the host-admission grant `web_egress host:port`, which consents to
+    /// reaching an undeclared host rather than to the fetch itself. Peeks.
+    pub(crate) fn require_named(
+        &mut self,
+        registry: &ApprovalRegistry,
+        key: String,
+    ) -> Result<(), String> {
+        if !registry.is_granted(&key) {
+            return Err(key);
+        }
+        // One act, one spend: a name required twice is spent once.
+        if !self.keys.contains(&key) {
+            self.keys.push(key);
+        }
+        Ok(())
+    }
+
+    /// Spend every required approval, all or none, immediately before the
+    /// effect. `Err` names one that is no longer live (it expired, or a
+    /// concurrent call spent it after it was checked); then nothing is spent.
+    pub(crate) fn spend(self, registry: &ApprovalRegistry) -> Result<(), String> {
+        registry.consume_all(&self.keys)
+    }
+}
+
+/// A [`ConsentHold::spend`] that found an approval no longer live, recorded as
+/// the refusal it is and handed back as the approval to ask for again.
+pub(crate) fn approval_lapsed(
+    sink: &dyn portcullis::verdict_sink::VerdictSink,
+    operation: Operation,
+    subject: &str,
+    actor: ActorIdentity,
+    key: String,
+) -> ApiError {
+    if let Err(e) = sink.record(VerdictContext {
+        operation,
+        subject: subject.to_string(),
+        outcome: VerdictOutcome::Deny {
+            reason: "approval_required".to_string(),
+        },
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
+    ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation: key })
 }
 
 impl crate::mediation::ApprovalGrants for ApprovalRegistry {
