@@ -860,7 +860,7 @@ impl VerifiedLaunch {
         Ok(Self {
             spiffe_id,
             launch,
-            root: crate::launch_quote::LaunchRoot::Tpm(appraised),
+            root: crate::launch_quote::LaunchRoot::Tpm(Box::new(appraised)),
         })
     }
 

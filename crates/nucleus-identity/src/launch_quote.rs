@@ -199,7 +199,7 @@ pub enum LaunchRoot {
     /// launches indistinguishable from this one.
     NodeCa,
     /// A TPM quote over the leaf's key and measurement, appraised `Attested`.
-    Tpm(Appraised),
+    Tpm(Box<Appraised>),
 }
 
 /// Appraise the launch quote `document` for the leaf `leaf_der`, whose

@@ -36,7 +36,7 @@ use std::time::Duration;
 const LEAF_KEY: &str = include_str!("../tests/fixtures/launch-quote/leaf-key.pem");
 const QUOTE: &[u8] = include_bytes!("../tests/fixtures/launch-quote/quote.json");
 /// SHA-256 of the swtpm AK's SubjectPublicKeyInfo, from `swtpm_attest`'s stderr.
-const AK_PIN: &str = "AK_PIN_PLACEHOLDER";
+const AK_PIN: &str = "c973a42e47c26d950b76f3930f8abcdb5f3915ae2c1d1df767f776f7d1025b9a";
 const SOURCE: &str = "swtpm-fixture";
 const NOW: i64 = 1_791_000_000;
 
@@ -145,7 +145,7 @@ fn the_launch_nonce_encoding_is_pinned() {
 }
 
 /// `printf 'nucleus-launch-v1spki'` then 32 × 0x11, 32 × 0x22, 32 × 0x33, through `sha256sum`.
-const GOLDEN: &str = "GOLDEN_PLACEHOLDER";
+const GOLDEN: &str = "a72f65a53bfad45fed894cd930c491b3c52759bb0135a9c1bb44caa2a1b65c60";
 
 /// Non-vacuous: the quote the swtpm took roots the leaf it was taken for, and
 /// it was taken over exactly the nonce this crate computes for that leaf.
