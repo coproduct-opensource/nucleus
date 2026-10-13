@@ -150,6 +150,27 @@ pub const OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES: &[u8] = &[
 
 pub const OID_NUCLEUS_UNMEASURED_LAUNCH_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 6];
 
+/// OID for the launch quote's digest (same PEN arc, component .1.7).
+///
+/// OID: 1.3.6.1.4.1.57212.1.7
+/// - Component: .1.7 (attestation.launch_quote)
+///
+/// Carries `SHA-256` of the launch-quote document the node stored and serves
+/// on its anonymous evidence listener (ADR 0016 D2): a TPM quote whose nonce is
+/// `SHA-256("nucleus-launch-v1" ‖ SPKI ‖ kernel ‖ rootfs ‖ config)`. The quote
+/// binds the leaf's SubjectPublicKeyInfo, not the certificate, so the
+/// certificate can name the quote without a circularity. The value has the
+/// shape of the `.1.2` and `.1.4` extensions: a version-tagged 32-byte octet
+/// string.
+///
+/// **INTERNAL / no interop commitment**, like the rest of the 57212 arc.
+pub const OID_NUCLEUS_LAUNCH_QUOTE_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x07, // .1.7 (attestation.launch_quote)
+];
+
+pub const OID_NUCLEUS_LAUNCH_QUOTE_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 7];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +273,30 @@ mod tests {
             OID_NUCLEUS_TPM_HW_ROOTING_BYTES,
         ] {
             assert_ne!(OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES, other);
+        }
+    }
+
+    #[test]
+    fn launch_quote_oid_is_its_own_component_of_the_arc() {
+        assert_eq!(
+            &OID_NUCLEUS_LAUNCH_QUOTE_BYTES[..8],
+            &OID_NUCLEUS_ATTESTATION_BYTES[..8]
+        );
+        assert_eq!(OID_NUCLEUS_LAUNCH_QUOTE_BYTES[8..], [0x01, 0x07]);
+        assert_eq!(
+            OID_NUCLEUS_LAUNCH_QUOTE_TUPLE[..8],
+            OID_NUCLEUS_ATTESTATION_TUPLE[..8]
+        );
+        assert_eq!(OID_NUCLEUS_LAUNCH_QUOTE_TUPLE[8], 7);
+        for other in [
+            OID_NUCLEUS_ATTESTATION_BYTES,
+            OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES,
+            OID_NUCLEUS_TPM_RESIDENCY_BYTES,
+            OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES,
+            OID_NUCLEUS_TPM_HW_ROOTING_BYTES,
+            OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES,
+        ] {
+            assert_ne!(OID_NUCLEUS_LAUNCH_QUOTE_BYTES, other);
         }
     }
 }

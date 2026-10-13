@@ -69,6 +69,10 @@ webpki = { package = "rustls-webpki", version = "0.103" }
 
 # IFC label encoding for X.509 extensions
 portcullis-core = { path = "../portcullis-core" }
+# The launch quote (ADR 0016 D2): `VerifiedLaunch::verify_tpm` appraises it with
+# the one verifier of node evidence. Verifier only (no `attester` feature): pure
+# Rust, no I/O, so it compiles to wasm32 as this crate does.
+nucleus-node-evidence = { path = "../nucleus-node-evidence" }
 
 # Utils
 chrono = { workspace = true, features = ["serde"] }
