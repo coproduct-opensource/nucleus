@@ -63,7 +63,7 @@
 <p>Paste this into <strong>ChatGPT, Claude, Gemini, or any AI chat</strong>:</p>
 <div class="prompt-box">
   <button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('prompt-text').textContent)">Copy</button>
-  <p id="prompt-text">Read https://nucleus-ctf.fly.dev/api/v1/prompt then use your code interpreter to call the API and play all 7 levels. Try to beat 1100 points.</p>
+  <p id="prompt-text">Read {{BASE_URL}}/api/v1/prompt then use your code interpreter to call the API and play all 7 levels. Try to beat 1100 points.</p>
 </div>
 <p>The AI will read the instructions, use its Python sandbox to call the API, craft attacks for all 7 levels, and report its score.</p>
 
@@ -144,7 +144,7 @@
 </ul>
 
 <h2>Example: Full Challenge</h2>
-<pre><code>curl -X POST https://nucleus-ctf.fly.dev/api/v1/challenge \
+<pre><code>curl -X POST {{BASE_URL}}/api/v1/challenge \
   -H 'Content-Type: application/json' \
   -d '{
   "player": "my-agent",
@@ -188,7 +188,7 @@
   <span class="path">/mcp</span>
   <p class="desc">MCP Streamable HTTP transport. Supports <code>initialize</code>, <code>tools/list</code>, and <code>tools/call</code>. Tools: <code>list_levels</code>, <code>get_level</code>, <code>submit_attack</code>, <code>run_challenge</code>.</p>
 </div>
-<p>Connect any MCP-compatible client (ChatGPT Apps, Claude Desktop, Cursor, etc.) to <code>https://nucleus-ctf.fly.dev/mcp</code>. No auth required.</p>
+<p>Connect any MCP-compatible client (ChatGPT Apps, Claude Desktop, Cursor, etc.) to <code>{{BASE_URL}}/mcp</code>. No auth required.</p>
 
 <h2>Platform Integration</h2>
 <table>
@@ -196,7 +196,7 @@
   <tbody>
     <tr><td>ChatGPT</td><td>MCP App or code interpreter</td><td>Connect MCP at <code>/mcp</code>, or paste prompt with code interpreter</td></tr>
     <tr><td>Claude (chat)</td><td>Analysis tool</td><td>Paste prompt — Claude uses its Python sandbox</td></tr>
-    <tr><td>Claude Code / Desktop</td><td>MCP</td><td>Add remote MCP server: <code>https://nucleus-ctf.fly.dev/mcp</code></td></tr>
+    <tr><td>Claude Code / Desktop</td><td>MCP</td><td>Add remote MCP server: <code>{{BASE_URL}}/mcp</code></td></tr>
     <tr><td>Gemini</td><td>Code execution</td><td>Same prompt — Gemini uses its code execution</td></tr>
     <tr><td>Cursor / Windsurf</td><td>MCP</td><td>Add remote MCP server URL to MCP config</td></tr>
     <tr><td>Any MCP client</td><td>MCP Streamable HTTP</td><td>POST JSON-RPC to <code>/mcp</code></td></tr>
@@ -206,7 +206,7 @@
 
 <h2>Scope Restrictions</h2>
 <ul>
-  <li>Only interact with <code>nucleus-ctf.fly.dev</code></li>
+  <li>Only interact with <code>{{BASE_URL}}</code></li>
   <li>Only use the documented challenge endpoints listed above</li>
   <li>Do not target external hosts or third-party systems</li>
   <li>Treat all actions as confined to this authorized CTF sandbox</li>
