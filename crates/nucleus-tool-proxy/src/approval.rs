@@ -44,6 +44,9 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use nucleus::portcullis::Operation;
 use nucleus_identity::approval_bundle::{ApprovalBundleVerifier, compute_manifest_hash};
+use nucleus_spec::PodSpec;
+use nucleus_spec::approval_binding::ApprovalBinding;
+use nucleus_spec::manifest_hash::ManifestHash;
 use portcullis::verdict_sink::{ActorIdentity, VerdictContext, VerdictOutcome};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
@@ -254,9 +257,14 @@ impl VerifiedApproval {
     /// the header's own JWK would be vacuous — an attacker could sign a bundle
     /// with their own key, embed that key in the header, and self-verify.
     /// Fail-closed: with no trusted approver key configured, nothing mints.
+    ///
+    /// The bundle is bound to `manifest_hash`, the spec's canonical v3 hash
+    /// (`GuestCapability::CanonicalManifestApproval`, #3395). The type is
+    /// minted only by [`PodSpec::manifest_hash`], so no other hash of the spec
+    /// can be handed to the mint (ADR 0007 C-1).
     pub(crate) fn verify_bundle(
         jws: &str,
-        manifest_hash: &str,
+        manifest_hash: &ManifestHash,
         trusted: &[nucleus_identity::did::JsonWebKey],
     ) -> Result<Vec<Self>, ApiError> {
         if trusted.is_empty() {
@@ -269,7 +277,7 @@ impl VerifiedApproval {
         let verifier = ApprovalBundleVerifier::new();
         let claims = trusted
             .iter()
-            .find_map(|tk| verifier.verify(jws, tk, manifest_hash).ok())
+            .find_map(|tk| verifier.verify(jws, tk, manifest_hash.as_str()).ok())
             .ok_or_else(|| {
                 ApiError::Spec(
                     "approval bundle signer is not a trusted approver key (or the signature / \
@@ -596,23 +604,73 @@ fn parse_approval_trusted_keys() -> Vec<nucleus_identity::did::JsonWebKey> {
     }
 }
 
-/// Verify a JWS approval bundle bound to `spec_contents` and register every
-/// approval it carries. See [`VerifiedApproval::verify_bundle`].
+/// Verify a JWS approval bundle bound to the spec in `spec_contents` and
+/// register every approval it carries. See [`VerifiedApproval::verify_bundle`].
+///
+/// The bundle must carry the spec's canonical v3 manifest hash
+/// ([`ApprovalBinding::CanonicalManifest`], the receipt's hash, #3393): an
+/// approval binds what the spec means, not the bytes the node's YAML writer
+/// produced. `spec_contents` is parsed here, from the file as the node wrote
+/// it, so nothing the proxy later does to its own copy of the spec moves the
+/// hash.
+///
+/// A bundle bound to the spec file's bytes — what a guest that predates
+/// [`ApprovalBinding::CAPABILITY`] binds — is refused by name
+/// ([`ApprovalBinding::LegacySpecBytes`]), never accepted as a fallback (#3395).
 fn verify_and_load_approval_bundle(
     jws: &str,
     spec_contents: &str,
     approvals: &ApprovalRegistry,
     trusted_keys: &[nucleus_identity::did::JsonWebKey],
 ) -> Result<(), ApiError> {
-    // NOT `PodSpec::manifest_hash` (the receipt's v3 rule), deliberately and for now: this
-    // check runs in the guest, and the pinned guest release hashes the spec file's bytes. Moving
-    // approvals to the canonical hash needs a guest that has it, so it is a GuestCapability row
-    // and a guest release, not a node change. Until then the bytes are whatever the node wrote.
-    let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
-    for approval in VerifiedApproval::verify_bundle(jws, &manifest_hash, trusted_keys)? {
+    let spec: PodSpec = nucleus_yaml::from_str(spec_contents).map_err(|e| {
+        ApiError::Spec(format!(
+            "approval bundle cannot be bound: the pod spec does not parse: {e}"
+        ))
+    })?;
+    let manifest_hash = spec
+        .manifest_hash()
+        .map_err(|e| ApiError::Spec(format!("approval bundle cannot be bound: {e}")))?;
+    let minted = match VerifiedApproval::verify_bundle(jws, &manifest_hash, trusted_keys) {
+        Ok(minted) => minted,
+        Err(refused) => {
+            return Err(
+                match bound_to_spec_bytes(jws, spec_contents, trusted_keys) {
+                    Some(binding) => legacy_binding_refused(binding, &manifest_hash),
+                    None => refused,
+                },
+            );
+        }
+    };
+    for approval in minted {
         approvals.approve(approval);
     }
     Ok(())
+}
+
+/// Whether a trusted approver signed `jws` for the spec file's bytes rather
+/// than for the canonical hash. Pure: it verifies and mints nothing, so the
+/// only thing it can change is which refusal is reported.
+fn bound_to_spec_bytes(
+    jws: &str,
+    spec_contents: &str,
+    trusted_keys: &[nucleus_identity::did::JsonWebKey],
+) -> Option<ApprovalBinding> {
+    let spec_bytes_hash = compute_manifest_hash(spec_contents.as_bytes());
+    let verifier = ApprovalBundleVerifier::new();
+    trusted_keys
+        .iter()
+        .any(|tk| verifier.verify(jws, tk, &spec_bytes_hash).is_ok())
+        .then_some(ApprovalBinding::LegacySpecBytes)
+}
+
+fn legacy_binding_refused(binding: ApprovalBinding, canonical: &ManifestHash) -> ApiError {
+    ApiError::Spec(format!(
+        "approval bundle refused: it is bound to the pod spec file's bytes ({binding:?}), the \
+         binding of a guest that predates {capability:?}. This guest binds approvals to the \
+         spec's canonical v3 manifest hash, {canonical}; mint the bundle for that hash (#3395)",
+        capability = ApprovalBinding::CAPABILITY,
+    ))
 }
 
 #[cfg(test)]
