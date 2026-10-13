@@ -631,7 +631,9 @@ mod tests {
     #[test]
     fn test_validate_attestation_any_allowed() {
         let verifier = AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent);
+        assert!(verifier.is_required());
         assert_eq!(verifier.validate_attestation(&info("aa")), Ok(()));
+        assert_eq!(verifier.validate_attestation(&info("ff")), Ok(()));
     }
 
     #[test]
@@ -640,38 +642,51 @@ mod tests {
             AttestationConfig::required().with_kernel_hashes(&"dd".repeat(32)),
             LaunchRoots::Absent,
         );
-        let refused = verifier
-            .validate_attestation(&info("aa"))
-            .expect_err("a kernel off the list is refused");
+        let got = verifier.validate_attestation(&info("aa"));
+        assert!(got.is_err(), "a kernel off the list is refused");
+        let refused = got.unwrap_err();
         assert!(refused.contains("kernel hash"), "{refused}");
+        assert!(
+            refused.contains(&"aa".repeat(8)),
+            "names the hash: {refused}"
+        );
     }
 
     #[test]
     fn test_validate_attestation_kernel_hash_match() {
+        // The list is normalised to lower case, as the CLI hands it over.
         let verifier = AttestationVerifier::new(
-            AttestationConfig::required().with_kernel_hashes(&"aa".repeat(32)),
+            AttestationConfig::required().with_kernel_hashes(&"AA".repeat(32)),
             LaunchRoots::Absent,
         );
         assert_eq!(verifier.validate_attestation(&info("aa")), Ok(()));
+        assert!(verifier.validate_attestation(&info("bb")).is_err());
     }
 
-    /// Not required: a certificate that does not even parse is not looked at.
+    /// Not required: nothing is looked at, whatever the transport carried.
     #[test]
     fn test_verifier_no_attestation_not_required() {
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
         let open = AttestationVerifier::new(AttestationConfig::default(), roots(&ca));
+        assert!(!open.is_required());
         assert_eq!(open.admit(&TransportEvidence::ClientCert(&[])), Ok(()));
+        assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
     }
 
-    /// Required: a certificate that does not parse fails closed.
+    /// Required: a certificate that does not parse, and no certificate at
+    /// all, both fail closed.
     #[test]
     fn test_verifier_no_attestation_required() {
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let verifier = required(&ca);
+        assert!(verifier.is_required());
+        let got = verifier.admit(&TransportEvidence::ClientCert(&[]));
+        assert!(got.is_err(), "an unparseable certificate is refused");
         assert!(
-            required(&ca)
-                .admit(&TransportEvidence::ClientCert(&[]))
-                .is_err()
+            got.unwrap_err().contains("peer launch not verified"),
+            "refused by the VerifiedLaunch check"
         );
+        assert!(verifier.admit(&TransportEvidence::None).is_err());
     }
 
     /// The retired header path, at the unit level: a well-formed launch that
@@ -698,17 +713,36 @@ mod tests {
     async fn test_verify_header_valid_attestation() {
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
         let verifier = required(&ca);
-        assert!(verifier.admit(&TransportEvidence::None).is_err());
+        // The launch alone, as a request would carry it: refused.
+        let none = verifier.admit(&TransportEvidence::None);
+        assert!(none.is_err());
+        assert!(none.unwrap_err().contains("not provided"));
+        // The same launch in a self-signed leaf: refused.
+        assert!(
+            verifier
+                .admit(&TransportEvidence::ClientCert(&forged_leaf()))
+                .is_err()
+        );
+        // In a leaf the CA signed: admitted, and it is this launch.
         let leaf = attested_leaf(&ca).await;
         assert_eq!(
             verifier.admit(&TransportEvidence::ClientCert(&leaf)),
             Ok(())
         );
+        let verified = VerifiedLaunch::verify(&leaf, ca.trust_bundle()).unwrap();
+        assert_eq!(verified.launch().kernel_hash(), launch().kernel_hash());
+        // Without the listener's bundle, not even that.
+        let no_roots = AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent);
+        assert!(
+            no_roots
+                .admit(&TransportEvidence::ClientCert(&leaf))
+                .is_err()
+        );
     }
 
     /// The floor directly, over a verified launch: L0 imposes nothing, an L1
-    /// floor admits a CA-issued launch (base `L1Software`), and an L2 floor
-    /// refuses it, naming the workload — never over-admits L2.
+    /// floor admits a CA-issued launch (base `L1Software`), and the L2 and L3
+    /// floors refuse it, naming the workload — never over-admits.
     #[tokio::test]
     async fn enforce_floor_admits_refuses_and_fails_closed() {
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
@@ -730,10 +764,13 @@ mod tests {
                 .enforce_floor(&leaf, &launch)
                 .is_ok()
         );
-        let refused = floor(AssuranceLevel::L2Device)
-            .enforce_floor(&leaf, &launch)
-            .expect_err("L2 refuses a software launch");
-        assert!(refused.contains(launch.spiffe_id()), "{refused}");
+        for level in [AssuranceLevel::L2Device, AssuranceLevel::L3MeasuredBoot] {
+            let got = floor(level).enforce_floor(&leaf, &launch);
+            assert!(got.is_err(), "{level:?} refuses a software launch");
+            let refused = got.unwrap_err();
+            assert!(refused.contains("below required floor"), "{refused}");
+            assert!(refused.contains(launch.spiffe_id()), "{refused}");
+        }
     }
 
     /// The control for every refusal below: a launch the trusted CA issued,
