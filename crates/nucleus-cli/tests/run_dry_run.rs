@@ -80,7 +80,7 @@ fn finish(mut child: Child) -> (bool, String, String) {
 }
 
 /// Prompt `-` with stdin open: the dry run must not read it, and must not
-/// refuse for want of a node URL or identity.
+/// refuse for want of a node identity.
 #[test]
 fn dry_run_with_stdin_prompt_does_not_read_stdin() {
     let fixture = Fixture::new();
@@ -91,7 +91,8 @@ fn dry_run_with_stdin_prompt_does_not_read_stdin() {
         out.contains("Prompt: from stdin (not read in a dry run)"),
         "{out}"
     );
-    assert!(out.contains("Node: (not configured:"), "{out}");
+    // The default config's node, shown though no identity is provisioned.
+    assert!(out.contains("Node URL: "), "{out}");
 }
 
 /// A node URL but no provisioned identity: a dry run shows the node and does
