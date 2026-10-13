@@ -2072,8 +2072,16 @@ mod tests {
                     "503 Service Unavailable",
                     r#"{"error":"temporarily unavailable"}"#.to_string(),
                 ),
-                // The in-pod run: create, wait for the workload, read its
-                // output, cancel. No proxy address is needed or asked for.
+                // The in-pod run: ask which guest the node boots (#3223),
+                // create, wait for the workload, read its output, cancel. No
+                // proxy address is needed or asked for. This node predates
+                // the guest report, which a run that makes no use of the
+                // guest's capabilities does not need.
+                (
+                    "GET /v1/health".to_string(),
+                    "200 OK",
+                    r#"{"status":"ok"}"#.to_string(),
+                ),
                 (
                     "POST /v1/pods".to_string(),
                     "200 OK",
