@@ -189,7 +189,7 @@ mod tests {
     /// own network stack; the label used to say `process=shared,
     /// file=unrestricted, network=host`, the request echoed back.
     #[test]
-    fn firecracker_reports_what_it_delivers_and_touches_only_labels() {
+    fn firecracker_is_faithful_and_touches_only_labels() {
         let mut spec = spec_with(PolicySpec::Profile {
             name: "default".to_string(),
         });
