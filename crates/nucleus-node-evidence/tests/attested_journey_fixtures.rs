@@ -91,6 +91,7 @@ fn federating() -> KeyBinding {
 
 fn pinned() -> AnchorPolicy {
     AnchorPolicy {
+        software_tpm_pins: Vec::new(),
         trust_roots: vec![],
         operator_pins: vec![OperatorPin {
             source: SOURCE.into(),

@@ -669,6 +669,18 @@ jobs:
         if: steps.relevance.outputs.relevant == 'true'
         with:
           node-version: "22"
+      # The node's TPM is SOFTWARE: swtpm on a loopback socket, which
+      # the collector starts, measures the node's binaries into and pins, per
+      # run, before the node starts. Evidence and results say `software_tpm`
+      # wherever they name the anchor, and a verifier accepts it only through
+      # `--allow-software-tpm-pin`. It exists so the node appraises itself
+      # Attested against this build's reference under the real admission rule
+      # (an eval cell is admitted only on an attested node), never as a
+      # hardware root. All logic is in the xtask and the collector.
+      - name: Install swtpm (the live boot node's software TPM)
+        if: steps.relevance.outputs.relevant == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq swtpm
+
       - name: Live boot evidence, verified by the public verifiers
         if: steps.relevance.outputs.relevant == 'true'
         # No check may be could_not_run: the guest prints its
@@ -676,7 +688,7 @@ jobs:
         # needs no allowance.
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --out live-boot-evidence
+          cargo xtask live-boot-evidence --bin-dir target/x86_64-unknown-linux-musl/release --arch x86_64 --sudo --software-tpm ci-swtpm --out live-boot-evidence
 
       - name: Upload the live boot evidence bundle
         if: ${{ !cancelled() && steps.relevance.outputs.relevant == 'true' }}
