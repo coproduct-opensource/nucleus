@@ -1933,7 +1933,12 @@ mod consent_spent_at_the_effect {
         let head = format!("async fn {name}(");
         let start = src.find(&head).unwrap_or_else(|| panic!("no `{head}`"));
         let rest = &src[start + head.len()..];
-        let end = rest.find("\nasync fn ").unwrap_or(rest.len());
+        // The next top-level item ends the handler.
+        let end = ["\nasync fn ", "\nfn ", "\npub(crate) fn ", "\n#["]
+            .iter()
+            .filter_map(|t| rest.find(t))
+            .min()
+            .unwrap_or(rest.len());
         let body: String = rest[..end]
             .lines()
             .filter(|l| !l.trim_start().starts_with("//"))

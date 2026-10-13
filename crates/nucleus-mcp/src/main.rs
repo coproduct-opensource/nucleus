@@ -1076,9 +1076,8 @@ fn call_tool(
                     // exfil inside the uninhabitable state asks twice. Two is
                     // the number of distinct gates, so the loop is bounded.
                     let mut held = decision.exposure_transition.dynamic_gate_applied;
-                    let mut asked = 0;
+                    let mut first = true;
                     let retry = loop {
-                        asked += 1;
                         let msg = if held {
                             format!(
                                 "uninhabitable_state({}) — exposure gate requires approval",
@@ -1100,7 +1099,8 @@ fn call_tool(
                         kernel.grant_approval(op, 1);
                         let (d, _token) = kernel.decide_with_parents(op, &subject, &parents);
                         trace.record(&d);
-                        if asked < 2 && matches!(d.verdict, Verdict::RequiresApproval) {
+                        if first && matches!(d.verdict, Verdict::RequiresApproval) {
+                            first = false;
                             held = d.exposure_transition.dynamic_gate_applied;
                             continue;
                         }
