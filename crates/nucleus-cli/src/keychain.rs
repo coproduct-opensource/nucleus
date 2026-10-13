@@ -90,13 +90,14 @@ fn nucleus_config_dir() -> Result<PathBuf> {
     Ok(config_dir.join("nucleus"))
 }
 
-/// The non-macOS store: one file per account in one directory.
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+/// The non-macOS store: one file per account in one directory. Compiled on
+/// macOS only for its tests, which never touch the Keychain.
+#[cfg(any(test, not(target_os = "macos")))]
 struct FileSecrets {
     dir: PathBuf,
 }
 
-#[cfg_attr(target_os = "macos", allow(dead_code))]
+#[cfg(any(test, not(target_os = "macos")))]
 impl FileSecrets {
     fn default_location() -> Result<Self> {
         Ok(Self {
