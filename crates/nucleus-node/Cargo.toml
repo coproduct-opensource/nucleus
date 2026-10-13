@@ -151,7 +151,7 @@ tower = { version = "0.5", features = ["util"] }
 # through `nucleus-federation`. Workspace pin: one crypto backend.
 jsonwebtoken = { workspace = true }
 # Drives the SPIFFE Workload API vsock bridge as a REAL client would.
-spiffe = { version = "0.16", features = ["workload-api-x509"] }
+spiffe = { version = "0.18", features = ["workload-api-x509"] }
 tokio-test = { workspace = true }
 # Property-based tests for the policy -> Firecracker VM-config lowering isolation
 # invariants (read-only rootfs, vsock CID distinctness, netns never omitted,
