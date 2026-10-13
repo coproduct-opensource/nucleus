@@ -82,6 +82,8 @@ impl std::fmt::Display for ProxyTarget {
 
 #[derive(Clone)]
 struct SignedProxyState {
+    guest: Option<crate::guest_proof_provision::Signer>,
+    proof: Option<Arc<nucleus_request_proof::LoopbackGate>>,
     target: ProxyTarget,
     approval: ApprovalKey,
     default_actor: Option<String>,
@@ -90,9 +92,113 @@ struct SignedProxyState {
 }
 
 pub struct SignedProxy {
+    health: ProxyHealth,
+    observation: ProxyObservation,
     listen_addr: SocketAddr,
     shutdown: Option<oneshot::Sender<()>>,
     task: JoinHandle<()>,
+}
+
+/// Host-only proof material restricted by both the signer and receiving gate.
+#[derive(Clone)]
+pub(crate) struct ProxyObservation {
+    addr: SocketAddr,
+    key: Option<Arc<Vec<u8>>>,
+}
+impl ProxyObservation {
+    pub(crate) fn proof(&self, address: &str, path: &str) -> std::io::Result<Option<String>> {
+        if address != format!("http://{}", self.addr)
+            || !nucleus_request_proof::is_supervisor_observation(path)
+        {
+            return Err(std::io::Error::other("observation target refused"));
+        }
+        use sha2::{Digest, Sha256};
+        self.key
+            .as_ref()
+            .map(|key| {
+                nucleus_identity::dpop::DpopProofBuilder::new("GET", &format!("{address}{path}"))
+                    .with_access_token(&hex::encode(Sha256::digest(b"")))
+                    .build(key)
+                    .map_err(std::io::Error::other)
+            })
+            .transpose()
+    }
+}
+
+fn observation_material(
+    addr: SocketAddr,
+) -> std::io::Result<(Arc<Vec<u8>>, nucleus_identity::did::JsonWebKey)> {
+    use base64::Engine;
+    let csr = nucleus_identity::CsrOptions::new("spiffe://node.local/ns/system/sa/observer")
+        .generate()
+        .map_err(std::io::Error::other)?;
+    let (_, pem) = x509_parser::pem::parse_x509_pem(csr.private_key().as_bytes())
+        .map_err(|_| std::io::Error::other("observation key encoding"))?;
+    let sample = nucleus_identity::dpop::DpopProofBuilder::new(
+        "GET",
+        &format!("http://{addr}/v1/workload/result"),
+    )
+    .build(&pem.contents)
+    .map_err(std::io::Error::other)?;
+    let header: nucleus_identity::dpop::DpopHeader = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(
+                sample
+                    .split('.')
+                    .next()
+                    .ok_or_else(|| std::io::Error::other("observation proof encoding"))?,
+            )
+            .map_err(std::io::Error::other)?,
+    )
+    .map_err(std::io::Error::other)?;
+    Ok((Arc::new(pem.contents), header.jwk))
+}
+
+/// A host-owned probe capability; its private key can sign only the fixed
+/// health request through this API. Never serialize or expose it to a caller.
+#[derive(Clone)]
+pub(crate) struct ProxyHealth {
+    addr: SocketAddr,
+    key: Option<Arc<Vec<u8>>>,
+}
+impl From<SocketAddr> for ProxyHealth {
+    fn from(addr: SocketAddr) -> Self {
+        Self { addr, key: None }
+    }
+}
+impl ProxyHealth {
+    pub(crate) fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+    pub(crate) fn request(&self) -> std::io::Result<String> {
+        use sha2::{Digest, Sha256};
+        let proof = match &self.key {
+            Some(key) => {
+                let token = hex::encode(Sha256::digest(b""));
+                let proof = nucleus_identity::dpop::DpopProofBuilder::new(
+                    "GET",
+                    &format!("http://{}/v1/health", self.addr),
+                )
+                .with_access_token(&token)
+                .build(key)
+                .map_err(std::io::Error::other)?;
+                format!("DPoP: {proof}\r\n")
+            }
+            None => String::new(),
+        };
+        Ok(format!(
+            "GET /v1/health HTTP/1.1\r\nHost: {}\r\n{proof}Connection: close\r\n\r\n",
+            self.addr
+        ))
+    }
+}
+
+/// Trusted launch configuration, never derived from forwarded HTTP headers.
+pub struct ProxyProofConfig {
+    pub(crate) guest: Option<crate::guest_proof_provision::Signer>,
+    pub key: nucleus_identity::did::JsonWebKey,
+    pub replay_path: PathBuf,
+    pub expires: u64,
 }
 
 impl std::fmt::Debug for SignedProxy {
@@ -139,8 +245,65 @@ impl SignedProxy {
         default_actor: Option<String>,
         drand_config: Option<DrandConfig>,
     ) -> std::io::Result<Self> {
+        Self::start_with_proof(target, approval, default_actor, drand_config, None).await
+    }
+
+    pub async fn start_with_proof(
+        target: impl Into<ProxyTarget>,
+        approval: ApprovalKey,
+        default_actor: Option<String>,
+        drand_config: Option<DrandConfig>,
+        proof: Option<ProxyProofConfig>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let listen_addr = listener.local_addr()?;
+        let mut health = ProxyHealth::from(listen_addr);
+        let mut observation = ProxyObservation {
+            addr: listen_addr,
+            key: None,
+        };
+        let guest = proof.as_ref().and_then(|config| config.guest.clone());
+        let proof = proof
+            .map(|config| {
+                use base64::Engine;
+                let csr =
+                    nucleus_identity::CsrOptions::new("spiffe://node.local/ns/system/sa/health")
+                        .generate()
+                        .map_err(std::io::Error::other)?;
+                let (_, pem) = x509_parser::pem::parse_x509_pem(csr.private_key().as_bytes())
+                    .map_err(|_| std::io::Error::other("health key encoding"))?;
+                let sample = nucleus_identity::dpop::DpopProofBuilder::new(
+                    "GET",
+                    &format!("http://{listen_addr}/v1/health"),
+                )
+                .build(&pem.contents)
+                .map_err(std::io::Error::other)?;
+                let header: nucleus_identity::dpop::DpopHeader = serde_json::from_slice(
+                    &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(
+                            sample
+                                .split('.')
+                                .next()
+                                .ok_or_else(|| std::io::Error::other("health proof encoding"))?,
+                        )
+                        .map_err(std::io::Error::other)?,
+                )
+                .map_err(std::io::Error::other)?;
+                health.key = Some(Arc::new(pem.contents));
+                let (secret, public) = observation_material(listen_addr)?;
+                observation.key = Some(secret);
+                nucleus_request_proof::LoopbackGate::open(
+                    &format!("http://{listen_addr}"),
+                    &config.replay_path,
+                    config.key,
+                    config.expires,
+                )
+                .and_then(|gate| gate.with_health_key(header.jwk))
+                .and_then(|gate| gate.with_observation_key(public))
+                .map(Arc::new)
+                .map_err(std::io::Error::other)
+            })
+            .transpose()?;
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
         let drand_client = drand_config.filter(|c| c.enabled).and_then(|c| {
@@ -164,6 +327,8 @@ impl SignedProxy {
         });
 
         let state = SignedProxyState {
+            guest,
+            proof,
             target: target.into(),
             approval,
             default_actor,
@@ -183,6 +348,8 @@ impl SignedProxy {
         });
 
         Ok(Self {
+            health,
+            observation,
             listen_addr,
             shutdown: Some(shutdown_tx),
             task,
@@ -191,6 +358,14 @@ impl SignedProxy {
 
     pub fn listen_addr(&self) -> SocketAddr {
         self.listen_addr
+    }
+
+    pub(crate) fn health_endpoint(&self) -> ProxyHealth {
+        self.health.clone()
+    }
+
+    pub(crate) fn observation_endpoint(&self) -> ProxyObservation {
+        self.observation.clone()
     }
 
     pub async fn shutdown(mut self) {
@@ -209,6 +384,27 @@ async fn proxy_handler(
     let body_bytes = to_bytes(body, MAX_PROXY_BODY_BYTES)
         .await
         .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("body error: {e}")))?;
+
+    if let Some(gate) = &state.proof {
+        if parts.uri.query().is_some() || parts.headers.contains_key(HEADER_ACTOR) {
+            return Err(proxy_error(
+                StatusCode::UNAUTHORIZED,
+                "unbound request context refused".into(),
+            ));
+        }
+        let proof = crate::request_proof::one(&parts.headers, "dpop")
+            .ok()
+            .flatten()
+            .ok_or_else(|| {
+                proxy_error(StatusCode::UNAUTHORIZED, "request proof required".into())
+            })?;
+        let verified = gate
+            .verify_request(proof, parts.method.as_str(), parts.uri.path(), &body_bytes)
+            .map_err(|_| proxy_error(StatusCode::UNAUTHORIZED, "request proof refused".into()))?;
+        let _key = verified
+            .into_thumbprint(nucleus_request_proof::unix_now())
+            .map_err(|_| proxy_error(StatusCode::UNAUTHORIZED, "request proof expired".into()))?;
+    }
 
     let actor = extract_actor(&parts.headers, state.default_actor.as_deref());
     let timestamp = now_unix();
@@ -267,6 +463,25 @@ async fn proxy_handler(
         .map_err(|e| proxy_error(StatusCode::BAD_REQUEST, format!("bad uri: {e}")))?;
 
     let mut headers = filter_headers(&parts.headers);
+    // Never forward the client's proof as the host's identity. The guest sees
+    // a fresh proof for this pod's configured logical origin and exact body.
+    if let Some(guest) = &state.guest {
+        if parts.uri.query().is_some() {
+            return Err(proxy_error(
+                StatusCode::BAD_REQUEST,
+                "unbound guest query".into(),
+            ));
+        }
+        let proof = guest
+            .proof(parts.method.as_str(), parts.uri.path(), &body_bytes)
+            .map_err(|_| proxy_error(StatusCode::UNAUTHORIZED, "guest proof refused".into()))?;
+        headers.insert(
+            "dpop",
+            HeaderValue::from_str(&proof).map_err(|_| {
+                proxy_error(StatusCode::UNAUTHORIZED, "guest proof encoding".into())
+            })?,
+        );
+    }
     headers.insert(
         axum::http::header::HOST,
         HeaderValue::from_str(&state.target.authority())
@@ -439,6 +654,232 @@ fn proxy_error(status: StatusCode, message: String) -> AxumResponse {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn dpop_refusals_never_reach_the_downstream_proxy() {
+        use base64::Engine;
+        use nucleus_identity::dpop::{DpopHeader, DpopProofBuilder};
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let key = nucleus_identity::CsrOptions::new("spiffe://test/ns/client/sa/tool")
+            .generate()
+            .unwrap();
+        let (_, pem) = x509_parser::pem::parse_x509_pem(key.private_key().as_bytes()).unwrap();
+        let sample = DpopProofBuilder::new("POST", "http://127.0.0.1:1234/v1/read")
+            .build(&pem.contents)
+            .unwrap();
+        let header: DpopHeader = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(sample.split('.').next().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut spec: crate::PodSpec = serde_json::from_value(serde_json::json!({
+            "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{}
+        }))
+        .unwrap();
+        spec.metadata.labels.insert(
+            crate::tool_proof_provision::LABEL.into(),
+            serde_json::json!({"expires":now_unix()+300}).to_string(),
+        );
+        let id = uuid::Uuid::new_v4();
+        crate::guest_proof_provision::provision(&mut spec, &dir.path().join("keys"), id).unwrap();
+        let guest = crate::guest_proof_provision::Signer::load(&spec, &dir.path().join("keys"), id)
+            .unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(&spec.metadata.labels[crate::guest_proof_provision::LABEL])
+                .unwrap();
+        let guest_public: nucleus_identity::did::JsonWebKey =
+            serde_json::from_value(config["key"].clone()).unwrap();
+        let gate = Arc::new(
+            nucleus_request_proof::ProofGate::open(
+                config["origin"].as_str().unwrap(),
+                &dir.path().join("guest-replay"),
+            )
+            .unwrap(),
+        );
+        let received = Arc::new(AtomicUsize::new(0));
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let count = received.clone();
+        let target_app = Router::new().fallback(any(move |request: axum::extract::Request| {
+            let gate = gate.clone();
+            let public = guest_public.clone();
+            let count = count.clone();
+            async move {
+                let (parts, body) = request.into_parts();
+                let body = to_bytes(body, 1024).await.unwrap();
+                let digest = hex::encode(Sha256::digest(&body));
+                let proof = parts.headers.get("dpop").unwrap().to_str().unwrap();
+                gate.verify(
+                    proof,
+                    parts.method.as_str(),
+                    parts.uri.path(),
+                    Some(&digest),
+                    &public,
+                )
+                .unwrap()
+                .into_thumbprint(nucleus_request_proof::unix_now())
+                .unwrap();
+                count.fetch_add(1, Ordering::SeqCst);
+                "forwarded"
+            }
+        }));
+        let task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
+        let proxy = SignedProxy::start_with_proof(
+            target_addr,
+            test_key(),
+            Some("fixture".into()),
+            None,
+            Some(ProxyProofConfig {
+                guest,
+                key: header.jwk,
+                replay_path: dir.path().join("proofs"),
+                expires: u64::try_from(now_unix()).unwrap_or(0) + 300,
+            }),
+        )
+        .await
+        .unwrap();
+        let url = format!("http://{}/v1/read", proxy.listen_addr());
+        let body = "{\"path\":\"fixture\"}";
+        let proof = DpopProofBuilder::new("POST", &url)
+            .with_access_token(&hex::encode(Sha256::digest(body.as_bytes())))
+            .build(&pem.contents)
+            .unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        for request in [
+            client.post(&url).body(body),
+            client.post(&url).header("dpop", &proof).body("changed"),
+            client
+                .post(&url)
+                .header("dpop", &proof)
+                .header("dpop", &proof)
+                .body(body),
+            client.get(&url).header("dpop", &proof).body(body),
+            client
+                .post(format!("{url}?unbound=true"))
+                .header("dpop", &proof)
+                .body(body),
+            client
+                .post(&url)
+                .header("dpop", &proof)
+                .header(HEADER_ACTOR, "other")
+                .body(body),
+        ] {
+            assert_eq!(
+                request.send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            client
+                .post(&url)
+                .header("dpop", &proof)
+                .body(body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            client
+                .post(&url)
+                .header("dpop", &proof)
+                .body(body)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(received.load(Ordering::SeqCst), 1);
+        let health = proxy.health_endpoint();
+        assert_eq!(
+            client
+                .get(format!("http://{}/v1/health", health.addr()))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let mut stream = TcpStream::connect(health.addr()).await.unwrap();
+            stream
+                .write_all(health.request().unwrap().as_bytes())
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                stream.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(response.starts_with(b"HTTP/1.1 200 "));
+        }
+        assert_eq!(received.load(Ordering::SeqCst), 2);
+        let observer = proxy.observation_endpoint();
+        let origin = format!("http://{}", proxy.listen_addr());
+        assert!(
+            observer
+                .proof("http://127.0.0.1:1", "/v1/workload/result")
+                .is_err()
+        );
+        for forbidden in ["/v1/health", "/v1/read", "/v1/workload/result?extra=1"] {
+            assert!(observer.proof(&origin, forbidden).is_err());
+        }
+        for path in [
+            "/v1/workload/result",
+            "/v1/workload/logs/stdout",
+            "/v1/workload/logs/stderr",
+        ] {
+            let url = format!("{origin}{path}");
+            assert_eq!(
+                client.get(&url).send().await.unwrap().status(),
+                StatusCode::UNAUTHORIZED
+            );
+            let observation = observer.proof(&origin, path).unwrap().unwrap();
+            assert_eq!(
+                client
+                    .post(&url)
+                    .header("dpop", &observation)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+            assert_eq!(
+                client
+                    .get(&url)
+                    .header("dpop", &observation)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::OK
+            );
+            assert_eq!(
+                client
+                    .get(&url)
+                    .header("dpop", &observation)
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::UNAUTHORIZED
+            );
+        }
+        assert_eq!(received.load(Ordering::SeqCst), 5);
+        proxy.shutdown().await;
+        task.abort();
+    }
+
     #[tokio::test]
     async fn a_chunked_request_is_reframed_before_forwarding() {
         use axum::routing::post;

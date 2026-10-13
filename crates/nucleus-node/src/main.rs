@@ -65,6 +65,7 @@ mod pod_resources;
 mod pod_view;
 mod production_confinement;
 mod public_evidence;
+mod request_proof;
 mod retired_config;
 mod rootfs_source;
 mod scratch_export;
@@ -123,6 +124,7 @@ mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
+mod guest_proof_provision;
 mod memory_provisioning;
 mod net;
 mod posture;
@@ -135,6 +137,7 @@ mod snapshot_vmm;
 #[cfg(test)]
 mod spiffe_walk;
 mod tls_ingress;
+mod tool_proof_provision;
 mod trust_gate;
 mod upstreams;
 mod vmm_process;
@@ -444,6 +447,7 @@ struct Args {
 
 #[derive(Clone)]
 struct NodeState {
+    request_proofs: Option<Arc<request_proof::RequestProofs>>,
     pods: pod_api::PodRegistry,
     /// Admission of new launches; closed by a shutdown drain (`node_drain`).
     intake: node_drain::Intake,
@@ -905,6 +909,11 @@ async fn main() -> Result<(), ApiError> {
             .map_err(ApiError::Driver)?;
     }
     let state = NodeState {
+        request_proofs: request_proof::RequestProofs::open(
+            &args.authority.ingress,
+            &args.state_dir,
+            args.grpc_listen.is_some(),
+        )?,
         pods: Arc::new(Mutex::new(HashMap::new())),
         intake: node_drain::Intake::open(),
         state_dir: args.state_dir.clone(),
@@ -1252,6 +1261,7 @@ async fn create_pod_internal(
     raw_yaml: Option<String>,
     admission: pod_authority::Admission,
 ) -> Result<(Uuid, Option<String>), ApiError> {
+    tool_proof_provision::admit(&spec, state.request_proofs.is_some())?;
     production_confinement::admit_seccomp(spec.spec.seccomp.as_ref())
         .map_err(|e| ApiError::InvalidSpec(e.to_owned()))?;
     rootfs_source::admit(&spec)?; // OCI needs an image store; boot_args are allowlisted (#3124)
@@ -1282,6 +1292,7 @@ async fn create_pod_internal(
 
     let pod_dir = lifecycle::pod_dir(&state.state_dir, id);
     tokio::fs::create_dir_all(&pod_dir).await?;
+    guest_proof_provision::provision(&mut spec, &state.state_dir.join("host-tool-keys"), id)?;
 
     // ── Posture Gate: proof-carrying admission (fail-closed) ──────────
     // If the pod carries a `dlc_posture` claim, admit it only when the claimed
@@ -1616,12 +1627,22 @@ async fn spawn_local_pod(
                 return Err(e);
             }
         };
-        let proxy = signed_proxy::SignedProxy::start_with_drand(
+        let proxy = signed_proxy::SignedProxy::start_with_proof(
             target,
             // Ed25519, verified against the public key `local_transport` provisioned.
             Arc::clone(&state.approval_signer),
             state.proxy_actor.clone(),
             state.drand_config.clone(),
+            tool_proof_provision::for_listener(
+                spec,
+                state.request_proofs.is_some(),
+                pod_dir,
+                guest_proof_provision::Signer::load(
+                    spec,
+                    &state.state_dir.join("host-tool-keys"),
+                    id,
+                )?,
+            )?,
         )
         .await
         .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
@@ -1856,12 +1877,14 @@ async fn spawn_container_pod(
                 .map_err(container_transport::unannounced)?;
             let target = container_transport::target(&pod_dir_abs, &addr)?;
             container_transport::ensure_reachable(&target).await?;
-            let proxy = signed_proxy::SignedProxy::start_with_drand(
+            let proxy = signed_proxy::SignedProxy::start_with_proof(
                 target,
                 // Ed25519, verified against the public key `container_transport` provisioned.
                 Arc::clone(&state.approval_signer),
                 state.proxy_actor.clone(),
                 state.drand_config.clone(),
+                tool_proof_provision::for_listener(spec, state.request_proofs.is_some(), pod_dir,
+                guest_proof_provision::Signer::load(spec, &state.state_dir.join("host-tool-keys"), id)?)?,
             )
             .await
             .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
@@ -2555,7 +2578,7 @@ async fn spawn_firecracker_pod(
                 let bridge_addr = bridge.listen_addr();
                 res.hold_bridge(bridge);
 
-                let proxy = signed_proxy::SignedProxy::start_with_drand(
+                let proxy = signed_proxy::SignedProxy::start_with_proof(
                     bridge_addr,
                     // Firecracker pod: it verifies approvals against the node's PUBLIC
                     // key (nucleus.approval_pubkeys), so approvals are Ed25519-signed
@@ -2563,11 +2586,13 @@ async fn spawn_firecracker_pod(
                     Arc::clone(&state.approval_signer),
                     state.proxy_actor.clone(),
                     state.drand_config.clone(),
+                    tool_proof_provision::for_listener(spec, state.request_proofs.is_some(), pod_dir,
+                guest_proof_provision::Signer::load(spec, &state.state_dir.join("host-tool-keys"), id)?)?,
                 )
                 .await
                 .map_err(|e| ApiError::Driver(format!("signed proxy failed: {e}")))?;
                 let proxy_addr = format!("http://{}", proxy.listen_addr());
-                let health_addr = proxy.listen_addr();
+                let health_addr = proxy.health_endpoint();
                 res.hold_proxy(proxy);
 
                 let workload_filesystem = prepared_pod

@@ -263,9 +263,12 @@ population_floor = 278
 # 2026-10-12 (off serde_yaml): new crate nucleus-yaml, the one YAML reader every spec,
 # profile and workflow goes through, declares all seven from its first commit -- a reader
 # that panics on hostile YAML is a denial of service on every caller. 40 of 97 = 41.23%.
-floor_bp = 4123
+# 2026-10-12 (request proofs, merged with the above): nucleus-request-proof parses DPoP
+# proofs from any client before authority is granted and declares all seven from its first
+# commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
+floor_bp = 4183
 floor_set = "measurement"
-population_floor = 97
+population_floor = 98
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -392,9 +395,13 @@ population_floor = 97
 # 2026-10-04: EgressUploadHold carries the original ledger id/epoch directly;
 # pace admission and settlement check that binding. The new affine right is
 # bounded, bringing life from 13/20 to 14/21 (66.66%).
-floor_bp = 6666
+# 2026-10-12: two new affine rights carry their interval from the first commit.
+# VerifiedRequest (a DPoP proof that passed replay) refuses into_thumbprint after
+# the proof's expiry; PendingCaller (an issuer assertion awaiting replay) fixes
+# exp + leeway when its check passes. 16 of 23 = 69.56%.
+floor_bp = 6956
 floor_set = "measurement"
-population_floor = 21
+population_floor = 23
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -603,9 +610,12 @@ population_floor = 23
 # 2026-10-12 (off serde_yaml): nucleus-yaml's reader and writer are the one place a direct
 # serde_saphyr call is allowed (the G-1 disallowed-methods entries), each under a reasoned
 # #[expect]. 34/149 = 22.81%; both pins follow the tree.
-floor_bp = 2281
+# 2026-10-12 (request proofs, merged with the above): the tool-proxy's per-pod proof key
+# provisioning reads and writes key files outside the workload tree under two reasoned
+# #[expect]s of the #1216 file-I/O ban. 36/151 = 23.84%; both pins follow the tree.
+floor_bp = 2384
 floor_set = "measurement"
-population_floor = 149
+population_floor = 151
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
