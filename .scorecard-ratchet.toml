@@ -621,9 +621,13 @@ population_floor = 23
 # 2026-10-12 (request proofs, merged with the above): the tool-proxy's per-pod proof key
 # provisioning reads and writes key files outside the workload tree under two reasoned
 # #[expect]s of the #1216 file-I/O ban. 36/151 = 23.84%; both pins follow the tree.
-floor_bp = 2384
+# 2026-10-13 (#3419): deleting the tool-proxy's unsigned attestation-header path removed
+# five undischarged #[allow(dead_code)]s with the code they excused (151 -> 146). The ratio
+# rises because the denominator shrank, not because anything was discharged; pinned at
+# the measurement so it does not read as progress. 36/146 = 24.65%.
+floor_bp = 2465
 floor_set = "measurement"
-population_floor = 151
+population_floor = 146
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
