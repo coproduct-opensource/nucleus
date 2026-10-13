@@ -1369,7 +1369,16 @@ async fn create_pod_internal(
 
     // The uploader's credential, minted only now that the caller's authority is admitted: one
     // limited to this pod's resolved bucket and prefix, for the pod's lifetime (#3160).
-    let capacity = state.node_capacity.reserve(&spec)?;
+    // A full node refuses before any spawn and returns what admission reserved before it
+    // answers. Dropping the reservation would also release it, but in a spawned task that
+    // can lose the race with a caller retrying on the refusal's Retry-After.
+    let capacity = match state.node_capacity.reserve(&spec) {
+        Ok(capacity) => capacity,
+        Err(error) => {
+            reservation.release().await;
+            return Err(error);
+        }
+    };
     let audit = match audit_mint {
         None => None,
         Some(mint) => {
