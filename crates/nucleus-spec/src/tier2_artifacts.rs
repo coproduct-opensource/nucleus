@@ -373,6 +373,18 @@ pub enum GuestCapability {
     /// declares `credentialed_egress`, and `container_broker::admit_image` reads
     /// it to refuse such a pod on an image known to lack it, by name.
     ContainerBrokerSocket,
+    /// The tool-proxy binds a signed approval bundle to the spec's canonical
+    /// manifest hash ([`PodSpec::manifest_hash`](crate::PodSpec::manifest_hash):
+    /// SHA-256 of `nucleus.pod-manifest.v3\0` and the spec's RFC 8785 JSON, the
+    /// hash a v3 receipt carries, #3393), and refuses by name a bundle bound to
+    /// the spec file's bytes (#3395). An older proxy hashes the bytes of the
+    /// `pod.yaml` the node wrote, so a bundle minted for it has to reproduce the
+    /// node's YAML writer byte for byte. [`Demand::Optional`]: the node delivers
+    /// no approval bundle and depends on neither binding; whoever mints a bundle
+    /// for a pod picks the hash from the guest's release
+    /// ([`crate::approval_binding::ApprovalBinding::for_guest_release`]), and a
+    /// bundle bound the other way is refused by the guest, never accepted.
+    CanonicalManifestApproval,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -428,7 +440,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 22] = [
+    pub const ALL: [GuestCapability; 23] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -451,6 +463,7 @@ impl GuestCapability {
         GuestCapability::HostApprovalRedeem,
         GuestCapability::SignedArt12Log,
         GuestCapability::ContainerBrokerSocket,
+        GuestCapability::CanonicalManifestApproval,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -494,6 +507,10 @@ impl GuestCapability {
             // The node needs it only for a container pod with credentialed egress,
             // and `container_broker::admit_image` reads it for that pod alone.
             GuestCapability::ContainerBrokerSocket => Demand::Optional,
+            // The node delivers no approval bundle: the binding is between the
+            // bundle's minter and the guest, and a mismatch is refused in the
+            // guest (fail closed), never granted.
+            GuestCapability::CanonicalManifestApproval => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -565,6 +582,8 @@ impl GuestCapability {
             GuestCapability::SignedArt12Log => FirstShipped::NotYet,
             // #2906: in this tree and in no release yet.
             GuestCapability::ContainerBrokerSocket => FirstShipped::NotYet,
+            // #3395: in this tree and in no release yet.
+            GuestCapability::CanonicalManifestApproval => FirstShipped::NotYet,
         }
     }
 
@@ -694,6 +713,13 @@ impl GuestCapability {
                  the node bind-mounts into a container pod; an older tool-proxy dials only \
                  vsock, so a container pod's credentialed egress could never be performed and \
                  the node refuses that pod on such an image"
+            }
+            GuestCapability::CanonicalManifestApproval => {
+                "#3395 has the tool-proxy bind a signed approval bundle to the spec's canonical \
+                 v3 manifest hash (the receipt's, #3393) and refuse a bundle bound to the spec \
+                 file's bytes by name; an older proxy binds the bytes of the pod.yaml the node \
+                 wrote, so a bundle for it must carry that hash instead (the node does not \
+                 require it)"
             }
         }
     }
@@ -1116,6 +1142,7 @@ mod tests {
             GuestCapability::HostApprovalRedeem,
             GuestCapability::SignedArt12Log,
             GuestCapability::ContainerBrokerSocket,
+            GuestCapability::CanonicalManifestApproval,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1294,7 +1321,10 @@ mod tests {
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
                 GuestCapability::HostApprovalRedeem => GuestCapability::SignedArt12Log,
                 GuestCapability::SignedArt12Log => GuestCapability::ContainerBrokerSocket,
-                GuestCapability::ContainerBrokerSocket => GuestCapability::CaBundle,
+                GuestCapability::ContainerBrokerSocket => {
+                    GuestCapability::CanonicalManifestApproval
+                }
+                GuestCapability::CanonicalManifestApproval => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

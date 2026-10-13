@@ -138,6 +138,21 @@ fn test_approval_registry_consume() {
 
 // ── Approval Bundle Tests ──────────────────────────────────────────
 
+/// A pod spec the proxy parses, distinct per `name`. A bundle is bound to a
+/// spec's canonical hash, so a test spec has to be a spec (#3395).
+fn pod_spec(name: &str) -> String {
+    format!(
+        "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: {name}\nspec:\n  work_dir: .\n  \
+         policy:\n    type: profile\n    name: codegen\n"
+    )
+}
+
+/// The hash a bundle for `spec_contents` carries: the canonical v3 manifest hash.
+fn manifest_hash_of(spec_contents: &str) -> ManifestHash {
+    let spec: PodSpec = nucleus_yaml::from_str(spec_contents).unwrap();
+    spec.manifest_hash().unwrap()
+}
+
 fn make_test_key() -> (Vec<u8>, nucleus_identity::did::JsonWebKey) {
     use ring::signature::KeyPair;
     let rng = ring::rand::SystemRandom::new();
@@ -163,7 +178,7 @@ fn make_test_key() -> (Vec<u8>, nucleus_identity::did::JsonWebKey) {
 fn test_approval_bundle_populates_registry() {
     let (pkcs8, jwk) = make_test_key();
     let spec = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy: { type: profile, name: default }\n  work_dir: .";
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
+    let manifest_hash = manifest_hash_of(spec).into_string();
 
     let jws =
         nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/alice")
@@ -192,7 +207,7 @@ fn test_approval_bundle_populates_registry() {
 #[test]
 fn test_approval_bundle_wrong_manifest() {
     let (pkcs8, jwk) = make_test_key();
-    let manifest_hash = compute_manifest_hash(b"different-manifest");
+    let manifest_hash = manifest_hash_of(&pod_spec("different-manifest")).into_string();
 
     let jws =
         nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/bob")
@@ -205,7 +220,7 @@ fn test_approval_bundle_wrong_manifest() {
     let registry = ApprovalRegistry::default();
     let result = verify_and_load_approval_bundle(
         &jws,
-        "actual-manifest-content",
+        &pod_spec("actual-manifest"),
         &registry,
         std::slice::from_ref(&jwk),
     );
@@ -215,8 +230,8 @@ fn test_approval_bundle_wrong_manifest() {
 #[test]
 fn test_approval_bundle_max_uses() {
     let (pkcs8, jwk) = make_test_key();
-    let spec = "spec: limited-use";
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
+    let spec = &pod_spec("limited-use");
+    let manifest_hash = manifest_hash_of(spec).into_string();
 
     let jws =
         nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/carol")
@@ -247,7 +262,7 @@ fn test_approval_bundle_invalid_jws() {
     // (not the fail-closed-empty path).
     let result = verify_and_load_approval_bundle(
         "not.a.valid.jws",
-        "spec",
+        &pod_spec("invalid-jws"),
         &registry,
         std::slice::from_ref(&jwk),
     );
@@ -261,10 +276,10 @@ fn test_approval_bundle_invalid_jws() {
 /// that code; GREEN now (pinned-key + fail-closed).
 #[test]
 fn approval_bundle_requires_pinned_trusted_key_not_header_self_trust() {
-    use nucleus_identity::approval_bundle::{ApprovalBundleBuilder, compute_manifest_hash};
+    use nucleus_identity::approval_bundle::ApprovalBundleBuilder;
 
-    let spec = "pod: spec yaml";
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
+    let spec = &pod_spec("self-trust");
+    let manifest_hash = manifest_hash_of(spec).into_string();
 
     // Attacker signs a bundle approving a dangerous op with THEIR OWN key.
     let (attacker_key, attacker_jwk) = make_test_key();
@@ -514,7 +529,7 @@ fn an_svid_without_a_signature_grants_nothing() {
 // ── The mint: VerifiedApproval::verify_bundle ───────────────────────────────
 
 fn bundle(ops: &[&str], max_uses: Option<u32>, key: &[u8], spec: &str) -> String {
-    let manifest_hash = compute_manifest_hash(spec.as_bytes());
+    let manifest_hash = manifest_hash_of(spec).into_string();
     let mut b = nucleus_identity::approval_bundle::ApprovalBundleBuilder::new(
         "spiffe://test/human/approver",
     )
@@ -531,8 +546,8 @@ fn bundle(ops: &[&str], max_uses: Option<u32>, key: &[u8], spec: &str) -> String
 
 #[test]
 fn an_untrusted_bundle_key_mints_nothing() {
-    let spec = "spec: untrusted";
-    let hash = compute_manifest_hash(spec.as_bytes());
+    let spec = &pod_spec("untrusted");
+    let hash = manifest_hash_of(spec);
     let (signer, _signer_jwk) = make_test_key();
     let (_other, other_jwk) = make_test_key();
     let jws = bundle(&["run_bash"], None, &signer, spec);
@@ -545,8 +560,8 @@ fn an_untrusted_bundle_key_mints_nothing() {
 
 #[test]
 fn bundle_mints_one_approval_per_operation() {
-    let spec = "spec: per-op";
-    let hash = compute_manifest_hash(spec.as_bytes());
+    let spec = &pod_spec("per-op");
+    let hash = manifest_hash_of(spec);
     let (signer, jwk) = make_test_key();
 
     let jws = bundle(&["write_files", "run_bash"], None, &signer, spec);
@@ -570,8 +585,8 @@ fn bundle_mints_one_approval_per_operation() {
 
 #[test]
 fn a_zero_use_bundle_is_refused() {
-    let spec = "spec: zero";
-    let hash = compute_manifest_hash(spec.as_bytes());
+    let spec = &pod_spec("zero");
+    let hash = manifest_hash_of(spec);
     let (signer, jwk) = make_test_key();
     let jws = bundle(&["run_bash"], Some(0), &signer, spec);
     assert!(VerifiedApproval::verify_bundle(&jws, &hash, std::slice::from_ref(&jwk)).is_err());
@@ -582,7 +597,7 @@ fn a_zero_use_bundle_is_refused() {
 /// build, a wrap to a tiny count in release.
 #[test]
 fn until_expiry_is_never_spent_and_never_overflows() {
-    let spec = "spec: until-expiry";
+    let spec = &pod_spec("until-expiry");
     let (signer, jwk) = make_test_key();
     let jws = bundle(&["run_bash"], None, &signer, spec);
     let registry = ApprovalRegistry::default();
@@ -591,4 +606,121 @@ fn until_expiry_is_never_spent_and_never_overflows() {
     for _ in 0..100 {
         assert!(registry.consume("run_bash"));
     }
+}
+
+// ── #3395: a bundle binds the spec's canonical v3 manifest hash ─────────────
+
+/// One pod spec, as the node might write it.
+const SPEC_A: &str = "apiVersion: nucleus/v1
+kind: Pod
+metadata:
+  name: approval-binding
+  labels:
+    team: platform
+spec:
+  work_dir: .
+  timeout_seconds: 600
+  policy:
+    type: profile
+    name: codegen
+  network:
+    dns_allow:
+      - example.org
+";
+
+/// The same spec, spelled differently: reordered keys, other quoting, flow
+/// mappings, a comment. Every difference is one RFC 8785 normalizes away.
+const SPEC_A_RESPELLED: &str = "# written by another YAML emitter
+kind: Pod
+apiVersion: 'nucleus/v1'
+spec: {timeout_seconds: 600, work_dir: \".\", policy: {name: codegen, type: profile}, \
+network: {dns_allow: [\"example.org\"]}}
+metadata: {labels: {team: \"platform\"}, name: approval-binding}
+";
+
+fn canonical_hash(spec_contents: &str) -> String {
+    let spec: nucleus_spec::PodSpec = nucleus_yaml::from_str(spec_contents).unwrap();
+    spec.manifest_hash().unwrap().into_string()
+}
+
+fn bundle_for_hash(hash: &str, key: &[u8]) -> String {
+    nucleus_identity::approval_bundle::ApprovalBundleBuilder::new("spiffe://test/human/approver")
+        .manifest_hash(hash)
+        .approve_operation("run_bash")
+        .ttl_seconds(3600)
+        .build(key)
+        .unwrap()
+}
+
+/// THE PROPERTY. An approval names what the spec means: it verifies for the
+/// spec however it is spelled, and for no spec that means something else —
+/// even one whose bytes differ from it by a single character. Red on the
+/// YAML-bytes binding, which refused the respelled spec (so a minter had to
+/// reproduce the node's YAML writer byte for byte).
+#[test]
+fn an_approval_binds_the_spec_meaning_not_its_bytes() {
+    let (signer, jwk) = make_test_key();
+    let jws = bundle_for_hash(&canonical_hash(SPEC_A), &signer);
+    assert_eq!(canonical_hash(SPEC_A), canonical_hash(SPEC_A_RESPELLED));
+
+    // Same meaning, any spelling: verifies.
+    for (what, contents) in [("as minted", SPEC_A), ("respelled", SPEC_A_RESPELLED)] {
+        let registry = ApprovalRegistry::default();
+        verify_and_load_approval_bundle(&jws, contents, &registry, std::slice::from_ref(&jwk))
+            .unwrap_or_else(|e| panic!("{what}: the approved spec must verify: {e}"));
+        assert!(registry.consume("run_bash"), "{what}: run_bash approved");
+    }
+
+    // Another meaning, however small the byte difference: refused, nothing
+    // registered.
+    for (what, contents) in [
+        ("timeout", SPEC_A.replace("600", "601")),
+        ("policy", SPEC_A.replace("name: codegen", "name: research")),
+        ("egress", SPEC_A.replace("example.org", "example.com")),
+        ("label", SPEC_A.replace("team: platform", "team: platforn")),
+    ] {
+        assert_ne!(canonical_hash(&contents), canonical_hash(SPEC_A), "{what}");
+        let registry = ApprovalRegistry::default();
+        assert!(
+            verify_and_load_approval_bundle(&jws, &contents, &registry, std::slice::from_ref(&jwk))
+                .is_err(),
+            "{what}: an approval for spec A verified for a different spec"
+        );
+        assert!(!registry.consume("run_bash"), "{what}: nothing registered");
+    }
+}
+
+/// A bundle bound to the spec file's bytes — the binding of a guest that
+/// predates `CanonicalManifestApproval` — is refused, by name, and never
+/// accepted as a fallback. Red on the YAML-bytes binding, which accepted it.
+#[test]
+fn a_bundle_bound_to_the_spec_bytes_is_refused_by_name() {
+    let (signer, jwk) = make_test_key();
+    let jws = bundle_for_hash(&compute_manifest_hash(SPEC_A.as_bytes()), &signer);
+    let registry = ApprovalRegistry::default();
+    let refusal =
+        verify_and_load_approval_bundle(&jws, SPEC_A, &registry, std::slice::from_ref(&jwk))
+            .expect_err("a spec-bytes bundle must not verify on this guest")
+            .to_string();
+    for needle in [
+        "LegacySpecBytes",
+        "CanonicalManifestApproval",
+        "#3395",
+        canonical_hash(SPEC_A).as_str(),
+    ] {
+        assert!(
+            refusal.contains(needle),
+            "{needle:?} missing from: {refusal}"
+        );
+    }
+    assert!(!registry.consume("run_bash"), "nothing registered");
+
+    // The name is only for a trusted signer's bundle: an untrusted one is
+    // refused as untrusted, and the refusal says nothing about its binding.
+    let (_other, other_jwk) = make_test_key();
+    let refusal =
+        verify_and_load_approval_bundle(&jws, SPEC_A, &registry, std::slice::from_ref(&other_jwk))
+            .expect_err("untrusted signer")
+            .to_string();
+    assert!(!refusal.contains("LegacySpecBytes"), "{refusal}");
 }
