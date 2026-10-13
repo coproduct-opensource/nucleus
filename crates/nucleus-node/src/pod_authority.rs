@@ -1153,13 +1153,25 @@ impl PodAuthority {
         child_id: Uuid,
         starting: crate::host_decide::StartingLabel,
     ) -> Result<IssuedAuthority, ApiError> {
-        let requested = spec
+        let mut requested = spec
             .spec
             .resolve_policy()
             .map_err(|e| ApiError::InvalidSpec(format!("policy: {e}")))?;
         let child_identity = self.pod_spiffe_id(child_id);
         let ttl = Duration::seconds(i64::try_from(spec.spec.timeout_seconds).unwrap_or(i64::MAX));
         let now = Utc::now();
+        // An inline lattice's window was stamped when the spec was WRITTEN; a
+        // named profile resolves fresh just above. Exhaustive on purpose: a new
+        // policy form is a compile error here before it is a window nobody
+        // re-stamped.
+        // Fields are bound to `_` rather than elided: `requested` above is the
+        // resolution of either form, so only the form is decided here.
+        match &spec.spec.policy {
+            nucleus_spec::PolicySpec::Inline { lattice: _ } => {
+                requested.time = restamp_window(&requested.time, now, now + ttl)?;
+            }
+            nucleus_spec::PolicySpec::Profile { name: _ } => {}
+        }
         let reason = format!("pod {child_id} created by {}", admission.caller_spiffe_id);
 
         let child_pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
@@ -1994,6 +2006,51 @@ fn ephemeral_key() -> Result<Ed25519KeyPair, ApiError> {
         .map_err(|_| ApiError::Authority("key generation failed".into()))?;
     Ed25519KeyPair::from_pkcs8(doc.as_ref())
         .map_err(|_| ApiError::Authority("key parse failed".into()))
+}
+
+/// Re-stamp an inline policy's validity window at admission (#2963).
+///
+/// The window keeps the DURATION its author wrote, measured from admission
+/// rather than from when the spec was serialized: `[max(now, valid_from),
+/// min(that + duration, not_after)]`.
+///
+/// Why: a spec carries its lattice with an absolute window fixed when the spec
+/// was written, and the pod then queues for admission. A window as long as the
+/// pod's own timeout could close in the queue, so the root the bootstrap
+/// identity mints from it was already expired by the parent check in
+/// `mint_child` (`Parent permission has expired`) — about 8% of gate runs,
+/// cleared by a retry. The parent-expired check itself is unchanged; this only
+/// stops a window from spending itself before the work it bounds has started.
+///
+/// It never widens what the author granted: the start never moves EARLIER
+/// (a future `valid_from` is kept), the length never grows, and the end never
+/// passes the certificate's `not_after`. A window that is empty — `valid_until`
+/// at or before `valid_from`, or opening only after `not_after` — grants no
+/// time at all, and is refused by name here rather than as a parent expiry.
+///
+/// `now` is a parameter so the arithmetic is tested against a fixed clock.
+fn restamp_window(
+    window: &portcullis::TimeLattice,
+    now: DateTime<Utc>,
+    not_after: DateTime<Utc>,
+) -> Result<portcullis::TimeLattice, ApiError> {
+    let duration = window.duration();
+    if duration <= Duration::zero() {
+        return Err(ApiError::InvalidSpec(format!(
+            "policy time window is empty: valid_until {} is not after valid_from {}",
+            window.valid_until, window.valid_from
+        )));
+    }
+    let from = now.max(window.valid_from);
+    let until = from
+        .checked_add_signed(duration)
+        .map_or(not_after, |end| end.min(not_after));
+    if until <= from {
+        return Err(ApiError::InvalidSpec(format!(
+            "policy time window opens at {from}, at or after the pod's certificate expiry {not_after}"
+        )));
+    }
+    Ok(portcullis::TimeLattice::between(from, until))
 }
 
 fn cert_not_after(cert: &LatticeCertificate) -> DateTime<Utc> {

@@ -27,6 +27,14 @@ use crate::isolation::{FileIsolation, IsolationLattice, NetworkIsolation, Proces
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// The floor of a backend that establishes nothing beyond the request: the
+/// lattice's bottom, so joining it changes nothing.
+const NO_FLOOR: IsolationLattice = IsolationLattice {
+    process: ProcessIsolation::Shared,
+    file: FileIsolation::Unrestricted,
+    network: NetworkIsolation::Host,
+};
+
 /// What a concrete isolation backend can enforce, per lattice dimension.
 ///
 /// Each slice lists exactly the levels the backend can honor *as specified*
@@ -43,6 +51,20 @@ pub struct BackendCapability {
     pub file: &'static [FileIsolation],
     /// Network-isolation levels this backend can enforce as specified.
     pub network: &'static [NetworkIsolation],
+    /// The posture this backend delivers **whatever is requested** — its floor.
+    ///
+    /// The slices above say which levels a request may be *held to*; this says
+    /// what every pod on the backend gets regardless. They are different facts:
+    /// a Firecracker pod that requests `process=shared` is clamped to `shared`
+    /// (Firecracker can honour a request that weak), yet it still runs under its
+    /// own kernel. Reporting the clamp alone listed microVM pods as
+    /// `process=shared, file=unrestricted, network=host` (#3220).
+    ///
+    /// Joined into [`EnforcedIsolation::delivered`] by [`require_isolation`], the
+    /// one place that reads it. Declare only what the backend's launch path
+    /// establishes unconditionally — under-declaring costs an understated label,
+    /// over-declaring is a claim nothing backs.
+    pub delivers: IsolationLattice,
 }
 
 impl BackendCapability {
@@ -67,6 +89,22 @@ impl BackendCapability {
             NetworkIsolation::Filtered,
             NetworkIsolation::Airgapped,
         ],
+        // Every Firecracker pod gets all three, whatever it requests:
+        // - process `MicroVM`: the workload runs under the guest's own kernel.
+        // - file `ReadOnly`: the rootfs drive is always lowered `is_read_only`
+        //   (`nucleus_node::firecracker_config`, "The rootfs drive is ALWAYS
+        //   `is_read_only = true`"); only a scratch drive is writable, and no
+        //   host path reaches the guest.
+        // - network `Namespaced`: the guest has its own network stack, and a NIC
+        //   is attached only with a host `NetPlan`, which is allocated only
+        //   inside a per-pod netns (`NetnsPlan::decide`: a network policy without
+        //   a netns is refused). With no NetPlan there is no NIC at all, which is
+        //   stronger still; `Namespaced` is the level that holds in both cases.
+        delivers: IsolationLattice {
+            process: ProcessIsolation::MicroVM,
+            file: FileIsolation::ReadOnly,
+            network: NetworkIsolation::Namespaced,
+        },
     };
 
     /// Apple `Virtualization.framework` (host-side enforcement). The VM
@@ -95,6 +133,10 @@ impl BackendCapability {
             NetworkIsolation::Namespaced,
             NetworkIsolation::Airgapped,
         ],
+        // No floor claimed: the boot driver is not implemented
+        // (`nucleus_node::driver::spawn_vz_pod`), so there is no launch path to
+        // cite. Declare one when there is.
+        delivers: NO_FLOOR,
     };
 
     /// OCI container runtime. Declared at the minimum the node's container path
@@ -121,6 +163,8 @@ impl BackendCapability {
         process: &[ProcessIsolation::Shared, ProcessIsolation::Namespaced],
         file: &[FileIsolation::Unrestricted],
         network: &[NetworkIsolation::Host],
+        // No floor claimed beyond the clamped request.
+        delivers: NO_FLOOR,
     };
 
     /// Process-only execution: no VM, and no isolation the node establishes
@@ -136,6 +180,8 @@ impl BackendCapability {
         process: &[ProcessIsolation::Shared],
         file: &[FileIsolation::Unrestricted],
         network: &[NetworkIsolation::Host],
+        // Process-only execution establishes nothing of its own.
+        delivers: NO_FLOOR,
     };
 
     /// Every backend this node can select, so a property that must hold "on
@@ -165,7 +211,14 @@ pub struct EnforcedIsolation {
     /// What the decision asked for.
     pub requested: IsolationLattice,
     /// What the backend will actually enforce (≥ `requested`, never weaker).
+    /// The posture the pod's policy is held to: a strengthening here is
+    /// written back into the policy.
     pub enforced: IsolationLattice,
+    /// What the backend delivers: `enforced` joined with the backend's floor
+    /// ([`BackendCapability::delivers`]). Always ≥ `enforced`. This is the
+    /// posture to *report*; it does not tighten the policy, since a floor the
+    /// backend provides anyway needs no policy to demand it.
+    pub delivered: IsolationLattice,
     /// The backend that produced this enforcement.
     pub backend: &'static str,
 }
@@ -301,9 +354,16 @@ pub fn require_isolation(
     };
     // Invariant: clamping up can only strengthen, never weaken.
     debug_assert!(enforced.at_least(&requested));
+    let delivered = IsolationLattice {
+        process: process.max(backend.delivers.process),
+        file: file.max(backend.delivers.file),
+        network: network.max(backend.delivers.network),
+    };
+    debug_assert!(delivered.at_least(&enforced));
     Ok(EnforcedIsolation {
         requested,
         enforced,
+        delivered,
         backend: backend.name,
     })
 }
@@ -330,6 +390,34 @@ mod tests {
             );
             assert_eq!(e.enforced, requested);
         }
+    }
+
+    /// #3220: a Firecracker pod that requests nothing still runs in a microVM
+    /// with a read-only rootfs and its own network stack. The clamp leaves the
+    /// request alone (faithful, so the policy is not rewritten), and `delivered`
+    /// carries the floor the listing reports. Before `delivers`, the only
+    /// posture on record was the clamp: `process=shared, file=unrestricted,
+    /// network=host`.
+    #[test]
+    fn firecracker_delivers_its_floor_without_tightening_the_policy() {
+        let e = require_isolation(
+            IsolationLattice::localhost(),
+            &BackendCapability::FIRECRACKER,
+        )
+        .unwrap();
+        assert!(e.is_faithful(), "the floor must not rewrite the policy");
+        assert_eq!(
+            e.delivered,
+            IsolationLattice {
+                process: ProcessIsolation::MicroVM,
+                file: FileIsolation::ReadOnly,
+                network: NetworkIsolation::Namespaced,
+            }
+        );
+        // A request above the floor is delivered as requested.
+        let strong = IsolationLattice::microvm();
+        let e = require_isolation(strong, &BackendCapability::FIRECRACKER).unwrap();
+        assert_eq!(e.delivered, strong);
     }
 
     // ── Apple: the secure default's `Filtered` can't be enforced ──────────
@@ -387,13 +475,23 @@ mod tests {
                         // succeeds". A backend that cannot reach the request
                         // must refuse it; only a returned posture is claimed.
                         match require_isolation(requested, backend) {
-                            Ok(e) => assert!(
-                                e.enforced.at_least(&requested),
-                                "enforced {} weaker than requested {} on {}",
-                                e.enforced,
-                                requested,
-                                backend.name
-                            ),
+                            Ok(e) => {
+                                assert!(
+                                    e.enforced.at_least(&requested),
+                                    "enforced {} weaker than requested {} on {}",
+                                    e.enforced,
+                                    requested,
+                                    backend.name
+                                );
+                                assert!(
+                                    e.delivered.at_least(&e.enforced)
+                                        && e.delivered.at_least(&backend.delivers),
+                                    "delivered {} is not enforced {} joined with {}'s floor",
+                                    e.delivered,
+                                    e.enforced,
+                                    backend.name
+                                );
+                            }
                             Err(EnforcementError::Unenforceable { .. }) => {}
                         }
                     }
@@ -459,6 +557,7 @@ mod tests {
                 FileIsolation::Ephemeral,
             ],
             network: &[NetworkIsolation::Host],
+            delivers: NO_FLOOR,
         };
         let requested = IsolationLattice {
             process: ProcessIsolation::MicroVM,

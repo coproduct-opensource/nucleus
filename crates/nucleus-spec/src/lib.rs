@@ -88,7 +88,13 @@ impl PodSpec {
     pub fn record_isolation(&mut self, isolation: portcullis::enforcement::EnforcedIsolation) {
         let portcullis::enforcement::EnforcedIsolation {
             requested,
-            enforced,
+            // The clamp the policy is held to. Not what the label reports: a
+            // backend's floor is delivered whether or not the policy demands it,
+            // and reporting the clamp alone listed microVM pods as
+            // `process=shared` (#3220). `delivered` is that clamp joined with the
+            // floor, decided once in `require_isolation`.
+            enforced: _,
+            delivered,
             backend,
         } = isolation;
         self.metadata.labels.extend([
@@ -98,7 +104,7 @@ impl PodSpec {
             ),
             (
                 "isolation.coproduct.one/enforced".into(),
-                enforced.to_string(),
+                delivered.to_string(),
             ),
             (
                 "isolation.coproduct.one/backend".into(),

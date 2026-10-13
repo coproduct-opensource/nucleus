@@ -182,8 +182,12 @@ mod tests {
         spec.metadata.labels.get(key).map(String::as_str)
     }
 
-    /// Firecracker enforces the full lattice: the posture labels are written
-    /// on every pod, the request is faithful, and the policy is untouched.
+    /// Firecracker enforces the full lattice, so a pod that requests no minimum
+    /// is clamped faithfully and its policy is untouched — but the `enforced`
+    /// label reports what the backend DELIVERS, not that clamp (#3220). Every
+    /// Firecracker pod runs under its own kernel on a read-only rootfs with its
+    /// own network stack; the label used to say `process=shared,
+    /// file=unrestricted, network=host`, the request echoed back.
     #[test]
     fn firecracker_is_faithful_and_touches_only_labels() {
         let mut spec = spec_with(PolicySpec::Profile {
@@ -198,8 +202,13 @@ mod tests {
         );
         assert_eq!(
             label(&spec, "isolation.coproduct.one/requested"),
+            Some("process=shared, file=unrestricted, network=host"),
+            "the request is recorded as made"
+        );
+        assert_eq!(
             label(&spec, "isolation.coproduct.one/enforced"),
-            "firecracker enforces the full lattice"
+            Some("process=microvm, file=readonly, network=namespaced"),
+            "a microVM pod must not be listed as process=shared"
         );
         match &spec.spec.policy {
             PolicySpec::Profile { name } => assert_eq!(name, "default"),
