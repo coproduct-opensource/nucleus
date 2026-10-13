@@ -81,6 +81,8 @@ use crate::receipt_chain::{ReceiptChain, VerdictReceipt};
 use crate::token::SessionProvenance;
 use crate::{ActionTerm, PreflightContext, PreflightResult, PreflightVerdict};
 
+/// Two-phase consent: approvals are looked at by the gates, spent only on `Allow`.
+mod consent;
 #[cfg(feature = "dlc")]
 mod dlc;
 /// IFC flow gate (poison + tainted-outbound denial) — extends `impl Kernel`.
@@ -1249,6 +1251,9 @@ impl Kernel {
         let pre_hash = self.effective.checksum();
         let pre_exposure_count = self.exposure.count();
         let contributed_label = exposure_core::classify_operation(operation);
+        // Approvals the gates below find are reserved here, and spent only by
+        // `record_allow` — so every refusal leaves them unspent (#3443).
+        let mut draw = consent::ConsentDraw::new(operation);
 
         // 0. Isolation minimum check — does runtime isolation meet policy requirement?
         if let Some(ref minimum) = self.effective.minimum_isolation {
@@ -1403,8 +1408,8 @@ impl Kernel {
                     );
                 }
                 RuleVerdict::RequiresApproval => {
-                    // Check if there's a pre-granted approval
-                    if !self.consume_approval(operation) {
+                    // Reserve, do not spend: the checks below can still refuse.
+                    if !self.reserve(&mut draw, consent::ConsentGate::Policy) {
                         return self.record_with_exposure(
                             operation,
                             subject,
@@ -1548,24 +1553,13 @@ impl Kernel {
             );
         }
 
-        // 7. Static approval check (obligations from lattice structure)
-        if self.effective.requires_approval(operation) {
-            if self.consume_approval(operation) {
-                // Approved — record exposure from this allowed operation
-                self.exposure = exposure_core::apply_record(&self.exposure, operation);
-                let state_uninhabitable =
-                    !ExposureSet::empty().is_uninhabitable() && self.exposure.is_uninhabitable();
-                return self.record_with_exposure(
-                    operation,
-                    subject,
-                    Verdict::Allow,
-                    &pre_hash,
-                    pre_exposure_count,
-                    contributed_label,
-                    state_uninhabitable,
-                    false,
-                );
-            }
+        // 7. Static approval check (obligations from lattice structure). The
+        // same question a policy rule asks at 3d, so it shares that approval;
+        // and an approval found here no longer returns `Allow` — the exposure
+        // gate below still runs (#3443).
+        if self.effective.requires_approval(operation)
+            && !self.reserve(&mut draw, consent::ConsentGate::Policy)
+        {
             return self.record_with_exposure(
                 operation,
                 subject,
@@ -1587,25 +1581,10 @@ impl Kernel {
         // This ensures exfil ops remain gated for the entire session once
         // the uninhabitable_state has been reached, not just at the transition point.
         let projected = exposure_core::project_exposure(&self.exposure, operation);
-        if (self.exposure.is_uninhabitable() || projected.is_uninhabitable())
-            && is_exfil_operation(operation)
-        {
-            // Check if there's a pre-granted approval
-            if self.consume_approval(operation) {
-                let pre_complete = self.exposure.is_uninhabitable();
-                self.exposure = exposure_core::apply_record(&self.exposure, operation);
-                let newly_completed = !pre_complete && self.exposure.is_uninhabitable();
-                return self.record_with_exposure(
-                    operation,
-                    subject,
-                    Verdict::Allow,
-                    &pre_hash,
-                    pre_exposure_count,
-                    contributed_label,
-                    newly_completed,
-                    true,
-                );
-            }
+        let gated = (self.exposure.is_uninhabitable() || projected.is_uninhabitable())
+            && is_exfil_operation(operation);
+        // Its own approval, on top of any static one reserved above (#3443).
+        if gated && !self.reserve(&mut draw, consent::ConsentGate::Exposure) {
             return self.record_with_exposure(
                 operation,
                 subject,
@@ -1618,21 +1597,9 @@ impl Kernel {
             );
         }
 
-        // All checks passed — record exposure and allow
-        let pre_complete = self.exposure.is_uninhabitable();
-        self.exposure = exposure_core::apply_record(&self.exposure, operation);
-        let state_uninhabitable = !pre_complete && self.exposure.is_uninhabitable();
-
-        self.record_with_exposure(
-            operation,
-            subject,
-            Verdict::Allow,
-            &pre_hash,
-            pre_exposure_count,
-            contributed_label,
-            state_uninhabitable,
-            false,
-        )
+        // All checks passed: the one `Allow`, which spends what was reserved.
+        let (count, label) = (pre_exposure_count, contributed_label);
+        self.record_allow(draw, subject, &pre_hash, count, label, gated)
     }
 
     /// Decide a typed [`ActionTerm`] by preflighting it, then lowering to the
@@ -1820,8 +1787,8 @@ impl Kernel {
 
     /// Grant pre-approval for an operation (with a count).
     ///
-    /// The approval is consumed by [`Kernel::decide`] when the operation
-    /// requires approval and an approval is available.
+    /// [`Kernel::decide`] spends approvals only when its verdict is `Allow`:
+    /// one for a policy rule or obligation, one for the exposure gate.
     pub fn grant_approval(&mut self, operation: Operation, count: u32) {
         let entry = self.approvals.entry(operation).or_insert(0);
         *entry = entry.saturating_add(count);
@@ -2110,17 +2077,6 @@ impl Kernel {
 
         self.trace.push(decision.clone());
         (decision, token)
-    }
-
-    /// Try to consume one pre-granted approval for the operation.
-    fn consume_approval(&mut self, operation: Operation) -> bool {
-        if let Some(count) = self.approvals.get_mut(&operation) {
-            if *count > 0 {
-                *count -= 1;
-                return true;
-            }
-        }
-        false
     }
 }
 
