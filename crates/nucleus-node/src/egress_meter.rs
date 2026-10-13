@@ -261,6 +261,33 @@ mod tests {
         assert!(log.contains("80 of 100 bytes"), "{log}");
     }
 
+    /// #2905: the exhaustion record is a receipt, not a log line. It carries the node's
+    /// signature and the key that made it, so a reader holding the node's pinned root key can
+    /// tell a record the node wrote from one anybody with write access to the pod directory
+    /// appended.
+    #[tokio::test]
+    async fn the_exhaustion_record_is_signed_by_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = meter(10, dir.path());
+        let _ = m.admit(11, 0).await.err().expect("past the ceiling");
+
+        let log = lifecycle(dir.path());
+        let line = log
+            .lines()
+            .find(|l| l.contains("egress_budget_exhausted"))
+            .unwrap_or_else(|| panic!("the exhaustion is recorded: {log}"));
+        let entry: serde_json::Value = serde_json::from_str(line).expect("one JSON record");
+        for field in ["signature", "signer_pubkey"] {
+            assert!(
+                entry
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|v| !v.is_empty()),
+                "the exhaustion record carries no {field}: {line}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn a_dropped_charge_counts_as_sent_and_not_sent_refunds() {
         let dir = tempfile::tempdir().unwrap();
