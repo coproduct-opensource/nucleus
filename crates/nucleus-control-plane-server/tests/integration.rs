@@ -164,6 +164,120 @@ async fn submit_then_poll_then_fetch_bundle() {
     assert_eq!(report.edge_count, 5);
 }
 
+/// `GET /v1/jobs/{id}/attestation?format=…` — the standard exports, signed by
+/// the build platform's own lineage key (the key whose JWKS verifies the
+/// bundle), with the produced artifact as a subject.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_job_serves_a_platform_signed_attestation_in_every_format() {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+
+    let state = fresh_state();
+    let app = build_app(state.clone());
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/jobs")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(&sample_spec()).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let job_id = read_json(resp.into_body()).await["job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    poll_until_completed(app.clone(), &job_id, 100).await;
+
+    let get = |uri: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        }
+    };
+
+    // The artifact digest the signed lineage records for this job.
+    let bundle: Bundle = serde_json::from_value(
+        read_json(get(format!("/v1/jobs/{job_id}/bundle")).await.into_body()).await,
+    )
+    .unwrap();
+    let artifact_digest = bundle
+        .envelope
+        .edges
+        .iter()
+        .find(|e| matches!(e.kind, nucleus_lineage::EdgeKind::ArtifactProduced))
+        .and_then(|e| e.child.content_hash_hex())
+        .expect("the mock runner records its artifact's digest")
+        .to_string();
+
+    let jwks = state.issuer.publish_jwks();
+    let x = URL_SAFE_NO_PAD
+        .decode(jwks["keys"][0]["x"].as_str().unwrap())
+        .unwrap();
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(&x.try_into().unwrap()).unwrap();
+
+    for (format, sigstore, predicate) in [
+        (
+            "in-toto",
+            false,
+            "https://nucleus.coproduct.io/agent-provenance/v2",
+        ),
+        ("slsa", false, "https://slsa.dev/provenance/v1"),
+        (
+            "sigstore",
+            true,
+            "https://nucleus.coproduct.io/agent-provenance/v2",
+        ),
+        ("sigstore-slsa", true, "https://slsa.dev/provenance/v1"),
+    ] {
+        let resp = get(format!("/v1/jobs/{job_id}/attestation?format={format}")).await;
+        assert_eq!(resp.status(), StatusCode::OK, "{format}");
+        let doc = read_json(resp.into_body()).await;
+        let dsse = if sigstore { &doc["dsseEnvelope"] } else { &doc };
+        let payload = B64.decode(dsse["payload"].as_str().unwrap()).unwrap();
+        let pae = nucleus_envelope::binding::pae_bytes(
+            dsse["payloadType"].as_str().unwrap(),
+            &[&payload],
+        );
+        let sig: [u8; 64] = B64
+            .decode(dsse["signatures"][0]["sig"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        ed25519_dalek::Verifier::verify(&vk, &pae, &ed25519_dalek::Signature::from_bytes(&sig))
+            .unwrap_or_else(|e| panic!("{format}: platform signature must verify: {e}"));
+        let stmt: Value = serde_json::from_slice(&payload).unwrap();
+        assert_eq!(stmt["predicateType"], predicate, "{format}");
+        let digests: Vec<&str> = stmt["subject"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["digest"]["sha256"].as_str().unwrap())
+            .collect();
+        assert!(
+            digests.contains(&artifact_digest.as_str()),
+            "{format}: artifact {artifact_digest} must be a subject: {digests:?}"
+        );
+    }
+
+    // An unknown or missing format is a 400, never a default.
+    for uri in [
+        format!("/v1/jobs/{job_id}/attestation?format=c2pa"),
+        format!("/v1/jobs/{job_id}/attestation"),
+    ] {
+        assert_eq!(
+            get(uri.clone()).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{uri}"
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unknown_driver_returns_422() {
     let app = build_app(fresh_state());
@@ -1002,11 +1116,15 @@ mod ownership {
             StatusCode::OK
         );
         // … and a different, fully authenticated principal in the same trust
-        // domain is told it does not exist — on all four routes, including
+        // domain is told it does not exist — on every job route, including
         // the mutating one and the bundle (the thing the caller paid for).
         for (method, path) in [
             (Method::GET, format!("/v1/jobs/{id}")),
             (Method::GET, format!("/v1/jobs/{id}/bundle")),
+            (
+                Method::GET,
+                format!("/v1/jobs/{id}/attestation?format=in-toto"),
+            ),
             (Method::GET, format!("/v1/jobs/{id}/events/stream")),
             (Method::POST, format!("/v1/jobs/{id}/cancel")),
         ] {
