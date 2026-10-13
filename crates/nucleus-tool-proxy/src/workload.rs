@@ -370,7 +370,10 @@ impl WorkloadLaunch {
     /// inherited runtime variable reach it, and it is never handed the work dir. It is
     /// admitted by the same `admit` as the workload, so the same relation and the same
     /// uid rule decide what crosses.
-    pub(crate) fn companion(spec: &nucleus_spec::CompanionSpec, work_dir: &std::path::Path) -> Self {
+    pub(crate) fn companion(
+        spec: &nucleus_spec::CompanionSpec,
+        work_dir: &std::path::Path,
+    ) -> Self {
         let home = work_dir.join(nucleus_spec::guest_layout::COMPANION_HOME_NAME);
         let mut env = BTreeMap::from([("HOME".to_string(), home.to_string_lossy().into_owned())]);
         env.extend(spec.env.clone());
@@ -621,7 +624,9 @@ pub(crate) fn spawn_admitted(
     // `/work` is on the read-only rootfs), and in that case the workload cannot
     // write it regardless, so the failure is not fatal: log it and proceed.
     // A companion is never handed it: the work dir is the workload's.
-    if plan.owns_work_dir && let Err(e) = confinement.hand_over(&plan.work_dir) {
+    if plan.owns_work_dir
+        && let Err(e) = confinement.hand_over(&plan.work_dir)
+    {
         tracing::warn!(
             work_dir = %plan.work_dir.display(),
             uid = ?drop_uid,
@@ -1008,7 +1013,14 @@ pub(crate) fn start_if_configured(
     // The companion is admitted before anything starts, so a refused one refuses the pod.
     let companion = match w.companion.as_ref() {
         None => None,
-        Some(c) => Some(admit_companion(c, &spec.spec.work_dir, &plan, containment, opt_in, landlock)?),
+        Some(c) => Some(admit_companion(
+            c,
+            &spec.spec.work_dir,
+            &plan,
+            containment,
+            opt_in,
+            landlock,
+        )?),
     };
 
     door.serve(door_app, plan.door_uid());
@@ -1039,7 +1051,11 @@ pub(crate) fn start_if_configured(
         launch_receipt = %serde_json::to_string(&receipt).unwrap_or_default(),
         "workload launch receipt"
     );
-    Ok(Some(Started { child, receipt, companion }))
+    Ok(Some(Started {
+        child,
+        receipt,
+        companion,
+    }))
 }
 
 /// A started workload, and its companion when the spec names one. Dropping it kills both
@@ -1063,7 +1079,10 @@ fn admit_companion(
     landlock: nucleus::LandlockWaiver,
 ) -> Result<AdmittedWorkloadPlan, crate::ApiError> {
     let refuse = |why: String| {
-        crate::ApiError::Spec(format!("refused to launch companion {:?}: {why}", companion.command))
+        crate::ApiError::Spec(format!(
+            "refused to launch companion {:?}: {why}",
+            companion.command
+        ))
     };
     if companion.uid == 0 {
         return Err(refuse("a companion never runs as root".into()));
@@ -1077,7 +1096,9 @@ fn admit_companion(
         .admit(containment, opt_in, landlock)
         .map_err(|e| refuse(e.to_string()))?;
     if !matches!(admitted.runs_as(), RunsAs::Dropped(uid) if uid == companion.uid) {
-        return Err(refuse("this runtime cannot drop to the companion's uid".into()));
+        return Err(refuse(
+            "this runtime cannot drop to the companion's uid".into(),
+        ));
     }
     Ok(admitted)
 }
@@ -2081,10 +2102,18 @@ mod companion_tests {
         let launch = WorkloadLaunch::companion(&companion(COMPANION_UID), dir.path());
         assert_eq!(
             launch.env.get("HOME").map(std::path::PathBuf::from),
-            Some(dir.path().join(nucleus_spec::guest_layout::COMPANION_HOME_NAME))
+            Some(
+                dir.path()
+                    .join(nucleus_spec::guest_layout::COMPANION_HOME_NAME)
+            )
         );
         assert_eq!(launch.env.get("MODE").map(String::as_str), Some("exec"));
-        assert_eq!(launch.env.len(), 2, "{:?}", launch.env.keys().collect::<Vec<_>>());
+        assert_eq!(
+            launch.env.len(),
+            2,
+            "{:?}",
+            launch.env.keys().collect::<Vec<_>>()
+        );
         assert!(!launch.owns_work_dir);
         assert!(WorkloadLaunch::build(&workload(), "u", dir.path(), &[]).owns_work_dir);
     }
@@ -2097,17 +2126,28 @@ mod companion_tests {
         let mode = nucleus::ContainmentMode::MicroVM;
         let opt_in = nucleus::UnsandboxedOptIn::Explicit;
         let waiver = nucleus::LandlockWaiver::Absent;
-        let Ok(plan) = WorkloadLaunch::build(&workload(), "u", dir.path(), &[]).admit(mode, opt_in, waiver)
+        let Ok(plan) =
+            WorkloadLaunch::build(&workload(), "u", dir.path(), &[]).admit(mode, opt_in, waiver)
         else {
             // A non-root runtime cannot drop to the workload's uid either: nothing to compare.
             assert_ne!(nix_getuid(), 0);
             return;
         };
         for uid in [0, WORKLOAD_UID] {
-            assert!(admit_companion(&companion(uid), dir.path(), &plan, mode, opt_in, waiver).is_err(), "{uid}");
+            assert!(
+                admit_companion(&companion(uid), dir.path(), &plan, mode, opt_in, waiver).is_err(),
+                "{uid}"
+            );
         }
-        let admitted = admit_companion(&companion(COMPANION_UID), dir.path(), &plan, mode, opt_in, waiver)
-            .expect("a distinct uid on a root runtime");
+        let admitted = admit_companion(
+            &companion(COMPANION_UID),
+            dir.path(),
+            &plan,
+            mode,
+            opt_in,
+            waiver,
+        )
+        .expect("a distinct uid on a root runtime");
         assert!(matches!(admitted.runs_as(), RunsAs::Dropped(COMPANION_UID)));
     }
 
@@ -2123,9 +2163,22 @@ mod companion_tests {
         let dir = tempfile::tempdir().unwrap();
         let owner = std::fs::metadata(dir.path()).unwrap().uid();
         let mode = nucleus::ContainmentMode::MicroVM;
-        let (opt_in, waiver) = (nucleus::UnsandboxedOptIn::Explicit, nucleus::LandlockWaiver::Absent);
-        let plan = WorkloadLaunch::build(&workload(), "u", dir.path(), &[]).admit(mode, opt_in, waiver).unwrap();
-        let admitted = admit_companion(&companion(COMPANION_UID), dir.path(), &plan, mode, opt_in, waiver).unwrap();
+        let (opt_in, waiver) = (
+            nucleus::UnsandboxedOptIn::Explicit,
+            nucleus::LandlockWaiver::Absent,
+        );
+        let plan = WorkloadLaunch::build(&workload(), "u", dir.path(), &[])
+            .admit(mode, opt_in, waiver)
+            .unwrap();
+        let admitted = admit_companion(
+            &companion(COMPANION_UID),
+            dir.path(),
+            &plan,
+            mode,
+            opt_in,
+            waiver,
+        )
+        .unwrap();
         let rlimits = nucleus::RlimitPolicy::node_ceiling().at_ceiling();
         let syscalls = portcullis::SeccompPolicy::derive(
             &portcullis::PermissionLattice::permissive(),
@@ -2133,9 +2186,18 @@ mod companion_tests {
         );
         let (child, _) = spawn_admitted(admitted, rlimits, syscalls).unwrap();
         let out = child.wait_with_output().await.unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), COMPANION_UID.to_string());
-        assert_eq!(std::fs::metadata(dir.path()).unwrap().uid(), owner, "the work dir stays the workload's");
-        let home = dir.path().join(nucleus_spec::guest_layout::COMPANION_HOME_NAME);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            COMPANION_UID.to_string()
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().uid(),
+            owner,
+            "the work dir stays the workload's"
+        );
+        let home = dir
+            .path()
+            .join(nucleus_spec::guest_layout::COMPANION_HOME_NAME);
         assert_eq!(std::fs::metadata(home).unwrap().uid(), COMPANION_UID);
     }
 }

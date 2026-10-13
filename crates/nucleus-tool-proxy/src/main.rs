@@ -24,8 +24,6 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 
-mod guest_request_proof;
-mod workload_request_proof;
 mod api_error;
 mod approval;
 mod art12;
@@ -46,6 +44,7 @@ mod effect_gate;
 mod egress;
 mod escalate;
 mod exit_report;
+mod guest_request_proof;
 mod host_decide;
 mod host_socket;
 mod identity_fusion;
@@ -73,6 +72,7 @@ mod telemetry;
 mod unicode_audit;
 mod url_allow;
 mod validation;
+mod workload_request_proof;
 
 use crate::api_error::ApiError;
 mod artifact;
@@ -197,7 +197,11 @@ struct Args {
     /// Privileged workload proof state, outside the workload tree. The default
     /// survives proxy restarts within a guest boot; use a private persistent
     /// mount when recovery across guest boots is required.
-    #[arg(long, env = "NUCLEUS_WORKLOAD_PROOF_STATE", default_value = "/run/nucleus-workload-proof")]
+    #[arg(
+        long,
+        env = "NUCLEUS_WORKLOAD_PROOF_STATE",
+        default_value = "/run/nucleus-workload-proof"
+    )]
     workload_proof_state: PathBuf,
     /// HMAC secret for the Article 12 log and its shipper. It no longer keys
     /// the audit log at `--audit-log`: that log is signed with an Ed25519 key
@@ -1678,8 +1682,11 @@ async fn main() -> Result<(), ApiError> {
     });
 
     let receipts = Arc::new(portcullis_effects::receipt::ReceiptLog::new());
-    let guest_proof = guest_proof_config.map(|c| c.open(&guest_proof_path).map(Arc::new)).transpose()?;
-    let workload_proof = workload_request_proof::provision_runtime(&spec, &args.workload_proof_state)?.map(Arc::new);
+    let guest_proof = guest_proof_config
+        .map(|c| c.open(&guest_proof_path).map(Arc::new))
+        .transpose()?;
+    let workload_proof =
+        workload_request_proof::provision_runtime(&spec, &args.workload_proof_state)?.map(Arc::new);
     let state = AppState {
         guest_proof,
         workload_proof,
@@ -1832,6 +1839,7 @@ async fn main() -> Result<(), ApiError> {
         )
         .route("/v1/health", get(health))
         .route("/v1/read", post(read_file))
+        .route("/v1/policy", post(pod_policy))
         .route("/v1/artifact", post(artifact::read))
         .route("/v1/write", post(write_file))
         .route("/v1/run", post(run_command))
@@ -2136,7 +2144,10 @@ async fn auth_middleware(
         // Only the sealed workload-door admission distinguishes local workload
         // requests. No caller-controlled header can bypass the host proof gate.
         if matches!(evidence.ingress(), auth::Ingress::WorkloadDoor { .. }) {
-            state.workload_proof.as_ref().ok_or(ApiError::Auth(auth::AuthError::InvalidHeader("dpop")))?
+            state
+                .workload_proof
+                .as_ref()
+                .ok_or(ApiError::Auth(auth::AuthError::InvalidHeader("dpop")))?
                 .verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
         } else {
             gate.verify(&parts.headers, parts.method.as_str(), &parts.uri, &bytes)?;
@@ -2522,6 +2533,23 @@ pub(crate) fn ingest_content_hash(bytes: &[u8]) -> nucleus_ifc_kernel::ContentHa
     hasher.update(bytes);
     let digest: [u8; 32] = hasher.finalize().into();
     nucleus_ifc_kernel::ContentHash::from_bytes(digest)
+}
+
+/// The pod's effective command and path rules and the named compartments it is confined to,
+/// as its certificate grants them (`runtime.policy()` is checked equal to the certificate at
+/// start). Read-only, for an in-pod executor to apply before it spawns; every effect is still
+/// decided here and by the node.
+pub(crate) async fn pod_policy(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let policy = state.runtime.policy();
+    let compartments: Vec<String> = portcullis::cert_compartment::named_of(&policy.capabilities)
+        .into_iter()
+        .map(|k| k.0)
+        .collect();
+    Json(serde_json::json!({
+        "commands": policy.commands,
+        "paths": policy.paths,
+        "compartments": compartments,
+    }))
 }
 
 async fn read_file(

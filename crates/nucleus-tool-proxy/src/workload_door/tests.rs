@@ -87,6 +87,8 @@ fn the_door_serves_exactly_these_routes() {
             "/v1/memory/write",
             "/v1/memory/recall",
             "/v1/egress/{name}/{*path}",
+            // Read-only: the pod's own certified command and path rules, for an in-pod executor.
+            "/v1/policy",
         ]
     );
 }
@@ -648,6 +650,8 @@ fn every_door_route_is_in_the_shadow_coverage_set() {
             DoorRoute::Glob => Operation::GlobSearch,
             DoorRoute::Grep => Operation::GrepSearch,
             DoorRoute::WebSearch => Operation::WebSearch,
+            // Reads the pod's own certified policy: no effect, so no operation to decide.
+            DoorRoute::Policy => continue,
         };
         assert!(
             COVERAGE.contains(&decided_as),

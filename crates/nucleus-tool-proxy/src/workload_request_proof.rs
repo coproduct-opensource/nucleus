@@ -53,9 +53,14 @@ fn open(config: &Provision, path: &Path) -> Result<Gate, ApiError> {
         expires: config.expires,
     })
 }
-pub(crate) fn provision_runtime(spec: &PodSpec, directory: &Path) -> Result<Option<Gate>, ApiError> {
+pub(crate) fn provision_runtime(
+    spec: &PodSpec,
+    directory: &Path,
+) -> Result<Option<Gate>, ApiError> {
     use std::os::unix::fs::DirBuilderExt;
-    if spec.spec.workload.is_none() || crate::guest_request_proof::Config::from_spec(spec)?.is_none() {
+    if spec.spec.workload.is_none()
+        || crate::guest_request_proof::Config::from_spec(spec)?.is_none()
+    {
         return Ok(None);
     }
     if !nix::unistd::geteuid().is_root() || !directory.is_absolute() {
@@ -68,13 +73,17 @@ pub(crate) fn provision_runtime(spec: &PodSpec, directory: &Path) -> Result<Opti
     if !parent_meta.is_dir() || parent_meta.uid() != 0 || parent_meta.mode() & 0o022 != 0 {
         return Err(refused());
     }
-    if parent.canonicalize().map_err(|_| refused())?.starts_with(
-        spec.spec.work_dir.canonicalize().map_err(|_| refused())?,
-    ) {
+    if parent
+        .canonicalize()
+        .map_err(|_| refused())?
+        .starts_with(spec.spec.work_dir.canonicalize().map_err(|_| refused())?)
+    {
         return Err(refused());
     }
     match std::fs::DirBuilder::new().mode(0o700).create(directory) {
-        Ok(()) => std::fs::File::open(parent).and_then(|f| f.sync_all()).map_err(|_| refused())?,
+        Ok(()) => std::fs::File::open(parent)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| refused())?,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(_) => return Err(refused()),
     }
