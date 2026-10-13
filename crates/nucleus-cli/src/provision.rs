@@ -24,15 +24,16 @@
 //! the actual cause is an encoding mismatch two crates away.
 
 use anyhow::{Context, Result, anyhow, bail};
-use nucleus_spec::guest_release::{GUEST_RELEASE_RECORD_FILE, GuestOrigin, GuestReleaseRecord};
+use nucleus_spec::guest_release::GuestOrigin;
 use nucleus_spec::microvm_host::HOST_ENFORCEMENT_ENV;
-use nucleus_spec::tier2_artifacts::{self, GUEST_ROOTFS_FILE, Tier2Artifact};
+use nucleus_spec::tier2_artifacts::{self, Tier2Artifact};
 use nucleus_spec::vmm_version;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub mod binary;
+mod guest_record;
 pub mod release;
 mod retired_env;
 
@@ -536,7 +537,7 @@ pub fn install_tier2_artifacts(
     for (artifact, local) in &files {
         if *artifact == Tier2Artifact::Rootfs {
             install_rootfs(host, local)?;
-            record_guest_release(host, cache_dir, guest.clone())?;
+            guest_record::record_guest_release(host, cache_dir, guest.clone())?;
         }
     }
     for s in &staged {
@@ -599,30 +600,6 @@ fn install_rootfs(host: &Tier2Host, local: &Path) -> Result<()> {
         host.put(local, &dest, SHARED_ARTIFACT_MODE)?;
     }
     Ok(())
-}
-
-/// Write, beside the rootfs just installed, which guest it is and the digest
-/// of its installed bytes, so the node can report it (#3223). The digest is
-/// measured on the host, of the file the node will boot, after it landed.
-fn record_guest_release(host: &Tier2Host, cache_dir: &Path, origin: GuestOrigin) -> Result<()> {
-    let rootfs = format!("{HOST_ARTIFACTS_DIR}/{GUEST_ROOTFS_FILE}");
-    let out = host.sh(&format!("sha256sum {rootfs}"))?;
-    let record = guest_release_record(origin, &out)?;
-    std::fs::create_dir_all(cache_dir)?;
-    let local = cache_dir.join(GUEST_RELEASE_RECORD_FILE);
-    std::fs::write(&local, serde_json::to_vec_pretty(&record)?)?;
-    host.put(
-        &local,
-        &format!("{HOST_ARTIFACTS_DIR}/{GUEST_RELEASE_RECORD_FILE}"),
-        SHARED_ARTIFACT_MODE,
-    )
-}
-
-/// The record for `origin`, from `sha256sum`'s output for the installed rootfs.
-fn guest_release_record(origin: GuestOrigin, sha256sum: &str) -> Result<GuestReleaseRecord> {
-    let digest = sha256sum.split_whitespace().next().unwrap_or_default();
-    GuestReleaseRecord::new(origin, digest)
-        .map_err(|e| anyhow!("recording the installed guest rootfs: {e}"))
 }
 
 /// The root shell that decompresses a shared artifact into place.
@@ -2377,33 +2354,6 @@ mod tests {
                 (&*format!("{TIER2_IDENTITY_DIR}/trust-bundle.pem"), "0644"),
             ]
         );
-    }
-
-    /// #3223: the record `setup` writes beside the rootfs carries the digest
-    /// `sha256sum` printed for the installed file, and refuses output that is
-    /// not one, rather than recording a guest it could not measure.
-    #[test]
-    fn the_guest_release_record_holds_the_installed_rootfs_digest() {
-        let sha = "21c1b167482f3c10428b8fd5e08bbeea14258ce74479730712dc11a4f34d2029";
-        let out = format!("{sha}  {HOST_ARTIFACTS_DIR}/{GUEST_ROOTFS_FILE}");
-        let record = guest_release_record(
-            GuestOrigin::Release {
-                version: tier2_artifacts::GUEST_RELEASE.into(),
-            },
-            &out,
-        )
-        .unwrap();
-        assert_eq!(record.rootfs_sha256(), sha);
-        assert_eq!(
-            GuestReleaseRecord::parse(&serde_json::to_vec(&record).unwrap()).unwrap(),
-            record
-        );
-        for bad in ["", "sha256sum: rootfs.ext4: No such file or directory"] {
-            assert!(
-                guest_release_record(GuestOrigin::LocalBuild, bad).is_err(),
-                "{bad:?}"
-            );
-        }
     }
 
     /// #3152: shared artifacts are installed root-owned and read-only, and a
