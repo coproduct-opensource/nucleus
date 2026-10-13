@@ -60,6 +60,20 @@ async fn no_default_signs_a_weaker_certificate_than_the_one_asked_for() {
             .await,
         ca.sign_unmeasured_csr(csr, key, &identity, ttl, UnmeasuredTier::Container)
             .await,
+        // A launch-quote digest no older method can state: refused, never dropped
+        // into a leaf that would read as rooted in the CA alone (ADR 0016 D2).
+        ca.sign_measured_csr(
+            csr,
+            key,
+            &identity,
+            ttl,
+            &MeasuredClaims {
+                attestation: &att,
+                mediator_key_sha256: None,
+                launch_quote_sha256: Some(&[7; 32]),
+            },
+        )
+        .await,
     ];
     for refused in refusals {
         let err = refused.expect_err("no weaker certificate in its place");

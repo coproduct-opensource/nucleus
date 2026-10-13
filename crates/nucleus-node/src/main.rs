@@ -900,6 +900,11 @@ async fn main() -> Result<(), ApiError> {
         )
         .map_err(ApiError::Driver)?,
     );
+    // A node with a TPM quotes every launch it measures, and each SVID names its
+    // quote (ADR 0016 D2). The identity manager exists before the attester does,
+    // and nothing has issued a launch yet, so the rooting is attached here.
+    let identity_manager =
+        identity_manager.map(|m| m.with_launch_rooting(node_platform.launch_rooting()));
     // Every federation assertion states the platform tier from the node's own
     // appraisal of the evidence in force at the mint (ADR 0012 A3). Attached
     // here because the attester's first quote binds the issuer's JWKS, so the

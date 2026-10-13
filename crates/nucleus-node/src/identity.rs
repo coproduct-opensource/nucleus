@@ -69,6 +69,10 @@ pub struct IdentityManager {
     /// leaves SVIDs unbound (attestation only) — a graceful default, not a
     /// failure.
     mediation_binding_dir: Option<std::path::PathBuf>,
+    /// What roots each measured launch this node issues: the CA alone, or also
+    /// the node's TPM, which quotes each issue's key and measurement (ADR 0016
+    /// D2). Set from the node's platform evidence source at start-up.
+    launch_rooting: nucleus_identity::LaunchRooting,
 }
 
 impl IdentityManager {
@@ -145,7 +149,16 @@ impl IdentityManager {
             attestation_registry: Arc::new(RwLock::new(HashMap::new())),
             cert_ttl,
             mediation_binding_dir: None,
+            launch_rooting: nucleus_identity::LaunchRooting::NodeCa,
         }
+    }
+
+    /// Roots every measured launch issued from here on as `rooting` says
+    /// (ADR 0016 D2). Chainable, like [`Self::with_mediation_binding_dir`].
+    #[must_use]
+    pub fn with_launch_rooting(mut self, rooting: nucleus_identity::LaunchRooting) -> Self {
+        self.launch_rooting = rooting;
+        self
     }
 
     /// Sets the base directory (`<dir>/<pod_id>/mediator-pubkey.hex`) from which an
@@ -658,6 +671,7 @@ impl IdentityManager {
                 nucleus_identity::Launch::Measured {
                     attestation,
                     mediator_key_sha256,
+                    rooting: self.launch_rooting.clone(),
                 },
             )
             .await
@@ -688,6 +702,7 @@ impl std::fmt::Debug for IdentityManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityManager")
             .field("trust_domain", &self.trust_domain)
+            .field("launch_rooting", &self.launch_rooting)
             .finish()
     }
 }

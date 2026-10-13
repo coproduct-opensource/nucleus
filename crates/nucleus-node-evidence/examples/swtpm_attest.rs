@@ -2,7 +2,7 @@
 //! Development and fixture capture only; a node uses the device transport.
 //!
 //! ```text
-//! swtpm_attest ADDR EXECUTOR_ED25519_HEX (epoch:COUNTER:IAT | nonce:HEX) [anchor-source]
+//! swtpm_attest ADDR EXECUTOR_ED25519_HEX (epoch:COUNTER:IAT | nonce:HEX) [anchor-source | software-tpm:SOURCE]
 //! ```
 //! The AK's SubjectPublicKeyInfo SHA-256 (what an operator would pin) goes to stderr.
 
@@ -30,8 +30,13 @@ fn run(args: &[String]) -> Result<String, String> {
         },
         _ => return Err("freshness is epoch:N:IAT or nonce:HEX".into()),
     };
-    let anchor = match rest.first() {
-        Some(source) => AkAnchorClaim::OperatorFetched {
+    // `software-tpm:<source>` claims what a software TPM is; any other source is
+    // claimed operator-fetched, as before.
+    let anchor = match rest.first().map(|s| (s, s.strip_prefix("software-tpm:"))) {
+        Some((_, Some(source))) => AkAnchorClaim::SoftwareTpm {
+            source: source.to_string(),
+        },
+        Some((source, None)) => AkAnchorClaim::OperatorFetched {
             source: source.clone(),
         },
         None => AkAnchorClaim::None,

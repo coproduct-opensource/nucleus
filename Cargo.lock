@@ -6196,6 +6196,7 @@ dependencies = [
  "futures-util",
  "hex",
  "hyper-util",
+ "nucleus-node-evidence",
  "nucleus-proto",
  "nucleus-recompute",
  "pem 4.0.0",
