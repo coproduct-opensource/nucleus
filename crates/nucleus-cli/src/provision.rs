@@ -1454,8 +1454,8 @@ pub(crate) async fn mint_cli_identity(
         .generate()
         .map_err(|e| anyhow!("failed to generate a CSR for the CLI's identity: {e}"))?;
     // 90 days, not a pod's 1-hour default: this is an operator's own
-    // credential, not re-minted per session, and 90 days matches the
-    // existing secret-rotation reminder convention (`keychain::ROTATION_DAYS`).
+    // credential, not re-minted per session; 90 days is the rotation period
+    // the CLI has always used for an operator's long-lived material.
     let cert = ca
         .sign_csr(
             csr.csr(),
