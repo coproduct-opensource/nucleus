@@ -617,6 +617,14 @@ case "$1" in
   *) exit 1 ;;
 esac"#;
 
+    /// The deadline for a store driving a *working* fixture. These tests are
+    /// about what the store does, not how fast `/bin/sh` starts: on a loaded
+    /// CI runner the fixture's process start alone has exceeded the 5 s
+    /// production deadline (#3427). The timeout path is tested separately,
+    /// deterministically in the other direction — a 30 s sleep against 300 ms.
+    #[cfg(unix)]
+    const WORKING_FIXTURE_TIMEOUT: Duration = Duration::from_secs(60);
+
     /// The macOS store's own logic, through a fake `security`: the full
     /// rotation, and the key never on the child's argv.
     #[cfg(unix)]
@@ -624,11 +632,7 @@ esac"#;
     fn security_cli_store_rotates_through_the_tool() {
         let dir = exec_tempdir();
         let program = fake_security(dir.path(), WORKING_SECURITY);
-        let store = SecurityCli::new(
-            &program,
-            KEYCHAIN_SERVICE,
-            Duration::from_millis(DEFAULT_KEYCHAIN_TIMEOUT_MS),
-        );
+        let store = SecurityCli::new(&program, KEYCHAIN_SERVICE, WORKING_FIXTURE_TIMEOUT);
         exercise(&store);
         let stored = std::fs::read_to_string(dir.path().join("current")).unwrap();
         assert!(stored.len() > 100, "the fixture stored the key");
@@ -648,11 +652,7 @@ esac"#;
         let dir = exec_tempdir();
         let body = WORKING_SECURITY.replace(r#"printf %s "$secret" > "$STORE/$acct""#, "true");
         let program = fake_security(dir.path(), &body);
-        let store = SecurityCli::new(
-            &program,
-            KEYCHAIN_SERVICE,
-            Duration::from_millis(DEFAULT_KEYCHAIN_TIMEOUT_MS),
-        );
+        let store = SecurityCli::new(&program, KEYCHAIN_SERVICE, WORKING_FIXTURE_TIMEOUT);
         assert!(matches!(
             init(&store),
             Err(OperatorKeyError::WriteNotRead { slot: "current" })
