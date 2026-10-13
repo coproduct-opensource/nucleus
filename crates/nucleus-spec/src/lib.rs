@@ -2,6 +2,8 @@
 
 pub mod approval_binding;
 pub mod boot_args;
+pub mod companion;
+pub use companion::CompanionSpec;
 pub mod boot_budget;
 pub mod dlc_admission;
 pub mod egress_budget;
@@ -1352,6 +1354,10 @@ pub struct WorkloadSpec {
     /// without one.
     #[serde(default)]
     pub uid: Option<u32>,
+    /// A second process the runtime starts beside the workload, under its own
+    /// uid. See [`CompanionSpec`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub companion: Option<CompanionSpec>,
 }
 
 /// Errors resolving policies.

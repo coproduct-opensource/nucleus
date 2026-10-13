@@ -103,8 +103,11 @@ pub(crate) fn start(
             reason: error.to_string(),
         },
     };
-    let Some((child, launch)) =
-        workload::start_if_configured(spec, door_path, door_app, containment, opt_in, landlock)?
+    let Some(workload::Started {
+        child,
+        receipt: launch,
+        companion,
+    }) = workload::start_if_configured(spec, door_path, door_app, containment, opt_in, landlock)?
     else {
         crate::console_line("[workload] no workload configured in pod spec");
         return Ok(None);
@@ -121,7 +124,47 @@ pub(crate) fn start(
         result: WorkloadResult::Running,
         logs: None,
     });
+    // The companion lives as long as this task: it is dropped, and so killed, once the
+    // workload is observed to exit. Its output is drained so a full pipe never stalls it;
+    // the first lines reach the console, so a companion that fails at start says why.
+    let companion = companion.map(|(mut child, _)| {
+        for pipe in [
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let mut pipe = pipe;
+            tokio::spawn(async move {
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(&mut pipe).lines();
+                for _ in 0..64 {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => crate::console_line(&format!(
+                            "[companion] {}",
+                            line.chars().take(512).collect::<String>()
+                        )),
+                        _ => return,
+                    }
+                }
+                let _ = tokio::io::copy(lines.get_mut(), &mut tokio::io::sink()).await;
+            });
+        }
+        crate::console_line(&format!(
+            "[workload] companion started (pid={:?})",
+            child.id()
+        ));
+        child
+    });
     Ok(Some(Supervisor(tokio::spawn(async move {
+        let _companion = companion;
         let observed = match observe(child).await {
             Ok((exit_code, stdout, stderr)) => Observation {
                 result: WorkloadResult::Exited {
