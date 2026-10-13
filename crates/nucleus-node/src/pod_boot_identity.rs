@@ -48,12 +48,14 @@ impl PreparedIdentity {
         let broker = broker_launch::start_broker_for_pod(broker_launch::BrokerInputs {
             state,
             spec,
-            vsock_path,
+            route: broker_launch::BrokerRoute::Vsock {
+                vsock_path,
+                jail_owner,
+                withheld: self.withholding.as_ref(),
+            },
             registered: self.identity(),
             id,
             capability,
-            jail_owner,
-            withheld: self.withholding.as_ref(),
             egress: Arc::clone(&egress),
         })
         .await?;

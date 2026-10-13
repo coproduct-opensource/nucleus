@@ -87,8 +87,9 @@ pub(crate) fn pod_yaml(
 }
 
 /// The container's image and command for a pod, from node configuration and the env the node
-/// built. Nothing here reads the spec: its only influence is `NUCLEUS_TASK_CMD`, which reaches
-/// `env` through admitted `credentials.env` and is used only on an unmediated node.
+/// built. Nothing here reads the spec: its only influence is `NUCLEUS_TASK_CMD`, the one
+/// `credentials.env` key a container spec may carry (#2906), which `container_env` passes only on an
+/// unmediated node.
 pub(crate) fn launch(
     mediation: ContainerMediation,
     node_image: &str,

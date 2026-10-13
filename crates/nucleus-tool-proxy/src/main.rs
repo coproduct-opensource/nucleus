@@ -1512,7 +1512,9 @@ async fn main() -> Result<(), ApiError> {
     // upstream error minutes into a run.
     egress::reject_egress_without_a_broker(
         &spec.spec.credentialed_egress,
-        std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").is_ok_and(|v| !v.is_empty()),
+        // The whole capability, key AND endpoint (#2906): a key with no
+        // transport, or two transports, can never be used.
+        egress::broker_capability().is_some(),
     )
     .map_err(ApiError::Spec)?;
 

@@ -1013,6 +1013,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         container_id: created.id.clone(),
         docker,
         signed_proxy: Mutex::new(None),
+        broker: Mutex::new(None),
         permit: Mutex::new(None),
         cached_exit: Mutex::new(None),
     };

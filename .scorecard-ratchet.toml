@@ -399,9 +399,17 @@ population_floor = 98
 # VerifiedRequest (a DPoP proof that passed replay) refuses into_thumbprint after
 # the proof's expiry; PendingCaller (an issuer assertion awaiting replay) fixes
 # exp + leeway when its check passes. 16 of 23 = 69.56%.
-floor_bp = 6956
+# 2026-10-13 (#2906): broker_transport::peer::ArmContainerInit, the one-shot
+# right to name the only process a container pod's credential broker admits,
+# entered as an affine right. Unbounded it reddened CI at 14/22 (63.63%), and the
+# gap was real: the right was minted when the listener was bound and could name
+# a pid at any later time. It now carries not_after (ARM_WINDOW after the bind),
+# and arm() past it arms nothing and fails the launch by name
+# (PeerRefused::ArmExpired, an_arm_used_after_its_window_admits_nobody). 15/22 on its own branch;
+# with the two DPoP rights above (#3385), 17 of 24 = 70.83%.
+floor_bp = 7083
 floor_set = "measurement"
-population_floor = 23
+population_floor = 24
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.

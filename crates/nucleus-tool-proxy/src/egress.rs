@@ -46,16 +46,53 @@ use std::sync::Arc;
 /// broker exists to remove. It was also dead weight on Firecracker, where the
 /// value never reached the guest at all.
 ///
-/// Both halves or neither: a secret with no port can sign and not connect. They
-/// arrive together in one reply for exactly that reason, and are read together
-/// here.
-fn broker_capability() -> Option<crate::broker_client::Capability> {
-    let secret = std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").ok()?;
-    let port: u32 = std::env::var("NUCLEUS_TOOL_PROXY_BROKER_PORT")
-        .ok()?
-        .parse()
-        .ok()?;
-    (!secret.is_empty() && port != 0).then_some(crate::broker_client::Capability { secret, port })
+/// Both halves or neither: a secret with no endpoint can sign and not connect.
+/// They arrive together in one reply for exactly that reason, and are read
+/// together here.
+///
+/// The endpoint is vsock (`NUCLEUS_TOOL_PROXY_BROKER_PORT`, set by guest-init on
+/// Firecracker) or a Unix socket (`NUCLEUS_TOOL_PROXY_BROKER_SOCKET`, set by the
+/// container driver, #2906), never both: two transports claimed for one
+/// capability is a provisioning error, and a proxy that picked one would be
+/// guessing which the host serves.
+pub(crate) fn broker_capability() -> Option<crate::broker_client::Capability> {
+    capability_from(
+        std::env::var("NUCLEUS_TOOL_PROXY_BROKER_SECRET").ok(),
+        std::env::var("NUCLEUS_TOOL_PROXY_BROKER_PORT").ok(),
+        std::env::var_os("NUCLEUS_TOOL_PROXY_BROKER_SOCKET"),
+    )
+}
+
+/// [`broker_capability`]'s decision, over the three variables' values.
+///
+/// A variable that is present but unusable (a port that does not parse or is
+/// zero, a relative socket path) is no capability, never "absent, so try the
+/// other": a malformed half is a provisioning error, not a choice.
+pub(crate) fn capability_from(
+    secret: Option<String>,
+    port: Option<String>,
+    socket: Option<std::ffi::OsString>,
+) -> Option<crate::broker_client::Capability> {
+    use crate::broker_client::Endpoint;
+    let secret = secret.filter(|s| !s.is_empty())?;
+    let port = match port {
+        None => None,
+        Some(p) => match p.parse::<u32>() {
+            Ok(p) if p != 0 => Some(p),
+            _ => return None,
+        },
+    };
+    let socket = match socket.map(std::path::PathBuf::from) {
+        None => None,
+        Some(path) if path.is_absolute() => Some(path),
+        Some(_) => return None,
+    };
+    let endpoint = match (port, socket) {
+        (Some(port), None) => Endpoint::Vsock(port),
+        (None, Some(path)) => Endpoint::Unix(path),
+        (Some(_), Some(_)) | (None, None) => return None,
+    };
+    Some(crate::broker_client::Capability { secret, endpoint })
 }
 
 /// Build the upstream URL for a request path.
@@ -360,7 +397,7 @@ pub(crate) async fn credentialed_egress(
         crate::broker_client::stream_open_line(authority, capability.secret.as_bytes(), &request)
             .map_err(|e| ApiError::IfcDenied(format!("authority not spendable: {e}")))?;
 
-    let conn = crate::broker_client::dial(capability.port)
+    let conn = crate::broker_client::dial(&capability.endpoint)
         .await
         .map_err(|e| ApiError::Spec(format!("the credential broker did not answer: {e}")))?;
 
@@ -543,6 +580,70 @@ pub(crate) fn relayed_response(relayed: crate::broker_client::Relayed) -> axum::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #2906: the broker capability names exactly one transport. A container
+    /// pod's proxy is given a socket in its pod directory and no port; a
+    /// Firecracker guest a port and no socket. Red before: the container
+    /// variable did not exist, so a container proxy holding a key and a socket
+    /// had no capability and refused every credentialed call.
+    #[test]
+    fn the_broker_capability_names_one_transport() {
+        use crate::broker_client::Endpoint;
+        let s = |v: &str| Some(v.to_string());
+        let os = |v: &str| Some(std::ffi::OsString::from(v));
+        let endpoint =
+            |secret, port, socket| capability_from(secret, port, socket).map(|c| c.endpoint);
+
+        assert_eq!(
+            endpoint(s("k"), s("15012"), None),
+            Some(Endpoint::Vsock(15012))
+        );
+        assert_eq!(
+            endpoint(s("k"), None, os("/data/pod/broker/broker_15012")),
+            Some(Endpoint::Unix("/data/pod/broker/broker_15012".into()))
+        );
+        // Both transports, neither, or a malformed half: no capability at all.
+        assert_eq!(endpoint(s("k"), s("15012"), os("/data/pod/b")), None);
+        assert_eq!(endpoint(s("k"), None, None), None);
+        assert_eq!(endpoint(s("k"), s("0"), None), None);
+        assert_eq!(endpoint(s("k"), s("nope"), os("/data/pod/b")), None);
+        assert_eq!(endpoint(s("k"), None, os("relative/socket")), None);
+        // And no key, no capability, whatever the endpoint.
+        assert_eq!(endpoint(None, None, os("/data/pod/b")), None);
+        assert_eq!(endpoint(s(""), s("15012"), None), None);
+        // The key never reaches a log line through Debug.
+        let cap = capability_from(s("never-logged"), s("1"), None).expect("capability");
+        assert!(!format!("{cap:?}").contains("never-logged"));
+    }
+
+    /// The Unix endpoint really connects, and bytes cross it both ways: the
+    /// relay is transport-blind, so this is the whole container-side change.
+    #[tokio::test]
+    async fn a_unix_endpoint_dials_the_socket_it_names() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("broker_15012");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept");
+            let mut lines = tokio::io::BufReader::new(stream);
+            let mut line = String::new();
+            lines.read_line(&mut line).await.expect("read");
+            lines.get_mut().write_all(b"ack\n").await.expect("write");
+            line
+        });
+        let mut conn = crate::broker_client::dial(&crate::broker_client::Endpoint::Unix(path))
+            .await
+            .expect("dial");
+        conn.write_all(b"hello\n").await.expect("write");
+        let mut reply = String::new();
+        tokio::io::BufReader::new(&mut conn)
+            .read_line(&mut reply)
+            .await
+            .expect("read");
+        assert_eq!(reply, "ack\n");
+        assert_eq!(server.await.expect("server"), "hello\n");
+    }
 
     #[test]
     fn workload_approval_wait_defaults_to_bounded_pause_and_can_be_disabled() {

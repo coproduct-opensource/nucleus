@@ -57,8 +57,11 @@ pub enum EnforcementRefused {
     NodeDoesNotWriteTheGuestSpec,
 }
 
-/// Enforcement is reachable only when the served spec's preparation minted a
-/// withholding witness. A listener or an identity alone proves no such fact.
+/// Enforcement is reachable only when a witness says nothing was delivered: the
+/// served spec's preparation minted `cred_split::Withheld` (Firecracker), or
+/// `container_broker::refuse_spec_credentials` admitted a container spec that
+/// carries no value (#2906). A listener or an identity alone proves no such
+/// fact.
 pub fn check_enforcement_is_honest(
     rollout: BrokerRollout,
     node_writes_the_guest_spec: bool,
@@ -384,6 +387,33 @@ pub async fn pod_credentials(
     crate::federated_credential::PodCredentials::new(store, federation)
 }
 
+/// How a pod's guest reaches its broker, and the evidence that what it would
+/// otherwise have been given was not.
+///
+/// One serving path for both drivers (ADR 0007 G-1): the route chooses the
+/// socket, the peer rule and the rollout's inputs, and everything after —
+/// identity, policy, upstreams, credentials, the decider — is shared.
+pub(crate) enum BrokerRoute<'a> {
+    /// Firecracker: the guest dials the host over vsock, which arrives at a
+    /// socket beside the pod's vsock UDS.
+    Vsock {
+        vsock_path: &'a std::path::Path,
+        jail_owner: Option<(u32, u32)>,
+        /// Minted only by preparing the credential-free spec the guest is served.
+        withheld: Option<&'a crate::cred_split::Withheld>,
+    },
+    /// A container pod: a socket in the pod directory the node bind-mounts
+    /// into exactly that container, admitting only the container's init
+    /// (`broker_transport::peer`, #2906).
+    PodDir {
+        pod_dir: &'a std::path::Path,
+        init: crate::broker_transport::peer::ContainerInit,
+        /// Minted only by `container_broker::refuse_spec_credentials`: this
+        /// pod's spec carries no credential value for the driver to deliver.
+        never_delivered: &'a crate::container_broker::NoSpecCredentials,
+    },
+}
+
 /// Start the credential broker for a pod, if the rollout and the pod's identity
 /// both permit it.
 ///
@@ -394,13 +424,62 @@ pub async fn pod_credentials(
 pub(crate) struct BrokerInputs<'a> {
     pub state: &'a crate::NodeState,
     pub spec: &'a nucleus_spec::PodSpec,
-    pub vsock_path: &'a std::path::Path,
+    pub route: BrokerRoute<'a>,
     pub registered: Option<&'a nucleus_identity::Identity>,
     pub id: uuid::Uuid,
     pub capability: VerifyToken,
-    pub jail_owner: Option<(u32, u32)>,
-    pub withheld: Option<&'a crate::cred_split::Withheld>,
     pub egress: std::sync::Arc<crate::egress_meter::EgressMeter>,
+}
+
+/// What a route resolves to before anything is bound.
+struct RouteParts {
+    transport: crate::broker_rollout::BrokerTransport,
+    requested_enforcing: bool,
+    nothing_delivered: bool,
+    uds_path: std::path::PathBuf,
+    jail_owner: Option<(u32, u32)>,
+    peer: crate::broker_transport::peer::PeerRule,
+}
+
+impl BrokerRoute<'_> {
+    /// Exhaustive, no `_` arm (ADR 0007 B-3): a third route says what it is.
+    fn parts(self, state: &crate::NodeState, spec: &nucleus_spec::PodSpec) -> RouteParts {
+        use crate::broker_rollout::BrokerTransport;
+        match self {
+            BrokerRoute::Vsock {
+                vsock_path,
+                jail_owner,
+                withheld,
+            } => RouteParts {
+                transport: if spec.spec.vsock.is_some() {
+                    BrokerTransport::Vsock
+                } else {
+                    BrokerTransport::None
+                },
+                requested_enforcing: state.broker_enforcing.is_required(),
+                nothing_delivered: withheld.is_some(),
+                uds_path: vsock_path.to_path_buf(),
+                jail_owner,
+                peer: crate::broker_transport::peer::PeerRule::VmmForwarded,
+            },
+            // The container driver has no credential delivery at all: a spec
+            // carrying a value is refused at create (`spec_posture::admit`), so
+            // the broker is the pod's only path to an upstream and the rollout
+            // enforces whenever it serves.
+            BrokerRoute::PodDir {
+                pod_dir,
+                init,
+                never_delivered,
+            } => RouteParts {
+                transport: BrokerTransport::PodDirSocket,
+                requested_enforcing: true,
+                nothing_delivered: never_delivered.witnessed(),
+                uds_path: crate::container_broker::host_socket_base(pod_dir),
+                jail_owner: None,
+                peer: crate::broker_transport::peer::PeerRule::ContainerInit(init),
+            },
+        }
+    }
 }
 
 pub(crate) async fn start_broker_for_pod(
@@ -409,26 +488,25 @@ pub(crate) async fn start_broker_for_pod(
     let BrokerInputs {
         state,
         spec,
-        vsock_path,
+        route,
         registered,
         id,
         capability,
-        jail_owner,
-        withheld,
         egress,
     } = inputs;
-    let transport = if spec.spec.vsock.is_some() {
-        crate::broker_rollout::BrokerTransport::Vsock
-    } else {
-        crate::broker_rollout::BrokerTransport::None
-    };
-    let rollout = crate::broker_rollout::decide_rollout(
-        state.broker_enforcing.is_required(),
-        state.broker_listen,
+    let RouteParts {
         transport,
-    );
-    // Only preparation of the actually served spec can mint this witness.
-    let rollout = check_enforcement_is_honest(rollout, withheld.is_some())
+        requested_enforcing,
+        nothing_delivered,
+        uds_path,
+        jail_owner,
+        peer,
+    } = route.parts(state, spec);
+    let rollout =
+        crate::broker_rollout::decide_rollout(requested_enforcing, state.broker_listen, transport);
+    // Only a witness can say nothing was delivered: the served spec's
+    // preparation (Firecracker) or the spec's own refusal (container).
+    let rollout = check_enforcement_is_honest(rollout, nothing_delivered)
         .map_err(|e| crate::ApiError::Driver(e.to_string()))?;
 
     let Some(identity) = broker_identity(rollout, registered) else {
@@ -481,7 +559,7 @@ pub(crate) async fn start_broker_for_pod(
         std::sync::Arc::new(pod_credentials(&state.authority, id, &identity, &upstreams).await);
 
     match crate::broker_transport::BrokerListener::start(
-        vsock_path,
+        &uds_path,
         crate::broker_transport::PodBrokerConfig {
             host_policy: state
                 .authority
@@ -504,6 +582,7 @@ pub(crate) async fn start_broker_for_pod(
             // validated at start-up; finite whether or not they were set.
             stream_limits: state.egress_stream_limits,
             staging_budget: state.staging_budget.clone(),
+            peer,
         },
         jail_owner,
     ) {
@@ -660,6 +739,18 @@ mod broker_capability {
     /// thing standing between that and a reviewer noticing.
     #[test]
     fn mint_appears_exactly_once_on_the_spawn_path() {
+        // The container spawn path mints in its own module (#2906); each path
+        // is held to exactly one.
+        let container = include_str!("container_broker.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or_default()
+            .matches("BrokerCapability::mint(")
+            .count();
+        assert_eq!(
+            container, 1,
+            "the container spawn path mints {container} times"
+        );
         let src = include_str!("main.rs");
         // The needle is `mint(` and not `mint()`: binding the pair to a pod gave
         // the constructor an argument, and a needle carrying the old empty

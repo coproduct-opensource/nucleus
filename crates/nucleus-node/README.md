@@ -214,6 +214,39 @@ node resolves the setting once at startup, from the driver:
   served its spec. It fails to launch, where before it booted without an
   identity.
 
+## Container pods: the host performs credentialed calls
+
+Since #2906 the container driver puts no credential value in a container. A
+container spec carrying any `credentials.env` key other than the unmediated
+task runner `NUCLEUS_TASK_CMD` is refused at create, by name: "credentials are
+delivered by the host broker; declare credentialed_egress upstreams instead".
+
+A mediated container pod reaches its upstreams the way a Firecracker pod does.
+The node binds the pod's credential broker on a Unix socket in the pod
+directory it already bind-mounts into that container (`/data/pod/broker/`),
+gives the container's tool-proxy the socket path and the pod's broker
+capability, and performs each admitted call itself with the credential from
+its own environment or minted per exchange (ADR 0010). Only the container's
+init process, the tool-proxy, may connect: the node creates the container with
+`init: false` and admits that pid alone, by the kernel's peer credentials.
+
+To migrate a container workload that used `credentials.env`:
+
+1. Put each upstream in the node's registry (`--upstreams` /
+   `NUCLEUS_UPSTREAMS`, see `src/upstreams.rs`), with its credential as
+   `credential.env.var` (a variable in the NODE's environment) or `federated`.
+2. Declare the upstreams in the pod spec's `credentialed_egress` (or run the
+   agent with `nucleus run --egress NAME`), and drop `credentials.env`.
+3. Point the workload at the loopback URL `nucleus-egress-http` gives it, or
+   have the orchestrator call `/v1/egress/{name}/{path}` on the pod's proxy.
+4. Use a tool-proxy image built from a tree with
+   `GuestCapability::ContainerBrokerSocket`. A labelled image that predates it is
+   refused by name for a pod with credentialed egress.
+
+The node must see container pids in its own pid namespace (run it on the host,
+or in a container with the host's pid namespace); otherwise every broker peer
+is refused. An unmediated container has no proxy and so no broker.
+
 ## Sealed rootfs syscall boundary
 
 2026-10-04: the exemplar unsafe-block baseline moves from 4 to 7 for the three
