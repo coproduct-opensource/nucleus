@@ -105,8 +105,10 @@ The node refuses the pod at create, by name, unless all of the following hold
 4. **The guest confines its children.** `GuestCapability::WorkloadLandlock` and
    `WorkloadSyscallPolicy` are `Demand::When(GuestUse::EvalCell)`: required for an eval
    cell, optional for every other pod, so the global guest floor does not move. The CLI
-   refuses a `--guest-release` without them. The node cannot read a release off a
-   Firecracker rootfs, so at boot it requires the guest's own `enforced` Landlock
+   refuses a guest without them: the one the node reports booting (#3223), or the one a
+   `--guest-release` states when the node cannot say. The report is the release
+   `nucleus setup` recorded for the rootfs's digest, not read off the image, so at boot
+   the node still requires the guest's own `enforced` Landlock
    verdict and fails the boot otherwise (`eval_cell::require_confined_children`). The
    derived syscall filter has no console verdict yet; for it, the release table is the
    only check.
@@ -192,6 +194,7 @@ what an eval cell needs of it.
   2.6.0 guests still serve standard pods.
 - An eval cell cannot boot on a guest that predates Landlock confinement, and the CLI
   refuses one on a release without the derived syscall filter.
-- Leftovers, owned by later milestones: the node does not know a Firecracker rootfs's
-  release (#3223), so the derived-filter requirement is a release-table check only; the
+- Leftovers, owned by later milestones: the node knows a Firecracker rootfs's release
+  only from the record `nucleus setup` writes beside it (#3223), so the derived-filter
+  requirement is a release-table check only; the
   profile is per pod, and a node that serves only eval cells is a later, separate flag.

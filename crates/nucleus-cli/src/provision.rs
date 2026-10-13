@@ -24,6 +24,7 @@
 //! the actual cause is an encoding mismatch two crates away.
 
 use anyhow::{Context, Result, anyhow, bail};
+use nucleus_spec::guest_release::GuestOrigin;
 use nucleus_spec::microvm_host::HOST_ENFORCEMENT_ENV;
 use nucleus_spec::tier2_artifacts::{self, Tier2Artifact};
 use nucleus_spec::vmm_version;
@@ -32,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub mod binary;
+mod guest_record;
 pub mod release;
 mod retired_env;
 
@@ -491,6 +493,12 @@ pub fn install_tier2_artifacts(
     plan: Tier2Plan,
     replace: ReplaceBinaries,
 ) -> Result<()> {
+    let guest = match &plan {
+        Tier2Plan::Local(_) => GuestOrigin::LocalBuild,
+        Tier2Plan::Release { version, .. } => GuestOrigin::Release {
+            version: version.clone(),
+        },
+    };
     let (origin, files) = match plan {
         Tier2Plan::Local(found) => {
             println!("  Guest artifacts from this working tree:");
@@ -529,6 +537,7 @@ pub fn install_tier2_artifacts(
     for (artifact, local) in &files {
         if *artifact == Tier2Artifact::Rootfs {
             install_rootfs(host, local)?;
+            guest_record::record_guest_release(host, cache_dir, guest.clone())?;
         }
     }
     for s in &staged {
@@ -2345,6 +2354,36 @@ mod tests {
                 (&*format!("{TIER2_IDENTITY_DIR}/trust-bundle.pem"), "0644"),
             ]
         );
+    }
+
+    /// #3223: the record `setup` writes beside the rootfs carries the digest
+    /// `sha256sum` printed for the installed file, and refuses output that is
+    /// not one, rather than recording a guest it could not measure.
+    #[test]
+    fn the_guest_release_record_holds_the_installed_rootfs_digest() {
+        use guest_record::guest_release_record;
+        use nucleus_spec::guest_release::GuestReleaseRecord;
+        use nucleus_spec::tier2_artifacts::GUEST_ROOTFS_FILE;
+        let sha = "21c1b167482f3c10428b8fd5e08bbeea14258ce74479730712dc11a4f34d2029";
+        let out = format!("{sha}  {HOST_ARTIFACTS_DIR}/{GUEST_ROOTFS_FILE}");
+        let record = guest_release_record(
+            GuestOrigin::Release {
+                version: tier2_artifacts::GUEST_RELEASE.into(),
+            },
+            &out,
+        )
+        .unwrap();
+        assert_eq!(record.rootfs_sha256(), sha);
+        assert_eq!(
+            GuestReleaseRecord::parse(&serde_json::to_vec(&record).unwrap()).unwrap(),
+            record
+        );
+        for bad in ["", "sha256sum: rootfs.ext4: No such file or directory"] {
+            assert!(
+                guest_release_record(GuestOrigin::LocalBuild, bad).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     /// #3152: shared artifacts are installed root-owned and read-only, and a

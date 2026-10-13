@@ -45,6 +45,7 @@ mod firecracker_config;
 mod firecracker_lifecycle;
 mod grpc_tls;
 mod guest_diagnosis;
+mod guest_report;
 mod http_serve;
 mod identity;
 mod image_identity;
@@ -459,6 +460,8 @@ struct NodeState {
     intake: node_drain::Intake,
     state_dir: PathBuf,
     host_roots: host_paths::Roots,
+    /// Which guest the default rootfs is, measured once at startup (#3223).
+    guest_report: Arc<guest_report::GuestReport>,
     /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
     pod_ceilings: pod_resources::PodCeilings,
     node_capacity: node_capacity::Capacity,
@@ -921,6 +924,17 @@ async fn main() -> Result<(), ApiError> {
             )
             .map_err(ApiError::Driver)?;
     }
+    // Which guest the default rootfs is, for `/v1/health` (#3223). Read once,
+    // here: the health route is public and never reads the rootfs itself.
+    let guest_report = {
+        let root = args.host_paths.artifacts_root.clone();
+        Arc::new(
+            tokio::task::spawn_blocking(move || guest_report::GuestReport::measure(&root))
+                .await
+                .map_err(|e| ApiError::Driver(format!("measuring the guest rootfs: {e}")))?,
+        )
+    };
+    info!(guest = %guest_report, "default guest rootfs");
     let state = NodeState {
         request_proofs: request_proof::RequestProofs::open(
             &args.authority.ingress,
@@ -931,6 +945,7 @@ async fn main() -> Result<(), ApiError> {
         intake: node_drain::Intake::open(),
         state_dir: args.state_dir.clone(),
         host_roots,
+        guest_report,
         memory,
         pod_ceilings: args.pod_ceilings.ceilings(),
         node_capacity: args.node_capacity.build()?,
@@ -1197,8 +1212,11 @@ async fn main() -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+async fn health(State(state): State<NodeState>) -> Json<nucleus_spec::guest_release::NodeHealth> {
+    Json(nucleus_spec::guest_release::NodeHealth {
+        status: "ok".to_string(),
+        guest: Some(state.guest_report.current()),
+    })
 }
 
 async fn create_pod(

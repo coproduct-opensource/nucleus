@@ -1219,6 +1219,9 @@ pub(crate) mod handler_tests {
             intake: crate::node_drain::Intake::open(),
             state_dir: a.state_dir.clone(),
             host_roots: a.host_paths.ensure(&a.state_dir).expect("host roots"),
+            guest_report: Arc::new(crate::guest_report::GuestReport::measure(
+                &a.host_paths.artifacts_root,
+            )),
             pod_ceilings: a.pod_ceilings.ceilings(),
             node_capacity: crate::node_capacity::Capacity::new(65536, 128),
             driver: a.driver.clone(),
