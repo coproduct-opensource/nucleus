@@ -121,6 +121,15 @@ verify; an absent launch is tolerated.
 An xtask census holds the closed list of `TlsServerConfig` and `MtlsListener` sites, and
 reds on an unlisted one (A-19: driven red by adding one).
 
+**Done ahead of S4: the tool-proxy's `--require-attestation`.** `AttestationVerifier` used to
+read the launch extension itself, and it accepted an unsigned base64 `LaunchAttestation` in an
+`x-nucleus-attestation` request header, so any caller could meet the requirement by sending
+one. The header path is deleted; nothing in the repository sent it. The requirement now
+decides only from a `VerifiedLaunch` over the mTLS client certificate, against the trust
+bundle of the same `MtlsConfig` the listener is built from. With no mTLS listener there is no
+chain-checked source, and every request outside the workload door is refused by name. This is
+still the per-request middleware check, the runner-up above; S4 moves it to the handshake.
+
 *Runner-up:* a per-request middleware check. It is weaker because the connection exists and
 routes run before the check. It would also put one decider in each router.
 
