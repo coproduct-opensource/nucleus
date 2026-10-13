@@ -190,12 +190,10 @@ fn proof_normalize_monotone() {
 #[kani::unwind(4)]
 fn proof_seccomp_policy_monotone() {
     use crate::seccomp_policy::{NetworkEgress, SeccompPolicy};
-    let egress = |declared: bool| {
-        if declared {
-            NetworkEgress::Declared
-        } else {
-            NetworkEgress::None
-        }
+    let egress = |pick: u8| match pick % 3 {
+        0 => NetworkEgress::None,
+        1 => NetworkEgress::Ipv4Only,
+        _ => NetworkEgress::Declared,
     };
     let b = arbitrary_caps();
     let c = arbitrary_caps();

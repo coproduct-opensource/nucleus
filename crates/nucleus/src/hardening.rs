@@ -114,6 +114,7 @@
 //! The denylist is the same for every pod. A pod's own lattice takes more away:
 //! `portcullis::SeccompPolicy::derive` names the classes (`exec` under
 //! `run_bash: never`, `inet_socket` under `web_fetch: never` with no declared
+//! egress, `inet6_socket` under `web_fetch: never` with no declared IPv6
 //! egress), [`ChildConfinement::apply`] takes that policy BY VALUE beside the
 //! rlimits, and the program it compiles is the denylist plus those classes in
 //! one filter: the union, never fewer. A derived denial answers `EPERM`, like
