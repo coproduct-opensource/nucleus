@@ -274,24 +274,27 @@ impl AttestationVerifier {
         self.config.require_attestation
     }
 
-    /// Enforces the assurance floor (North Star C9) for a request whose launch
-    /// `cert_der` carries was verified (`_launch` is the witness: the floor is
-    /// never reached without one).
+    /// Enforces the assurance floor (North Star C9) over the certificate whose
+    /// launch `launch` verified. The floor is never reached without one, so the
+    /// launch half of the assurance is the witness, not a flag.
     ///
     /// The launch attestation establishes at most `L1Software`; TPM residency
     /// evidence carried by the client certificate can raise the effective level,
     /// and a present-but-invalid or replayed proof makes this err (fail-closed).
-    /// Returns `Err(reason)` when the SVID's verified assurance is below the floor.
-    /// A no-op (`Ok`) when the floor is `L0Bearer`.
-    fn enforce_floor(&self, cert_der: &[u8], _launch: &VerifiedLaunch) -> Result<(), String> {
+    /// Returns `Err(reason)`, naming the verified workload, when the SVID's
+    /// assurance is below the floor. A no-op (`Ok`) when the floor is `L0Bearer`.
+    fn enforce_floor(&self, cert_der: &[u8], launch: &VerifiedLaunch) -> Result<(), String> {
         let min = self.config.min_assurance;
         if min <= AssuranceLevel::L0Bearer {
             return Ok(());
         }
+        let who = launch.spiffe_id();
         let level = nucleus_identity::tpm_devid::effective_assurance(cert_der, true)
-            .map_err(|e| format!("residency evidence invalid: {e}"))?;
+            .map_err(|e| format!("residency evidence of {who} invalid: {e}"))?;
         if level < min {
-            return Err(format!("assurance {level:?} below required floor {min:?}"));
+            return Err(format!(
+                "assurance {level:?} of {who} below required floor {min:?}"
+            ));
         }
         Ok(())
     }
