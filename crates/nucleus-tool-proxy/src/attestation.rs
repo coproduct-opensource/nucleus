@@ -619,6 +619,123 @@ mod tests {
         assert_eq!(info.config_hash, "cc".repeat(32));
     }
 
+    fn info(kernel: &str) -> AttestationInfo {
+        AttestationInfo {
+            kernel_hash: kernel.repeat(32),
+            rootfs_hash: "bb".repeat(32),
+            config_hash: "cc".repeat(32),
+            timestamp: "2024-01-01T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_validate_attestation_any_allowed() {
+        let verifier = AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent);
+        assert_eq!(verifier.validate_attestation(&info("aa")), Ok(()));
+    }
+
+    #[test]
+    fn test_validate_attestation_kernel_hash_mismatch() {
+        let verifier = AttestationVerifier::new(
+            AttestationConfig::required().with_kernel_hashes(&"dd".repeat(32)),
+            LaunchRoots::Absent,
+        );
+        let refused = verifier
+            .validate_attestation(&info("aa"))
+            .expect_err("a kernel off the list is refused");
+        assert!(refused.contains("kernel hash"), "{refused}");
+    }
+
+    #[test]
+    fn test_validate_attestation_kernel_hash_match() {
+        let verifier = AttestationVerifier::new(
+            AttestationConfig::required().with_kernel_hashes(&"aa".repeat(32)),
+            LaunchRoots::Absent,
+        );
+        assert_eq!(verifier.validate_attestation(&info("aa")), Ok(()));
+    }
+
+    /// Not required: a certificate that does not even parse is not looked at.
+    #[test]
+    fn test_verifier_no_attestation_not_required() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let open = AttestationVerifier::new(AttestationConfig::default(), roots(&ca));
+        assert_eq!(open.admit(&TransportEvidence::ClientCert(&[])), Ok(()));
+    }
+
+    /// Required: a certificate that does not parse fails closed.
+    #[test]
+    fn test_verifier_no_attestation_required() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        assert!(
+            required(&ca)
+                .admit(&TransportEvidence::ClientCert(&[]))
+                .is_err()
+        );
+    }
+
+    /// The retired header path, at the unit level: a well-formed launch that
+    /// survives a base64 round trip — exactly what the `x-nucleus-attestation`
+    /// header used to carry — is not evidence. A request with no certificate
+    /// is refused whatever its headers say, because `admit` no longer reads
+    /// them (its signature has no `HeaderMap`).
+    #[test]
+    fn test_base64_roundtrip() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let der = launch().to_der();
+        let decoded = STANDARD.decode(STANDARD.encode(&der)).unwrap();
+        assert!(LaunchAttestation::from_der(&decoded).is_ok());
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        assert!(required(&ca).admit(&TransportEvidence::None).is_err());
+    }
+
+    /// A header carrying a valid attestation used to meet the requirement
+    /// (red on 7d7c3c70d). With the header path deleted, the same valid
+    /// launch meets it only inside a certificate the trusted CA signed; the
+    /// end-to-end header refusal is
+    /// `workload_door::tests::a_forged_attestation_header_does_not_meet_the_requirement`.
+    #[tokio::test]
+    async fn test_verify_header_valid_attestation() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let verifier = required(&ca);
+        assert!(verifier.admit(&TransportEvidence::None).is_err());
+        let leaf = attested_leaf(&ca).await;
+        assert_eq!(
+            verifier.admit(&TransportEvidence::ClientCert(&leaf)),
+            Ok(())
+        );
+    }
+
+    /// The floor directly, over a verified launch: L0 imposes nothing, an L1
+    /// floor admits a CA-issued launch (base `L1Software`), and an L2 floor
+    /// refuses it, naming the workload — never over-admits L2.
+    #[tokio::test]
+    async fn enforce_floor_admits_refuses_and_fails_closed() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&ca).await;
+        let launch = VerifiedLaunch::verify(&leaf, ca.trust_bundle()).unwrap();
+        let floor = |level| {
+            AttestationVerifier::new(
+                AttestationConfig::default().with_min_assurance(level),
+                roots(&ca),
+            )
+        };
+        assert!(
+            floor(AssuranceLevel::L0Bearer)
+                .enforce_floor(&leaf, &launch)
+                .is_ok()
+        );
+        assert!(
+            floor(AssuranceLevel::L1Software)
+                .enforce_floor(&leaf, &launch)
+                .is_ok()
+        );
+        let refused = floor(AssuranceLevel::L2Device)
+            .enforce_floor(&leaf, &launch)
+            .expect_err("L2 refuses a software launch");
+        assert!(refused.contains(launch.spiffe_id()), "{refused}");
+    }
+
     /// The control for every refusal below: a launch the trusted CA issued,
     /// presented as the mTLS client certificate, meets the requirement — with
     /// no allow-list, and with allow-lists that name its measurement.
