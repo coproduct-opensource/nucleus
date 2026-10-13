@@ -20,9 +20,14 @@ workspace = true
 # build and replace the pin; never generate it locally.
 #
 # Two digest generations are in the lockfile: the workspace's sha2 0.11 hashes
-# everything here, and the RustCrypto signature crates below (p256/p384 0.13,
-# rsa 0.9) are verified through their *prehash* entry points with that digest, so
-# no digest-0.10 trait object ever crosses this crate's API.
+# everything here, and the RustCrypto ECDSA crates below (p256/p384 0.13) are
+# verified through their *prehash* entry points with that digest, so no
+# digest-0.10 trait object ever crosses this crate's API.
+#
+# RSA (TPM RSASSA quotes, RSA certificates in AK chains) is verified in-crate:
+# src/rsa_pkcs1.rs, verify-only RSASSA-PKCS1-v1_5 by encode-and-compare. The
+# `rsa` crate is NOT used: it carries RUSTSEC-2023-0071 with no patched release,
+# and the C-backed alternatives (aws-lc-rs, ring) do not build for wasm32.
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -32,9 +37,10 @@ base64 = { workspace = true }
 sha2 = { workspace = true }
 p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
 p384 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "std"] }
-# Signature VERIFICATION only. RUSTSEC-2023-0071 (Marvin) is a timing side channel
-# on private-key decryption; this crate holds no RSA private key. See deny.toml.
-rsa = { version = "0.9", default-features = false, features = ["std"] }
+# The bignum under src/rsa_pkcs1.rs: runtime-sized `modpow`, pure Rust, no_std
+# capable, already in the lockfile. Public inputs only, so it need not be
+# constant time.
+num-bigint = { version = "0.4", default-features = false }
 # Parsing only: the workspace entry enables `verify` (ring). Signatures over the
 # AK certificate chain are checked here with the RustCrypto crates above.
 x509-parser = { version = "0.18", default-features = false }

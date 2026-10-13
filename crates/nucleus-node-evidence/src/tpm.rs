@@ -88,7 +88,7 @@ impl AkPublic {
                 let exponent = r.be_u32()?;
                 let n = r.tpm2b()?;
                 PublicKey::rsa_from_parts(n, exponent)
-                    .ok_or_else(|| field(S, "RSA modulus/exponent do not form a key"))?
+                    .map_err(|e| field(S, format!("RSA key not admitted: {e}")))?
             }
             TPM_ALG_ECC => {
                 let curve = r.be_u16()?;
