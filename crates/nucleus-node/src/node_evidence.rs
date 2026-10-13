@@ -471,7 +471,8 @@ impl TpmNode {
     /// `.1.7`). The anonymous evidence listener serves it by that digest.
     ///
     /// Serialized with every other quote on the attester mutex; the time it
-    /// took is logged, so the per-launch cost is measured where it is paid.
+    /// took is logged, so the per-launch cost is measured where it is paid, and
+    /// a quote over [`LAUNCH_QUOTE_BUDGET`] is a warning.
     fn quote_launch(&self, nonce: [u8; 32]) -> Result<[u8; 32], String> {
         let started = std::time::Instant::now();
         let bytes = self.quote(Freshness::Challenge {
@@ -482,11 +483,19 @@ impl TpmNode {
             &self.store.join(format!("{}.json", hex::encode(digest))),
             &bytes,
         )?;
+        let elapsed = started.elapsed();
         info!(
             launch_quote_sha256 = %hex::encode(digest),
-            elapsed_ms = started.elapsed().as_millis(),
+            elapsed_ms = elapsed.as_millis(),
             "launch quote taken"
         );
+        if elapsed > LAUNCH_QUOTE_BUDGET {
+            warn!(
+                elapsed_ms = elapsed.as_millis(),
+                budget_ms = LAUNCH_QUOTE_BUDGET.as_millis(),
+                "launch quote over its budget: every launch on this node waits for it"
+            );
+        }
         Ok(digest)
     }
 
@@ -626,6 +635,13 @@ impl TpmNode {
         )
     }
 }
+
+/// What one launch quote may cost (ADR 0016 D2). Measured 2026-10-13 on the
+/// agent builder, quote + store + SVID issue together: p50 2.0 ms / max 2.3 ms on
+/// swtpm 0.7.3, and p50 75.6 ms / max 77.3 ms on a GCE Shielded VM's vTPM
+/// (`/dev/tpmrm0`), 20 launches each. The budget is about three times the
+/// vTPM's: a discrete TPM's ECC primary is slower than a virtual one's.
+const LAUNCH_QUOTE_BUDGET: Duration = Duration::from_millis(250);
 
 /// The node's TPM as the quoter of each launch it measures (ADR 0016 D2).
 struct TpmLaunchQuoter(Arc<TpmNode>);
@@ -1482,6 +1498,12 @@ mod tests {
             issue_ms[issue_ms.len() / 2],
             issue_ms[issue_ms.len() * 9 / 10],
             issue_ms[issue_ms.len() - 1],
+        );
+        let p90 = issue_ms[issue_ms.len() * 9 / 10];
+        assert!(
+            p90 < LAUNCH_QUOTE_BUDGET.as_secs_f64() * 1000.0,
+            "p90 {p90:.1} ms is over the {} ms launch-quote budget",
+            LAUNCH_QUOTE_BUDGET.as_millis()
         );
     }
 

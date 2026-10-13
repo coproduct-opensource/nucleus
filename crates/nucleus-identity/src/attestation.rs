@@ -17,6 +17,12 @@
 //! these measurements.* Do not label this "hardware attestation" or "DICE measured
 //! boot."
 //!
+//! A node with a TPM also quotes each launch, and the leaf names the quote (OID
+//! `.1.7`, ADR 0016 D2). [`VerifiedLaunch::verify_tpm`] checks that quote, and
+//! only a launch verified that way is rooted in the TPM
+//! ([`crate::launch_quote::LaunchRoot::Tpm`]); the rest of this module is the
+//! CA-signed claim alone.
+//!
 //! # DICE-format-compatible encoding
 //!
 //! The DER encoding borrows the TCG DICE `DiceTcbInfo` *format* (FWID hash
