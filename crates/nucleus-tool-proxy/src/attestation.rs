@@ -1,38 +1,48 @@
-//! Attestation verification for tool proxy requests.
+//! The attestation requirement (`--require-attestation`) for tool proxy requests.
 //!
-//! This module provides verification of SPIFFE certificates with embedded
-//! launch attestation, ensuring that requests come from workloads running
-//! in attested VM environments.
+//! A network caller meets the requirement only with a launch the proxy checked
+//! itself: the client certificate its mTLS handshake presented, verified against
+//! the listener's trust bundle by [`nucleus_identity::VerifiedLaunch::verify`],
+//! the one decider for "this leaf carries a launch a trusted CA vouched for"
+//! (ADR 0007 G-1, ADR 0016 D1).
 //!
-//! # Attestation Flow
+//! # Flow
 //!
-//! 1. Client presents X.509 certificate with SPIFFE identity and attestation extension
-//! 2. Tool proxy extracts attestation from custom OID (1.3.6.1.4.1.57212.1.1)
-//! 3. Attestation hashes are compared against configured allowed values
-//! 4. Request proceeds only if attestation matches requirements
+//! 1. The caller completes an mTLS handshake with an SVID.
+//! 2. [`VerifiedLaunch::verify`] chains the leaf to the trust bundle the mTLS
+//!    listener was built from, then reads its launch extension
+//!    (OID 1.3.6.1.4.1.57212.1.1). Both are required, in that order.
+//! 3. The verified measurement is compared against the configured allow-lists.
+//! 4. The assurance floor (North Star C9) is checked over the same certificate.
+//!
+//! # What is not evidence
+//!
+//! A launch a caller asserts about itself is not evidence (ADR 0007 C-1, C-2).
+//! There used to be an `x-nucleus-attestation` request header carrying an
+//! unsigned base64 `LaunchAttestation`; any caller could satisfy the requirement
+//! by sending one. It is gone, and nothing reads it: a request without a
+//! chain-checked certificate on a listener with no trust bundle is refused, by
+//! name ([`LaunchRoots::Absent`]).
 //!
 //! # Configuration
 //!
-//! Attestation requirements can be configured via:
-//! - `--require-attestation`: Enable attestation verification
-//! - `--allowed-kernel-hashes`: Comma-separated list of allowed kernel SHA-256 hashes
-//! - `--allowed-rootfs-hashes`: Comma-separated list of allowed rootfs SHA-256 hashes
+//! - `--require-attestation`: enable the requirement (needs `--mtls` to be
+//!   satisfiable by a network caller)
+//! - `--allowed-kernel-hashes`, `--allowed-rootfs-hashes`,
+//!   `--allowed-config-hashes`: comma-separated SHA-256 allow-lists
 //!
-//! If no allowed hashes are specified but attestation is required, any valid
-//! attestation is accepted (useful for logging without enforcement).
+//! If no allowed hashes are specified but attestation is required, any launch a
+//! trusted CA vouched for is accepted.
 
 use ed25519_dalek::VerifyingKey;
-use nucleus_identity::{AssuranceLevel, LaunchAttestation, VerifiedAttestation};
+use nucleus_identity::{
+    AssuranceLevel, LaunchAttestation, TrustBundle, VerifiedAttestation, VerifiedLaunch,
+};
 use portcullis::mediation_receipt::MediationReceipt;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-
-/// OID for Nucleus Launch Attestation extension: 1.3.6.1.4.1.57212.1.1
-/// This OID is encoded in DER as: 06 0a 2b 06 01 04 01 83 be 5c 01 01
-#[allow(dead_code)]
-const ATTESTATION_OID: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 1];
 
 /// Configuration for attestation verification.
 #[derive(Clone, Debug, Default)]
@@ -108,26 +118,33 @@ impl AttestationConfig {
         }
         self
     }
-
-    /// Checks if attestation verification is effectively enforcing.
-    #[allow(dead_code)]
-    pub fn is_enforcing(&self) -> bool {
-        self.require_attestation
-    }
 }
 
-/// Result of attestation verification.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub struct AttestationResult {
-    /// Whether attestation was present in the certificate.
-    pub attestation_present: bool,
-    /// The extracted attestation, if present.
-    pub attestation: Option<AttestationInfo>,
-    /// Whether the attestation matches requirements.
-    pub matches_requirements: bool,
-    /// Reason for rejection, if any.
-    pub rejection_reason: Option<String>,
+/// Where a peer's launch can be chain-checked on this proxy's network listener.
+///
+/// Two constructors and no `Default` (ADR 0007 B-1): "no source" is a value the
+/// requirement refuses by name, never an `Option::None` read as "unrestricted"
+/// (B-2).
+#[derive(Clone, Debug)]
+pub enum LaunchRoots {
+    /// The trust bundle the mTLS listener verifies client certificates
+    /// against. A client certificate's launch is checked against exactly this.
+    MtlsBundle(Arc<TrustBundle>),
+    /// The proxy serves no mTLS listener, so no network caller can present a
+    /// chain-checked launch. The requirement refuses every such request.
+    Absent,
+}
+
+impl LaunchRoots {
+    /// The roots of the mTLS listener the proxy will serve, if it serves one.
+    /// Read from the same `MtlsConfig` the listener is built from, so the
+    /// handshake and the launch check cannot disagree about the CA (G-1).
+    pub fn of(mtls: Option<&nucleus_identity::mtls::MtlsConfig>) -> Self {
+        match mtls {
+            Some(config) => Self::MtlsBundle(Arc::new(config.trust_bundle.clone())),
+            None => Self::Absent,
+        }
+    }
 }
 
 /// Extracted attestation information.
@@ -159,204 +176,97 @@ impl From<&LaunchAttestation> for AttestationInfo {
 #[derive(Clone)]
 pub struct AttestationVerifier {
     config: Arc<AttestationConfig>,
+    roots: LaunchRoots,
 }
 
 impl AttestationVerifier {
-    /// Creates a new attestation verifier with the given config.
-    pub fn new(config: AttestationConfig) -> Self {
+    /// Creates a new attestation verifier with the given config, deciding a
+    /// client certificate's launch against `roots`.
+    pub fn new(config: AttestationConfig, roots: LaunchRoots) -> Self {
         if config.require_attestation {
-            let kernel_count = if config.allowed_kernel_hashes.is_empty() {
-                "any".to_string()
-            } else {
-                config.allowed_kernel_hashes.len().to_string()
-            };
-            let rootfs_count = if config.allowed_rootfs_hashes.is_empty() {
-                "any".to_string()
-            } else {
-                config.allowed_rootfs_hashes.len().to_string()
-            };
-            let config_count = if config.allowed_config_hashes.is_empty() {
-                "any".to_string()
-            } else {
-                config.allowed_config_hashes.len().to_string()
+            let count = |set: &HashSet<String>| {
+                if set.is_empty() {
+                    "any".to_string()
+                } else {
+                    set.len().to_string()
+                }
             };
             info!(
                 "attestation verification enabled: kernel_hashes={}, rootfs_hashes={}, config_hashes={}",
-                kernel_count, rootfs_count, config_count,
+                count(&config.allowed_kernel_hashes),
+                count(&config.allowed_rootfs_hashes),
+                count(&config.allowed_config_hashes),
             );
+            if let LaunchRoots::Absent = roots {
+                warn!(
+                    "attestation required without --mtls: no network caller can present a \
+                     chain-checked launch, so every request outside the workload door is refused"
+                );
+            }
         }
         Self {
             config: Arc::new(config),
+            roots,
         }
     }
 
-    /// Verifies attestation from a DER-encoded X.509 certificate.
+    /// The launch a client certificate carries, chain-checked against the
+    /// listener's trust bundle, then compared against the allow-lists.
     ///
-    /// This extracts the attestation extension (if present) and validates
-    /// it against the configured requirements.
-    #[allow(dead_code)]
-    pub fn verify_certificate(&self, cert_der: &[u8]) -> AttestationResult {
-        // Try to extract attestation from certificate
-        let attestation = match extract_attestation_from_cert(cert_der) {
-            Ok(Some(att)) => att,
-            Ok(None) => {
-                if self.config.require_attestation {
-                    return AttestationResult {
-                        attestation_present: false,
-                        attestation: None,
-                        matches_requirements: false,
-                        rejection_reason: Some("attestation required but not present".to_string()),
-                    };
-                }
-                return AttestationResult {
-                    attestation_present: false,
-                    attestation: None,
-                    matches_requirements: true,
-                    rejection_reason: None,
-                };
-            }
-            Err(e) => {
-                warn!("failed to parse attestation extension: {}", e);
-                return AttestationResult {
-                    attestation_present: false,
-                    attestation: None,
-                    matches_requirements: !self.config.require_attestation,
-                    rejection_reason: if self.config.require_attestation {
-                        Some(format!("attestation parse error: {}", e))
-                    } else {
-                        None
-                    },
-                };
+    /// # Errors
+    /// No chain-checked source on this listener, a leaf the bundle did not
+    /// issue, a leaf with no measured launch, or a measurement off the lists.
+    fn verify_peer_launch(&self, cert_der: &[u8]) -> Result<VerifiedLaunch, String> {
+        let bundle = match &self.roots {
+            LaunchRoots::MtlsBundle(bundle) => bundle,
+            LaunchRoots::Absent => {
+                return Err(
+                    "attestation required but this proxy has no mTLS trust bundle to check a \
+                     peer's launch against"
+                        .to_string(),
+                );
             }
         };
-
-        let info = AttestationInfo::from(&attestation);
+        let verified = VerifiedLaunch::verify(cert_der, bundle)
+            .map_err(|e| format!("peer launch not verified: {e}"))?;
+        let info = AttestationInfo::from(verified.launch());
         debug!(
             "attestation present: kernel={}, rootfs={}, config={}",
             &info.kernel_hash[..16],
             &info.rootfs_hash[..16],
             &info.config_hash[..16]
         );
-
-        // Validate against requirements
-        let (matches, reason) = self.validate_attestation(&info);
-
-        AttestationResult {
-            attestation_present: true,
-            attestation: Some(info),
-            matches_requirements: matches,
-            rejection_reason: reason,
-        }
-    }
-
-    /// Verifies attestation from an attestation header value (base64-encoded DER).
-    ///
-    /// This is an alternative path when attestation is passed via HTTP header
-    /// rather than embedded in a certificate.
-    pub fn verify_header(&self, attestation_header: &str) -> AttestationResult {
-        // Decode base64
-        let der = match base64_decode(attestation_header) {
-            Ok(der) => der,
-            Err(e) => {
-                return AttestationResult {
-                    attestation_present: false,
-                    attestation: None,
-                    matches_requirements: !self.config.require_attestation,
-                    rejection_reason: if self.config.require_attestation {
-                        Some(format!("invalid attestation header encoding: {}", e))
-                    } else {
-                        None
-                    },
-                };
-            }
-        };
-
-        // Parse attestation DER
-        let attestation = match LaunchAttestation::from_der(&der) {
-            Ok(att) => att,
-            Err(e) => {
-                return AttestationResult {
-                    attestation_present: false,
-                    attestation: None,
-                    matches_requirements: !self.config.require_attestation,
-                    rejection_reason: if self.config.require_attestation {
-                        Some(format!("invalid attestation DER: {}", e))
-                    } else {
-                        None
-                    },
-                };
-            }
-        };
-
-        let info = AttestationInfo::from(&attestation);
-        debug!(
-            "attestation from header: kernel={}, rootfs={}, config={}",
-            &info.kernel_hash[..16],
-            &info.rootfs_hash[..16],
-            &info.config_hash[..16]
-        );
-
-        let (matches, reason) = self.validate_attestation(&info);
-
-        AttestationResult {
-            attestation_present: true,
-            attestation: Some(info),
-            matches_requirements: matches,
-            rejection_reason: reason,
-        }
+        self.validate_attestation(&info)?;
+        Ok(verified)
     }
 
     /// Validates attestation info against configured requirements.
-    fn validate_attestation(&self, info: &AttestationInfo) -> (bool, Option<String>) {
-        // Check kernel hash if restrictions are configured
-        if !self.config.allowed_kernel_hashes.is_empty()
-            && !self
-                .config
-                .allowed_kernel_hashes
-                .contains(&info.kernel_hash)
-        {
-            return (
-                false,
-                Some(format!(
-                    "kernel hash {} not in allowed list",
-                    &info.kernel_hash[..16]
-                )),
-            );
+    fn validate_attestation(&self, info: &AttestationInfo) -> Result<(), String> {
+        for (what, allowed, got) in [
+            (
+                "kernel",
+                &self.config.allowed_kernel_hashes,
+                &info.kernel_hash,
+            ),
+            (
+                "rootfs",
+                &self.config.allowed_rootfs_hashes,
+                &info.rootfs_hash,
+            ),
+            (
+                "config",
+                &self.config.allowed_config_hashes,
+                &info.config_hash,
+            ),
+        ] {
+            if !allowed.is_empty() && !allowed.contains(got) {
+                return Err(format!(
+                    "{what} hash {} not in allowed list",
+                    got.get(..16).unwrap_or(got)
+                ));
+            }
         }
-
-        // Check rootfs hash if restrictions are configured
-        if !self.config.allowed_rootfs_hashes.is_empty()
-            && !self
-                .config
-                .allowed_rootfs_hashes
-                .contains(&info.rootfs_hash)
-        {
-            return (
-                false,
-                Some(format!(
-                    "rootfs hash {} not in allowed list",
-                    &info.rootfs_hash[..16]
-                )),
-            );
-        }
-
-        // Check config hash if restrictions are configured
-        if !self.config.allowed_config_hashes.is_empty()
-            && !self
-                .config
-                .allowed_config_hashes
-                .contains(&info.config_hash)
-        {
-            return (
-                false,
-                Some(format!(
-                    "config hash {} not in allowed list",
-                    &info.config_hash[..16]
-                )),
-            );
-        }
-
-        (true, None)
+        Ok(())
     }
 
     /// Returns whether attestation is required.
@@ -364,31 +274,27 @@ impl AttestationVerifier {
         self.config.require_attestation
     }
 
-    /// Enforces the assurance floor (North Star C9) for a request whose launch
-    /// attestation already passed.
+    /// Enforces the assurance floor (North Star C9) over the certificate whose
+    /// launch `launch` verified. The floor is never reached without one, so the
+    /// launch half of the assurance is the witness, not a flag.
     ///
     /// The launch attestation establishes at most `L1Software`; TPM residency
     /// evidence carried by the client certificate can raise the effective level,
     /// and a present-but-invalid or replayed proof makes this err (fail-closed).
-    /// Returns `Err(reason)` when the SVID's verified assurance is below the floor.
-    /// A no-op (`Ok`) when the floor is `L0Bearer`.
-    pub fn enforce_floor(
-        &self,
-        client_cert_der: Option<&[u8]>,
-        attestation_result: &AttestationResult,
-    ) -> Result<(), String> {
+    /// Returns `Err(reason)`, naming the verified workload, when the SVID's
+    /// assurance is below the floor. A no-op (`Ok`) when the floor is `L0Bearer`.
+    fn enforce_floor(&self, cert_der: &[u8], launch: &VerifiedLaunch) -> Result<(), String> {
         let min = self.config.min_assurance;
         if min <= AssuranceLevel::L0Bearer {
             return Ok(());
         }
-        let cert_der = client_cert_der
-            .ok_or_else(|| "assurance floor requires an mTLS client certificate".to_string())?;
-        let launch_verified =
-            attestation_result.attestation_present && attestation_result.matches_requirements;
-        let level = nucleus_identity::tpm_devid::effective_assurance(cert_der, launch_verified)
-            .map_err(|e| format!("residency evidence invalid: {e}"))?;
+        let who = launch.spiffe_id();
+        let level = nucleus_identity::tpm_devid::effective_assurance(cert_der, true)
+            .map_err(|e| format!("residency evidence of {who} invalid: {e}"))?;
         if level < min {
-            return Err(format!("assurance {level:?} below required floor {min:?}"));
+            return Err(format!(
+                "assurance {level:?} of {who} below required floor {min:?}"
+            ));
         }
         Ok(())
     }
@@ -396,89 +302,58 @@ impl AttestationVerifier {
     /// The attestation requirement, decided over what the transport proved.
     ///
     /// The requirement authenticates a *network* caller (the host, the node)
-    /// by the launch attestation its certificate carries. Each kind of
+    /// by the launch its chain-checked certificate carries. Each kind of
     /// evidence is its own arm, matched exhaustively (ADR 0007 E-2), so a new
     /// transport cannot fall through to a pass (B-3):
     ///
-    /// - [`TransportEvidence::ClientCert`]: the certificate's attestation, then
-    ///   the assurance floor over that certificate.
+    /// - [`TransportEvidence::ClientCert`]: a [`VerifiedLaunch`] over the
+    ///   certificate against [`LaunchRoots`], then the assurance floor over it.
     /// - [`TransportEvidence::DoorPeer`]: satisfied. The workload door already
     ///   authenticated the caller by its kernel-reported uid, and the evidence
     ///   exists only on one of the door's own routes
     ///   ([`crate::workload_door::DoorAdmission`]). A local peer proven to be
     ///   the workload has no certificate to attest and does not need one.
-    /// - [`TransportEvidence::None`]: the `x-nucleus-attestation` header if one
-    ///   was sent, otherwise refused. Absence is not a pass (A-5).
+    /// - [`TransportEvidence::None`]: refused. Absence is not a pass (A-5), and
+    ///   nothing a request says about itself stands in for a certificate.
     ///
     /// # Errors
     /// The reason the requirement is not met.
-    pub(crate) fn admit(
-        &self,
-        evidence: &TransportEvidence<'_>,
-        headers: &axum::http::HeaderMap,
-    ) -> Result<(), String> {
+    pub(crate) fn admit(&self, evidence: &TransportEvidence<'_>) -> Result<(), String> {
         if !self.is_required() {
             return Ok(());
         }
-        let (result, cert_der) = match evidence {
+        match evidence {
             TransportEvidence::DoorPeer(admission) => {
                 debug!(
                     uid = admission.uid(),
                     route = ?admission.route(),
                     "attestation requirement met by the workload door's peer credentials"
                 );
-                return Ok(());
+                Ok(())
             }
             TransportEvidence::ClientCert(der) => {
                 info!(
                     event = "attestation_verify_mtls",
                     "verifying attestation from client certificate"
                 );
-                (self.verify_certificate(der), Some(*der))
+                let launch = self.verify_peer_launch(der)?;
+                // North Star C9: the assurance floor, fail-closed on absent,
+                // invalid or replayed residency evidence. A no-op at L0Bearer.
+                self.enforce_floor(der, &launch)?;
+                debug!(
+                    spiffe_id = launch.spiffe_id(),
+                    "attestation verified against the mTLS trust bundle"
+                );
+                Ok(())
             }
-            TransportEvidence::None => match headers.get(HEADER_ATTESTATION) {
-                Some(value) => {
-                    // Less secure than mTLS: a header can be replayed.
-                    warn!(
-                        event = "attestation_verify_header",
-                        "attestation via header (not mTLS) - consider enabling mTLS for production"
-                    );
-                    let value = value
-                        .to_str()
-                        .map_err(|_| "invalid attestation header encoding".to_string())?;
-                    (self.verify_header(value), None)
-                }
-                None => {
-                    return Err(
-                        "attestation required but not provided (enable mTLS or send \
-                                x-nucleus-attestation header)"
-                            .to_string(),
-                    );
-                }
-            },
-        };
-        if !result.matches_requirements {
-            return Err(result
-                .rejection_reason
-                .clone()
-                .unwrap_or_else(|| "unknown attestation failure".to_string()));
+            TransportEvidence::None => Err(
+                "attestation required but not provided: only a chain-checked mTLS client \
+                 certificate carries a launch"
+                    .to_string(),
+            ),
         }
-        // North Star C9: the assurance floor, fail-closed on absent, invalid or
-        // replayed residency evidence. A no-op when the floor is L0Bearer.
-        self.enforce_floor(cert_der, &result)?;
-        if let Some(ref info) = result.attestation {
-            debug!(
-                kernel_hash = %&info.kernel_hash[..16],
-                rootfs_hash = %&info.rootfs_hash[..16],
-                "attestation verified"
-            );
-        }
-        Ok(())
     }
 }
-
-/// The header a network caller without mTLS may carry its attestation in.
-pub(crate) const HEADER_ATTESTATION: &str = "x-nucleus-attestation";
 
 /// What the transport proved about a request's caller, before any header is
 /// read. [`AttestationVerifier::admit`] decides the requirement over it, and
@@ -621,50 +496,81 @@ pub fn verify_attested_receipt(
     Ok(attestation.assurance())
 }
 
-/// Extracts attestation from a DER-encoded X.509 certificate.
-#[allow(dead_code)]
-fn extract_attestation_from_cert(cert_der: &[u8]) -> Result<Option<LaunchAttestation>, String> {
-    use x509_parser::prelude::*;
-
-    let (_, cert) = X509Certificate::from_der(cert_der)
-        .map_err(|e| format!("failed to parse certificate: {}", e))?;
-
-    // Construct our attestation OID for comparison
-    // OID: 1.3.6.1.4.1.57212.1.1
-    let attestation_oid =
-        oid_registry::Oid::from(ATTESTATION_OID).expect("invalid attestation OID");
-
-    // Look for our custom attestation extension
-    for ext in cert.extensions() {
-        if ext.oid == attestation_oid {
-            // Found attestation extension, parse the DER content
-            let attestation = LaunchAttestation::from_der(ext.value)
-                .map_err(|e| format!("failed to parse attestation DER: {}", e))?;
-            return Ok(Some(attestation));
-        }
-    }
-
-    Ok(None)
-}
-
-/// Decode standard base64 to bytes.
-pub(crate) fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    STANDARD
-        .decode(input)
-        .map_err(|e| format!("base64 decode error: {e}"))
-}
-
-/// Encode bytes to standard base64.
-#[cfg(test)]
-pub(crate) fn base64_encode(input: &[u8]) -> String {
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    STANDARD.encode(input)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nucleus_identity::{CaClient, CsrOptions, Identity, SelfSignedCa};
+
+    const TRUST_DOMAIN: &str = "nucleus.local";
+
+    fn launch() -> LaunchAttestation {
+        LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32])
+    }
+
+    /// A leaf the way the node issues one: signed by `ca`, launch embedded.
+    async fn attested_leaf(ca: &SelfSignedCa) -> Vec<u8> {
+        let identity = Identity::new(TRUST_DOMAIN, "pods", "p1");
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        ca.sign_attested_csr(
+            csr.csr(),
+            csr.private_key(),
+            &identity,
+            std::time::Duration::from_secs(3600),
+            &launch(),
+        )
+        .await
+        .unwrap()
+        .leaf()
+        .der()
+        .to_vec()
+    }
+
+    /// A leaf `ca` issued with no launch claim.
+    async fn plain_leaf(ca: &SelfSignedCa) -> Vec<u8> {
+        let identity = Identity::new(TRUST_DOMAIN, "pods", "p1");
+        let csr = CsrOptions::new(identity.to_spiffe_uri())
+            .generate()
+            .unwrap();
+        ca.sign_csr(
+            csr.csr(),
+            csr.private_key(),
+            &identity,
+            std::time::Duration::from_secs(3600),
+        )
+        .await
+        .unwrap()
+        .leaf()
+        .der()
+        .to_vec()
+    }
+
+    /// The forgery: a self-signed leaf carrying the launch OID and a
+    /// well-formed measurement. Anyone can make one in a few lines.
+    fn forged_leaf() -> Vec<u8> {
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = vec![rcgen::SanType::URI(
+            rcgen::string::Ia5String::try_from(format!("spiffe://{TRUST_DOMAIN}/ns/pods/sa/p1"))
+                .unwrap(),
+        )];
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                nucleus_identity::oid::OID_NUCLEUS_ATTESTATION_TUPLE,
+                launch().to_der(),
+            ));
+        let key = rcgen::KeyPair::generate().unwrap();
+        params.self_signed(&key).unwrap().der().to_vec()
+    }
+
+    fn roots(ca: &SelfSignedCa) -> LaunchRoots {
+        LaunchRoots::MtlsBundle(Arc::new(ca.trust_bundle().clone()))
+    }
+
+    fn required(ca: &SelfSignedCa) -> AttestationVerifier {
+        AttestationVerifier::new(AttestationConfig::required(), roots(ca))
+    }
 
     #[test]
     fn test_attestation_config_default() {
@@ -674,46 +580,6 @@ mod tests {
         assert!(config.allowed_rootfs_hashes.is_empty());
         // No floor by default — existing deployments are unaffected.
         assert_eq!(config.min_assurance, AssuranceLevel::L0Bearer);
-    }
-
-    #[test]
-    fn enforce_floor_admits_refuses_and_fails_closed() {
-        // Any DER works here: with no residency extension the effective assurance is
-        // exactly the launch base, so this exercises the floor RESULT mapping without
-        // TPM fixtures. (A garbage DER simply parses to "no residency" → base level.)
-        let dummy_cert = [0x30u8, 0x00];
-        let launch_ok = AttestationResult {
-            attestation_present: true,
-            attestation: None,
-            matches_requirements: true, // launch verified → base L1Software
-            rejection_reason: None,
-        };
-        let bearer = AttestationResult {
-            attestation_present: false,
-            attestation: None,
-            matches_requirements: false, // no launch → base L0Bearer
-            rejection_reason: None,
-        };
-
-        // No floor → always Ok, even without a client cert.
-        let v0 = AttestationVerifier::new(AttestationConfig::default());
-        assert!(v0.enforce_floor(None, &bearer).is_ok());
-
-        // L1 floor: a launch-verified SVID is admitted; a bare bearer is refused.
-        let v1 = AttestationVerifier::new(
-            AttestationConfig::default().with_min_assurance(AssuranceLevel::L1Software),
-        );
-        assert!(v1.enforce_floor(Some(&dummy_cert), &launch_ok).is_ok());
-        assert!(v1.enforce_floor(Some(&dummy_cert), &bearer).is_err());
-        // A floor with no client certificate fails closed.
-        assert!(v1.enforce_floor(None, &launch_ok).is_err());
-
-        // L2 floor refuses even a launch-verified SVID: residency-only tops out at
-        // L1Software until the EK-manufacturer root lands (never over-admits L2).
-        let v2 = AttestationVerifier::new(
-            AttestationConfig::default().with_min_assurance(AssuranceLevel::L2Device),
-        );
-        assert!(v2.enforce_floor(Some(&dummy_cert), &launch_ok).is_err());
     }
 
     #[test]
@@ -744,37 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn test_verifier_no_attestation_not_required() {
-        let config = AttestationConfig::default();
-        let verifier = AttestationVerifier::new(config);
-
-        // Empty cert (will fail to parse but attestation not required)
-        let result = verifier.verify_certificate(&[]);
-        assert!(!result.attestation_present);
-        assert!(result.matches_requirements);
-    }
-
-    #[test]
-    fn test_verifier_no_attestation_required() {
-        let config = AttestationConfig::required();
-        let verifier = AttestationVerifier::new(config);
-
-        // Empty cert (will fail to parse and attestation is required)
-        let result = verifier.verify_certificate(&[]);
-        assert!(!result.attestation_present);
-        assert!(!result.matches_requirements);
-        assert!(result.rejection_reason.is_some());
-    }
-
-    #[test]
-    fn test_base64_roundtrip() {
-        let original = b"hello world attestation data";
-        let encoded = base64_encode(original);
-        let decoded = base64_decode(&encoded).unwrap();
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
     fn test_attestation_info_from_launch_attestation() {
         let attestation = LaunchAttestation::from_hashes([0xaa; 32], [0xbb; 32], [0xcc; 32]);
 
@@ -784,77 +619,292 @@ mod tests {
         assert_eq!(info.config_hash, "cc".repeat(32));
     }
 
-    #[test]
-    fn test_validate_attestation_any_allowed() {
-        let config = AttestationConfig::required();
-        let verifier = AttestationVerifier::new(config);
-
-        let info = AttestationInfo {
-            kernel_hash: "aa".repeat(32),
+    fn info(kernel: &str) -> AttestationInfo {
+        AttestationInfo {
+            kernel_hash: kernel.repeat(32),
             rootfs_hash: "bb".repeat(32),
             config_hash: "cc".repeat(32),
             timestamp: "2024-01-01T00:00:00Z".to_string(),
-        };
+        }
+    }
 
-        let (matches, reason) = verifier.validate_attestation(&info);
-        assert!(matches);
-        assert!(reason.is_none());
+    #[test]
+    fn test_validate_attestation_any_allowed() {
+        let verifier = AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent);
+        assert!(verifier.is_required());
+        assert_eq!(verifier.validate_attestation(&info("aa")), Ok(()));
+        assert_eq!(verifier.validate_attestation(&info("ff")), Ok(()));
     }
 
     #[test]
     fn test_validate_attestation_kernel_hash_mismatch() {
-        let config = AttestationConfig::required().with_kernel_hashes(&"dd".repeat(32));
-        let verifier = AttestationVerifier::new(config);
-
-        let info = AttestationInfo {
-            kernel_hash: "aa".repeat(32),
-            rootfs_hash: "bb".repeat(32),
-            config_hash: "cc".repeat(32),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-        };
-
-        let (matches, reason) = verifier.validate_attestation(&info);
-        assert!(!matches);
-        assert!(reason.is_some());
-        assert!(reason.unwrap().contains("kernel hash"));
+        let verifier = AttestationVerifier::new(
+            AttestationConfig::required().with_kernel_hashes(&"dd".repeat(32)),
+            LaunchRoots::Absent,
+        );
+        let got = verifier.validate_attestation(&info("aa"));
+        assert!(got.is_err(), "a kernel off the list is refused");
+        let refused = got.unwrap_err();
+        assert!(refused.contains("kernel hash"), "{refused}");
+        assert!(
+            refused.contains(&"aa".repeat(8)),
+            "names the hash: {refused}"
+        );
     }
 
     #[test]
     fn test_validate_attestation_kernel_hash_match() {
-        let kernel_hash = "aa".repeat(32);
-        let config = AttestationConfig::required().with_kernel_hashes(&kernel_hash);
-        let verifier = AttestationVerifier::new(config);
-
-        let info = AttestationInfo {
-            kernel_hash: kernel_hash.clone(),
-            rootfs_hash: "bb".repeat(32),
-            config_hash: "cc".repeat(32),
-            timestamp: "2024-01-01T00:00:00Z".to_string(),
-        };
-
-        let (matches, reason) = verifier.validate_attestation(&info);
-        assert!(matches);
-        assert!(reason.is_none());
+        // The list is normalised to lower case, as the CLI hands it over.
+        let verifier = AttestationVerifier::new(
+            AttestationConfig::required().with_kernel_hashes(&"AA".repeat(32)),
+            LaunchRoots::Absent,
+        );
+        assert_eq!(verifier.validate_attestation(&info("aa")), Ok(()));
+        assert!(verifier.validate_attestation(&info("bb")).is_err());
     }
 
+    /// Not required: nothing is looked at, whatever the transport carried.
     #[test]
-    fn test_verify_header_valid_attestation() {
-        let attestation = LaunchAttestation::from_hashes([0x11; 32], [0x22; 32], [0x33; 32]);
-        let der = attestation.to_der();
-        let encoded = base64_encode(&der);
+    fn test_verifier_no_attestation_not_required() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let open = AttestationVerifier::new(AttestationConfig::default(), roots(&ca));
+        assert!(!open.is_required());
+        assert_eq!(open.admit(&TransportEvidence::ClientCert(&[])), Ok(()));
+        assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
+    }
 
-        let config = AttestationConfig::required();
-        let verifier = AttestationVerifier::new(config);
+    /// Required: a certificate that does not parse, and no certificate at
+    /// all, both fail closed.
+    #[test]
+    fn test_verifier_no_attestation_required() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let verifier = required(&ca);
+        assert!(verifier.is_required());
+        let got = verifier.admit(&TransportEvidence::ClientCert(&[]));
+        assert!(got.is_err(), "an unparseable certificate is refused");
+        assert!(
+            got.unwrap_err().contains("peer launch not verified"),
+            "refused by the VerifiedLaunch check"
+        );
+        assert!(verifier.admit(&TransportEvidence::None).is_err());
+    }
 
-        let result = verifier.verify_header(&encoded);
-        assert!(result.attestation_present);
-        assert!(result.matches_requirements);
-        assert!(result.attestation.is_some());
+    /// The retired header path, at the unit level: a well-formed launch that
+    /// survives a base64 round trip — exactly what the `x-nucleus-attestation`
+    /// header used to carry — is not evidence. A request with no certificate
+    /// is refused whatever its headers say, because `admit` no longer reads
+    /// them (its signature has no `HeaderMap`).
+    #[test]
+    fn test_base64_roundtrip() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let der = launch().to_der();
+        let decoded = STANDARD.decode(STANDARD.encode(&der)).unwrap();
+        assert!(LaunchAttestation::from_der(&decoded).is_ok());
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        assert!(required(&ca).admit(&TransportEvidence::None).is_err());
+    }
 
-        let info = result.attestation.unwrap();
-        assert_eq!(info.kernel_hash, "11".repeat(32));
-        assert_eq!(info.rootfs_hash, "22".repeat(32));
-        assert_eq!(info.config_hash, "33".repeat(32));
+    /// A header carrying a valid attestation used to meet the requirement
+    /// (red on 7d7c3c70d). With the header path deleted, the same valid
+    /// launch meets it only inside a certificate the trusted CA signed; the
+    /// end-to-end header refusal is
+    /// `workload_door::tests::a_forged_attestation_header_does_not_meet_the_requirement`.
+    #[tokio::test]
+    async fn test_verify_header_valid_attestation() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let verifier = required(&ca);
+        // The launch alone, as a request would carry it: refused.
+        let none = verifier.admit(&TransportEvidence::None);
+        assert!(none.is_err());
+        assert!(none.unwrap_err().contains("not provided"));
+        // The same launch in a self-signed leaf: refused.
+        assert!(
+            verifier
+                .admit(&TransportEvidence::ClientCert(&forged_leaf()))
+                .is_err()
+        );
+        // In a leaf the CA signed: admitted, and it is this launch.
+        let leaf = attested_leaf(&ca).await;
+        assert_eq!(
+            verifier.admit(&TransportEvidence::ClientCert(&leaf)),
+            Ok(())
+        );
+        let verified = VerifiedLaunch::verify(&leaf, ca.trust_bundle()).unwrap();
+        assert_eq!(verified.launch().kernel_hash(), launch().kernel_hash());
+        // Without the listener's bundle, not even that.
+        let no_roots = AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent);
+        assert!(
+            no_roots
+                .admit(&TransportEvidence::ClientCert(&leaf))
+                .is_err()
+        );
+    }
+
+    /// The floor directly, over a verified launch: L0 imposes nothing, an L1
+    /// floor admits a CA-issued launch (base `L1Software`), and the L2 and L3
+    /// floors refuse it, naming the workload — never over-admits.
+    #[tokio::test]
+    async fn enforce_floor_admits_refuses_and_fails_closed() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&ca).await;
+        let launch = VerifiedLaunch::verify(&leaf, ca.trust_bundle()).unwrap();
+        let floor = |level| {
+            AttestationVerifier::new(
+                AttestationConfig::default().with_min_assurance(level),
+                roots(&ca),
+            )
+        };
+        assert!(
+            floor(AssuranceLevel::L0Bearer)
+                .enforce_floor(&leaf, &launch)
+                .is_ok()
+        );
+        assert!(
+            floor(AssuranceLevel::L1Software)
+                .enforce_floor(&leaf, &launch)
+                .is_ok()
+        );
+        for level in [AssuranceLevel::L2Device, AssuranceLevel::L3MeasuredBoot] {
+            let got = floor(level).enforce_floor(&leaf, &launch);
+            assert!(got.is_err(), "{level:?} refuses a software launch");
+            let refused = got.unwrap_err();
+            assert!(refused.contains("below required floor"), "{refused}");
+            assert!(refused.contains(launch.spiffe_id()), "{refused}");
+        }
+    }
+
+    /// The control for every refusal below: a launch the trusted CA issued,
+    /// presented as the mTLS client certificate, meets the requirement — with
+    /// no allow-list, and with allow-lists that name its measurement.
+    #[tokio::test]
+    async fn a_chain_checked_launch_meets_the_requirement() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&ca).await;
+        assert_eq!(
+            required(&ca).admit(&TransportEvidence::ClientCert(&leaf)),
+            Ok(())
+        );
+        let listed = AttestationVerifier::new(
+            AttestationConfig::required()
+                .with_kernel_hashes(&"11".repeat(32))
+                .with_rootfs_hashes(&"22".repeat(32))
+                .with_config_hashes(&"33".repeat(32)),
+            roots(&ca),
+        );
+        assert_eq!(listed.admit(&TransportEvidence::ClientCert(&leaf)), Ok(()));
+    }
+
+    /// **The chain check is load-bearing.** A self-signed leaf carrying the
+    /// launch OID and a well-formed measurement is refused as the client
+    /// certificate. Red on main: `admit` read the extension off the leaf with
+    /// no issuer check, so this forgery met the requirement. Replacing
+    /// `VerifiedLaunch::verify` with a bare extension read turns it green.
+    #[tokio::test]
+    async fn a_self_signed_leaf_carrying_the_launch_oid_is_refused() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let forged = forged_leaf();
+        assert!(
+            nucleus_identity::attestation::extract_launch_attestation(&forged).is_some(),
+            "the forgery must carry a parseable launch, or this test proves nothing"
+        );
+        let refused = required(&ca)
+            .admit(&TransportEvidence::ClientCert(&forged))
+            .expect_err("a self-signed launch is not evidence");
+        assert!(refused.contains("not issued by a trusted CA"), "{refused}");
+    }
+
+    /// A launch another CA issued is a forgery for this proxy too.
+    #[tokio::test]
+    async fn a_launch_a_foreign_ca_issued_is_refused() {
+        let ours = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let theirs = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&theirs).await;
+        let refused = required(&ours)
+            .admit(&TransportEvidence::ClientCert(&leaf))
+            .expect_err("a foreign CA's launch is refused");
+        assert!(refused.contains("not issued by a trusted CA"), "{refused}");
+    }
+
+    /// A leaf the trusted CA issued without a launch is refused: absence is
+    /// not a pass (A-5).
+    #[tokio::test]
+    async fn a_trusted_leaf_without_a_launch_is_refused() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = plain_leaf(&ca).await;
+        let refused = required(&ca)
+            .admit(&TransportEvidence::ClientCert(&leaf))
+            .expect_err("no launch on a required proxy is refused");
+        assert!(refused.contains("launch"), "{refused}");
+    }
+
+    /// A verified launch outside an allow-list is refused, by which hash.
+    #[tokio::test]
+    async fn a_verified_launch_off_the_allow_list_is_refused() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&ca).await;
+        for (config, what) in [
+            (
+                AttestationConfig::required().with_kernel_hashes(&"dd".repeat(32)),
+                "kernel",
+            ),
+            (
+                AttestationConfig::required().with_rootfs_hashes(&"dd".repeat(32)),
+                "rootfs",
+            ),
+            (
+                AttestationConfig::required().with_config_hashes(&"dd".repeat(32)),
+                "config",
+            ),
+        ] {
+            let refused = AttestationVerifier::new(config, roots(&ca))
+                .admit(&TransportEvidence::ClientCert(&leaf))
+                .expect_err("a measurement off the list is refused");
+            assert!(refused.contains(&format!("{what} hash")), "{refused}");
+        }
+    }
+
+    /// **No chain-checked source, no pass.** With no mTLS trust bundle the
+    /// proxy cannot check any certificate's launch, so even a real one is
+    /// refused, by name — never read as "nothing to check".
+    #[tokio::test]
+    async fn without_a_trust_bundle_the_requirement_refuses_by_name() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&ca).await;
+        let verifier = AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent);
+        let refused = verifier
+            .admit(&TransportEvidence::ClientCert(&leaf))
+            .expect_err("no roots refuses");
+        assert!(refused.contains("no mTLS trust bundle"), "{refused}");
+        assert!(verifier.admit(&TransportEvidence::None).is_err());
+    }
+
+    /// The assurance floor runs over the verified certificate: an L1 floor
+    /// admits a CA-issued launch (base `L1Software`), and an L2 floor refuses
+    /// it — residency-only tops out at L1 until the EK-manufacturer root lands.
+    #[tokio::test]
+    async fn the_floor_is_decided_over_the_verified_launch() {
+        let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
+        let leaf = attested_leaf(&ca).await;
+        let l1 = AttestationVerifier::new(
+            AttestationConfig::default().with_min_assurance(AssuranceLevel::L1Software),
+            roots(&ca),
+        );
+        assert_eq!(l1.admit(&TransportEvidence::ClientCert(&leaf)), Ok(()));
+        let l2 = AttestationVerifier::new(
+            AttestationConfig::default().with_min_assurance(AssuranceLevel::L2Device),
+            roots(&ca),
+        );
+        let refused = l2
+            .admit(&TransportEvidence::ClientCert(&leaf))
+            .expect_err("L2 floor refuses a software launch");
+        assert!(refused.contains("below required floor"), "{refused}");
+    }
+
+    /// With the requirement off, nothing is checked (the default deployment).
+    #[test]
+    fn not_required_admits_without_evidence() {
+        let open = AttestationVerifier::new(AttestationConfig::default(), LaunchRoots::Absent);
+        assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
     }
 
     // ── Forensic receipt cross-check (signed-agent-actions brick 2) ────────────
