@@ -83,10 +83,15 @@ mod verify_attestation;
 mod workload_verification;
 mod workspace_scan;
 
+/// What `--version` prints: the release tag this binary was built for, else
+/// the Cargo version marked `+dev` (#3208).
+static VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
+
 /// Nucleus CLI - policy-aware wrapper (tool enforcement via proxy)
 #[derive(Parser)]
 #[command(name = "nucleus", mut_args = |a| a.hide_env_values(true))]
-#[command(version, about, long_about = None)]
+#[command(version = VERSION.as_str(), about, long_about = None)]
 struct Cli {
     /// Configuration file path
     #[arg(short, long, env = "NUCLEUS_CONFIG")]
@@ -276,3 +281,17 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod help_env_tests;
+
+#[cfg(test)]
+mod version_tests {
+    /// #3208: `--version` is the decided version (the release tag, else
+    /// the Cargo version marked `+dev`), never the bare workspace Cargo version every
+    /// release used to print.
+    #[test]
+    fn version_flag_is_the_decided_version_not_the_bare_cargo_version() {
+        let cmd = <super::Cli as clap::CommandFactory>::command();
+        let decided = nucleus_spec::reported_version!().to_string();
+        assert_eq!(cmd.get_version(), Some(decided.as_str()));
+        assert_ne!(cmd.get_version(), Some(env!("CARGO_PKG_VERSION")));
+    }
+}
