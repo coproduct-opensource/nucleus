@@ -122,7 +122,8 @@ pub(crate) fn start(
         logs: None,
     });
     // The companion lives as long as this task: it is dropped, and so killed, once the
-    // workload is observed to exit. Its output is drained so a full pipe never stalls it.
+    // workload is observed to exit. Its output is drained so a full pipe never stalls it;
+    // the first lines reach the console, so a companion that fails at start says why.
     let companion = companion.map(|(mut child, _)| {
         for pipe in [
             child.stdout.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
@@ -133,7 +134,15 @@ pub(crate) fn start(
         {
             let mut pipe = pipe;
             tokio::spawn(async move {
-                let _ = tokio::io::copy(&mut pipe, &mut tokio::io::sink()).await;
+                use tokio::io::AsyncBufReadExt;
+                let mut lines = tokio::io::BufReader::new(&mut pipe).lines();
+                for _ in 0..64 {
+                    match lines.next_line().await {
+                        Ok(Some(line)) => crate::console_line(&format!("[companion] {}", line.chars().take(512).collect::<String>())),
+                        _ => return,
+                    }
+                }
+                let _ = tokio::io::copy(lines.get_mut(), &mut tokio::io::sink()).await;
             });
         }
         crate::console_line(&format!("[workload] companion started (pid={:?})", child.id()));
