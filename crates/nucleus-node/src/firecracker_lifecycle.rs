@@ -9,6 +9,13 @@ use crate::{
 
 /// Only `stopped` constructs this witness, while holding the process lock.
 /// Cleanup consumes it; a caller's `AlreadyExited` hint is not exit evidence.
+/// The bound on identity cleanup during teardown (`FirecrackerPod::teardown`).
+const IDENTITY_DRAIN: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(300)
+} else {
+    std::time::Duration::from_secs(15)
+};
+
 #[must_use]
 struct StoppedVm<'a> {
     pod: &'a FirecrackerPod,
@@ -42,8 +49,21 @@ impl FirecrackerPod {
     }
 
     pub(crate) async fn teardown(&self, stop: Stop) -> Result<(), ApiError> {
-        // Drain identity-backed effects before stopping the VMM.
-        self.cleanup_identity().await;
+        // Drain identity-backed effects before stopping the VMM. Revocation is the
+        // drain's first step and takes effect at once, so no effect is served past
+        // it; the rest is bounded as a whole, so a wait that never ends cannot keep
+        // the VMM (and the node's capacity) alive. Stage node, 2026-10-13: a cancel
+        // after an unresolved model call held the VMM for 23+ minutes with every
+        // listener join already bounded (`teardown_bound`).
+        if tokio::time::timeout(IDENTITY_DRAIN, self.cleanup_identity())
+            .await
+            .is_err()
+        {
+            tracing::error!(
+                bound_ms = IDENTITY_DRAIN.as_millis() as u64,
+                "identity cleanup passed its bound after revocation; stopping the VMM anyway"
+            );
+        }
         if let Some(proxy) = self.signed_proxy.lock().await.take() {
             proxy.shutdown().await;
         }
@@ -156,6 +176,20 @@ mod tests {
             snapshot: None,
         };
         (pod, pool)
+    }
+
+    /// A drain that never ends still reaches the VMM kill. The broker's mutex is
+    /// held, so identity cleanup cannot get past its first await.
+    #[tokio::test]
+    async fn a_stuck_identity_drain_still_kills_the_vmm_and_returns_the_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let (pod, pool) = fixture(dir.path()).await;
+        let held = pod.broker.lock().await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), pod.teardown(Stop::Kill)).await;
+        drop(held);
+        result.expect("teardown must not wait on a stuck drain").unwrap();
+        assert!(matches!(pod.status().await, PodState::Exited { .. }));
+        assert_eq!(pool.available_permits(), 1);
     }
 
     #[tokio::test]
