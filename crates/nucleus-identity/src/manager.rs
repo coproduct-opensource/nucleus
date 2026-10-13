@@ -66,7 +66,7 @@ pub struct SecretManager<C: CaClient> {
 /// expiry was re-signed by `sign_csr`, so an attested SVID silently became a
 /// plain one at its first refresh. An identity with no registered launch (the
 /// node's own, a client's) is not a launch and is issued plainly, as before.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Launch {
     /// The node measured the launch; the leaf carries the measurement and,
     /// when the pod has a mediation key, its binding.
@@ -75,6 +75,10 @@ pub enum Launch {
         attestation: crate::attestation::LaunchAttestation,
         /// SHA-256 of the pod's mediation key, bound into the leaf (OID `.1.4`).
         mediator_key_sha256: Option<[u8; 32]>,
+        /// What roots each issue: the CA alone, or also a TPM launch quote
+        /// taken over the issue's own key, named in the leaf (OID `.1.7`). A
+        /// re-issue has a new key, so it is quoted again.
+        rooting: crate::launch_quote::LaunchRooting,
     },
     /// The tier cannot measure a launch; the leaf says so, naming the tier.
     Unmeasured(crate::attestation::UnmeasuredTier),
@@ -568,19 +572,19 @@ impl<C: CaClient + 'static> SecretManager<C> {
             None => self.ca_client.sign_csr(csr, key, identity, ttl).await,
             Some(Launch::Measured {
                 attestation,
-                mediator_key_sha256: None,
+                mediator_key_sha256,
+                rooting,
             }) => {
-                self.ca_client
-                    .sign_attested_csr(csr, key, identity, ttl, attestation)
-                    .await
-            }
-            Some(Launch::Measured {
-                attestation,
-                mediator_key_sha256: Some(binding),
-            }) => {
-                self.ca_client
-                    .sign_attested_and_bound_csr(csr, key, identity, ttl, attestation, binding)
-                    .await
+                self.sign_measured(
+                    csr,
+                    key,
+                    identity,
+                    ttl,
+                    attestation,
+                    mediator_key_sha256.as_ref(),
+                    rooting,
+                )
+                .await
             }
             Some(Launch::Unmeasured(tier)) => {
                 self.ca_client
@@ -613,6 +617,47 @@ impl<C: CaClient + 'static> SecretManager<C> {
 
         info!("fetched certificate for {}", identity);
         Ok(cert)
+    }
+
+    /// Sign a measured launch, quoting it first when it is TPM-rooted: the
+    /// quote is taken over the key this CSR requests, so it binds this leaf and
+    /// no other (ADR 0016 D2). A quote that cannot be taken issues nothing.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the CSR, its key, the identity and TTL, and the three launch claims: each is a distinct input to one signature"
+    )]
+    async fn sign_measured(
+        &self,
+        csr: &str,
+        key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        attestation: &crate::attestation::LaunchAttestation,
+        mediator_key_sha256: Option<&[u8; 32]>,
+        rooting: &crate::launch_quote::LaunchRooting,
+    ) -> Result<crate::certificate::WorkloadCertificate> {
+        // Exhaustive, no `_` arm (E-2).
+        let quote = match rooting {
+            crate::launch_quote::LaunchRooting::NodeCa => None,
+            crate::launch_quote::LaunchRooting::Tpm(quoter) => {
+                let spki = crate::launch_quote::csr_spki(csr)?;
+                let nonce = crate::launch_quote::launch_nonce(&spki, attestation);
+                Some(quoter.quote_launch(nonce).await?)
+            }
+        };
+        self.ca_client
+            .sign_measured_csr(
+                csr,
+                key,
+                identity,
+                ttl,
+                &crate::ca::MeasuredClaims {
+                    attestation,
+                    mediator_key_sha256,
+                    launch_quote_sha256: quote.as_ref(),
+                },
+            )
+            .await
     }
 
     /// Marks an identity as unavailable after a fetch failure.

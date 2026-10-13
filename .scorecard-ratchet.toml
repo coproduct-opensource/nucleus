@@ -625,12 +625,19 @@ population_floor = 23
 # five undischarged #[allow(dead_code)]s with the code they excused (151 -> 146). The ratio
 # rises because the denominator shrank, not because anything was discharged; pinned at
 # the measurement so it does not read as progress. 36/146 = 24.65%.
-# 2026-10-13 (#3433, C2 census): the NodeState census builds its list one cfg-carrying
-# push at a time under a reasoned #[expect] of vec_init_then_push. 37/147 = 25.17%;
-# both pins follow the tree.
-floor_bp = 2517
+# 2026-10-13 (ADR 0016 S3): the secret manager's TPM-quoting signer takes the CSR, its
+# key, the identity, the TTL and the three launch claims, under a reasoned #[expect] of
+# clippy::too_many_arguments. 37/147 = 25.17%; both pins follow the tree.
+# 2026-10-13 (#3437): retiring nucleus setup's dead keychain secrets deleted the code that
+# created and rotated them, and five undischarged #[allow]s went with it (147 -> 142). As
+# with #3419, the ratio rises because the denominator shrank, not because anything was
+# discharged; pinned at the measurement. 37/142 = 26.05%.
+# 2026-10-13 (#3433, C2 census, merged after #3437): the NodeState census builds its list
+# one cfg-carrying push at a time under a reasoned #[expect] of vec_init_then_push.
+# 38/143 = 26.57%; both pins follow the tree.
+floor_bp = 2657
 floor_set = "measurement"
-population_floor = 147
+population_floor = 143
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

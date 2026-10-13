@@ -191,6 +191,73 @@ fn a_command_that_writes_a_git_hook_is_reverted_and_refused() {
     assert!(tmp.path().join("src.txt").exists());
 }
 
+/// #3322: `spawn_checked` is the choke point every synchronous spawn passes,
+/// so its refusals are injected here directly rather than through `run`
+/// (which refuses an unconfigured executor before it ever gets this far):
+///
+/// 1. no declared containment ⇒ refused BEFORE any child exists — the file
+///    the child would have created is absent;
+/// 2. a child that writes a watched file ⇒ the write is reverted and the spawn
+///    refused, although the child itself exited 0.
+///
+/// The control is the same executor and the same program writing an
+/// unwatched path, which runs and keeps its write.
+#[test]
+fn spawn_checked_refuses_an_unconfined_spawn_and_reverts_a_watched_write() {
+    let tmp = tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join(".git/hooks")).unwrap();
+    // As in `a_command_that_writes_a_git_hook_is_reverted_and_refused`: a root
+    // runtime's child runs as the drop uid, so the hook directory must be its
+    // to write, or the write this test reverts never happens.
+    let confinement = ChildConfinement::for_containment(
+        ContainmentMode::Unsandboxed,
+        crate::UnsandboxedOptIn::Explicit,
+        crate::LandlockWaiver::Absent,
+    )
+    .unwrap();
+    for dir in [".git", ".git/hooks"] {
+        confinement.hand_over(&tmp.path().join(dir)).unwrap();
+    }
+    let policy = test_policy();
+    let budget = AtomicBudget::new(&test_budget());
+    let sandbox = Sandbox::new(&policy, tmp.path()).unwrap();
+    let touch = |executor: &Executor<'_>, path: &str| {
+        executor.spawn_checked(
+            "touch",
+            &[path.to_string()],
+            sandbox.root_path(),
+            None,
+            Authority::new(allowed_bundle(&format!("touch {path}"))),
+        )
+    };
+
+    // 1. No containment declared: refused, and nothing ran.
+    let unconfigured = Executor::new(&policy, &sandbox, &budget);
+    match touch(&unconfigured, "marker") {
+        Err(NucleusError::IsolationNotConfigured) => {}
+        other => panic!("expected IsolationNotConfigured, got {other:?}"),
+    }
+    assert!(
+        !tmp.path().join("marker").exists(),
+        "an unconfined spawn must be refused before the child exists"
+    );
+
+    // 2. A watched write: reverted and refused.
+    let executor = Executor::new(&policy, &sandbox, &budget).allow_unsandboxed_local();
+    match touch(&executor, ".git/hooks/pre-commit") {
+        Err(NucleusError::CommandDenied { reason, .. }) => {
+            assert!(reason.contains(".git/hooks/pre-commit"), "{reason}")
+        }
+        other => panic!("expected CommandDenied naming the hook, got {other:?}"),
+    }
+    assert!(!tmp.path().join(".git/hooks/pre-commit").exists());
+
+    // Control: the same spawn of an unwatched path runs and keeps its write.
+    let output = touch(&executor, "src.txt").expect("an unwatched write is not refused");
+    assert!(output.status.success());
+    assert!(tmp.path().join("src.txt").exists());
+}
+
 #[test]
 fn test_budget_exhausted_blocks_execution() {
     let tmp = tempdir().unwrap();

@@ -1,5 +1,6 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod approval_binding;
 pub mod boot_args;
 pub mod boot_budget;
 pub mod dlc_admission;

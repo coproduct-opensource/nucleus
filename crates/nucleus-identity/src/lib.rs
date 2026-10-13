@@ -40,6 +40,7 @@ pub mod did_resolver;
 pub mod dpop;
 pub mod identity;
 pub mod ifc_extension;
+pub mod launch_quote;
 pub mod manager;
 pub mod mtls;
 pub mod node_tls;
@@ -66,7 +67,7 @@ pub use attestation::{
     AttestationRequirements, LaunchAttestation, UnmeasuredTier, VerifiedLaunch,
     extract_launch_attestation, extract_unmeasured_launch, verify_attested_svid,
 };
-pub use ca::{CaClient, SelfSignedCa};
+pub use ca::{CaClient, MeasuredClaims, SelfSignedCa};
 #[cfg(feature = "spire")]
 pub use ca::{DEFAULT_SPIRE_SOCKET, SPIFFE_ENDPOINT_ENV, SpireCaClient, auto_detect_ca};
 pub use certificate::{
@@ -93,6 +94,10 @@ pub use identity::Identity;
 pub use ifc_extension::{
     ExtensionError, NUCLEUS_IFC_OID, OID_NUCLEUS_IFC_BYTES, OID_NUCLEUS_IFC_TUPLE,
     decode_ifc_extension, default_peer_label, encode_ifc_extension, extract_peer_ifc,
+};
+pub use launch_quote::{
+    Appraised, LaunchQuotePolicy, LaunchQuoter, LaunchRoot, LaunchRooting,
+    extract_launch_quote_digest, launch_nonce,
 };
 pub use manager::{Launch, SecretManager};
 pub use session::{SessionId, SessionIdentity};
