@@ -123,7 +123,7 @@ async fn no_driver_injects_credential_values() {
         let mut state = state.clone();
         state.container_mediation = mediation;
         let env =
-            crate::container_env::container_env(&state, &carrying, id, "t", "", None, None).await;
+            crate::container_env::container_env(&state, &carrying, id, "", None, None).await;
         assert!(
             !env.iter().any(|e| e.contains(VALUE)),
             "{mediation:?}: a credential value reached the container's environment"
