@@ -179,5 +179,10 @@
 # predicate, and `CallSpiffeId` gained `llm_provider`. No function the wasm exports changed
 # behaviour. The digest is from CI's Clippy run of this PR's head (4b83dcc9e, run
 # 38345190457), and `09264066…` is REPLACED, on the rule above. The .js shim did not move.
-e3ac5e8f17fc254eae2ecae017d7e05369a83c8bdc54fb45681237a02f35017c  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
+# 2026-10-13 (#3417, dependency group bump): the .wasm moved because Cargo.lock bumped crates the
+# embedded closure links (nucleus-identity / nucleus-node-evidence manifests changed with it).
+# No function the wasm exports changed behaviour. The digest is from CI's Clippy run of this
+# PR's head (0081a8188, run 38430406999, a self-hosted CI runner), and `e3ac5e8f…` (#3412) is REPLACED, on the
+# rule above. The .js shim did not move.
+fb79e41f7b004fa4baa8da54486b3c49d58f223db9e323f906dd5b5d529be986  sdks/verifier-js/pkg/nucleus_verifier_wasm_bg.wasm
 8d29fea6bd0827ae40c6d058f5a1a76397eaf57cfe5a4d43d8df5f4119ad81ad  sdks/verifier-js/pkg/nucleus_verifier_wasm.js
