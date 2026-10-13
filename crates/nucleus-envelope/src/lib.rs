@@ -77,9 +77,11 @@ pub mod verify;
 
 #[cfg(feature = "c2pa")]
 pub use c2pa_export::{C2paExportError, NUCLEUS_C2PA_ASSERTION_LABEL};
+pub use interop::export::{Attestation, ExportFormat, UnknownExportFormat};
 pub use interop::in_toto::{
-    DSSE_INTOTO_PAYLOAD_TYPE, DsseEnvelope, DsseSignature, IN_TOTO_STATEMENT_TYPE, InTotoError,
-    NUCLEUS_PREDICATE_TYPE, NUCLEUS_SUBJECT_NAME, ResourceDescriptor, Statement,
+    AgentProvenance, AiGeneration, ContentOrigin, DSSE_INTOTO_PAYLOAD_TYPE, DsseEnvelope,
+    DsseSignature, IN_TOTO_STATEMENT_TYPE, InTotoError, NUCLEUS_PREDICATE_TYPE,
+    NUCLEUS_SUBJECT_NAME, ResourceDescriptor, Statement,
 };
 pub use interop::sigstore::{
     PublicKeyIdentifier, SIGSTORE_BUNDLE_V03_MEDIA_TYPE, SigstoreBundle, TimestampVerificationData,
