@@ -395,7 +395,7 @@ jobs:
       # there was no point at which they could be checked. 0.13.1 is the version
       # docs.yml already pins. install-action is the same SHA-pinned action this
       # workflow uses for cargo-nextest.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
@@ -439,7 +439,7 @@ jobs:
       # wall clock of `cargo test` on a workspace this size (nexte.st
       # benchmarks); baked into the self-hosted image, installed on hosted.
       # Doctests are not nextest's — they stay on `cargo test --doc` below.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         if: ${{ runner.environment == 'github-hosted' }}
         with:
           tool: cargo-nextest
@@ -796,7 +796,7 @@ jobs:
       # there was no point at which they could be checked. 0.13.1 is the version
       # docs.yml already pins. install-action is the same SHA-pinned action this
       # workflow uses for cargo-nextest.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+      - uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
         with:
           tool: wasm-pack@0.13.1
       - name: Build wasm SDK (vendored into verifier-service via include_bytes!)
