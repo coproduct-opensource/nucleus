@@ -1066,6 +1066,12 @@ pub(crate) struct Started {
     pub(crate) companion: Option<(tokio::process::Child, LaunchReceipt)>,
 }
 
+/// Why a companion was refused. A plain function, not a closure: everything reachable from a
+/// workload-spawn root must resolve statically (`nucleus-identity-lint`, FM-5).
+fn companion_refused(command: &str, why: String) -> crate::ApiError {
+    crate::ApiError::Spec(format!("refused to launch companion {command:?}: {why}"))
+}
+
 /// Admit `WorkloadSpec::companion` beside the admitted workload `plan`. Its uid must be a
 /// distinct drop that is neither root nor the workload's: the door admits the workload's uid,
 /// and a companion that shared it would be admitted too, and could read the workload's
@@ -1078,25 +1084,24 @@ fn admit_companion(
     opt_in: nucleus::UnsandboxedOptIn,
     landlock: nucleus::LandlockWaiver,
 ) -> Result<AdmittedWorkloadPlan, crate::ApiError> {
-    let refuse = |why: String| {
-        crate::ApiError::Spec(format!(
-            "refused to launch companion {:?}: {why}",
-            companion.command
-        ))
-    };
     if companion.uid == 0 {
-        return Err(refuse("a companion never runs as root".into()));
+        return Err(companion_refused(
+            &companion.command,
+            "a companion never runs as root".into(),
+        ));
     }
     if companion.uid == plan.runs_as().uid() {
-        return Err(refuse(
+        return Err(companion_refused(
+            &companion.command,
             "the companion's uid is the workload's; the door would admit it".into(),
         ));
     }
     let admitted = WorkloadLaunch::companion(companion, work_dir)
         .admit(containment, opt_in, landlock)
-        .map_err(|e| refuse(e.to_string()))?;
+        .map_err(|e| companion_refused(&companion.command, e.to_string()))?;
     if !matches!(admitted.runs_as(), RunsAs::Dropped(uid) if uid == companion.uid) {
-        return Err(refuse(
+        return Err(companion_refused(
+            &companion.command,
             "this runtime cannot drop to the companion's uid".into(),
         ));
     }
