@@ -385,7 +385,8 @@ impl AuthorityBinding {
 pub(crate) struct Art12Sink {
     inner: Arc<dyn VerdictSink>,
     log: Arc<Art12Log>,
-    /// Streams each record to the host as it is produced, when configured.
+    /// Streams each sealed record to the host, when configured. Handed to
+    /// `Art12Log::append`, which ships each record once it is sealed (#3392).
     ///
     /// The local log stays regardless: it is the fast path and the thing the
     /// chain head is computed over. The shipper is the copy the pod cannot
@@ -561,20 +562,11 @@ impl VerdictSink for Art12Sink {
         // which is where an upstream checkpoint's authority record flows.
         let receipt_draft = self.receipt_signer.as_ref().map(|_| draft.clone());
 
-        // Ship BEFORE the local append. The record the host witnesses is the
-        // one built from this decision, and ordering it first means a pod that
-        // crashes between the two has told the host more than it kept, never
-        // less.
-        if let Some(shipper) = &self.shipper {
-            match serde_json::to_string(&draft) {
-                Ok(line) => shipper.submit(line),
-                Err(e) => {
-                    tracing::error!(error = %e, "could not serialize an Article 12 record for the host")
-                }
-            }
-        }
-
-        match self.log.append(draft) {
+        // The record ships from INSIDE `append`, after it is sealed and written
+        // (#3392). The shipper takes only a `SealedArt12Line`, which `append`
+        // alone constructs, so there is no draft to ship from here: a failed
+        // seal or write ships nothing and latches the log degraded.
+        match self.log.append(draft, self.shipper.as_deref()) {
             Ok((hash, seq)) => {
                 // Opt-in signed MediationReceipt binding this record's hash.
                 if let (Some(signer), Some(mut rec)) = (self.receipt_signer.as_ref(), receipt_draft)
@@ -1047,5 +1039,119 @@ mod tests {
         let unbound = sink_with(open_log(&dir));
         let rec = unbound.project(&ctx(VerdictOutcome::Allow, &[]));
         assert_eq!(rec.authority_fingerprint(), None);
+    }
+
+    /// A sink that ships to a capturing shipper, plus the log and the signer's
+    /// public key, so a test can compare what the host would hold with what the
+    /// log holds.
+    fn shipping_sink(
+        dir: &TempDir,
+    ) -> (
+        Art12Sink,
+        Arc<Art12Log>,
+        tokio::sync::mpsc::Receiver<String>,
+        String,
+    ) {
+        let signer = Arc::new(crate::audit_log::AuditSigner::for_test(9));
+        let public = signer.public_hex().to_string();
+        let log = Arc::new(
+            Art12Log::open(&dir.path().join("a12.jsonl"), signer, "g".into(), false).unwrap(),
+        );
+        let (shipper, rx) = crate::art12_shipper::Art12Shipper::capturing();
+        let sink = Art12Sink::new(
+            Arc::new(NullSink),
+            Arc::clone(&log),
+            "sess".to_string(),
+            "checksum".to_string(),
+            false,
+            Some(Arc::new(shipper)),
+            None,
+            None,
+        );
+        (sink, log, rx, public)
+    }
+
+    fn drain(rx: &mut tokio::sync::mpsc::Receiver<String>) -> Vec<String> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    /// #3392, A-19. The host must receive the SEALED record: the same bytes as
+    /// the local log, with a chain hash that recomputes, a signature that
+    /// verifies under the audit signer, and links that chain. Before the fix
+    /// the sink shipped the draft, whose `hash` and `signature` are empty, so
+    /// the host's last line had an empty hash and `attest_art12` returned `None`
+    /// for every shipping pod.
+    #[test]
+    fn the_host_receives_the_sealed_record_the_log_holds() {
+        use ed25519_dalek::{Signature, VerifyingKey};
+
+        let dir = TempDir::new().unwrap();
+        let (sink, log, mut rx, public) = shipping_sink(&dir);
+        sink.record(ctx(VerdictOutcome::Allow, &[])).unwrap();
+        sink.record(ctx(
+            VerdictOutcome::Deny {
+                reason: "blocked".to_string(),
+            },
+            &[("deny_code", "command_blocked")],
+        ))
+        .unwrap();
+
+        let shipped = drain(&mut rx);
+        let kept: Vec<String> = std::fs::read_to_string(dir.path().join("a12.jsonl"))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(kept.len(), 2, "both verdicts must be in the local log");
+        assert_eq!(
+            shipped, kept,
+            "the host must hold byte-for-byte what the sealed log holds, in order"
+        );
+
+        let key: [u8; 32] = hex::decode(&public).unwrap().try_into().unwrap();
+        let key = VerifyingKey::from_bytes(&key).unwrap();
+        let mut prev = "g".to_string();
+        for line in &shipped {
+            let rec: Art12Record = serde_json::from_str(line).unwrap();
+            assert!(!rec.hash.is_empty(), "a shipped record has no chain hash");
+            assert_eq!(rec.chain_hash().unwrap(), rec.hash);
+            assert_eq!(rec.prev_hash, prev, "shipped records must chain in order");
+            assert_eq!(rec.signer.as_deref(), Some(public.as_str()));
+            let sig: [u8; 64] = hex::decode(&rec.signature).unwrap().try_into().unwrap();
+            key.verify_strict(&rec.signed_bytes().unwrap(), &Signature::from_bytes(&sig))
+                .expect("a shipped record verifies under the audit signer");
+            prev = rec.hash;
+        }
+        // The host's chain head is its last line's hash: it must be the log's.
+        assert_eq!(log.head().unwrap(), (prev, 2));
+    }
+
+    /// #3392, fail closed. A record that cannot be sealed must not reach the
+    /// host at all, and the failure must be visible: the log is degraded and the
+    /// next operation is refused. Before the fix the draft shipped before
+    /// `append` ran, so the host received a record the log never sealed.
+    #[test]
+    fn a_record_that_fails_to_seal_ships_nothing() {
+        let dir = TempDir::new().unwrap();
+        let (sink, log, mut rx, _) = shipping_sink(&dir);
+        log.poison_for_test();
+
+        assert!(
+            sink.record(ctx(VerdictOutcome::Allow, &[])).is_ok(),
+            "recording must not fail a call whose effect already happened"
+        );
+        assert_eq!(
+            drain(&mut rx),
+            Vec::<String>::new(),
+            "an unsealed record reached the host"
+        );
+        assert!(
+            log.is_degraded() && log.dropped() == 1,
+            "the loss is counted"
+        );
+        assert!(
+            sink.preflight(Operation::RunBash).is_err(),
+            "the next operation must be refused"
+        );
     }
 }

@@ -73,6 +73,7 @@ use std::sync::{Arc, Mutex};
 use portcullis::art12_record::{ART12_SCHEMA_VERSION, Art12Record};
 use portcullis::signed_record::FormError;
 
+use crate::art12_shipper::Art12Shipper;
 use crate::audit_log::AuditSigner;
 
 /// What went wrong writing a record.
@@ -202,16 +203,38 @@ impl Art12Log {
     /// Append a decision. `draft` supplies everything except the chain fields,
     /// which are assigned here.
     ///
-    /// # Errors
-    /// [`Art12Error`] on serialize/IO failure; the log latches `degraded` and
-    /// increments `dropped` before returning, so the caller may continue while
-    /// the next `preflight` fails closed.
-    /// Append a record and return its assigned `(hash, seq)` — the chained
-    /// identity a [`MediationReceipt`](portcullis::mediation_receipt::MediationReceipt)
+    /// Returns its assigned `(hash, seq)` — the chained identity a
+    /// [`MediationReceipt`](portcullis::mediation_receipt::MediationReceipt)
     /// binds as its `art12_record_hash`. Returned from under the same lock that
     /// assigned it, so it is race-free with concurrent appends.
-    pub fn append(&self, draft: Art12Record) -> Result<(String, u64), Art12Error> {
-        match self.append_inner(draft) {
+    ///
+    /// # Shipping happens here, and only here (#3392)
+    ///
+    /// When `ship` is given, the record goes to the host from inside this call,
+    /// after it is sealed (hash and signature) and written to the local log, and
+    /// still under the lock that assigned its `seq`. Three things follow:
+    ///
+    /// - The host holds the exact bytes this log holds, so the head it attests
+    ///   is a head `nucleus-audit verify-art12` can check.
+    /// - Records reach the shipper's queue in `seq` order, so the host's last
+    ///   line is the chain head.
+    /// - If sealing or writing fails, nothing ships: the error returns before the
+    ///   shipper is reached, and the log latches `degraded` as for any failure.
+    ///
+    /// This is a type, not a convention (ADR 0007 D-1, C-1). The shipper accepts
+    /// only a [`SealedArt12Line`], and the only place one is constructed is
+    /// below, so a draft cannot be shipped — the program does not compile.
+    ///
+    /// # Errors
+    /// [`Art12Error`] on sign/serialize/IO failure; the log latches `degraded`
+    /// and increments `dropped` before returning, so the caller may continue
+    /// while the next `preflight` fails closed.
+    pub fn append(
+        &self,
+        draft: Art12Record,
+        ship: Option<&Art12Shipper>,
+    ) -> Result<(String, u64), Art12Error> {
+        match self.append_inner(draft, ship) {
             Ok(record) => Ok((record.hash, record.seq)),
             Err(e) => {
                 self.degraded.store(true, Ordering::Release);
@@ -221,7 +244,11 @@ impl Art12Log {
         }
     }
 
-    fn append_inner(&self, mut draft: Art12Record) -> Result<Art12Record, Art12Error> {
+    fn append_inner(
+        &self,
+        mut draft: Art12Record,
+        ship: Option<&Art12Shipper>,
+    ) -> Result<Art12Record, Art12Error> {
         let mut inner = self.inner.lock().map_err(|_| Art12Error::Poisoned)?;
 
         draft.schema_version = ART12_SCHEMA_VERSION;
@@ -253,17 +280,55 @@ impl Art12Log {
 
         inner.last_hash = draft.hash.clone();
         inner.seq = draft.seq;
+
+        // Sealed and written: the one point a `SealedArt12Line` is minted. Still
+        // under the lock, so the shipper's queue is in `seq` order.
+        if let Some(shipper) = ship {
+            shipper.submit(SealedArt12Line { line });
+        }
         Ok(draft)
+    }
+
+    /// Poison the log's mutex, so the next `append` fails before it seals.
+    ///
+    /// `#[cfg(test)]`, compiled out of production, for the same reason as
+    /// [`Self::force_degraded`]: a real write failure is not reproducible on
+    /// every platform, and a test that cannot fail proves nothing.
+    #[cfg(test)]
+    pub(crate) fn poison_for_test(&self) {
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.inner.lock();
+            panic!("poison the Article 12 log for a test");
+        }));
+    }
+}
+
+/// One Article 12 record, sealed (chain hash and signature assigned) and written
+/// to the local log, serialized exactly as the log holds it.
+///
+/// The only thing [`Art12Shipper::submit`] accepts. Its field is private to this
+/// module and the only constructor is in [`Art12Log::append`], after sealing,
+/// so a draft cannot reach the host (#3392; ADR 0007 C-1, D-1). Not `Clone`, and
+/// taken by value, so one sealed record ships once (C-4).
+#[must_use = "a sealed record that is not shipped never reaches the host"]
+pub(crate) struct SealedArt12Line {
+    line: String,
+}
+
+impl SealedArt12Line {
+    /// The JSON line, as written to the local log (without its newline).
+    pub(crate) fn into_line(self) -> String {
+        self.line
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use portcullis::art12_record::{Actor, DenyInfo};
     use std::collections::BTreeMap;
 
-    fn draft(operation: &str, verdict: &str, gate_class: &str) -> Art12Record {
+    pub(crate) fn draft(operation: &str, verdict: &str, gate_class: &str) -> Art12Record {
         Art12Record {
             schema_version: 0, // overwritten by append
             seq: 0,            // overwritten
@@ -293,7 +358,7 @@ mod tests {
         }
     }
 
-    fn signer() -> Arc<AuditSigner> {
+    pub(crate) fn signer() -> Arc<AuditSigner> {
         Arc::new(AuditSigner::for_test(5))
     }
 
@@ -311,7 +376,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
         let log = Art12Log::open(&path, signer(), "genesis".to_string(), false).unwrap();
-        log.append(draft("read_files", "allow", "none")).unwrap();
+        log.append(draft("read_files", "allow", "none"), None)
+            .unwrap();
 
         let recs = read_records(&path);
         assert_eq!(recs.len(), 1);
@@ -326,8 +392,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
         let log = Art12Log::open(&path, signer(), "genesis".to_string(), false).unwrap();
-        log.append(draft("read_files", "allow", "none")).unwrap();
-        log.append(draft("run_bash", "deny", "admission")).unwrap();
+        log.append(draft("read_files", "allow", "none"), None)
+            .unwrap();
+        log.append(draft("run_bash", "deny", "admission"), None)
+            .unwrap();
 
         let recs = read_records(&path);
         assert_eq!(recs.len(), 2);
@@ -342,7 +410,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
         let log = Art12Log::open(&path, signer(), "boot-report-hash".to_string(), false).unwrap();
-        log.append(draft("read_files", "allow", "none")).unwrap();
+        log.append(draft("read_files", "allow", "none"), None)
+            .unwrap();
         assert_eq!(read_records(&path)[0].prev_hash, "boot-report-hash");
     }
 
@@ -353,7 +422,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
         let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
-        log.append(draft("read_files", "allow", "none")).unwrap();
+        log.append(draft("read_files", "allow", "none"), None)
+            .unwrap();
 
         let rec = &read_records(&path)[0];
         assert_eq!(rec.chain_hash().unwrap(), rec.hash);
@@ -366,7 +436,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("art12.jsonl");
         let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
-        log.append(draft("run_bash", "deny", "admission")).unwrap();
+        log.append(draft("run_bash", "deny", "admission"), None)
+            .unwrap();
 
         let mut rec = read_records(&path).remove(0);
         assert_eq!(rec.chain_hash().unwrap(), rec.hash);
@@ -394,7 +465,8 @@ mod tests {
         let signer = signer();
         let public = signer.public_hex().to_string();
         let log = Art12Log::open(&path, Arc::clone(&signer), "g".to_string(), false).unwrap();
-        log.append(draft("run_bash", "deny", "admission")).unwrap();
+        log.append(draft("run_bash", "deny", "admission"), None)
+            .unwrap();
 
         let rec = read_records(&path).remove(0);
         assert_eq!(rec.signer.as_deref(), Some(public.as_str()));
@@ -433,7 +505,7 @@ mod tests {
         }));
         assert!(poisoner.is_err());
 
-        let err = log.append(draft("read_files", "allow", "none"));
+        let err = log.append(draft("read_files", "allow", "none"), None);
         assert!(err.is_err(), "append must fail on a poisoned log");
         assert!(log.is_degraded(), "degraded must latch");
         assert_eq!(log.dropped(), 1, "the loss must be counted");
@@ -446,8 +518,10 @@ mod tests {
         let log = Art12Log::open(&path, signer(), "g".to_string(), false).unwrap();
         assert_eq!(log.head().unwrap(), ("g".to_string(), 0));
 
-        log.append(draft("read_files", "allow", "none")).unwrap();
-        log.append(draft("run_bash", "deny", "admission")).unwrap();
+        log.append(draft("read_files", "allow", "none"), None)
+            .unwrap();
+        log.append(draft("run_bash", "deny", "admission"), None)
+            .unwrap();
 
         let (head, count) = log.head().unwrap();
         assert_eq!(count, 2);
@@ -467,7 +541,7 @@ mod tests {
             code: "dlc_admission_denied".to_string(),
             detail: Some("no issuer-signed credential".to_string()),
         });
-        log.append(d).unwrap();
+        log.append(d, None).unwrap();
 
         let rec = read_records(&path).remove(0);
         let reason = rec

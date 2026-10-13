@@ -414,11 +414,11 @@ pub struct Art12Attestation {
     pub pod_reported_head: Option<String>,
     /// How many records the pod said it wrote.
     ///
-    /// `records` is what the HOST received. The two can legitimately differ in
-    /// ONE direction: the pod ships each record before appending it locally, so
-    /// a pod that dies mid-write leaves the host holding one MORE than the pod
-    /// kept. `pod_records > records` is the alarming direction — records the pod
-    /// made and the host never saw.
+    /// `records` is what the HOST received. The pod ships each record only
+    /// after sealing and writing it locally (#3392), so the host holds a prefix
+    /// of the pod's log: `records > pod_records` is something no honest pod
+    /// produces, and `pod_records > records` means records the pod made and the
+    /// host never saw.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "Option::is_none")
