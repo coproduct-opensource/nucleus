@@ -235,11 +235,11 @@ pub use portcullis::art12_record::{
 /// honest signature over a possibly dishonest input, which reads exactly like a
 /// trustworthy one.
 ///
-/// When the pod also reported a head, both are carried. They can legitimately
-/// differ in ONE direction: the pod ships each record before appending it
-/// locally, so a pod that dies mid-write leaves the host holding one MORE than
-/// the pod kept. The other direction — the pod claiming more records than the
-/// host received — means records were made and never witnessed, and that is the
+/// When the pod also reported a head, both are carried. The pod ships each
+/// record only after sealing and writing it locally (#3392), so the host holds
+/// a prefix of the pod's log. The host holding MORE than the pod reported is
+/// something no honest pod produces. The pod claiming more records than the
+/// host received means records were made and never witnessed, and that is the
 /// finding this field exists to surface rather than reconcile.
 ///
 /// Falls back to the pod-reported head when the host observed nothing, so a

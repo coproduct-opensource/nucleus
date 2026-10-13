@@ -36,6 +36,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use hmac::{Hmac, Mac, digest::KeyInit};
 use sha2::Sha256;
 
+use crate::art12::SealedArt12Line;
+
 /// How many records may be in flight before the shipper calls it a failure.
 ///
 /// Small on purpose. A deep queue converts "the host is not hearing us" into
@@ -118,13 +120,19 @@ impl Art12Shipper {
         }
     }
 
-    /// Hand a record to the shipper.
+    /// Hand a sealed record to the shipper.
+    ///
+    /// Takes a [`SealedArt12Line`], which only `Art12Log::append` can construct
+    /// and only after the record has its chain hash and signature. A draft
+    /// therefore cannot be shipped: before #3392 the host received drafts with
+    /// an empty hash, so the head it attested was empty and `attest_art12`
+    /// returned `None` for exactly the pods that ship.
     ///
     /// Never blocks. A full queue latches degraded rather than waiting: blocking
     /// here would stall the decision path, and dropping silently would produce
     /// exactly the invisible gap this exists to prevent.
-    pub(crate) fn submit(&self, line: String) {
-        if self.tx.try_send(line).is_err() {
+    pub(crate) fn submit(&self, sealed: SealedArt12Line) {
+        if self.tx.try_send(sealed.into_line()).is_err() {
             self.unshipped.fetch_add(1, Ordering::AcqRel);
             self.degraded.store(true, Ordering::Release);
             tracing::error!(
@@ -160,6 +168,21 @@ impl Art12Shipper {
         )))
     }
 
+    /// A shipper with no sender task, whose queue the test reads directly: the
+    /// lines the host would receive, in the order it would receive them.
+    ///
+    /// `#[cfg(test)]`, so it does not exist in a production build.
+    #[cfg(test)]
+    pub(crate) fn capturing() -> (Self, tokio::sync::mpsc::Receiver<String>) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(QUEUE_DEPTH);
+        let shipper = Self {
+            tx,
+            degraded: Arc::new(AtomicBool::new(false)),
+            unshipped: Arc::new(AtomicU64::new(0)),
+        };
+        (shipper, rx)
+    }
+
     pub(crate) fn is_degraded(&self) -> bool {
         self.degraded.load(Ordering::Acquire)
     }
@@ -172,6 +195,16 @@ impl Art12Shipper {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::art12::Art12Log;
+    use crate::art12::tests::{draft, signer};
+
+    /// A log to mint sealed records from: the shipper takes nothing else.
+    fn log() -> (tempfile::TempDir, Art12Log) {
+        let dir = tempfile::tempdir().unwrap();
+        let log =
+            Art12Log::open(&dir.path().join("a12.jsonl"), signer(), "g".into(), false).unwrap();
+        (dir, log)
+    }
 
     /// `reqwest::Client::new()` panics without a rustls provider. Production
     /// installs one at startup (main.rs); a test process has to do it itself,
@@ -202,7 +235,9 @@ mod tests {
             "a fresh shipper must be healthy, or the assertion below proves nothing"
         );
 
-        s.submit("{}".to_string());
+        let (_dir, log) = log();
+        log.append(draft("read_files", "allow", "none"), Some(&s))
+            .unwrap();
         for _ in 0..200 {
             if s.is_degraded() {
                 break;
@@ -228,8 +263,10 @@ mod tests {
             client(),
         );
         // Submit well past the queue depth without awaiting the drain.
-        for i in 0..(QUEUE_DEPTH * 4) {
-            s.submit(format!("{{\"n\":{i}}}"));
+        let (_dir, log) = log();
+        for _ in 0..(QUEUE_DEPTH * 4) {
+            log.append(draft("read_files", "allow", "none"), Some(&s))
+                .unwrap();
         }
         assert!(
             s.is_degraded(),
