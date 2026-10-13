@@ -1881,7 +1881,7 @@ mod tests {
         let guard = MediationGuard::establish(&build_mcp_allowed_tools(&policy)).unwrap();
         let agent = crate::agent::AgentCommand::named(Some("/opt/agent"), &[]).unwrap();
         let w = pod_agent::workload(&agent, &guard, &policy, None, "task").unwrap();
-        let config = pod_agent::guest_mcp_config();
+        let config = pod_agent::guest_mcp_config(&policy).unwrap();
         let host: Vec<String> = mcp_launch_protocol(None, config.as_ref(), &guard, &policy, "task")
             .into_iter()
             .map(|a| a.into_string().unwrap())
