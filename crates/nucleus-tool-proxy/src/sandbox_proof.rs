@@ -30,15 +30,14 @@
 
 use std::path::{Path, PathBuf};
 
-use nucleus_identity::TrustBundle;
+use nucleus_identity::{TrustBundle, VerifiedLaunch};
 use tracing::{debug, error, info, warn};
 
 use crate::attestation::AttestationInfo;
 
-/// Evidence that this process was launched as a measured microVM by the node
-/// that issued its identity.
+/// Tier 1: the launch claim on `leaf_der`, verified against `trust_bundle`.
 ///
-/// # The defect this type exists to make unwritable (2026-09-29)
+/// # The defect this exists to make unwritable (2026-09-29)
 ///
 /// `try_svid_proof` used to return `SandboxProof::Attested` for ANY certificate
 /// that carried the launch-attestation extension (OID 1.3.6.1.4.1.57212.1.1).
@@ -48,49 +47,18 @@ use crate::attestation::AttestationInfo;
 /// executor is inside a VM". The measurement is only worth what the signature
 /// over it is worth, and nothing checked the signature.
 ///
-/// So the claim is now a value with a private constructor (ADR 0007 C-1),
-/// minted by the one function that performs the check (C-2):
-/// [`VerifiedLaunch::verify`] succeeds only when the leaf chains to the node's
-/// CA in the trust bundle guest-init exports as `NUCLEUS_IDENTITY_TRUST_BUNDLE`
-/// AND carries a parseable launch claim. `SandboxProof::Attested` holds one, so
-/// an `Attested` that skipped the chain check does not typecheck.
-///
-/// Not `Clone`: it is evidence about this process, held once in `AppState`
-/// behind an `Arc`, and there is no second owner that needs a copy. Not
-/// `#[must_use]`: it is a standing fact for the life of the process, never
-/// spent, so it is not a one-shot right and carries no validity interval.
-#[derive(Debug)]
-pub struct VerifiedLaunch {
-    spiffe_id: String,
-    kernel_hash: String,
-    rootfs_hash: String,
-    config_hash: String,
-}
-
-impl VerifiedLaunch {
-    /// The only constructor. Both halves are required, in this order: a
-    /// launch claim on a certificate the node did not sign is the forgery, not
-    /// a weaker form of the real thing.
-    ///
-    /// The check is `nucleus_identity::VerifiedLaunch::verify`, the one decider
-    /// every relying party calls (ADR 0007 G-1, ADR 0016 D1); this only shapes
-    /// its result for the boot log.
-    fn verify(leaf_der: &[u8], trust_bundle: &TrustBundle) -> Result<Self, SandboxProofError> {
-        let verified = nucleus_identity::VerifiedLaunch::verify(leaf_der, trust_bundle)
-            .map_err(|e| SandboxProofError::LaunchUnverified(e.to_string()))?;
-        let info = AttestationInfo::from(verified.launch());
-        Ok(Self {
-            spiffe_id: verified.spiffe_id().to_string(),
-            kernel_hash: info.kernel_hash,
-            rootfs_hash: info.rootfs_hash,
-            config_hash: info.config_hash,
-        })
-    }
-
-    /// The workload identity the verified certificate names.
-    pub fn spiffe_id(&self) -> &str {
-        &self.spiffe_id
-    }
+/// `SandboxProof::Attested` therefore holds a [`VerifiedLaunch`], whose
+/// constructor is private to `nucleus-identity` and runs the chain check first
+/// (ADR 0007 C-1, C-2). This process used to keep its own `VerifiedLaunch`
+/// beside that one; there is now one type and one decider for every relying
+/// party (G-1, ADR 0016 D1), and this only names the refusal for the boot log.
+fn attested(
+    leaf_der: &[u8],
+    trust_bundle: &TrustBundle,
+) -> Result<SandboxProof, SandboxProofError> {
+    VerifiedLaunch::verify(leaf_der, trust_bundle)
+        .map(SandboxProof::Attested)
+        .map_err(|e| SandboxProofError::LaunchUnverified(e.to_string()))
 }
 
 /// Whether a leaf carries the launch-attestation extension at all. Presence
@@ -155,14 +123,17 @@ impl std::fmt::Display for SandboxProof {
         match self {
             // The measurements go in the boot log: which kernel and rootfs the
             // node vouched for is what an operator needs to know when tier 1 holds.
-            SandboxProof::Attested(launch) => write!(
-                f,
-                "tier=1/attested spiffe_id={} kernel={} rootfs={} config={}",
-                launch.spiffe_id(),
-                launch.kernel_hash,
-                launch.rootfs_hash,
-                launch.config_hash
-            ),
+            SandboxProof::Attested(verified) => {
+                let launch = AttestationInfo::from(verified.launch());
+                write!(
+                    f,
+                    "tier=1/attested spiffe_id={} kernel={} rootfs={} config={}",
+                    verified.spiffe_id(),
+                    launch.kernel_hash,
+                    launch.rootfs_hash,
+                    launch.config_hash
+                )
+            }
             SandboxProof::SpiffeIdentity { spiffe_id } => {
                 write!(f, "tier=2/spiffe-identity spiffe_id={spiffe_id}")
             }
@@ -322,7 +293,7 @@ async fn try_svid_proof(
         .map_err(|e| SandboxProofError::CertReadError(format!("{}: {e}", bundle_path.display())))?;
     let bundle = TrustBundle::from_pem(&bundle_pem)
         .map_err(|e| SandboxProofError::CertParseError(format!("trust bundle: {e}")))?;
-    VerifiedLaunch::verify(&der, &bundle).map(SandboxProof::Attested)
+    attested(&der, &bundle)
 }
 
 /// Try to establish proof via SPIRE Workload API socket.
@@ -374,7 +345,7 @@ async fn try_spire_proof(socket_path: &str) -> Result<SandboxProof, SandboxProof
     if let Ok((_, cert)) = X509Certificate::from_der(leaf_der)
         && claims_launch(&cert)
     {
-        return VerifiedLaunch::verify(leaf_der, ca.trust_bundle()).map(SandboxProof::Attested);
+        return attested(leaf_der, ca.trust_bundle());
     }
 
     // SVID without attestation extension → Tier 2
@@ -565,7 +536,11 @@ mod tests {
             panic!("expected Attested, got {proof:?}");
         };
         assert_eq!(launch.spiffe_id(), "spiffe://nucleus.local/ns/pods/sa/p1");
-        assert_eq!(launch.kernel_hash, hex::encode([1u8; 32]));
+        assert_eq!(launch.launch().kernel_hash(), &[1u8; 32]);
+        assert!(
+            proof.to_string().contains(&hex::encode([1u8; 32])),
+            "the boot log names the measurement: {proof}"
+        );
     }
 
     /// A real node-issued leaf, checked against a DIFFERENT node's bundle, is

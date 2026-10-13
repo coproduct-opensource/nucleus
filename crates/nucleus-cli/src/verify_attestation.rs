@@ -255,6 +255,61 @@ mod tests {
         );
     }
 
+    /// ADR 0016 S2's falsifier: a self-signed `rcgen` leaf carrying the launch
+    /// extension (OID `.1.1`) and the exact measurement the operator expects.
+    /// Before #3352 the CLI read the extension and passed it. It must be refused
+    /// by the issuer tooth, with the node's real bundle present, so the refusal is
+    /// the chain and not a missing or unreadable file.
+    #[tokio::test]
+    async fn cli_refuses_a_self_signed_leaf_carrying_the_launch_extension() {
+        let ca = SelfSignedCa::new("test.local").unwrap();
+        let b = bundle(&ca);
+        let att = LaunchAttestation::from_hashes([1u8; 32], [2u8; 32], [3u8; 32]);
+
+        let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
+        params.subject_alt_names = vec![rcgen::SanType::URI(
+            rcgen::string::Ia5String::try_from(
+                Identity::for_pod("test.local", "pod-1").to_spiffe_uri(),
+            )
+            .unwrap(),
+        )];
+        params.custom_extensions = vec![rcgen::CustomExtension::from_oid_content(
+            nucleus_identity::oid::OID_NUCLEUS_ATTESTATION_TUPLE,
+            att.to_der(),
+        )];
+        let forged = params
+            .self_signed(&rcgen::KeyPair::generate().unwrap())
+            .unwrap()
+            .pem();
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(forged.as_bytes()).unwrap();
+
+        // The forgery really carries the claim the operator expects: the
+        // extension alone, read the way the pre-#3352 CLI read it, matches.
+        let der = pem::parse(&forged).unwrap();
+        let lifted = nucleus_identity::extract_launch_attestation(der.contents())
+            .expect("the forgery carries a launch claim");
+        AttestationRequirements::exact(*att.kernel_hash(), *att.rootfs_hash(), *att.config_hash())
+            .verify(&lifted)
+            .expect("the very measurement the operator expects");
+
+        for require_attestation in [true, false] {
+            let mut a = args(
+                &f,
+                &b,
+                att.kernel_hash(),
+                att.rootfs_hash(),
+                att.config_hash(),
+            );
+            a.require_attestation = require_attestation;
+            let err = execute(a).expect_err("a self-signed launch claim");
+            assert!(
+                format!("{err:#}").contains("not issued by a trusted CA"),
+                "require_attestation={require_attestation}: {err:#}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_malformed_hex_measurement() {
         assert!(parse_hash("not-hex").is_err());

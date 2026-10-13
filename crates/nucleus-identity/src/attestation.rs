@@ -785,12 +785,15 @@ pub fn extract_mediation_key_binding(cert_der: &[u8]) -> Option<[u8; 32]> {
 /// anyone, passed `nucleus verify-attestation`. The tool-proxy had fixed the same
 /// defect for itself on 2026-09-29 with a private `VerifiedLaunch`, so a weak
 /// public check and a strong private one decided the same fact (ADR 0007 G-1).
-/// [`issued_launch`] is now the one decider, and both call it.
+/// This is now the only `VerifiedLaunch`: the tool-proxy's `SandboxProof::Attested`
+/// holds this type, and `verify_attested_svid` (so `SelfMeasuredBackend` and the
+/// CLI) reads a measured launch only out of one (ADR 0016 D1).
 ///
-/// The fields are private and [`VerifiedLaunch::verify`] is the only constructor
-/// (C-1, C-2). Both halves are required, in this order: a launch claim on a
-/// certificate the trusted CA did not sign is a forgery, not a weaker form of
-/// the real thing.
+/// The fields are private, and the struct is built in exactly one place, the
+/// measured arm of [`issued_launch`], after the chain check (C-1, C-2).
+/// [`VerifiedLaunch::verify`] is the public way to mint one. Both halves are
+/// required, in this order: a launch claim on a certificate the trusted CA did not
+/// sign is a forgery, not a weaker form of the real thing.
 #[derive(Debug)]
 pub struct VerifiedLaunch {
     spiffe_id: String,
@@ -806,12 +809,7 @@ impl VerifiedLaunch {
     /// parseable launch attestation.
     pub fn verify(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<Self> {
         match issued_launch(leaf_der, trust_bundle)? {
-            IssuedLaunch::Measured(launch) => {
-                let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
-                    Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
-                })?;
-                Ok(Self { spiffe_id, launch })
-            }
+            IssuedLaunch::Measured(verified) => Ok(verified),
             IssuedLaunch::Unmeasured(tier) => Err(Error::VerificationFailed(unmeasured(tier))),
             IssuedLaunch::Unstated => Err(Error::VerificationFailed(
                 "verified leaf carries no parseable launch attestation".to_string(),
@@ -842,7 +840,12 @@ fn issued_launch(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<I
         extract_launch_attestation(leaf_der),
         extract_unmeasured_launch(leaf_der)?,
     ) {
-        (Some(launch), None) => Ok(IssuedLaunch::Measured(launch)),
+        (Some(launch), None) => {
+            let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
+                Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
+            })?;
+            Ok(IssuedLaunch::Measured(VerifiedLaunch { spiffe_id, launch }))
+        }
         (None, Some(tier)) => Ok(IssuedLaunch::Unmeasured(tier)),
         (None, None) => Ok(IssuedLaunch::Unstated),
         // Two answers to one question is not a launch claim of either kind.
@@ -855,8 +858,9 @@ fn issued_launch(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<I
 
 /// What a leaf a trusted CA signed says about the launch it identifies.
 enum IssuedLaunch {
-    /// The node's measurement of the kernel, rootfs and config it launched.
-    Measured(LaunchAttestation),
+    /// The node's measurement of the kernel, rootfs and config it launched, on a
+    /// leaf that chains: the only arm that builds a [`VerifiedLaunch`].
+    Measured(VerifiedLaunch),
     /// The tier that launched it cannot measure a launch, and the leaf says so.
     Unmeasured(UnmeasuredTier),
     /// Neither: an identity that is not a pod launch (a node, a client).
@@ -989,9 +993,9 @@ pub fn verify_attested_svid(
     let leaf = pem::parse(chain_pem)
         .map_err(|e| Error::VerificationFailed(format!("cert PEM parse failed: {e}")))?;
     match issued_launch(leaf.contents(), trust_bundle)? {
-        IssuedLaunch::Measured(att) => {
-            requirements.verify(&att)?;
-            Ok(Some(att))
+        IssuedLaunch::Measured(verified) => {
+            requirements.verify(verified.launch())?;
+            Ok(Some(verified.launch))
         }
         IssuedLaunch::Unmeasured(tier) if require_attestation => {
             Err(Error::VerificationFailed(unmeasured(tier)))
