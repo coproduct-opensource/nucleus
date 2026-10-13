@@ -17,6 +17,12 @@
 //! these measurements.* Do not label this "hardware attestation" or "DICE measured
 //! boot."
 //!
+//! A node with a TPM also quotes each launch, and the leaf names the quote (OID
+//! `.1.7`, ADR 0016 D2). [`VerifiedLaunch::verify_tpm`] checks that quote, and
+//! only a launch verified that way is rooted in the TPM
+//! ([`crate::launch_quote::LaunchRoot::Tpm`]); the rest of this module is the
+//! CA-signed claim alone.
+//!
 //! # DICE-format-compatible encoding
 //!
 //! The DER encoding borrows the TCG DICE `DiceTcbInfo` *format* (FWID hash
@@ -794,14 +800,28 @@ pub fn extract_mediation_key_binding(cert_der: &[u8]) -> Option<[u8; 32]> {
 /// [`VerifiedLaunch::verify`] is the public way to mint one. Both halves are
 /// required, in this order: a launch claim on a certificate the trusted CA did not
 /// sign is a forgery, not a weaker form of the real thing.
+///
+/// # Roots (ADR 0016 D2)
+///
+/// [`Self::verify`] roots the launch in the node CA's signature alone
+/// ([`LaunchRoot::NodeCa`]). [`Self::verify_tpm`] also requires the TPM launch
+/// quote the leaf names (OID `.1.7`) to have been taken over this leaf's key and
+/// this measurement, and to appraise `Attested` under the relying party's
+/// reference and anchors ([`LaunchRoot::Tpm`]).
+///
+/// [`LaunchRoot::NodeCa`]: crate::launch_quote::LaunchRoot::NodeCa
+/// [`LaunchRoot::Tpm`]: crate::launch_quote::LaunchRoot::Tpm
 #[derive(Debug)]
 pub struct VerifiedLaunch {
     spiffe_id: String,
     launch: LaunchAttestation,
+    root: crate::launch_quote::LaunchRoot,
 }
 
 impl VerifiedLaunch {
     /// Verify `leaf_der` against `trust_bundle`, then read its launch claim.
+    /// The launch is rooted in the node CA alone (`LaunchRoot::NodeCa`),
+    /// whether or not the leaf names a launch quote.
     ///
     /// # Errors
     ///
@@ -815,6 +835,44 @@ impl VerifiedLaunch {
                 "verified leaf carries no parseable launch attestation".to_string(),
             )),
         }
+    }
+
+    /// [`Self::verify`], then the TPM root: `quote_document` is the document
+    /// the leaf names (OID `.1.7`), its quote was taken over the nonce
+    /// recomputed from this leaf's `SubjectPublicKeyInfo` and measurement, and
+    /// it appraises `Attested` under `policy` (`LaunchRoot::Tpm`).
+    ///
+    /// The caller fetches the document (the node serves it on its anonymous
+    /// evidence listener, by the digest the leaf names); nothing here does I/O.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::verify`]'s, or any check of [`crate::launch_quote`]: no quote
+    /// named, a different document, a quote over another key or measurement, a
+    /// refused quote, or a tier other than `Attested`.
+    pub fn verify_tpm(
+        leaf_der: &[u8],
+        trust_bundle: &crate::TrustBundle,
+        quote_document: &[u8],
+        policy: &crate::launch_quote::LaunchQuotePolicy<'_>,
+    ) -> Result<Self> {
+        let Self {
+            spiffe_id,
+            launch,
+            root: _,
+        } = Self::verify(leaf_der, trust_bundle)?;
+        let appraised =
+            crate::launch_quote::appraise_launch_quote(leaf_der, &launch, quote_document, policy)?;
+        Ok(Self {
+            spiffe_id,
+            launch,
+            root: crate::launch_quote::LaunchRoot::Tpm(Box::new(appraised)),
+        })
+    }
+
+    /// What the launch is rooted in.
+    pub fn root(&self) -> &crate::launch_quote::LaunchRoot {
+        &self.root
     }
 
     /// The workload identity the verified leaf names.
@@ -844,7 +902,11 @@ fn issued_launch(leaf_der: &[u8], trust_bundle: &crate::TrustBundle) -> Result<I
             let spiffe_id = crate::spiffe_uri_from_svid(leaf_der).map_err(|e| {
                 Error::VerificationFailed(format!("verified leaf has no SPIFFE ID: {e}"))
             })?;
-            Ok(IssuedLaunch::Measured(VerifiedLaunch { spiffe_id, launch }))
+            Ok(IssuedLaunch::Measured(VerifiedLaunch {
+                spiffe_id,
+                launch,
+                root: crate::launch_quote::LaunchRoot::NodeCa,
+            }))
         }
         (None, Some(tier)) => Ok(IssuedLaunch::Unmeasured(tier)),
         (None, None) => Ok(IssuedLaunch::Unstated),

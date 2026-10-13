@@ -35,6 +35,19 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// What a measured launch's leaf states, beyond the SPIFFE ID: the measurement,
+/// and the two optional bindings.
+#[derive(Clone, Copy, Debug)]
+pub struct MeasuredClaims<'a> {
+    /// The launch measurement (OID `.1.1`).
+    pub attestation: &'a LaunchAttestation,
+    /// `SHA-256` of the pod's mediation key (OID `.1.4`).
+    pub mediator_key_sha256: Option<&'a [u8; 32]>,
+    /// `SHA-256` of the TPM launch-quote document taken over this leaf's key
+    /// and measurement (OID `.1.7`, ADR 0016 D2).
+    pub launch_quote_sha256: Option<&'a [u8; 32]>,
+}
+
 /// A Certificate Authority client that can sign CSRs.
 ///
 /// # Security Model
@@ -190,6 +203,49 @@ pub trait CaClient: Send + Sync {
         _mediator_pubkey_sha256: &[u8; 32],
     ) -> Result<WorkloadCertificate> {
         Err(cannot_embed(identity, "a mediator-key binding"))
+    }
+
+    /// Signs a CSR for a measured launch, stating every claim in `claims`.
+    ///
+    /// The one entry point the secret manager signs a measured launch through.
+    ///
+    /// # Default Implementation
+    ///
+    /// The claims a CA states through the older methods go through them; a
+    /// launch-quote digest, which none of them can state, is refused, never
+    /// dropped: a leaf without it would read as a launch rooted in the CA alone
+    /// when the node asked for its TPM's word.
+    async fn sign_measured_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        claims: &MeasuredClaims<'_>,
+    ) -> Result<WorkloadCertificate> {
+        let MeasuredClaims {
+            attestation,
+            mediator_key_sha256,
+            launch_quote_sha256,
+        } = *claims;
+        match (mediator_key_sha256, launch_quote_sha256) {
+            (None, None) => {
+                self.sign_attested_csr(csr, private_key, identity, ttl, attestation)
+                    .await
+            }
+            (Some(binding), None) => {
+                self.sign_attested_and_bound_csr(
+                    csr,
+                    private_key,
+                    identity,
+                    ttl,
+                    attestation,
+                    binding,
+                )
+                .await
+            }
+            (_, Some(_)) => Err(cannot_embed(identity, "a launch-quote digest")),
+        }
     }
 
     /// Signs a CSR and returns only the certificate chain (not the private key).
@@ -355,6 +411,19 @@ impl CaClient for Arc<dyn CaClient> {
                 attestation,
                 mediator_pubkey_sha256,
             )
+            .await
+    }
+
+    async fn sign_measured_csr(
+        &self,
+        csr: &str,
+        private_key: &str,
+        identity: &Identity,
+        ttl: Duration,
+        claims: &MeasuredClaims<'_>,
+    ) -> Result<WorkloadCertificate> {
+        (**self)
+            .sign_measured_csr(csr, private_key, identity, ttl, claims)
             .await
     }
 
