@@ -458,7 +458,7 @@ jobs:
       # and the accept/reject smoke fixtures; the Python SDK is its own
       # workspace (the root cargo test never reaches it) and runs the shared
       # conformance corpus through its bindings. Both report under `Tests`.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
       - name: SDK tests (node golden seal + smoke; python conformance + clippy)
