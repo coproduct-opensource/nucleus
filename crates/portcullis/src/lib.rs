@@ -146,6 +146,12 @@ pub mod uninhabitable_state;
 /// `nucleus-audit`) enable the feature.
 #[cfg(feature = "serde")]
 pub mod art12_record;
+/// The signing scheme the tool-proxy's audit log and Article 12 log share
+/// (#3293, #3309): the `sig_alg`/`signer` fields, the rule that tells a
+/// signed record from a legacy MAC'd one, and the signed-preimage encoding.
+/// Gated on `serde` with [`art12_record`], which uses it.
+#[cfg(feature = "serde")]
+pub mod signed_record;
 // Mediation receipt: a portable proof of one agent↔tool crossing (crypto-gated).
 /// Kernel decision engine — complete mediation with monotone session state.
 pub mod delegation;
@@ -202,7 +208,7 @@ pub mod manifest_enforcement;
 /// MCP mediation: classify and gate arbitrary MCP tool calls against the
 /// permission lattice with exposure tracking.
 ///
-/// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
+/// Requires the `spec` feature (includes `serde`, `nucleus-yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod manifest_registry;
 #[cfg(feature = "spec")]
@@ -211,12 +217,12 @@ pub mod mcp_mediation;
 pub mod mediation_receipt;
 /// Progressive discovery: observe agent behavior and generate minimal policies.
 ///
-/// Requires the `spec` feature (includes `serde`, `serde_yaml`, `toml`).
+/// Requires the `spec` feature (includes `serde`, `nucleus-yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod observe;
 /// Declarative profile specification and canonical profile registry.
 ///
-/// Requires the `spec` feature (includes `serde`, `cel`, `serde_yaml`, `toml`).
+/// Requires the `spec` feature (includes `serde`, `cel`, `nucleus-yaml`, `toml`).
 #[cfg(feature = "spec")]
 pub mod policy;
 #[cfg(feature = "spec")]

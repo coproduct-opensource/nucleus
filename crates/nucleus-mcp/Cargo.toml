@@ -21,7 +21,7 @@ clap = { workspace = true }
 rust_decimal = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml" }
 rustls = { workspace = true }
 ureq = { workspace = true }
 uuid = { workspace = true }

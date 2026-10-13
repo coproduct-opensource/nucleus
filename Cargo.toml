@@ -10,6 +10,7 @@ members = [
     "crates/nucleus-decision-protocol", # L-1 P7: the per-pod decision channel's one wire declaration (guest + host)
     "crates/nucleus-oci-rootfs",    # OCI image -> one verified, normalized, deterministic rootfs tar (local layouts/archives only)
     "crates/nucleus-jsonl",       # One atomic append per record for every line-oriented evidence log
+    "crates/nucleus-yaml",        # The one YAML reader/writer: serde-saphyr with every setting pinned (G-1)
     "crates/nucleus-pca",           # PCA: the unified verify() SDK facade
     "crates/nucleus",        # Enforcement: wraps OS APIs with policy checks
     "crates/nucleus-cli",    # CLI: distributed executor with enforcement
@@ -180,7 +181,6 @@ proc-macro2 = "1.0"
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde_yaml = "0.9"
 toml = "1.1"
 
 # Content provenance (EU AI Act)

@@ -356,6 +356,14 @@ pub enum GuestCapability {
     /// the guest-local release. S6's `HostDecides` is the row that makes the
     /// host's answer load-bearing for an eval cell.
     HostApprovalRedeem,
+    /// The tool-proxy signs its Article 12 decision log with the audit log's
+    /// Ed25519 key and names it in every record (#3309). An older proxy MACs
+    /// the log, under a key derived from the public session id when no operator
+    /// secret was set. [`Demand::Optional`]: the node reads only a record's
+    /// hash and authority binding, which both forms carry; `nucleus-audit
+    /// verify-art12` refuses an older guest's keyless log by name rather than
+    /// report it verified.
+    SignedArt12Log,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -411,7 +419,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 20] = [
+    pub const ALL: [GuestCapability; 21] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -432,6 +440,7 @@ impl GuestCapability {
         GuestCapability::SignedAuditLog,
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
+        GuestCapability::SignedArt12Log,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -469,6 +478,9 @@ impl GuestCapability {
             // Read by `cargo xtask host-decide-agreement`, never by the node.
             GuestCapability::HostDecideTelemetry => Demand::Optional,
             GuestCapability::HostApprovalRedeem => Demand::Optional,
+            // Read by a verifier, never by the node: the collector reads a
+            // record's hash and authority, which both forms carry.
+            GuestCapability::SignedArt12Log => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -536,6 +548,8 @@ impl GuestCapability {
             // ADR 0014 S1: in this tree and in no release yet.
             GuestCapability::HostDecideTelemetry => FirstShipped::NotYet,
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
+            // #3309: in this tree and in no release yet.
+            GuestCapability::SignedArt12Log => FirstShipped::NotYet,
         }
     }
 
@@ -653,6 +667,12 @@ impl GuestCapability {
                 "ADR 0014 (S4) has the tool-proxy redeem, on the host, the approval of a call its \
                  own grant released; an older guest never does, so the host never sees that \
                  release (the node does not require it)"
+            }
+            GuestCapability::SignedArt12Log => {
+                "#3309 has the tool-proxy sign its Article 12 log with its audit signer and name \
+                 the key in every record; an older proxy MACs the log, so `nucleus-audit \
+                 verify-art12` refuses that log by name unless given its non-empty secret (the \
+                 node does not require it)"
             }
         }
     }
@@ -1073,6 +1093,7 @@ mod tests {
         let after_the_pin = [
             GuestCapability::HostDecideTelemetry,
             GuestCapability::HostApprovalRedeem,
+            GuestCapability::SignedArt12Log,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1249,7 +1270,8 @@ mod tests {
                 GuestCapability::HostVerifiedProxySocket => GuestCapability::SignedAuditLog,
                 GuestCapability::SignedAuditLog => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
-                GuestCapability::HostApprovalRedeem => GuestCapability::CaBundle,
+                GuestCapability::HostApprovalRedeem => GuestCapability::SignedArt12Log,
+                GuestCapability::SignedArt12Log => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

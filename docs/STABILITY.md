@@ -75,5 +75,14 @@ All extension fields use `#[serde(default)]` and `#[serde(skip_serializing_if = 
 
 - `ExecutionReceipt.version`: Schema version (1 for v1.0). Verifiers that don't
   understand version N fall back to verifying `v1_content_hash` over fields 1-8.
+- `ExecutionReceipt.manifest_hash` changed rule at **version 3**: it is the hex
+  SHA-256 of `nucleus.pod-manifest.v3\0` followed by the RFC 8785 JSON of the
+  PodSpec (`nucleus_spec::PodSpec::manifest_hash`). Versions 1 and 2 hashed the
+  node's serde_yaml rendering of the spec; those receipts stay valid as issued
+  (the node signature covers the version and the hash) but their hash cannot be
+  recomputed from a spec. `nucleus_sdk::ExecutionReceipt::check_manifest` picks
+  the rule by version and refuses a version it does not know. Anyone comparing
+  `manifest_hash` across a node upgrade, or holding a pre-computed hash, sees
+  every value change at v3.
 - `AuditEntry.schema_version`: Entry schema version (1 for v1.0). The hash chain
   algorithm for v1 fields is frozen. Extension fields are not included in v1 hashes.

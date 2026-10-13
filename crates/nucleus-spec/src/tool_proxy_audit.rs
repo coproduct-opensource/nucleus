@@ -37,7 +37,17 @@
 //!
 //! A record carrying one of the two fields without the other is neither form.
 //! It is refused ([`FormError`]), never read as legacy.
+//!
+//! # Shared with the Article 12 log (#3309)
+//!
+//! The Article 12 decision log is signed by the same key and tells its two
+//! forms apart by the same rule. That rule, the algorithm tag and the
+//! length-prefixed preimage encoding are declared once, in
+//! [`portcullis::signed_record`], and re-exported here; this module keeps the
+//! audit record and its two preimages.
 
+pub use portcullis::signed_record::{FormError, RecordForm, SigAlg};
+use portcullis::signed_record::{absorb, absorb_opt, signed_chain_hash};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -45,14 +55,6 @@ use sha2::{Digest, Sha256};
 /// signature over an audit record is never a valid signature over anything
 /// else that key might sign.
 pub const SIGNED_DOMAIN: &str = "nucleus-tool-proxy-audit/2";
-
-/// How a record's `signature` was made. Absent on a legacy record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum SigAlg {
-    /// Ed25519 by the key `signer` names, over [`AuditRecord::signed_bytes`].
-    Ed25519,
-}
 
 /// What a caller asks the audit log to record. The chain fields (`prev_hash`,
 /// `hash`, `signature`, `signer`) are not in it: only the log can fill them,
@@ -99,38 +101,6 @@ pub struct AuditRecord {
     pub signer: Option<String>,
 }
 
-/// Which of the two forms a record is in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordForm<'a> {
-    /// A shared-secret MAC from a tool-proxy older than #3293.
-    LegacyMac,
-    /// Ed25519 by `signer` (hex public key).
-    Signed { signer: &'a str },
-}
-
-/// A record that is neither form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FormError {
-    /// `sig_alg` is present and `signer` is not: nothing names the key.
-    SignerMissing,
-    /// `signer` is present and `sig_alg` is not: reading it as legacy would let
-    /// a forger strip the algorithm and fall back to the keyless MAC.
-    AlgMissing,
-}
-
-impl std::fmt::Display for FormError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::SignerMissing => "the record names a signature algorithm but no signer",
-            Self::AlgMissing => {
-                "the record names a signer but no signature algorithm; it is not a legacy record"
-            }
-        })
-    }
-}
-
-impl std::error::Error for FormError {}
-
 impl AuditEvent {
     /// The record this event becomes when `signer` (hex public key) signs it
     /// after `prev_hash`. Unsigned: [`AuditRecord::with_signature`] seals it.
@@ -173,12 +143,7 @@ impl AuditRecord {
     /// # Errors
     /// [`FormError`] when exactly one of `sig_alg` and `signer` is present.
     pub fn form(&self) -> Result<RecordForm<'_>, FormError> {
-        match (self.sig_alg, self.signer.as_deref()) {
-            (None, None) => Ok(RecordForm::LegacyMac),
-            (Some(SigAlg::Ed25519), Some(signer)) => Ok(RecordForm::Signed { signer }),
-            (Some(SigAlg::Ed25519), None) => Err(FormError::SignerMissing),
-            (None, Some(_)) => Err(FormError::AlgMissing),
-        }
+        portcullis::signed_record::form(self.sig_alg, self.signer.as_deref())
     }
 
     /// The bytes `signature` covers, for this record's form.
@@ -203,9 +168,7 @@ impl AuditRecord {
                 format!("{}|{}", self.legacy_message(), self.signature).as_bytes(),
             ))),
             RecordForm::Signed { .. } => {
-                let mut bytes = self.signed_preimage();
-                absorb(&mut bytes, "signature", self.signature.as_bytes());
-                Ok(hex::encode(Sha256::digest(&bytes)))
+                Ok(signed_chain_hash(self.signed_preimage(), &self.signature))
             }
         }
     }
@@ -288,27 +251,6 @@ impl AuditRecord {
             policy_rule.as_deref().map(str::as_bytes),
         );
         out
-    }
-}
-
-fn absorb(out: &mut Vec<u8>, tag: &str, bytes: &[u8]) {
-    out.extend_from_slice(tag.as_bytes());
-    out.push(0);
-    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-    out.extend_from_slice(bytes);
-}
-
-/// An absent value and an empty one are different preimages.
-fn absorb_opt(out: &mut Vec<u8>, tag: &str, bytes: Option<&[u8]>) {
-    match bytes {
-        Some(b) => {
-            out.push(1);
-            absorb(out, tag, b);
-        }
-        None => {
-            out.push(0);
-            absorb(out, tag, &[]);
-        }
     }
 }
 

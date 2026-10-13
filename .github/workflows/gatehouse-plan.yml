@@ -137,7 +137,7 @@ jobs:
           gatehouse/target/debug/gate plan check .gatehouse/pipeline.writ
 
       # The derivation check runs in its OWN job (`scope-derivation`, below), from this `gate`.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         id: gatebin
         if: steps.tok.outputs.present == 'true'
         with:
@@ -178,7 +178,7 @@ jobs:
           scripts/gatehouse-plan-body.py . gatehouse/target/debug/gate > "$RUNNER_TEMP/plan-body.json"
           python3 -c 'import json,sys; b=json.load(open(sys.argv[1])); print("plan", b["plan"], "gates", [g["name"] for g in b["gates"]])' "$RUNNER_TEMP/plan-body.json"
           echo "built=true" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: steps.body.outputs.built == 'true'
         with:
           name: plan-body

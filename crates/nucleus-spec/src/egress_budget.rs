@@ -62,7 +62,7 @@ mod egress_budget_spec_tests {
     use crate::NetworkSpec;
 
     fn network(yaml: &str) -> NetworkSpec {
-        serde_yaml::from_str(yaml).expect("network section parses")
+        nucleus_yaml::from_str(yaml).expect("network section parses")
     }
 
     /// ADR 0007 B-2: no section, and a section without `egress`, are both the
@@ -103,18 +103,18 @@ mod egress_budget_spec_tests {
     #[test]
     fn a_zero_window_and_an_unknown_field_are_refused_at_parse() {
         assert!(
-            serde_yaml::from_str::<NetworkSpec>(
+            nucleus_yaml::from_str::<NetworkSpec>(
                 "egress:\n  max_bytes: 1\n  rate:\n    bytes: 1\n    window_secs: 0\n"
             )
             .is_err()
         );
         assert!(
-            serde_yaml::from_str::<NetworkSpec>("egress:\n  max_bytes: 1\n  unlimited: true\n")
+            nucleus_yaml::from_str::<NetworkSpec>("egress:\n  max_bytes: 1\n  unlimited: true\n")
                 .is_err()
         );
         // A ceiling must be WRITTEN when the section is: `egress: {}` is not a
         // way to spell "no limit".
-        assert!(serde_yaml::from_str::<NetworkSpec>("egress: {}\n").is_err());
+        assert!(nucleus_yaml::from_str::<NetworkSpec>("egress: {}\n").is_err());
     }
 
     /// Absent means absent on the wire: a spec that does not set `egress`

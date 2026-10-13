@@ -34,6 +34,15 @@ use serde::Serialize;
 
 use crate::{NodeState, PodHandle, PodState};
 
+/// The receipt schema version this node issues.
+///
+/// **3**: `manifest_hash` is [`nucleus_spec::PodSpec::manifest_hash`] — SHA-256 over a domain
+/// tag and the spec's RFC 8785 JSON. **2** (still in circulation, verify-only): `manifest_hash`
+/// was the SHA-256 of serde_yaml 0.9's rendering of the spec. Both are covered by the same
+/// signature over [`Receipt::preimage`], which absorbs this number, so an issued v2 receipt
+/// still verifies; only recomputing a v2 `manifest_hash` from a spec needs the retired emitter.
+pub(crate) const RECEIPT_VERSION: u32 = 3;
+
 /// The receipt as served. Field-for-field the proto message, so the two transports cannot
 /// disagree about what a receipt IS — `main.rs` converts, it does not re-derive.
 #[derive(Debug, Clone, Serialize)]
@@ -143,6 +152,9 @@ pub(crate) enum ReceiptError {
     NoExitReport(String),
     /// The report is there and unreadable.
     Malformed(String),
+    /// The pod's spec has no canonical form, so it has no manifest hash. Never a receipt
+    /// carrying the hash of nothing (A-2, B-4).
+    Unhashable(String),
 }
 
 impl std::fmt::Display for ReceiptError {
@@ -151,6 +163,7 @@ impl std::fmt::Display for ReceiptError {
             Self::NotExited => write!(f, "pod has not exited yet; receipt not available"),
             Self::NoExitReport(why) => write!(f, "exit report not found: {why}"),
             Self::Malformed(why) => write!(f, "failed to parse exit report: {why}"),
+            Self::Unhashable(why) => write!(f, "pod spec has no manifest hash: {why}"),
         }
     }
 }
@@ -194,9 +207,11 @@ pub(crate) async fn build(
     let provenance = claim.provenance();
     let report = claim.0;
 
-    let spec_yaml = serde_yaml::to_string(&handle.spec).unwrap_or_default();
-    let manifest_hash =
-        nucleus_identity::approval_bundle::compute_manifest_hash(spec_yaml.as_bytes());
+    let manifest_hash = handle
+        .spec
+        .manifest_hash()
+        .map_err(|e| ReceiptError::Unhashable(e.to_string()))?
+        .into_string();
     let v1_content_hash =
         crate::trust_gate::compute_v1_content_hash(&id.to_string(), &manifest_hash, &report);
 
@@ -233,7 +248,7 @@ pub(crate) async fn build(
         // and is the natural follow-up; it is new behaviour, not a deletion.
         sandbox_tier: String::new(),
         spiffe_id,
-        version: 2,
+        version: RECEIPT_VERSION,
         report_provenance: provenance,
         v1_content_hash,
         input_tokens: report.input_tokens,
@@ -524,7 +539,7 @@ mod tests {
         );
     }
 
-    /// The three refusals stay distinguishable, because they ask the caller for different things.
+    /// The refusals stay distinguishable, because they ask the caller for different things.
     ///
     /// "Not finished yet" means retry, "no exit report" means look at why the pod died, and
     /// "malformed" means something is broken. Collapsing them into one string — which is what the
@@ -536,6 +551,7 @@ mod tests {
             ReceiptError::NotExited,
             ReceiptError::NoExitReport("/w/.nucleus-exit-report.json: ENOENT".into()),
             ReceiptError::Malformed("expected value at line 1".into()),
+            ReceiptError::Unhashable("NaN".into()),
         ]
         .iter()
         .map(ToString::to_string)
@@ -546,8 +562,9 @@ mod tests {
             "{rendered:?}"
         );
         assert!(rendered[2].contains("failed to parse"), "{rendered:?}");
+        assert!(rendered[3].contains("no manifest hash"), "{rendered:?}");
         let unique: std::collections::BTreeSet<&String> = rendered.iter().collect();
-        assert_eq!(unique.len(), 3, "each must read differently: {rendered:?}");
+        assert_eq!(unique.len(), 4, "each must read differently: {rendered:?}");
     }
 
     // ── `build`, against a real exited pod ──────────────────────────────────
@@ -607,7 +624,7 @@ mod tests {
             let built = build(&pod(dir.path(), true, &[]).await, &authority(dir.path()))
                 .await
                 .unwrap();
-            assert_eq!(built.receipt.version, 2);
+            assert_eq!(built.receipt.version, RECEIPT_VERSION);
             assert_eq!(
                 built.receipt.report_provenance,
                 ReportProvenance::GuestReported
@@ -641,7 +658,7 @@ mod tests {
                 !r.signature.is_empty(),
                 "build produced an unsigned receipt"
             );
-            assert_eq!(r.version, 2);
+            assert_eq!(r.version, RECEIPT_VERSION);
             assert_eq!(r.report_provenance, ReportProvenance::GuestReported);
             let wire: crate::proto::ExecutionReceipt = r.clone().into();
             assert_eq!(wire.report_provenance, "guest_reported");
@@ -802,10 +819,14 @@ mod tests {
             assert_eq!(r.output_tokens, 22);
             assert_eq!(r.cache_read_tokens, 33);
             assert!((r.cost_usd - 1.5).abs() < f64::EPSILON);
-            assert_eq!(r.version, 2);
+            assert_eq!(r.version, RECEIPT_VERSION);
             assert_eq!(r.report_provenance, ReportProvenance::GuestReported);
             assert_eq!(built.exit_code, 0, "/bin/true exits 0");
-            assert!(!r.manifest_hash.is_empty(), "the spec must be hashed");
+            assert_eq!(
+                r.manifest_hash,
+                handle.spec.manifest_hash().unwrap().into_string(),
+                "the receipt carries the spec's v3 manifest hash, and only that"
+            );
             assert!(
                 !r.v1_content_hash.is_empty(),
                 "the content hash is the point"

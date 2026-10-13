@@ -75,7 +75,7 @@ pub(crate) enum ApiError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
+    Serde(#[from] nucleus_yaml::Error),
     #[error("nucleus error: {0}")]
     Nucleus(#[from] NucleusError),
     #[error("auth error: {0}")]

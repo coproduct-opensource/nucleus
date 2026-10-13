@@ -9,17 +9,42 @@
 //!
 //! The writer (`nucleus_tool_proxy::art12::Art12Log`) owns file I/O and chain
 //! state; everything about what a record *is* lives here.
+//!
+//! # Signed, not MAC'd (#3309)
+//!
+//! A record used to carry `HMAC(audit secret, preimage)`. A MAC shows who
+//! wrote a record only if its key is kept from everyone else, and the
+//! tool-proxy's secret-free transports (vsock, the peer-verified socket) have no
+//! such key. A record is now signed with Ed25519 by the tool-proxy's audit
+//! signer, the same in-memory key that signs its audit log (#3293), and names
+//! that key (`signer`) inside the signed bytes and so inside the chain hash.
+//! The two forms, and the rule that tells them apart, are the audit log's
+//! ([`crate::signed_record`]); [`Art12Record::form`] applies it.
+//!
+//! A **legacy** record (no `sig_alg`, no `signer`) keeps its `|`-joined
+//! [`Art12Record::canonical_preimage`] byte for byte, so a log written before
+//! #3309 can still be checked against the secret it was keyed with.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::signed_record::{absorb, absorb_opt, signed_chain_hash, FormError, RecordForm, SigAlg};
 
 /// Schema version for [`Art12Record`]. v1 is FROZEN: fields may be added with
 /// `#[serde(default)]`, never removed or repurposed, and the canonical preimage
 /// below must not change without a version bump.
 pub const ART12_SCHEMA_VERSION: u32 = 1;
 
-/// Domain separation tag for the record preimage, so an Article 12 record can
-/// never be confused with another HMAC'd artifact signed by the same secret.
+/// Domain separation tag for the LEGACY record preimage, so an Article 12
+/// record can never be confused with another HMAC'd artifact signed by the same
+/// secret.
 pub const PREIMAGE_DOMAIN: &str = "nucleus-art12-record-v1";
+
+/// The domain tag at the head of every SIGNED record's preimage. The audit
+/// signer also signs the tool-proxy's audit log (`nucleus-tool-proxy-audit/2`),
+/// so the tag is what keeps a signature over one kind of record from being a
+/// valid signature over the other.
+pub const SIGNED_DOMAIN: &str = "nucleus-art12-record/2";
 
 /// Extension keys binding a record to the AUTHORITY it was decided under
 /// (#2437): the pod certificate the tool-proxy verified at boot against the
@@ -113,10 +138,20 @@ pub struct Art12Record {
     pub extensions: std::collections::BTreeMap<String, String>,
     /// Hash of the previous record; for the first record, the boot report's hash.
     pub prev_hash: String,
+    /// The chain hash: for a signed record, SHA-256 over the signed preimage
+    /// and the signature ([`Art12Record::chain_hash`]); for a legacy one,
     /// SHA-256 over the canonical preimage.
     pub hash: String,
-    /// HMAC-SHA256 over the canonical preimage, under the audit secret.
+    /// Ed25519 by `signer` over [`Art12Record::signed_bytes`], hex-encoded. On
+    /// a legacy record, HMAC-SHA256 over the canonical preimage.
     pub signature: String,
+    /// Absent on a legacy record. See [`RecordForm`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_alg: Option<SigAlg>,
+    /// The signer's Ed25519 public key, 64 hex characters. Absent on a legacy
+    /// record. Inside the signed bytes, and so inside the chain hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
 }
 
 impl Art12Record {
@@ -129,8 +164,12 @@ impl Art12Record {
             .map(String::as_str)
     }
 
-    /// The canonical preimage: a `|`-joined, field-ordered rendering that both
-    /// the writer and any verifier reconstruct **from the record's own fields**.
+    /// The LEGACY canonical preimage: a `|`-joined, field-ordered rendering
+    /// that a verifier reconstructs **from the record's own fields**. Only a
+    /// record in [`RecordForm::LegacyMac`] form is MAC'd and hashed over it;
+    /// a signed record uses [`Art12Record::signed_bytes`]. Kept byte for byte,
+    /// and it still lets a `|` in one field move a boundary, which is one reason
+    /// the signed preimage is length-prefixed instead.
     ///
     /// Deliberately not `serde_json::to_string` — JSON key order and escaping
     /// are not guaranteed stable across serde versions, and a verifier that
@@ -176,6 +215,149 @@ impl Art12Record {
             ext
         )
     }
+
+    /// Which form this record is in, by the rule the audit log uses.
+    ///
+    /// # Errors
+    /// [`FormError`] when exactly one of `sig_alg` and `signer` is present.
+    pub fn form(&self) -> Result<RecordForm<'_>, FormError> {
+        crate::signed_record::form(self.sig_alg, self.signer.as_deref())
+    }
+
+    /// This draft, to be signed by `signer` (hex public key): it names the
+    /// signer and the algorithm, and its `hash` and `signature` are cleared.
+    /// [`Art12Record::with_signature`] seals it.
+    #[must_use]
+    pub fn to_be_signed_by(mut self, signer: String) -> Self {
+        self.sig_alg = Some(SigAlg::Ed25519);
+        self.signer = Some(signer);
+        self.hash = String::new();
+        self.signature = String::new();
+        self
+    }
+
+    /// The bytes `signature` covers, for this record's form.
+    ///
+    /// # Errors
+    /// [`FormError`] when the record is neither form.
+    pub fn signed_bytes(&self) -> Result<Vec<u8>, FormError> {
+        match self.form()? {
+            RecordForm::LegacyMac => Ok(self.canonical_preimage().into_bytes()),
+            RecordForm::Signed { .. } => Ok(self.signed_preimage()),
+        }
+    }
+
+    /// The chain hash this record must carry, given its `signature`. The next
+    /// record names it as its `prev_hash`.
+    ///
+    /// # Errors
+    /// [`FormError`] when the record is neither form.
+    pub fn chain_hash(&self) -> Result<String, FormError> {
+        match self.form()? {
+            RecordForm::LegacyMac => Ok(hex::encode(Sha256::digest(
+                self.canonical_preimage().as_bytes(),
+            ))),
+            RecordForm::Signed { .. } => {
+                Ok(signed_chain_hash(self.signed_preimage(), &self.signature))
+            }
+        }
+    }
+
+    /// Set the signature and the chain hash it implies.
+    ///
+    /// # Errors
+    /// [`FormError`] when the record is neither form.
+    pub fn with_signature(mut self, signature: String) -> Result<Self, FormError> {
+        self.signature = signature;
+        self.hash = self.chain_hash()?;
+        Ok(self)
+    }
+
+    /// The signed preimage. Every field is tag-separated and length-prefixed,
+    /// so no two distinct records share a preimage by concatenation.
+    ///
+    /// EXHAUSTIVELY DESTRUCTURED (ADR 0007 E-1): a field added to the record,
+    /// to its actor or to its refusal is a compile error here until someone
+    /// decides whether it is signed.
+    fn signed_preimage(&self) -> Vec<u8> {
+        let Art12Record {
+            schema_version,
+            seq,
+            timestamp_unix,
+            session_id,
+            transport,
+            actor: Actor { kind, spiffe_id },
+            operation,
+            subject,
+            verdict,
+            gate_class,
+            deny_reason,
+            policy_checksum,
+            policy_rule,
+            dlc_admission,
+            lockdown_active,
+            decision_sequence,
+            extensions,
+            prev_hash,
+            hash: _,
+            signature: _,
+            sig_alg: _,
+            signer,
+        } = self;
+        let mut out = Vec::new();
+        absorb(&mut out, "domain", SIGNED_DOMAIN.as_bytes());
+        absorb_opt(&mut out, "signer", signer.as_deref().map(str::as_bytes));
+        absorb(&mut out, "schema_version", &schema_version.to_be_bytes());
+        absorb(&mut out, "seq", &seq.to_be_bytes());
+        absorb(&mut out, "timestamp_unix", &timestamp_unix.to_be_bytes());
+        absorb(&mut out, "session_id", session_id.as_bytes());
+        absorb(&mut out, "transport", transport.as_bytes());
+        absorb(&mut out, "actor.kind", kind.as_bytes());
+        absorb_opt(
+            &mut out,
+            "actor.spiffe_id",
+            spiffe_id.as_deref().map(str::as_bytes),
+        );
+        absorb(&mut out, "operation", operation.as_bytes());
+        absorb(&mut out, "subject", subject.as_bytes());
+        absorb(&mut out, "verdict", verdict.as_bytes());
+        absorb(&mut out, "gate_class", gate_class.as_bytes());
+        // The code is present exactly when the refusal is, so the pair
+        // (code, detail) is unambiguous for all three shapes.
+        let (code, detail) = match deny_reason {
+            Some(DenyInfo { code, detail }) => (Some(code.as_bytes()), detail.as_deref()),
+            None => (None, None),
+        };
+        absorb_opt(&mut out, "deny_reason.code", code);
+        absorb_opt(&mut out, "deny_reason.detail", detail.map(str::as_bytes));
+        absorb(&mut out, "policy_checksum", policy_checksum.as_bytes());
+        absorb_opt(
+            &mut out,
+            "policy_rule",
+            policy_rule.as_deref().map(str::as_bytes),
+        );
+        absorb(&mut out, "dlc_admission", dlc_admission.as_bytes());
+        absorb(&mut out, "lockdown_active", &[u8::from(*lockdown_active)]);
+        let decision = decision_sequence.map(u64::to_be_bytes);
+        absorb_opt(
+            &mut out,
+            "decision_sequence",
+            decision.as_ref().map(<[u8; 8]>::as_slice),
+        );
+        absorb(
+            &mut out,
+            "extensions.len",
+            &u64::try_from(extensions.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        for (k, v) in extensions {
+            absorb(&mut out, "extension.key", k.as_bytes());
+            absorb(&mut out, "extension.value", v.as_bytes());
+        }
+        absorb(&mut out, "prev_hash", prev_hash.as_bytes());
+        out
+    }
 }
 
 /// A host-signed attestation binding an Article 12 log to the executor that ran it.
@@ -190,11 +372,13 @@ impl Art12Record {
 ///
 /// # What it establishes
 ///
-/// `verify-art12` can show no party LACKING the log's HMAC secret altered it. It
-/// cannot show that a HOLDER of the secret did not rewrite history — and a pod
-/// that derives its own secret is such a holder. This is signed with the node's
-/// executor key, which the pod never sees, so a pod that rewrites its log
-/// produces a different chain head and cannot forge a signature over the new one.
+/// `verify-art12` can show no party LACKING the log's signing key altered it. It
+/// cannot show that the HOLDER of the key did not rewrite history — and the key
+/// is the tool-proxy's own, generated in the pod, so root in the pod can reach
+/// it. This is signed with the node's executor key, which the pod never sees, so
+/// a pod that rewrites its log produces a different chain head and cannot forge
+/// a signature over the new one. Every signed record names its signer inside the
+/// chain, so the attested head pins the signer too.
 ///
 /// # What it does NOT establish
 ///
@@ -311,7 +495,13 @@ mod tests {
             prev_hash: "p".into(),
             hash: String::new(),
             signature: String::new(),
+            sig_alg: None,
+            signer: None,
         }
+    }
+
+    fn signed_form(r: Art12Record) -> Art12Record {
+        r.to_be_signed_by("ab".repeat(32))
     }
 
     /// Domain separation: an Article 12 preimage cannot collide with another
@@ -403,6 +593,7 @@ mod tests {
                 }),
             ),
         ];
+        let signed_base = signed_form(rec()).signed_bytes().unwrap();
         for (name, f) in mutate {
             let mut r = rec();
             f(&mut r);
@@ -411,6 +602,81 @@ mod tests {
                 base,
                 "changing `{name}` left the preimage identical — it is not covered by the hash"
             );
+            assert_ne!(
+                signed_form(r).signed_bytes().unwrap(),
+                signed_base,
+                "changing `{name}` left the SIGNED preimage identical — it is not signed"
+            );
         }
+        let mut r = rec();
+        r.schema_version += 1;
+        assert_ne!(signed_form(r).signed_bytes().unwrap(), signed_base);
+    }
+
+    /// The signer is inside the signed bytes and the chain hash, so a pin on
+    /// the chain head pins every record's signer.
+    #[test]
+    fn the_signer_is_inside_the_signed_bytes_and_the_hash() {
+        let a = rec().to_be_signed_by("ab".repeat(32));
+        let b = rec().to_be_signed_by("cd".repeat(32));
+        assert_ne!(a.signed_bytes(), b.signed_bytes());
+        let a = a.with_signature("00".into()).unwrap();
+        let b = b.with_signature("00".into()).unwrap();
+        assert_ne!(a.hash, b.hash);
+        // And the signature is inside the hash.
+        let c = rec()
+            .to_be_signed_by("ab".repeat(32))
+            .with_signature("01".into())
+            .unwrap();
+        assert_ne!(a.hash, c.hash);
+    }
+
+    /// The legacy `|`-joined preimage lets a `|` move a field boundary; the
+    /// signed one does not.
+    #[test]
+    fn a_pipe_in_a_field_cannot_move_a_boundary_in_the_signed_form() {
+        let (mut a, mut b) = (rec(), rec());
+        a.subject = "x|y".into();
+        a.verdict = "deny".into();
+        b.subject = "x".into();
+        b.verdict = "y|deny".into();
+        assert_eq!(a.canonical_preimage(), b.canonical_preimage());
+        assert_ne!(
+            signed_form(a).signed_bytes().unwrap(),
+            signed_form(b).signed_bytes().unwrap()
+        );
+    }
+
+    /// A legacy record keeps the bytes the pre-#3309 writer MAC'd and hashed.
+    #[test]
+    fn a_legacy_record_keeps_its_preimage_and_hash() {
+        let r = rec();
+        assert_eq!(r.form(), Ok(RecordForm::LegacyMac));
+        assert_eq!(
+            r.signed_bytes().unwrap(),
+            r.canonical_preimage().into_bytes()
+        );
+        assert_eq!(
+            r.chain_hash().unwrap(),
+            hex::encode(Sha256::digest(r.canonical_preimage().as_bytes()))
+        );
+    }
+
+    /// A record round-trips through JSON in both forms, and an unknown
+    /// algorithm or field is refused rather than read as legacy.
+    #[test]
+    fn both_forms_round_trip_and_unknown_shapes_are_refused() {
+        let signed = signed_form(rec()).with_signature("00".into()).unwrap();
+        for r in [rec(), signed.clone()] {
+            let back: Art12Record =
+                serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+            assert_eq!(back, r);
+        }
+        let mut v = serde_json::to_value(&signed).unwrap();
+        v["sig_alg"] = serde_json::json!("hmac-sha256");
+        assert!(serde_json::from_value::<Art12Record>(v).is_err());
+        let mut half = signed;
+        half.sig_alg = None;
+        assert_eq!(half.form(), Err(FormError::AlgMissing));
     }
 }

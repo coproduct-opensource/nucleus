@@ -604,6 +604,10 @@ fn verify_and_load_approval_bundle(
     approvals: &ApprovalRegistry,
     trusted_keys: &[nucleus_identity::did::JsonWebKey],
 ) -> Result<(), ApiError> {
+    // NOT `PodSpec::manifest_hash` (the receipt's v3 rule), deliberately and for now: this
+    // check runs in the guest, and the pinned guest release hashes the spec file's bytes. Moving
+    // approvals to the canonical hash needs a guest that has it, so it is a GuestCapability row
+    // and a guest release, not a node change. Until then the bytes are whatever the node wrote.
     let manifest_hash = compute_manifest_hash(spec_contents.as_bytes());
     for approval in VerifiedApproval::verify_bundle(jws, &manifest_hash, trusted_keys)? {
         approvals.approve(approval);

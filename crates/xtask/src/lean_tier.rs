@@ -289,7 +289,7 @@ pub fn derive_tier(root: &Path, dir: &str, targets: &Targets) -> Result<Tier> {
 pub fn derive_workflow(root: &Path, workflow: &Path) -> Result<Vec<Tier>> {
     let text = std::fs::read_to_string(root.join(workflow))
         .with_context(|| workflow.display().to_string())?;
-    let yaml: serde_yaml::Value = serde_yaml::from_str(&text)?;
+    let yaml: serde_json::Value = nucleus_yaml::from_str(&text)?;
     let steps = lean_action_builds::steps(&yaml).with_context(|| workflow.display().to_string())?;
     // Two steps building in one package are one tier: merge what they build.
     let mut by_dir: BTreeMap<String, Targets> = BTreeMap::new();

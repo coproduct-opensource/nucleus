@@ -4,37 +4,30 @@
 //! files carry keys this tool has no model for, and a partial `#[derive]`
 //! would drop steps it did not anticipate — which for a checker means silently
 //! examining less than it reports. Line numbers are recovered by searching the
-//! raw text, since `serde_yaml` drops spans.
+//! raw text, since the YAML reader drops spans.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use serde_yaml::Value;
+use serde_json::Value;
 
 use crate::model::{
     Allowlist, Concurrency, InlineGates, Job, Ledger, Model, PathFilter, QueueConfig, Replacement,
     Replacements, Step, Triggers, Workflow,
 };
 
-/// Look a key up in a mapping, tolerating YAML 1.1's reading of `on` as a
-/// boolean. Whether `on:` parses as the string `"on"` or as `true` depends on
-/// the YAML library's schema; a loader that only tried one of them would read
-/// every workflow as trigger-less.
+/// Look a key up in a mapping. A workflow's `on:` key is the string `"on"`:
+/// the document is read into `serde_json::Value`, whose object keys are always
+/// strings, so the YAML 1.1 reading of `on` as `true` has nowhere to land and
+/// there is no second spelling to try. `on_key_is_read_as_triggers` pins it.
 fn get<'a>(map: &'a Value, key: &str) -> Option<&'a Value> {
-    let m = map.as_mapping()?;
-    if let Some(v) = m.get(Value::String(key.to_string())) {
-        return Some(v);
-    }
-    if key == "on" {
-        return m.get(Value::Bool(true));
-    }
-    None
+    map.as_object()?.get(key)
 }
 
 fn as_str_list(v: Option<&Value>) -> Vec<String> {
     match v {
-        Some(Value::Sequence(s)) => s
+        Some(Value::Array(s)) => s
             .iter()
             .filter_map(|x| x.as_str().map(str::to_string))
             .collect(),
@@ -73,19 +66,17 @@ fn triggers(on: Option<&Value>) -> Triggers {
     };
     match on {
         Value::String(s) => mark(s, None),
-        Value::Sequence(seq) => {
+        Value::Array(seq) => {
             for e in seq {
                 if let Some(s) = e.as_str() {
                     mark(s, None);
                 }
             }
         }
-        Value::Mapping(m) => {
+        Value::Object(m) => {
             for (k, v) in m {
-                if let Some(s) = k.as_str() {
-                    let body = if v.is_null() { None } else { Some(v) };
-                    mark(s, body);
-                }
+                let body = if v.is_null() { None } else { Some(v) };
+                mark(k, body);
             }
         }
         _ => {}
@@ -105,7 +96,7 @@ fn find_line(raw: &[&str], needle: &str, from: usize) -> Option<usize> {
 /// Parse one workflow file.
 pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
     let doc: Value =
-        serde_yaml::from_str(text).with_context(|| format!("{path}: not valid YAML"))?;
+        nucleus_yaml::from_str(text).with_context(|| format!("{path}: not valid YAML"))?;
     let raw: Vec<&str> = text.lines().collect();
 
     let name = scalar_string(get(&doc, "name")).unwrap_or_else(|| path.to_string());
@@ -130,10 +121,10 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
         .map(str::to_string);
 
     let mut jobs = Vec::new();
-    if let Some(Value::Mapping(jm)) = get(&doc, "jobs") {
+    if let Some(Value::Object(jm)) = get(&doc, "jobs") {
         let mut cursor = 0usize;
         for (k, jv) in jm {
-            let id = k.as_str().unwrap_or("<job>").to_string();
+            let id = k.clone();
             let line = find_line(&raw, &format!("  {id}:"), cursor).unwrap_or(1);
             cursor = line;
             let job_shell = get(jv, "defaults")
@@ -155,7 +146,7 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
 
             let mut steps = Vec::new();
             let mut scursor = line;
-            if let Some(Value::Sequence(sv)) = get(jv, "steps") {
+            if let Some(Value::Array(sv)) = get(jv, "steps") {
                 for st in sv {
                     let sname = scalar_string(get(st, "name"))
                         .or_else(|| scalar_string(get(st, "uses")).map(|u| format!("uses {u}")))
@@ -166,10 +157,10 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
                         .map(str::to_string)
                         .or_else(|| job_shell.clone());
                     let mut env = BTreeMap::new();
-                    if let Some(Value::Mapping(em)) = get(st, "env") {
+                    if let Some(Value::Object(em)) = get(st, "env") {
                         for (ek, ev) in em {
-                            if let (Some(k), Some(v)) = (ek.as_str(), scalar_string(Some(ev))) {
-                                env.insert(k.to_string(), v);
+                            if let Some(v) = scalar_string(Some(ev)) {
+                                env.insert(ek.clone(), v);
                             }
                         }
                     }
@@ -210,16 +201,16 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
             // declaration order (GitHub's check-run naming order).
             let mut matrix: Vec<Vec<(String, String)>> = Vec::new();
             let mut matrix_opaque = false;
-            if let Some(Value::Mapping(mm)) = get(jv, "strategy").and_then(|s| get(s, "matrix")) {
+            if let Some(Value::Object(mm)) = get(jv, "strategy").and_then(|s| get(s, "matrix")) {
                 let mut dims: Vec<(String, Vec<String>)> = Vec::new();
                 for (mk, mv) in mm {
-                    let Some(k) = mk.as_str() else { continue };
+                    let k = mk.as_str();
                     if k == "include" || k == "exclude" {
                         matrix_opaque = true;
                         continue;
                     }
                     let vals: Vec<String> = match mv {
-                        Value::Sequence(s) => {
+                        Value::Array(s) => {
                             s.iter().filter_map(|x| scalar_string(Some(x))).collect()
                         }
                         other => scalar_string(Some(other)).into_iter().collect(),
@@ -244,12 +235,10 @@ pub fn parse_workflow(path: &str, text: &str) -> Result<Workflow> {
                 }
             }
             let outputs = get(jv, "outputs")
-                .and_then(Value::as_mapping)
+                .and_then(Value::as_object)
                 .map(|m| {
                     m.iter()
-                        .filter_map(|(k, v)| {
-                            Some((k.as_str()?.to_string(), scalar_string(Some(v))?))
-                        })
+                        .filter_map(|(k, v)| Some((k.clone(), scalar_string(Some(v))?)))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -723,5 +712,45 @@ mod gate_def_tests {
         );
         let (fmt, _) = defs.get("fmt").expect("fmt");
         assert_eq!(fmt, &["cargo", "fmt", "--all", "--", "--check"]);
+    }
+}
+
+#[cfg(test)]
+mod trigger_key_tests {
+    use super::parse_workflow;
+
+    /// `on:` is a YAML 1.1 boolean word. Read as `true`, every workflow would be
+    /// trigger-less; the loader relies on the reader keeping it a string.
+    #[test]
+    fn on_key_is_read_as_triggers() {
+        let wf = parse_workflow(
+            ".github/workflows/x.yml",
+            "name: x\non:\n  push:\n    paths: ['src/**']\n  merge_group:\njobs: {}\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            wf.triggers.push.expect("push trigger").paths,
+            vec!["src/**".to_string()]
+        );
+        assert!(wf.triggers.merge_group);
+    }
+
+    /// Jobs and matrix dimensions keep declaration order: check-run names and
+    /// line recovery depend on it, and a sorted map would reorder both.
+    #[test]
+    fn declaration_order_is_kept() {
+        let wf = parse_workflow(
+            ".github/workflows/x.yml",
+            "name: x\non: push\njobs:\n  zeta:\n    runs-on: a\n    strategy:\n      matrix:\n        \
+             os: [l]\n        arch: [x]\n  alpha:\n    runs-on: b\n",
+        )
+        .expect("parses");
+        let ids: Vec<&str> = wf.jobs.iter().map(|j| j.id.as_str()).collect();
+        assert_eq!(ids, ["zeta", "alpha"]);
+        let dims: Vec<&str> = wf.jobs[0].matrix[0]
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
+        assert_eq!(dims, ["os", "arch"]);
     }
 }

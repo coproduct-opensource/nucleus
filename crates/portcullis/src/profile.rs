@@ -320,7 +320,7 @@ impl std::error::Error for ProfileError {}
 impl ProfileSpec {
     /// Parse a profile specification from YAML.
     pub fn from_yaml(yaml: &str) -> Result<Self, ProfileError> {
-        serde_yaml::from_str(yaml).map_err(|e| ProfileError::Yaml(e.to_string()))
+        nucleus_yaml::from_str(yaml).map_err(|e| ProfileError::Yaml(e.to_string()))
     }
 
     /// Parse a profile specification from TOML.
@@ -461,7 +461,7 @@ impl ProfileSpec {
 
     /// Serialize to YAML.
     pub fn to_yaml(&self) -> Result<String, ProfileError> {
-        serde_yaml::to_string(self).map_err(|e| ProfileError::Yaml(e.to_string()))
+        nucleus_yaml::to_string(self).map_err(|e| ProfileError::Yaml(e.to_string()))
     }
 }
 

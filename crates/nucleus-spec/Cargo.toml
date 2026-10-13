@@ -13,7 +13,7 @@ categories = ["config", "development-tools"]
 
 [dependencies]
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml" }
 serde_json = { workspace = true }
 serde_json_canonicalizer = "0.3"
 sha2 = { workspace = true }

@@ -95,8 +95,18 @@ fn run_bridge(
     env: &[(&str, &str)],
     requests: &[Value],
 ) -> (Vec<Value>, std::process::ExitStatus, String) {
+    run_bridge_with_args(&[], env, requests)
+}
+
+/// [`run_bridge`] with command-line `args` as well.
+fn run_bridge_with_args(
+    args: &[&str],
+    env: &[(&str, &str)],
+    requests: &[Value],
+) -> (Vec<Value>, std::process::ExitStatus, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_nucleus-mcp"));
-    cmd.env_clear()
+    cmd.args(args)
+        .env_clear()
         .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -128,6 +138,80 @@ fn rpc(id: u64, method: &str, params: Value) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
 }
 
+/// A pod spec whose policy is the named profile.
+fn spec_doc(profile: &str) -> String {
+    format!(
+        "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy:\n    type: profile\n    name: {profile}\n"
+    )
+}
+
+fn tool_names(lines: &[Value], id: u64) -> Vec<String> {
+    reply(lines, id)["result"]["tools"]
+        .as_array()
+        .expect("a tool list")
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// ADR 0007 B-2: a bridge given a good door and no spec refuses to start, by
+/// name, before it answers anything. Red before: it started, ran its kernel on
+/// `PermissionLattice::permissive` and listed read, write, run, web_fetch,
+/// glob and grep.
+#[test]
+fn a_bridge_without_a_spec_refuses_to_start_by_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("workload.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let url = format!("unix://{}", socket.display());
+
+    let (lines, status, stderr) = run_bridge(
+        &[("NUCLEUS_TOOL_PROXY_URL", &url)],
+        &[
+            rpc(1, "initialize", json!({ "protocolVersion": "2025-11-25" })),
+            rpc(2, "tools/list", json!({})),
+        ],
+    );
+    assert!(!status.success(), "started with no spec: {lines:?}");
+    assert!(lines.is_empty(), "answered with no spec: {lines:?}");
+    for name in [
+        "--spec",
+        "NUCLEUS_MCP_SPEC",
+        "--spec-yaml",
+        "NUCLEUS_MCP_SPEC_YAML",
+    ] {
+        assert!(stderr.contains(name), "{name} not named: {stderr}");
+    }
+}
+
+/// The tools offered are the spec's, and only the spec's: a read-only spec
+/// offers no write, run or fetch.
+#[test]
+fn the_spec_decides_the_offered_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("workload.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let url = format!("unix://{}", socket.display());
+    let spec = spec_doc("read-only");
+
+    let (lines, status, stderr) = run_bridge(
+        &[
+            ("NUCLEUS_TOOL_PROXY_URL", &url),
+            ("NUCLEUS_MCP_SPEC_YAML", &spec),
+        ],
+        &[rpc(1, "tools/list", json!({}))],
+    );
+    assert!(status.success(), "bridge failed: {status}\n{stderr}");
+    let tools = tool_names(&lines, 1);
+    assert!(tools.iter().any(|t| t == "read"), "{tools:?}");
+    for denied in ["write", "run", "web_fetch", "create_pod"] {
+        assert!(
+            !tools.iter().any(|t| t == denied),
+            "{denied} offered: {tools:?}"
+        );
+    }
+}
+
 fn reply(lines: &[Value], id: u64) -> &Value {
     lines
         .iter()
@@ -146,8 +230,14 @@ fn an_agent_lists_tools_and_reads_through_the_door() {
     let door = test_door(UnixListener::bind(&socket).unwrap(), 2);
     let url = format!("unix://{}", socket.display());
 
+    // The bridge's own kernel is not what this test is about, so the spec
+    // names the unrestricted profile -- by name, the only way to get it.
+    let spec = spec_doc("permissive");
     let (lines, status, stderr) = run_bridge(
-        &[("NUCLEUS_TOOL_PROXY_URL", &url)],
+        &[
+            ("NUCLEUS_TOOL_PROXY_URL", &url),
+            ("NUCLEUS_MCP_SPEC_YAML", &spec),
+        ],
         &[
             rpc(1, "initialize", json!({ "protocolVersion": "2025-11-25" })),
             rpc(2, "tools/list", json!({})),
@@ -201,10 +291,57 @@ fn an_agent_lists_tools_and_reads_through_the_door() {
 /// unsigned requests.
 #[test]
 fn a_tcp_proxy_without_auth_is_refused_at_startup() {
+    let spec = spec_doc("permissive");
     let (lines, status, stderr) = run_bridge(
-        &[("NUCLEUS_MCP_PROXY_URL", "http://127.0.0.1:9")],
+        &[
+            ("NUCLEUS_MCP_PROXY_URL", "http://127.0.0.1:9"),
+            ("NUCLEUS_MCP_SPEC_YAML", &spec),
+        ],
         &[rpc(1, "tools/list", json!({}))],
     );
     assert!(!status.success(), "started unauthenticated: {lines:?}");
     assert!(stderr.contains("--auth-secret"), "{stderr}");
+}
+
+/// #2446 step 3c: `NUCLEUS_MCP_SANDBOX_TOKEN` is set by nothing since the
+/// tier-3 token stopped being minted, and the bridge never read it. A caller
+/// still setting it is refused at startup by name, not ignored, even with an
+/// otherwise good door configuration. Red before: the bridge started and
+/// answered.
+#[test]
+fn a_retired_sandbox_token_variable_is_refused_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("workload.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let url = format!("unix://{}", socket.display());
+
+    for value in ["test-token-123", ""] {
+        let (lines, status, stderr) = run_bridge(
+            &[
+                ("NUCLEUS_TOOL_PROXY_URL", &url),
+                ("NUCLEUS_MCP_SANDBOX_TOKEN", value),
+            ],
+            &[rpc(1, "tools/list", json!({}))],
+        );
+        assert!(!status.success(), "started with it set: {lines:?}");
+        assert!(lines.is_empty(), "answered with it set: {lines:?}");
+        assert!(stderr.contains("NUCLEUS_MCP_SANDBOX_TOKEN"), "{stderr}");
+    }
+}
+
+/// The flag itself is refused by clap, by name. Red before: it parsed.
+#[test]
+fn a_retired_sandbox_token_flag_is_refused_at_startup() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("workload.sock");
+    let _listener = UnixListener::bind(&socket).unwrap();
+    let url = format!("unix://{}", socket.display());
+
+    let (lines, status, stderr) = run_bridge_with_args(
+        &["--sandbox-token", "test-token-123"],
+        &[("NUCLEUS_TOOL_PROXY_URL", &url)],
+        &[rpc(1, "tools/list", json!({}))],
+    );
+    assert!(!status.success(), "started with the flag: {lines:?}");
+    assert!(stderr.contains("--sandbox-token"), "{stderr}");
 }

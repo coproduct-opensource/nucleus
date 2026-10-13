@@ -768,7 +768,11 @@ fn verify_signature(secret: &[u8], message: &[u8], signature_hex: &str) -> Resul
         .map_err(|_| AuthError::InvalidSignature)
 }
 
-/// Sign a message with HMAC-SHA256.
+/// Sign a message with HMAC-SHA256, as a test client of the shared-secret tier.
+///
+/// Test-only: since the Article 12 log is signed by the audit signer (#3309),
+/// nothing in this process MACs anything it writes.
+#[cfg(test)]
 pub fn sign_message(secret: &[u8], message: &[u8]) -> String {
     let mut mac = Hmac::<Sha256>::new_from_slice(secret).expect("hmac key");
     mac.update(message);

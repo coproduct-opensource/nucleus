@@ -24,7 +24,7 @@ pub(crate) enum ApiError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("serde error: {0}")]
-    Serde(#[from] serde_yaml::Error),
+    Serde(#[from] nucleus_yaml::Error),
     #[error("driver error: {0}")]
     Driver(String),
     #[error("workload supervisor unavailable: {0}")]

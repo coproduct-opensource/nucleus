@@ -356,3 +356,76 @@ fn an_unattested_receipt_is_never_upgraded_by_evidence_beside_it() {
     assert_eq!(report["node_platform"]["platform"]["tier"], "unattested");
     assert_eq!(report["node_platform"]["platform"]["reason"], "no TPM");
 }
+
+/// A software TPM is anchored only by `--allow-software-tpm-pin`, and labelled
+/// `software_tpm`; the same fingerprint under `--operator-pin` anchors nothing,
+/// so a verifier that asked for hardware never accepts a software TPM. The
+/// claim is the fixture's own, rewritten: the anchor claim is not quoted, so
+/// the quote still verifies and only the anchor decides.
+#[test]
+fn a_software_tpm_is_anchored_only_by_its_own_flag_and_labelled_so() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut doc: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(fixture("node-evidence-swtpm-epoch3.json")).unwrap())
+            .unwrap();
+    doc["ak_anchor"] = serde_json::json!({ "software_tpm": { "source": SOURCE } });
+    let evidence = dir.path().join("software-tpm-evidence.json");
+    std::fs::write(&evidence, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let good = reference(dir.path(), PCR16);
+    let pin = format!("{SOURCE}={AK_PIN}");
+    let time = (EPOCH3_IAT + 60).to_string();
+    let run = |extra: &[&str]| {
+        let mut args = vec![
+            "verify-node-evidence",
+            "--evidence",
+            evidence.to_str().unwrap(),
+            "--reference",
+            good.to_str().unwrap(),
+            "--executor-ed25519",
+            EXECUTOR,
+            "--receipt-time",
+            &time,
+        ];
+        args.extend_from_slice(extra);
+        audit(&args)
+    };
+
+    let allowed = run(&["--allow-software-tpm-pin", &pin]);
+    assert!(
+        allowed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&allowed.stderr)
+    );
+    let ear = json(&allowed);
+    assert_eq!(ear["submods"]["node"]["ear.status"], "affirming");
+    assert_eq!(
+        ear["submods"]["node"]["nucleus.appraisal"]["anchor"]["software_tpm"]["source"],
+        SOURCE
+    );
+
+    let as_operator = run(&["--operator-pin", &pin]);
+    assert!(!as_operator.status.success());
+    assert_eq!(json(&as_operator)["submods"]["node"]["ear.status"], "none");
+
+    // And the other way: the fixture's own operator claim is not anchored by
+    // a software-TPM pin.
+    let original = fixture("node-evidence-swtpm-epoch3.json");
+    let operator_claim = audit(&[
+        "verify-node-evidence",
+        "--evidence",
+        original.to_str().unwrap(),
+        "--reference",
+        good.to_str().unwrap(),
+        "--executor-ed25519",
+        EXECUTOR,
+        "--receipt-time",
+        &time,
+        "--allow-software-tpm-pin",
+        &pin,
+    ]);
+    assert!(!operator_claim.status.success());
+    assert_eq!(
+        json(&operator_claim)["submods"]["node"]["ear.status"],
+        "none"
+    );
+}

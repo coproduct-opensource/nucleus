@@ -29,7 +29,7 @@ prost = { workspace = true }
 # Core
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_yaml = { workspace = true }
+nucleus-yaml = { path = "../nucleus-yaml" }
 tokio = { workspace = true, features = ["rt", "sync"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

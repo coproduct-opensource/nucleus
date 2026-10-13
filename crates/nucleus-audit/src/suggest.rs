@@ -216,7 +216,7 @@ pub fn format_suggestion(profile: &ProfileSpec, findings: &[Finding]) -> String 
     out.push_str("#\n\n");
 
     // Serialize the profile
-    let yaml = serde_yaml::to_string(profile).unwrap_or_else(|_| "# error serializing".into());
+    let yaml = nucleus_yaml::to_string(profile).unwrap_or_else(|_| "# error serializing".into());
     out.push_str(&yaml);
     out
 }
