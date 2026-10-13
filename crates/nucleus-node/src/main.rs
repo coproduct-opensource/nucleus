@@ -74,6 +74,7 @@ mod sealed_rootfs;
 mod spec_posture;
 mod spend_receipt_collector;
 mod state_lock;
+mod teardown_bound;
 mod workload_api_protocol;
 mod workload_api_vsock;
 mod workload_artifacts;
@@ -3046,7 +3047,7 @@ impl NodeService for GrpcService {
 
         let (md, ext, req) = request.into_parts();
         let pod = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &req.id).await?;
-        pod.cancel()
+        pod.cancel_detached()
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
         Ok(GrpcResponse::new(proto::CancelPodResponse {

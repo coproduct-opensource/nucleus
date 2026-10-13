@@ -318,7 +318,7 @@ pub(crate) async fn cancel_pod(
     AxumPath(id): AxumPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let pod = get_pod_for_caller(&state, id, &caller).await?;
-    pod.cancel().await?;
+    pod.cancel_detached().await?;
     Ok(Json(serde_json::json!({"status": "cancelled"})))
 }
 
@@ -1392,6 +1392,37 @@ pub(crate) mod handler_tests {
         assert!(st.node_capacity.reserve(&pod.spec).is_err());
         pod.cancel().await.unwrap();
         drop(st.node_capacity.reserve(&pod.spec).unwrap());
+    }
+
+    /// A cancel whose client gives up still finishes teardown. Stage node,
+    /// 2026-10-13: a cancel request timed out at the client, its handler future was
+    /// dropped mid-teardown, and the pod's capacity stayed held. Teardown is made to
+    /// wait here by holding the capacity lock it takes last.
+    #[tokio::test]
+    async fn a_dropped_cancel_request_still_returns_node_capacity() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut st = state(&dir);
+        st.node_capacity = crate::node_capacity::Capacity::new(640, 1);
+        let id = register(&st, None).await;
+        let pod = st.pods.lock().await.get(&id).unwrap().clone();
+        *pod.capacity.lock().await = Some(st.node_capacity.reserve(&pod.spec).unwrap());
+        let held = pod.capacity.lock().await;
+        let request = pod.clone().cancel_detached();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), request)
+                .await
+                .is_err(),
+            "teardown must still be waiting when the request is dropped"
+        );
+        drop(held);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while st.node_capacity.reserve(&pod.spec).is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the dropped cancel abandoned teardown and kept the pod's capacity"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
     }
 
     /// A registered pod, running, optionally owned by `parent`.
