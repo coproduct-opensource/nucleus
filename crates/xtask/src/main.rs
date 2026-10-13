@@ -509,6 +509,15 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Lower the clippy ratchet ceiling after a push to main. Publishes the
+    /// change as an auto-merging PR when CLIPPY_RATCHET_TOKEN is set; without
+    /// it, reports the possible drop and changes nothing (exit 0).
+    ClippyRatchetDown {
+        /// Use this count instead of running
+        /// `scripts/check-clippy-ratchet.sh --count`.
+        #[arg(long)]
+        actual: Option<u32>,
+    },
     /// CI configuration is sound (CI-1): decide the invariants the merge queue
     /// relies on over a typed model of the workflows, the required-check
     /// ledger (ci/required-checks.txt) and the merge-queue pin
@@ -647,6 +656,7 @@ mod ci_otel;
 mod ci_spec;
 mod ci_timings;
 mod clippy_config;
+mod clippy_ratchet_down;
 mod command_grammar;
 mod convergence;
 mod coverage_floor;
@@ -805,6 +815,7 @@ fn main() -> Result<()> {
         Command::RerunPlan => rerun_plan_cmd(),
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
         Command::CiEjections { limit, json } => ci_ejections::ci_ejections(limit, json),
+        Command::ClippyRatchetDown { actual } => clippy_ratchet_down::run(&repo_root()?, actual),
         Command::HostDecideAgreement { bundles } => match host_decide_agreement::run(&bundles)? {
             0 => Ok(()),
             code => std::process::exit(code),
