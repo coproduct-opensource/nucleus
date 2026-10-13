@@ -213,7 +213,7 @@ fn read_tlv(input: &[u8], tag: u8) -> Result<(&[u8], &[u8]), RsaKeyError> {
 }
 
 /// A non-negative DER INTEGER's magnitude, leading zeros removed.
-fn unsigned_magnitude(content: &[u8], what: &'static str) -> Result<&[u8], RsaKeyError> {
+fn unsigned_magnitude<'a>(content: &'a [u8], what: &'static str) -> Result<&'a [u8], RsaKeyError> {
     match content.first() {
         None => Err(RsaKeyError::Malformed(what)),
         Some(&b) if b & 0x80 != 0 => Err(RsaKeyError::Malformed(what)),
