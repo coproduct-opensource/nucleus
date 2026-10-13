@@ -144,7 +144,7 @@ The `analysis` field is honestly labeled as `AIDerived` — the model generated 
 
 | Standard | What Nucleus Provides |
 |----------|----------------------|
-| **EU AI Act Article 50** | `contains_ai_derived` flag, machine-readable provenance |
+| **EU AI Act Article 50** | `contains_ai_derived` flag, machine-readable provenance (the provenance layer only — embedding a marking into the output is the generating application's step; see [eu-ai-act-article-50.md](./eu-ai-act-article-50.md)) |
 | **FINRA/SEC** | Immutable receipt chain, Ed25519 signed |
 | **W3C PROV-DM** | PROV-JSON export of flow *nodes* (entities/activities/agents + IFC labels). Derivation relations (`wasDerivedFrom`, `used`) are **not** emitted — see note below. CLI export not yet shipped. |
 | **NIST AI RMF** | Execution context telemetry in receipts |

@@ -6,10 +6,10 @@
 # transitive deps force multiple lines (e.g. sha2). So instead this caps the
 # version count per watched crate at a documented ceiling: NEW drift (a PR that
 # introduces another version) fails CI, while the existing debt is visible and
-# paid down by *lowering* a ceiling when a unification lands. ed25519-dalek is now
-# unified across ALL first-party crates (default builds resolve a single v3); the
-# ceiling stays 2 only because c2pa (provenance SDK) still pins v2 under
-# --all-features. Never raise a ceiling without recording why below.
+# paid down by *lowering* a ceiling when a unification lands. ed25519-dalek is
+# unified across all crates in THIS repository on v3; the ceiling stays 2 because
+# the delegation_calc git dependency (dlc-crypto, via portcullis) still pins v2.
+# Never raise a ceiling without recording why below.
 #
 # Honest framing for PROOFS.md / pitches: dependency hygiene here is RATCHETED,
 # not single-version. See docs/PROOFS.md.
@@ -33,15 +33,16 @@ set -euo pipefail
 
 # watched-crate ceilings. Format: "<crate> <max-distinct-versions>".
 #
-# ed25519-dalek = 2  (FIRST-PARTY UNIFIED — default builds resolve a SINGLE v3)
-#   v3.0.0-pre.7  ← the unified line: workspace default + envelope/lineage/oidc-*/
+# ed25519-dalek = 2
+#   v3.0.0        ← the unified line: workspace default + envelope/lineage/oidc-*/
 #                   verifier/trust-registry/witness/node + iroh (pins it exactly).
 #                   jsonwebtoken no longer pulls v2 either (aws_lc_rs backend).
-#   v2.2.0        ← ONLY c2pa v0.85.2 (content-provenance SDK; direct dep), pulled
-#                   in by nucleus-envelope/audit's c2pa features. `cargo tree`
-#                   (default features) shows a single v3; this ceiling uses
-#                   --all-features, which surfaces c2pa's v2. Drops to 1 when c2pa
-#                   moves to dalek 3 (upstream) — not ours to force.
+#   v2.2.0        ← dlc-crypto (coproduct-opensource/delegation_calc, git dep) via
+#                   dlc-d → portcullis, in default builds too. Measured 2026-10-13
+#                   (`cargo tree --workspace -i ed25519-dalek@2.2.0`) when c2pa —
+#                   which this comment previously named as the only v2 user — was
+#                   removed: the count stayed 2. Drops to 1 when delegation_calc
+#                   moves to dalek 3.
 #
 # sha2 = 3
 #   v0.9.9   ← drand-verify v0.6.2 (nucleus-client → node/tool-proxy; dormant)

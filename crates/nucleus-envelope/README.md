@@ -57,8 +57,10 @@ payload or metadata — require one with `TrustAnchor::require_payload_binding`.
 ## Interop exports
 
 The `interop` module emits the same provenance as ecosystem-standard formats:
-in-toto / DSSE statements, Sigstore bundles, and SLSA. With the `c2pa` feature,
-`c2pa_export` produces a C2PA assertion.
+in-toto / DSSE statements, Sigstore bundles, and SLSA. Their subjects are the
+produced artifacts' digests, and the nucleus predicate carries a typed
+AI-generation marking. `nucleus envelope-export` and the control plane's
+`GET /v1/jobs/{id}/attestation` are the binaries that emit them.
 
 ## Example
 
@@ -85,7 +87,6 @@ let json = serde_json::to_string(&bundle)?;
 | Feature | Effect |
 |---|---|
 | *(default)* | core bundle + verify + in-toto/Sigstore/SLSA interop |
-| `c2pa` | C2PA assertion export via the `c2pa` crate |
 
 ## License
 

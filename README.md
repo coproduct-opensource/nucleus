@@ -418,7 +418,7 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 | Crate | Purpose | Status |
 |-------|---------|--------|
 | [**nucleus-cli**](crates/nucleus-cli/) | Run agents under enforced permissions; ships the `nucleus` binary (`audit` / `run --local` / `run`) | Mixed — Tier 0 working; runner vendor-coupled; `--hook`/`guard` need an external binary |
-| [**nucleus-audit**](crates/nucleus-audit/) | Scan configs; verify HMAC tool-proxy logs + SHA-256 receipt chains; provenance / SLSA / C2PA subcommands | Mixed — config scan + tool-proxy-log HMAC verification real; receipt-chain verifier checks hash chain, not yet Ed25519 sig |
+| [**nucleus-audit**](crates/nucleus-audit/) | Scan configs; verify HMAC tool-proxy logs + SHA-256 receipt chains; provenance subcommands | Mixed — config scan + tool-proxy-log HMAC verification real; receipt-chain verifier checks hash chain, not yet Ed25519 sig |
 | [**nucleus-sdk**](crates/nucleus-sdk/) | Rust client: tool-proxy + node clients, intent profiles, HMAC/mTLS | Working library (unit-tested) |
 | [**exposure-playground**](crates/exposure-playground/) / **exposure-web** | TUI / WASM visualizer of the capability lattice | Demo — currently does **not** compile on this branch (portcullis feature-gate bug) |
 
@@ -528,7 +528,7 @@ Documented in [`SECURITY_TODO.md`](docs/SECURITY_TODO.md) and [`docs/production-
 - **The public verifier service is not hosted.** It is self-hostable and deploy-ready (`fly.toml`; 26 integration / 70 total tests); no hosted endpoint resolves today. The `@coproduct/verify` npm package and `/verify/` demo are publish-gated.
 - **Tier 2 isolation needs KVM.** A supported macOS host reaches it through the [Apple Container host](docs/quickstart/apple-container.md) or a Lima VM with nested virtualisation. Their version and artifact requirements differ; a passing `cargo test` on macOS does not imply a live VM boot, which is what `nucleus verify --tier2` is for. CI boots a real pod on **x86_64** only — GitHub has no hosted arm64 runner with `/dev/kvm` — so the aarch64 boot is verified by hand before a release.
 - **`bash -c` bypasses command-level checks.** Firecracker network policy is the real defense.
-- **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log HMAC verification *is* real; C2PA verification is feature-gated.
+- **`verify-receipts` checks the hash chain, not yet the Ed25519 signature.** Tool-proxy-log HMAC verification *is* real. Nucleus has no C2PA support; provenance exports are in-toto / SLSA / Sigstore (`nucleus envelope-export`).
 - **Issuance/signing of identities is demo-only.** `LocalIssuer` is `dev`-feature-gated; there is no SPIRE-backed JWT-SVID issuer in this repo.
 - **The research-tier Lean formalizations are not discharged.** 23 open `sorry` proof holes remain across 10 exploratory alignment-tax / cohomology / braid files (each labeled `CONJECTURE`; manifest at `crates/portcullis-core/lean/CONJECTURES.md`); only the security core is `sorry`-free and CI-gated against regression.
 - **Some crate-level READMEs are stale** (`nucleus-lineage` under-claims; a few doc comments lag the code). The code/tests are the source of truth.

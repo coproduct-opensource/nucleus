@@ -20,12 +20,11 @@ version = 2
 # See https://github.com/RustSec/advisory-db
 ignore = [
   # rsa Marvin Attack — no fix available upstream.
-  # Transitive via c2pa-rs. Not exploitable: we use c2pa for content
-  # credential assertions, not RSA key operations.
-  # Also a direct dependency of nucleus-node-evidence, which VERIFIES RSA
+  # A direct dependency of nucleus-node-evidence, which VERIFIES RSA
   # signatures (TPM quotes, AK certificate chains) with public keys only.
   # Marvin is a timing side channel on private-key decryption; that crate
-  # holds no RSA private key and decrypts nothing.
+  # holds no RSA private key and decrypts nothing. Its only path in the root
+  # lockfile (the c2pa-rs path is gone).
   "RUSTSEC-2023-0071",
 ]
 # These are informational; scope to workspace dependencies.

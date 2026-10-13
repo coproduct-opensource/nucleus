@@ -370,7 +370,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | **DPI flow red team** | Tested | 33 red team tests for causal flow graph attacks |
 | **OTLP permission telemetry** | Tested | OTel spans with all 13 capability dimensions, exposure state, lockdown status |
 | **Fleet lockdown** | Tested | `nucleus lockdown` drops agents to read-only via gRPC streaming (sub-second) |
-| **C2PA content credentials** | Tested | c2pa-rs manifest builder, signer config, sidecar emission, audit verification |
+| **Standard attestation export** | Tested | in-toto / SLSA / Sigstore DSSE exports bound to produced-artifact digests; verified with cosign (C2PA support removed 2026-10) |
 | **AI confidence scoring** | Tested | `AiDerivedWitness` with input context hash, model ID, multi-generation agreement rate |
 | **Budget tracking** | Partial | AtomicBudget exists; pre-exec reservation works, post-exec accounting incomplete |
 | **SPIFFE identity** | Implemented | mTLS + cert management code exists; no SPIRE deployment |
