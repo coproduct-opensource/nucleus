@@ -48,7 +48,7 @@ fn put(dir: &Path, name: &str) -> PathBuf {
 /// test varies exactly one path.
 fn pod(n: &Node) -> PodSpec {
     let mut spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"image":{
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"image":{
             "kernel_path":"/k","rootfs_path":"/r"}}}"#,
     )
     .expect("minimal spec");
@@ -135,7 +135,7 @@ fn an_oci_rootfs_names_no_host_path_and_is_left_alone() {
     let n = node();
     let h = "a".repeat(64);
     let mut spec: PodSpec = serde_json::from_str(&format!(
-        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
             "kernel_path":"/k","rootfs_digest":"sha-256:{h}",
             "rootfs_oci":{{"reference":"registry.example/app@sha256:{h}",
                           "manifest_digest":"sha256:{h}",
@@ -346,7 +346,7 @@ fn the_root_itself_a_directory_and_a_missing_file_are_refused() {
 fn a_spec_without_host_paths_is_untouched() {
     let n = node();
     let mut spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     admit(&mut spec, &FC, &n.roots).expect("nothing to confine");
     assert!(spec.spec.image.is_none());
@@ -419,7 +419,7 @@ fn the_repositorys_example_specs_are_admitted_under_their_documented_flags() {
         .ensure(&t.path().join("state"))
         .expect("roots");
         let mut spec: PodSpec = serde_json::from_str(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"image":{
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"image":{
                 "kernel_path":"/k","rootfs_path":"/r"}}}"#,
         )
         .expect("spec");

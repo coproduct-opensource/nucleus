@@ -2061,7 +2061,7 @@ mod tests {
         });
 
         let spec: SpecPodSpec =
-            nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /work\n")
+            nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy: { type: profile, name: default }\n  work_dir: /work\n")
                 .unwrap();
         let created_pod = create_pod_via_node(&format!("https://{addr}"), &spec, &client)
             .await

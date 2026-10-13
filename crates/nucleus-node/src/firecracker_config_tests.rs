@@ -14,7 +14,7 @@ use std::path::PathBuf;
 /// Built by deserialization so it exercises the real spec defaults rather
 /// than hand-constructing every field.
 fn base_spec() -> PodSpec {
-    serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+    serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
         .expect("base PodSpec must deserialize")
 }
 
@@ -400,7 +400,7 @@ fn no_pod_cmdline_carries_any_per_pod_secret() {
 #[cfg(target_os = "linux")]
 fn boot_args_maximal() -> String {
     let spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"p"}}}"#,
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"audit_sink":{"sink":"audit","prefix":"p"}}}"#,
     )
     .expect("maximal spec must deserialize");
     let sinks = crate::audit_sink::AuditSinks::from_toml(
@@ -437,7 +437,7 @@ fn boot_args_maximal() -> String {
 #[test]
 fn the_spec_audit_sink_is_never_rendered_unresolved() {
     let spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit"}}}"#,
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"audit_sink":{"sink":"audit"}}}"#,
     )
     .expect("spec deserializes");
     let config = FirecrackerConfig::from_spec(

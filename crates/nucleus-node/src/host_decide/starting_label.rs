@@ -99,12 +99,14 @@ mod tests {
     }
 
     fn bare() -> nucleus_spec::PodSpec {
-        spec(serde_json::json!({"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}))
+        spec(
+            serde_json::json!({"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}),
+        )
     }
 
     fn with_scratch() -> nucleus_spec::PodSpec {
         spec(
-            serde_json::json!({"apiVersion":"nucleus/v1","kind":"Pod","spec":{
+            serde_json::json!({"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},
                 "image": {"kernel_path": "/k", "rootfs_path": "/r", "scratch_path": "/caller/scratch.ext4"}
             }}),
         )

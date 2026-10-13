@@ -47,6 +47,13 @@ async fn prepare_labelled_for_test(
         "kernel_path": kernel, "rootfs_path": rootfs,
     }))
     .unwrap();
+    // Every pod names its policy (#3400); these tests are about something else.
+    let mut pod_spec = pod_spec;
+    pod_spec
+        .as_object_mut()
+        .expect("pod spec is an object")
+        .entry("policy")
+        .or_insert(serde_json::json!({"type": "profile", "name": "default"}));
     let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
         "metadata": {"name": "host-spec-before-vmm", "labels": labels}, "spec": pod_spec,
@@ -102,7 +109,7 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
     assert!(manager.get_attestation(&id.to_string()).await.is_some());
     let spec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
-        "metadata": {"name": "spawn-control"}, "spec": {},
+        "metadata": {"name": "spawn-control"}, "spec": {"policy":{"type":"profile","name":"default"}},
     }))
     .unwrap();
     let ready = ready
@@ -150,7 +157,7 @@ async fn enforcing_broker_refusal_cleans_identity_before_spawn_is_available() {
     let spec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
         "metadata": {"name": "enforcing-refusal"},
-        "spec": {"vsock": {"guest_cid": 3, "port": 5005}},
+        "spec": {"policy":{"type":"profile","name":"default"},"vsock": {"guest_cid": 3, "port": 5005}},
     }))
     .unwrap();
     let result = ready
@@ -191,7 +198,7 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
         .unwrap();
     let spec = serde_json::from_value(serde_json::json!({
         "apiVersion": "nucleus/v1", "kind": "Pod",
-        "metadata": {"name": "child-cleanup"}, "spec": {},
+        "metadata": {"name": "child-cleanup"}, "spec": {"policy":{"type":"profile","name":"default"}},
     }))
     .unwrap();
     let ready = identity

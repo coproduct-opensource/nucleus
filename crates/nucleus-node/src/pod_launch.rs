@@ -104,7 +104,7 @@ exec sleep 30
         let work = state.state_dir.join("work");
         std::fs::create_dir_all(&work).unwrap();
         let spec: PodSpec = serde_json::from_value(serde_json::json!({
-            "apiVersion":"nucleus/v1", "kind":"Pod", "spec":{"work_dir":work}
+            "apiVersion":"nucleus/v1", "kind":"Pod", "spec":{"policy":{"type":"profile","name":"default"},"work_dir":work}
         }))
         .unwrap();
         let root = pod_authority::Admission {

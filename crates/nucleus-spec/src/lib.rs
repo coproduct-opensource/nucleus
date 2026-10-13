@@ -15,6 +15,8 @@ pub mod isolation_profile;
 pub mod live_boot;
 pub mod manifest_hash;
 pub mod microvm_host;
+#[cfg(test)]
+mod policy_required_tests;
 mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod tool_proxy_audit;
@@ -150,8 +152,10 @@ pub struct PodSpecInner {
     /// pods on its next reaper pass after expiry; cleanup is not an exact-time kill.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
-    /// Permission policy.
-    #[serde(default)]
+    /// Permission policy. Required: a spec that omits it is refused at parse
+    /// time with an error naming `policy`. Absence does not pick a profile on
+    /// the caller's behalf (ADR 0007 B-2; #3400). To ask for the baseline
+    /// profile, say so: `policy: { type: profile, name: default }`.
     pub policy: PolicySpec,
     /// Optional budget model overrides.
     #[serde(default)]
@@ -211,6 +215,9 @@ fn default_timeout_seconds() -> u64 {
 }
 
 /// Policy spec for a pod.
+///
+/// No `Default`: a pod's policy is always named by whoever wrote the spec
+/// (ADR 0007 B-1; #3400).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
@@ -219,14 +226,6 @@ pub enum PolicySpec {
     Profile { name: String },
     /// Inline permission lattice.
     Inline { lattice: Box<PermissionLattice> },
-}
-
-impl Default for PolicySpec {
-    fn default() -> Self {
-        Self::Profile {
-            name: "default".to_string(),
-        }
-    }
 }
 
 impl PolicySpec {
@@ -2336,6 +2335,9 @@ spec:
 apiVersion: nucleus/v1
 kind: Pod
 spec:
+  policy:
+    type: profile
+    name: default
   network:
     deny: ["*"]
 "#;
@@ -2348,7 +2350,7 @@ spec:
 
     #[test]
     fn an_unknown_kind_is_rejected() {
-        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec: {}\n";
+        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec:\n  policy:\n    type: profile\n    name: default\n";
         assert!(
             nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "`kind: Podd` used to parse because nothing compared it to anything"
@@ -2357,7 +2359,7 @@ spec:
 
     #[test]
     fn an_unknown_api_version_is_rejected() {
-        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec: {}\n";
+        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec:\n  policy:\n    type: profile\n    name: default\n";
         assert!(
             nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "an unrecognised apiVersion must not silently parse as v1"

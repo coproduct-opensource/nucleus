@@ -302,7 +302,7 @@ async fn a_create_that_sets_the_ci_principal_label_is_refused() {
     let dir = tempfile::tempdir().expect("tempdir");
     let st = state(&dir);
     let body = format!(
-        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{{"labels":{{"{}":"spiffe://nucleus.local/ns/github/sa/org-other"}}}},"spec":{{}}}}"#,
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","metadata":{{"labels":{{"{}":"spiffe://nucleus.local/ns/github/sa/org-other"}}}},"spec":{{"policy":{{"type":"profile","name":"default"}}}}}}"#,
         crate::auth::CI_PRINCIPAL_LABEL
     );
     let ci = "spiffe://nucleus.local/ns/github/sa/org-repo";

@@ -271,7 +271,7 @@ mod tests {
         let spec: PodSpec =
             serde_json::from_value(serde_json::json!({"apiVersion":"nucleus/v1","kind":"Pod",
             "metadata":{"labels":{"nucleus.guest-proof":label.to_string()}},
-            "spec":{"work_dir":work,"workload":{"command":"/bin/true","uid":65534}}}))
+            "spec":{"policy":{"type":"profile","name":"default"},"work_dir":work,"workload":{"command":"/bin/true","uid":65534}}}))
             .unwrap();
         let replay = dir.path().join("workload-proofs.olog");
         assert!(provision(&spec, &work.join("forbidden.olog")).is_err());

@@ -570,7 +570,10 @@ fn a_child_cannot_shed_its_parents_eval_cell() {
 #[test]
 fn an_unknown_profile_is_refused_never_read_as_standard() {
     for driver in every_driver() {
-        let pod = spec_json(Some("eval_cell"), "{}");
+        let pod = spec_json(
+            Some("eval_cell"),
+            r#"{"policy":{"type":"profile","name":"default"}}"#,
+        );
         let e = admit(&pod, &holding(&driver), None).expect_err("an unknown profile denies");
         assert!(matches!(e, EvalCellRefused::UnknownProfile(_)), "{e:?}");
     }

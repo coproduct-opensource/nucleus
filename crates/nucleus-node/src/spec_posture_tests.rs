@@ -69,10 +69,18 @@ fn a_container_spec_carrying_credentials_is_refused_by_name() {
 }
 
 fn spec(inner: &str) -> PodSpec {
-    serde_json::from_str(&format!(
+    // Every pod names its policy (#3400); a test that is about something else
+    // names the baseline profile here rather than leaving it to the parser.
+    let mut spec: serde_json::Value = serde_json::from_str(&format!(
         r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{inner}}}"#
     ))
-    .expect("test spec parses")
+    .expect("test spec is JSON");
+    spec["spec"]
+        .as_object_mut()
+        .expect("spec is an object")
+        .entry("policy")
+        .or_insert(serde_json::json!({"type": "profile", "name": "default"}));
+    serde_json::from_value(spec).expect("test spec parses")
 }
 
 /// The operator's audit sinks every test here admits against: one sink, named `audit`.
@@ -124,7 +132,7 @@ fn a_spec_cannot_choose_where_the_operators_credentials_write() {
         ),
     ] {
         let json = format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"audit_sink":{{{fields}}}}}}}"#
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"audit_sink":{{{fields}}}}}}}"#
         );
         let refusal = match serde_json::from_str::<PodSpec>(&json) {
             Err(e) => e.to_string(),

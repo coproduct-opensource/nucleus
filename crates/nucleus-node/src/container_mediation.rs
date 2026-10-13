@@ -219,6 +219,7 @@ mod workspace_tests {
         let raw = r#"apiVersion: nucleus/v1
 kind: Pod
 spec:
+  policy: { type: profile, name: default }
   work_dir: /srv/workspaces/project
   task: run the standard tests
 "#;

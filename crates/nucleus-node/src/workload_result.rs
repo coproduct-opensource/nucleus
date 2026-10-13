@@ -329,7 +329,7 @@ mod tests {
         serde_json::from_value(serde_json::json!({
             "apiVersion": "nucleus/v1", "kind": "Pod",
             "metadata": {"name": "observation-test"},
-            "spec": {"work_dir": "/work"}
+            "spec": {"policy":{"type":"profile","name":"default"},"work_dir": "/work"}
         }))
         .unwrap()
     }

@@ -1022,7 +1022,7 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
 
     let handle = PodHandle {
         id: uuid::Uuid::new_v4(),
-        spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        spec: serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec"),
         created_at: 1_757_000_000,
         execution_deadline: tokio::time::Instant::now() + Duration::from_secs(3600),
@@ -1094,7 +1094,7 @@ async fn a_container_pods_dlc_labels_reach_its_tool_proxy() {
         credentials: "read_files=cc".to_string(),
     };
     let mut spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     // The labels a spec author writes, through the same declaration.
     spec.metadata.labels = dlc.labels();
@@ -1154,7 +1154,7 @@ async fn a_container_pod_holds_no_shared_secret_and_no_token() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = crate::pod_api::handler_tests::state(&dir);
     let spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     let env = container_env(&state, &spec, Uuid::new_v4(), "", None, None).await;
     let held: Vec<&str> = env
@@ -1256,7 +1256,7 @@ async fn the_ambient_key_never_reaches_a_container_uploader() {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = crate::pod_api::handler_tests::state(&dir);
     let spec: PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     let grant = fake::grant(fake::target()).await;
     let env = container_env(&state, &spec, Uuid::new_v4(), "", Some(&grant), None).await;
@@ -1292,7 +1292,7 @@ async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
     );
     assert!(st.audit_minter.is_none(), "the fixture has no minter");
     let spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"audit_sink":{"sink":"audit","prefix":"team-a"}}}"#,
     )
     .expect("spec parses");
     let admission = crate::pod_authority::Admission {

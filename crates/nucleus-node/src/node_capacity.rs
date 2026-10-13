@@ -208,7 +208,7 @@ impl Drop for Reservation {
 mod tests {
     use super::*;
     fn spec() -> nucleus_spec::PodSpec {
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#).unwrap()
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#).unwrap()
     }
     #[test]
     fn cpu_quotas_preserve_whole_cpu_capacity() {

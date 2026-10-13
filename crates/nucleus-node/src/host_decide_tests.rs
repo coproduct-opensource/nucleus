@@ -56,7 +56,7 @@ fn authority(dir: &Path) -> Arc<PodAuthority> {
 
 fn spec_with(lattice: PermissionLattice) -> nucleus_spec::PodSpec {
     let mut spec: nucleus_spec::PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     spec.spec.policy = nucleus_spec::PolicySpec::Inline {
         lattice: Box::new(lattice),

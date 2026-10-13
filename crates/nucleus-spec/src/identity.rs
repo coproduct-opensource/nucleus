@@ -278,9 +278,16 @@ mod tests {
     const D1: &str = "sha-256:1111111111111111111111111111111111111111111111111111111111111111";
     const D2: &str = "sha-256:2222222222222222222222222222222222222222222222222222222222222222";
 
+    /// Every pod names its policy (#3400): the baseline profile unless `extra`
+    /// names another.
     fn pinned(extra: &str) -> PodSpec {
+        let policy = if extra.contains(r#""policy""#) {
+            ""
+        } else {
+            r#""policy":{"type":"profile","name":"default"},"#
+        };
         spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{{policy}
                  "image":{{"kernel_path":"/k","rootfs_path":"/r",
                            "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}{extra}}}}}"#
         ))
@@ -293,12 +300,12 @@ mod tests {
     #[test]
     fn formatting_and_key_order_do_not_change_the_program() {
         let a = spec_from(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"work_dir":"/w","timeout_seconds":60}}"#,
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"work_dir":"/w","timeout_seconds":60}}"#,
         );
         let b = spec_from(
             r#"{ "kind" : "Pod" ,
                  "apiVersion":"nucleus/v1",
-                 "spec" : { "timeout_seconds" : 60 , "work_dir" : "/w" } }"#,
+                 "spec" : {"policy":{"type":"profile","name":"default"}, "timeout_seconds" : 60 , "work_dir" : "/w" } }"#,
         );
         assert_eq!(
             program_digest(&a).unwrap(),
@@ -334,12 +341,12 @@ mod tests {
     #[test]
     fn the_same_bytes_at_different_paths_are_the_same_program() {
         let here = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
                  "kernel_path":"/images/a/vmlinux","rootfs_path":"/images/a/rootfs.ext4",
                  "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
         ));
         let there = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
                  "kernel_path":"/mnt/elsewhere/vmlinux","rootfs_path":"/mnt/elsewhere/rootfs.ext4",
                  "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
         ));
@@ -355,7 +362,7 @@ mod tests {
     fn different_image_digests_are_different_programs() {
         let a = pinned("");
         let b = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
                  "kernel_path":"/k","rootfs_path":"/r",
                  "kernel_digest":"{D2}","rootfs_digest":"{D1}"}}}}}}"#
         ));
@@ -402,12 +409,12 @@ mod tests {
     fn a_different_data_image_is_a_different_program() {
         let bare = pinned("");
         let with_data = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
                  "kernel_path":"/k","rootfs_path":"/r","kernel_digest":"{D1}",
                  "rootfs_digest":"{D2}","data_path":"/d.img","data_digest":"{D1}"}}}}}}"#
         ));
         let other_data = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
                  "kernel_path":"/k","rootfs_path":"/r","kernel_digest":"{D1}",
                  "rootfs_digest":"{D2}","data_path":"/d.img","data_digest":"{D2}"}}}}}}"#
         ));
@@ -423,7 +430,7 @@ mod tests {
         );
         // ...and where the image sits on the host is not part of it, same as every other artifact.
         let elsewhere = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"image":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"image":{{
                  "kernel_path":"/k","rootfs_path":"/r","kernel_digest":"{D1}",
                  "rootfs_digest":"{D2}","data_path":"/mnt/elsewhere.img","data_digest":"{D1}"}}}}}}"#
         ));
@@ -438,7 +445,7 @@ mod tests {
     #[test]
     fn an_unpinned_image_has_no_program_identity() {
         let unpinned = spec_from(
-            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},
                  "image":{"kernel_path":"/k","rootfs_path":"/r"}}}"#,
         );
         assert_eq!(
@@ -447,8 +454,9 @@ mod tests {
             "a path is not an identity"
         );
         // ...while a pod with no image at all is fine: there is nothing unpinned about it.
-        let no_image =
-            spec_from(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"work_dir":"/w"}}"#);
+        let no_image = spec_from(
+            r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"work_dir":"/w"}}"#,
+        );
         assert!(program_digest(&no_image).is_ok());
     }
 
@@ -458,7 +466,7 @@ mod tests {
     #[test]
     fn a_path_spec_keeps_the_program_digest_it_had_before_rootfs_source() {
         let spec = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},
                  "image":{{"kernel_path":"/k","rootfs_path":"/r","boot_args":"console=ttyS0",
                            "kernel_digest":"{D1}","rootfs_digest":"{D2}"}}}}}}"#
         ));
@@ -473,7 +481,7 @@ mod tests {
     fn an_oci_rootfs_pinning_the_same_bytes_is_the_same_program() {
         let path = pinned("");
         let oci = spec_from(&format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},
                  "image":{{"kernel_path":"/k",
                            "rootfs_oci":{{"reference":"registry.example/app@sha256:{h}",
                                          "manifest_digest":"sha256:{h}",

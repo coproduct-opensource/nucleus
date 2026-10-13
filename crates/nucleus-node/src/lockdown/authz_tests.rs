@@ -222,7 +222,7 @@ async fn a_label_lockdown_refuses_creating_a_pod_it_matches_until_lifted() {
         let work = st.state_dir.join("w");
         std::fs::create_dir_all(&work).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = work;
         spec.metadata.labels = labelled(pairs);
