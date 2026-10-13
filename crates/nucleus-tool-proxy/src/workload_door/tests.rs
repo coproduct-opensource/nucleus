@@ -388,10 +388,10 @@ fn restrictive_umask_keeps_new_door_parents_traversable() {
 
 // ── the attestation requirement, by transport ──────────────────────
 
-use crate::attestation::{AttestationConfig, AttestationVerifier, TransportEvidence};
+use crate::attestation::{AttestationConfig, AttestationVerifier, LaunchRoots, TransportEvidence};
 
 fn attestation_required() -> AttestationVerifier {
-    AttestationVerifier::new(AttestationConfig::required())
+    AttestationVerifier::new(AttestationConfig::required(), LaunchRoots::Absent)
 }
 
 /// The attestation step of `crate::auth_middleware`, verbatim: read the
@@ -403,8 +403,8 @@ async fn attestation_step(
     request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let decided = TransportEvidence::of(request.extensions())
-        .and_then(|evidence| verifier.admit(&evidence, request.headers()));
+    let decided =
+        TransportEvidence::of(request.extensions()).and_then(|evidence| verifier.admit(&evidence));
     match decided {
         Ok(()) => next.run(request).await,
         Err(reason) => (StatusCode::FORBIDDEN, reason).into_response(),
@@ -519,11 +519,38 @@ async fn a_tcp_request_without_a_cert_is_refused() {
 
     let open = serve_tcp(tcp_app(AttestationVerifier::new(
         AttestationConfig::default(),
+        LaunchRoots::Absent,
     )))
     .await;
     let reply = post_tcp(open, "/v1/read", "").await;
     assert!(
         reply.starts_with("HTTP/1.0 200") && reply.ends_with("none"),
+        "{reply}"
+    );
+}
+
+/// **A caller cannot attest itself with a header.** A well-formed launch,
+/// base64 DER in the retired `x-nucleus-attestation` header, on a TCP request
+/// with no certificate: refused by an attestation-required proxy, because a
+/// launch a request asserts about itself is not evidence (ADR 0007 C-1, C-2).
+///
+/// Red on 7d7c3c70d: `admit` decoded the header, parsed the unsigned
+/// `LaunchAttestation` and served the request (200), so any caller met
+/// `--require-attestation` by sending one. The header is not refused because
+/// it is malformed — the launch inside is the one a CA would sign.
+#[tokio::test]
+async fn a_forged_attestation_header_does_not_meet_the_requirement() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    let launch = nucleus_identity::LaunchAttestation::from_hashes([1; 32], [2; 32], [3; 32]);
+    let header = format!(
+        "x-nucleus-attestation: {}\r\n",
+        STANDARD.encode(launch.to_der())
+    );
+    let required = serve_tcp(tcp_app(attestation_required())).await;
+    let reply = post_tcp(required, "/v1/read", &header).await;
+    assert!(
+        reply.starts_with("HTTP/1.0 403")
+            && reply.contains("attestation required but not provided"),
         "{reply}"
     );
 }
@@ -606,27 +633,26 @@ fn evidence_refuses_every_mismatched_door_shape() {
 /// and with the requirement off `None` passes.
 #[test]
 fn the_requirement_over_each_evidence() {
-    let headers = axum::http::HeaderMap::new();
     let admission = DoorAdmission {
         peer: DoorPeer { uid: WORKLOAD },
         route: DoorRoute::Egress,
     };
     let required = attestation_required();
     assert_eq!(
-        required.admit(&TransportEvidence::DoorPeer(&admission), &headers),
+        required.admit(&TransportEvidence::DoorPeer(&admission)),
         Ok(())
     );
     let refused = required
-        .admit(&TransportEvidence::None, &headers)
+        .admit(&TransportEvidence::None)
         .expect_err("no evidence on a required proxy is refused");
     assert!(refused.contains("not provided"), "{refused}");
     assert!(
         required
-            .admit(&TransportEvidence::ClientCert(&[0x30, 0x00]), &headers)
+            .admit(&TransportEvidence::ClientCert(&[0x30, 0x00]))
             .is_err()
     );
-    let open = AttestationVerifier::new(AttestationConfig::default());
-    assert_eq!(open.admit(&TransportEvidence::None, &headers), Ok(()));
+    let open = AttestationVerifier::new(AttestationConfig::default(), LaunchRoots::Absent);
+    assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
 }
 
 /// ADR 0014 S2: every door route is decided as an operation in the live-boot

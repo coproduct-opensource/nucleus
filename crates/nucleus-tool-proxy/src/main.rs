@@ -273,7 +273,9 @@ struct Args {
     )]
     web_fetch_max_bytes: usize,
     /// Require attestation for all requests.
-    /// When enabled, requests must include valid VM attestation.
+    /// When enabled, a network caller must present an mTLS client certificate
+    /// whose launch chains to `--trust-bundle`; without `--mtls` every request
+    /// outside the workload door is refused.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_REQUIRE_ATTESTATION")]
     require_attestation: bool,
     /// Explicit opt-in to the bare host tier (owner decisions, 2026-10-02):
@@ -1314,8 +1316,18 @@ async fn main() -> Result<(), ApiError> {
     )
     .map_err(|e| ApiError::Spec(format!("failed to build HTTP client: {e}")))?;
 
-    // Build attestation verifier
-    let attestation_verifier = AttestationVerifier::new(startup_trace::attestation_config(&args));
+    // The mTLS listener's config, built once: the listener verifies client
+    // certificates against its trust bundle, and the attestation requirement
+    // checks a client certificate's launch against the same bundle (G-1).
+    let mtls_config = if args.mtls {
+        Some(build_mtls_config(&args).await?)
+    } else {
+        None
+    };
+    let attestation_verifier = AttestationVerifier::new(
+        startup_trace::attestation_config(&args),
+        attestation::LaunchRoots::of(mtls_config.as_ref()),
+    );
 
     // Build policy engine for identity-based authorization
     let policy_engine = if let Some(policy_path) = &args.policy_file {
@@ -1945,8 +1957,7 @@ async fn main() -> Result<(), ApiError> {
     };
 
     // Check if mTLS is enabled
-    if args.mtls {
-        let mtls_config = build_mtls_config(&args).await?;
+    if let Some(mtls_config) = mtls_config {
         let mtls_listener = MtlsListener::new(listener, &mtls_config)
             .map_err(|e| ApiError::Spec(format!("failed to create mTLS listener: {}", e)))?;
 
@@ -2133,7 +2144,7 @@ async fn auth_middleware(
         .map_err(ApiError::AttestationFailed)?;
     state
         .attestation_verifier
-        .admit(&evidence, &parts.headers)
+        .admit(&evidence)
         .map_err(ApiError::AttestationFailed)?;
 
     // Determine authentication context (unified flow — no early returns).
