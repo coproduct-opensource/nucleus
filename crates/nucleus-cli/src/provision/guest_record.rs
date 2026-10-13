@@ -32,41 +32,11 @@ pub(super) fn record_guest_release(
 }
 
 /// The record for `origin`, from `sha256sum`'s output for the installed rootfs.
-fn guest_release_record(origin: GuestOrigin, sha256sum: &str) -> Result<GuestReleaseRecord> {
+pub(super) fn guest_release_record(
+    origin: GuestOrigin,
+    sha256sum: &str,
+) -> Result<GuestReleaseRecord> {
     let digest = sha256sum.split_whitespace().next().unwrap_or_default();
     GuestReleaseRecord::new(origin, digest)
         .map_err(|e| anyhow!("recording the installed guest rootfs: {e}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nucleus_spec::tier2_artifacts;
-
-    /// #3223: the record `setup` writes beside the rootfs carries the digest
-    /// `sha256sum` printed for the installed file, and refuses output that is
-    /// not one, rather than recording a guest it could not measure.
-    #[test]
-    fn the_guest_release_record_holds_the_installed_rootfs_digest() {
-        let sha = "21c1b167482f3c10428b8fd5e08bbeea14258ce74479730712dc11a4f34d2029";
-        let out = format!("{sha}  {HOST_ARTIFACTS_DIR}/{GUEST_ROOTFS_FILE}");
-        let record = guest_release_record(
-            GuestOrigin::Release {
-                version: tier2_artifacts::GUEST_RELEASE.into(),
-            },
-            &out,
-        )
-        .unwrap();
-        assert_eq!(record.rootfs_sha256(), sha);
-        assert_eq!(
-            GuestReleaseRecord::parse(&serde_json::to_vec(&record).unwrap()).unwrap(),
-            record
-        );
-        for bad in ["", "sha256sum: rootfs.ext4: No such file or directory"] {
-            assert!(
-                guest_release_record(GuestOrigin::LocalBuild, bad).is_err(),
-                "{bad:?}"
-            );
-        }
-    }
 }
