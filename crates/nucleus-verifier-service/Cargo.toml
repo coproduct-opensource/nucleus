@@ -61,7 +61,12 @@ clap = { workspace = true }
 hex = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "chrono", "macros", "migrate"] }
+# SQLite only, no TLS (SQLite opens a file; nothing to encrypt in transit).
+# `sqlite-bundled` + `sqlite-unlock-notify` is what 0.8's `sqlite` built; 0.9's
+# `sqlite` also adds load-extension and deserialize, which this crate never uses.
+# No `mysql`/`mysql-rsa`: sqlx 0.9 keeps `rsa` (RUSTSEC-2023-0071) behind
+# `mysql-rsa`, so it stays out of Cargo.lock.
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite-bundled", "sqlite-unlock-notify", "macros", "migrate"] }
 ed25519-dalek = { version = "=3.0.0", features = ["rand_core"] }
 rand = "0.10"
 base64 = "0.23"

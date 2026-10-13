@@ -46,7 +46,7 @@ pub async fn append_entry(
     envelope_hash_hex: &str,
     ts_ms: i64,
 ) -> Result<(i64, [u8; 32])> {
-    // sqlx 0.8 sqlite pool serializes writes at the driver level; for
+    // sqlx sqlite pool serializes writes at the driver level; for
     // an extra safety margin we wrap in an explicit transaction. The
     // chain-head read + insert must be atomic w.r.t. other appenders.
     let mut tx = pool.begin().await.context("begin tx")?;

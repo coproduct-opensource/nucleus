@@ -18,15 +18,7 @@ targets = [
 [advisories]
 version = 2
 # See https://github.com/RustSec/advisory-db
-ignore = [
-  # rsa Marvin Attack — no fix available upstream. nucleus-node-evidence no
-  # longer depends on `rsa` (in-crate PKCS#1 v1.5 verify, src/rsa_pkcs1.rs);
-  # the one path left is sqlx-mysql 0.8.6, in the lockfile through
-  # sqlx-macros-core's weak `sqlx-mysql?/…` features and enabled by no
-  # workspace crate. Deleted with the sqlx 0.9 upgrade (`rsa` behind
-  # `mysql-rsa` there). See .cargo/audit.toml.
-  "RUSTSEC-2023-0071",
-]
+ignore = []
 # These are informational; scope to workspace dependencies.
 unmaintained = "workspace"
 unsound = "workspace"

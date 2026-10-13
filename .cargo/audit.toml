@@ -8,18 +8,6 @@ ignore = [
     # TODO: Watch for cel-interpreter updates that remove paste dependency.
     "RUSTSEC-2024-0436",
 
-    # rsa Marvin Attack (RUSTSEC-2023-0071) — no fix available upstream.
-    # nucleus-node-evidence no longer depends on `rsa` (it verifies PKCS#1 v1.5
-    # in-crate, src/rsa_pkcs1.rs) and the c2pa-rs path is gone. The one path
-    # left in the root lockfile is sqlx-mysql 0.8.6, where `rsa` is a
-    # non-optional dependency: sqlx-macros-core names it in weak
-    # `sqlx-mysql?/…` features, and cargo puts optional dependencies named
-    # that way into Cargo.lock. No workspace crate enables the `mysql` feature
-    # (nucleus-verifier-service uses `sqlite`), so it is not built. sqlx 0.9
-    # makes `rsa` optional behind `mysql-rsa`; this entry is deleted with that
-    # upgrade.
-    "RUSTSEC-2023-0071",
-
     # proc-macro-error unmaintained (RUSTSEC-2024-0370) — no security impact.
     # proc-macro-error 0.4.12, transitive via iroh-blobs → bao-tree →
     # genawaiter. (The 1.0.4 copy via c2pa-rs → iref is gone.)
