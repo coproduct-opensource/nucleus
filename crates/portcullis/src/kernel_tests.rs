@@ -2266,6 +2266,10 @@ mod decider_parity {
     fn policy(levels: &[CapabilityLevel; 13]) -> PermissionLattice {
         let mut policy = PermissionLattice::permissive();
         policy.commands = crate::CommandLattice::permissive();
+        // `permissive()` is itself normalized, so it arrives holding the
+        // uninhabitable-state obligations for ITS all-`Always` capabilities.
+        // They are recomputed below for the generated ones.
+        policy.obligations = crate::Obligations::default();
         for (op, level) in Operation::ALL.into_iter().zip(levels.iter().copied()) {
             set_level(&mut policy.capabilities, op, level);
             if level == CapabilityLevel::LowRisk {
