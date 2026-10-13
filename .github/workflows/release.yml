@@ -86,7 +86,7 @@ jobs:
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-mcp-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-mcp
           tar -C "$RELEASE_DIR" -czf "dist/nucleus-audit-${VERSION}-${{ matrix.target }}.tar.gz" nucleus-audit
       - name: Upload artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: nucleus-node-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -184,7 +184,7 @@ jobs:
           VERSION="${VERSION#v}"
           cargo xtask guest-kernel-mirror stage --arch ${{ matrix.arch }} --file vmlinux.download --version "$VERSION" --dist dist
       - name: Upload packaged artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: nucleus-binaries-${{ matrix.target }}
           if-no-files-found: error
@@ -193,7 +193,7 @@ jobs:
             dist/*.node-reference.json
             dist/*.vmlinux
       - name: Upload guest binaries for rootfs build
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: guest-binaries-${{ matrix.arch }}
           # All nine the rootfs needs. Building them is not enough — the
@@ -258,7 +258,7 @@ jobs:
           mkdir -p dist
           gzip -9 -c build/firecracker/${{ matrix.arch }}/rootfs.ext4 > "dist/nucleus-rootfs-${VERSION}-${{ matrix.arch }}.ext4.gz"
       - name: Upload rootfs artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: rootfs-${{ matrix.arch }}
           path: dist/*.ext4.gz
@@ -278,7 +278,7 @@ jobs:
           cp scripts/lima/nucleus-aarch64.yaml "dist/nucleus-lima-${VERSION}-aarch64.yaml"
           cp scripts/lima/nucleus-x86_64.yaml "dist/nucleus-lima-${VERSION}-x86_64.yaml"
       - name: Upload Lima templates
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: lima-templates
           path: dist/*.yaml
