@@ -245,13 +245,12 @@ impl SignedProxy {
         default_actor: Option<String>,
         drand_config: Option<DrandConfig>,
     ) -> std::io::Result<Self> {
-        Self::start_with_proof(target, secret, approval, default_actor, drand_config, None).await
+        Self::start_with_proof(target, approval, default_actor, drand_config, None).await
     }
 
     pub async fn start_with_proof(
         target: impl Into<ProxyTarget>,
-        secret: Arc<Vec<u8>>,
-        approval: Option<ApprovalSigning>,
+        approval: ApprovalKey,
         default_actor: Option<String>,
         drand_config: Option<DrandConfig>,
         proof: Option<ProxyProofConfig>,
@@ -729,8 +728,7 @@ mod tests {
         let task = tokio::spawn(async move { axum::serve(target, target_app).await.unwrap() });
         let proxy = SignedProxy::start_with_proof(
             target_addr,
-            Arc::new(vec![1; 32]),
-            None,
+            test_key(),
             Some("fixture".into()),
             None,
             Some(ProxyProofConfig {

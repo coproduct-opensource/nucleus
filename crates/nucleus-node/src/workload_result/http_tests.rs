@@ -32,8 +32,7 @@ async fn result_fetch_requires_fresh_proxy_observation_authority() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     let proxy = SignedProxy::start_with_proof(
         address,
-        std::sync::Arc::new(vec![1; 32]),
-        None,
+        std::sync::Arc::new(ed25519_dalek::SigningKey::from_bytes(&[1; 32])),
         None,
         None,
         Some(ProxyProofConfig {
