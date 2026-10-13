@@ -152,7 +152,7 @@ pub use nucleus_proto::nucleus_node as proto;
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
 /// What `--version` prints: the release tag this binary was built for, else
-/// `git describe`, else the Cargo version marked `+dev` (#3208).
+/// the Cargo version marked `+dev` (#3208).
 static VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
 

@@ -84,7 +84,7 @@ mod workload_verification;
 mod workspace_scan;
 
 /// What `--version` prints: the release tag this binary was built for, else
-/// `git describe`, else the Cargo version marked `+dev` (#3208).
+/// the Cargo version marked `+dev` (#3208).
 static VERSION: std::sync::LazyLock<String> =
     std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
 
@@ -284,8 +284,8 @@ mod help_env_tests;
 
 #[cfg(test)]
 mod version_tests {
-    /// #3208: `--version` is the decided version (release tag, else `git
-    /// describe`, else `+dev`), never the bare workspace Cargo version every
+    /// #3208: `--version` is the decided version (the release tag, else
+    /// the Cargo version marked `+dev`), never the bare workspace Cargo version every
     /// release used to print.
     #[test]
     fn version_flag_is_the_decided_version_not_the_bare_cargo_version() {

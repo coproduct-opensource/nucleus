@@ -1317,8 +1317,8 @@ async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
     );
 }
 
-/// #3208: `--version` is the decided version (release tag, else `git
-/// describe`, else `+dev`), never the bare workspace Cargo version every
+/// #3208: `--version` is the decided version (the release tag, else
+/// the Cargo version marked `+dev`), never the bare workspace Cargo version every
 /// release used to print.
 #[test]
 fn version_flag_is_the_decided_version_not_the_bare_cargo_version() {
