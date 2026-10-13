@@ -152,24 +152,17 @@ pub enum BrokerTransport {
     /// A Unix socket in the pod directory, already visible to the guest
     /// (container).
     ///
-    /// # Admitted by this predicate, not yet reachable in practice
+    /// # Served since #2906
     ///
-    /// The container spawn path does not construct one, and the reason is not
-    /// missing wiring. `broker_launch::broker_identity` refuses to serve a pod
-    /// with no host-established identity, and **the container driver registers
-    /// none** — there is no `identity_manager` call on that path at all.
-    ///
-    /// Giving containers an identity is not a line of glue either. On the
-    /// Firecracker path an identity comes with an attested SVID and a netns that
-    /// default-denies egress; a container has neither, so the identity would
-    /// assert something the driver cannot back. That is the same defect as
-    /// letting the guest name itself, one level up: an identity nobody
-    /// established.
-    ///
-    /// So this variant records that the *transport* is not the obstacle, which
-    /// is worth knowing — the obstacle is that the container driver has no
-    /// story for workload identity, and inventing one to unblock a socket would
-    /// be the claim outrunning the wiring again.
+    /// This used to be admitted by the predicate and constructed nowhere,
+    /// because the container driver registered no workload identity to bind a
+    /// listener to. It now issues each pod an identity that says it is
+    /// UNMEASURED (ADR 0016 D5, `pod_identity_files`), which claims exactly
+    /// what the driver can back: the node minted it for this pod. That is the
+    /// identity `container_broker` binds, and the listener admits only the
+    /// container's init by the kernel's peer credentials
+    /// (`broker_transport::peer`). The container driver delivers no credential
+    /// value, so whenever it serves this transport it enforces.
     PodDirSocket,
 }
 

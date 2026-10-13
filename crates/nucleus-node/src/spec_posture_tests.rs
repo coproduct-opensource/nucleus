@@ -5,9 +5,67 @@
 
 use super::*;
 
-/// The node's default ceilings: these tests are about the other fields.
+/// The node's default ceilings: these tests are about the other fields. Firecracker, whose
+/// `credentials.env` the node withholds from the guest; the container driver has its own tests.
 fn admit(s: &PodSpec, sinks: &AuditSinks) -> Result<Option<AuditTarget>, PostureRefused> {
-    super::admit(s, sinks, &PodCeilings::defaults())
+    super::admit(
+        s,
+        sinks,
+        &PodCeilings::defaults(),
+        &crate::driver::DriverKind::Firecracker,
+    )
+}
+
+fn on_container(s: &PodSpec) -> Result<Option<AuditTarget>, PostureRefused> {
+    super::admit(
+        s,
+        &sinks(),
+        &PodCeilings::defaults(),
+        &crate::driver::DriverKind::Container,
+    )
+}
+
+/// #2906: the container driver put `credentials.env` VALUES in the container's environment
+/// (`docker inspect`, `/proc/<pid>/environ`, every child) and in the `pod.yaml` it mounts. Its
+/// credentialed calls are now the host broker's, so a container spec carrying a credential is
+/// refused at create, naming every key and saying what to declare instead; it is never admitted
+/// with the values dropped. Red on main: the spec was admitted and its value injected.
+#[test]
+fn a_container_spec_carrying_credentials_is_refused_by_name() {
+    let carrying = spec(
+        r#"{"credentials":{"env":{"LLM_API_TOKEN":"test-token-123","OTHER_TOKEN":"x","NUCLEUS_TASK_CMD":"run"}}}"#,
+    );
+    let refusal = on_container(&carrying).expect_err("a credential value on a container pod");
+    assert_eq!(
+        refusal,
+        PostureRefused::ContainerCredentials {
+            keys: "LLM_API_TOKEN, OTHER_TOKEN".to_string()
+        }
+    );
+    let message = refusal.to_string();
+    for needle in [
+        "LLM_API_TOKEN",
+        "credentials are delivered by the host broker",
+        "credentialed_egress",
+    ] {
+        assert!(
+            message.contains(needle),
+            "{needle:?} missing from: {message}"
+        );
+    }
+    assert!(
+        !message.contains("test-token-123"),
+        "a refusal never echoes a value"
+    );
+    // Non-vacuity: the same spec is admitted where the node withholds the values, a container
+    // spec with no credentials is admitted, and the unmediated task runner (a command, not a
+    // credential) still is.
+    admitted(&carrying).expect("Firecracker withholds the values from its guest");
+    on_container(&spec("{}")).expect("no credentials");
+    on_container(&spec(
+        r#"{"credentials":{"env":{"NUCLEUS_TASK_CMD":"run"}}}"#,
+    ))
+    .expect("the task runner is not a credential");
 }
 
 fn spec(inner: &str) -> PodSpec {

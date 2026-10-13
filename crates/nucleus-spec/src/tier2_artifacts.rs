@@ -371,6 +371,15 @@ pub enum GuestCapability {
     /// verify-art12` refuses an older guest's keyless log by name rather than
     /// report it verified.
     SignedArt12Log,
+    /// The tool-proxy reaches the host credential broker over a Unix socket the
+    /// node bind-mounts into a container pod (`NUCLEUS_TOOL_PROXY_BROKER_SOCKET`,
+    /// #2906), so the container driver's credentialed egress is performed by the
+    /// host (CB4A Model A) as Firecracker's is. An older tool-proxy dials only
+    /// vsock, finds none in a container, and refuses every credentialed call.
+    /// [`Demand::Optional`]: the node depends on it only for a container pod that
+    /// declares `credentialed_egress`, and `container_broker::admit_image` reads
+    /// it to refuse such a pod on an image known to lack it, by name.
+    ContainerBrokerSocket,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -426,7 +435,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 22] = [
+    pub const ALL: [GuestCapability; 23] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -449,6 +458,7 @@ impl GuestCapability {
         GuestCapability::HostDecideTelemetry,
         GuestCapability::HostApprovalRedeem,
         GuestCapability::SignedArt12Log,
+        GuestCapability::ContainerBrokerSocket,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -492,6 +502,9 @@ impl GuestCapability {
             // Read by a verifier, never by the node: the collector reads a
             // record's hash and authority, which both forms carry.
             GuestCapability::SignedArt12Log => Demand::Optional,
+            // The node needs it only for a container pod with credentialed egress,
+            // and `container_broker::admit_image` reads it for that pod alone.
+            GuestCapability::ContainerBrokerSocket => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -562,6 +575,8 @@ impl GuestCapability {
             GuestCapability::HostApprovalRedeem => FirstShipped::NotYet,
             // #3309: in this tree and in no release yet.
             GuestCapability::SignedArt12Log => FirstShipped::NotYet,
+            // #2906: in this tree and in no release yet.
+            GuestCapability::ContainerBrokerSocket => FirstShipped::NotYet,
         }
     }
 
@@ -691,6 +706,12 @@ impl GuestCapability {
                  the key in every record; an older proxy MACs the log, so `nucleus-audit \
                  verify-art12` refuses that log by name unless given its non-empty secret (the \
                  node does not require it)"
+            }
+            GuestCapability::ContainerBrokerSocket => {
+                "#2906 has the tool-proxy reach the host credential broker over a Unix socket \
+                 the node bind-mounts into a container pod; an older tool-proxy dials only \
+                 vsock, so a container pod's credentialed egress could never be performed and \
+                 the node refuses that pod on such an image"
             }
         }
     }
@@ -1114,6 +1135,7 @@ mod tests {
             GuestCapability::HostDecideTelemetry,
             GuestCapability::HostApprovalRedeem,
             GuestCapability::SignedArt12Log,
+            GuestCapability::ContainerBrokerSocket,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1292,7 +1314,8 @@ mod tests {
                 GuestCapability::SharedSecretTierRetired => GuestCapability::HostDecideTelemetry,
                 GuestCapability::HostDecideTelemetry => GuestCapability::HostApprovalRedeem,
                 GuestCapability::HostApprovalRedeem => GuestCapability::SignedArt12Log,
-                GuestCapability::SignedArt12Log => GuestCapability::CaBundle,
+                GuestCapability::SignedArt12Log => GuestCapability::ContainerBrokerSocket,
+                GuestCapability::ContainerBrokerSocket => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

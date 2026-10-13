@@ -5,6 +5,9 @@
 #
 # Contains:
 #   - nucleus-tool-proxy binary (lattice-guard policy enforcement)
+#   - nucleus-egress-http, the workload's loopback adapter to its declared
+#     upstreams: the host performs those calls through the pod's broker
+#     socket and the workload never holds a credential (#2906)
 #   - claude CLI (installed via npm)
 #   - git, curl, and other common dev tools
 #
@@ -29,7 +32,7 @@ COPY --from=planner /build/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo chef cook --release --recipe-path recipe.json \
-        -p nucleus-tool-proxy
+        -p nucleus-tool-proxy -p nucleus-egress-http
 
 # ── Builder (compile our code — fast when only src changes) ───────────
 FROM cook AS builder
@@ -39,8 +42,9 @@ COPY crates/ crates/
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     cargo build --release -p nucleus-tool-proxy --features remote-audit \
-    && cp target/release/nucleus-tool-proxy /usr/local/bin/ \
-    && strip /usr/local/bin/nucleus-tool-proxy
+    && cargo build --release -p nucleus-egress-http \
+    && cp target/release/nucleus-tool-proxy target/release/nucleus-egress-http /usr/local/bin/ \
+    && strip /usr/local/bin/nucleus-tool-proxy /usr/local/bin/nucleus-egress-http
 
 # ── Runtime ──────────────────────────────────────────────────────────
 FROM debian:bookworm-slim@sha256:74d56e3931e0d5a1dd51f8c8a2466d21de84a271cd3b5a733b803aa91abf4421
@@ -60,7 +64,7 @@ RUN cd /tmp/cli-pins && npm ci --ignore-scripts \
     && npm install -g /tmp/cli-pins/node_modules/@anthropic-ai/claude-code \
     && rm -rf /tmp/cli-pins
 
-COPY --from=builder /usr/local/bin/nucleus-tool-proxy /usr/local/bin/
+COPY --from=builder /usr/local/bin/nucleus-tool-proxy /usr/local/bin/nucleus-egress-http /usr/local/bin/
 
 RUN useradd -m -s /bin/bash -u 1000 agent
 USER agent

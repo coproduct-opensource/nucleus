@@ -900,6 +900,7 @@ impl Host for Node {
             caller,
             egress: crate::broker_transport::serving_tests::test_egress_arc(),
             streams: crate::broker_transport::serving_tests::test_streams(),
+            peer: crate::broker_transport::peer::PeerRule::VmmForwarded,
         };
         tokio::spawn(crate::broker_transport::serve_broker(
             listener,

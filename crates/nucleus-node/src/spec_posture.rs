@@ -25,9 +25,12 @@
 //! - **`vsock.guest_cid`** — the node's PID-1 transport authenticates the host by peer CID 2
 //!   (`KB-VSOCK-PEER-CID`). A guest whose own CID is 2 makes a loopback peer indistinguishable
 //!   from the host. The guest only ever binds CID 3 (#2395), so 3 is the node's value.
-//! - **`credentials.env`** — on the container driver these are appended after the runtime's own
+//! - **`credentials.env`** — on the container driver these were appended after the runtime's own
 //!   variables, so a spec could set `NUCLEUS_TOOL_PROXY_APPROVAL_SECRET` or `LD_PRELOAD` for the
-//!   mediating process itself.
+//!   mediating process itself. And their VALUES sat in the container's environment, readable by
+//!   `docker inspect`, `/proc/<pid>/environ` and every child. A container pod's credentialed calls
+//!   are now performed by the host broker (`container_broker`, #2906), so on that driver any key
+//!   but the unmediated task runner is refused by name.
 //! - **`timeout_seconds`** — becomes a certificate and task-token lifetime. A value past
 //!   `TimeDelta`'s range panicked the create handler; one inside it minted tokens for centuries.
 //! - **`budget_model`** — the spec priced its own command executions, below the runtime's
@@ -101,6 +104,15 @@ pub(crate) enum PostureRefused {
          CID 2 is the host, and the in-guest proxy authenticates the host by it."
     )]
     GuestCid { cid: u32 },
+    /// `credentials.env` on the container driver, whose credentialed calls the host performs.
+    #[error(
+        "credentials.env ({keys}) is refused on the container driver: credentials are delivered \
+         by the host broker; declare credentialed_egress upstreams instead (the node's \
+         --upstreams registry). A container's environment is readable through `docker inspect` \
+         and /proc/<pid>/environ and is inherited by every child, so the node no longer puts a \
+         credential value there (#2906)."
+    )]
+    ContainerCredentials { keys: String },
     /// A `credentials.env` name the runtime owns, or that is not an environment variable name.
     #[error(
         "credentials.env key `{key}` is refused: {why}. Credentials are passed to the pod's \
@@ -161,6 +173,7 @@ pub(crate) fn admit(
     spec: &PodSpec,
     sinks: &AuditSinks,
     ceilings: &PodCeilings,
+    driver: &crate::driver::DriverKind,
 ) -> Result<Option<AuditTarget>, PostureRefused> {
     crate::pod_resources::admit(spec, ceilings)?;
     for &(label, owner) in NODE_OWNED_LABELS {
@@ -182,6 +195,7 @@ pub(crate) fn admit(
             credential_name(key)?;
         }
     }
+    container_credentials(driver, spec)?;
     if inner.timeout_seconds > MAX_TIMEOUT_SECONDS {
         return Err(PostureRefused::Timeout {
             seconds: inner.timeout_seconds,
@@ -194,6 +208,23 @@ pub(crate) fn admit(
         return Err(PostureRefused::WritableRootfs);
     }
     Ok(audit)
+}
+
+/// The container driver delivers no credential value (#2906). Exhaustive over drivers, no `_`
+/// arm (ADR 0007 B-3): a new driver says whether it puts `credentials.env` anywhere.
+fn container_credentials(
+    driver: &crate::driver::DriverKind,
+    spec: &PodSpec,
+) -> Result<(), PostureRefused> {
+    use crate::driver::DriverKind;
+    match driver {
+        DriverKind::Container => crate::container_broker::refuse_spec_credentials(spec).map(drop),
+        // Firecracker withholds the values from the spec it serves (`cred_split`); Apple VZ and
+        // the local driver never read them.
+        DriverKind::Firecracker | DriverKind::AppleVz => Ok(()),
+        #[cfg(feature = "local-driver")]
+        DriverKind::Local => Ok(()),
+    }
 }
 
 /// A `credentials.env` name: an environment variable name outside the runtime's namespaces.

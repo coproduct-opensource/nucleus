@@ -95,6 +95,7 @@ mod broker_rollout;
 mod broker_stream;
 mod broker_transport;
 mod cgroup;
+mod container_broker;
 mod container_env;
 mod container_mediation;
 mod container_transport;
@@ -706,6 +707,8 @@ struct ContainerPod {
     docker: bollard::Docker,
     /// Only present when the node mediates its container pods.
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
+    /// The pod's credential broker (#2906), torn down with it.
+    broker: Mutex<Option<broker_transport::BrokerListener>>,
     /// Semaphore permit for concurrency limiting.
     permit: Mutex<Option<OwnedSemaphorePermit>>,
     /// Cached exit state — set before container removal so status() works after cleanup.
@@ -1270,7 +1273,12 @@ async fn create_pod_internal(
     // Posture fields a spec may not weaken (#3120), and where its audit log goes (#3131). A sink
     // this node cannot mint a scoped credential for is refused here, by name (#3160).
     let audit_mint = audit_sink::credentials::admit(
-        spec_posture::admit(&spec, &state.audit_sinks, &state.pod_ceilings)?,
+        spec_posture::admit(
+            &spec,
+            &state.audit_sinks,
+            &state.pod_ceilings,
+            &state.driver,
+        )?,
         state.audit_minter.as_ref(),
     )?;
     let requested_memory = state
@@ -1695,7 +1703,11 @@ async fn spawn_container_pod(
         };
         let version = container_transport::image_version(labels.as_ref());
         container_transport::admit_image(state.container_proxy, &state.container_image, version)?;
+        container_broker::admit_image(&state.container_image, version, spec)?;
     }
+    // Before pod.yaml is written: a spec carrying a credential is refused, and the host performs
+    // the pod's credentialed calls over a broker the proxy is told how to reach (#2906).
+    let broker = container_broker::prepare(state, spec, pod_dir, id).await?;
 
     let spec_path = pod_dir.join("pod.yaml");
     let log_path = pod_dir.join("pod.log");
@@ -1728,6 +1740,12 @@ async fn spawn_container_pod(
                 .map(|(key, path)| format!("{key}={}", path.display())),
         );
     }
+    env.extend(
+        broker
+            .iter()
+            .flat_map(container_broker::Prepared::env)
+            .cloned(),
+    );
     let launch = container_mediation::launch(mediation, &state.container_image, &env);
     let image = launch.image.clone();
 
@@ -1765,6 +1783,8 @@ async fn spawn_container_pod(
         memory_swap: Some(container_memory),
         nano_cpus: Some(i64::from(size.vcpus()) * 1_000_000_000),
         pids_limit: Some(pod_resources::CONTAINER_PIDS_MAX),
+        // The proxy must be the container's init: its broker admits that pid alone.
+        init: proxy_mode.then_some(false),
         ..Default::default()
     };
 
@@ -1829,6 +1849,7 @@ async fn spawn_container_pod(
             )
             .await
             .map_err(|e| ApiError::Driver(format!("start container {container_id}: {e}")))?;
+        let broker = container_broker::arm(broker, docker, &container_id).await?;
 
         // Stream container logs to pod.log in background
         {
@@ -1910,6 +1931,7 @@ async fn spawn_container_pod(
             container_id,
             docker: docker.as_ref().clone(),
             signed_proxy: Mutex::new(signed_proxy_opt),
+            broker: Mutex::new(broker),
             permit: Mutex::new(None),
             cached_exit: Mutex::new(None),
         };

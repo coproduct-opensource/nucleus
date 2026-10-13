@@ -57,11 +57,19 @@ pub(crate) async fn container_env(
         }
     }
 
-    // Pass credentials from PodSpec (if any)
-    if let Some(ref creds) = spec.spec.credentials {
-        for (key, val) in &creds.env {
-            env.push(format!("{key}={val}"));
-        }
+    // No credential VALUE reaches a container's environment (#2906): `docker inspect`,
+    // `/proc/<pid>/environ` and every child read it there. A mediated pod's credentialed calls
+    // are the host broker's (`container_broker`), and `spec_posture::admit` refuses a container
+    // spec carrying any `credentials.env` key but the unmediated task runner, which is a command
+    // and is read here by name, for the one mode that runs it.
+    if !proxy_mode
+        && let Some(runner) = spec
+            .spec
+            .credentials
+            .as_ref()
+            .and_then(|creds| creds.env.get(container_broker::TASK_RUNNER))
+    {
+        env.push(format!("{}={runner}", container_broker::TASK_RUNNER));
     }
 
     // In direct mode, extract the task from the raw YAML (task is not in the typed
