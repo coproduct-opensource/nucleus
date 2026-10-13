@@ -579,3 +579,44 @@ pub async fn get_bundle(
         JobState::Failed { .. } => Err(ApiError::Conflict { state: "failed" }),
     }
 }
+
+/// Query string of `GET /v1/jobs/{id}/attestation`. `format` is required:
+/// there is no default format to fall back to.
+#[derive(Debug, Deserialize)]
+pub struct AttestationQuery {
+    pub format: nucleus_envelope::ExportFormat,
+}
+
+/// `GET /v1/jobs/{id}/attestation?format=in-toto|slsa|sigstore|sigstore-slsa`
+/// — the job's bundle as a standard attestation, signed by this server's
+/// lineage key (the key whose JWKS verifies the bundle). That signer is the
+/// build platform, which is what SLSA's L2 "signed by the build platform"
+/// requires; an attestation from `nucleus envelope-export` is signed by
+/// whoever runs it.
+///
+/// Same ownership rule and same 409-until-completed as the bundle route. The
+/// ownership check runs before the query is read, so a non-owner gets 404
+/// for every format string, valid or not.
+pub async fn get_attestation(
+    State(state): State<AppState>,
+    crate::auth::RequireSpiffeAuth(principal): crate::auth::RequireSpiffeAuth,
+    Path(job_id): Path<String>,
+    query: Result<axum::extract::Query<AttestationQuery>, axum::extract::rejection::QueryRejection>,
+) -> Result<Json<nucleus_envelope::Attestation>, ApiError> {
+    let id = JobId::from_raw(job_id);
+    let job_state = state.jobs.get(&id).map_err(|_| ApiError::NotFound)?;
+    require_owner(&principal, &job_state)?;
+    let axum::extract::Query(AttestationQuery { format }) =
+        query.map_err(|e| ApiError::BadRequest(e.body_text()))?;
+    let bundle = match job_state {
+        JobState::Completed { outcome, .. } => outcome.bundle,
+        JobState::Queued { .. } => return Err(ApiError::Conflict { state: "queued" }),
+        JobState::Running { .. } => return Err(ApiError::Conflict { state: "running" }),
+        JobState::Failed { .. } => return Err(ApiError::Conflict { state: "failed" }),
+    };
+    let signer: &dyn nucleus_lineage::EdgeSigner = state.issuer.as_ref();
+    bundle
+        .export_attestation(format, signer)
+        .map(Json)
+        .map_err(|e| ApiError::Internal(format!("exporting {}: {e}", format.name())))
+}

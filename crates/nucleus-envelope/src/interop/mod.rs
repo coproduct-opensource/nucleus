@@ -7,6 +7,7 @@
 //! here are all pure JSON + base64 + Ed25519, the primitives the
 //! envelope already uses.
 
+pub mod export;
 pub mod in_toto;
 pub mod sigstore;
 pub mod slsa;

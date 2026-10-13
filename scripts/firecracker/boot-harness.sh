@@ -35,7 +35,6 @@ ROOTFS="${ROOTFS:-$FC_DIR/rootfs.ext4}"
 NODE_BIN="${NODE_BIN:-$FC_DIR/nucleus-node}"
 STATE_DIR="${STATE_DIR:-$FC_DIR/state}"
 NODE_ADDR="${NODE_ADDR:-127.0.0.1:9900}"
-PROXY_AUTH_SECRET="${PROXY_AUTH_SECRET:-harness-proxy-secret}"
 
 # The node's API is mTLS with SPIFFE, and this harness has to speak it.
 #
@@ -86,8 +85,6 @@ sudo -b env RUST_LOG="${RUST_LOG:-info}" \
     "$NODE_BIN" \
     --listen "$NODE_ADDR" \
     --state-dir "$STATE_DIR" \
-    --proxy-auth-secret "$PROXY_AUTH_SECRET" \
-    --proxy-approval-secret harness-approval-secret \
     --identity-workload-api-socket "$FC_DIR/wapi.sock" \
     > "$FC_DIR/node.log" 2>&1
 sleep 5

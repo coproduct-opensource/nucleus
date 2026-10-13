@@ -219,11 +219,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        for needle in [
-            "HostVerifiedProxySocket",
-            "2.2.0",
-            "--container-proxy-transport tcp-hmac",
-        ] {
+        for needle in ["HostVerifiedProxySocket", "2.2.0", "that release or later"] {
             assert!(error.contains(needle), "missing {needle:?} in: {error}");
         }
         assert!(

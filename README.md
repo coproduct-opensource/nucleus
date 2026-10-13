@@ -434,7 +434,7 @@ The workspace contains **~47 crates** (42 workspace members + 5 excluded build t
 | [**portcullis-effects**](crates/portcullis-effects/) | Sealed effect traits (`FileEffect`/`ShellEffect`/`GitEffect`/…) gated by `production_effects(policy)` | Alpha — file/shell/git do real I/O; web/spawn stubbed |
 | [**portcullis-profiles**](crates/portcullis-profiles/) | Work-type presets (CodeReview/BugFix/DocsEdit/Research), vendor-neutral | Working |
 | [**portcullis-python**](crates/portcullis-python/) | PyO3/maturin native bindings exposing the portcullis core to Python | Excluded build target (native bindings) |
-| [**portcullis-zkvm-guest**](crates/portcullis-zkvm-guest/) | RISC-V zkVM guest (risc0-build) — proving target for core checks | Excluded build target (zkVM guest) |
+| [**portcullis-zkvm-guest**](crates/portcullis-zkvm-guest/) | RISC-V zkVM guest (risc0-build) + host `ZkvmReceipt` container — research, no proof is verified anywhere | Excluded, own lockfile; not built in CI |
 | [**nucleus-ifc**](crates/nucleus-ifc/) | Standalone IFC API (re-export of the core FlowTracker) | Working |
 | [**nucleus-memory**](crates/nucleus-memory/) | Governed memory with per-entry IFC labels + poisoning detection | Working |
 | [**nucleus-spec**](crates/nucleus-spec/) | `PodSpec`, generic `credentials.env`, network/resource/seccomp specs, draft `workload_identity` | Alpha — `workload_identity` is a draft RFC with no runtime consumer; **still hardcodes specific LLM-vendor hostnames + workload-identity defaults** (see Known Gaps) |

@@ -92,6 +92,7 @@ pub mod c2pa_assertions;
 pub mod c2pa_manifest;
 #[cfg(feature = "c2pa-manifest")]
 pub mod c2pa_signer;
+pub mod canonical;
 pub mod capability_traits;
 pub mod category;
 pub mod certchain;
@@ -147,8 +148,6 @@ pub mod wasm_sandbox;
 pub mod wire;
 #[cfg(feature = "envelope")]
 pub mod witness;
-#[cfg(feature = "zkvm")]
-pub mod zkvm_receipt;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // IFC admission core — re-exported from `nucleus-ifc-kernel` (MVK M3)

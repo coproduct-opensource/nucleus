@@ -153,13 +153,8 @@ mod tests {
     #[test]
     fn the_default_container_pod_is_mediated_by_the_node_chosen_binary() {
         use clap::Parser;
-        let args = crate::Args::try_parse_from([
-            "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
-            "--driver=container",
-        ])
-        .expect("minimal container node");
+        let args = crate::Args::try_parse_from(["nucleus-node", "--driver=container"])
+            .expect("minimal container node");
         assert_eq!(args.container_mediation, ContainerMediation::ToolProxy);
 
         let task = [
@@ -182,8 +177,6 @@ mod tests {
         use clap::Parser;
         let args = crate::Args::try_parse_from([
             "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
             "--container-image=registry.local/mediator@sha256:00",
         ])
         .expect("args");
@@ -197,13 +190,9 @@ mod tests {
     #[test]
     fn unmediated_is_an_explicit_node_opt_in() {
         use clap::Parser;
-        let args = crate::Args::try_parse_from([
-            "nucleus-node",
-            "--proxy-auth-secret=test",
-            "--proxy-approval-secret=test",
-            "--container-mediation=unmediated",
-        ])
-        .expect("args");
+        let args =
+            crate::Args::try_parse_from(["nucleus-node", "--container-mediation=unmediated"])
+                .expect("args");
         assert_eq!(args.container_mediation, ContainerMediation::Unmediated);
         assert!(!args.container_mediation.runs_tool_proxy());
 

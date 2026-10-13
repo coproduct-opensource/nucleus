@@ -14,9 +14,15 @@
 //! - `mediaType = "application/vnd.dev.sigstore.bundle.v0.3+json"`
 //!   (the current Bundle spec)
 //! - DSSE envelope carried verbatim under `dsseEnvelope`
-//! - `verificationMaterial.publicKey.hint` set to the DSSE signature's
-//!   `keyid` — required by the spec when a key hint is present
-//!   alongside a DSSE envelope
+//! - `verificationMaterial.publicKey.hint` and the DSSE signature's
+//!   `keyid` both EMPTY. The spec requires the two to be identical; it
+//!   does not require either to be set. Measured 2026-10-13 with cosign
+//!   v2.4.1 (`verify-blob-attestation --key … --bundle …
+//!   --new-bundle-format`): a non-empty `keyid` is rejected ("accepted
+//!   signatures do not match threshold, Found: 0") because the key-based
+//!   verifier has no key id to match it against; with both empty the same
+//!   bundle verifies. The bare DSSE exports keep the `keyid`; a Sigstore
+//!   consumer selects the key out-of-band (`--key`) either way.
 //! - Empty `tlogEntries` and no `timestampVerificationData`
 //!
 //! # What v2 of this adapter will add
@@ -59,8 +65,8 @@ pub struct SigstoreBundle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationMaterial {
     /// Public key identifier (hint). Per the spec, when the content
-    /// is a DSSE envelope and a key hint is present, it MUST equal
-    /// each signature's `keyid`.
+    /// is a DSSE envelope it MUST be exactly the signature's `keyid`;
+    /// this adapter leaves both empty (module docs).
     #[serde(rename = "publicKey", default, skip_serializing_if = "Option::is_none")]
     pub public_key: Option<PublicKeyIdentifier>,
     /// Rekor transparency log entries. Empty in v1; reserved for
@@ -77,11 +83,10 @@ pub struct VerificationMaterial {
 }
 
 /// Public-key hint — opaque string the verifier resolves against a
-/// trust anchor. Aligned with the DSSE signature's `keyid`.
+/// trust anchor. Must equal the DSSE signature's `keyid`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicKeyIdentifier {
-    /// Hint string. For nucleus this is the JWS-style kid of the
-    /// signing key — the same value the DSSE envelope carries.
+    /// Hint string. Empty in this adapter (module docs).
     pub hint: String,
 }
 
@@ -116,16 +121,21 @@ impl Bundle {
 }
 
 /// Internal helper: wrap a DSSE envelope in a v1-shape Sigstore Bundle.
-fn wrap_dsse(dsse: DsseEnvelope) -> SigstoreBundle {
-    let hint = dsse
-        .signatures
-        .first()
-        .map(|s| s.keyid.clone())
-        .unwrap_or_default();
+///
+/// Clears every signature's `keyid` and sets an equal (empty) hint — the
+/// spec's "exactly the same" rule, in the form cosign's key-based bundle
+/// verifier accepts (module docs). `keyid` is outside the PAE, so the
+/// signature is unaffected.
+fn wrap_dsse(mut dsse: DsseEnvelope) -> SigstoreBundle {
+    for sig in &mut dsse.signatures {
+        sig.keyid.clear();
+    }
     SigstoreBundle {
         media_type: SIGSTORE_BUNDLE_V03_MEDIA_TYPE.to_string(),
         verification_material: VerificationMaterial {
-            public_key: Some(PublicKeyIdentifier { hint }),
+            public_key: Some(PublicKeyIdentifier {
+                hint: String::new(),
+            }),
             tlog_entries: Vec::new(),
             timestamp_verification_data: None,
         },
@@ -209,8 +219,8 @@ mod tests {
     }
 
     #[test]
-    fn public_key_hint_matches_dsse_keyid() {
-        let signer = TestSigner::new("must-match-this-kid");
+    fn public_key_hint_equals_dsse_keyid_and_both_are_empty() {
+        let signer = TestSigner::new("a-kid-the-bundle-must-not-carry");
         let b = fixture_bundle().to_sigstore_bundle_intoto(&signer).unwrap();
         let hint = &b.verification_material.public_key.as_ref().unwrap().hint;
         let kid = &b.dsse_envelope.signatures[0].keyid;
@@ -218,7 +228,13 @@ mod tests {
             hint, kid,
             "Sigstore spec requires verification_material.publicKey.hint == dsse.signatures[*].keyid"
         );
-        assert_eq!(hint, "must-match-this-kid");
+        assert_eq!(
+            hint, "",
+            "cosign's key-based verifier rejects a non-empty keyid"
+        );
+        // The bare DSSE export still names the key.
+        let dsse = fixture_bundle().to_in_toto_dsse(&signer).unwrap();
+        assert_eq!(dsse.signatures[0].keyid, "a-kid-the-bundle-must-not-carry");
     }
 
     #[test]
@@ -256,7 +272,7 @@ mod tests {
         let stmt: crate::Statement = serde_json::from_slice(&payload_bytes).unwrap();
         assert_eq!(
             stmt.predicate_type,
-            "https://nucleus.coproduct.io/agent-provenance/v1"
+            "https://nucleus.coproduct.io/agent-provenance/v2"
         );
     }
 

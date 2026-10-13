@@ -1,6 +1,6 @@
 //! Configure an Apple host or provision the legacy Lima/Linux installation.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use clap::Args;
 use std::path::PathBuf;
 use std::process::Command;
@@ -755,13 +755,10 @@ async fn provision_tier2_host(
     provision::install_kernel(&host, arch, &cache_dir)?;
     provision::install_tier2_artifacts(&host, arch, &cache_dir, plan, args.replace_binaries())?;
 
-    // The secrets already exist — `setup_secrets` created them a step ago, and
-    // on an existing install they predate this run. They were simply never
-    // handed to the node, which is why its unit could not start it. There is
-    // no node API secret among them: the node's API is mTLS-only (Move B), so
-    // the CLI reaches it with the identity minted below (#3294).
-    let proxy = secret_hex(SecretKind::ProxyAuthSecret)?;
-    let approval = secret_hex(SecretKind::ApprovalSecret)?;
+    // The node is handed no shared secret. Its API is mTLS-only (Move B), so
+    // the CLI reaches it with the identity minted below (#3294), and its pods'
+    // proxies authenticate it by transport and verify approvals against its
+    // Ed25519 key, so the proxy secrets went with #2446 step 3.
     // A fresh canary per setup. It is not a stored secret: it exists only so the
     // guest leak sweep has something real to fail to find, and rotating it every
     // run means a value that DID leak once cannot keep passing later (#2372).
@@ -790,24 +787,9 @@ async fn provision_tier2_host(
          fallback to opt out of.)"
     );
 
-    provision::install_node_service(&host, &provision::node_env_body(&proxy, &approval, &canary))?;
+    provision::install_node_service(&host, &provision::node_env_body(&canary))?;
 
     Ok(())
-}
-
-/// A stored secret hex-encoded, the form the node reads from `node.env`.
-///
-/// Anything else that signs with the same secret must use `hex::encode` too, or
-/// every signed request fails in a way that reads like clock skew rather than
-/// an encoding mismatch.
-fn secret_hex(kind: SecretKind) -> Result<String> {
-    let raw = SecretStore::get(kind)?.ok_or_else(|| {
-        anyhow!(
-            "secret '{}' is missing; re-run nucleus setup",
-            kind.description()
-        )
-    })?;
-    Ok(hex::encode(raw))
 }
 
 fn get_lima_config_path() -> Result<PathBuf> {

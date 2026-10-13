@@ -1,8 +1,10 @@
 //! RISC-V zkVM guest entrypoint — `nucleus-audit verify-provenance` (#1116).
 //!
-//! This binary is compiled to a RISC-V ELF by `risc0-build` and embedded
-//! in `portcullis-core` (behind the `zkvm` feature flag). The host invokes
-//! the prover with this ELF and receives a `risc0_zkvm::Receipt` that proves:
+//! This binary is compiled to a RISC-V ELF by `risc0-build`. Nothing in the
+//! root workspace builds or embeds it: `portcullis-core`'s former `zkvm`
+//! feature was removed on 2026-10-12 to keep risc0 out of the root lockfile.
+//! A host that does build it invokes the prover with this ELF and receives a
+//! `risc0_zkvm::Receipt` that proves:
 //!
 //! > "Parser with hash H, when executed on input I, produced output O."
 //!
