@@ -86,6 +86,11 @@ pub fn inherit_compartment(requested: &mut CapabilityLattice, parent: &Capabilit
             set_compartment(requested, p);
         }
     }
+    // A named compartment is not narrowed by a hop: a child keeps every one its parent
+    // holds (it may not add one, which `verify_certificate`'s `leq` refuses).
+    for k in named_of(parent) {
+        requested.extensions.insert(k, CapabilityLevel::Always);
+    }
 }
 
 /// Meet the NAMED capability dimensions of `caps` with `c`'s ceiling, keeping
@@ -163,7 +168,47 @@ pub fn check_effective(
     if compartment_of(parent).is_some() && compartment_of(effective).is_none() {
         return Err(CompartmentHopError::Dropped);
     }
+    if named_of(parent).iter().any(|k| {
+        effective
+            .extensions
+            .get(k)
+            .is_none_or(|l| *l == CapabilityLevel::Never)
+    }) {
+        return Err(CompartmentHopError::Dropped);
+    }
     Ok(())
+}
+
+// ── Named compartments ──────────────────────────────────────────────────────
+//
+// An operator-defined ceiling (a node registry's `[[compartment]]`), carried by name and
+// the digest of its definition. Unlike the four built-ins it is not a level that a hop may
+// lower: the definition is the ceiling, applied where the root is minted, and every hop
+// below keeps the key (`inherit_compartment`) and may not drop it (`check_effective`).
+
+/// Prefix of every named compartment key: `compartment@<name>:<digest>`.
+pub const NAMED_PREFIX: &str = "compartment@";
+
+/// The key for named compartment `name` whose definition has `digest`.
+#[must_use]
+pub fn named_key(name: &str, digest: &str) -> ExtensionOperation {
+    ExtensionOperation::new(format!("{NAMED_PREFIX}{name}:{digest}"))
+}
+
+/// Place `caps` in named compartment `name` (definition `digest`).
+pub fn set_named(caps: &mut CapabilityLattice, name: &str, digest: &str) {
+    caps.extensions
+        .insert(named_key(name, digest), CapabilityLevel::Always);
+}
+
+/// Every named compartment `caps` holds.
+#[must_use]
+pub fn named_of(caps: &CapabilityLattice) -> Vec<ExtensionOperation> {
+    caps.extensions
+        .iter()
+        .filter(|(k, l)| k.0.starts_with(NAMED_PREFIX) && **l != CapabilityLevel::Never)
+        .map(|(k, _)| k.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -222,6 +267,30 @@ mod tests {
         let mut under_unset = CapabilityLattice::permissive();
         inherit_compartment(&mut under_unset, &CapabilityLattice::permissive());
         assert!(under_unset.extensions.is_empty());
+    }
+
+    /// A named compartment survives a silent hop, and a hop that loses it is refused. It is
+    /// not one of the built-in levels, so it never reads as one.
+    #[test]
+    fn a_named_compartment_is_inherited_and_cannot_be_dropped() {
+        let mut parent = CapabilityLattice::permissive();
+        set_named(&mut parent, "pilot", "abc123");
+        assert_eq!(named_of(&parent), vec![named_key("pilot", "abc123")]);
+        assert_eq!(compartment_of(&parent), None);
+
+        let mut silent = CapabilityLattice::permissive();
+        inherit_compartment(&mut silent, &parent);
+        let child = parent.meet(&silent);
+        assert_eq!(named_of(&child), named_of(&parent));
+        assert!(child.leq(&parent));
+        assert_eq!(check_effective(&child, &parent), Ok(()));
+
+        let shed = parent.meet(&CapabilityLattice::permissive());
+        assert!(named_of(&shed).is_empty(), "a plain meet drops it");
+        assert_eq!(
+            check_effective(&shed, &parent),
+            Err(CompartmentHopError::Dropped)
+        );
     }
 
     /// The ceiling is applied to the named dimensions and leaves the

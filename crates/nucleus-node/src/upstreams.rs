@@ -203,6 +203,10 @@ struct RegistryFile {
     /// credential" on the type the broker injects from (ADR 0007 B-2).
     #[serde(default)]
     egress: Vec<crate::egress_proxy::EgressFile>,
+    /// Named compartments (`federation_ingress::CompartmentFile`): operator-defined ceilings a
+    /// `[[caller]]` may name, carried into every certificate the binding mints.
+    #[serde(default)]
+    compartment: Vec<crate::federation_ingress::CompartmentFile>,
 }
 
 #[derive(Deserialize)]
@@ -596,6 +600,8 @@ pub(crate) struct UpstreamRegistry {
     callers: Vec<crate::federation_ingress::CallerFile>,
     /// The `[[egress]]` routes, validated.
     egress: Arc<crate::egress_proxy::EgressRoutes>,
+    /// The file's `[[compartment]]` tables, validated with the callers.
+    compartments: Vec<crate::federation_ingress::CompartmentFile>,
 }
 
 impl UpstreamRegistry {
@@ -681,6 +687,7 @@ impl UpstreamRegistry {
             specs,
             callers: file.caller,
             egress: Arc::new(egress),
+            compartments: file.compartment,
         })
     }
 
@@ -692,6 +699,11 @@ impl UpstreamRegistry {
     /// The `[[caller]]` tables of this file, unvalidated.
     pub fn callers(&self) -> &[crate::federation_ingress::CallerFile] {
         &self.callers
+    }
+
+    /// The `[[compartment]]` tables of this file, unvalidated.
+    pub fn compartments(&self) -> &[crate::federation_ingress::CompartmentFile] {
+        &self.compartments
     }
 
     /// Every entry's projection, for admission to clamp against.
