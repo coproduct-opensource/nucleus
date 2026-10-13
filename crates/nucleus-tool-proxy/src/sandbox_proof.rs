@@ -4,19 +4,29 @@
 //! Tool-proxy refuses to start unless it can cryptographically prove it's
 //! running inside a managed sandbox. There is no dev override — no escape hatch.
 //!
-//! # Three-Tier Proof Hierarchy
+//! # Two-Tier Proof Hierarchy
 //!
 //! 1. **Attested** (Firecracker): SVID cert with TCG DICE extension containing
 //!    kernel/rootfs/config hashes, AND a chain to the node's CA (the trust
 //!    bundle). Unforgeable: requires host CA + vsock. Held as a
 //!    [`VerifiedLaunch`], which only the chain check can mint.
-//! 2. **SpiffeIdentity** (Docker + SPIRE): SVID from SPIRE Workload API without
-//!    attestation extension. Unforgeable: requires SPIRE Agent attestation.
-//! 3. **OrchestratorToken** (Docker without SPIRE): HMAC-SHA256 token generated
-//!    by nucleus-node at spawn time. Unforgeable: requires shared auth_secret.
+//! 2. **SpiffeIdentity**: an SVID without the attestation extension, from the
+//!    identity files the launcher wrote (the node's container and local
+//!    drivers, and the host-tier launchers' minted identity,
+//!    `nucleus_identity::pod_files`) or from the SPIRE Workload API.
 //!
-//! Verification proceeds tier 1 → tier 2 → tier 3. If none succeed, the process
+//! Verification proceeds tier 1 → tier 2. If neither succeeds, the process
 //! exits with a fatal error.
+//!
+//! # The tier that is gone (#2446 step 3)
+//!
+//! A third tier, `OrchestratorToken`, accepted an HMAC-SHA256 token the node
+//! minted with the shared `--auth-secret`. It proved only that the launcher
+//! held a secret it also handed to the proxy, on an argv or in an environment
+//! the agent could read. Every launcher now writes an identity instead, so the
+//! tier, its token (`NUCLEUS_SANDBOX_TOKEN`) and its key are deleted rather
+//! than kept as a fallback. A token that still arrives is named at startup and
+//! proves nothing ([`RETIRED_SANDBOX_TOKEN_ENV`]).
 
 use std::path::{Path, PathBuf};
 
@@ -98,10 +108,9 @@ pub enum SandboxProof {
     /// Tier 1: SVID certificate with TCG DICE launch attestation, verified to
     /// chain to the node's CA.
     Attested(VerifiedLaunch),
-    /// Tier 2: SVID certificate from SPIRE Workload API (no attestation extension).
+    /// Tier 2: an SVID with no attestation extension, from identity files or
+    /// the SPIRE Workload API.
     SpiffeIdentity { spiffe_id: String },
-    /// Tier 3: HMAC-SHA256 token injected by the orchestrator (nucleus-node).
-    OrchestratorToken { pod_id: String, spec_hash: String },
 }
 
 impl SandboxProof {
@@ -115,14 +124,12 @@ impl SandboxProof {
     /// tier-1 check above it was not; with `VerifiedLaunch` minted by the chain
     /// check, tier 1 is the claim a microVM boundary needs.
     ///
-    /// Tiers 2 and 3 prove a managed launch, not a VM boundary, so they stay
+    /// Tier 2 proves a managed launch, not a VM boundary, so it stays
     /// `Unsandboxed`. No `_ =>` (ADR 0007 B): a new tier must say what it attests.
     pub fn containment(&self) -> nucleus::ContainmentMode {
         match self {
             SandboxProof::Attested(_) => nucleus::ContainmentMode::MicroVM,
-            SandboxProof::SpiffeIdentity { .. } | SandboxProof::OrchestratorToken { .. } => {
-                nucleus::ContainmentMode::Unsandboxed
-            }
+            SandboxProof::SpiffeIdentity { .. } => nucleus::ContainmentMode::Unsandboxed,
         }
     }
 
@@ -131,7 +138,6 @@ impl SandboxProof {
         match self {
             SandboxProof::Attested(_) => "attested",
             SandboxProof::SpiffeIdentity { .. } => "spiffe-identity",
-            SandboxProof::OrchestratorToken { .. } => "orchestrator-token",
         }
     }
 
@@ -140,7 +146,6 @@ impl SandboxProof {
         match self {
             SandboxProof::Attested(_) => 1,
             SandboxProof::SpiffeIdentity { .. } => 2,
-            SandboxProof::OrchestratorToken { .. } => 3,
         }
     }
 }
@@ -161,9 +166,6 @@ impl std::fmt::Display for SandboxProof {
             SandboxProof::SpiffeIdentity { spiffe_id } => {
                 write!(f, "tier=2/spiffe-identity spiffe_id={spiffe_id}")
             }
-            SandboxProof::OrchestratorToken { pod_id, .. } => {
-                write!(f, "tier=3/orchestrator-token pod_id={pod_id}")
-            }
         }
     }
 }
@@ -178,10 +180,25 @@ pub struct SandboxProofConfig {
     pub trust_bundle_path: Option<PathBuf>,
     /// SPIRE Workload API socket path (--spire-socket or SPIFFE_ENDPOINT_SOCKET).
     pub spire_socket: Option<String>,
-    /// HMAC-signed sandbox token from NUCLEUS_SANDBOX_TOKEN env var.
-    pub sandbox_token: Option<String>,
-    /// Shared secret for HMAC verification (from --auth-secret).
-    pub auth_secret: Vec<u8>,
+}
+
+/// The environment variable the deleted tier-3 token rode (#2446 step 3).
+///
+/// A node from a release before the deletion still sets it on every container
+/// pod, beside the identity files that are the proof now, so its presence is
+/// not refused: it is named on stderr and never read. It proves nothing,
+/// because nothing in this process holds a key to check it with.
+pub const RETIRED_SANDBOX_TOKEN_ENV: &str = "NUCLEUS_SANDBOX_TOKEN";
+
+/// The line [`RETIRED_SANDBOX_TOKEN_ENV`] gets when it is set, or `None`.
+pub fn retired_token_notice(value: Option<&str>) -> Option<String> {
+    value.filter(|v| !v.is_empty()).map(|_| {
+        format!(
+            "{RETIRED_SANDBOX_TOKEN_ENV} is set, but the orchestrator-token tier it proved is \
+             deleted (#2446 step 3); it is ignored. The sandbox proof is the identity \
+             certificate (NUCLEUS_IDENTITY_CERT) or SPIRE"
+        )
+    })
 }
 
 /// Errors during sandbox proof verification.
@@ -193,8 +210,6 @@ pub enum SandboxProofError {
     CertReadError(String),
     /// Certificate could not be parsed.
     CertParseError(String),
-    /// Token verification failed.
-    TokenError(String),
     /// A certificate claimed a measured launch that could not be verified:
     /// no trust bundle, a chain to some other CA, or no parseable claim.
     LaunchUnverified(String),
@@ -208,7 +223,6 @@ impl std::fmt::Display for SandboxProofError {
             }
             SandboxProofError::CertReadError(msg) => write!(f, "cert read error: {msg}"),
             SandboxProofError::CertParseError(msg) => write!(f, "cert parse error: {msg}"),
-            SandboxProofError::TokenError(msg) => write!(f, "token error: {msg}"),
             SandboxProofError::LaunchUnverified(msg) => {
                 write!(f, "launch attestation unverified: {msg}")
             }
@@ -252,21 +266,6 @@ pub async fn verify_sandbox(
             }
             Err(e) => {
                 debug!("SPIRE proof not available: {e}");
-            }
-        }
-    }
-
-    // Tier 3: Try orchestrator token
-    if let Some(ref token) = config.sandbox_token
-        && !token.is_empty()
-    {
-        match try_orchestrator_token(token, &config.auth_secret) {
-            Ok(proof) => {
-                info!(containment = ?proof.containment(), "sandbox proof established: {proof}");
-                return Ok(proof);
-            }
-            Err(e) => {
-                warn!("orchestrator token invalid: {e}");
             }
         }
     }
@@ -405,21 +404,6 @@ async fn try_spire_proof(socket_path: &str) -> Result<SandboxProof, SandboxProof
     Ok(SandboxProof::SpiffeIdentity { spiffe_id })
 }
 
-/// Try to verify an HMAC-signed orchestrator token.
-///
-/// Token format: `sandbox-proof.{pod_id}.{spec_hash}.{timestamp}.{hmac_hex}`
-fn try_orchestrator_token(
-    token: &str,
-    auth_secret: &[u8],
-) -> Result<SandboxProof, SandboxProofError> {
-    let payload = nucleus_client::verify_sandbox_token(auth_secret, token)
-        .map_err(SandboxProofError::TokenError)?;
-    Ok(SandboxProof::OrchestratorToken {
-        pod_id: payload.pod_id,
-        spec_hash: payload.spec_hash,
-    })
-}
-
 /// Extract SPIFFE ID from X.509 certificate SAN extension.
 fn extract_spiffe_id(cert: &x509_parser::prelude::X509Certificate<'_>) -> Option<String> {
     // One validator for the whole repo: the local SAN loop this replaced took
@@ -443,11 +427,8 @@ fn build_naked_process_message(config: &SandboxProofConfig) -> String {
     if config.spire_socket.is_none() {
         reasons.push("no SPIRE socket (--spire-socket or SPIFFE_ENDPOINT_SOCKET)");
     }
-    if config.sandbox_token.is_none() || config.sandbox_token.as_deref() == Some("") {
-        reasons.push("no sandbox token (NUCLEUS_SANDBOX_TOKEN)");
-    }
     format!(
-        "no sandbox proof available. Tried all 3 tiers. Missing: {}. \
+        "no sandbox proof available. Tried both tiers. Missing: {}. \
          Tool-proxy will not start outside a managed sandbox.",
         reasons.join("; ")
     )
@@ -614,8 +595,6 @@ mod tests {
             identity_cert_path: Some(write(&dir, "svid.pem", &forged_leaf())),
             trust_bundle_path: Some(write(&dir, "bundle.pem", &bundle_pem(&node_ca))),
             spire_socket: None,
-            sandbox_token: None,
-            auth_secret: b"test-secret".to_vec(),
         };
         assert!(matches!(
             verify_sandbox(&config).await,
@@ -623,116 +602,15 @@ mod tests {
         ));
     }
 
-    /// Tiers 2 and 3 prove a managed launch, not a VM boundary.
+    /// Tier 2 proves a managed launch, not a VM boundary.
     #[tokio::test]
-    async fn spiffe_and_token_tiers_are_unsandboxed() {
+    async fn the_spiffe_tier_is_unsandboxed() {
         let dir = tempfile::tempdir().unwrap();
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
         let cert = write(&dir, "svid.pem", &plain_leaf(&ca).await);
         let spiffe = try_svid_proof(&cert, None).await.unwrap();
         assert_eq!(spiffe.tier(), 2);
         assert_eq!(spiffe.containment(), nucleus::ContainmentMode::Unsandboxed);
-
-        let secret = b"test-secret";
-        let token = nucleus_client::generate_sandbox_token(secret, "pod-1", "hash-1");
-        let proof = try_orchestrator_token(&token, secret).unwrap();
-        assert_eq!(proof.containment(), nucleus::ContainmentMode::Unsandboxed);
-    }
-
-    #[test]
-    fn test_generate_and_verify_token() {
-        let secret = b"test-secret-key-12345";
-        let pod_id = "pod-abc-123";
-        let spec_hash = "deadbeefcafebabe";
-
-        let token = nucleus_client::generate_sandbox_token(secret, pod_id, spec_hash);
-
-        // Token should have the right prefix
-        assert!(token.starts_with("sandbox-proof."));
-
-        // Should verify successfully via try_orchestrator_token
-        let proof = try_orchestrator_token(&token, secret).unwrap();
-        match proof {
-            SandboxProof::OrchestratorToken {
-                pod_id: p,
-                spec_hash: s,
-            } => {
-                assert_eq!(p, pod_id);
-                assert_eq!(s, spec_hash);
-            }
-            _ => panic!("expected OrchestratorToken"),
-        }
-    }
-
-    #[test]
-    fn test_invalid_signature_rejected() {
-        let secret = b"test-secret-key-12345";
-        let token = nucleus_client::generate_sandbox_token(secret, "pod-1", "hash-1");
-
-        // Tamper with the HMAC portion (last segment)
-        let mut parts: Vec<&str> = token.split('.').collect();
-        assert_eq!(parts.len(), 5);
-        parts[4] = "0000000000000000000000000000000000000000000000000000000000000000";
-        let tampered = parts.join(".");
-
-        let result = try_orchestrator_token(&tampered, secret);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_wrong_secret_rejected() {
-        let secret = b"correct-secret";
-        let wrong = b"wrong-secret";
-        let token = nucleus_client::generate_sandbox_token(secret, "pod-1", "hash-1");
-
-        let result = try_orchestrator_token(&token, wrong);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_expired_token_rejected() {
-        use hmac::{Mac, digest::KeyInit};
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let secret = b"test-secret";
-        let max_token_age: u64 = 300; // matches nucleus-client MAX_TOKEN_AGE_SECS
-
-        // Manually construct a token with an old timestamp
-        let old_ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs()
-            - max_token_age
-            - 10; // 10 seconds past expiry
-
-        let message = format!("sandbox-proof.pod-1.hash-1.{old_ts}");
-        let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret).expect("hmac key");
-        mac.update(message.as_bytes());
-        let sig = hex::encode(mac.finalize().into_bytes());
-        let token = format!("{message}.{sig}");
-
-        let result = try_orchestrator_token(&token, secret);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_malformed_token_rejected() {
-        let secret = b"test-secret";
-
-        // Too few parts
-        let result = try_orchestrator_token("sandbox-proof.only-two", secret);
-        assert!(result.is_err());
-
-        // Wrong prefix
-        let result = try_orchestrator_token("wrong-prefix.a.b.123.deadbeef", secret);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_empty_token_not_accepted() {
-        let secret = b"test-secret";
-        let result = try_orchestrator_token("", secret);
-        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -750,23 +628,18 @@ mod tests {
         };
         assert_eq!(spiffe.tier_label(), "spiffe-identity");
         assert_eq!(spiffe.tier(), 2);
-
-        let token = SandboxProof::OrchestratorToken {
-            pod_id: "pod-1".into(),
-            spec_hash: "hash-1".into(),
-        };
-        assert_eq!(token.tier_label(), "orchestrator-token");
-        assert_eq!(token.tier(), 3);
+        assert!(format!("{spiffe}").contains("tier=2/spiffe-identity"));
     }
 
+    /// With no certificate and no SPIRE socket the process is naked, and the
+    /// refusal names what is missing. It no longer offers the deleted token as
+    /// a way in (#2446 step 3).
     #[tokio::test]
     async fn test_naked_process_rejected() {
         let config = SandboxProofConfig {
             identity_cert_path: None,
             trust_bundle_path: None,
             spire_socket: None,
-            sandbox_token: None,
-            auth_secret: b"test-secret".to_vec(),
         };
 
         let result = verify_sandbox(&config).await;
@@ -776,40 +649,21 @@ mod tests {
                 assert!(msg.contains("no sandbox proof"));
                 assert!(msg.contains("no identity cert"));
                 assert!(msg.contains("no SPIRE socket"));
-                assert!(msg.contains("no sandbox token"));
+                assert!(!msg.contains(RETIRED_SANDBOX_TOKEN_ENV), "{msg}");
             }
             other => panic!("expected NakedProcess, got: {other}"),
         }
     }
 
-    #[tokio::test]
-    async fn test_orchestrator_token_proof() {
-        let secret = b"test-secret-for-sandbox";
-        let token = nucleus_client::generate_sandbox_token(secret, "pod-xyz", "spec-hash-abc");
-
-        let config = SandboxProofConfig {
-            identity_cert_path: None,
-            trust_bundle_path: None,
-            spire_socket: None,
-            sandbox_token: Some(token),
-            auth_secret: secret.to_vec(),
-        };
-
-        let result = verify_sandbox(&config).await;
-        assert!(result.is_ok());
-        let proof = result.unwrap();
-        assert_eq!(proof.tier(), 3);
-        assert_eq!(proof.tier_label(), "orchestrator-token");
-    }
-
+    /// A token from a node that still sets one is named, and an absent or
+    /// empty one says nothing.
     #[test]
-    fn test_display_formatting() {
-        let proof = SandboxProof::OrchestratorToken {
-            pod_id: "pod-abc".into(),
-            spec_hash: "hash-123".into(),
-        };
-        let display = format!("{proof}");
-        assert!(display.contains("tier=3"));
-        assert!(display.contains("pod-abc"));
+    fn a_retired_token_is_named_and_proves_nothing() {
+        let notice = retired_token_notice(Some("sandbox-proof.pod.hash.1.ab")).unwrap();
+        for needle in [RETIRED_SANDBOX_TOKEN_ENV, "#2446", "ignored"] {
+            assert!(notice.contains(needle), "missing {needle:?} in {notice}");
+        }
+        assert_eq!(retired_token_notice(None), None);
+        assert_eq!(retired_token_notice(Some("")), None);
     }
 }

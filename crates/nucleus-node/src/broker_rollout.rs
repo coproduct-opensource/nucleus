@@ -276,13 +276,7 @@ mod tests {
     #[test]
     fn the_flag_parses_unset_bare_and_explicit() {
         let parse = |extra: &[&str]| {
-            let mut argv = vec![
-                "nucleus-node",
-                "--proxy-auth-secret",
-                "a",
-                "--proxy-approval-secret",
-                "b",
-            ];
+            let mut argv = vec!["nucleus-node"];
             argv.extend_from_slice(extra);
             <crate::Args as clap::Parser>::try_parse_from(argv)
                 .expect("parses")

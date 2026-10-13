@@ -15,15 +15,12 @@ use nucleus_provenance_memory::{
     recompute::derive_label,
 };
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     os::unix::fs::PermissionsExt,
     path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-
-const SECRET: &str = "memory-runtime-fixture-secret-32-bytes";
 
 struct Proxy {
     child: Child,
@@ -38,7 +35,14 @@ impl Drop for Proxy {
 
 async fn launch(root: &Path, iteration: usize) -> Proxy {
     let spec_path = root.join("pod.json");
-    let spec = std::fs::read(&spec_path).unwrap();
+    let identity_dir = root.join(format!("identity-{iteration}"));
+    std::fs::create_dir_all(&identity_dir).unwrap();
+    let identity = nucleus_identity::pod_files::issue_ephemeral(
+        &identity_dir,
+        "memory-runtime",
+        Duration::from_secs(600),
+    )
+    .unwrap();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -65,14 +69,9 @@ async fn launch(root: &Path, iteration: usize) -> Proxy {
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", root)
-        .env(
-            "NUCLEUS_SANDBOX_TOKEN",
-            nucleus_client::generate_sandbox_token(
-                SECRET.as_bytes(),
-                "memory-runtime",
-                &hex::encode(Sha256::digest(&spec)),
-            ),
-        )
+        // The run's minted identity is the sandbox proof, as for every
+        // host-tier launcher (#2446 step 3 deleted the HMAC'd token).
+        .envs(identity.env())
         .env("NUCLEUS_TASK_TOKEN", serde_json::to_string(&token).unwrap())
         .env("NUCLEUS_TASK_TOKEN_NONCE", hex::encode(nonce))
         .env(
@@ -82,14 +81,14 @@ async fn launch(root: &Path, iteration: usize) -> Proxy {
         .arg("--spec")
         .arg(spec_path)
         .arg("--unsandboxed")
-        // The peer-verified socket (#2446 step 2): the shared-secret tier this
-        // fixture used to sign for admits only /v1/health now.
+        // The peer-verified socket: the shared-secret tier this fixture used
+        // to sign for is deleted (#2446 step 3).
         .arg("--listen-unix")
         .arg(root.join(format!("p{iteration}.sock")))
-        .arg("--auth-secret")
-        .arg(SECRET)
-        .arg("--approval-secret")
-        .arg("separate-fixture-approval-secret")
+        .arg("--approval-pubkeys")
+        .arg(hex::encode(
+            SigningKey::from_bytes(&[9; 32]).verifying_key().to_bytes(),
+        ))
         .arg("--audit-log")
         .arg(root.join(format!("audit-{iteration}.jsonl")))
         .arg("--announce-path")
