@@ -776,7 +776,7 @@ mod tests {
             )
         });
         format!(
-            r#"{{"apiVersion":"nucleus/v1","kind":"Pod"{labels},"spec":{{"network":{{"allow":[],"deny":[]}}}}}}"#
+            r#"{{"apiVersion":"nucleus/v1","kind":"Pod"{labels},"spec":{{"policy":{{"type":"profile","name":"default"}},"network":{{"allow":[],"deny":[]}}}}}}"#
         )
     }
 

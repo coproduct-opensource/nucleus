@@ -1000,7 +1000,7 @@ mod tests {
     fn the_rlimit_policy_is_derived_from_the_pod_spec() {
         let pod = |extra: &str| -> nucleus_spec::PodSpec {
             nucleus_yaml::from_str(&format!(
-                "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
+                "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  policy: {{ type: profile, name: default }}\n  \
                  timeout_seconds: 60\n{extra}"
             ))
             .expect("spec parses")

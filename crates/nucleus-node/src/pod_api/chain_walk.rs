@@ -784,7 +784,7 @@ fn upstreams(ups: u8) -> Vec<nucleus_spec::CredentialedEgressSpec> {
 
 fn spec_yaml(work: &std::path::Path, policy: PermissionLattice, ups: u8) -> String {
     let mut spec: nucleus_spec::PodSpec =
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec");
     spec.spec.work_dir = work.to_path_buf();
     spec.spec.timeout_seconds = 600;

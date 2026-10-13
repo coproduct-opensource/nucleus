@@ -1081,6 +1081,7 @@ kind: Pod
 metadata:
   name: sub
 spec:
+  policy: { type: profile, name: default }
   work_dir: /w
   audit_sink:
     sink: audit

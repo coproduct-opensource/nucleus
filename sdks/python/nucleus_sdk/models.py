@@ -6,9 +6,11 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class PodSpec:
+    # Required: the node refuses a spec that does not name its policy, so the
+    # SDK does not pick one on the caller's behalf either.
+    profile: str
     work_dir: str = "."
     timeout_seconds: int = 3600
-    profile: str = "default"
     network_allow: Optional[List[str]] = None
     dns_allow: Optional[List[str]] = None
     cpu_cores: Optional[int] = None

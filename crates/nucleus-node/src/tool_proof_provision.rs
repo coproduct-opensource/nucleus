@@ -78,7 +78,7 @@ mod tests {
     fn required_proofs_cannot_be_omitted_expired_or_private() {
         let mut spec: PodSpec = serde_json::from_value(serde_json::json!({
             "apiVersion":"nucleus/v1", "kind":"Pod", "metadata":{},
-            "spec":{"timeout_seconds":300}
+            "spec":{"policy":{"type":"profile","name":"default"},"timeout_seconds":300}
         }))
         .unwrap();
         assert!(admit(&spec, true).is_err());

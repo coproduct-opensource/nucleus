@@ -162,7 +162,7 @@ fn make_test_key() -> (Vec<u8>, nucleus_identity::did::JsonWebKey) {
 #[test]
 fn test_approval_bundle_populates_registry() {
     let (pkcs8, jwk) = make_test_key();
-    let spec = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: .";
+    let spec = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy: { type: profile, name: default }\n  work_dir: .";
     let manifest_hash = compute_manifest_hash(spec.as_bytes());
 
     let jws =

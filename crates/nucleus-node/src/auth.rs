@@ -819,7 +819,7 @@ mod tests {
     }
 
     fn bare_spec() -> nucleus_spec::PodSpec {
-        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+        serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
             .expect("minimal spec")
     }
 

@@ -1335,7 +1335,7 @@ pub(crate) mod handler_tests {
             let work = st.state_dir.join("w");
             std::fs::create_dir_all(&work).expect("work dir");
             let mut spec: nucleus_spec::PodSpec =
-                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                     .expect("minimal spec");
             spec.spec.work_dir = work;
             spec
@@ -1423,7 +1423,7 @@ pub(crate) mod handler_tests {
         let dir = st.state_dir.join("w");
         std::fs::create_dir_all(&dir).expect("work dir");
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = dir;
         for (k, v) in labels {
@@ -1480,7 +1480,7 @@ pub(crate) mod handler_tests {
             .expect("a child spawns");
         let _ = child.wait().await;
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.spec.work_dir = dir.path().to_path_buf();
         let handle = crate::PodHandle {

@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn only_an_eval_cell_is_labelled() {
         let base: PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("parses");
         let mut standard = base.clone();
         label(IsolationProfile::Standard, &mut standard);

@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn accepted_limits_match_the_admitted_size() {
         let spec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#).unwrap();
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#).unwrap();
         let size = PodSize::of(&spec);
         let config = bollard::models::HostConfig {
             memory: Some(536870912),

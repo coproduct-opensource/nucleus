@@ -109,7 +109,7 @@ mod tests {
     fn host_proof_is_required_body_bound_and_replay_durable() {
         let dir = tempfile::tempdir().unwrap();
         let mut spec: PodSpec = serde_json::from_value(serde_json::json!({
-            "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{}
+            "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{"policy":{"type":"profile","name":"default"}}
         }))
         .unwrap();
         assert!(Config::from_spec(&spec).unwrap().is_none());

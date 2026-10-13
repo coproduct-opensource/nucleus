@@ -692,7 +692,7 @@ mod tests {
             labels: &[(&str, &str)],
         ) -> Arc<crate::PodHandle> {
             let mut spec: nucleus_spec::PodSpec =
-                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+                serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                     .expect("a minimal PodSpec deserializes");
             spec.spec.work_dir = work_dir.to_path_buf();
             spec.metadata.name = Some("probe".to_string());

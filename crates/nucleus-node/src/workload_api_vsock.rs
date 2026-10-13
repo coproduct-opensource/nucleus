@@ -1723,7 +1723,7 @@ mod tests {
             credentials: "glob_search=7c7c,read_files=8d8d".to_string(),
         };
         let mut spec: nucleus_spec::PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("minimal spec");
         spec.metadata.labels = asked.labels();
 

@@ -90,7 +90,7 @@ mod tests {
     fn host_key_is_private_unique_and_never_overwritten() {
         let make = || {
             let mut spec: PodSpec = serde_json::from_value(serde_json::json!({
-                "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{}
+                "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{"policy":{"type":"profile","name":"default"}}
             }))
             .unwrap();
             spec.metadata.labels.insert(

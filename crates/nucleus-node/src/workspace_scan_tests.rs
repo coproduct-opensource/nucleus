@@ -296,7 +296,7 @@ async fn a_standard_pod_s_disk_image_is_not_read() {
 #[test]
 fn the_sources_are_the_disks_on_firecracker_and_the_work_dir_on_a_container() {
     let mut spec: PodSpec = serde_json::from_str(
-        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"work_dir":"/w","image":{
+        r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"},"work_dir":"/w","image":{
             "kernel_path":"/k","rootfs_path":"/r","scratch_path":"/s.ext4","data_path":"/d.ext4"}}}"#,
     )
     .expect("spec");
@@ -387,7 +387,7 @@ async fn admission_refuses_an_eval_cell_and_labels_a_standard_pod() {
     )
     .expect("plant");
     let mut spec: PodSpec = serde_json::from_str(&format!(
-        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"work_dir":"{}"}}}}"#,
+        r#"{{"apiVersion":"nucleus/v1","kind":"Pod","spec":{{"policy":{{"type":"profile","name":"default"}},"work_dir":"{}"}}}}"#,
         w.path().display()
     ))
     .expect("spec");

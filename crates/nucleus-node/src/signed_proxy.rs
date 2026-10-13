@@ -675,7 +675,7 @@ mod tests {
         .unwrap();
         let dir = tempfile::tempdir().unwrap();
         let mut spec: crate::PodSpec = serde_json::from_value(serde_json::json!({
-            "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{}
+            "apiVersion":"nucleus/v1","kind":"Pod","metadata":{},"spec":{"policy":{"type":"profile","name":"default"}}
         }))
         .unwrap();
         spec.metadata.labels.insert(

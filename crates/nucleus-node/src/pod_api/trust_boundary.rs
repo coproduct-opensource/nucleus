@@ -806,14 +806,14 @@ impl Host for Node {
         }))
         .map_err(|e| e.to_string())?;
         let image = crate::rootfs_source::HostImage::resolve(&image).map_err(|e| e.to_string())?;
-        let mut spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
-            "apiVersion": "nucleus/v1", "kind": "Pod",
-            "metadata": {"name": POD_NAME}, "spec": {},
-        }))
-        .map_err(|e| e.to_string())?;
-        spec.spec.policy = nucleus_spec::PolicySpec::Inline {
+        let pod_policy = nucleus_spec::PolicySpec::Inline {
             lattice: Box::new(policy.clone()),
         };
+        let spec: nucleus_spec::PodSpec = serde_json::from_value(serde_json::json!({
+            "apiVersion": "nucleus/v1", "kind": "Pod",
+            "metadata": {"name": POD_NAME}, "spec": {"policy": pod_policy},
+        }))
+        .map_err(|e| e.to_string())?;
         // What `create_pod_internal` decides from the spec and the node's
         // driver (`StartingLabel::of`), given here as its result.
         let starting = match workspace {

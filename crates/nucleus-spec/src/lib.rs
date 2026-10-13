@@ -150,8 +150,10 @@ pub struct PodSpecInner {
     /// pods on its next reaper pass after expiry; cleanup is not an exact-time kill.
     #[serde(default = "default_timeout_seconds")]
     pub timeout_seconds: u64,
-    /// Permission policy.
-    #[serde(default)]
+    /// Permission policy. Required: a spec that omits it is refused at parse
+    /// time with an error naming `policy`. Absence does not pick a profile on
+    /// the caller's behalf (ADR 0007 B-2; #3400). To ask for the baseline
+    /// profile, say so: `policy: { type: profile, name: default }`.
     pub policy: PolicySpec,
     /// Optional budget model overrides.
     #[serde(default)]
@@ -211,6 +213,9 @@ fn default_timeout_seconds() -> u64 {
 }
 
 /// Policy spec for a pod.
+///
+/// No `Default`: a pod's policy is always named by whoever wrote the spec
+/// (ADR 0007 B-1; #3400).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[serde(deny_unknown_fields)]
@@ -219,14 +224,6 @@ pub enum PolicySpec {
     Profile { name: String },
     /// Inline permission lattice.
     Inline { lattice: Box<PermissionLattice> },
-}
-
-impl Default for PolicySpec {
-    fn default() -> Self {
-        Self::Profile {
-            name: "default".to_string(),
-        }
-    }
 }
 
 impl PolicySpec {
@@ -2336,6 +2333,9 @@ spec:
 apiVersion: nucleus/v1
 kind: Pod
 spec:
+  policy:
+    type: profile
+    name: default
   network:
     deny: ["*"]
 "#;
@@ -2346,9 +2346,41 @@ spec:
         );
     }
 
+    /// #3400 (ADR 0007 B-2): a spec with no `policy` is refused, and the
+    /// error names the field. It used to parse and resolve to the `default`
+    /// profile, so leaving the field out picked a policy for the caller.
+    #[test]
+    fn a_spec_without_a_policy_is_refused_and_names_the_field() {
+        let yaml = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: .\n";
+        let err = nucleus_yaml::from_str::<PodSpec>(yaml)
+            .expect_err("a spec with no policy must not parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("policy"),
+            "the refusal must name the missing field, got: {msg}"
+        );
+        // The JSON door refuses it the same way.
+        let json = r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"work_dir":"."}}"#;
+        let err = serde_json::from_str::<PodSpec>(json).expect_err("JSON too");
+        assert!(err.to_string().contains("policy"), "got: {err}");
+    }
+
+    /// Non-vacuity for the refusal above: the same spec with the policy named
+    /// explicitly parses, so the refusal is about the missing field and
+    /// nothing else.
+    #[test]
+    fn the_same_spec_naming_its_policy_parses() {
+        let yaml = "apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: .\n  policy:\n    type: profile\n    name: default\n";
+        let spec: PodSpec = nucleus_yaml::from_str(yaml).expect("an explicit policy parses");
+        assert!(matches!(
+            &spec.spec.policy,
+            PolicySpec::Profile { name } if name == "default"
+        ));
+    }
+
     #[test]
     fn an_unknown_kind_is_rejected() {
-        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec: {}\n";
+        let yaml = "apiVersion: nucleus/v1\nkind: Podd\nspec:\n  policy:\n    type: profile\n    name: default\n";
         assert!(
             nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "`kind: Podd` used to parse because nothing compared it to anything"
@@ -2357,7 +2389,7 @@ spec:
 
     #[test]
     fn an_unknown_api_version_is_rejected() {
-        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec: {}\n";
+        let yaml = "apiVersion: nucleus/v2\nkind: Pod\nspec:\n  policy:\n    type: profile\n    name: default\n";
         assert!(
             nucleus_yaml::from_str::<PodSpec>(yaml).is_err(),
             "an unrecognised apiVersion must not silently parse as v1"

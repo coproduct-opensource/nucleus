@@ -402,7 +402,7 @@ mod receipt_provenance_tests {
     }
 
     fn spec() -> nucleus_spec::PodSpec {
-        nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  work_dir: /w\n")
+        nucleus_yaml::from_str("apiVersion: nucleus/v1\nkind: Pod\nspec:\n  policy: { type: profile, name: default }\n  work_dir: /w\n")
             .expect("spec")
     }
 

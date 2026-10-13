@@ -165,7 +165,7 @@ mod tests {
     use super::*;
     fn spec(namespace: &str) -> PodSpec {
         let mut spec: PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#).unwrap();
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#).unwrap();
         spec.metadata.labels.insert(LABEL.into(), namespace.into());
         spec
     }

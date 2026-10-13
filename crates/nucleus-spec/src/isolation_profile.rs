@@ -166,7 +166,7 @@ mod tests {
 
     fn spec(labels: &[(&str, &str)]) -> PodSpec {
         let mut spec: PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{}}"#)
+            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#)
                 .expect("a minimal spec parses");
         for (k, v) in labels {
             spec.metadata.labels.insert((*k).into(), (*v).into());
