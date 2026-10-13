@@ -1164,11 +1164,13 @@ impl PodAuthority {
         // named profile resolves fresh just above. Exhaustive on purpose: a new
         // policy form is a compile error here before it is a window nobody
         // re-stamped.
+        // Fields are bound to `_` rather than elided: `requested` above is the
+        // resolution of either form, so only the form is decided here.
         match &spec.spec.policy {
-            nucleus_spec::PolicySpec::Inline { .. } => {
+            nucleus_spec::PolicySpec::Inline { lattice: _ } => {
                 requested.time = restamp_window(&requested.time, now, now + ttl)?;
             }
-            nucleus_spec::PolicySpec::Profile { .. } => {}
+            nucleus_spec::PolicySpec::Profile { name: _ } => {}
         }
         let reason = format!("pod {child_id} created by {}", admission.caller_spiffe_id);
 
