@@ -974,6 +974,23 @@ const RESERVED_FOR_CLIENT_CERTIFICATE: &[&str] = &[
     "scope",
 ];
 
+/// The operator's `paths`, each absolute and plain: no wildcard, query, fragment,
+/// traversal or percent-encoding, so a listed path means exactly what it says.
+fn paths(name: &str, listed: Vec<String>) -> Result<BTreeSet<String>, String> {
+    let mut paths = BTreeSet::new();
+    for path in listed {
+        let plain = path.starts_with('/')
+            && path.len() > 1
+            && !path.contains(['*', '?', '#', '%', '\\'])
+            && !path.split('/').any(|s| s == ".." || s == ".");
+        if !plain {
+            return Err(format!("upstream {name:?}: paths entry {path:?} must be an absolute, plain path"));
+        }
+        paths.insert(path);
+    }
+    Ok(paths)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1518,19 +1535,3 @@ requested_token_type = "urn:ietf:params:oauth:token-type:access_token"
     }
 }
 
-/// The operator's `paths`, each absolute and plain: no wildcard, query, fragment,
-/// traversal or percent-encoding, so a listed path means exactly what it says.
-fn paths(name: &str, listed: Vec<String>) -> Result<BTreeSet<String>, String> {
-    let mut paths = BTreeSet::new();
-    for path in listed {
-        let plain = path.starts_with('/')
-            && path.len() > 1
-            && !path.contains(['*', '?', '#', '%', '\\'])
-            && !path.split('/').any(|s| s == ".." || s == ".");
-        if !plain {
-            return Err(format!("upstream {name:?}: paths entry {path:?} must be an absolute, plain path"));
-        }
-        paths.insert(path);
-    }
-    Ok(paths)
-}

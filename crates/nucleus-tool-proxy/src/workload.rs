@@ -1021,7 +1021,7 @@ pub(crate) fn start_if_configured(
         None => None,
         Some(plan) => {
             let command = plan.command.clone();
-            let (child, receipt) = spawn_admitted(plan, rlimits, syscalls.clone()).map_err(|e| {
+            let (child, receipt) = spawn_admitted(plan, rlimits, syscalls).map_err(|e| {
                 crate::ApiError::Spec(format!("failed to start companion {command:?}: {e}"))
             })?;
             tracing::info!(
