@@ -114,10 +114,12 @@ the code that ships, re-checked on every change, and a relying party can verify
 from the outside that the pod they are talking to is the artifact the theorem is
 about.**
 
-The clause "*nor those of any other pod*" is **NOT-YET**, and is scoped by its
-row in the ledger below: the C2 note under the table states what of it is
-proved, what is assumed, and what is not covered. Read the sentence through that
-row, not past it.
+The clause "*nor those of any other pod*" is **NOT-YET**, even inside the
+sentence's own limits (explicit flows only; timing, cache, microarchitectural,
+availability and resource-contention channels excluded). It is scoped by its row
+in the ledger below: the C2 note under the table states what of it is proved,
+what is assumed, and what is not covered. Read the sentence through that row,
+not past it.
 
 The exclusions are **inside the sentence, not a footnote**, so the claim cannot
 be quoted without its limits. Cross-pod confidentiality stated without them would
