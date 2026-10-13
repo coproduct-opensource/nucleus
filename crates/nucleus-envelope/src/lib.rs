@@ -73,9 +73,11 @@ pub mod extract;
 pub mod interop;
 pub mod verify;
 
+pub use interop::export::{Attestation, ExportFormat, UnknownExportFormat};
 pub use interop::in_toto::{
-    DSSE_INTOTO_PAYLOAD_TYPE, DsseEnvelope, DsseSignature, IN_TOTO_STATEMENT_TYPE, InTotoError,
-    NUCLEUS_PREDICATE_TYPE, NUCLEUS_SUBJECT_NAME, ResourceDescriptor, Statement,
+    AgentProvenance, AiGeneration, ContentOrigin, DSSE_INTOTO_PAYLOAD_TYPE, DsseEnvelope,
+    DsseSignature, IN_TOTO_STATEMENT_TYPE, InTotoError, NUCLEUS_PREDICATE_TYPE,
+    NUCLEUS_SUBJECT_NAME, ResourceDescriptor, Statement,
 };
 pub use interop::sigstore::{
     PublicKeyIdentifier, SIGSTORE_BUNDLE_V03_MEDIA_TYPE, SigstoreBundle, TimestampVerificationData,

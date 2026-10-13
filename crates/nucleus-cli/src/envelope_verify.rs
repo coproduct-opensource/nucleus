@@ -263,7 +263,7 @@ fn read_witness_pubkey(path: &std::path::Path) -> Result<[u8; 32]> {
     ))
 }
 
-fn read_bundle_bytes(source: &str) -> Result<Vec<u8>> {
+pub fn read_bundle_bytes(source: &str) -> Result<Vec<u8>> {
     if source == "-" {
         let mut buf = Vec::new();
         std::io::stdin()

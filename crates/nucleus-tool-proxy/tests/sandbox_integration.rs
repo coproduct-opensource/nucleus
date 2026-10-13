@@ -1,7 +1,8 @@
 #![allow(clippy::disallowed_types)] // #1216: migration pending
 //! Integration test: verify nucleus-tool-proxy exits with code 78 (EX_CONFIG)
-//! when launched outside a managed sandbox (no SPIFFE socket, no sandbox token,
-//! no identity cert).
+//! when launched outside a managed sandbox (no SPIFFE socket, no identity
+//! cert). The tier-3 sandbox token is deleted (#2446 step 3), so it is no
+//! longer one of the ways in.
 
 use std::process::Command;
 
@@ -14,8 +15,6 @@ fn exits_78_without_sandbox_proof() {
     let bin = env!("CARGO_BIN_EXE_nucleus-tool-proxy");
 
     let output = Command::new(bin)
-        .arg("--auth-secret")
-        .arg("test-secret")
         .arg("--approval-secret")
         .arg("test-approval-secret")
         .arg("--spec")

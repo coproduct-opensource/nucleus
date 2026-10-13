@@ -759,13 +759,16 @@ fn discard_staged(host: &Tier2Host, s: &StagedBinary) -> Result<()> {
 /// the node admitted, never a `pod.yaml` baked into the rootfs, and an operator
 /// reading this file should see that rather than infer it from a default.
 ///
-/// It carries no secret for the node's own API: that API is mTLS-only (Move B),
-/// and the node stopped reading `NUCLEUS_NODE_AUTH_SECRET` then. Writing it
-/// anyway left a static shared secret with no consumer on every host (#3294);
-/// [`RETIRED_NODE_ENV_KEYS`] names it so an upgrade takes it back out.
-pub fn node_env_body(proxy_hex: &str, approval_hex: &str, canary_hex: &str) -> String {
+/// It carries no shared secret at all. Not for the node's own API: that API is
+/// mTLS-only (Move B), and the node stopped reading `NUCLEUS_NODE_AUTH_SECRET`
+/// then (#3294). Not for its pods' tool-proxies: every pod is reached over a
+/// transport that authenticates the node and approves with its Ed25519 key, so
+/// `NUCLEUS_NODE_PROXY_{AUTH,APPROVAL}_SECRET` went with #2446 step 3, and the
+/// node refuses to start with either. [`RETIRED_NODE_ENV_KEYS`] names all three
+/// so an upgrade takes them back out.
+pub fn node_env_body(canary_hex: &str) -> String {
     format!(
-        "# Written by `nucleus setup`. Contains HMAC secrets - keep mode 0600.\n\
+        "# Written by `nucleus setup`. Keep mode 0600.\n\
          NUCLEUS_NODE_DRIVER=firecracker\n\
          {HOST_ENFORCEMENT_ENV}=true\n\
          NUCLEUS_NODE_LISTEN=0.0.0.0:8080\n\
@@ -773,8 +776,6 @@ pub fn node_env_body(proxy_hex: &str, approval_hex: &str, canary_hex: &str) -> S
          NUCLEUS_NODE_STATE_DIR={HOST_STATE_DIR}\n\
          NUCLEUS_NODE_SCRATCH_ROOT={HOST_SCRATCH_ROOT}\n\
          NUCLEUS_NODE_ARTIFACTS_ROOT={HOST_ARTIFACTS_DIR}\n\
-         NUCLEUS_NODE_PROXY_AUTH_SECRET={proxy_hex}\n\
-         NUCLEUS_NODE_PROXY_APPROVAL_SECRET={approval_hex}\n\
          NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET={WORKLOAD_API_SOCKET}\n\
          NUCLEUS_FIRECRACKER_PATH=/usr/local/bin/firecracker\n\
          NUCLEUS_JAILER_PATH=/usr/local/bin/jailer\n\
@@ -1546,12 +1547,10 @@ mod tests {
     /// attributes.
     #[test]
     fn node_env_uses_the_names_the_node_reads() {
-        let body = node_env_body("bb", "cc", "dd");
+        let body = node_env_body("dd");
         for required in [
             "NUCLEUS_NODE_LISTEN=",
             "NUCLEUS_NODE_GRPC_LISTEN=",
-            "NUCLEUS_NODE_PROXY_AUTH_SECRET=",
-            "NUCLEUS_NODE_PROXY_APPROVAL_SECRET=",
             "NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=",
         ] {
             assert!(body.contains(required), "node.env is missing {required}");
@@ -1578,7 +1577,7 @@ mod tests {
     /// `nucleus_spec::microvm_host::tests::every_host_recipe_requires_the_admitted_spec` covers.
     #[test]
     fn setup_node_env_requires_the_admitted_spec() {
-        let body = node_env_body("bb", "cc", "dd");
+        let body = node_env_body("dd");
         assert!(
             env_requires_the_admitted_spec(&body),
             "node.env must set NUCLEUS_NODE_DRIVER=firecracker and {HOST_ENFORCEMENT_ENV}=true:\n{body}"
@@ -1589,7 +1588,7 @@ mod tests {
     /// changed, the same body is refused.
     #[test]
     fn a_node_env_without_enforcement_is_refused() {
-        let body = node_env_body("bb", "cc", "dd");
+        let body = node_env_body("dd");
         let line = format!("{HOST_ENFORCEMENT_ENV}=true\n");
         for (from, to) in [
             (line.as_str(), String::new()),
@@ -1610,7 +1609,7 @@ mod tests {
     /// startup with a message about a missing secret.
     #[test]
     fn node_env_does_not_use_the_names_that_never_worked() {
-        let body = node_env_body("bb", "cc", "dd");
+        let body = node_env_body("dd");
         for wrong in [
             "NUCLEUS_NODE_LISTEN_ADDR",
             "NUCLEUS_NODE_GRPC_ADDR",
@@ -1623,22 +1622,14 @@ mod tests {
         }
     }
 
-    /// Both secrets the node still requires must appear with the values given.
-    /// The node refuses to start without either, so a partial env file is a
-    /// node that never comes up.
-    #[test]
-    fn every_required_secret_reaches_the_env_file() {
-        let body = node_env_body("2222", "3333", "4444");
-        assert!(body.contains("NUCLEUS_NODE_PROXY_AUTH_SECRET=2222\n"));
-        assert!(body.contains("NUCLEUS_NODE_PROXY_APPROVAL_SECRET=3333\n"));
-    }
-
     /// #3294, red on main: `setup` wrote `NUCLEUS_NODE_AUTH_SECRET` into
     /// node.env although the node stopped reading it with Move B — a static
     /// shared secret on every host with nothing on the node side to consume it.
+    /// #2446 step 3 adds the two proxy secrets, which the node now refuses by
+    /// name: red before, `setup` wrote both.
     #[test]
     fn setup_writes_no_retired_secret_into_node_env() {
-        let body = node_env_body("bb", "cc", "dd");
+        let body = node_env_body("dd");
         for key in RETIRED_NODE_ENV_KEYS {
             assert!(
                 !body.contains(key),
@@ -1652,18 +1643,20 @@ mod tests {
     /// between lines it still emits, plus what an operator or CI appends.
     const UPGRADED_NODE_ENV_TAIL: &str = "NUCLEUS_NODE_BROKER_ENFORCING=false\r\n\
                                           # NUCLEUS_NODE_AUTH_SECRET=commented-out\n\
+                                          # NUCLEUS_NODE_PROXY_AUTH_SECRET=commented-out\n\
                                           NUCLEUS_NODE_AUTH_SECRET_FILE=/kept\n\
                                           \n\
                                           NUCLEUS_E2E_CANARY=no-trailing-newline";
 
     fn upgraded_node_env() -> (String, String) {
-        let current = node_env_body("bb", "cc", "dd");
+        let current = node_env_body("dd");
         let (head, rest) = current
-            .split_once("NUCLEUS_NODE_PROXY_AUTH_SECRET=")
-            .expect("node.env sets the proxy secret");
+            .split_once("NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET=")
+            .expect("node.env sets the workload API socket");
         let old = format!(
             "{head}NUCLEUS_NODE_AUTH_SECRET=aa\n  NUCLEUS_NODE_AUTH_SECRET = again\n\
-             NUCLEUS_NODE_PROXY_AUTH_SECRET={rest}{UPGRADED_NODE_ENV_TAIL}"
+             NUCLEUS_NODE_PROXY_AUTH_SECRET=bb\nNUCLEUS_NODE_PROXY_APPROVAL_SECRET=cc\n\
+             NUCLEUS_IDENTITY_WORKLOAD_API_SOCKET={rest}{UPGRADED_NODE_ENV_TAIL}"
         );
         (old, format!("{current}{UPGRADED_NODE_ENV_TAIL}"))
     }
@@ -1723,14 +1716,14 @@ mod tests {
     #[test]
     fn artifact_paths_are_guest_absolute_not_host_relative() {
         assert!(HOST_ARTIFACTS_DIR.starts_with('/'));
-        assert!(node_env_body("b", "c", "d").contains(HOST_STATE_DIR));
+        assert!(node_env_body("d").contains(HOST_STATE_DIR));
     }
 
     /// A provisioned node confines caller-supplied scratch disks to a directory
     /// that is inside its state dir but is NOT the state dir, which holds the CA.
     #[test]
     fn a_provisioned_node_confines_scratch_away_from_its_ca() {
-        let body = node_env_body("b", "c", "d");
+        let body = node_env_body("d");
         assert!(body.contains(&format!("NUCLEUS_NODE_SCRATCH_ROOT={HOST_SCRATCH_ROOT}\n")));
         assert!(HOST_SCRATCH_ROOT.starts_with(&format!("{HOST_STATE_DIR}/")));
         assert!(!HOST_SCRATCH_ROOT.starts_with(HOST_CA_DIR));
@@ -1744,7 +1737,7 @@ mod tests {
     /// here, so they need no line of their own.
     #[test]
     fn a_provisioned_node_admits_kernels_only_from_its_artifacts_dir() {
-        let body = node_env_body("b", "c", "d");
+        let body = node_env_body("d");
         assert!(body.contains(&format!(
             "NUCLEUS_NODE_ARTIFACTS_ROOT={HOST_ARTIFACTS_DIR}\n"
         )));
@@ -1759,7 +1752,7 @@ mod tests {
     /// require the planted value to come back out.
     #[test]
     fn the_canary_line_round_trips_through_the_shell_parse() {
-        let body = node_env_body("bb", "cc", "deadbeef");
+        let body = node_env_body("deadbeef");
 
         let parsed = body
             .lines()
@@ -1774,23 +1767,6 @@ mod tests {
         // One `=` only. A value containing '=' would be truncated by `cut -d=
         // -f2` without `-f2-`, and would fail here first.
         assert_eq!(parsed.matches('=').count(), 0);
-    }
-
-    /// A canary equal to a real secret would make a genuine credential leak
-    /// indistinguishable from the decoy, and vice versa.
-    #[test]
-    fn the_canary_is_not_any_of_the_real_secrets() {
-        let body = node_env_body("bbbb", "cccc", "dddd");
-        let canary = body
-            .lines()
-            .find(|l| l.starts_with("NUCLEUS_E2E_CANARY="))
-            .unwrap();
-        for secret in ["bbbb", "cccc"] {
-            assert!(
-                !canary.contains(secret),
-                "canary line must not carry a real secret value"
-            );
-        }
     }
 
     /// The bug this pins: `install_binary` stages a release tarball at

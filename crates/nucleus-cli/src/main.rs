@@ -29,6 +29,7 @@ mod config;
 mod constants;
 mod doctor;
 mod envelope;
+mod envelope_export;
 mod envelope_verify;
 mod federation;
 mod goal;
@@ -183,6 +184,9 @@ enum Commands {
     /// Verify a provenance bundle standalone
     EnvelopeVerify(envelope_verify::EnvelopeVerifyArgs),
 
+    /// Export a verified bundle as an in-toto / SLSA / Sigstore attestation
+    EnvelopeExport(envelope_export::EnvelopeExportArgs),
+
     /// Content-addressed bundle transfer over iroh-blobs (publish/fetch)
     Bundle(bundle::BundleArgs),
 
@@ -260,6 +264,7 @@ async fn main() -> Result<()> {
         Commands::LineageVerifyChain(args) => lineage_verify::execute(args),
         Commands::Envelope(args) => envelope::execute(args),
         Commands::EnvelopeVerify(args) => envelope_verify::execute(args),
+        Commands::EnvelopeExport(args) => envelope_export::execute(args),
         Commands::Bundle(args) => bundle::execute(args).await,
         Commands::Image(args) => image::execute(args),
         Commands::VerifyAttestation(args) => verify_attestation::execute(args),
