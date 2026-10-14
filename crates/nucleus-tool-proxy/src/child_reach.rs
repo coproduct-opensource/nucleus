@@ -337,5 +337,7 @@ fn chain_reach(path: &Path, uid: u32, exposure: Exposure) -> Option<String> {
 }
 
 #[cfg(test)]
+mod alone;
+#[cfg(test)]
 #[path = "child_reach_tests.rs"]
 mod tests;
