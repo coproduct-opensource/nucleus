@@ -113,13 +113,18 @@ fn scratch(parent: &Path, tag: &str) -> Scratch {
 
 /// Where the test's workspace lives: outside the write layer's scratch, or
 /// the layer refuses it for overlapping (`/tmp`, where `tempfile` would put
-/// it). `/var/tmp` is world-writable on every Linux host and is not scratch.
+/// it). Cargo's per-target scratch is writable wherever the build is (a gate
+/// sandbox that writes only `target/` included); if the target dir is itself
+/// under `/tmp`, `/var/tmp`, which is not scratch.
 fn workspace_parent() -> PathBuf {
-    let var_tmp = Path::new("/var/tmp");
-    if var_tmp.is_dir() {
-        return var_tmp.to_path_buf();
+    let target_tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    std::fs::create_dir_all(&target_tmp).unwrap();
+    let resolved = std::fs::canonicalize(&target_tmp).unwrap();
+    if resolved.starts_with("/tmp") {
+        PathBuf::from("/var/tmp")
+    } else {
+        resolved
     }
-    PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
 }
 
 /// A workspace seeded the way a pod's is: a source file the agent was given,
@@ -161,9 +166,13 @@ impl Workspace {
     }
 }
 
-/// The child binary, copied where a dropped uid can execute it.
+/// The child binary: this one, or, for a root runtime whose children drop
+/// their uid, a copy where the dropped uid can execute it.
 fn child_exe(dir: &Scratch) -> PathBuf {
     let me = std::env::current_exe().expect("current_exe");
+    if nucleus::runtime_uid() != 0 {
+        return me;
+    }
     let path = dir.0.join("child");
     std::fs::copy(&me, &path).unwrap();
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -302,7 +311,7 @@ fn landlock_or_refusal(ws: &Workspace) -> bool {
 /// succeeds like the control.
 #[test]
 fn a_child_of_a_read_only_workspace_cannot_write_it() {
-    let bin = scratch(Path::new("/tmp"), "bin");
+    let bin = scratch(&std::env::temp_dir(), "bin");
     let exe = child_exe(&bin);
     let ws = Workspace::new("ro");
     if !landlock_or_refusal(&ws) {
@@ -359,7 +368,7 @@ fn a_child_of_a_read_only_workspace_cannot_write_it() {
 /// not applied (then the denial above would not hold either).
 #[test]
 fn a_child_of_a_read_only_workspace_still_writes_the_runtime_scratch() {
-    let bin = scratch(Path::new("/tmp"), "bin");
+    let bin = scratch(&std::env::temp_dir(), "bin");
     let exe = child_exe(&bin);
     let ws = Workspace::new("scratch");
     if !landlock_or_refusal(&ws) {
@@ -391,7 +400,7 @@ fn a_child_of_a_read_only_workspace_still_writes_the_runtime_scratch() {
 /// the profile itself, so a profile that stopped saying `never` would red.
 #[test]
 fn the_test_runner_profile_builds_in_the_scratch_not_the_workspace() {
-    let bin = scratch(Path::new("/tmp"), "bin");
+    let bin = scratch(&std::env::temp_dir(), "bin");
     let exe = child_exe(&bin);
     let ws = Workspace::new("runner");
     let lattice = nucleus::portcullis::profile::ProfileRegistry::canonical()
