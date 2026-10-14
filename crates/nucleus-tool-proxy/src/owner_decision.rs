@@ -35,8 +35,8 @@ use nucleus_ifc_kernel::{
     ProvenanceSet,
 };
 use nucleus_signed_decision::{
-    DecisionBundle, DecisionLedger, OptionBody, OwnerDecisionId, Scope, SignedDecision, TrustRoots,
-    Window,
+    DecisionBundle, DecisionLedger, OptionBody, OwnerDecision, OwnerDecisionId, QuestionCore,
+    Scope, SignedDecision, TrustRoots, Window,
 };
 use portcullis::{Act, FilePath, ReadSink};
 use portcullis_effects::authority::Authority;
@@ -232,15 +232,16 @@ pub struct DecisionView {
 }
 
 impl DecisionView {
-    fn of(d: &SignedDecision) -> Self {
-        let r = d.record();
+    /// Built from what a decision shows, not from the decision: a view never borrows the right
+    /// itself (ADR 0007 C-4).
+    fn of(id: OwnerDecisionId, kid: &str, r: &OwnerDecision, q: &QuestionCore) -> Self {
         Self {
-            id: d.id().to_hex(),
-            kid: d.kid().to_string(),
+            id: id.to_hex(),
+            kid: kid.to_string(),
             repo: r.repo.clone(),
             question_id: r.question_id.clone(),
-            question: d.question().question.clone(),
-            options: d.question().options.clone(),
+            question: q.question.clone(),
+            options: q.options.clone(),
             chosen: r.chosen.clone(),
             scope: r.scope.clone(),
             conditions: r.conditions.clone(),
@@ -342,7 +343,7 @@ pub(crate) fn decision_read_core(
         .ok_or_else(|| ApiError::IfcDenied(format!("owner decision {id} is not held")))?;
     observe_decisions(graph, now, &[held])?;
     Ok(DecisionReadResp {
-        decision: DecisionView::of(held),
+        decision: DecisionView::of(held.id(), held.kid(), held.record(), held.question()),
     })
 }
 
@@ -386,7 +387,10 @@ pub(crate) fn decision_list_core(
         .collect();
     observe_decisions(graph, now, &live)?;
     Ok(DecisionListResp {
-        decisions: live.into_iter().map(DecisionView::of).collect(),
+        decisions: live
+            .into_iter()
+            .map(|d| DecisionView::of(d.id(), d.kid(), d.record(), d.question()))
+            .collect(),
         refused,
     })
 }

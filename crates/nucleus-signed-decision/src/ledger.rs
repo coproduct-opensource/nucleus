@@ -186,14 +186,15 @@ impl DecisionLedger {
         self.held.is_empty()
     }
 
-    fn usable(d: &SignedDecision, action: &Action<'_>, now: u64) -> Result<(), LedgerError> {
-        let id = d.id();
-        match d.window(now) {
+    /// Decides over the two verdicts, not the decision: a helper that borrowed the right would
+    /// be the C-4 shape, so callers ask the decision and hand over only what it answered.
+    fn usable(id: OwnerDecisionId, window: Window, coverage: Coverage) -> Result<(), LedgerError> {
+        match window {
             Window::Live => {}
             Window::NotYetValid => return Err(LedgerError::NotYetValid(id)),
             Window::Expired => return Err(LedgerError::Expired(id)),
         }
-        match d.covers_action(action) {
+        match coverage {
             Coverage::Covered => Ok(()),
             Coverage::OutOfScope => Err(LedgerError::OutOfScope(id)),
             Coverage::CannotTell => Err(LedgerError::CannotTell(id)),
@@ -213,7 +214,7 @@ impl DecisionLedger {
         if d.record().single_use {
             return Err(LedgerError::OneShot(id));
         }
-        Self::usable(d, action, now)?;
+        Self::usable(id, d.window(now), d.covers_action(action))?;
         Ok(d)
     }
 
@@ -230,7 +231,7 @@ impl DecisionLedger {
         if !d.record().single_use {
             return Err(LedgerError::Standing(id));
         }
-        Self::usable(d, action, now)?;
+        Self::usable(id, d.window(now), d.covers_action(action))?;
         let d = self.held.remove(&id).ok_or(LedgerError::NotHeld(id))?;
         self.retire_spent(d, action, now)
     }
@@ -248,7 +249,7 @@ impl DecisionLedger {
         if !decision.record().single_use {
             return Err(LedgerError::Standing(id));
         }
-        Self::usable(&decision, action, now)?;
+        Self::usable(id, decision.window(now), decision.covers_action(action))?;
         self.held.remove(&id);
         self.retire_spent(decision, action, now)
     }
