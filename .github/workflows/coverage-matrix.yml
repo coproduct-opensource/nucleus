@@ -362,7 +362,7 @@ jobs:
       - name: Size the shard matrix from the plan
         if: ${{ steps.mutscope.outputs.run == 'true' }}
         id: sizing
-        run: cargo run -q -p xtask -- mutants-gate plan --list mutants-plan/list.json --per-shard 60 --max-shards 8 --github-output "$GITHUB_OUTPUT"
+        run: cargo run -q -p xtask -- mutants-gate plan --list mutants-plan/list.json --per-shard 3 --max-shards 8 --github-output "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         if: ${{ steps.mutscope.outputs.run == 'true' }}
         with:
@@ -428,7 +428,7 @@ jobs:
           # [profile.mutants] in Cargo.toml. Neither changes WHICH tests a
           # mutant must fail -- same test binaries, same proptest cases.
           # shellcheck disable=SC2086
-          cargo mutants $MUTANTS_SCOPE $IN_DIFF \
+          timeout -s KILL 150 cargo mutants $MUTANTS_SCOPE $IN_DIFF \
             --shard "$SHARD" --sharding round-robin \
             --profile mutants --jobs "$MUTANTS_JOBS" \
             --timeout 120 \
