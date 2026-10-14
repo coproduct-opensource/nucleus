@@ -6,14 +6,14 @@
 - Default network egress to deny; explicit allowlists only (host netns iptables + guest defense).
 - The node provisions a per-pod netns, tap interface, and guest IP; guest init configures eth0 from kernel args.
 - Netns setup enables bridge netfilter (`br_netfilter`) so iptables can enforce guest egress.
-- Approvals require signed tokens issued by an authority (HMAC today; external authority roadmap).
+- Approvals require an approver's Ed25519 signature against configured public keys (a pod provisioned with a legacy approval secret still takes its drand-anchored HMAC).
 - Provide verifiable audit logs for every operation (signed + verified).
 
 ## Trust Boundaries
 
 ```
 Agent / Tool Adapter
-  |  (signed HTTP)
+  |  (mTLS HTTP)
   v
 Host Control Plane (nucleus-node + signed proxy)
   |  (vsock bridge, no guest TCP)
@@ -25,7 +25,7 @@ Side effects (filesystem/commands)
 ```
 
 ### Boundary 1: Agent -> Control Plane
-- Requests are signed (HMAC today; asymmetric is roadmap).
+- Callers authenticate by transport: SPIFFE mTLS, or a host-verified vsock / peer-verified Unix socket. The shared-secret (HMAC) request tier is deleted (#2446 step 3).
 - Control plane forwards only to the VM proxy.
 
 ### Boundary 2: Control Plane -> VM

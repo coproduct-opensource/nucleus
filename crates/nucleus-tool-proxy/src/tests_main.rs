@@ -262,7 +262,7 @@ mod ifc_http_enforcement {
         operation: Operation,
         subject: &str,
     ) -> (
-        Result<portcullis::kernel::DecisionToken, ApiError>,
+        Result<crate::mediation::Admitted, ApiError>,
         Vec<(String, String, BTreeMap<String, String>)>,
     ) {
         let sink = CapturingSink::default();
@@ -1984,21 +1984,151 @@ mod consent_spent_at_the_effect {
         );
     }
 
-    /// `write_file`'s approved retry re-discharges BEFORE `request_approval`
-    /// (whose approver spends the grant), so a failed re-discharge leaves the
-    /// grant unspent.
+    /// The sandbox and executor handlers spend every approval the effect
+    /// needs, the monitor's included, in one `consent_for_effect` after every
+    /// check that can refuse and before the effect (#3446). There is no
+    /// refused first attempt and approved retry any more, so no second
+    /// decision token is minted for one act.
     #[test]
-    fn write_file_spends_only_after_the_re_discharge() {
-        let body = handler("write_file");
-        let spend = at(&body, "request_approval(", "write_file");
+    fn sandbox_effects_spend_the_admission_at_the_effect() {
+        for (name, check, effects) in [
+            (
+                "read_file",
+                "preflight_read_fs(",
+                &[
+                    "sandbox.read_to_string_approved(",
+                    "sandbox.read_to_string(",
+                ][..],
+            ),
+            (
+                "write_file",
+                "preflight_fs(",
+                &["sandbox.write_approved(", "sandbox.write("][..],
+            ),
+            (
+                "run_command",
+                "preflight_runbash(",
+                &["executor.run_args_with_approval(", "executor.run_args("][..],
+            ),
+        ] {
+            let body = handler(name);
+            let spend = at(&body, "approval::consent_for_effect(", name);
+            assert!(
+                at(&body, "http_kernel_decide(", name) < spend,
+                "{name}: the spend must carry the monitor's admission"
+            );
+            assert!(
+                last_at(&body, check, name) < spend,
+                "{name}: `{check}` can refuse after the approval is spent"
+            );
+            for effect in effects {
+                assert!(
+                    spend < at(&body, effect, name),
+                    "{name}: `{effect}` runs before its approvals are spent"
+                );
+            }
+            assert!(
+                !body.contains("issue_approved_token("),
+                "{name}: a second decision token for one act"
+            );
+        }
+    }
+
+    /// Every handler the monitor admits carries the admission to its effect,
+    /// so an approval the monitor relied on is spent there (#3446). It used
+    /// to be discarded (`let _ = http_kernel_decide(..)`) or kept only for its
+    /// token, which left the approval live.
+    #[test]
+    fn every_admission_is_carried_to_its_effect() {
+        // Every file that calls the monitor. An admission bound to `_` or
+        // `_name` is dropped unspent the moment the effect runs.
+        let mut calls = 0;
+        for (file, src) in [
+            ("main.rs", include_str!("main.rs")),
+            ("artifact.rs", include_str!("artifact.rs")),
+            ("memory.rs", include_str!("memory.rs")),
+            ("owner_decision.rs", include_str!("owner_decision.rs")),
+        ] {
+            let src = code(src);
+            for (at, _) in src.match_indices("http_kernel_decide(") {
+                let before = &src[..at];
+                let statement = &before[before.rfind([';', '{', '}']).unwrap_or(0)..];
+                let Some(binding) = statement.split("let ").nth(1) else {
+                    continue; // the definition, or a tail expression
+                };
+                calls += 1;
+                assert!(
+                    !binding.trim_start_matches("mut ").starts_with('_'),
+                    "{file} drops an admission: `let {}`",
+                    binding.trim()
+                );
+            }
+        }
         assert!(
-            last_at(&body, "preflight_fs(", "write_file") < spend,
-            "the approved write's re-discharge can refuse after the approval is spent"
+            calls >= 12,
+            "found only {calls} monitor calls; the scan reached nothing"
+        );
+        for name in ["web_fetch", "grep_search", "web_search"] {
+            let body = handler(name);
+            assert!(
+                at(&body, "monitor.into_consent()", name)
+                    < at(&body, ".spend(&state.approvals)", name),
+                "{name}: the monitor's approvals must join the spend"
+            );
+        }
+        let glob = handler("glob_search");
+        assert!(
+            at(&glob, "let mut consent = admitted;", "glob_search")
+                < at(
+                    &glob,
+                    "let decision_token = match consent.spend(",
+                    "glob_search"
+                ),
+            "glob_search: the listing's token must come out of the spend"
+        );
+        let artifact = code(include_str!("artifact.rs"));
+        assert!(
+            at(&artifact, "admitted.spend(", "artifact::read")
+                < at(&artifact, ".read_bounded(", "artifact::read"),
+            "artifact::read: the read's token must come out of the spend"
+        );
+        for (file, src, handlers) in [
+            ("memory.rs", include_str!("memory.rs"), 2),
+            ("owner_decision.rs", include_str!("owner_decision.rs"), 2),
+        ] {
+            assert_eq!(
+                code(src)
+                    .matches("approval::spend_admission(&state, admitted)?")
+                    .count(),
+                handlers,
+                "{file}: each handler spends its admission"
+            );
+        }
+    }
+
+    /// The approver the sandbox and executor ask only asks. If it spent too,
+    /// an act both the monitor and the sandbox asked about would cost two
+    /// approvals, and the handler's one spend would find nothing left.
+    #[test]
+    fn the_effect_approver_spends_nothing() {
+        let main = code(include_str!("main.rs"));
+        assert!(
+            main.contains("approval::effect_approver("),
+            "the runtime's approver is not the proxy's effect approver"
         );
         assert!(
-            spend < at(&body, "write_approved(", "write_file"),
-            "the spend must precede the write it pays for"
+            !main.contains("approvals.consume(request.operation())"),
+            "the sandbox approver spends grants beside the handler's spend"
         );
+    }
+
+    /// Source without `//` lines, so a comment naming a pattern does not
+    /// count as code using it.
+    fn code(src: &str) -> String {
+        src.lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// The listings and search spend after every check that can refuse the

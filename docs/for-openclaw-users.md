@@ -196,7 +196,7 @@ If someone changes the Rust `CapabilityLevel` enum, the Aeneas pipeline regenera
                     │   └─────────────────┘   │
                     │                         │
                     │   ┌─────────────────┐   │
-                    │   │ Audit Chain     │   │  ← HMAC-signed,
+                    │   │ Audit Chain     │   │  ← Ed25519-signed,
                     │   │ (witness log)   │   │    tamper-evident
                     │   └─────────────────┘   │
                     └─────────────────────────┘

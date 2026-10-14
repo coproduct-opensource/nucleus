@@ -68,7 +68,7 @@ What must be true before Nucleus can be called enterprise-ready. This page conso
 |------|--------|--------|
 | SPIFFE identity deployment | Implemented | Code exists for mTLS + cert management. No SPIRE deployment or integration testing. |
 | Firecracker in production | Tested | Real jailer invocation + iptables. Linux+KVM only. Not deployed to production infrastructure. |
-| Audit log S3 sink | Implemented | HMAC-SHA256 chain with optional S3 append-only sink. Not production-tested. |
+| Audit log S3 sink | Implemented | Ed25519-signed SHA-256 chain with optional S3 append-only sink. Not production-tested. |
 | Fleet lockdown (`nucleus lockdown`) | Tested | Drops agents to read-only via gRPC streaming (sub-second). Not deployed. |
 | `--local` vs Firecracker isolation gap | Documented | `--local` mode has weaker isolation. Tier 2 (Firecracker) required for high-security workloads. |
 

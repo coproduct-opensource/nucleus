@@ -13,7 +13,8 @@
 //!
 //! [`SeccompPolicy::derive`] is that missing step, written once and here, where
 //! the lattice lives. It is a pure function of the [`PermissionLattice`] and of
-//! whether the pod declares any network egress ([`NetworkEgress`]). The guest
+//! which address families the pod declares network egress in
+//! ([`NetworkEgress`]). The guest
 //! compiles the result to BPF and installs it with the denylist, as their
 //! union: a derived class adds denials, it never removes one.
 //!
@@ -23,8 +24,11 @@
 //! |---|---|
 //! | [`SyscallClass::Exec`] | `run_bash` is `never` |
 //! | [`SyscallClass::InetSocket`] | `web_fetch` is `never` AND the pod declares no egress ([`NetworkEgress::None`]) |
+//! | [`SyscallClass::Inet6Socket`] | `web_fetch` is `never` AND every destination the pod declares is IPv4 ([`NetworkEgress::Ipv4Only`] or less) |
 //!
-//! Nothing else is read. `fork` and `clone` are not a class: a process that
+//! The socket classes are one per address family, so a pod is denied each
+//! family it declares nothing in: an IPv4 allowlist does not hand the workload
+//! `AF_INET6` (#2907). Nothing else is read. `fork` and `clone` are not a class: a process that
 //! cannot exec gains nothing by copying itself (the copy runs the same,
 //! already-filtered image), threads are `clone`, and `RLIMIT_NPROC` already
 //! bounds how many copies there can be.
@@ -33,9 +37,9 @@
 //!
 //! A tighter lattice, or less egress, denies a superset:
 //! `a ≤ b ∧ e ≤ f ⇒ derive(a, e).at_least_as_tight_as(derive(b, f))`. Each
-//! class's condition is a conjunction of "this dimension is at its bottom", and
-//! the bottom of a chain is downward closed, so the property holds by the shape
-//! of the rule. It is checked by a property test below and by the Kani harness
+//! class's condition is a conjunction of "this dimension is at or below a
+//! fixed point of its chain", which is downward closed, so the property holds
+//! by the shape of the rule. It is checked by a property test below and by the Kani harness
 //! `proof_seccomp_policy_monotone` (`src/kani.rs`).
 //!
 //! # Evidence
@@ -47,18 +51,24 @@
 
 use crate::{CapabilityLattice, CapabilityLevel, PermissionLattice};
 
-/// Whether a pod declares any network egress at all: hosts it may reach
-/// directly, DNS names pinned for it, or credentialed upstreams (whose guest
-/// adapter listens on loopback).
+/// Which address families a pod declares network egress in: hosts it may
+/// reach directly, DNS names pinned for it, or credentialed upstreams (whose
+/// guest adapter listens on IPv4 loopback).
 ///
-/// Two named cases rather than a `bool` (ADR 0007 A), and no `Default`
-/// (B-1): the caller states which one it has. Ordered `None < Declared`, the
-/// way the lattice orders "less" below "more".
+/// Named cases rather than a `bool` (ADR 0007 A), and no `Default` (B-1): the
+/// caller states which one it has. Ordered `None < Ipv4Only < Declared`, the
+/// way the lattice orders "less" below "more", so the meet stays a `min`. An
+/// IPv6-only declaration is [`Self::Declared`]: it gives back both families,
+/// which never denies more than the pod declares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NetworkEgress {
     /// Nothing is declared: the pod's network fence denies every destination.
     None,
-    /// Some destination is declared.
+    /// Every declared destination is IPv4: the workload needs `AF_INET`, and
+    /// nothing it may reach is reached over `AF_INET6`.
+    Ipv4Only,
+    /// Some declared destination is not known to be IPv4 (an IPv6 address,
+    /// or a caller that does not narrow): both families.
     Declared,
 }
 
@@ -70,14 +80,22 @@ pub enum SyscallClass {
     /// one descriptor the runtime starts the child through. Denied when the
     /// lattice says `run_bash: never`.
     Exec,
-    /// An `AF_INET` or `AF_INET6` socket. Denied when the lattice says
-    /// `web_fetch: never` and the pod declares no egress.
+    /// An `AF_INET` socket. Denied when the lattice says `web_fetch: never`
+    /// and the pod declares no egress.
     InetSocket,
+    /// An `AF_INET6` socket. Denied when the lattice says `web_fetch: never`
+    /// and every destination the pod declares is IPv4, or it declares none:
+    /// the family is narrowed to what the pod declares (#2907).
+    Inet6Socket,
 }
 
 impl SyscallClass {
     /// Every class, in the order the canonical form lists them.
-    pub const ALL: [SyscallClass; 2] = [SyscallClass::Exec, SyscallClass::InetSocket];
+    pub const ALL: [SyscallClass; 3] = [
+        SyscallClass::Exec,
+        SyscallClass::InetSocket,
+        SyscallClass::Inet6Socket,
+    ];
 
     /// The class's name in the canonical form and the receipt.
     #[must_use]
@@ -85,6 +103,7 @@ impl SyscallClass {
         match self {
             SyscallClass::Exec => "exec",
             SyscallClass::InetSocket => "inet_socket",
+            SyscallClass::Inet6Socket => "inet6_socket",
         }
     }
 }
@@ -107,6 +126,7 @@ enum Verdict {
 pub struct SeccompPolicy {
     exec: Verdict,
     inet_socket: Verdict,
+    inet6_socket: Verdict,
 }
 
 impl SeccompPolicy {
@@ -129,10 +149,21 @@ impl SeccompPolicy {
         };
         let inet_socket = match (caps.web_fetch, egress) {
             (CapabilityLevel::Never, NetworkEgress::None) => Verdict::Denied,
+            (CapabilityLevel::Never, NetworkEgress::Ipv4Only | NetworkEgress::Declared)
+            | (CapabilityLevel::LowRisk | CapabilityLevel::Always, _) => Verdict::Allowed,
+        };
+        let inet6_socket = match (caps.web_fetch, egress) {
+            (CapabilityLevel::Never, NetworkEgress::None | NetworkEgress::Ipv4Only) => {
+                Verdict::Denied
+            }
             (CapabilityLevel::Never, NetworkEgress::Declared)
             | (CapabilityLevel::LowRisk | CapabilityLevel::Always, _) => Verdict::Allowed,
         };
-        Self { exec, inet_socket }
+        Self {
+            exec,
+            inet_socket,
+            inet6_socket,
+        }
     }
 
     /// Whether `class` is denied.
@@ -141,6 +172,7 @@ impl SeccompPolicy {
         let verdict = match class {
             SyscallClass::Exec => self.exec,
             SyscallClass::InetSocket => self.inet_socket,
+            SyscallClass::Inet6Socket => self.inet6_socket,
         };
         match verdict {
             Verdict::Denied => true,
@@ -203,7 +235,11 @@ mod tests {
     }
 
     fn egress() -> impl Strategy<Value = NetworkEgress> {
-        prop_oneof![Just(NetworkEgress::None), Just(NetworkEgress::Declared)]
+        prop_oneof![
+            Just(NetworkEgress::None),
+            Just(NetworkEgress::Ipv4Only),
+            Just(NetworkEgress::Declared)
+        ]
     }
 
     /// Every one of the thirteen core dimensions arbitrary, so the property is
@@ -298,13 +334,37 @@ mod tests {
             SeccompPolicy::from_capabilities(&caps, egress).canonical()
         };
         use CapabilityLevel::{Always, LowRisk, Never};
-        assert_eq!(with(Never, Never, NetworkEgress::None), "exec,inet_socket");
-        assert_eq!(with(Never, Never, NetworkEgress::Declared), "exec");
-        assert_eq!(with(Never, LowRisk, NetworkEgress::None), "exec");
-        assert_eq!(with(LowRisk, Never, NetworkEgress::None), "inet_socket");
-        assert_eq!(with(Always, Never, NetworkEgress::None), "inet_socket");
-        assert_eq!(with(LowRisk, LowRisk, NetworkEgress::None), "none");
-        assert_eq!(with(Always, Always, NetworkEgress::Declared), "none");
+        use NetworkEgress::{Declared, Ipv4Only};
+        let none = NetworkEgress::None;
+        assert_eq!(with(Never, Never, none), "exec,inet_socket,inet6_socket");
+        assert_eq!(with(Never, Never, Ipv4Only), "exec,inet6_socket");
+        assert_eq!(with(Never, Never, Declared), "exec");
+        assert_eq!(with(Never, LowRisk, none), "exec");
+        assert_eq!(with(Never, LowRisk, Ipv4Only), "exec");
+        assert_eq!(with(LowRisk, Never, none), "inet_socket,inet6_socket");
+        assert_eq!(with(Always, Never, none), "inet_socket,inet6_socket");
+        assert_eq!(with(Always, Never, Ipv4Only), "inet6_socket");
+        assert_eq!(with(LowRisk, LowRisk, none), "none");
+        assert_eq!(with(Always, Always, Declared), "none");
+    }
+
+    /// #2907: an IPv4-only declaration narrows the socket classes to its
+    /// family. `AF_INET` is given back and `AF_INET6` is not; a declaration
+    /// the rule cannot narrow gives both, and the narrowed policy is the
+    /// strictly tighter one.
+    #[test]
+    fn an_ipv4_only_declaration_keeps_the_inet6_family_denied() {
+        let caps = CapabilityLattice {
+            web_fetch: CapabilityLevel::Never,
+            ..CapabilityLattice::default()
+        };
+        let v4 = SeccompPolicy::from_capabilities(&caps, NetworkEgress::Ipv4Only);
+        assert!(!v4.denies(SyscallClass::InetSocket));
+        assert!(v4.denies(SyscallClass::Inet6Socket));
+        let both = SeccompPolicy::from_capabilities(&caps, NetworkEgress::Declared);
+        assert!(!both.denies(SyscallClass::Inet6Socket));
+        assert!(v4.at_least_as_tight_as(&both));
+        assert!(!both.at_least_as_tight_as(&v4));
     }
 
     /// The shipped presets the issue names: `read_only` and `untrusted-model`
@@ -316,11 +376,11 @@ mod tests {
         let none = NetworkEgress::None;
         assert_eq!(
             SeccompPolicy::derive(&PermissionLattice::read_only(), none).canonical(),
-            "exec,inet_socket"
+            "exec,inet_socket,inet6_socket"
         );
         assert_eq!(
             SeccompPolicy::derive(&PermissionLattice::codegen(), none).canonical(),
-            "inet_socket"
+            "inet_socket,inet6_socket"
         );
         assert_eq!(
             SeccompPolicy::derive(&PermissionLattice::permissive(), none).canonical(),
@@ -338,7 +398,10 @@ mod tests {
         let policy = SeccompPolicy::derive(&lattice, NetworkEgress::None);
         assert!(policy.denies(SyscallClass::Exec));
         assert!(policy.denies(SyscallClass::InetSocket));
-        // Declaring egress gives the socket family back, never exec.
+        assert!(policy.denies(SyscallClass::Inet6Socket));
+        // Declaring egress gives the declared families back, never exec.
+        let v4 = SeccompPolicy::derive(&lattice, NetworkEgress::Ipv4Only);
+        assert_eq!(v4.canonical(), "exec,inet6_socket");
         let declared = SeccompPolicy::derive(&lattice, NetworkEgress::Declared);
         assert_eq!(declared.canonical(), "exec");
     }
@@ -354,7 +417,7 @@ mod tests {
         let p = SeccompPolicy::from_capabilities(&caps, NetworkEgress::None);
         assert_eq!(
             serde_json::to_string(&p).unwrap(),
-            r#"["exec","inet_socket"]"#
+            r#"["exec","inet_socket","inet6_socket"]"#
         );
     }
 }

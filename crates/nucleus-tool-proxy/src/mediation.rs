@@ -18,6 +18,7 @@ use nucleus::portcullis::verdict_sink::{ActorIdentity, VerdictSink};
 use tracing::{info, warn};
 
 use crate::ApiError;
+use crate::approval::{ApprovalRegistry, ConsentHold};
 
 /// Whether a human approval is already on file for an operation key.
 ///
@@ -29,8 +30,9 @@ use crate::ApiError;
 /// unit-testable against a bare `Kernel` + `FlowGraph`, which is why
 /// `decide_with_flow_mapped` was split out in the first place.
 ///
-/// The method PEEKS. See `ApprovalRegistry::is_granted` for why the spend
-/// belongs to the last gate rather than this one.
+/// The method PEEKS. A grant the monitor relies on travels out in the
+/// [`Admitted`] it returns, and the handler spends it at the effect (#3446).
+/// See `ApprovalRegistry::is_granted`.
 pub(crate) trait ApprovalGrants {
     /// Whether a live, unexpired grant exists for this operation key.
     fn is_granted(&self, operation: &str) -> bool;
@@ -174,7 +176,7 @@ fn decide_with_flow_mapped(
     operation: Operation,
     subject: &str,
     grants: &dyn ApprovalGrants,
-) -> (Decision, Result<DecisionToken, ApiError>) {
+) -> (Decision, Result<Admitted, ApiError>) {
     let term = ActionTerm::from_operation(operation, subject);
     // The single authoritative `FlowGraph` backs the egress verdict (its
     // `is_poisoned` / `is_tainted` / `session_exfiltration_check` aggregates carry
@@ -182,7 +184,10 @@ fn decide_with_flow_mapped(
     // against during the Phase 2 cutover has been retired.
     let (decision, token) = kernel.decide_term_with_flow(term, Some(graph));
     let mapped = match decision.verdict.clone() {
-        Verdict::Allow => Ok(token.expect("Allow verdict always produces token")),
+        Verdict::Allow => Ok(Admitted {
+            token: token.expect("Allow verdict always produces token"),
+            consent: ConsentHold::empty(),
+        }),
         Verdict::Deny(DenyReason::IfcUnsafe { detail }) => {
             warn!(?operation, subject, %detail, "HTTP IFC denied outbound action (lethal trifecta)");
             Err(ApiError::IfcDenied(detail))
@@ -226,9 +231,12 @@ fn decide_with_flow_mapped(
                 // This is NOT a widening path. The kernel already decided the
                 // operation is one a person MAY authorize; nothing here can turn
                 // a `Deny` into an allow, and with no grant on file the arm
-                // below refuses exactly as before. The grant is not spent here
-                // (see `ApprovalRegistry::is_granted`) — the sandbox approver
-                // spends it, once.
+                // below refuses exactly as before. The grant is not spent here:
+                // it leaves in the `Admitted`, and the handler spends it once,
+                // immediately before the effect. It used to be left for the
+                // sandbox approver, which asks only for a static obligation, so
+                // a grant that cleared an exposure-gate or policy-rule hold was
+                // never spent and replayed until it expired (#3446).
                 info!(
                     ?operation,
                     subject,
@@ -236,7 +244,10 @@ fn decide_with_flow_mapped(
                     "HTTP kernel required approval and a human grant is on file; \
                      issuing an approved token (#2406)"
                 );
-                Ok(kernel.issue_approved_token(operation, subject))
+                Ok(Admitted {
+                    token: kernel.issue_approved_token(operation, subject),
+                    consent: ConsentHold::peeked(key),
+                })
             } else {
                 info!(
                     ?operation,
@@ -297,7 +308,7 @@ pub(crate) fn decide_and_record(
     graph: &FlowGraph,
     operation: Operation,
     subject: &str,
-) -> Result<DecisionToken, Box<Denied>> {
+) -> Result<Admitted, Box<Denied>> {
     let MediationEnv {
         sink,
         actor,
@@ -380,6 +391,58 @@ pub(crate) fn decide_and_record(
             error,
         })
     })
+}
+
+/// What the reference monitor admitted: the token the effect redeems, and
+/// every approval the admission relied on, checked and still unspent.
+///
+/// The token is released only by [`Self::spend`], which takes `self` by value
+/// (ADR 0007 C-4) and spends the approvals all or none. A handler cannot hand
+/// a sandbox or executor the token without spending what the decision used,
+/// so an effect without its spend is unwritable there (#3446). A handler that
+/// performs its effect itself, without a token, carries the approvals into its
+/// own hold with [`Self::into_consent`] and spends that at the effect. A
+/// handler that refuses drops this, and a dropped `Admitted` spends nothing.
+#[must_use = "an admission carries the approvals the decision used; spend them at the effect"]
+#[derive(Debug)]
+pub(crate) struct Admitted {
+    token: DecisionToken,
+    consent: ConsentHold,
+}
+
+impl Admitted {
+    /// Require one more approval for the same effect (peek). See
+    /// [`ConsentHold::require`].
+    pub(crate) fn require(
+        &mut self,
+        registry: &ApprovalRegistry,
+        operation: Operation,
+        subject: &str,
+    ) -> Result<(), String> {
+        self.consent.require(registry, operation, subject)
+    }
+
+    /// [`Self::require`] by name. See [`ConsentHold::require_named`].
+    pub(crate) fn require_named(
+        &mut self,
+        registry: &ApprovalRegistry,
+        key: String,
+    ) -> Result<(), String> {
+        self.consent.require_named(registry, key)
+    }
+
+    /// Spend every approval this effect needs, all or none, and release the
+    /// token for the effect. Called immediately before the effect. `Err`
+    /// names an approval no longer live; then nothing is spent.
+    pub(crate) fn spend(self, registry: &ApprovalRegistry) -> Result<DecisionToken, String> {
+        self.consent.spend(registry)?;
+        Ok(self.token)
+    }
+
+    /// The approvals alone, for a handler whose effect takes no token.
+    pub(crate) fn into_consent(self) -> ConsentHold {
+        self.consent
+    }
 }
 
 /// A refusal, with the kernel's own reason for it.

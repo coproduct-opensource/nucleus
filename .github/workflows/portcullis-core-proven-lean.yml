@@ -220,6 +220,7 @@ jobs:
             PodMachineSpike
             PodCrossView
             PodCrossViewIdentity
+            MemoryContext
             IdentityOracleMirror
             ConfidentialityOracleMirror
             IntegrityOracleMirror

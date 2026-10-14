@@ -1,4 +1,13 @@
 //! Operator-owned journal for the live memory surface; replay never trusts set serialization.
+//!
+//! Only the proxy may reach the journal (#3454). Its children are not held
+//! off it by Landlock (the child ruleset is the guest layout's and applies
+//! only under `MicroVM`, which never provisions memory), so the boundary is
+//! the uid: a `0600` file in a `0700` directory, and no child whose uid could
+//! open, append to or replace it. [`ChildReach`] (`child_reach`, the one
+//! decider of what a child reaches, #3461) is that last clause as evidence,
+//! and [`MemoryStoreArgs::open`] cannot open a persistent journal without it.
+use crate::child_reach::ChildReach;
 use crate::{
     api_error::ApiError,
     memory::{MemoryWriteReq, MemoryWriteResp},
@@ -9,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::OpenOptions,
     io::{Read, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::PathBuf,
 };
 use tokio::io::AsyncWriteExt;
@@ -57,6 +66,7 @@ impl MemoryStoreArgs {
         &self,
         workspace: &std::path::Path,
         registry: &dyn RecomputeMemory,
+        children: &ChildReach,
     ) -> Result<Store, ApiError> {
         let fail = |message: &str| ApiError::Spec(format!("memory store: {message}"));
         let (path, namespace) = match (&self.memory_store, &self.memory_namespace) {
@@ -82,11 +92,17 @@ impl MemoryStoreArgs {
             .parent()
             .ok_or_else(|| fail("missing parent directory"))?
             .canonicalize()?;
-        if parent.metadata()?.permissions().mode() & 0o077 != 0 {
+        let parent_meta = parent.metadata()?;
+        if parent_meta.permissions().mode() & 0o077 != 0 {
             return Err(fail(
                 "parent directory must not grant group or other access",
             ));
         }
+        // Before anything is created in it: a directory a child can write is
+        // a journal the child can replace (#3454).
+        children
+            .excludes("directory", parent_meta.uid())
+            .map_err(|e| fail(&e))?;
         let path = parent.join(
             path.file_name()
                 .ok_or_else(|| fail("missing journal filename"))?,
@@ -117,9 +133,15 @@ impl MemoryStoreArgs {
         };
         file.try_lock()
             .map_err(|_| fail("journal is already owned by another proxy"))?;
-        if file.metadata()?.permissions().mode() & 0o077 != 0 {
+        let file_meta = file.metadata()?;
+        if file_meta.permissions().mode() & 0o077 != 0 {
             return Err(fail("journal must be private"));
         }
+        // The opened file's owner, not the path's: what is checked is what is
+        // read and appended.
+        children
+            .excludes("file", file_meta.uid())
+            .map_err(|e| fail(&e))?;
         let set = if fresh {
             let mut header = serde_json::to_vec(&Header {
                 schema: SCHEMA.into(),

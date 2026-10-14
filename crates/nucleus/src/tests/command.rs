@@ -739,16 +739,17 @@ fn a_root_runtimes_child_is_never_root_in_any_mode() {
 
 /// The fd half of the confinement, on a real spawn: a `HostHardened`
 /// child (restricted, or dropped under a root runtime) inherits no
-/// descriptor beyond its own stdio, while the bare tier's child keeps
-/// whatever the runtime leaves open. `ls /proc/self/fd` opens one more fd
-/// for its directory listing, so a confined child lists at most four.
+/// descriptor beyond its own stdio, and since #3461 neither does the bare
+/// tier's, whose one step of the hook is this sweep. `ls /proc/self/fd`
+/// opens one more fd for its directory listing, so a child lists at most
+/// four.
 ///
 /// This is the mechanism the tool-proxy's workload test used to cover
 /// through a non-root harness; since #3120 a non-root workload is either
-/// refused or on the declared bare tier, which closes nothing, so the
-/// close-on-exec sweep is asserted here, where a non-root CI runner still
-/// reaches it. The test harness itself holds high non-CLOEXEC fds (seen in
-/// CI: 149 and 152), which is what the bare row shows.
+/// refused or on the declared bare tier, so the close-on-exec sweep is
+/// asserted here, where a non-root CI runner still reaches it. The test
+/// harness itself holds high non-CLOEXEC fds (seen in CI: 149 and 152): the
+/// bare row listed them before #3461, which is the leak it closed.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
@@ -791,11 +792,10 @@ fn a_confined_child_inherits_no_fd_beyond_its_stdio() {
         "a confined child inherited a descriptor beyond its stdio: {confined:?}"
     );
     let bare = list(ContainmentMode::Unsandboxed);
-    if crate::runtime_uid() != 0 {
-        // The contrast, reported rather than required: whether the bare
-        // child sees extra fds depends on what the harness left open.
-        eprintln!("bare-tier child fds (no sweep, by design): {bare:?}");
-    }
+    assert!(
+        (3..=4).contains(&bare.len()),
+        "a bare-tier child inherited a descriptor beyond its stdio: {bare:?}"
+    );
 }
 
 /// #2572: a confined child's resource limits are its pod's policy, not

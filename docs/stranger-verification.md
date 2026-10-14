@@ -235,6 +235,66 @@ its federation JWKS into every quote, next to its executor key.
 A browser and JavaScript verifier for node evidence, built from the same Rust verifier
 compiled to wasm in `sdks/verifier-js`, is being added in a separate change.
 
+## 5. Verify a pod's launch
+
+A pod's SVID states what the node launched: the SHA-256 of the kernel, rootfs and config
+(OID `.1.1`), signed by the node CA. On a node with a TPM, the node also quotes each launch
+(ADR 0016 D2). The quote is a challenge-response TPM quote over
+
+```text
+SHA-256("nucleus-launch-v1" ‖ SVID SubjectPublicKeyInfo DER ‖ kernel ‖ rootfs ‖ config)
+```
+
+from the same AK that signs the node's epoch evidence. The SVID names the quote document by
+its SHA-256 (OID `.1.7`). A launch rooted in the TPM survives a stolen CA key: a forger also
+needs a quote over the forged key, from an AK your anchors accept, on a boot your reference
+accepts.
+
+You need:
+
+| Input | Where it comes from | What makes it trustworthy |
+|---|---|---|
+| The SVID chain (`svid.pem`) | The pod, over `FETCH_SVID`, or the run's published artifacts | It must chain to the trust bundle |
+| The node's trust bundle (`bundle.pem`) | The operator | It is the CA the launch claim is signed by; a leaf it did not issue is refused |
+| The launch quote (`launch-quote.json`) | `GET /v1/evidence/<sha256>` on the node's public evidence listener, with `<sha256>` the digest the leaf names | Content-addressed: the verifier checks it hashes to the digest the leaf names |
+| The node reference, executor key and AK pin | Sections 1 to 3 above; the executor key is also served at `GET /v1/node/keys` | The same inputs, and the same verifier, as the node's own evidence |
+
+Run it once without the quote. If the leaf names one, the output gives the digest and the URL
+to fetch:
+
+```sh
+nucleus verify-attestation --cert svid.pem --trust-bundle bundle.pem \
+  --expect-kernel <hex> --expect-rootfs <hex> --expect-config <hex>
+#   root:       node CA only — TPM root NOT verified
+#   why:        the leaf names launch quote <sha256>, which was not checked; fetch
+#               GET /v1/evidence/<sha256> ...
+
+curl -fsS https://<node>:<public-evidence-port>/v1/evidence/<sha256> -o launch-quote.json
+
+nucleus verify-attestation --cert svid.pem --trust-bundle bundle.pem \
+  --expect-kernel <hex> --expect-rootfs <hex> --expect-config <hex> \
+  --launch-quote launch-quote.json --node-reference node-reference.json \
+  --executor-ed25519 <executor public key hex> \
+  --operator-pin 'SOURCE=<spki-sha256>' \
+  --require-tpm-root
+#   root:       TPM — launch quote <sha256> appraised Attested over this leaf's key and
+#               measurement (AK anchor OperatorFetched { source: "..." })
+```
+
+`--federation <jwks-sha256>` applies as in section 4. A software-TPM node needs
+`--allow-software-tpm-pin`, with the caveat in section 3, and the result names the
+`SoftwareTpm` anchor.
+
+| Verdict | Meaning |
+|---|---|
+| `root: TPM` (exit 0) | The leaf chains to the bundle, its measurement is in your allow-lists, and the quote it names appraised `Attested` over this leaf's key and this measurement. |
+| `root: node CA only`, the leaf names no quote | The node did not quote this launch (no TPM, or a node from before ADR 0016 S3). Only the CA vouches for it. |
+| `root: node CA only`, the quote was not checked | The leaf names a quote, and you did not pass it. This is never reported as a TPM root. |
+| Exit non-zero | Any refusal: a leaf the bundle did not issue, measurement drift, a document other than the one the leaf names (one changed byte is enough), a quote over another key or measurement, a quote that does not appraise `Attested`, or `--require-tpm-root` without a TPM root. |
+
+Pass `--require-tpm-root` whenever you mean to rely on the TPM. Without it, a CA-only launch
+verifies, and the result says so by name.
+
 ## What a stranger cannot yet verify
 
 - **The host boot, without the operator.** The release ships no host image, so boot
@@ -248,6 +308,11 @@ compiled to wasm in `sdks/verifier-js`, is being added in a separate change.
 - **EFI applications (PCR 4).** The reference generator does not compute Authenticode
   digests yet.
 - **Inside the guest.** The host TPM does not measure what runs in a Firecracker guest.
+- **The node CA, without the operator.** The trust bundle a pod's SVID chains to is the
+  operator's. A TPM-rooted launch does not need the CA key to be safe, but a CA-only launch
+  is exactly as good as it.
+- **A launch measurement against a released artifact.** Nothing yet signs the kernel and
+  rootfs digests a release ships (ADR 0016 S7), so `--expect-*` are values you chose.
 - **Whether a measured binary still runs.** IMA records a load.
 - **The node's clock.** The epoch time is the node's.
 - **Upstream Firecracker before the release.** The release workflow hashes the upstream

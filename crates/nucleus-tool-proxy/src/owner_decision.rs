@@ -107,6 +107,12 @@ fn read_capped(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
 }
 
 impl DecisionArgs {
+    /// The operator's trust-roots file, when configured: durable authority no
+    /// child may reach (`secret_census`, #3461).
+    pub(crate) fn trust_roots(&self) -> Option<&Path> {
+        self.decision_trust_roots.as_deref()
+    }
+
     /// Load the trust roots and check the paths. `Ok(None)` when nothing is configured; any
     /// partial or malformed configuration is fatal at startup.
     pub(crate) fn open(&self, workspace: &Path) -> Result<Option<DecisionDesk>, ApiError> {
@@ -418,7 +424,7 @@ pub(crate) async fn decision_read(
 ) -> Result<Json<DecisionReadResp>, ApiError> {
     use nucleus_ifc_kernel::discharge::PreflightResult;
     let desk = desk(&state)?;
-    let _dt = crate::http_kernel_decide(
+    let admitted = crate::http_kernel_decide(
         &state,
         Operation::ReadFiles,
         "decision://read",
@@ -439,6 +445,9 @@ pub(crate) async fn decision_read(
             return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
         }
     };
+    // The approvals the admission relied on, spent once, immediately before
+    // the read (#3446).
+    crate::approval::spend_admission(&state, admitted)?;
     let mut ledger = desk.ledger.lock().await;
     let mut graph = state.flow_graph.lock().await;
     let resp = decision_read_core(desk, &mut ledger, &mut graph, unix_now(), req, authority)?;
@@ -453,7 +462,7 @@ pub(crate) async fn decision_list(
 ) -> Result<Json<DecisionListResp>, ApiError> {
     use nucleus_ifc_kernel::discharge::PreflightResult;
     let desk = desk(&state)?;
-    let _dt = crate::http_kernel_decide(
+    let admitted = crate::http_kernel_decide(
         &state,
         Operation::ReadFiles,
         LIST_SUBJECT,
@@ -473,6 +482,8 @@ pub(crate) async fn decision_list(
             return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
         }
     };
+    // Spent once, immediately before the listing (#3446).
+    crate::approval::spend_admission(&state, admitted)?;
     let mut ledger = desk.ledger.lock().await;
     let mut graph = state.flow_graph.lock().await;
     let resp = decision_list_core(desk, &mut ledger, &mut graph, unix_now(), authority)?;
