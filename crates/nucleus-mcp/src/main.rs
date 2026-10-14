@@ -742,15 +742,19 @@ fn main() -> Result<()> {
     let client = ProxyClient::new(transport, Some(args.actor.clone()), args.session_id.clone());
     // The kernel enforces the spec's policy with monotone session state. There
     // is no other lattice it could start from: absence was refused above.
+    let policy_identity = portcullis_core::ContentHash::from_bytes(
+        portcullis_core::attestation::sha256_hash(policy.checksum().as_bytes()),
+    );
     let mut kernel = Kernel::new(policy);
 
     // The session's instruction source (#3459): the principal that started
-    // this session under the policy above. Every tool call names it as the
-    // CONTROL parent, so an action's authority comes from it, while the prior
-    // observations below are DATA. This is the authority an unparented action
-    // used to get implicitly; naming it makes absence mean no authority.
+    // this session under the policy above, content-addressed by that policy.
+    // Every tool call names it as the CONTROL parent, so an action's authority
+    // comes from it, while the prior observations below are DATA. This is the
+    // authority an unparented action used to get implicitly; naming it makes
+    // absence mean no authority.
     let session_root = kernel
-        .observe(NodeKind::UserPrompt, &[])
+        .observe_with_content_hash(NodeKind::UserPrompt, &[], policy_identity)
         .map_err(|e| anyhow!("could not record the session's instruction source: {e:?}"))?;
 
     // Track the last flow graph node ID for causal chaining.
