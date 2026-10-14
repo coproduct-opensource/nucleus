@@ -724,11 +724,37 @@ impl LedgerView {
     }
 }
 
-/// Domain separator for pod-receipt signatures.
+/// What the node's root key signs besides certificates: one domain separator per record kind.
 ///
-/// Versioned: a change to how the preimage is built is a new signature space,
-/// not a silent reinterpretation of the old one.
-const RECEIPT_DOMAIN: &[u8] = b"nucleus/pod-receipt/v1\0";
+/// A closed enum rather than a `&[u8]` parameter, so the root key's only signature spaces are
+/// the ones listed here and two record kinds cannot share a tag by a typo. Each tag is
+/// versioned: a change to how a preimage is built is a new signature space, not a silent
+/// reinterpretation of the old one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SignedRecord {
+    /// A pod receipt (`pod_receipt::Receipt::preimage`).
+    PodReceipt,
+    /// An egress-meter exhaustion record (`egress_meter::record::EgressRecord::preimage`,
+    /// #2905).
+    EgressExhaustion,
+}
+
+impl SignedRecord {
+    const fn domain(self) -> &'static [u8] {
+        match self {
+            Self::PodReceipt => b"nucleus/pod-receipt/v1\0",
+            Self::EgressExhaustion => b"nucleus/egress-exhaustion/v1\0",
+        }
+    }
+
+    fn message(self, preimage: &[u8]) -> Vec<u8> {
+        let domain = self.domain();
+        let mut msg = Vec::with_capacity(domain.len() + preimage.len());
+        msg.extend_from_slice(domain);
+        msg.extend_from_slice(preimage);
+        msg
+    }
+}
 
 /// Verify a pod-receipt signature against a node's advertised root public key.
 ///
@@ -743,12 +769,26 @@ const RECEIPT_DOMAIN: &[u8] = b"nucleus/pod-receipt/v1\0";
 // it would be a signature no one can test against.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_hex: &str) -> bool {
+    verify_record(
+        SignedRecord::PodReceipt,
+        pubkey_hex,
+        preimage,
+        signature_hex,
+    )
+}
+
+/// Verify a signature a node's root key made over `preimage` in `kind`'s signature space.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn verify_record(
+    kind: SignedRecord,
+    pubkey_hex: &str,
+    preimage: &[u8],
+    signature_hex: &str,
+) -> bool {
     let (Ok(pubkey), Ok(sig)) = (hex::decode(pubkey_hex), hex::decode(signature_hex)) else {
         return false;
     };
-    let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
-    msg.extend_from_slice(RECEIPT_DOMAIN);
-    msg.extend_from_slice(preimage);
+    let msg = kind.message(preimage);
 
     // `verify_strict`, NOT `ring::signature::ED25519`.
     //
@@ -768,6 +808,30 @@ pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_he
         return false;
     };
     vk.verify_strict(&msg, &sig).is_ok()
+}
+
+/// Signs egress-exhaustion records with the node's root key, in
+/// [`SignedRecord::EgressExhaustion`]'s space and no other. Minted only by
+/// [`PodAuthority::egress_record_signer`] (ADR 0007 C-1).
+#[derive(Clone)]
+pub(crate) struct EgressRecordSigner(std::sync::Arc<PodAuthority>);
+
+impl EgressRecordSigner {
+    /// The signature over `preimage`, and the hex public key that verifies it.
+    pub(crate) fn sign(&self, preimage: &[u8]) -> (String, String) {
+        (
+            self.0.sign_record(SignedRecord::EgressExhaustion, preimage),
+            self.0.root_pubkey_hex(),
+        )
+    }
+}
+
+impl std::fmt::Debug for EgressRecordSigner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("EgressRecordSigner")
+            .field(&self.0.root_pubkey_hex())
+            .finish()
+    }
 }
 
 /// The node's certificate authority for pods. See the module docs.
@@ -1114,10 +1178,22 @@ impl PodAuthority {
     /// node, holding this key, observed these bytes. It says nothing about
     /// whether the workload told the truth in them.
     pub fn sign_pod_receipt(&self, preimage: &[u8]) -> String {
-        let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
-        msg.extend_from_slice(RECEIPT_DOMAIN);
-        msg.extend_from_slice(preimage);
-        hex::encode(self.root_key.sign(&msg).as_ref())
+        self.sign_record(SignedRecord::PodReceipt, preimage)
+    }
+
+    /// The one place the root key signs a record: under `kind`'s domain tag, so no record
+    /// kind's signature is valid as another kind's, nor as a certificate body's.
+    fn sign_record(&self, kind: SignedRecord, preimage: &[u8]) -> String {
+        hex::encode(self.root_key.sign(&kind.message(preimage)).as_ref())
+    }
+
+    /// The capability to sign this node's egress-exhaustion records, and nothing else (#2905).
+    ///
+    /// A pod's egress meter holds this rather than the authority, so the meter signs its
+    /// exhaustion record with the key that signs the pod's receipt and reaches nothing else
+    /// the root key does.
+    pub(crate) fn egress_record_signer(self: &std::sync::Arc<Self>) -> EgressRecordSigner {
+        EgressRecordSigner(std::sync::Arc::clone(self))
     }
 
     pub fn root_pubkey_hex(&self) -> String {
