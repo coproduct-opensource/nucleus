@@ -122,6 +122,8 @@ census! {
     proxy_actor => Structural, "operator setting";
     trusted_postures => Structural, "operator posture registry, parsed once";
     audit_sinks => Structural, "operator audit sinks";
+    decisions => Structural,
+        "operator trust roots, tenant and bundle directory; read per pod, written by no pod (decision_provisioning)";
     memory => TenantShared,
         "persistent stores keyed by sha256(owner)/namespace with owner = the issued tenant root, so non-lineage pods of one tenant share a namespace (memory_provisioning::Stores::provision)";
     audit_minter => Secret, "holds the node's audit credential; each pod is minted only its own scoped one";

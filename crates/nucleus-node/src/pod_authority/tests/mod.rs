@@ -43,6 +43,7 @@ fn spec_with(lattice: PermissionLattice) -> PodSpec {
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     })
 }
 

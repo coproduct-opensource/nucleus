@@ -37,6 +37,7 @@ mod authority_round;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
+mod decision_gate;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
@@ -1592,7 +1593,8 @@ async fn main() -> Result<(), ApiError> {
             .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
     ));
     let declassify_threshold = startup_trace::declassify_threshold();
-    let decisions = args.decisions.open(&spec.spec.work_dir)?.map(Arc::new);
+    let decisions =
+        decision_gate::arm(args.decisions.open(&spec.spec.work_dir)?, &spec.spec)?.map(Arc::new);
     if let Some(d) = &decisions {
         eprintln!("owner decisions: {} trust root(s) pinned", d.root_count());
     }

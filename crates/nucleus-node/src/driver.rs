@@ -175,6 +175,7 @@ mod tests {
             cgroup: None,
             audit_sink: None,
             credentials: None,
+            requires_decision: Vec::new(),
         })
     }
 

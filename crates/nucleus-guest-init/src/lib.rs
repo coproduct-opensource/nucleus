@@ -46,5 +46,6 @@
 //! ```
 
 pub mod boot;
+pub mod decisions;
 pub mod fence;
 pub mod net;

@@ -419,6 +419,10 @@ pub struct PodMaterial {
     /// image carries — which is the behaviour every pod has today, so a node
     /// that never sets this is unchanged.
     pub pod_spec_yaml: Option<String>,
+    /// The node's owner-decision material (`decision_provisioning`), served in the
+    /// `FETCH_POD_SPEC` reply beside the spec that may require it. `None` when the node has
+    /// none. Untrusted bytes but the operator's roots; the guest's tool-proxy verifies.
+    pub decisions: Option<nucleus_spec::decision_gate::DecisionMaterial>,
     /// Whether the guest has announced it is at its snapshot barrier — booted, and having asked
     /// for nothing that would make it one pod.
     ///
@@ -803,10 +807,20 @@ fn handle_fetch_mediation_key() -> Reply {
 /// would boot something — whatever its rootfs carries — while believing the
 /// host had spoken, and the two would disagree about what ran. The guest falls
 /// back to its baked spec only when it is told there is nothing to fetch.
-fn handle_fetch_pod_spec(spec: Option<&str>) -> Reply {
-    match spec {
-        Some(spec) => Ok(serde_json::json!({ "spec": spec }).to_string()),
-        None => Err(Refusal::NotProvisioned(Material::PodSpec)),
+///
+/// The decision material rides the same reply, so a guest is never handed a spec that requires
+/// a decision without the material to verify one. A guest-init that predates it reads `spec`
+/// alone and ignores the rest.
+pub(crate) fn handle_fetch_pod_spec(
+    spec: Option<&str>,
+    decisions: Option<&nucleus_spec::decision_gate::DecisionMaterial>,
+) -> Reply {
+    match (spec, decisions) {
+        (Some(spec), None) => Ok(serde_json::json!({ "spec": spec }).to_string()),
+        (Some(spec), Some(decisions)) => {
+            Ok(serde_json::json!({ "spec": spec, "decisions": decisions }).to_string())
+        }
+        (None, _) => Err(Refusal::NotProvisioned(Material::PodSpec)),
     }
 }
 
@@ -1173,7 +1187,10 @@ where
             // must not have; this is not that (credentialed-egress secrets
             // live in the node's environment, never in the spec).
             debug!("workload API FETCH_POD_SPEC for pod {}", pod_id);
-            handle_fetch_pod_spec(material.pod_spec_yaml.as_deref())
+            handle_fetch_pod_spec(
+                material.pod_spec_yaml.as_deref(),
+                material.decisions.as_ref(),
+            )
         }
         Ok(WorkloadApiCommand::SnapshotReady) => {
             debug!("workload API SNAPSHOT_READY for pod {}", pod_id);
