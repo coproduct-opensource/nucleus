@@ -557,6 +557,11 @@ mod tests {
             "{rendered:?}"
         );
         assert!(rendered[2].contains("failed to parse"), "{rendered:?}");
+        // The parser's own reason survives rendering: "malformed" alone sends nobody anywhere.
+        assert!(
+            rendered[2].contains("expected value at line 1"),
+            "{rendered:?}"
+        );
         let unique: std::collections::BTreeSet<&String> = rendered.iter().collect();
         assert_eq!(
             unique.len(),
