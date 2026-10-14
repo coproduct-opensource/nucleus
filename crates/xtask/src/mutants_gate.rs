@@ -144,23 +144,34 @@ fn plan(list: &Path, per_shard: usize, max_shards: usize, github_output: &Path) 
     let listed: Vec<Listed> = read_json(list).map_err(anyhow::Error::msg)?;
     let n = shard_count(listed.len(), per_shard, max_shards)?;
     let shards: Vec<usize> = (0..n).collect();
-    let mut out = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(github_output)
-        .with_context(|| format!("open {}", github_output.display()))?;
     let text = format!(
         "shard_count={n}\nshards={}\n",
         serde_json::to_string(&shards)?
     );
-    std::io::Write::write_all(&mut out, text.as_bytes())
-        .with_context(|| format!("write {}", github_output.display()))?;
+    append_runner_file(github_output, &text)?;
     println!(
         "mutants plan: {} mutants -> {n} shard(s) of at most {} (per-shard target {per_shard}, cap {max_shards})",
         listed.len(),
         listed.len().div_ceil(n)
     );
     Ok(())
+}
+
+/// Add `text` to the end of a runner file (`GITHUB_OUTPUT`, the step summary) in one write.
+/// Not `OpenOptions::append`: ADR 0007 G-1 reserves that for record logs (clippy.toml), and these
+/// are files the runner reads once the step ends.
+fn append_runner_file(path: &Path, text: &str) -> Result<()> {
+    use std::io::{Seek as _, Write as _};
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    f.seek(std::io::SeekFrom::End(0))
+        .with_context(|| format!("seek to the end of {}", path.display()))?;
+    f.write_all(text.as_bytes())
+        .with_context(|| format!("write {}", path.display()))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -816,13 +827,7 @@ pub fn run(args: Args) -> Result<i32> {
                 println!("{line}");
             }
             if let Some(path) = &summary {
-                let mut f = fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(path)
-                    .with_context(|| format!("open {}", path.display()))?;
-                std::io::Write::write_all(&mut f, md.as_bytes())
-                    .with_context(|| format!("write {}", path.display()))?;
+                append_runner_file(path, &md)?;
             }
             Ok(v.exit_code())
         }
