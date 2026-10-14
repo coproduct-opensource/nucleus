@@ -23,6 +23,10 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-task-compiler = { path = "../nucleus-task-compiler" }
 nucleus-client = { path = "../nucleus-client" }
 nucleus-identity = { path = "../nucleus-identity" }
+# `verify-attestation --launch-quote`: the relying party's appraisal inputs
+# (reference manifest, AK anchors, key binding) for `VerifiedLaunch::verify_tpm`.
+# The verifier only: no attester, no I/O.
+nucleus-node-evidence = { path = "../nucleus-node-evidence" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
