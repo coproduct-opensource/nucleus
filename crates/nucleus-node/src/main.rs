@@ -1667,7 +1667,7 @@ async fn spawn_local_pod(
         // (`guest_layout::WORKLOAD_DOOR`, under /run) is not writable by a
         // host-side proxy. Bound only when the pod has a workload.
         .arg("--workload-door")
-        .arg(std::path::absolute(pod_dir.join("workload.sock"))?);
+        .arg(lifecycle::local_workload_door(pod_dir)?);
     // No shared secret, and none inherited from the node's own environment.
     command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
     command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
