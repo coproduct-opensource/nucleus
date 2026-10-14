@@ -25,7 +25,8 @@ use uuid::Uuid;
 
 use crate::ApiError;
 use crate::memory_space::{
-    Audience, Expiry, Mode, PolicyAuthority, SchemaAtom, SpaceId, SpaceOrigin, TenantKey, ViewSpec,
+    Audience, Expiry, LabelStamping, MemoryWriter, Mode, PolicyAuthority, SchemaAtom, SpaceId,
+    SpaceOrigin, TenantKey, ViewSpec,
 };
 
 const FLOW_SCHEMA: &str = "nucleus.memory-flow.v2";
@@ -54,6 +55,8 @@ pub(crate) enum FlowEvent<'a> {
         schema: &'a std::collections::BTreeSet<SchemaAtom>,
         quota_bytes: u64,
         epoch: u32,
+        /// Whether every record it holds is dependency-stamped (Program C, C1).
+        stamping: LabelStamping,
     },
     /// A binding policy was recorded.
     PolicyCreated {
@@ -96,6 +99,9 @@ pub(crate) enum FlowEvent<'a> {
         epoch: u32,
         not_after: u64,
         allocation_bytes: u64,
+        /// Whether the run's proxy stamps its writes, which decided what it was given: a legacy
+        /// run is given only stamped Public records (Program C, C1).
+        writer: MemoryWriter,
     },
     /// The node decided a publish under a binding: `head` is the head its commit creates.
     PublishAuthorized {

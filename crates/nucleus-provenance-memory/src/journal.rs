@@ -19,6 +19,11 @@
 //!   holds every v1 record in admission order — through a staging file, synced,
 //!   renamed over the journal, with the parent directory synced. A crash at any
 //!   step leaves either the old v1 file or the complete v2 file.
+//! - A record's writer stamp ([`crate::LabelStamp`], Program C, C1) is in its
+//!   commit's head hash beside its label, and replay re-derives the label against
+//!   the floor the stamp records, so reopening in a fresh session keeps a Secret
+//!   writer's record Secret. A v1 record has no stamp and migrates unstamped; an
+//!   unstamped record encodes, and hashes, exactly as before stamps existed.
 //!
 //! The overlay journal a branch writes to is in [`crate::overlay`].
 

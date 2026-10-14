@@ -1447,6 +1447,7 @@ async fn create_pod_internal(
         run_ends: memory_provisioning::now_unix()
             .saturating_add(spec.spec.timeout_seconds)
             .saturating_add(memory_provisioning::PUBLISH_WINDOW_SECS),
+        writer: memory_provisioning::writer_for(state, requested_memory.is_some()).await,
     };
     let memory = match state.memory.provision(
         requested_memory,
