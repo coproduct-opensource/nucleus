@@ -30,6 +30,10 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+// ADR 0016 D4: the census of every TLS acceptor in the workspace. Here, in the
+// shard whose scope is the whole repository, because it reads every crate.
+#[cfg(test)]
+mod acceptor_census_tests;
 mod api_error;
 mod art12_collector;
 mod audit_sink;
@@ -2920,19 +2924,20 @@ async fn serve_grpc(
     // practice. Asserted rather than assumed: HMAC has no fallback any more
     // (Move B), so a caller lacking a client cert would otherwise be
     // silently unauthenticatable instead of loudly refused at startup.
-    let mtls_enabled = tls_config.mtls_enabled();
-    if !mtls_enabled {
+    let Some(client_trust) = tls_config.client_trust_bundle().cloned() else {
         return Err(ApiError::Driver(
             "gRPC TLS is configured without a client CA (--grpc-tls-ca) — with no HMAC \
              fallback, no caller could ever authenticate. Pass --grpc-tls-ca, or omit \
              --grpc-tls-cert/--grpc-tls-key to use the self-issued mTLS default."
                 .to_string(),
         ));
-    }
+    };
 
     let service =
         NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
-            let auth_ctx = auth::authenticate_grpc_request(&req)
+            // The peer's launch is admitted against the listener's own client CA
+            // before any handler runs (ADR 0016 D4).
+            let auth_ctx = auth::authenticate_grpc_request(&req, &client_trust) // hmac-allow: the second argument is the listener's client-CA TrustBundle for the launch decision (ADR 0016 D4), not an HMAC config
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers

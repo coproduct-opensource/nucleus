@@ -64,8 +64,9 @@ pub use assurance::{
     VerifiedAttestation,
 };
 pub use attestation::{
-    AttestationRequirements, LaunchAttestation, UnmeasuredTier, VerifiedLaunch,
-    extract_launch_attestation, extract_unmeasured_launch, verify_attested_svid,
+    AttestationRequirements, LaunchAttestation, PeerLaunch, SvidProfile, UnmeasuredTier,
+    VerifiedLaunch, admit_peer_launch, extract_isolation_profile, extract_launch_attestation,
+    extract_unmeasured_launch, verify_attested_svid,
 };
 pub use ca::{CaClient, MeasuredClaims, SelfSignedCa};
 #[cfg(feature = "spire")]

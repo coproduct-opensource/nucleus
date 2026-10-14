@@ -79,6 +79,9 @@ pub enum Launch {
         /// taken over the issue's own key, named in the leaf (OID `.1.7`). A
         /// re-issue has a new key, so it is quoted again.
         rooting: crate::launch_quote::LaunchRooting,
+        /// The isolation profile the launch was admitted under, stated in
+        /// every issue (OID `.1.8`, ADR 0016 D4).
+        profile: crate::attestation::SvidProfile,
     },
     /// The tier cannot measure a launch; the leaf says so, naming the tier.
     Unmeasured(crate::attestation::UnmeasuredTier),
@@ -574,6 +577,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
                 attestation,
                 mediator_key_sha256,
                 rooting,
+                profile,
             }) => {
                 self.sign_measured(
                     csr,
@@ -583,6 +587,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
                     attestation,
                     mediator_key_sha256.as_ref(),
                     rooting,
+                    *profile,
                 )
                 .await
             }
@@ -624,7 +629,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
     /// no other (ADR 0016 D2). A quote that cannot be taken issues nothing.
     #[expect(
         clippy::too_many_arguments,
-        reason = "the CSR, its key, the identity and TTL, and the three launch claims: each is a distinct input to one signature"
+        reason = "the CSR, its key, the identity and TTL, and the four launch claims: each is a distinct input to one signature"
     )]
     async fn sign_measured(
         &self,
@@ -635,6 +640,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
         attestation: &crate::attestation::LaunchAttestation,
         mediator_key_sha256: Option<&[u8; 32]>,
         rooting: &crate::launch_quote::LaunchRooting,
+        isolation_profile: crate::attestation::SvidProfile,
     ) -> Result<crate::certificate::WorkloadCertificate> {
         // Exhaustive, no `_` arm (E-2).
         let quote = match rooting {
@@ -655,6 +661,7 @@ impl<C: CaClient + 'static> SecretManager<C> {
                     attestation,
                     mediator_key_sha256,
                     launch_quote_sha256: quote.as_ref(),
+                    isolation_profile,
                 },
             )
             .await
