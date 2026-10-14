@@ -104,6 +104,44 @@ const CERT_ROOT_KEY_FILE: &str = "cert_root_signing_key.der";
 #[cfg(test)]
 const JWT_SVID_P256_KEY_FILE: &str = nucleus_federation::keyring::CURRENT_KEY_FILE;
 
+/// Filename (under `state_dir`) holding the key a node in declared insecure
+/// mode (the bare tier, Program C C0) signs ALL its evidence with, in place of
+/// the executor key: execution receipts, pod receipts, Article 12
+/// attestations.
+///
+/// Not a role key. Its workloads run at the node's uid and can read this file,
+/// so it is never sealed, never recorded in the key custody statement, never
+/// published in a JWKS, trust bundle, federation or evidence document, and
+/// its kid ([`nucleus_ci_verdict::execution::INSECURE_SHARED_UID_KID_PREFIX`])
+/// is refused by name by every verifier in this repository.
+const INSECURE_EVIDENCE_KEY_FILE: &str = "insecure_shared_uid_signing_key.der";
+
+/// Load the declared-insecure evidence key, creating it on first run. See
+/// [`INSECURE_EVIDENCE_KEY_FILE`].
+pub(crate) fn load_or_create_insecure_evidence_key(state_dir: &Path) -> SigningKey {
+    load_or_create_key_file(
+        state_dir,
+        INSECURE_EVIDENCE_KEY_FILE,
+        "insecure-mode evidence key",
+    )
+}
+
+/// The executor key's files in `state_dir`, plain or sealed, that exist.
+///
+/// The executor key is the one whose signatures leave the node as trusted
+/// evidence. A node in declared insecure mode refuses a state directory that
+/// holds one, because its workloads could read it.
+pub(crate) fn executor_key_files(state_dir: &Path) -> Vec<PathBuf> {
+    let role = NodeKeyRole::Executor;
+    [
+        state_dir.join(role.file()),
+        state_dir.join(role.sealed_file()),
+    ]
+    .into_iter()
+    .filter(|p| p.symlink_metadata().is_ok())
+    .collect()
+}
+
 /// Generate a fresh Ed25519 signing key from the OS CSPRNG.
 ///
 /// Samples 32 raw bytes via `rand_core 0.6`'s `fill_bytes` and feeds

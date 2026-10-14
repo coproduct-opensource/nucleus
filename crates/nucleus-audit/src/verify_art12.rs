@@ -193,6 +193,19 @@ pub fn attested_head(
             ),
         });
     }
+    // By name, before the signature (Program C, C0): a bare-tier node's key is
+    // readable by the very pod whose log this would pin, so its attestation
+    // binds nothing the pod could not have signed itself.
+    if nucleus_ci_verdict::execution::is_insecure_kid(&att.executor_id) {
+        return Err(AuditError::Invalid {
+            line: 0,
+            message: format!(
+                "attestation is from {:?}, a node in declared insecure mode (bare tier): its key \
+                 is readable by its own workloads, so it attests nothing",
+                att.executor_id
+            ),
+        });
+    }
 
     let bytes: [u8; 64] = hex::decode(&att.signature)
         .ok()
@@ -932,6 +945,28 @@ mod tests {
         let err = verify_art12_log(&valid_log(&dir), &pins(&[], Some(attested), None).unwrap())
             .unwrap_err();
         assert!(format!("{err}").contains("rewritten after"), "got: {err}");
+    }
+
+    /// C0: an attestation from a bare-tier node is refused by name, even with
+    /// a valid signature under the key the verifier was handed.
+    #[test]
+    fn an_attestation_from_an_insecure_tier_node_is_refused_by_name() {
+        let exec = SigningKey::from_bytes(&[3u8; 32]);
+        let kid = format!(
+            "{}0011223344556677",
+            nucleus_ci_verdict::execution::INSECURE_SHARED_UID_KID_PREFIX
+        );
+        let preimage = art12_attestation_preimage("sess", "head", 2, 0, &kid);
+        let mut att = attest("head", &exec);
+        att.executor_id = kid;
+        att.signature = hex::encode(exec.sign(preimage.as_bytes()).to_bytes());
+        let err = attested_head(&att, &exec.verifying_key()).unwrap_err();
+        assert!(
+            format!("{err}").contains("declared insecure mode"),
+            "got: {err}"
+        );
+        // Control: the same attestation under an ordinary executor id verifies.
+        assert!(attested_head(&attest("head", &exec), &exec.verifying_key()).is_ok());
     }
 
     /// A signature from the wrong key must not pass — otherwise the attestation

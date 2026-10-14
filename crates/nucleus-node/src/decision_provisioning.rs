@@ -111,6 +111,18 @@ fn read_capped(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
 }
 
 impl DecisionArgs {
+    /// Whether any decision material is configured, for the insecure-mode
+    /// refusal (`insecure_mode`, Program C C0). Any one of the three counts:
+    /// partial material is a refusal of its own in [`Self::load`].
+    pub(crate) fn configured(&self) -> bool {
+        let Self {
+            decision_trust_roots,
+            decision_tenant,
+            decision_bundles,
+        } = self;
+        decision_trust_roots.is_some() || decision_tenant.is_some() || decision_bundles.is_some()
+    }
+
     /// Check the material, or `Ok(None)` when none is configured. Any partial or malformed
     /// configuration refuses the node's start.
     pub(crate) fn load(&self, workspace_root: &Path) -> Result<Option<NodeDecisions>, ApiError> {
