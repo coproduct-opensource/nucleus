@@ -1602,15 +1602,29 @@ async fn spawn_local_pod(
     provision_local_audit_env(&mut command, audit);
     memory_provisioning::local_command(&mut command, memory);
 
+    // Whether this pod's proxy calls the node, decided once from the admitted
+    // plan (#3471): the same value turns pod management on below and decides
+    // whether the pod's private key leaves the node at all.
+    let node_client = pod_identity_files::NodeClient::of(spec);
+    // Nothing reaches the proxy's stdin but the key it is handed, if any: not
+    // the node's own stdin, and no key variable by inheritance.
+    command
+        .stdin(std::process::Stdio::null())
+        .env_remove(nucleus_identity::pod_files::RETIRED_KEY_FILE_ENV)
+        .env_remove(nucleus_identity::pod_files::KEY_ON_STDIN_ENV);
+
     // The sandbox proof is the pod's node-issued SVID (tier 2). The HMAC'd
     // sandbox token needs a key this proxy no longer holds. Every local pod gets
-    // the files; an orchestrator pod also authenticates to the node with them.
+    // the public files; only an orchestrator pod, which authenticates to the
+    // node with them, is handed the key, on its stdin and never as a file
+    // (`pod_identity_files`).
     // `main` always builds the identity manager; without one (a unit-test
     // fixture) the real proxy finds no sandbox proof and refuses to start, which
     // `local_transport::exited` names below.
     if state.identity_manager.is_some() {
-        let identity = pod_identity_files::provision(state, pod_dir, id).await?;
-        command.envs(identity.env());
+        pod_identity_files::provision(state, pod_dir, id)
+            .await?
+            .hand_to(&mut command, node_client)?;
     }
 
     // Live-path: mint + inject the session capability token scoped to exactly
@@ -1633,14 +1647,8 @@ async fn spawn_local_pod(
     // proxy's parser owns that and fails CLOSED (partial/garbage config provisions deny-all).
     provision_local_dlc_env(&mut command, state.authority.dlc(id).await.as_ref());
 
-    // Detect orchestrator pod: inject pod management env vars
-    let enable_pod_mgmt = spec
-        .metadata
-        .labels
-        .get("enable_pod_mgmt")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    if enable_pod_mgmt {
+    // An orchestrator pod: inject pod management env vars.
+    if node_client == pod_identity_files::NodeClient::PodManagement {
         command.env("NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT", "true");
         // Point orchestrator's tool-proxy at this node's HTTP API. `https://`
         // since Move B: the node's HTTP listener is mTLS-only, unconditionally
@@ -1656,7 +1664,8 @@ async fn spawn_local_pod(
         // Node-assigned `ns/pods/sa/<uuid>`: the shape `AuthorizationPolicy`'s
         // pod class authorizes for pod management and nothing else. What the
         // pod may CREATE is decided by its certificate, not by this prefix.
-        // (The SVID files are provisioned above, for every local pod.)
+        // (The SVID's public files are provisioned above, for every local
+        // pod, and its key on this proxy's stdin.)
         // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
         command.env("NUCLEUS_POD_ID", id.to_string());
         command.env(
@@ -1783,8 +1792,12 @@ async fn spawn_container_pod(
     let mut env = container_env(state, spec, id, spec_yaml, audit, memory).await;
     // The identity files are the proxy's sandbox proof (tier 2); the HMAC'd
     // token that used to stand in for them is deleted (#2446 step 3).
+    // No key: this driver enables no node client in its proxy, so the pod's
+    // private key is dropped unwritten (#3471).
     if proxy_mode {
-        pod_identity_files::provision(state, pod_dir, id).await?;
+        let _public = pod_identity_files::provision(state, pod_dir, id)
+            .await?
+            .without_key();
         env.extend(
             pod_identity_files::Files::at(Path::new("/data/pod"))
                 .env()

@@ -831,9 +831,14 @@ async fn run_local(
 
     // Spawn tool-proxy as subprocess
     let mut proxy_child = transport
-        .command(&proxy_bin, &spec_path, &announce_path, &audit_path)
+        .command(
+            &proxy_bin,
+            &spec_path,
+            &announce_path,
+            &audit_path,
+            &task_token,
+        )
         .args(pod_cert_args(args))
-        .args(crate::session_token::proxy_args(&task_token))
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
