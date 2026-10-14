@@ -882,7 +882,7 @@ impl Registry {
     ) -> Result<(), ApiError> {
         claims
             .iter()
-            .try_for_each(|claim| record(claim))
+            .try_for_each(record)
             .and_then(|()| self.persist())
     }
 

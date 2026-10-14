@@ -52,8 +52,8 @@ pub(crate) struct Requested {
 /// A binding provisioned for one pod: the directory its proxy journals into, and the namespace
 /// that journal's header carries.
 pub(crate) struct Attachment {
-    directory: PathBuf,
-    namespace: String,
+    pub(crate) directory: PathBuf,
+    pub(crate) namespace: String,
 }
 
 /// Which lineage a pod belongs to: the root of the parent chain the node recorded at creation
