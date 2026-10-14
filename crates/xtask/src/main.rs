@@ -512,6 +512,11 @@ enum Command {
     /// Lower the clippy ratchet ceiling after a push to main. Publishes the
     /// change as an auto-merging PR when CLIPPY_RATCHET_TOKEN is set; without
     /// it, reports the possible drop and changes nothing (exit 0).
+    /// The sharded `Mutation Testing` gate: `plan` sizes the shard matrix from the planned
+    /// mutant list; `decide` requires every shard's report to be its share of the plan,
+    /// complete, from this commit and the pinned cargo-mutants. Exit 0 green, 1 red, 2 could
+    /// not look.
+    MutantsGate(mutants_gate::Args),
     ClippyRatchetDown {
         /// Use this count instead of running
         /// `scripts/check-clippy-ratchet.sh --count`.
@@ -686,6 +691,7 @@ mod live_boot_evidence;
 mod local_coverage;
 mod mediate;
 mod microvm_host_context;
+mod mutants_gate;
 mod node_reference;
 mod pin_parity;
 mod pipefail;
@@ -816,6 +822,10 @@ fn main() -> Result<()> {
         Command::CiTimings { sha, top, json } => ci_timings::ci_timings(sha, top, json),
         Command::CiEjections { limit, json } => ci_ejections::ci_ejections(limit, json),
         Command::ClippyRatchetDown { actual } => clippy_ratchet_down::run(&repo_root()?, actual),
+        Command::MutantsGate(args) => match mutants_gate::run(args)? {
+            0 => Ok(()),
+            code => std::process::exit(code),
+        },
         Command::HostDecideAgreement { bundles } => match host_decide_agreement::run(&bundles)? {
             0 => Ok(()),
             code => std::process::exit(code),

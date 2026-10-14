@@ -25,6 +25,23 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # What Mutation Testing mutates, declared once and read by the plan and every
+  # shard (a flag list, word-split on purpose), so the plan and the shards cannot
+  # disagree about the scope whose identities they compare.
+  MUTANTS_SCOPE: >-
+    --package portcullis --all-features
+    --file crates/portcullis/src/capability.rs
+    --file crates/portcullis/src/guard.rs
+    --file crates/portcullis/src/lattice.rs
+    --file crates/portcullis/src/certificate.rs
+    --file crates/portcullis/src/delegation.rs
+    --file crates/portcullis/src/trust.rs
+  # The pinned cargo-mutants: the hosted-runner fallback installs it, and the
+  # decision refuses a plan or report made by any other version. The
+  # self-hosted image bakes the same version (docker/Dockerfile.runner).
+  CARGO_MUTANTS_VERSION: "27.1.0"
+
 jobs:
   # Detects which crates changed so the heavy coverage/mutation/proof jobs
   # below can skip on PRs with no crate-relevant changes (docs-only, etc).
@@ -232,38 +249,44 @@ jobs:
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "**Thresholds:** workspace ≥ 83% lines (measured 83.47 % on 2026-09-05), portcullis ≥ 87% lines" >> "$GITHUB_STEP_SUMMARY"
 
-  # Layer 2: Mutation testing on security-critical modules
-  mutants:
-    name: Mutation Testing
-    # Compile-class: cargo-mutants builds and tests portcullis once per mutant.
-    # On the gate pool (0.5 CPU request, 2 CPU limit) it hit the 30-minute
-    # timeout on every run of 2026-09-05 and reported "cancelled".
-    #
-    # MUTANTS_JOBS=3 (2026-10-14). #3467's diff yields 129 mutants; serially the
-    # build pool (8 performance CPUs, 32 GiB) tested 80 of them in 42.6 min --
-    # 32 s each after a 126 s baseline -- and the 45-minute timeout cancelled it,
-    # twice. Measured on 33 of those mutants, pinned to 8 cores: build is ~64 %
-    # of a caught mutant (15.7 s build + 8.8 s test), and each build is serial
-    # enough (one crate, then link) to leave cores idle. Wall time, serial dev
-    # 763 s; serial --profile mutants 726 s; --jobs 2: 478 s; --jobs 3: 452 s;
-    # --jobs 4: 460 s, peak memory 7.7 GiB. 3 is the knee: 4 adds a fourth cold
-    # build directory and contention for nothing. Each job copies the tree and
-    # builds in its own target dir, so memory scales with J; 32 GiB holds it.
+  # Layer 2: Mutation testing on security-critical modules -- planned, sharded, decided.
+  #
+  # One job ran every diff-scoped mutant under a 45-minute timeout. With
+  # --jobs 3 --profile mutants (#3480) #3467's 129 mutants still took 36.5 min,
+  # and a full run (607 mutants: nightly, push) cannot finish in one job at all.
+  # So it is three jobs, and the REQUIRED context `Mutation Testing` is the last:
+  #
+  #   mutants-plan   the scope, then `cargo mutants --list --json` at this commit
+  #                  (the PLAN); `xtask mutants-gate plan` sizes the matrix from
+  #                  the plan's length, so a small diff gets one shard.
+  #   mutants-shard  one job per shard: `--shard k/N --sharding round-robin`,
+  #                  which gives shard k exactly the plan's entries i % N == k.
+  #                  A failed shard is re-run alone ("Re-run failed jobs").
+  #   mutants        `Mutation Testing`: `xtask mutants-gate decide` requires each
+  #                  shard's outcomes to be its share of the plan BY NAME, every
+  #                  report finished, from this commit and the pinned version.
+  #
+  # Each job's build cost is measured in #3480: ~16.6 s of wall per mutant at
+  # --jobs 3 on the build pool, plus ~2 min of baseline and ~2 min of setup.
+  # MUTANTS_PER_SHARD=60 is ~17 min of mutants, ~21 min a shard; the cap of 8
+  # shards holds a full 607-mutant run at ~76 a shard.
+  mutants-plan:
+    name: Mutation Testing plan
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 45
+    timeout-minutes: 20
     needs: changed-crates
-    if: github.event.pull_request.draft != true
+    if: ${{ github.event.pull_request.draft != true && needs.changed-crates.outputs.mutate == 'true' }}
+    outputs:
+      run: ${{ steps.mutscope.outputs.run }}
+      in_diff: ${{ steps.mutscope.outputs.in_diff }}
+      shard_count: ${{ steps.sizing.outputs.shard_count }}
+      shards: ${{ steps.sizing.outputs.shards }}
     steps:
-      - name: No-op twin (no relevant crate changes)
-        if: ${{ needs.changed-crates.outputs.mutate != 'true' }}
-        run: echo "No crate or CI configuration changes in this diff."
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: ${{ needs.changed-crates.outputs.mutate == 'true' }}
         with:
           fetch-depth: 0
           filter: blob:none
       - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
-        if: ${{ needs.changed-crates.outputs.mutate == 'true' }}
         with:
           cache: ${{ runner.environment == 'github-hosted' }}
       # The self-hosted image bakes it (docker/Dockerfile.runner
@@ -272,8 +295,7 @@ jobs:
       # which both floated the version and — because nothing baked it — spent
       # ~0.9m of a 1.4m job installing on every run of the SCARCEST pool.
       - name: Install cargo-mutants (baked into the self-hosted image)
-        if: ${{ needs.changed-crates.outputs.mutate == 'true' }}
-        run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --version 27.1.0 --locked
+        run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
       # A full run of the six modules is ~30 min of a gate runner and ran on
       # every rebase of every PR. On pull_request and merge_group only the
       # mutants overlapping the change are tried (`--in-diff`, cargo-mutants'
@@ -284,13 +306,13 @@ jobs:
       # took the whole group down with it (2026-09-06). push, the nightly
       # schedule and workflow_dispatch still run everything.
       - name: Scope to the diff of the change under review
-        if: ${{ needs.changed-crates.outputs.mutate == 'true' }}
         id: mutscope
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE: ${{ github.event.pull_request.base.ref || github.event.merge_group.base_ref }}
         run: |
           set -euo pipefail
+          mkdir -p mutants-plan
           run=true; in_diff=""
           case "$EVENT_NAME" in
             pull_request | merge_group)
@@ -298,27 +320,22 @@ jobs:
               # narrower one, so a missing base ref cannot quietly shrink the gate.
               base="${BASE#refs/heads/}"; base="${base:-main}"
               git fetch -q origin "$base"
-              git diff "origin/$base...HEAD" > git.diff
-              if grep -qE '^\+\+\+ b/crates/portcullis/src/(capability|guard|lattice|certificate|delegation|trust)\.rs$' git.diff; then
-                in_diff="--in-diff git.diff"
+              git diff "origin/$base...HEAD" > mutants-plan/git.diff
+              if grep -qE '^\+\+\+ b/crates/portcullis/src/(capability|guard|lattice|certificate|delegation|trust)\.rs$' mutants-plan/git.diff; then
+                in_diff="--in-diff mutants-plan/git.diff"
                 # A filename in the diff is COARSER than cargo-mutants' own scope:
                 # a change confined to `mod tests` names the file but yields no
                 # mutants, so cargo-mutants exits 0 writing no outcomes.json and
-                # check-mutants-report.sh then fails a run that had nothing to do
-                # (#2884). Ask the tool what it would generate and stand down when
-                # the answer is nothing — the same "no mutants in diff" pass the
+                # the gate then fails a run that had nothing to do (#2884). Ask
+                # the tool what it would generate and stand down when the answer
+                # is nothing — the same "no mutants in diff" pass the
                 # untouched-file case already gets, decided by the tool's scope
                 # rather than by a filename. Only the EMPTY answer stands down; a
                 # listing failure leaves the gate armed, so this cannot quietly
                 # skip a run it should have made.
-                if ! cargo mutants --package portcullis --all-features \
-                      --in-diff git.diff \
-                      --file crates/portcullis/src/capability.rs \
-                      --file crates/portcullis/src/guard.rs \
-                      --file crates/portcullis/src/lattice.rs \
-                      --file crates/portcullis/src/certificate.rs \
-                      --file crates/portcullis/src/delegation.rs \
-                      --file crates/portcullis/src/trust.rs \
+                # MUTANTS_SCOPE is a flag list: a deliberate word-split.
+                # shellcheck disable=SC2086
+                if ! cargo mutants $MUTANTS_SCOPE --in-diff mutants-plan/git.diff \
                       --list 2>/dev/null | grep -q .; then
                   run=false; in_diff=""
                   echo "mutants: the six files are named in the diff but cargo-mutants generates no mutants from it (test-only change); standing down"
@@ -330,90 +347,151 @@ jobs:
           esac
           { echo "run=$run"; echo "in_diff=$in_diff"; } >> "$GITHUB_OUTPUT"
           echo "mutants: run=$run ${in_diff:+(diff-scoped)}"
-      - name: Run mutation tests on security-critical modules
-        if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (steps.mutscope.outputs.run == 'true') }}
-        shell: bash
+      # The plan: every mutant this run must test, by identity, at this commit,
+      # by this cargo-mutants. The shards' reports are checked against it.
+      - name: List the plan
+        if: ${{ steps.mutscope.outputs.run == 'true' }}
         env:
           IN_DIFF: ${{ steps.mutscope.outputs.in_diff }}
+        run: |
+          # MUTANTS_SCOPE and IN_DIFF are flag lists: a deliberate word-split.
+          # shellcheck disable=SC2086
+          cargo mutants $MUTANTS_SCOPE $IN_DIFF --list --json > mutants-plan/list.json
+          git rev-parse HEAD > mutants-plan/commit.txt
+          cargo mutants --version > mutants-plan/version.txt
+      - name: Size the shard matrix from the plan
+        if: ${{ steps.mutscope.outputs.run == 'true' }}
+        id: sizing
+        run: cargo run -q -p xtask -- mutants-gate plan --list mutants-plan/list.json --per-shard 60 --max-shards 8 --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ steps.mutscope.outputs.run == 'true' }}
+        with:
+          name: mutants-plan
+          path: mutants-plan/
+          if-no-files-found: error
+          retention-days: 14
+
+  mutants-shard:
+    name: Mutation Testing shard ${{ matrix.shard }}
+    # Compile-class: cargo-mutants builds and tests portcullis once per mutant.
+    # On the gate pool (0.5 CPU request, 2 CPU limit) it hit the 30-minute
+    # timeout on every run of 2026-09-05 and reported "cancelled".
+    #
+    # MUTANTS_JOBS=3 (#3480, 2026-10-14). Measured on 33 of #3467's mutants,
+    # pinned to 8 cores: build is ~64 % of a caught mutant (15.7 s build + 8.8 s
+    # test), and each build is serial enough (one crate, then link) to leave
+    # cores idle. Wall time, serial dev 763 s; serial --profile mutants 726 s;
+    # --jobs 2: 478 s; --jobs 3: 452 s; --jobs 4: 460 s, peak memory 7.7 GiB.
+    # 3 is the knee. Each job copies the tree and builds in its own target dir,
+    # so memory scales with J; 32 GiB holds it.
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    needs: [changed-crates, mutants-plan]
+    if: ${{ github.event.pull_request.draft != true && needs.mutants-plan.outputs.run == 'true' }}
+    strategy:
+      # Every shard runs to its own end: one red shard must not cancel the
+      # others, or a re-run could not be confined to the shard that failed.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.mutants-plan.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - name: Install cargo-mutants (baked into the self-hosted image)
+        run: command -v cargo-mutants >/dev/null || cargo install cargo-mutants --version "$CARGO_MUTANTS_VERSION" --locked
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: mutants-plan
+          path: mutants-plan
+      - name: Run this shard's share of the plan
+        shell: bash
+        env:
+          IN_DIFF: ${{ needs.mutants-plan.outputs.in_diff }}
+          SHARD: ${{ matrix.shard }}/${{ needs.mutants-plan.outputs.shard_count }}
           MUTANTS_JOBS: "3"
-        # pipefail so the tool's exit status is the step's (not tee's); the
-        # run is allowed to fail here so the report step below can say WHY.
+        # pipefail so the tool's exit status is the step's (not tee's); the run
+        # is allowed to fail here so the decision can say WHY from the report.
         run: |
           set -o pipefail
+          mkdir -p shard
+          git rev-parse HEAD > shard/commit.txt
           rc=0
-          # --all-features on cargo-mutants ITSELF: args after `--` reach only
-          # `cargo test`, so the baseline BUILD ran without features and, under
-          # RUSTFLAGS=-D warnings, died on feature-gated imports in
-          # tests/adversarial.rs — the "cargo build failed in an unmutated
-          # tree" every run showed once the gate stopped looking away.
-          # IN_DIFF is "--in-diff git.diff" or empty: a deliberate word-split.
+          # --all-features on cargo-mutants ITSELF (in MUTANTS_SCOPE): args after
+          # `--` reach only `cargo test`, so the baseline BUILD ran without
+          # features and, under RUSTFLAGS=-D warnings, died on feature-gated
+          # imports in tests/adversarial.rs — the "cargo build failed in an
+          # unmutated tree" every run showed once the gate stopped looking away.
           #
-          # --jobs / --profile mutants: see the MUTANTS_JOBS note on the job
-          # and [profile.mutants] in Cargo.toml. Neither changes WHICH tests a
+          # --jobs / --profile mutants: see MUTANTS_JOBS above and
+          # [profile.mutants] in Cargo.toml. Neither changes WHICH tests a
           # mutant must fail -- same test binaries, same proptest cases.
           # shellcheck disable=SC2086
-          cargo mutants --package portcullis --all-features $IN_DIFF \
+          cargo mutants $MUTANTS_SCOPE $IN_DIFF \
+            --shard "$SHARD" --sharding round-robin \
             --profile mutants --jobs "$MUTANTS_JOBS" \
-            --file crates/portcullis/src/capability.rs \
-            --file crates/portcullis/src/guard.rs \
-            --file crates/portcullis/src/lattice.rs \
-            --file crates/portcullis/src/certificate.rs \
-            --file crates/portcullis/src/delegation.rs \
-            --file crates/portcullis/src/trust.rs \
             --timeout 120 \
-            --output mutants-report 2>&1 | tee /tmp/mutants.txt || rc=$?
+            --output shard 2>&1 | tee shard/console.log || rc=$?
           echo "cargo mutants exit: $rc"
-      - name: The gate reads the machine report, not the console (#2562)
-        if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (always() && steps.mutscope.outputs.run == 'true') }}
-        shell: bash
-        run: |
-          # `Mutation Testing` passed runs whose log said "cargo build failed in
-          # an unmutated tree, so no mutants were tested": the old guard grepped
-          # for "Found N mutants", which prints before the baseline fails.
-          # scripts/check-mutants-report.sh parses mutants-report/mutants.out/
-          # outcomes.json: tested == total > 0, missed == 0, timeout/unviable
-          # bounded, and the unmutated-tree preamble is itself a failure.
-          if ! scripts/check-mutants-report.sh mutants-report/mutants.out /tmp/mutants.txt 5 50; then
-            echo "::group::baseline log (why the unmutated tree failed, if it did)"
-            tail -60 mutants-report/mutants.out/log/baseline.log 2>/dev/null || echo "(no baseline log)"
-            echo "::endgroup::"
-            exit 1
-          fi
-      # The machine report, kept: per-mutant build and test durations live only
-      # here (the console prints just the non-caught mutants), and sizing this
-      # job -- --jobs, a timeout, sharding -- is a measurement of them. The
-      # run that asked for this had no report to download.
-      - name: Keep the mutants report
-        if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (always() && steps.mutscope.outputs.run == 'true') }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      # Uploaded whatever happened, so the decision can name what is missing.
+      # overwrite: a re-run of this shard replaces its earlier attempt's report.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        if: ${{ always() }}
         with:
-          name: mutants-report
+          name: mutants-shard-${{ matrix.shard }}-of-${{ needs.mutants-plan.outputs.shard_count }}
           path: |
-            mutants-report/mutants.out/outcomes.json
-            mutants-report/mutants.out/*.txt
+            shard/console.log
+            shard/commit.txt
+            shard/mutants.out/outcomes.json
+            shard/mutants.out/*.txt
+          overwrite: true
           retention-days: 14
-      - name: The mutants gate goes red on a saved failure log and a survivor
-        if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (always()) }}
-        run: scripts/check-mutants-report.sh --self-test
-      - name: Mutation summary
-        if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (always()) }}
-        shell: bash
+
+  mutants:
+    name: Mutation Testing
+    runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    needs: [changed-crates, mutants-plan, mutants-shard]
+    # always(): a failed, cancelled or skipped upstream must reach the decision,
+    # which reads every result from `needs` -- a skipped required check counts
+    # as passed, so this job must never be the one that is skipped for it.
+    if: ${{ always() && github.event.pull_request.draft != true }}
+    steps:
+      - name: No-op twin (no relevant crate changes)
+        if: ${{ needs.changed-crates.result == 'success' && needs.changed-crates.outputs.mutate != 'true' }}
+        run: echo "No crate or CI configuration changes in this diff."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ always() && !(needs.changed-crates.result == 'success' && needs.changed-crates.outputs.mutate != 'true') }}
+      - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+        if: ${{ always() && !(needs.changed-crates.result == 'success' && needs.changed-crates.outputs.mutate != 'true') }}
+        with:
+          cache: ${{ runner.environment == 'github-hosted' }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: ${{ always() && needs.mutants-plan.outputs.run == 'true' }}
+        with:
+          name: mutants-plan
+          path: mutants-plan
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        if: ${{ always() && needs.mutants-plan.outputs.run == 'true' }}
+        with:
+          pattern: mutants-shard-*
+          path: mutants-shards
+      # `Mutation Testing` passed runs whose log said "cargo build failed in an
+      # unmutated tree" (#2562), and a report reader that compared a report's
+      # tested count with its OWN total passed a cancelled run (the report of an
+      # interrupted run counts only what it reached). The decision is
+      # crates/xtask/src/mutants_gate.rs: every shard's outcomes are exactly its
+      # share of the plan, every report finished, one commit, one version.
+      - name: The gate reads every shard's machine report against the plan
+        if: ${{ always() && !(needs.changed-crates.result == 'success' && needs.changed-crates.outputs.mutate != 'true') }}
         env:
-          RUN: ${{ steps.mutscope.outputs.run }}
-          IN_DIFF: ${{ steps.mutscope.outputs.in_diff }}
-        run: |
-          echo "## Mutation Testing Report" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Modules tested:** capability, guard, lattice, certificate, delegation, trust" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          if [ "$RUN" != "true" ]; then
-            echo "no mutants in this pull request's diff (none of the six modules changed); the nightly schedule runs them all" >> "$GITHUB_STEP_SUMMARY"
-          elif [ -s mutants-report/mutants.out/outcomes.json ]; then
-            echo "**Scope:** ${IN_DIFF:-full}" >> "$GITHUB_STEP_SUMMARY"
-            jq -r '"- **tested:** \((.caught//0)+(.missed//0)+(.timeout//0)+(.unviable//0)) / \(.total_mutants//0)\n- **caught:** \(.caught//0)\n- **survived:** \(.missed//0)\n- **timeout:** \(.timeout//0)\n- **unviable:** \(.unviable//0)"' mutants-report/mutants.out/outcomes.json >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "no outcomes.json — the run did not produce a report" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          NEEDS: ${{ toJSON(needs) }}
+          COMMIT: ${{ github.sha }}
+        run: cargo run -q -p xtask -- mutants-gate decide --needs "$NEEDS" --plan mutants-plan --shards mutants-shards --commit "$COMMIT" --expect-version "$CARGO_MUTANTS_VERSION" --max-timeout 5 --max-unviable 50 --summary "$GITHUB_STEP_SUMMARY"
+      - name: The mutants gate goes red on a truncated report, a missing shard and a survivor
+        if: ${{ always() && !(needs.changed-crates.result == 'success' && needs.changed-crates.outputs.mutate != 'true') }}
+        run: cargo run -q -p xtask -- mutants-gate --self-test
 
   # Layer 3: Verification proof count regression gates
   #
