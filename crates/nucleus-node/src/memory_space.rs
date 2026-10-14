@@ -30,6 +30,18 @@
 //! * `TenantAllLegacy` — the declared form of what the owner-keyed layout did implicitly; only
 //!   migration records one.
 //!
+//! # Cross-run memory is paused until labels are stamped (Program C, C0)
+//!
+//! A record's label is derived from its derivation alone, so every root is Public whatever its
+//! writer had read: a run that read Secret data writes Public records. Delivered to another
+//! lineage, that is a leak no view ceiling can catch. Until a space's records carry labels
+//! stamped with their writer's dependency context (Program C, C1), [`Registry::cross_run_reach`]
+//! — the one decider — refuses, by name (`CrossRunMemoryUnavailable`), every `Workspace`,
+//! `TenantAll` and `TenantAllLegacy` policy at creation, at bind (before anything is delivered)
+//! and at publish, and a `Lineage` policy over a space any of whose policies admits another
+//! lineage. Lineage audiences keep working: the runs of one lineage share one space. A migrated
+//! owner-keyed store records no owning lineage, so it is delivered to no run at all until C1.
+//!
 //! A policy is created by the tenant's root identity (`memory_space_api`), or by citing a
 //! standing signed owner decision whose scope covers `memory.bind:<space>` (and
 //! `memory.publish:<space>` for a policy that may publish), re-cited at every bind and publish.
@@ -392,6 +404,12 @@ impl MemorySpace {
     pub(crate) fn kernel_scope(&self) -> Scope {
         scope_of(&self.schema)
     }
+
+    /// Whether the space's records carry dependency-stamped writer labels. None does before
+    /// Program C's C1, which decides this per space.
+    pub(crate) const fn label_stamping(&self) -> LabelStamping {
+        LabelStamping::Unstamped
+    }
 }
 
 /// Who a policy admits. There is no variant for another tenant, so a cross-tenant binding is
@@ -447,6 +465,46 @@ pub(crate) enum PodLabels<'a> {
 pub(crate) struct PodMatch<'a> {
     pub(crate) lineage: Uuid,
     pub(crate) labels: PodLabels<'a>,
+}
+
+/// Whether a space's records carry labels stamped with what their writer had read (Program C,
+/// C1). C1 adds the stamped case and decides it per space; until then no space has one, and
+/// [`Registry::cross_run_reach`] matches on this exhaustively, so adding it is a compile error
+/// there rather than a silent default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LabelStamping {
+    /// Each record's label is derived from its derivation alone (every root Public), and says
+    /// nothing of what its writer had read.
+    Unstamped,
+}
+
+/// The reach [`Registry::cross_run_reach`] refused: memory crossing to a run of another lineage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CrossRun {
+    /// A `Workspace(selector)` audience.
+    Workspace,
+    /// A `TenantAll` audience.
+    TenantAll,
+    /// A migrated owner-keyed store: it records no lineage that owns it.
+    TenantAllLegacy,
+    /// A `Lineage` audience over a space another of whose policies (live or not) admits runs of
+    /// another lineage, which may already have published into it.
+    BeyondOneLineage,
+}
+
+impl std::fmt::Display for CrossRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CrossRun::Workspace => "a workspace audience",
+            CrossRun::TenantAll => "a tenant-wide audience",
+            CrossRun::TenantAllLegacy => {
+                "a migrated tenant-wide store, which records no lineage that owns it"
+            }
+            CrossRun::BeyondOneLineage => {
+                "a lineage audience over a space whose policies admit another lineage"
+            }
+        })
+    }
 }
 
 /// What a binding may do.
@@ -646,14 +704,17 @@ pub(crate) enum MemoryRefusal {
         "memory space {space}'s journal has a different head at version {version} than a binding was pinned to: it was rewritten"
     )]
     Rewritten { space: String, version: u64 },
+    /// Coarse on purpose: the unreserved byte count is the quota less every binding's
+    /// reservation and every record published, Secret ones included, so stating it would count
+    /// bytes the caller's view cannot see.
     #[error(
-        "memory space {space} has {free} bytes unreserved; a binding of this policy reserves {allocation}"
+        "QuotaFullyAllocated: memory space {space} is fully allocated and cannot reserve the {allocation} bytes a binding of this policy is allocated"
     )]
-    QuotaFullyAllocated {
-        space: String,
-        free: u64,
-        allocation: u64,
-    },
+    QuotaFullyAllocated { space: String, allocation: u64 },
+    #[error(
+        "CrossRunMemoryUnavailable: record labels are not yet dependency-stamped. Memory space {space} would reach runs of another lineage through {reach}; until a record's label carries what its writer had read (Program C, C1), memory crosses to no run outside its lineage"
+    )]
+    CrossRunMemoryUnavailable { space: String, reach: CrossRun },
     #[error("memory space {0} cannot be revoked again: its epoch is at its limit")]
     EpochExhausted(String),
     #[error("binding policy {policy}'s owner decision {decision} no longer covers it: {why}")]
@@ -688,7 +749,10 @@ impl From<MemoryRefusal> for ApiError {
             | MemoryRefusal::ForeignEpoch { .. }
             | MemoryRefusal::Expired { .. }
             | MemoryRefusal::MayNotPublish(_)
-            | MemoryRefusal::DecisionRefused { .. } => ApiError::Authority(refusal.to_string()),
+            | MemoryRefusal::DecisionRefused { .. }
+            | MemoryRefusal::CrossRunMemoryUnavailable { .. } => {
+                ApiError::Authority(refusal.to_string())
+            }
             MemoryRefusal::QuotaFullyAllocated { .. } | MemoryRefusal::EpochExhausted(_) => {
                 ApiError::CapacityExhausted(refusal.to_string())
             }
@@ -967,6 +1031,7 @@ impl Registry {
     ) -> Result<Uuid, ApiError> {
         let space = self.space(tenant, id)?;
         check_policy(space, &request, now)?;
+        self.cross_run_reach(space, &request.audience)?;
         let epoch = space.epoch;
         let policy = Uuid::new_v4();
         self.policies.insert(
@@ -1081,6 +1146,50 @@ impl Registry {
             })
             .collect();
         serde_json::Value::Array(spaces)
+    }
+
+    /// Whether memory under `audience` may reach space `space`: the one decider (ADR 0007 G-1)
+    /// of cross-run memory, asked when a policy is created, when a binding is minted (before
+    /// anything is delivered) and when a publish is admitted.
+    ///
+    /// Until the space's labels are stamped (Program C, C1), only a `Lineage(root)` audience
+    /// reaches it, and only when every policy the space has ever recorded (revoked ones too: their
+    /// runs may already have published) names that same lineage. Everything else is refused by
+    /// name (`CrossRunMemoryUnavailable`), never narrowed silently.
+    pub(crate) fn cross_run_reach(
+        &self,
+        space: &MemorySpace,
+        audience: &Audience,
+    ) -> Result<(), MemoryRefusal> {
+        match space.label_stamping() {
+            LabelStamping::Unstamped => {}
+        }
+        let refuse = |reach| {
+            Err(MemoryRefusal::CrossRunMemoryUnavailable {
+                space: space.id.reference(),
+                reach,
+            })
+        };
+        let root = match audience {
+            Audience::Lineage { root } => *root,
+            Audience::Workspace { .. } => return refuse(CrossRun::Workspace),
+            Audience::TenantAll => return refuse(CrossRun::TenantAll),
+            Audience::TenantAllLegacy => return refuse(CrossRun::TenantAllLegacy),
+        };
+        let held = self
+            .policies
+            .values()
+            .filter(|p| p.tenant == space.tenant && p.space == space.id);
+        for policy in held {
+            match &policy.audience {
+                Audience::Lineage { root: other } if *other == root => {}
+                Audience::Lineage { .. }
+                | Audience::Workspace { .. }
+                | Audience::TenantAll
+                | Audience::TenantAllLegacy => return refuse(CrossRun::BeyondOneLineage),
+            }
+        }
+        Ok(())
     }
 
     /// The space a pod asking for `name` is bound to, and the policy that admits it.
