@@ -315,7 +315,7 @@ pub(crate) async fn memory_write(
     Json(req): Json<MemoryWriteReq>,
 ) -> Result<Json<MemoryWriteResp>, ApiError> {
     use nucleus_ifc_kernel::discharge::PreflightResult;
-    let _dt = crate::http_kernel_decide(
+    let admitted = crate::http_kernel_decide(
         &state,
         Operation::WriteFiles,
         "memory://write",
@@ -339,6 +339,9 @@ pub(crate) async fn memory_write(
     let mut set = state.provenance_memory.lock().await;
     let registry = state.memory_transforms.as_ref();
     let prepared = set.prepare(registry, req, authority)?;
+    // The approvals the admission relied on, spent once, immediately before
+    // the commit (#3446). The token itself is not redeemed here.
+    crate::approval::spend_admission(&state, admitted)?;
     Ok(Json(prepared.commit().await?))
 }
 
@@ -363,7 +366,7 @@ pub(crate) async fn memory_recall(
     if req.declassify.is_some() {
         state.governor_keys.admit()?;
     }
-    let _dt = crate::http_kernel_decide(
+    let admitted = crate::http_kernel_decide(
         &state,
         Operation::ReadFiles,
         "memory://recall",
@@ -389,6 +392,8 @@ pub(crate) async fn memory_recall(
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let set = state.provenance_memory.lock().await;
+    // Spent once, immediately before the recall (#3446).
+    crate::approval::spend_admission(&state, admitted)?;
     // Project the recall's effective label onto the single authoritative graph
     // the egress verdict reads.
     let mut graph = state.flow_graph.lock().await;

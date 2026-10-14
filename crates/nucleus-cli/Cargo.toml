@@ -23,6 +23,10 @@ nucleus-spec = { path = "../nucleus-spec" }
 nucleus-task-compiler = { path = "../nucleus-task-compiler" }
 nucleus-client = { path = "../nucleus-client" }
 nucleus-identity = { path = "../nucleus-identity" }
+# `verify-attestation --launch-quote`: the relying party's appraisal inputs
+# (reference manifest, AK anchors, key binding) for `VerifiedLaunch::verify_tpm`.
+# The verifier only: no attester, no I/O.
+nucleus-node-evidence = { path = "../nucleus-node-evidence" }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-lineage = { path = "../nucleus-lineage" }
 nucleus-envelope = { path = "../nucleus-envelope" }
@@ -85,8 +89,7 @@ ureq = { workspace = true }
 # supports skipping hostname verification while still validating the chain
 # against a pinned CA root, which is the correct primitive for SPIFFE
 # identity (not hostname-based). Same feature set as nucleus-sdk's own
-# (already-working) mTLS path. The HMAC fallback (for a machine that has not
-# run `nucleus setup` since Move A step 6) stays on ureq, unchanged.
+# (already-working) mTLS path.
 #
 # "blocking": `twosafety_boot.rs`'s `PodBoot` implements a SYNC trait
 # (`twosafety::Boot`) and needs a sync mTLS client for its node calls —
@@ -96,7 +99,6 @@ rand = "0.10"
 chrono = { workspace = true, features = ["serde"] }
 hex = { workspace = true }
 sha2 = { workspace = true }
-hmac = { workspace = true }
 rustls = { workspace = true }
 # `provision`: the identity files are checked block by block before they are
 # installed (#3158) — the same parser `nucleus_identity::node_tls` reads them with.

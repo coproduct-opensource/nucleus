@@ -100,6 +100,22 @@ hasn't drifted from the committed code.
 - G7: Denied nodes cannot become parents (causal isolation)
 - G8: Denied set persists across subsequent operations
 
+**The DAG authority rule (#3459).** On the DAG path (`FlowGraph::insert_action`,
+`Kernel::decide_with_parents`) a caller names each parent's role in
+`ActionParents { control, data }`. An action's **authority comes from its control
+chain** — the meet of what its control parents confer: a `UserPrompt` its label's
+authority, a `ModelPlan` rooted in a prompt chain what it was rooted with, anything
+else `NoAuthority`, and no control parent at all is `NoAuthority`. **Every other
+dimension comes from all ancestry**: confidentiality, integrity, provenance,
+freshness and derivation are judged on the full join over control and data, and
+the stored node label is that join. Data cannot raise authority; `Informational` or
+`Suggestive` data (a file read, a tool response) does not lower it, while
+`NoAuthority` or `Adversarial` data still caps it exactly as before. The
+`FlowGraphProofs` theorems concern the stored label, which is unchanged; the
+authority substitution in the verdict is tested
+(`crates/portcullis/src/flow_graph_authority_tests.rs`), not proved. This is not the
+live tool-proxy path, which does not compare authority at all (#3459).
+
 ### 6. Certificate & Delegation (Kani BMC — bounded)
 
 **What's proved (C1-C3):**
@@ -366,7 +382,7 @@ Full maturity table for every nucleus component. **Maturity key:** *Verified* = 
 | **Execution receipts** | Tested | Cryptographic pod execution proof with token usage and cost tracking |
 | **Permission market** | Tested | Lagrangian pricing oracle for multi-dimensional capability constraints |
 | **Web fetch security** | Tested | Unified MCP+HTTP path: MIME gating, DNS/URL allowlist, redirect verification |
-| **Audit log verification** | Tested | HMAC-SHA256 + SHA-256 chain; optional S3 append-only sink |
+| **Audit log verification** | Tested | Ed25519-signed records + SHA-256 chain; optional S3 append-only sink |
 | **PodSpec scanner** | Tested | Uninhabitable state, credentials, network, isolation, timeout checks |
 | **Claude Code scanner** | Tested | Uninhabitable state via allow/deny projection, Bash capability propagation |
 | **MCP config scanner** | Tested | Well-known server classification (15 packages), `npx -y` supply chain detection |

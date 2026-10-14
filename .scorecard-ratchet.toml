@@ -270,9 +270,12 @@ population_floor = 278
 # commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
 # 2026-10-13 (signed owner decisions): nucleus-signed-decision verifies bytes from outside the
 # pod and declares all seven from its first commit. 42 of 99 = 42.42%.
-floor_bp = 4242
+# 2026-10-13 (Program B M1, merged with the above): new crate nucleus-memory-context, the
+# pure kernel that decides what a run may see of shared memory and whether a publish is
+# valid, declares all seven from its first commit. Combined 43 of 100 = 43.00%.
+floor_bp = 4300
 floor_set = "measurement"
-population_floor = 99
+population_floor = 100
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -413,9 +416,14 @@ population_floor = 99
 # with the two DPoP rights above (#3385), 17 of 24 = 70.83%.
 # 2026-10-13 (signed owner decisions): SignedDecision enters as an affine right carrying the
 # signed window (valid_from, not_after) that every cite and spend re-checks. 18 of 25 = 72.00%.
-floor_bp = 7200
+# 2026-10-13 (Program B M1): two new affine rights in nucleus-memory-context, each bounded
+# from its first commit. AdmittedOp (one admitted mediated memory op) carries the epoch
+# and not_after it was admitted under; ValidCandidate (a whole-candidate-validated
+# publish) carries the generation it was validated against, and History::commit refuses
+# it unless that is still the head. Combined with SignedDecision above, 20 of 27 = 74.07%.
+floor_bp = 7407
 floor_set = "measurement"
-population_floor = 25
+population_floor = 27
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -641,9 +649,12 @@ population_floor = 23
 # 2026-10-13 (#3433, C2 census, merged after #3437): the NodeState census builds its list
 # one cfg-carrying push at a time under a reasoned #[expect] of vec_init_then_push.
 # 38/143 = 26.57%; both pins follow the tree.
-floor_bp = 2657
+# 2026-10-14 (#3461): the tests that seal their process run alone in a fresh copy of the
+# test binary, under one reasoned #[expect] of the #1216 spawn ban (the umask pattern).
+# 39/144 = 27.08%; both pins follow the tree.
+floor_bp = 2708
 floor_set = "measurement"
-population_floor = 143
+population_floor = 144
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an

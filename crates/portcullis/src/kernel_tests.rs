@@ -1,7 +1,17 @@
 #![allow(deprecated)] // Tests exercise both decide() and decide_term(); migration tracked in #1194
 
 use super::*;
+use crate::flow_graph::ActionParents;
 use crate::{CapabilityLevel, PermissionLattice};
+// Borrow one node id as a parent slice (a `let`-bound `&[id]` would be a dropped temporary).
+use std::slice::from_ref as one;
+
+/// The user's instruction: the control parent of a prompted action (#3459).
+fn user_prompt(kernel: &mut Kernel) -> u64 {
+    kernel
+        .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
+        .unwrap()
+}
 
 fn trusted_term_input(name: &str) -> crate::ActionInput {
     crate::ActionInput::new(
@@ -1359,12 +1369,14 @@ fn flow_enabled_by_default() {
     // Flow graph is always on. Flat decide() no longer gates — use
     // decide_with_parents() for flow enforcement via the causal DAG.
     //
+    let user = user_prompt(&mut kernel);
     // Observe web content (this is the data source, not an action).
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
     // Write depending on web content is blocked by DAG flow check
-    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", p);
     assert!(
         matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
         "Flow control should enforce via DAG, got {:?}",
@@ -1389,13 +1401,15 @@ fn flow_web_then_write_blocked() {
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control();
 
+    let user = user_prompt(&mut kernel);
     // Observe web content — this is the data source node
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
 
     // WriteFiles depending on web content is blocked by DAG flow check
-    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d2, _) = kernel.decide_with_parents(Operation::WriteFiles, "/tmp/test.txt", p);
     assert!(
         matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
         "Expected FlowViolation, got {:?}",
@@ -1454,6 +1468,7 @@ fn flow_check_runs_before_approvals() {
     // Pre-grant approval for GitPush
     kernel.grant_approval(Operation::GitPush, 1);
 
+    let user = user_prompt(&mut kernel);
     // Observe web content (data source)
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1461,7 +1476,8 @@ fn flow_check_runs_before_approvals() {
 
     // GitPush depending on web node should be DENIED by DAG flow check
     // even with pre-granted approval
-    let (d2, _) = kernel.decide_with_parents(Operation::GitPush, "origin main", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d2, _) = kernel.decide_with_parents(Operation::GitPush, "origin main", p);
     assert!(
         matches!(d2.verdict, Verdict::Deny(DenyReason::FlowViolation { .. })),
         "Flow check must run before approval path! Got {:?}",
@@ -1476,6 +1492,7 @@ fn dag_independent_branches_no_overtaint() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     // Task A: web content (adversarial)
     let web_id = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1486,7 +1503,8 @@ fn dag_independent_branches_no_overtaint() {
         .unwrap();
 
     // Task B write depends ONLY on file — ALLOWED
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[file_id]);
+    let p = ActionParents::control(one(&user)).data(one(&file_id));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", p);
     assert!(
         d.verdict.is_allowed(),
         "File-only write should be allowed, got {:?}",
@@ -1495,7 +1513,8 @@ fn dag_independent_branches_no_overtaint() {
     assert!(d.flow_node_id.is_some());
 
     // Task A write depends on web — DENIED
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/web.txt", &[web_id]);
+    let p = ActionParents::control(one(&user)).data(one(&web_id));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/web.txt", p);
     assert!(
         d.verdict.is_denied(),
         "Web-tainted write should be denied, got {:?}",
@@ -1512,16 +1531,18 @@ fn dag_transitive_taint_propagation() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
-    // Model plan derived from web content
+    // Model plan derived from web content, rooted in the user's prompt
     let plan = kernel
-        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[web])
+        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[user, web])
         .unwrap();
 
-    // Write depending on plan (transitively depends on web) — DENIED
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/derived.txt", &[plan]);
+    // Write directed by the plan (transitively depends on web) — DENIED
+    let p = ActionParents::control(one(&plan));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/derived.txt", p);
     assert!(
         d.verdict.is_denied(),
         "Transitive web taint should propagate, got {:?}",
@@ -1534,18 +1555,17 @@ fn dag_clean_chain_allowed() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
-    let user = kernel
-        .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
-        .unwrap();
+    let user = user_prompt(&mut kernel);
     let file = kernel
         .observe(portcullis_core::flow::NodeKind::FileRead, &[user])
         .unwrap();
     let plan = kernel
-        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[file])
+        .observe(portcullis_core::flow::NodeKind::ModelPlan, &[user, file])
         .unwrap();
 
-    // Write depending on clean chain: user → file → plan — ALLOWED
-    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[plan]);
+    // Write directed by a clean chain: user → (file) → plan — ALLOWED
+    let p = ActionParents::control(one(&plan));
+    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", p);
     assert!(d.verdict.is_allowed());
     assert!(token.is_some());
     assert!(d.flow_node_id.is_some());
@@ -1556,11 +1576,13 @@ fn dag_denied_action_produces_receipt() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
 
-    let (d, _) = kernel.decide_with_parents(Operation::CreatePr, "my-pr", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d, _) = kernel.decide_with_parents(Operation::CreatePr, "my-pr", p);
     assert!(d.verdict.is_denied());
     match &d.verdict {
         Verdict::Deny(DenyReason::FlowViolation { receipt, .. }) => {
@@ -1583,7 +1605,8 @@ fn dag_always_on_even_capability_only() {
     let mut kernel = Kernel::capability_only(perms);
     // capability_only() still has a flow graph — decide_with_parents uses the DAG
 
-    let (d, _) = kernel.decide_with_parents(Operation::ReadFiles, "/workspace/main.rs", &[]);
+    let p = ActionParents::control(&[]);
+    let (d, _) = kernel.decide_with_parents(Operation::ReadFiles, "/workspace/main.rs", p);
     assert!(d.verdict.is_allowed());
     assert!(
         d.flow_node_id.is_some(),
@@ -1596,12 +1619,11 @@ fn dag_capability_check_still_applies() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
-    let user = kernel
-        .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
-        .unwrap();
+    let user = user_prompt(&mut kernel);
 
     // DAG says allow (clean parents), but capability lattice says never for GitPush
-    let (d, _) = kernel.decide_with_parents(Operation::GitPush, "origin/main", &[user]);
+    let p = ActionParents::control(one(&user));
+    let (d, _) = kernel.decide_with_parents(Operation::GitPush, "origin/main", p);
     assert!(
         d.verdict.is_denied(),
         "Capability check should still apply even when DAG allows, got {:?}",
@@ -1621,6 +1643,7 @@ fn dag_bypasses_flat_flow_label() {
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control(); // flat label
 
+    let user = user_prompt(&mut kernel);
     // Read web content — taints the flat session label
     let _web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1634,7 +1657,8 @@ fn dag_bypasses_flat_flow_label() {
     let file = kernel
         .observe(portcullis_core::flow::NodeKind::FileRead, &[])
         .unwrap();
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[file]);
+    let p = ActionParents::control(one(&user)).data(one(&file));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", p);
     assert!(
         d.verdict.is_allowed(),
         "DAG clean parents should override flat taint, got {:?}",
@@ -1671,6 +1695,7 @@ fn dag_declassification_allows_validated_tool() {
         justification: "Search API returns curated content".to_string(),
     });
 
+    let user = user_prompt(&mut kernel);
     // Observe web content — normally Adversarial/NoAuthority
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1682,7 +1707,8 @@ fn dag_declassification_allows_validated_tool() {
     // Authority is still NoAuthority, so writes are still denied by
     // the authority check. This verifies declassification fires but
     // doesn't grant more than it should.
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", p);
     assert!(
         d.verdict.is_denied(),
         "Authority is still NoAuthority — write should be denied even with raised integrity"
@@ -1690,47 +1716,56 @@ fn dag_declassification_allows_validated_tool() {
 }
 
 #[test]
-fn dag_declassification_authority_upgrade() {
+fn dag_declassification_authority_upgrade_lifts_no_authority_cap() {
+    // #3459: data caps authority only when NoAuthority (or adversarial). An HTTP
+    // response is Untrusted/NoAuthority until a declassification raises it.
     use portcullis_core::declassify::{DeclassificationRule, DeclassifyAction};
     use portcullis_core::AuthorityLevel;
 
-    let perms = PermissionLattice::safe_pr_fixer();
-    let mut kernel = Kernel::new(perms);
+    let write_from_http = |kernel: &mut Kernel| {
+        let user = kernel
+            .observe(portcullis_core::flow::NodeKind::UserPrompt, &[])
+            .unwrap();
+        let http = kernel
+            .observe(portcullis_core::flow::NodeKind::HTTPResponse, &[])
+            .unwrap();
+        kernel
+            .decide_with_parents(
+                Operation::WriteFiles,
+                "/out.txt",
+                ActionParents {
+                    control: &[user],
+                    data: &[http],
+                },
+            )
+            .0
+    };
 
-    // Raise authority: Informational → Suggestive (for curated tool output)
-    // ToolResponse starts at Informational authority
+    // Without the upgrade: NoAuthority data caps the user's authority.
+    let mut strict = Kernel::new(PermissionLattice::safe_pr_fixer());
+    let d = write_from_http(&mut strict);
+    assert!(
+        d.verdict.is_denied(),
+        "NoAuthority data must cap a write even under the user's prompt, got {:?}",
+        d.verdict
+    );
+
+    // With the upgrade (NoAuthority ≤ Informational → Suggestive): allowed.
+    let mut kernel = Kernel::new(PermissionLattice::safe_pr_fixer());
     kernel.add_declassification_rule(DeclassificationRule {
         action: DeclassifyAction::RaiseAuthority {
             from: AuthorityLevel::Informational,
             to: AuthorityLevel::Suggestive,
         },
-        justification: "Tool output from validated API".to_string(),
-    });
-
-    // Also raise integrity so both checks pass
-    kernel.add_declassification_rule(DeclassificationRule {
-        action: DeclassifyAction::RaiseIntegrity {
-            from: portcullis_core::IntegLevel::Adversarial,
-            to: portcullis_core::IntegLevel::Untrusted,
-        },
         justification: "Validated API output".to_string(),
     });
-
-    let tool = kernel
-        .observe(portcullis_core::flow::NodeKind::ToolResponse, &[])
-        .unwrap();
-
-    // ToolResponse starts with Untrusted/Informational.
-    // Declassification raises authority to Suggestive.
-    // Write requires Suggestive authority — should now be allowed.
-    let (d, _) = kernel.decide_with_parents(Operation::WriteFiles, "/out.txt", &[tool]);
+    let d = write_from_http(&mut kernel);
     assert!(
         d.verdict.is_allowed(),
-        "Declassified tool response should allow write, got {:?}",
+        "Declassified HTTP response should allow write, got {:?}",
         d.verdict
     );
 }
-
 /// #C-2: Under the SECURE posture (trusted keys configured), an UNSIGNED
 /// declassification rule must NOT endorse attacker-tainted data on the live
 /// `observe()` path. Before the fail-closed fix this REDs (integrity becomes
@@ -1890,6 +1925,7 @@ fn causal_decide_key_test_adversarial_read_clean_write_allowed() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     // Adversarial content observed
     let _web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
@@ -1901,7 +1937,8 @@ fn causal_decide_key_test_adversarial_read_clean_write_allowed() {
         .unwrap();
 
     // Clean write depending only on the file — ALLOWED
-    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", &[file]);
+    let p = ActionParents::control(one(&user)).data(one(&file));
+    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/clean.txt", p);
     assert!(
         d.verdict.is_allowed(),
         "#654 key test: independent clean write must be ALLOWED. Got {:?}",
@@ -1917,13 +1954,15 @@ fn causal_decide_key_test_write_depending_on_adversarial_denied() {
     let perms = PermissionLattice::safe_pr_fixer();
     let mut kernel = Kernel::new(perms);
 
+    let user = user_prompt(&mut kernel);
     // Adversarial content observed
     let web = kernel
         .observe(portcullis_core::flow::NodeKind::WebContent, &[])
         .unwrap();
 
     // Write depending on adversarial content — DENIED
-    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/tainted.txt", &[web]);
+    let p = ActionParents::control(one(&user)).data(one(&web));
+    let (d, token) = kernel.decide_with_parents(Operation::WriteFiles, "/tainted.txt", p);
     assert!(
         d.verdict.is_denied(),
         "#654 key test: write depending on adversarial content must be DENIED. Got {:?}",

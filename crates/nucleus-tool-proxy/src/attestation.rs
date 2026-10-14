@@ -45,7 +45,11 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// Configuration for attestation verification.
-#[derive(Clone, Debug, Default)]
+///
+/// No `Default` (ADR 0007 B-1): whether attestation is required is named at
+/// every construction, by [`Self::required`] or [`Self::not_required`], never
+/// supplied by an omitted value.
+#[derive(Clone, Debug)]
 pub struct AttestationConfig {
     /// Whether attestation is required for all requests.
     pub require_attestation: bool,
@@ -59,7 +63,7 @@ pub struct AttestationConfig {
     /// Empty means any config hash is allowed.
     pub allowed_config_hashes: HashSet<String>,
     /// Minimum normalized assurance level a request's SVID must carry (North Star
-    /// C9). `L0Bearer` (the default) imposes no floor. A floor above `L0Bearer`
+    /// C9). `L0Bearer` (what both constructors start from) imposes no floor. A floor above `L0Bearer`
     /// makes attestation effectively required and refuses any SVID whose verified
     /// assurance is below it — fail-closed on absent/invalid evidence. Note a
     /// `L2Device`+ floor refuses every SVID until the EK-manufacturer root lands
@@ -70,9 +74,25 @@ pub struct AttestationConfig {
 impl AttestationConfig {
     /// Creates a new attestation config with attestation required.
     pub fn required() -> Self {
+        Self::with_requirement(true)
+    }
+
+    /// Creates a new attestation config with attestation not required: the
+    /// off state of `--require-attestation`, named rather than defaulted. A
+    /// later [`Self::with_min_assurance`] above `L0Bearer` still turns the
+    /// requirement on.
+    pub fn not_required() -> Self {
+        Self::with_requirement(false)
+    }
+
+    /// Every field written, so a new one cannot be filled in silently (E-1).
+    fn with_requirement(require_attestation: bool) -> Self {
         Self {
-            require_attestation: true,
-            ..Default::default()
+            require_attestation,
+            allowed_kernel_hashes: HashSet::new(),
+            allowed_rootfs_hashes: HashSet::new(),
+            allowed_config_hashes: HashSet::new(),
+            min_assurance: AssuranceLevel::L0Bearer,
         }
     }
 
@@ -572,25 +592,74 @@ mod tests {
         AttestationVerifier::new(AttestationConfig::required(), roots(ca))
     }
 
+    /// The off state is constructed by name. It was `Default::default()`
+    /// until `Default` was removed (ADR 0007 B-1); the assertions are the
+    /// ones that test made, now about the named constructor.
     #[test]
-    fn test_attestation_config_default() {
-        let config = AttestationConfig::default();
+    fn not_required_names_no_requirement_and_no_floor() {
+        let config = AttestationConfig::not_required();
         assert!(!config.require_attestation);
         assert!(config.allowed_kernel_hashes.is_empty());
         assert!(config.allowed_rootfs_hashes.is_empty());
-        // No floor by default — existing deployments are unaffected.
+        assert!(config.allowed_config_hashes.is_empty());
+        // No floor — existing deployments are unaffected.
         assert_eq!(config.min_assurance, AssuranceLevel::L0Bearer);
+    }
+
+    /// `required()` differs from `not_required()` in the requirement alone.
+    #[test]
+    fn required_names_the_requirement_and_nothing_else() {
+        let config = AttestationConfig::required();
+        assert!(config.require_attestation);
+        assert!(config.allowed_kernel_hashes.is_empty());
+        assert!(config.allowed_rootfs_hashes.is_empty());
+        assert!(config.allowed_config_hashes.is_empty());
+        assert_eq!(config.min_assurance, AssuranceLevel::L0Bearer);
+    }
+
+    /// ADR 0007 B-1: a security config has no `Default`, so no caller can get
+    /// "no requirement" by omission. Autoref specialization: the `HasDefault`
+    /// method is chosen only where `T: Default` holds (the probe mirrors
+    /// portcullis's `executor_builder_has_no_default`).
+    #[test]
+    // The explicit `&` is the probe: autoref specialization needs it.
+    #[allow(clippy::needless_borrow)]
+    fn attestation_config_has_no_default() {
+        use std::marker::PhantomData;
+        struct Probe<T>(PhantomData<T>);
+        trait HasNoDefault {
+            fn has_default(&self) -> bool {
+                false
+            }
+        }
+        impl<T> HasNoDefault for &Probe<T> {}
+        trait HasDefault {
+            fn has_default(&self) -> bool {
+                true
+            }
+        }
+        impl<T: Default> HasDefault for Probe<T> {}
+
+        // The probe is sound: it sees a `Default` where there is one.
+        assert!((&Probe::<String>(PhantomData)).has_default());
+        assert!(
+            !(&Probe::<AttestationConfig>(PhantomData)).has_default(),
+            "AttestationConfig must not implement Default: an omitted config \
+             would choose \"no attestation required\" for the caller"
+        );
     }
 
     #[test]
     fn test_min_assurance_floor_implies_required() {
         // A floor above L0 makes attestation required (can't check a floor without
         // a client cert); an L0 floor leaves require_attestation untouched.
-        let floored = AttestationConfig::default().with_min_assurance(AssuranceLevel::L2Device);
+        let floored =
+            AttestationConfig::not_required().with_min_assurance(AssuranceLevel::L2Device);
         assert_eq!(floored.min_assurance, AssuranceLevel::L2Device);
         assert!(floored.require_attestation);
 
-        let no_floor = AttestationConfig::default().with_min_assurance(AssuranceLevel::L0Bearer);
+        let no_floor =
+            AttestationConfig::not_required().with_min_assurance(AssuranceLevel::L0Bearer);
         assert_eq!(no_floor.min_assurance, AssuranceLevel::L0Bearer);
         assert!(!no_floor.require_attestation);
     }
@@ -667,7 +736,7 @@ mod tests {
     #[test]
     fn test_verifier_no_attestation_not_required() {
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
-        let open = AttestationVerifier::new(AttestationConfig::default(), roots(&ca));
+        let open = AttestationVerifier::new(AttestationConfig::not_required(), roots(&ca));
         assert!(!open.is_required());
         assert_eq!(open.admit(&TransportEvidence::ClientCert(&[])), Ok(()));
         assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
@@ -750,7 +819,7 @@ mod tests {
         let launch = VerifiedLaunch::verify(&leaf, ca.trust_bundle()).unwrap();
         let floor = |level| {
             AttestationVerifier::new(
-                AttestationConfig::default().with_min_assurance(level),
+                AttestationConfig::not_required().with_min_assurance(level),
                 roots(&ca),
             )
         };
@@ -886,12 +955,12 @@ mod tests {
         let ca = SelfSignedCa::new(TRUST_DOMAIN).unwrap();
         let leaf = attested_leaf(&ca).await;
         let l1 = AttestationVerifier::new(
-            AttestationConfig::default().with_min_assurance(AssuranceLevel::L1Software),
+            AttestationConfig::not_required().with_min_assurance(AssuranceLevel::L1Software),
             roots(&ca),
         );
         assert_eq!(l1.admit(&TransportEvidence::ClientCert(&leaf)), Ok(()));
         let l2 = AttestationVerifier::new(
-            AttestationConfig::default().with_min_assurance(AssuranceLevel::L2Device),
+            AttestationConfig::not_required().with_min_assurance(AssuranceLevel::L2Device),
             roots(&ca),
         );
         let refused = l2
@@ -903,7 +972,7 @@ mod tests {
     /// With the requirement off, nothing is checked (the default deployment).
     #[test]
     fn not_required_admits_without_evidence() {
-        let open = AttestationVerifier::new(AttestationConfig::default(), LaunchRoots::Absent);
+        let open = AttestationVerifier::new(AttestationConfig::not_required(), LaunchRoots::Absent);
         assert_eq!(open.admit(&TransportEvidence::None), Ok(()));
     }
 

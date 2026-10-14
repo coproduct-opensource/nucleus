@@ -114,6 +114,7 @@
 //! The denylist is the same for every pod. A pod's own lattice takes more away:
 //! `portcullis::SeccompPolicy::derive` names the classes (`exec` under
 //! `run_bash: never`, `inet_socket` under `web_fetch: never` with no declared
+//! egress, `inet6_socket` under `web_fetch: never` with no declared IPv6
 //! egress), [`ChildConfinement::apply`] takes that policy BY VALUE beside the
 //! rlimits, and the program it compiles is the denylist plus those classes in
 //! one filter: the union, never fewer. A derived denial answers `EPERM`, like
@@ -772,14 +773,16 @@ impl ChildConfinement {
         }
     }
 
-    /// Whether inherited descriptors above stdio are closed at exec.
+    /// Whether inherited descriptors above stdio are closed at exec. The
+    /// bare tier sweeps them too on Linux (#3461), the one step of the hook
+    /// it takes; off Linux it has no hook.
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
             Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
                 true
             }
-            Posture::Unsandboxed => false,
+            Posture::Unsandboxed => cfg!(target_os = "linux"),
         }
     }
 
@@ -849,19 +852,22 @@ impl ChildConfinement {
             }
         };
         match self.posture {
-            Posture::Unsandboxed => match layer {
-                WriteLayer::None => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
-                WriteLayer::ReadOnly { abi, workspace } => {
-                    match imp::install_write_layer_only(cmd, abi, workspace) {
-                        Hook::Installed => {
-                            SpawnHardening::Unhardened(Unhardened::BareTierWorkspaceReadOnly {
-                                abi,
-                            })
-                        }
-                        Hook::NoneOnThisPlatform => SpawnHardening::Unhardened(Unhardened::Refused),
+            Posture::Unsandboxed => {
+                // The bare tier's sweep (#3461), and, under a read-only
+                // workspace, the write layer with it and nothing else.
+                let hold = layer.hold();
+                match (hold, imp::sweep_inherited(cmd, layer)) {
+                    (WorkspaceHold::Writable, Hook::Installed | Hook::NoneOnThisPlatform) => {
+                        SpawnHardening::Unhardened(Unhardened::DeclaredBareTier)
+                    }
+                    (WorkspaceHold::ReadOnly { abi }, Hook::Installed) => {
+                        SpawnHardening::Unhardened(Unhardened::BareTierWorkspaceReadOnly { abi })
+                    }
+                    (WorkspaceHold::ReadOnly { .. }, Hook::NoneOnThisPlatform) => {
+                        SpawnHardening::Unhardened(Unhardened::Refused)
                     }
                 }
-            },
+            }
             Posture::Restricted(filter) => Self::restrict(
                 cmd,
                 Isolation::None,
@@ -1091,6 +1097,68 @@ enum Hook {
     NoneOnThisPlatform,
 }
 
+/// What the runtime did to keep its own children out of it (#3461).
+///
+/// A child that shares the runtime's uid (the declared bare tier, or a
+/// `Restricted` child of a non-root runtime) can open
+/// `/proc/<runtime>/environ`, `mem` and `fd/*`. [`seal_runtime`] makes the
+/// process non-dumpable, so the kernel refuses those files and `ptrace` to
+/// every process without `CAP_SYS_PTRACE`. (Descriptors are the spawn's
+/// half: every posture on Linux, the bare tier included, marks those above
+/// stdio close-on-exec in the child.)
+///
+/// Evidence (ADR 0007 C-1): [`Self::environment`] answers
+/// [`EnvironmentReach::ClosedToSameUid`] only for a value [`seal_runtime`]
+/// minted after the kernel confirmed the seal. [`Self::unsealed`] claims
+/// nothing, so a caller can always hold the weaker value.
+#[derive(Debug)]
+pub struct RuntimeSeal {
+    /// True only when the kernel confirmed the process non-dumpable.
+    sealed: bool,
+}
+
+/// Whether a process at the runtime's own uid can read the runtime's
+/// environment and memory. A process at another non-root uid never can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentReach {
+    /// The runtime is non-dumpable: `/proc/<pid>/environ` and `mem` refuse
+    /// a same-uid process.
+    ClosedToSameUid,
+    /// Nothing keeps a same-uid process out (no seal, or a platform where
+    /// the environment of a same-uid process is readable regardless).
+    OpenToSameUid,
+}
+
+impl RuntimeSeal {
+    /// A value that claims no seal: what a platform without one holds.
+    #[must_use]
+    pub fn unsealed() -> Self {
+        Self { sealed: false }
+    }
+
+    /// What a same-uid child can read of this process.
+    #[must_use]
+    pub fn environment(&self) -> EnvironmentReach {
+        if self.sealed {
+            EnvironmentReach::ClosedToSameUid
+        } else {
+            EnvironmentReach::OpenToSameUid
+        }
+    }
+}
+
+/// Seal this process against its own children; see [`RuntimeSeal`]. Call it
+/// first, before the process reads a secret or spawns anything.
+///
+/// # Errors
+/// On Linux, the kernel's errno when it refused, or an
+/// [`std::io::ErrorKind::Other`] error when the process still reads as
+/// dumpable afterwards. Off Linux nothing is attempted and the answer is
+/// [`RuntimeSeal::unsealed`].
+pub fn seal_runtime() -> std::io::Result<RuntimeSeal> {
+    imp::seal_self().map(|sealed| RuntimeSeal { sealed })
+}
+
 /// The runtime's own uid.
 ///
 /// Read through `std` (the owner of `/proc/self`) so this needs neither
@@ -1255,6 +1323,15 @@ mod imp {
         Refuse,
     }
 
+    /// How much of the hook runs. Two named cases rather than an `Option`
+    /// of limits (ADR 0007 B-2).
+    enum Restrict<'a> {
+        /// Every step: `no_new_privs`, these limits, Landlock, the filter.
+        Full(&'a HookLimits),
+        /// The descriptor sweep only (the declared bare tier, #3461).
+        SweepOnly,
+    }
+
     /// Who execs the child once the hook is done (#2907). Two named cases
     /// rather than an `Option` (ADR 0007 B-2).
     enum Start {
@@ -1273,7 +1350,7 @@ mod imp {
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
         writes: &mut Landlock,
-        limits: &HookLimits,
+        restrict: Restrict<'_>,
         start: &Start,
     ) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
@@ -1339,6 +1416,20 @@ mod imp {
                     _ => return Err(err),
                 }
             }
+            // The bare tier stops here: descriptors swept, nothing else.
+            // Under a read-only workspace (#2907) it also installs the write
+            // layer, and nothing else: `restrict_self` sets `no_new_privs`
+            // itself, which an unprivileged `landlock_restrict_self` needs.
+            let limits = match restrict {
+                Restrict::Full(limits) => limits,
+                Restrict::SweepOnly => {
+                    return match writes {
+                        Landlock::NotRequested => Ok(()),
+                        Landlock::Refuse => Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
+                        Landlock::Restrict(ruleset) => ruleset.restrict_self(),
+                    };
+                }
+            };
             // What any process may do to itself — the uid, if it was to
             // change, already has.
             // No new privileges: defeats setuid/file-capability escalation,
@@ -1470,7 +1561,7 @@ mod imp {
                 &mut seccomp,
                 &mut landlock,
                 &mut writes,
-                &limits,
+                Restrict::Full(&limits),
                 &start,
             )
         });
@@ -1500,26 +1591,6 @@ mod imp {
         }
     }
 
-    /// The bare tier's hook under a read-only workspace (#2907): the write
-    /// layer and nothing else. `restrict_self` sets `no_new_privs` itself
-    /// (idempotently; an unprivileged `landlock_restrict_self` needs it), so
-    /// this needs no `unsafe`. No fd closing, no rlimits and no filter: the
-    /// bare tier's contract is unchanged except for the one thing the pod's
-    /// policy requires.
-    pub(super) fn install_write_layer_only(
-        cmd: &mut std::process::Command,
-        abi: u32,
-        workspace: &std::path::Path,
-    ) -> Hook {
-        let mut writes = write_layer(WriteLayer::ReadOnly { abi, workspace });
-        super::hook::pre_exec(cmd, move || match &mut writes {
-            Landlock::NotRequested => Ok(()),
-            Landlock::Refuse => Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
-            Landlock::Restrict(ruleset) => ruleset.restrict_self(),
-        });
-        Hook::Installed
-    }
-
     /// The denylist plus `syscalls`' classes, and who starts the child: a
     /// policy that denies exec gets a pin at or above `nofile` (the limit the
     /// hook sets), and the program pins `execveat` to it.
@@ -1540,6 +1611,41 @@ mod imp {
         let program = Program::workload(syscalls, pin).map_err(|e| e.to_string())?;
         Ok((program, start))
     }
+
+    /// The runtime's seal (#3461): non-dumpable, confirmed by reading it
+    /// back. Through `rustix`'s safe `prctl` wrappers, so no `unsafe`.
+    pub(super) fn seal_self() -> io::Result<bool> {
+        use rustix::process::{DumpableBehavior, dumpable_behavior, set_dumpable_behavior};
+        set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
+        if matches!(dumpable_behavior()?, DumpableBehavior::NotDumpable) {
+            Ok(true)
+        } else {
+            Err(io::Error::other("the process still reads as dumpable"))
+        }
+    }
+
+    /// The bare tier's one confinement (#3461): every descriptor above stdio
+    /// marked close-on-exec at the child's exec, so a descriptor the runtime
+    /// inherited without close-on-exec (from a careless launcher, or a build
+    /// tool's jobserver) does not pass on to a command the agent runs. No
+    /// `no_new_privs`, no limits, no filter: the tier's stated meaning stands.
+    ///
+    /// Under a read-only workspace (#2907) the same hook also installs the
+    /// write layer `layer` names, and still nothing else.
+    pub(super) fn sweep_inherited(cmd: &mut std::process::Command, layer: WriteLayer<'_>) -> Hook {
+        let mut writes = write_layer(layer);
+        super::hook::pre_exec(cmd, move || {
+            harden_child(
+                Isolation::None,
+                &mut Seccomp::NotRequested,
+                &mut Landlock::NotRequested,
+                &mut writes,
+                Restrict::SweepOnly,
+                &Start::ByStd,
+            )
+        });
+        Hook::Installed
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -1550,6 +1656,27 @@ mod imp {
     use super::{
         AppliedRlimits, FilesystemConfinement, Hook, Isolation, SyscallFilter, WriteLayer,
     };
+
+    /// No seal off Linux (#3461): there is no `PR_SET_DUMPABLE`, and a
+    /// same-uid process can read another's environment regardless, so the
+    /// runtime says so (`false`) rather than claiming one. `Result` for one
+    /// signature with the Linux seal, which can fail.
+    pub(super) fn seal_self() -> std::io::Result<bool> {
+        Ok(false)
+    }
+
+    /// No sweep off Linux: there is no hook here for the bare tier, and
+    /// installing the refusing one would refuse every bare spawn.
+    ///
+    /// A read-only workspace (#2907) cannot be held here either, so that
+    /// spawn is refused rather than run with its workspace writable.
+    pub(super) fn sweep_inherited(cmd: &mut std::process::Command, layer: WriteLayer<'_>) -> Hook {
+        match layer {
+            WriteLayer::None => {}
+            WriteLayer::ReadOnly { .. } => super::refuse(cmd),
+        }
+        Hook::NoneOnThisPlatform
+    }
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
@@ -1595,17 +1722,6 @@ mod imp {
                 });
             }
         }
-        Hook::NoneOnThisPlatform
-    }
-
-    /// No Landlock off Linux, so the write layer cannot be installed: the
-    /// spawn is refused rather than run with a writable workspace (#2907).
-    pub(super) fn install_write_layer_only(
-        cmd: &mut std::process::Command,
-        _abi: u32,
-        _workspace: &std::path::Path,
-    ) -> Hook {
-        super::refuse(cmd);
         Hook::NoneOnThisPlatform
     }
 }
@@ -2212,7 +2328,8 @@ mod tests {
         assert!(c.is_unsandboxed());
         assert_eq!(c.drop_uid(), None);
         assert!(!c.restricts());
-        assert!(!c.closes_inherited_fds());
+        // #3461: its one step of the hook, where there is a hook.
+        assert_eq!(c.closes_inherited_fds(), cfg!(target_os = "linux"));
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
                 ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent, LL, NO)
@@ -2220,6 +2337,22 @@ mod tests {
                 "{mode:?}"
             );
         }
+    }
+
+    /// #3461: the bare posture restricts nothing, yet on Linux its child
+    /// inherits no descriptor above stdio; off Linux it has no hook to do it.
+    #[test]
+    fn the_bare_posture_sweeps_inherited_fds_where_it_can() {
+        let c = ChildConfinement::decide(
+            ContainmentMode::Unsandboxed,
+            1000,
+            UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
+        )
+        .unwrap();
+        assert!(!c.restricts());
+        assert_eq!(c.closes_inherited_fds(), cfg!(target_os = "linux"));
     }
 
     /// #2572: only an installed hook claims hardening, and the claim carries

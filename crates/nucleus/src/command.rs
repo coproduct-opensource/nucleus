@@ -1031,6 +1031,21 @@ impl<'a> Executor<'a> {
         args: &[String],
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
+        let Some(key) = self.consent_required(command, args)? else {
+            return Ok(());
+        };
+        match approval {
+            Some(token) if token.matches(&key) => Ok(()),
+            Some(_) => Err(NucleusError::InvalidApproval { operation: key }),
+            None => Err(NucleusError::ApprovalRequired { operation: key }),
+        }
+    }
+
+    /// The approval running `args` needs here, if any: `Some(key)` when this
+    /// executor will ask for one, `None` when it will not. Refuses a `Never`
+    /// capability outright. The ONE decider for both [`Self::check_capability`]
+    /// and [`Self::consent`] (ADR 0007 G-1).
+    fn consent_required(&self, command: &str, args: &[String]) -> Result<Option<String>> {
         // Determine required capability based on command type
         let (operation, capability_name, level) = if is_git_push_command(args) {
             (Operation::GitPush, "git_push", self.capabilities.git_push)
@@ -1058,28 +1073,29 @@ impl<'a> Executor<'a> {
             });
         }
 
-        if self.obligations.requires(operation) {
-            // The command executor used to key approvals on the RAW COMMAND
-            // (`echo hello`) — no operation at all, and so a third vocabulary
-            // beside the kernel's and the sandbox's. Measured on a live pod:
-            // the kernel deferred `RunBash echo nucleus-agency`, a person
-            // approved exactly that, and this gate then asked for
-            // `echo nucleus-agency` and refused the retry as unapproved. Same
-            // defect as #2406, one layer over. One name, from
-            // `approval::approval_key`.
-            let key = crate::approval::approval_key(operation, command);
-            if let Some(token) = approval {
-                if token.matches(&key) {
-                    Ok(())
-                } else {
-                    Err(NucleusError::InvalidApproval { operation: key })
-                }
-            } else {
-                Err(NucleusError::ApprovalRequired { operation: key })
-            }
-        } else {
-            Ok(())
-        }
+        // The command executor used to key approvals on the RAW COMMAND
+        // (`echo hello`) — no operation at all, and so a third vocabulary
+        // beside the kernel's and the sandbox's. Measured on a live pod: the
+        // kernel deferred `RunBash echo nucleus-agency`, a person approved
+        // exactly that, and this gate then asked for `echo nucleus-agency` and
+        // refused the retry as unapproved. Same defect as #2406, one layer
+        // over. One name, from `approval::approval_key`.
+        Ok(self
+            .obligations
+            .requires(operation)
+            .then(|| crate::approval::approval_key(operation, command)))
+    }
+
+    /// Which approval [`Self::run_args`] will ask for before running `args`:
+    /// `Some(key)` when this executor will ask, `None` when it will not. It
+    /// refuses now what the run would refuse at its argv and capability
+    /// checks. It asks no approver and spends nothing, so a caller can collect
+    /// every approval the run needs and spend them together immediately
+    /// before it (#3446).
+    pub fn consent(&self, args: &[String]) -> Result<Option<String>> {
+        let display_command = args.join(" ");
+        refuse_bad_argv(args, &display_command)?;
+        self.consent_required(&display_command, args)
     }
 
     fn max_duration_for_run(&self) -> Option<Duration> {

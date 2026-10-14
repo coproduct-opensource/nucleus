@@ -79,10 +79,10 @@ pub use budget::AtomicBudget;
 pub use command::{BudgetModel, ContainmentMode, Executor};
 pub use error::{NucleusError, Result};
 pub use hardening::{
-    AppliedRlimits, ChildConfinement, ChildUid, DEFAULT_CHILD_UID, FilesystemConfinement, Hardened,
-    InstalledFilter, LandlockSupport, LandlockWaiver, MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector,
-    SpawnHardening, SyscallFilter, Unhardened, UnsandboxedOptIn, WorkspaceHold, WorkspaceWrites,
-    runtime_uid,
+    AppliedRlimits, ChildConfinement, ChildUid, DEFAULT_CHILD_UID, EnvironmentReach,
+    FilesystemConfinement, Hardened, InstalledFilter, LandlockSupport, LandlockWaiver,
+    MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector, RuntimeSeal, SpawnHardening, SyscallFilter,
+    Unhardened, UnsandboxedOptIn, WorkspaceHold, WorkspaceWrites, runtime_uid, seal_runtime,
 };
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};
