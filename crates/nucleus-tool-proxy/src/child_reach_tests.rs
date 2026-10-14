@@ -4,6 +4,29 @@ fn me() -> u32 {
     nucleus::runtime_uid()
 }
 
+/// Run the calling test alone, in a fresh copy of this test binary: it seals
+/// the process (`nucleus::seal_runtime`), and the seal is process-wide. In a
+/// harness that runs every test in one process (`cargo test`, coverage), a
+/// test beside it would lose `/proc/<pid>/environ` too. `true` in the copy,
+/// where the body runs; `false` in the caller once the copy passed.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test-only self-execution isolates the process-wide seal from other tests"
+)]
+fn alone(test: &str) -> bool {
+    const CHILD: &str = "NUCLEUS_TEST_SEAL_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        return true;
+    }
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", test, "--nocapture"])
+        .env(CHILD, "1")
+        .status()
+        .unwrap();
+    assert!(status.success(), "{test} failed in its own process");
+    false
+}
+
 /// A uid that owns nothing the harness made.
 fn stranger() -> u32 {
     me().wrapping_add(4242)
@@ -155,6 +178,12 @@ fn a_symlink_is_followed_to_the_file_it_names() {
 /// the runtime is unsealed.
 #[test]
 fn argv_is_reached_by_every_child_and_the_environment_only_unsealed() {
+    // It seals the process; see `alone`.
+    if !alone(
+        "child_reach::tests::argv_is_reached_by_every_child_and_the_environment_only_unsealed",
+    ) {
+        return;
+    }
     for child in [ChildUid::SharedWithRuntime, ChildUid::Distinct(stranger())] {
         let refused = admit(vec![child], held(Exposure::Secret, At::Argv)).unwrap_err();
         assert!(refused.contains("command line"), "{refused}");
@@ -401,6 +430,10 @@ async fn a_workload_child_reaches_no_secret_or_durable_file() {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn sealing_closes_the_environment_to_a_same_uid_child() {
+    // It seals the process; see `alone`.
+    if !alone("child_reach::tests::sealing_closes_the_environment_to_a_same_uid_child") {
+        return;
+    }
     let workspace = tempfile::tempdir().unwrap();
     let probe = || {
         String::from(
