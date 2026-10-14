@@ -996,3 +996,9 @@ mod request_ceiling_tests {
         }
     }
 }
+
+/// THROWAWAY (A-19 red-first for #3480): an untested function, so every mutant of it survives.
+/// Reverted before merge.
+pub fn mutants_red_first_probe(x: u32) -> u32 {
+    x.wrapping_add(7)
+}
