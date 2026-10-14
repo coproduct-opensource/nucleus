@@ -996,23 +996,3 @@ mod request_ceiling_tests {
         }
     }
 }
-
-/// THROWAWAY (A-19 for the sharded Mutation Testing gate): a function with several mutants, all
-/// killed by the test below. Reverted before merge.
-pub fn mutants_shard_probe(a: u32, b: u32) -> u32 {
-    if a > b {
-        a - b
-    } else {
-        b + a
-    }
-}
-
-#[cfg(test)]
-mod mutants_shard_probe_tests {
-    #[test]
-    fn the_probe_is_pinned() {
-        assert_eq!(super::mutants_shard_probe(5, 3), 2);
-        assert_eq!(super::mutants_shard_probe(3, 5), 8);
-        assert_eq!(super::mutants_shard_probe(4, 4), 8);
-    }
-}
