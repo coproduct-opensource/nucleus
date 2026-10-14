@@ -1450,8 +1450,9 @@ mod tests {
     /// Driven red by putting `Command::new("ip")` back into `configure_network`.
     #[test]
     fn the_only_programs_pid1_starts_are_the_guest_layers() {
-        const SOURCES: [(&str, &str); 6] = [
+        const SOURCES: [(&str, &str); 7] = [
             ("main.rs", include_str!("main.rs")),
+            ("decisions.rs", include_str!("decisions.rs")),
             ("identity.rs", include_str!("identity.rs")),
             ("lib.rs", include_str!("lib.rs")),
             ("boot.rs", include_str!("boot.rs")),

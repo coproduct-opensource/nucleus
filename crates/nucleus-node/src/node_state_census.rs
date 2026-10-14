@@ -178,7 +178,7 @@ fn every_node_state_field_has_a_cross_pod_class() {
     let linux = usize::from(cfg!(target_os = "linux"));
     // Pinned in both directions: a reclassification is an edit here, in the
     // open. `Unclassified` may only shrink.
-    assert_eq!(count(Surface::Structural), 32 + local);
+    assert_eq!(count(Surface::Structural), 33 + local);
     assert_eq!(count(Surface::Secret), 4);
     assert_eq!(count(Surface::PerPod), 1);
     assert_eq!(count(Surface::LineageScoped), 2);
@@ -186,5 +186,5 @@ fn every_node_state_field_has_a_cross_pod_class() {
     assert_eq!(count(Surface::TenantShared), 1);
     assert_eq!(count(Surface::Contention), 8 + linux);
     assert_eq!(count(Surface::Unclassified), 2);
-    assert_eq!(entries.len(), 52 + local + linux);
+    assert_eq!(entries.len(), 53 + local + linux);
 }
