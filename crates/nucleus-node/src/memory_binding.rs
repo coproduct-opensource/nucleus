@@ -12,6 +12,10 @@
 //!   runs of one space share the base and never each other's writes. A publish takes the
 //!   branch's records that are not in the delivered base as its patch.
 //!
+//! Until records carry dependency-stamped labels (Program C, C1), a binding is minted, and a
+//! publish admitted, only for a lineage audience: `Registry::cross_run_reach` refuses every
+//! other one by name before anything is delivered or published (see `memory_space`).
+//!
 //! Nothing here assumes the run shares a filesystem with the space: what crosses is one file,
 //! written by the node and read back by the node. (Firecracker still refuses memory, #3100.)
 //!
@@ -28,7 +32,8 @@
 //! binding. What still depends on others is declared, not hidden:
 //!
 //! * minting a publishing binding is refused when the space has no unreserved bytes left
-//!   (`QuotaFullyAllocated`): a bind-time availability channel, receipted by its absence;
+//!   (`QuotaFullyAllocated`): a bind-time availability channel, receipted by its absence. The
+//!   refusal is one bit: it names no unreserved byte count, which would count Secret bytes;
 //! * a stale base (`StaleBase`) says the head moved: a version count, which a rebind shows
 //!   anyway;
 //! * a keyed conflict or a lowered label says a record with the same content hash as one the
@@ -312,6 +317,7 @@ impl Registry {
             .policies
             .get(&policy_id)
             .ok_or(MemoryRefusal::UnknownPolicy(policy_id))?;
+        self.cross_run_reach(space, &policy.audience)?;
         let decided = recite(policy, &space_id, citer, now, policy.may_publish)?;
         let policy_ends = match policy.expiry {
             Expiry::At(at) => at.saturating_sub(1),
@@ -350,11 +356,9 @@ impl Registry {
                 .bytes()
                 .map_err(journal_error)?
                 .saturating_add(self.reserved(space, now));
-            let free = space.quota_bytes.saturating_sub(used);
-            if allocation > free {
+            if allocation > space.quota_bytes.saturating_sub(used) {
                 return Err(MemoryRefusal::QuotaFullyAllocated {
                     space: space_id.reference(),
-                    free,
                     allocation,
                 }
                 .into());
@@ -495,6 +499,7 @@ impl Registry {
         }
         let policy = self.policies.get(&held.policy).ok_or(unknown)?;
         policy_liveness(policy, space, now)?;
+        self.cross_run_reach(space, &policy.audience)?;
         let publishes = match held.mode {
             Mode::Read => false,
             Mode::ReadPropose => held.may_publish,
