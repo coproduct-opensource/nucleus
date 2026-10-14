@@ -219,6 +219,7 @@ impl NodeDecisions {
     }
 
     /// A local pod's tool-proxy reads the node's own files.
+    #[cfg(feature = "local-driver")]
     pub(crate) fn local_env(&self) -> [(&'static str, String); 3] {
         [
             (TRUST_ROOTS_ENV, self.roots_path.display().to_string()),

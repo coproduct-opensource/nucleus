@@ -142,9 +142,12 @@ fn the_spec_reply_carries_the_material_beside_the_spec() {
 fn each_driver_names_where_its_tool_proxy_reads_the_material() {
     let n = node();
     let d = loaded(&n);
-    let local = d.local_env();
-    assert_eq!(local[0].0, TRUST_ROOTS_ENV);
-    assert_eq!(PathBuf::from(&local[0].1), n.roots.canonicalize().unwrap());
+    #[cfg(feature = "local-driver")]
+    {
+        let local = d.local_env();
+        assert_eq!(local[0].0, TRUST_ROOTS_ENV);
+        assert_eq!(PathBuf::from(&local[0].1), n.roots.canonicalize().unwrap());
+    }
     let env: Vec<String> = d.container_env().collect();
     assert!(env.contains(&format!(
         "{TRUST_ROOTS_ENV}={}",
