@@ -168,6 +168,16 @@ pub(crate) enum EvalCellRefused {
          took of its kernel, rootfs and config (ADR 0016)"
     )]
     LaunchUnverified(String),
+    /// The SVID verifies, but nothing past the node CA vouches for the launch
+    /// (ADR 0016 S3): no TPM quote over it appraises attested.
+    #[error(
+        "the eval-cell pod was not started: its launch is not rooted in this node's TPM ({0}). \
+         An eval cell is served only an SVID whose launch quote (OID 1.3.6.1.4.1.57212.1.7) this \
+         node's TPM took over the SVID's key and measurement, and which appraises attested \
+         against the operator's reference and AK anchor; the node CA's signature alone is a \
+         software root (ADR 0016 S3)"
+    )]
+    LaunchNotTpmRooted(String),
 }
 
 impl From<EvalCellRefused> for ApiError {
@@ -332,26 +342,72 @@ pub(crate) enum LaunchIdentity<'a> {
     NotMeasured(String),
     /// Issuing the attested SVID failed.
     NotIssued(String),
-    /// The SVID the node will serve, the measurement it took, and its CA's roots.
+    /// The SVID the node will serve, the measurement it took, its CA's roots,
+    /// and what the node roots a launch in beyond its CA.
     Issued {
         measured: &'a nucleus_identity::LaunchAttestation,
         leaf_der: &'a [u8],
         trust_bundle: &'a nucleus_identity::TrustBundle,
+        quotes: &'a dyn OwnLaunchQuotes,
     },
 }
 
-/// At boot, before the VMM starts: an eval cell is served only an SVID that
-/// verifies (ADR 0016 D3). A standard pod is not checked, and keeps today's
-/// fallback to a plain SVID.
+/// What this node brings to root a launch in its own TPM (ADR 0016 S3): its
+/// own appraisal inputs, and the launch quotes it stored by digest.
 ///
-/// The check is `nucleus_identity::VerifiedLaunch::verify`, the one decider every
-/// relying party calls (G-1): the leaf chains to the node's CA, and carries a
-/// launch claim. Then the claim must be exactly the measurement the node took:
-/// a cached certificate from another launch is not this one.
+/// The one production implementation is
+/// [`crate::node_evidence::NodePlatformSource`], the same source the node's
+/// self-appraisal and its public evidence listener read (G-1). A trait so the
+/// decider below is tested against a quote a TPM really took (the swtpm
+/// fixture) on a machine with no TPM.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) trait OwnLaunchQuotes {
+    /// The reference, AK anchors and binding the node appraises its own quotes
+    /// against, now.
+    ///
+    /// # Errors
+    ///
+    /// The node has no TPM, or its TPM has no reference to appraise against;
+    /// each named.
+    fn appraisal(&self) -> Result<OwnQuoteAppraisal<'_>, String>;
+
+    /// The launch quote document the node stored under `digest`.
+    ///
+    /// # Errors
+    ///
+    /// The node has no TPM, or holds no document by that digest.
+    fn document(&self, digest: &[u8; 32]) -> Result<Vec<u8>, String>;
+}
+
+/// The node's own inputs to [`nucleus_identity::LaunchQuotePolicy`]. Built
+/// from the node's configuration, never from the quote.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) struct OwnQuoteAppraisal<'a> {
+    pub(crate) binding: nucleus_node_evidence::KeyBinding,
+    pub(crate) reference: &'a nucleus_node_evidence::ReferenceManifest,
+    pub(crate) anchors: &'a nucleus_node_evidence::AnchorPolicy,
+    /// Unix seconds.
+    pub(crate) now: i64,
+}
+
+/// At boot, before the VMM starts: an eval cell is served only an SVID whose
+/// launch this node's TPM roots (ADR 0016 D3, S3). A standard pod is not
+/// checked, and keeps today's fallback to a plain SVID.
+///
+/// The check is `nucleus_identity::VerifiedLaunch::verify_tpm`, the one decider
+/// every relying party calls (G-1), with the node's own reference, AK anchors
+/// and binding: the leaf chains to the node's CA and carries a launch claim; it
+/// names a launch quote (`.1.7`); the node holds that document; the quote was
+/// taken over this leaf's key and measurement; and it appraises `Attested`.
+/// Only [`nucleus_identity::LaunchRoot::Tpm`] admits: the CA-only root is a
+/// refusal by name. Then the claim must be exactly the measurement the node
+/// took: a cached certificate from another launch is not this one.
 ///
 /// # Errors
 ///
-/// [`EvalCellRefused::LaunchUnverified`], naming the failure.
+/// [`EvalCellRefused::LaunchUnverified`] when the SVID itself does not verify,
+/// [`EvalCellRefused::LaunchNotTpmRooted`] when nothing past the CA roots it;
+/// each naming the failure.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn require_verified_launch(
     profile: IsolationProfile,
@@ -375,9 +431,58 @@ pub(crate) fn require_verified_launch(
             measured,
             leaf_der,
             trust_bundle,
+            quotes,
         } => {
-            let verified = nucleus_identity::VerifiedLaunch::verify(leaf_der, trust_bundle)
+            // The node's own inputs first: a node with no TPM is refused for that, by name,
+            // before anything is read off the leaf.
+            let own = quotes
+                .appraisal()
+                .map_err(EvalCellRefused::LaunchNotTpmRooted)?;
+            // The SVID itself, so a leaf this node's CA did not sign is refused as that and not
+            // as a missing TPM root. `verify_tpm` below repeats this check: it is the one
+            // decider, and the root it returns is the one that admits.
+            nucleus_identity::VerifiedLaunch::verify(leaf_der, trust_bundle)
                 .map_err(|e| EvalCellRefused::LaunchUnverified(e.to_string()))?;
+            // Read only to find the document; `verify_tpm` compares it against what it is handed.
+            let digest = nucleus_identity::extract_launch_quote_digest(leaf_der)
+                .map_err(|e| EvalCellRefused::LaunchUnverified(e.to_string()))?
+                .ok_or_else(|| {
+                    EvalCellRefused::LaunchNotTpmRooted(
+                        "the SVID names no launch quote, so only the node CA vouches for it".into(),
+                    )
+                })?;
+            let document = quotes
+                .document(&digest)
+                .map_err(EvalCellRefused::LaunchNotTpmRooted)?;
+            // Exhaustive, so an input added to the node's appraisal cannot go unused (E-1).
+            let OwnQuoteAppraisal {
+                binding,
+                reference,
+                anchors,
+                now,
+            } = &own;
+            let verified = nucleus_identity::VerifiedLaunch::verify_tpm(
+                leaf_der,
+                trust_bundle,
+                &document,
+                &nucleus_identity::LaunchQuotePolicy {
+                    expected_binding: binding,
+                    reference,
+                    anchors,
+                    now: *now,
+                },
+            )
+            .map_err(|e| EvalCellRefused::LaunchNotTpmRooted(e.to_string()))?;
+            // Exhaustive, no `_` arm (E-2): a root added later does not admit a cell until
+            // someone says it may.
+            match verified.root() {
+                nucleus_identity::LaunchRoot::Tpm(_) => {}
+                nucleus_identity::LaunchRoot::NodeCa => {
+                    return Err(EvalCellRefused::LaunchNotTpmRooted(
+                        "the launch verifies only to the node CA".into(),
+                    ));
+                }
+            }
             // The three measurements, compared by the relying party's own rule. Not `==`
             // on the whole value: the certificate keeps the time to the second, the
             // measurement to the nanosecond, so equality would refuse every launch.
