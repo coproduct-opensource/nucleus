@@ -15,7 +15,7 @@
 //! **fail-closed** to the most-restrictive label (conf-join, integ-meet,
 //! derivation-join) — a deterministic, convergent lattice merge — rather than
 //! converging on the more-trusting of the two. The writer stamps (Program C, C1)
-//! merge the same way ([`LabelStamp::join`]): an unstamped copy of a stamped
+//! merge the same way ([`crate::LabelStamp::join`]): an unstamped copy of a stamped
 //! record is unknown, so the merge is stamped Secret, never the stamped copy's
 //! lower floor.
 
@@ -27,7 +27,7 @@ use crate::hash::ContentHash;
 use crate::recompute::{
     RecomputeMemory, RecomputeVerdict, conf_join, integ_meet, verify_admission,
 };
-use crate::record::{LabelStamp, MemoryRecord};
+use crate::record::MemoryRecord;
 
 /// Fail-closed label merge for the same content under divergent labels: the
 /// most-restrictive label — confidentiality joined up, integrity met down,
@@ -43,7 +43,7 @@ fn most_restrictive(a: MemoryLabel, b: MemoryLabel) -> MemoryLabel {
 }
 
 /// The fail-closed merge of two admitted copies of one content hash: labels by
-/// [`most_restrictive`], stamps by [`LabelStamp::join`], and the merged label's
+/// [`most_restrictive`], stamps by [`crate::LabelStamp::join`], and the merged label's
 /// confidentiality raised to the merged stamp's floor, so the result re-derives
 /// wherever either copy did. A join on (label, stamp): the floor is monotone in
 /// the stamp, so the merge stays idempotent, commutative and associative.
