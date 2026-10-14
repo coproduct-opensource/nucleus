@@ -71,6 +71,23 @@ async fn no_default_signs_a_weaker_certificate_than_the_one_asked_for() {
                 attestation: &att,
                 mediator_key_sha256: None,
                 launch_quote_sha256: Some(&[7; 32]),
+                isolation_profile: crate::attestation::SvidProfile::Standard,
+            },
+        )
+        .await,
+        // An eval-cell profile no older method can state: refused, never dropped
+        // into a leaf a relying party would hold to the standard handshake rule
+        // (ADR 0016 D4).
+        ca.sign_measured_csr(
+            csr,
+            key,
+            &identity,
+            ttl,
+            &MeasuredClaims {
+                attestation: &att,
+                mediator_key_sha256: None,
+                launch_quote_sha256: None,
+                isolation_profile: crate::attestation::SvidProfile::EvalCell,
             },
         )
         .await,

@@ -171,6 +171,27 @@ pub const OID_NUCLEUS_LAUNCH_QUOTE_BYTES: &[u8] = &[
 
 pub const OID_NUCLEUS_LAUNCH_QUOTE_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 7];
 
+/// OID for the isolation profile a measured launch was admitted under (same PEN
+/// arc, component .1.8).
+///
+/// OID: 1.3.6.1.4.1.57212.1.8
+/// - Component: .1.8 (attestation.isolation_profile)
+///
+/// The value is the DER `UTF8String` of the profile's name
+/// (`attestation::SvidProfile::as_str`): `standard` or `eval-cell`. It is
+/// CA-signed, so a relying party with no node state knows the peer is an eval
+/// cell and holds its handshake to that (ADR 0016 D4): an eval-cell SVID with no
+/// verified launch fails the handshake. Non-critical, so a verifier that
+/// predates it (a pinned guest) ignores it rather than refusing the leaf.
+///
+/// **INTERNAL / no interop commitment**, like the rest of the 57212 arc.
+pub const OID_NUCLEUS_ISOLATION_PROFILE_BYTES: &[u8] = &[
+    0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbe, 0x7c, // 1.3.6.1.4.1.57212
+    0x01, 0x08, // .1.8 (attestation.isolation_profile)
+];
+
+pub const OID_NUCLEUS_ISOLATION_PROFILE_TUPLE: &[u64] = &[1, 3, 6, 1, 4, 1, 57212, 1, 8];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,6 +318,31 @@ mod tests {
             OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES,
         ] {
             assert_ne!(OID_NUCLEUS_LAUNCH_QUOTE_BYTES, other);
+        }
+    }
+
+    #[test]
+    fn isolation_profile_oid_is_its_own_component_of_the_arc() {
+        assert_eq!(
+            &OID_NUCLEUS_ISOLATION_PROFILE_BYTES[..8],
+            &OID_NUCLEUS_ATTESTATION_BYTES[..8]
+        );
+        assert_eq!(OID_NUCLEUS_ISOLATION_PROFILE_BYTES[8..], [0x01, 0x08]);
+        assert_eq!(
+            OID_NUCLEUS_ISOLATION_PROFILE_TUPLE[..8],
+            OID_NUCLEUS_ATTESTATION_TUPLE[..8]
+        );
+        assert_eq!(OID_NUCLEUS_ISOLATION_PROFILE_TUPLE[8], 8);
+        for other in [
+            OID_NUCLEUS_ATTESTATION_BYTES,
+            OID_NUCLEUS_PERMISSION_FINGERPRINT_BYTES,
+            OID_NUCLEUS_TPM_RESIDENCY_BYTES,
+            OID_NUCLEUS_MEDIATION_KEY_BINDING_BYTES,
+            OID_NUCLEUS_TPM_HW_ROOTING_BYTES,
+            OID_NUCLEUS_UNMEASURED_LAUNCH_BYTES,
+            OID_NUCLEUS_LAUNCH_QUOTE_BYTES,
+        ] {
+            assert_ne!(OID_NUCLEUS_ISOLATION_PROFILE_BYTES, other);
         }
     }
 }

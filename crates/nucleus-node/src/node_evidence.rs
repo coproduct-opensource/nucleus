@@ -1482,7 +1482,11 @@ mod tests {
                 .unwrap();
             let started = std::time::Instant::now();
             let cert = manager
-                .fetch_attested_certificate(&id, &pod.to_string())
+                .fetch_attested_certificate(
+                    &id,
+                    &pod.to_string(),
+                    nucleus_identity::SvidProfile::Standard,
+                )
                 .await
                 .expect("a quoted launch is issued");
             issue_ms.push(started.elapsed().as_secs_f64() * 1000.0);

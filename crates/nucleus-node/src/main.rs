@@ -2920,19 +2920,20 @@ async fn serve_grpc(
     // practice. Asserted rather than assumed: HMAC has no fallback any more
     // (Move B), so a caller lacking a client cert would otherwise be
     // silently unauthenticatable instead of loudly refused at startup.
-    let mtls_enabled = tls_config.mtls_enabled();
-    if !mtls_enabled {
+    let Some(client_trust) = tls_config.client_trust_bundle().cloned() else {
         return Err(ApiError::Driver(
             "gRPC TLS is configured without a client CA (--grpc-tls-ca) — with no HMAC \
              fallback, no caller could ever authenticate. Pass --grpc-tls-ca, or omit \
              --grpc-tls-cert/--grpc-tls-key to use the self-issued mTLS default."
                 .to_string(),
         ));
-    }
+    };
 
     let service =
         NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
-            let auth_ctx = auth::authenticate_grpc_request(&req)
+            // The peer's launch is admitted against the listener's own client CA
+            // before any handler runs (ADR 0016 D4).
+            let auth_ctx = auth::authenticate_grpc_request(&req, &client_trust)
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers

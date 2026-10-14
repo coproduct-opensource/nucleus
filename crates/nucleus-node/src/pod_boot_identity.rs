@@ -209,6 +209,19 @@ fn not_attested(id: uuid::Uuid, why: &str) -> ApiError {
     ))
 }
 
+/// The profile the pod's SVID states (OID `.1.8`), read from the one decider of
+/// the spec's profile. Exhaustive (E-2): a profile added to the spec does not
+/// compile here until it says what its SVID claims.
+fn svid_profile(
+    profile: nucleus_spec::isolation_profile::IsolationProfile,
+) -> nucleus_identity::SvidProfile {
+    use nucleus_spec::isolation_profile::IsolationProfile;
+    match profile {
+        IsolationProfile::Standard => nucleus_identity::SvidProfile::Standard,
+        IsolationProfile::EvalCell => nucleus_identity::SvidProfile::EvalCell,
+    }
+}
+
 pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiError> {
     let Inputs {
         state,
@@ -283,7 +296,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                 // Issue and register the attested cert: the served FETCH_SVID, and
                 // every re-issue after it, carries the measurement.
                 match manager
-                    .fetch_attested_certificate(&identity, &pod_id_str)
+                    .fetch_attested_certificate(&identity, &pod_id_str, svid_profile(profile))
                     .await
                 {
                     Ok(cert) => crate::eval_cell::require_verified_launch(

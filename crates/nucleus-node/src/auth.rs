@@ -50,6 +50,10 @@ pub enum AuthError {
     InvalidSignature,
     #[error("no client certificate presented (mTLS is mandatory; there is no HMAC fallback)")]
     NoClientCertificate,
+    /// The client certificate chained, and its launch did not verify
+    /// (`nucleus_identity::admit_peer_launch`, ADR 0016 D4).
+    #[error("peer launch refused: {0}")]
+    LaunchRefused(String),
 }
 
 /// HMAC-SHA256 verify. NOT part of the CLI/tool-proxy/node auth tier Move B
@@ -574,25 +578,6 @@ pub fn extract_spiffe_id_from_cert(cert_der: &[u8]) -> Option<String> {
     nucleus_identity::spiffe_uri_from_svid(cert_der).ok()
 }
 
-/// Extracts SPIFFE ID from a tonic Request's peer certificates.
-///
-/// This is used for gRPC mTLS authentication. Returns `None` if:
-/// - No TLS connection info is available
-/// - No peer certificates were provided
-/// - The certificate doesn't contain a SPIFFE ID
-pub fn extract_spiffe_id_from_request<T>(request: &tonic::Request<T>) -> Option<String> {
-    // Use tonic's built-in peer_certs() method which extracts from TlsConnectInfo
-    let peer_certs = request.peer_certs()?;
-
-    if peer_certs.is_empty() {
-        return None;
-    }
-
-    // The first certificate is the end-entity (client) certificate
-    let client_cert_der = peer_certs[0].as_ref();
-    extract_spiffe_id_from_cert(client_cert_der)
-}
-
 /// Authenticate a gRPC request via mTLS.
 ///
 /// Move B: this used to try mTLS first and fall back to HMAC when no client
@@ -600,9 +585,27 @@ pub fn extract_spiffe_id_from_request<T>(request: &tonic::Request<T>) -> Option<
 /// requires a client certificate unconditionally (`serve_grpc` refuses to
 /// start otherwise), so a request with no extractable SPIFFE ID is refused
 /// here rather than silently degrading to a weaker check.
-pub fn authenticate_grpc_request<T>(request: &tonic::Request<T>) -> Result<AuthContext, AuthError> {
+///
+/// The peer's launch is admitted first, by the one decider every mTLS acceptor
+/// runs (`nucleus_identity::admit_peer_launch`, ADR 0016 D4), against
+/// `trust_bundle`, the bundle the listener's client CA came from. Here it runs
+/// per request, in the interceptor, before any handler: tonic's
+/// `ServerTlsConfig` takes no custom client verifier, so this acceptor is the
+/// census's one `PerRequest` site until it serves over a `TlsServerConfig`
+/// acceptor.
+pub fn authenticate_grpc_request<T>(
+    request: &tonic::Request<T>,
+    trust_bundle: &nucleus_identity::TrustBundle,
+) -> Result<AuthContext, AuthError> {
+    let peer_certs = request.peer_certs().ok_or(AuthError::NoClientCertificate)?;
+    let (leaf, rest) = peer_certs
+        .split_first()
+        .ok_or(AuthError::NoClientCertificate)?;
+    let intermediates: Vec<&[u8]> = rest.iter().map(|c| c.as_ref()).collect();
+    nucleus_identity::admit_peer_launch(leaf.as_ref(), &intermediates, trust_bundle)
+        .map_err(|e| AuthError::LaunchRefused(e.to_string()))?;
     let spiffe_id =
-        extract_spiffe_id_from_request(request).ok_or(AuthError::NoClientCertificate)?;
+        extract_spiffe_id_from_cert(leaf.as_ref()).ok_or(AuthError::NoClientCertificate)?;
     tracing::debug!(spiffe_id = %spiffe_id, "authenticated via mTLS with SPIFFE ID");
     Ok(AuthContext::from_spiffe(spiffe_id))
 }
