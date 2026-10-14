@@ -8,7 +8,7 @@
 //! mint for another. A pod is never a tenant root, and neither is a CI/CD identity: both are
 //! refused before the registry is read (`Operation::MemoryShare` refuses them at the route too).
 use axum::extract::{Extension, Path, State};
-use axum::routing::{get, post};
+use axum::routing::post;
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

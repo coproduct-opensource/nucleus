@@ -280,7 +280,31 @@ What each status means, and what it deliberately does not:
   `POD_LIST` over its own vsock, which the socket authenticates, and the host
   asserts view(A) ⊇ {A, C} without B, view(B) holds B without A or C, each root's
   view holds itself and not the other root, and both are strict subsets of the
-  operator view. What remains is the M6 plan below: a compile-checked census of
+  operator view. (h) **Persistent memory is lineage-scoped** (owner decision
+  2026-10-13). A store used to be keyed by `sha256(owner)/namespace`, so two
+  pods of one tenant in unrelated lineages — siblings the pod API keeps apart —
+  were handed the same journal: a cross-pod flow outside lineage. A store is now
+  keyed by (tenant, lineage root, namespace) (`memory_provisioning.rs`), where
+  the lineage root is folded at creation from the same recorded parent edge
+  `caller_may_manage` reads. Sharing across lineages is possible only through a
+  declared `SharedMemory` grant (`memory_share.rs`): minted by the tenant's root
+  identity over `/v1/memory/grants`, naming the share, its namespace, its
+  readers and writers and an explicit expiry, narrowable but never widened, and
+  revoked by epoch. A pod reaches a share only by presenting the grant's id, and
+  a reader is given a snapshot, so nothing it writes flows back. Every attach,
+  mint, narrowing, revocation and migration is a node-signed receipt naming the
+  grant in the node's own `lifecycle.log`, under its own signature domain. The
+  persisted IFC labels are untouched, so taint survives the crossing. Stores
+  left in the old layout were shared by construction; at start each becomes a
+  migrated grant (writers: the tenant root, until revoked), receipted once and
+  never re-widened after a revocation. Tests:
+  `non_lineage_siblings_of_one_tenant_are_handed_separate_stores` (reds on the
+  owner-keyed layout), `a_grant_attaches_exactly_its_named_readers_and_writers`,
+  `an_attenuated_grant_cannot_widen_its_parent`,
+  `migration_declares_each_legacy_store_once_and_never_rewidens`. This does not
+  promote C2. The node sees an attach, not each read or write, so per-operation
+  attribution rests on the pod's own records. The Lean model of the memory
+  surface is a later PR. What remains is the M6 plan below: a compile-checked census of
   the node's fields and a classification of the unclassified ones; mechanizing
   lockdown delivery and the remaining fields; linking the model to the runtime by
   extraction rather than by the parity test in (c); and the owner's sign-off.
@@ -357,11 +381,12 @@ What each status means, and what it deliberately does not:
   2. **Classify the 22 new fields** in the revelation form the KILL assessment
      prescribes: what B's action reveals to A, not what shape the counter has.
      - Expected classes:
-       - availability: `node_capacity`, `staging_budget`, `memory`
+       - availability: `node_capacity`, `staging_budget`
        - cardinality: `decision_epochs`, which reveals a node-wide count of
          decision channels
        - lineage-keyed and needing a model: `authority`, `eval_cells`,
-         `lockdowns`
+         `lockdowns`, and `memory`, whose stores are keyed by lineage root
+         and cross lineages only under a receipted `SharedMemory` grant (h)
      - Size: S–M, a reading pass.
      - **DoD:** no field is left without a stated revelation.
      - **Red:** a field whose projection varies with another pod's *contents*
@@ -393,7 +418,7 @@ What each status means, and what it deliberately does not:
          Not yet mechanized.
        - **Red:** the pre-#2203 broadcast `delivery` breaks local-respect.
      - **Availability, cardinality and contention fields (S):** the pools,
-       `node_capacity`, `staging_budget`, `memory`, `network_allocator`,
+       `node_capacity`, `staging_budget`, `network_allocator`,
        `decision_epochs`, `docker` and `http_client`. List them in Lean as an
        `Excluded` enumeration that step 1's census must equal.
        - **Red:** a census field that is in neither list.

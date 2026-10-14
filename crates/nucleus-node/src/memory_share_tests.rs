@@ -366,7 +366,6 @@ fn the_registry_survives_a_restart_and_refuses_a_malformed_file() {
         Err(Refusal::Revoked { .. })
     ));
     assert_eq!(reloaded.grants_of(&tenant()).len(), 1);
-    assert!(reloaded.grant_of(&tenant(), grant).is_some());
     std::fs::write(dir.path().join(REGISTRY_FILE), b"{\"schema\":\"other\"}").unwrap();
     assert!(Registry::load(dir.path()).is_err());
 }

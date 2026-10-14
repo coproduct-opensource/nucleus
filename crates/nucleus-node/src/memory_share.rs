@@ -750,14 +750,6 @@ impl Registry {
             .collect()
     }
 
-    /// The grant `id` as the issuing API reports it, if `tenant` holds it.
-    pub(crate) fn grant_of<'a>(&'a self, tenant: &TenantKey, id: Uuid) -> Option<GrantView<'a>> {
-        self.grants
-            .get(&id)
-            .filter(|g| &g.tenant == tenant)
-            .map(SharedMemoryGrant::view)
-    }
-
     /// Convert every store in the owner-keyed layout under `root` into a migrated grant, once,
     /// in memory: [`Self::commit_migration`] writes it after the receipts are kept.
     ///
