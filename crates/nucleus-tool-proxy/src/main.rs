@@ -1218,6 +1218,18 @@ async fn main() -> Result<(), ApiError> {
         eprintln!("FATAL: {why}");
         std::process::exit(78);
     }
+    let declared = children.declared(&held);
+    if !declared.is_empty() {
+        console_line(&format!(
+            "[nucleus-tool-proxy] bare host tier: a child at this proxy's uid can read or \
+             replace {}",
+            declared
+                .iter()
+                .map(|h| h.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let runtime = pod_mgmt::build_runtime(
         &spec,
         containment,

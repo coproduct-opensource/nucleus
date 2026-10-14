@@ -43,8 +43,10 @@ pub(crate) struct ChildReach {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Exposure {
     /// Reading it grants authority beyond this session: a private key, a
-    /// shared secret, a bearer credential. No child may read or replace it.
-    /// The bare host tier may not hold one in a file at all.
+    /// shared secret, a bearer credential. No separated child may read or
+    /// replace it. On the bare host tier: in the environment only while the
+    /// runtime is sealed; on the command line never; in a launcher's file as
+    /// the named, declared exposure (see `bare_tier_may_hold`).
     Secret,
     /// Authority that outlives this process: a ledger, a replay record, a
     /// journal, trust roots. No child may write or replace it. The bare host
@@ -161,6 +163,22 @@ impl ChildReach {
         }
         Ok(())
     }
+
+    /// The held files a child at the proxy's own uid reaches and
+    /// [`Self::admit`] lets the proxy hold anyway: the bare host tier's
+    /// declared exposure, by name, for the banner `--unsandboxed` prints.
+    /// Empty when no child shares the proxy's uid.
+    pub(crate) fn declared<'a>(&self, held: &'a [Held]) -> Vec<&'a Held> {
+        if !self.children.contains(&ChildUid::SharedWithRuntime) {
+            return Vec::new();
+        }
+        held.iter()
+            .filter(|item| match item.at {
+                At::Path(_) | At::FrontDoorPeer(_) => item.exposure.bare_tier_may_hold(),
+                At::Env | At::Argv => false,
+            })
+            .collect()
+    }
 }
 
 impl Exposure {
@@ -180,12 +198,18 @@ impl Exposure {
         }
     }
 
-    /// Whether the bare host tier may hold it: no for anything whose reach
-    /// outlives this session.
+    /// Whether the bare host tier may hold it in a file. The bare tier never
+    /// may hold durable authority: the proxy would go on trusting bytes its
+    /// child could have written. A secret or session file it may hold, as
+    /// the declared exposure that [`ChildReach::declared`] names. Such a file
+    /// is the launcher's, written at this uid, so a child at this uid opens
+    /// it whether or not the proxy reads it. Refusing would take away the
+    /// pod, not the child's reach. (A separated child is held off both by
+    /// the file's own ownership and bits.)
     fn bare_tier_may_hold(self) -> bool {
         match self {
-            Self::Secret | Self::Durable => false,
-            Self::Session => true,
+            Self::Durable => false,
+            Self::Secret | Self::Session => true,
         }
     }
 }
