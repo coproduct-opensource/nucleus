@@ -26,6 +26,12 @@ chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
 
+# Opted into the workspace lint table, so the journal's one suppression (an
+# `#[expect]` with a reason, moved here from the proxy) is held to the
+# allow-attribute mandate rather than reported as undeclared.
+[lints]
+workspace = true
+
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
