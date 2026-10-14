@@ -1,7 +1,6 @@
 //! The refusals, each driven by the defect its name describes (A-19).
 
 use base64::Engine as _;
-use p256::pkcs8::EncodePublicKey as _;
 
 use crate::record::BATCH_DOMAIN;
 use crate::*;
@@ -38,12 +37,13 @@ impl Signer {
 
     fn pem(&self) -> String {
         match self {
-            Self::P256(k) => pem_of(
-                k.verifying_key()
-                    .to_public_key_der()
-                    .expect("spki")
-                    .as_bytes(),
-            ),
+            Self::P256(k) => {
+                // SPKI of an uncompressed P-256 point: id-ecPublicKey, prime256v1, BIT STRING.
+                let mut der = hex::decode("3059301306072a8648ce3d020106082a8648ce3d030107034200")
+                    .expect("hex");
+                der.extend_from_slice(k.verifying_key().to_encoded_point(false).as_bytes());
+                pem_of(&der)
+            }
             Self::Ed25519(k) => {
                 let mut der = vec![
                     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,

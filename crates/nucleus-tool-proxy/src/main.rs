@@ -58,6 +58,7 @@ mod memory;
 mod memory_store;
 mod node_client;
 mod node_identity;
+mod owner_decision;
 mod pod_cert;
 mod pod_mgmt;
 mod policy;
@@ -139,6 +140,8 @@ fn workload_landlock_verdict(
 struct Args {
     #[command(flatten)]
     memory: memory_store::MemoryStoreArgs,
+    #[command(flatten)]
+    decisions: owner_decision::DecisionArgs,
     /// Pod spec YAML path.
     #[arg(long, env = "NUCLEUS_POD_SPEC")]
     spec: PathBuf,
@@ -700,6 +703,9 @@ pub(crate) struct AppState {
     /// Deterministic transforms used to recompute-verify `Deterministic` memory
     /// records. Empty by default ⇒ deterministic records fail closed (`Invalid`).
     pub(crate) memory_transforms: Arc<nucleus_provenance_memory::TransformRegistry>,
+    /// Verified owner decisions (`owner_decision.rs`). `None` when no trust roots are
+    /// provisioned, and then the decision routes do not exist.
+    pub(crate) decisions: Option<Arc<owner_decision::DecisionDesk>>,
     /// The governor keys that verify a token or cosign a memory declassification
     /// (`NUCLEUS_DECLASSIFY_TRUSTED_KEYS`); empty or withheld from an eval cell ⇒
     /// every declassify fails closed (ADR 0013 rule 8).
@@ -1590,6 +1596,10 @@ async fn main() -> Result<(), ApiError> {
             .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
     ));
     let declassify_threshold = startup_trace::declassify_threshold();
+    let decisions = args.decisions.open(&spec.spec.work_dir)?.map(Arc::new);
+    if let Some(d) = &decisions {
+        eprintln!("owner decisions: {} trust root(s) pinned", d.root_count());
+    }
 
     // Live-path session task token (PR-2, present-not-consumed). Read the
     // host-injected token/nonce/issuer off the boot channel and verify ONCE.
@@ -1707,6 +1717,7 @@ async fn main() -> Result<(), ApiError> {
         flow_graph,
         provenance_memory,
         memory_transforms,
+        decisions,
         governor_keys,
         declassify_threshold,
         session_task_token,
@@ -1819,6 +1830,13 @@ async fn main() -> Result<(), ApiError> {
         // Safe on the workload-facing surface because the Ed25519 signature —
         // not the transport — is the authority (see declassify.rs).
         .route("/v1/declassify", post(declassify::apply_declassification));
+
+    // Owner decisions exist only on a pod with trust roots (owner_decision.rs).
+    if state.decisions.is_some() {
+        app = app
+            .route("/v1/decision/read", post(owner_decision::decision_read))
+            .route("/v1/decision/list", post(owner_decision::decision_list));
+    }
 
     // Conditionally add pod management routes for orchestrator mode
     if state.node_client.is_some() {
