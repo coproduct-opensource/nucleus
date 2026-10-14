@@ -406,6 +406,15 @@ pub enum GuestCapability {
     /// guest's records as unstamped (Secret wherever they are delivered), refuses them into a
     /// space whose records are all stamped, and delivers it only stamped Public records.
     MemoryDependencyStamp,
+    /// The tool-proxy starts a guest workload in a PID namespace of its own,
+    /// as the only child of that namespace's init, with a `/proc` mounted for
+    /// it (`hidepid=invisible`), and refuses the workload if it cannot (#3344).
+    /// The launch receipt records it (`pids=own`). [`Demand::Optional`] while
+    /// no release carries it: defence in depth under ADR 0013, and an older
+    /// guest's workload shares the runtime's PID namespace, held by its uid and
+    /// procfs access checks as before. An eval cell demands it once the pin
+    /// carries it.
+    WorkloadPidNamespace,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -461,7 +470,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 25] = [
+    pub const ALL: [GuestCapability; 26] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -487,6 +496,7 @@ impl GuestCapability {
         GuestCapability::CanonicalManifestApproval,
         GuestCapability::DecisionGatedSinks,
         GuestCapability::MemoryDependencyStamp,
+        GuestCapability::WorkloadPidNamespace,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -540,6 +550,8 @@ impl GuestCapability {
             // The node withholds and refuses for a guest without it; it never needs it to run
             // one (`memory_provisioning::writer_of`).
             GuestCapability::MemoryDependencyStamp => Demand::Optional,
+            // Defence in depth; an eval cell demands it once a release has it.
+            GuestCapability::WorkloadPidNamespace => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -617,6 +629,8 @@ impl GuestCapability {
             GuestCapability::DecisionGatedSinks => FirstShipped::NotYet,
             // Program C, C1: in this tree and in no release yet.
             GuestCapability::MemoryDependencyStamp => FirstShipped::NotYet,
+            // #3344: in this tree and in no release yet.
+            GuestCapability::WorkloadPidNamespace => FirstShipped::NotYet,
         }
     }
 
@@ -767,6 +781,12 @@ impl GuestCapability {
                  writes unstamped records and refuses a delivered record that is not Public, so \
                  the node treats its records as Secret, refuses them into a stamped space, and \
                  delivers it only stamped Public records"
+            }
+            GuestCapability::WorkloadPidNamespace => {
+                "#3344 has the tool-proxy start a guest workload in a PID namespace of its own \
+                 with its own /proc, so the workload has no pid for the tool-proxy or guest-init; \
+                 an older guest's workload shares the runtime's PID namespace, held by its uid \
+                 and procfs access checks (the node does not require it)"
             }
         }
     }
@@ -1192,6 +1212,7 @@ mod tests {
             GuestCapability::CanonicalManifestApproval,
             GuestCapability::DecisionGatedSinks,
             GuestCapability::MemoryDependencyStamp,
+            GuestCapability::WorkloadPidNamespace,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1375,7 +1396,8 @@ mod tests {
                 }
                 GuestCapability::CanonicalManifestApproval => GuestCapability::DecisionGatedSinks,
                 GuestCapability::DecisionGatedSinks => GuestCapability::MemoryDependencyStamp,
-                GuestCapability::MemoryDependencyStamp => GuestCapability::CaBundle,
+                GuestCapability::MemoryDependencyStamp => GuestCapability::WorkloadPidNamespace,
+                GuestCapability::WorkloadPidNamespace => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
