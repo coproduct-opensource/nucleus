@@ -235,7 +235,8 @@ impl ApiError {
             | ApiError::Nucleus(NucleusError::ChildSharesRuntimeUid { .. })
             | ApiError::Nucleus(NucleusError::UnsandboxedNotOptedIn { .. })
             | ApiError::Nucleus(NucleusError::LandlockUnavailable { .. })
-            | ApiError::Nucleus(NucleusError::LandlockRuleset { .. }) => {
+            | ApiError::Nucleus(NucleusError::LandlockRuleset { .. })
+            | ApiError::Nucleus(NucleusError::WorkspaceReadOnlyUnenforceable { .. }) => {
                 (StatusCode::FORBIDDEN, "isolation_denied", None, None)
             }
             ApiError::Nucleus(NucleusError::ProvenanceUnverified { .. }) => {

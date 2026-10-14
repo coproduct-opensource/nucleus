@@ -81,7 +81,8 @@ pub use error::{NucleusError, Result};
 pub use hardening::{
     AppliedRlimits, ChildConfinement, ChildUid, DEFAULT_CHILD_UID, FilesystemConfinement, Hardened,
     InstalledFilter, LandlockSupport, LandlockWaiver, MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector,
-    SpawnHardening, SyscallFilter, Unhardened, UnsandboxedOptIn, runtime_uid,
+    SpawnHardening, SyscallFilter, Unhardened, UnsandboxedOptIn, WorkspaceHold, WorkspaceWrites,
+    runtime_uid,
 };
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};
