@@ -1110,8 +1110,11 @@ mod tests {
     /// identity, not by a secret. Red before: the command carried
     /// `--auth-secret <hex>` and `NUCLEUS_SANDBOX_TOKEN`, an orchestrator token
     /// HMAC'd with that secret, and no identity.
+    ///
+    /// #3471: and no private key is named for it: this proxy calls no node.
+    /// Red before: `NUCLEUS_IDENTITY_KEY` named a `key.pem` at the proxy's uid.
     #[test]
-    fn the_harness_proxy_is_proven_by_the_runs_identity_not_a_secret() {
+    fn the_harness_proxy_is_proven_by_the_runs_identity_and_names_no_key() {
         let work = std::env::temp_dir();
         let run_id = format!("identity-test-{}", std::process::id());
         let prepared = prepare_local_proxy(&LocalProxyConfig {
@@ -1150,12 +1153,20 @@ mod tests {
             "no tier-3 token or secret in the proxy's env: {env:?}"
         );
         let cert = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_CERT"]).unwrap();
-        let key = std::fs::read_to_string(&env["NUCLEUS_IDENTITY_KEY"]).unwrap();
-        let certificate = nucleus_identity::WorkloadCertificate::from_pem(&cert, &key).unwrap();
+        let leaf = nucleus_identity::certificate::Certificate::from_pem(&cert).unwrap();
         assert_eq!(
-            certificate.identity().to_spiffe_uri(),
+            leaf.extract_spiffe_identity().unwrap().to_spiffe_uri(),
             format!("spiffe://host-tier.nucleus.local/ns/pods/sa/{run_id}")
         );
-        assert!(std::path::Path::new(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]).is_file());
+        let bundle = std::path::Path::new(&env["NUCLEUS_IDENTITY_TRUST_BUNDLE"]);
+        assert!(bundle.is_file());
+        assert!(
+            !env.keys().any(|k| k.starts_with("NUCLEUS_IDENTITY_KEY")),
+            "no key is named: {env:?}"
+        );
+        assert!(
+            !bundle.with_file_name("key.pem").exists(),
+            "no key file beside the certificate"
+        );
     }
 }

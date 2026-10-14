@@ -16,6 +16,17 @@
 //! * **Any** process on the host can read `/proc/<proxy>/cmdline`, so a
 //!   secret passed as a flag is reachable by every child, whatever its uid.
 //!
+//! # Named limitation: the bare tier off Linux (#3471)
+//!
+//! A macOS (or other non-Linux) development host has neither half of what
+//! closes this process to a same-uid child: no non-dumpable seal
+//! (`PR_SET_DUMPABLE`), so `nucleus::seal_runtime` answers unsealed, and no
+//! descriptor sweep at the child's exec. There the bare tier holds no secret
+//! at all: in the environment, delivered on stdin, or in a file, each is
+//! refused by name. A bare-tier pod that needs one (an orchestrator, which
+//! carries a caller token and its key) runs on Linux, or on a tier whose
+//! children are another uid.
+//!
 //! [`ChildReach`] is the one decider of those questions (ADR 0007 G-1). It
 //! answers them for the uids the spawn deciders give the children, not for a
 //! restatement of those uids. [`ChildReach::admit`] refuses, by name, the
@@ -44,9 +55,9 @@ pub(crate) struct ChildReach {
 pub(crate) enum Exposure {
     /// Reading it grants authority beyond this session: a private key, a
     /// shared secret, a bearer credential. No separated child may read or
-    /// replace it. On the bare host tier: in the environment only while the
-    /// runtime is sealed; on the command line never; in a launcher's file as
-    /// the named, declared exposure (see `bare_tier_may_hold`).
+    /// replace it. On the bare host tier: in the environment or delivered on
+    /// stdin only while the runtime is sealed; on the command line never; in
+    /// a file never (see `bare_tier_may_hold`).
     Secret,
     /// Authority that outlives this process: a ledger, a replay record, a
     /// journal, trust roots. No child may write or replace it. The bare host
@@ -67,6 +78,11 @@ pub(crate) enum At {
     Path(PathBuf),
     /// This process's environment, under the item's name.
     Env,
+    /// Read once from the launcher's pipe on stdin, and held only in this
+    /// process's memory (#3471). No file has it and the pipe is drained, so
+    /// what reaches it is what reaches this process's memory: the same as
+    /// the environment.
+    Delivered,
     /// This process's command line, as the item's flag.
     Argv,
     /// A uid that `--listen-unix` admits besides the proxy's own.
@@ -175,7 +191,7 @@ impl ChildReach {
         held.iter()
             .filter(|item| match item.at {
                 At::Path(_) | At::FrontDoorPeer(_) => item.exposure.bare_tier_may_hold(),
-                At::Env | At::Argv => false,
+                At::Env | At::Delivered | At::Argv => false,
             })
             .collect()
     }
@@ -200,16 +216,16 @@ impl Exposure {
 
     /// Whether the bare host tier may hold it in a file. The bare tier never
     /// may hold durable authority: the proxy would go on trusting bytes its
-    /// child could have written. A secret or session file it may hold, as
-    /// the declared exposure that [`ChildReach::declared`] names. Such a file
-    /// is the launcher's, written at this uid, so a child at this uid opens
-    /// it whether or not the proxy reads it. Refusing would take away the
-    /// pod, not the child's reach. (A separated child is held off both by
-    /// the file's own ownership and bits.)
+    /// child could have written. Nor a secret (#3471): a child at this uid
+    /// reads the file, and no launcher needs to leave one there any more:
+    /// the local driver hands an orchestrator's key over on stdin, and every
+    /// other pod gets none. A session file it may hold, as the declared
+    /// exposure that [`ChildReach::declared`] names. (A separated child is
+    /// held off all three by the file's own ownership and bits.)
     fn bare_tier_may_hold(self) -> bool {
         match self {
-            Self::Durable => false,
-            Self::Secret | Self::Session => true,
+            Self::Durable | Self::Secret => false,
+            Self::Session => true,
         }
     }
 }
@@ -226,15 +242,20 @@ fn reach(child: ChildUid, item: &Held, environment: EnvironmentReach) -> Option<
                 .into(),
         ),
         // A process at another non-root uid cannot open this process's
-        // `/proc/<pid>/environ` (a root runtime's children are never root).
-        (At::Env, ChildUid::Distinct(_)) => None,
-        (At::Env, ChildUid::SharedWithRuntime) => match environment {
+        // `/proc/<pid>/environ` or `mem` (a root runtime's children are never
+        // root).
+        (At::Env | At::Delivered, ChildUid::Distinct(_)) => None,
+        (At::Env | At::Delivered, ChildUid::SharedWithRuntime) => match environment {
             EnvironmentReach::ClosedToSameUid => None,
-            EnvironmentReach::OpenToSameUid => Some(
-                "is in this process's environment, which a child at the proxy's own uid can \
-                 read here (the bare host tier, and the runtime could not seal itself)"
-                    .into(),
-            ),
+            EnvironmentReach::OpenToSameUid => Some(format!(
+                "is in this process's {}, which a child at the proxy's own uid can read here \
+                 (the bare host tier, and the runtime could not seal itself)",
+                if item.at == At::Delivered {
+                    "memory"
+                } else {
+                    "environment"
+                }
+            )),
         },
         (At::FrontDoorPeer(peer), ChildUid::Distinct(uid)) => (*peer == uid).then(|| {
             format!(
