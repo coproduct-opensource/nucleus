@@ -843,11 +843,9 @@ fn the_unlocked_reader_reads_v1_and_v2_in_admission_order_beside_the_writer() {
     );
     let mut journal = PublishedJournal::open(loc.clone(), &Anyone, &registry()).unwrap();
     publish_now(&mut journal, vec![b.clone()]);
-    let mut torn = std::fs::OpenOptions::new()
-        .append(true)
-        .open(loc.path())
-        .unwrap();
-    torn.write_all(b"{\"version\":").unwrap();
+    let mut torn = std::fs::read(loc.path()).unwrap();
+    torn.extend_from_slice(b"{\"version\":");
+    std::fs::write(loc.path(), torn).unwrap();
     assert_eq!(
         read_unlocked(&loc, &Anyone, &registry()).unwrap(),
         vec![a, child, b],
