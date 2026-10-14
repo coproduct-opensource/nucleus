@@ -69,7 +69,22 @@ pub struct ActionParents<'a> {
     pub data: &'a [NodeId],
 }
 
-impl ActionParents<'_> {
+impl<'a> ActionParents<'a> {
+    /// Parents with these control parents and no data parents; add data with
+    /// [`data`](Self::data). The role is still named at the call site:
+    /// `ActionParents::control(&[prompt]).data(&[file])`.
+    pub fn control(control: &'a [NodeId]) -> Self {
+        Self { control, data: &[] }
+    }
+
+    /// The same control parents, with these data parents.
+    pub fn data(self, data: &'a [NodeId]) -> Self {
+        Self {
+            control: self.control,
+            data,
+        }
+    }
+
     /// Every parent, control first: the order the node records them in.
     pub(super) fn all(&self) -> Vec<NodeId> {
         let mut all = Vec::with_capacity(self.control.len() + self.data.len());

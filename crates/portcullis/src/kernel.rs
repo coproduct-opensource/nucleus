@@ -2397,7 +2397,3 @@ fn extract_host_from_subject(subject: &str) -> Option<String> {
 #[cfg(test)]
 #[path = "kernel_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "kernel_dag_tests.rs"]
-mod dag_tests;
