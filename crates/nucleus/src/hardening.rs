@@ -687,14 +687,16 @@ impl ChildConfinement {
         }
     }
 
-    /// Whether inherited descriptors above stdio are closed at exec.
+    /// Whether inherited descriptors above stdio are closed at exec. The
+    /// bare tier sweeps them too on Linux (#3461), the one step of the hook
+    /// it takes; off Linux it has no hook.
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
             Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
                 true
             }
-            Posture::Unsandboxed => false,
+            Posture::Unsandboxed => cfg!(target_os = "linux"),
         }
     }
 
@@ -747,7 +749,10 @@ impl ChildConfinement {
         syscalls: SeccompPolicy,
     ) -> SpawnHardening {
         match self.posture {
-            Posture::Unsandboxed => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
+            Posture::Unsandboxed => {
+                imp::sweep_inherited(cmd);
+                SpawnHardening::Unhardened(Unhardened::DeclaredBareTier)
+            }
             Posture::Restricted(filter) => Self::restrict(
                 cmd,
                 Isolation::None,
@@ -923,13 +928,11 @@ enum Hook {
 ///
 /// A child that shares the runtime's uid (the declared bare tier, or a
 /// `Restricted` child of a non-root runtime) can open
-/// `/proc/<runtime>/environ`, `mem` and `fd/*`. It also inherits every
-/// descriptor that the runtime's launcher left open without close-on-exec,
-/// because those postures sweep no descriptors. [`seal_runtime`] closes both
-/// ways in. The process becomes non-dumpable, so the kernel refuses those
-/// files and `ptrace` to every process without `CAP_SYS_PTRACE`. Every
-/// descriptor above stdio that is open when it runs is marked close-on-exec,
-/// so no later spawn can pass one on.
+/// `/proc/<runtime>/environ`, `mem` and `fd/*`. [`seal_runtime`] makes the
+/// process non-dumpable, so the kernel refuses those files and `ptrace` to
+/// every process without `CAP_SYS_PTRACE`. (Descriptors are the spawn's
+/// half: every posture on Linux, the bare tier included, marks those above
+/// stdio close-on-exec in the child.)
 ///
 /// Evidence (ADR 0007 C-1): [`Self::environment`] answers
 /// [`EnvironmentReach::ClosedToSameUid`] only for a value [`seal_runtime`]
@@ -975,7 +978,7 @@ impl RuntimeSeal {
 /// first, before the process reads a secret or spawns anything.
 ///
 /// # Errors
-/// On Linux, the kernel's errno when it refused either step, or an
+/// On Linux, the kernel's errno when it refused, or an
 /// [`std::io::ErrorKind::Other`] error when the process still reads as
 /// dumpable afterwards. Off Linux nothing is attempted and the answer is
 /// [`RuntimeSeal::unsealed`].
@@ -1055,10 +1058,8 @@ mod hook {
 #[cfg(target_os = "linux")]
 // The crate denies `unsafe_code` globally; this module is an audited
 // exception. Child-side hardening is intrinsically `unsafe` FFI: it calls
-// `close_range`/`prctl`/`setrlimit`, which must be async-signal-safe. Two
-// `unsafe` blocks: the child's syscall sequence, and the runtime's own seal
-// (`seal_self`, the same `prctl` and `close_range` on itself). The hook
-// install is `hook::pre_exec`.
+// `close_range`/`prctl`/`setrlimit`, which must be async-signal-safe. One
+// `unsafe` block: the syscall sequence. The hook install is `hook::pre_exec`.
 #[allow(unsafe_code)]
 mod imp {
     use std::io;
@@ -1148,6 +1149,15 @@ mod imp {
         Refuse,
     }
 
+    /// How much of the hook runs. Two named cases rather than an `Option`
+    /// of limits (ADR 0007 B-2).
+    enum Restrict<'a> {
+        /// Every step: `no_new_privs`, these limits, Landlock, the filter.
+        Full(&'a HookLimits),
+        /// The descriptor sweep only (the declared bare tier, #3461).
+        SweepOnly,
+    }
+
     /// Who execs the child once the hook is done (#2907). Two named cases
     /// rather than an `Option` (ADR 0007 B-2).
     enum Start {
@@ -1165,7 +1175,7 @@ mod imp {
         isolation: Isolation,
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
-        limits: &HookLimits,
+        restrict: Restrict<'_>,
         start: &Start,
     ) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
@@ -1231,6 +1241,11 @@ mod imp {
                     _ => return Err(err),
                 }
             }
+            // The bare tier stops here: descriptors swept, nothing else.
+            let limits = match restrict {
+                Restrict::Full(limits) => limits,
+                Restrict::SweepOnly => return Ok(()),
+            };
             // What any process may do to itself — the uid, if it was to
             // change, already has.
             // No new privileges: defeats setuid/file-capability escalation,
@@ -1347,7 +1362,13 @@ mod imp {
             }
         };
         super::hook::pre_exec(cmd, move || {
-            harden_child(isolation, &mut seccomp, &mut landlock, &limits, &start)
+            harden_child(
+                isolation,
+                &mut seccomp,
+                &mut landlock,
+                Restrict::Full(&limits),
+                &start,
+            )
         });
         Hook::Installed
     }
@@ -1374,62 +1395,32 @@ mod imp {
     }
 
     /// The runtime's seal (#3461): non-dumpable, confirmed by reading it
-    /// back, then every descriptor from 3 up marked close-on-exec.
-    ///
-    /// `CLOSE_RANGE_CLOEXEC` closes nothing, so a descriptor the runtime
-    /// itself uses (an inherited listener, the async runtime's own) keeps
-    /// working; only its passage through a later `exec` ends. On a kernel
-    /// without the flag (ENOSYS before 5.9, EINVAL on 5.9 and 5.10) each
-    /// descriptor `/proc/self/fd` listed is marked one by one, and one that
-    /// closed between the listing and the mark (EBADF) is skipped.
+    /// back. Through `rustix`'s safe `prctl` wrappers, so no `unsafe`.
     pub(super) fn seal_self() -> io::Result<bool> {
-        let listed: Vec<libc::c_int> = std::fs::read_dir("/proc/self/fd")?
-            .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
-            .filter(|fd| *fd > 2)
-            .collect();
-        // SAFETY: `prctl(PR_SET_DUMPABLE | PR_GET_DUMPABLE)` and
-        // `close_range` take scalars and change only this process's own
-        // attributes. `fcntl(F_GETFD | F_SETFD)` on a raw descriptor number
-        // reads or sets that descriptor's flag word and nothing else: no
-        // memory is borrowed, and a number that is not open answers EBADF.
-        unsafe {
-            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            match libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) {
-                0 => {}
-                -1 => return Err(io::Error::last_os_error()),
-                _ => return Err(io::Error::other("the process still reads as dumpable")),
-            }
-            if libc::syscall(
-                libc::SYS_close_range,
-                3 as libc::c_long,
-                libc::c_uint::MAX as libc::c_long,
-                CLOSE_RANGE_CLOEXEC,
-            ) != 0
-            {
-                let err = io::Error::last_os_error();
-                match err.raw_os_error() {
-                    Some(libc::ENOSYS | libc::EINVAL) => {
-                        for fd in listed {
-                            let flags = libc::fcntl(fd, libc::F_GETFD);
-                            if flags == -1 {
-                                let err = io::Error::last_os_error();
-                                if err.raw_os_error() == Some(libc::EBADF) {
-                                    continue;
-                                }
-                                return Err(err);
-                            }
-                            if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
-                                return Err(io::Error::last_os_error());
-                            }
-                        }
-                    }
-                    _ => return Err(err),
-                }
-            }
+        use rustix::process::{DumpableBehavior, dumpable_behavior, set_dumpable_behavior};
+        set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
+        if matches!(dumpable_behavior()?, DumpableBehavior::NotDumpable) {
+            Ok(true)
+        } else {
+            Err(io::Error::other("the process still reads as dumpable"))
         }
-        Ok(true)
+    }
+
+    /// The bare tier's one confinement (#3461): every descriptor above stdio
+    /// marked close-on-exec at the child's exec, so a descriptor the runtime
+    /// inherited without close-on-exec (from a careless launcher, or a build
+    /// tool's jobserver) does not pass on to a command the agent runs. No
+    /// `no_new_privs`, no limits, no filter: the tier's stated meaning stands.
+    pub(super) fn sweep_inherited(cmd: &mut std::process::Command) {
+        super::hook::pre_exec(cmd, || {
+            harden_child(
+                Isolation::None,
+                &mut Seccomp::NotRequested,
+                &mut Landlock::NotRequested,
+                Restrict::SweepOnly,
+                &Start::ByStd,
+            )
+        });
     }
 }
 
@@ -1447,6 +1438,10 @@ mod imp {
     pub(super) fn seal_self() -> std::io::Result<bool> {
         Ok(false)
     }
+
+    /// No sweep off Linux: there is no hook here for the bare tier, and
+    /// installing the refusing one would refuse every bare spawn.
+    pub(super) fn sweep_inherited(_cmd: &mut std::process::Command) {}
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
@@ -2093,7 +2088,6 @@ mod tests {
         assert!(c.is_unsandboxed());
         assert_eq!(c.drop_uid(), None);
         assert!(!c.restricts());
-        assert!(!c.closes_inherited_fds());
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
                 ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent, LL, NO)
@@ -2101,6 +2095,22 @@ mod tests {
                 "{mode:?}"
             );
         }
+    }
+
+    /// #3461: the bare posture restricts nothing, yet on Linux its child
+    /// inherits no descriptor above stdio; off Linux it has no hook to do it.
+    #[test]
+    fn the_bare_posture_sweeps_inherited_fds_where_it_can() {
+        let c = ChildConfinement::decide(
+            ContainmentMode::Unsandboxed,
+            1000,
+            UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
+        )
+        .unwrap();
+        assert!(!c.restricts());
+        assert_eq!(c.closes_inherited_fds(), cfg!(target_os = "linux"));
     }
 
     /// #2572: only an installed hook claims hardening, and the claim carries

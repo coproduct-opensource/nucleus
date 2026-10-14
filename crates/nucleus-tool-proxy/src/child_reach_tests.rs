@@ -390,49 +390,36 @@ async fn a_workload_child_reaches_no_secret_or_durable_file() {
     drop(dir);
 }
 
-/// **#3461, the environment and inherited descriptors, on a real spawn.** A
-/// bare-tier child (the harness is non-root) reads `/proc/$PPID/environ` and
-/// inherits every descriptor without close-on-exec. After
-/// `nucleus::seal_runtime` it can do neither, and [`ChildReach::admit`]
-/// admits an environment secret only then. A root harness's child is another
-/// uid, which reaches neither before the seal or after it.
+/// **#3461, the environment, on a real spawn.** A bare-tier child (the
+/// harness is non-root) reads `/proc/$PPID/environ`. After
+/// `nucleus::seal_runtime` it cannot, and [`ChildReach::admit`] admits an
+/// environment secret on the bare tier only then. A root harness's child is
+/// another uid, which reads it neither before the seal nor after.
 ///
-/// Red with `seal_runtime` reduced to a no-op: the sealed probe still read
-/// the environment and listed the descriptor.
+/// Red with `seal_runtime` reduced to a no-op that still claims a seal: the
+/// sealed probe read the environment.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn sealing_closes_the_environment_and_inherited_descriptors_to_a_child() {
+async fn sealing_closes_the_environment_to_a_same_uid_child() {
     let workspace = tempfile::tempdir().unwrap();
-    let marker = tempfile::NamedTempFile::new().unwrap();
-    let held_fd = marker.reopen().unwrap();
-    nix::fcntl::fcntl(
-        &held_fd,
-        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
-    )
-    .unwrap();
     let probe = || {
         String::from(
             "tr '\\0' '\\n' < /proc/$PPID/environ | grep -q '^PATH=' && echo ENVIRON; \
-             for f in /proc/self/fd/*; do readlink \"$f\"; done; true",
+             echo RAN",
         )
     };
     let bare = !nix::unistd::geteuid().is_root();
     let before = run_probe(probe(), workspace.path()).await;
+    assert!(before.contains("RAN"), "{before}");
     if bare {
-        // Positive control: unsealed, a same-uid child reaches both.
+        // Positive control: unsealed, a same-uid child reads it.
         assert!(before.contains("ENVIRON"), "{before}");
-        assert!(before.contains(marker.path().to_str().unwrap()), "{before}");
     }
     let seal = nucleus::seal_runtime().unwrap();
     assert_eq!(seal.environment(), EnvironmentReach::ClosedToSameUid);
     let after = run_probe(probe(), workspace.path()).await;
+    assert!(after.contains("RAN"), "{after}");
     assert!(!after.contains("ENVIRON"), "sealed, yet read: {after}");
-    assert!(
-        !after.contains(marker.path().to_str().unwrap()),
-        "sealed, yet inherited: {after}"
-    );
-    // The descriptor still works for this process: the seal closes nothing.
-    assert!(held_fd.metadata().is_ok());
     let item = Held {
         name: "PATH",
         exposure: Exposure::Secret,
@@ -450,4 +437,38 @@ async fn sealing_closes_the_environment_and_inherited_descriptors_to_a_child() {
                 .is_err()
         );
     }
+}
+
+/// **#3461, inherited descriptors, on a real spawn.** The proxy holds a
+/// descriptor without close-on-exec, as one inherited from a careless
+/// launcher or a build tool's jobserver is. A workload child, spawned as the
+/// proxy spawns one under the harness's posture, does not get it: every
+/// posture sweeps descriptors above stdio at exec, the bare tier included.
+///
+/// Red on main, on a non-root harness: the bare tier swept nothing and the
+/// child listed the descriptor.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_workload_child_inherits_no_descriptor_the_proxy_holds() {
+    let workspace = tempfile::tempdir().unwrap();
+    let marker = tempfile::NamedTempFile::new().unwrap();
+    let held_fd = marker.reopen().unwrap();
+    nix::fcntl::fcntl(
+        &held_fd,
+        nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty()),
+    )
+    .unwrap();
+    let seen = run_probe(
+        String::from("for f in /proc/self/fd/*; do readlink \"$f\"; done; echo RAN"),
+        workspace.path(),
+    )
+    .await;
+    // Non-vacuity: the probe ran and listed at least its own stdout.
+    assert!(seen.contains("RAN") && seen.contains("pipe:"), "{seen}");
+    assert!(
+        !seen.contains(marker.path().to_str().unwrap()),
+        "the child inherited the proxy's descriptor:\n{seen}"
+    );
+    // The sweep is the child's: this process's descriptor still works.
+    assert!(held_fd.metadata().is_ok());
 }

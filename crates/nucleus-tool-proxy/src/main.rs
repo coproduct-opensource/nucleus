@@ -1036,8 +1036,8 @@ fn console_line(msg: &str) {
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
     // First, before a secret is read or a child spawned (#3461): no process at
-    // this uid may open /proc/<pid>/environ, mem or fd, and no descriptor this
-    // process inherited survives into a child it starts.
+    // this uid may open /proc/<pid>/environ, mem or fd. (No descriptor this
+    // process holds survives into a child: every spawn sweeps them.)
     let seal = match nucleus::seal_runtime() {
         Ok(seal) => seal,
         Err(e) => {
