@@ -574,7 +574,8 @@ pub(crate) fn spawn_admitted(
     // Executor gives every `/v1/run` child under MicroVM (ADR 0007 G-1 — one
     // decider, one mechanism; the copy that lived here is gone). It declares
     // the uid/gid drop on the Command, where std applies it before `chdir` and
-    // before any `pre_exec` closure, and installs the async-signal-safe hook
+    // before any `pre_exec` closure (in a guest the hook drops instead, once
+    // it has made the workload's PID namespace, #3344), and installs the async-signal-safe hook
     // that marks every inherited fd above 2 close-on-exec (the runc
     // CVE-2024-21626 lesson) and, once dropped, sets no_new_privs and the
     // `rlimits` the pod's policy produced (#2572).
