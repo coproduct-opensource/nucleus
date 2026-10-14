@@ -72,9 +72,13 @@ pub const KEY_ON_STDIN_MAX: u64 = 16 * 1024;
 ///
 /// Not `Clone`, and taken by value to deliver (ADR 0007 C-4): one key reaches
 /// at most one proxy. Dropping it is the decision that the proxy reads no key.
+/// Valid until its certificate expires, and not delivered after: a key whose
+/// certificate is stale authenticates nothing.
 #[must_use = "a pod key is delivered with `into_pipe` or dropped, never written"]
 pub struct PodKey {
     pem: String,
+    /// The certificate's expiry.
+    not_after: chrono::DateTime<chrono::Utc>,
 }
 
 impl std::fmt::Debug for PodKey {
@@ -92,10 +96,17 @@ impl PodKey {
     /// becomes holds it. The write end is closed before this returns.
     ///
     /// # Errors
-    /// When the pipe cannot be created or written (a PEM key is far below
-    /// any pipe's capacity, so the write does not block).
+    /// When the certificate has expired, or the pipe cannot be created or
+    /// written (a PEM key is far below any pipe's capacity, so the write does
+    /// not block).
     pub fn into_pipe(self) -> std::io::Result<std::io::PipeReader> {
         use std::io::Write as _;
+        if chrono::Utc::now() >= self.not_after {
+            return Err(std::io::Error::other(format!(
+                "the pod key's certificate expired at {}; it is not delivered",
+                self.not_after
+            )));
+        }
         let (reader, mut writer) = std::io::pipe()?;
         writer.write_all(self.pem.as_bytes())?;
         drop(writer);
@@ -166,6 +177,7 @@ impl PodIdentityFiles {
         }
         Ok(PodKey {
             pem: certificate.private_key_pem().to_string(),
+            not_after: certificate.expiry(),
         })
     }
 }
@@ -300,7 +312,14 @@ mod tests {
         assert_eq!(got, expected);
         assert!(got.contains("PRIVATE KEY"));
         assert!(u64::try_from(got.len()).unwrap() < KEY_ON_STDIN_MAX);
-        assert_eq!(format!("{:?}", PodKey { pem: got }), "PodKey(<redacted>)");
+        let stale = PodKey {
+            pem: got,
+            not_after: chrono::Utc::now() - chrono::Duration::seconds(1),
+        };
+        assert_eq!(format!("{stale:?}"), "PodKey(<redacted>)");
+        // A key whose certificate has expired is not delivered.
+        let refused = stale.into_pipe().unwrap_err();
+        assert!(refused.to_string().contains("expired"), "{refused}");
     }
 
     /// The public files are private to their owner all the same, and a second
