@@ -136,6 +136,7 @@ impl Live {
             crate::identity::IdentityManager::new(NODE_TD, Duration::from_secs(3600)).unwrap();
         Self {
             st: IngressState {
+                request_proofs: None,
                 authority: Arc::new(authority),
                 identity,
                 gate: Arc::new(Semaphore::new(4)),
@@ -164,6 +165,7 @@ impl Live {
         let resp = exchange(
             &self.st,
             Some(&format!("Bearer {}", self.a.token(&sub, now()))),
+            None,
             &body(&csr_for(&principal_a(&sub)), None),
             now(),
         )
@@ -382,6 +384,7 @@ async fn a_spent_day_refuses_and_the_next_utc_day_admits() {
             pod_spec(Vec::new(), 3),
             pod,
             crate::host_decide::StartingLabel::Clean,
+            crate::delivered_spec::Delivery::AsAdmitted,
         )
         .await
         .expect("a new UTC day admits");
@@ -525,6 +528,7 @@ async fn a_raised_ceiling_applies_across_a_restart_too() {
     // caller does after a restart, and its certificate carries 20.
     let fresh = {
         let f = IngressState {
+            request_proofs: None,
             authority: Arc::new(restarted),
             identity: live.st.identity.clone(),
             gate: Arc::new(Semaphore::new(1)),
@@ -533,6 +537,7 @@ async fn a_raised_ceiling_applies_across_a_restart_too() {
         let resp = exchange(
             &f,
             Some(&format!("Bearer {}", live.a.token(sub, now()))),
+            None,
             &body(&csr_for(&principal_a(sub)), None),
             now(),
         )
@@ -558,14 +563,8 @@ async fn a_token_exchanged_before_a_reload_is_refused_by_the_reloaded_binding() 
     let live = Live::new(&ceiling(5, from, until), None);
     let sub = "spent-before-reload";
     let bearer = format!("Bearer {}", live.a.token(sub, now()));
-    let present = || {
-        exchange(
-            &live.st,
-            Some(&bearer),
-            &body(&csr_for(&principal_a(sub)), None),
-            now(),
-        )
-    };
+    let request = body(&csr_for(&principal_a(sub)), None);
+    let present = || exchange(&live.st, Some(&bearer), None, &request, now());
     present().await.expect("first use");
     assert!(present().await.is_err(), "a replay before any reload");
 
@@ -633,7 +632,7 @@ async fn a_spent_day_stays_spent_across_a_reload_and_a_restart() {
         .admit_kept(&who, &pod_spec(Vec::new(), 1), uuid::Uuid::new_v4())
         .await;
     assert!(
-        refused_with(&refused, "daily allowance"),
+        matches!(&refused, Err(crate::ApiError::Authority(m)) if m.contains("daily allowance")),
         "after a restart: {refused:?}"
     );
 
