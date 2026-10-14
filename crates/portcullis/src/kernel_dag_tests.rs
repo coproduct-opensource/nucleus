@@ -1,6 +1,7 @@
 //! Causal DAG integration tests (step 6 of bright-knitting-mitten), moved out
 //! of `kernel_tests.rs` when #3459 named each action's control and data
 //! parents and the file outgrew the line ratchet's default ceiling.
+#![allow(deprecated)] // As kernel_tests.rs: these exercise decide() too; migration tracked in #1194
 
 use super::*;
 use crate::flow_graph::ActionParents;
