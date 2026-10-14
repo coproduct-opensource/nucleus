@@ -121,18 +121,32 @@ be separate from the node's configured workspace root. A pod requests a store
 with metadata label `nucleus.io/memory-namespace: project-a`; namespace names
 contain 1–64 ASCII letters, digits, underscores or hyphens.
 
-After authority admission, the node uses the issued root-owner identity to
-select `<memory-root>/<sha256(owner)>/<namespace>/memory.jsonl`. The proxy's
-journal header is bound to that owner hash and namespace. A spec cannot supply a
-host path or override the owner. New directories are private and their parent
-entries are synced. Cancellation stops the pod and retains its memory directory;
-replacement pods with the same owner and namespace reopen the journal. Different
-owners get different directories even when they choose the same namespace.
+After authority admission, the node resolves the name to a **memory space** and
+the **binding policy** that admits the pod (`crates/nucleus-node/src/memory_space.rs`):
+the tenant's declared space of that name if there is one, else the pod's lineage's
+own space for the name, created on first use under a `Lineage(root)` policy. A
+spec cannot supply a host path, a tenant, a policy or an audience. The node then
+mints the run its own binding (`memory_binding.rs`): it pins the space's head,
+writes the run a private copy of that version as the policy's view sees it at
+`<memory-root>/bindings/<binding id>/memory.jsonl` (a v1 journal, which every
+proxy opens; a v2 proxy migrates it on open), and keeps a node-signed
+`memory_snapshot_delivery` receipt in its `lifecycle.log` before the pod is
+handed the directory. The proxy is that copy's only writer: a `Read` binding's
+writes stay there, and a `ReadPropose` binding's copy is its branch, which the
+tenant root (or the pod holding the binding) publishes onto the space with
+`POST /v1/memory/bindings/<id>/publish` and an expected head (compare and swap).
+A new run of the same audience is given what was published; a run already bound
+keeps its pinned snapshot. Runs of one lineage share the base and never each
+other's writes. Stores left at `<memory-root>/<sha256(owner)>/<namespace>` by the
+owner-keyed layout become spaces in place under a `TenantAll-legacy` policy at
+node start, once, receipted; their reach is kept and their writes become private
+until published.
 
 The local development driver passes explicit proxy arguments and clears ambient
 memory environment settings. A mediated container receives a dedicated bind at
 `/run/nucleus/memory` and matching proxy environment. The proxy's file lock permits
-one active writer per journal. An absent selector provisions no persistent memory.
+one active writer per journal, and the node is the only writer of a space's own
+journal. An absent selector provisions no persistent memory.
 Unmediated containers and VM drivers refuse the selector because no memory
 transport has been provisioned for them. A local driver whose proxies run on the bare tier
 (a non-root node with `--allow-local-driver`) therefore cannot provision memory:

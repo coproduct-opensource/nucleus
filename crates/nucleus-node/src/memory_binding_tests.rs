@@ -637,12 +637,14 @@ fn a_publish_whose_receipt_is_not_kept_appends_nothing() {
 }
 
 /// The quota is split, so a publish's accept/refuse depends only on the binding's own
-/// allocation: whether another binding of the space published nothing or nearly all of its
-/// own allocation, B's verdict on the same patch is the same. Overspending its own allocation
-/// is refused by name either way.
+/// allocation. Two cells differ only in what ANOTHER binding of the space published: nothing,
+/// or over a third of the space. B's verdicts on the same two patches (one that fits its own
+/// allocation with little to spare, one that does not) are the same in both cells, and the
+/// refusal names B's own allocation. Counted against the space instead, the first patch would
+/// be refused only where the other binding had published: a channel.
 #[test]
 fn a_publish_verdict_depends_only_on_the_bindings_own_allocation() {
-    let allocation = 4096;
+    let allocation = 8192;
     let mut verdicts = Vec::new();
     for other_publishes in [false, true] {
         let mut lab = Lab::new();
@@ -652,25 +654,40 @@ fn a_publish_verdict_depends_only_on_the_bindings_own_allocation() {
         let other = lab.bind("notes", Uuid::new_v4()).unwrap();
         let b = lab.bind("notes", Uuid::new_v4()).unwrap();
         if other_publishes {
-            let filler: Vec<MemoryRecord> = (0..6).map(|i| raw(&format!("filler {i}"))).collect();
+            let filler: Vec<MemoryRecord> =
+                (0..6).map(|i| raw(&format!("other{i:0>300}"))).collect();
             write(&other, &filler);
             lab.publish(other.binding).unwrap();
+            assert!(lab.registry.bindings[&other.binding].spent_bytes > allocation / 3);
         }
-        write(&b, &[raw("small")]);
-        let small = lab.publish(b.binding).map(|_| ());
-        let big: Vec<MemoryRecord> = (0..64).map(|i| raw(&format!("{i:0>200}"))).collect();
-        write(&b, &big);
-        let over = lab.publish(b.binding).map(|_| ());
+        let fits: Vec<MemoryRecord> = (0..10).map(|i| raw(&format!("fits{i:0>300}"))).collect();
+        write(&b, &fits);
+        let first = lab.publish(b.binding).map(|_| ());
+        let spent = lab.registry.bindings[&b.binding].spent_bytes;
+        let over: Vec<MemoryRecord> = (0..20).map(|i| raw(&format!("over{i:0>300}"))).collect();
+        write(&b, &over);
+        let second = lab.publish(b.binding).map(|_| ());
         verdicts.push((
-            small.is_ok(),
-            over.as_ref().err().map(|e| e.to_string().contains("left")),
+            first.map_err(|e| e.to_string()),
+            spent,
+            second.map_err(|e| e.to_string().contains("left")),
         ));
     }
     assert_eq!(
         verdicts[0], verdicts[1],
-        "B cannot tell whether the other published"
+        "B cannot tell whether the other binding published"
     );
-    assert_eq!(verdicts[0], (true, Some(true)));
+    let (first, spent, second) = &verdicts[0];
+    assert_eq!(first, &Ok(()));
+    assert!(
+        *spent > allocation / 2,
+        "the first patch nearly fills B's allocation: {spent}"
+    );
+    assert_eq!(
+        second,
+        &Err(true),
+        "overspending its own allocation is refused by name"
+    );
 }
 
 /// The 6 + 6 > 10 counterexample, on bytes: two branches each within its own allocation are

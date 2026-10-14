@@ -236,17 +236,42 @@ What each status means, and what it deliberately does not:
   served identity is unchanged by pods outside its lineage (direct children and
   itself), for create and for identity mint/release/register/unregister.
   **Assumed:** the runtime refuses a create naming a parent the caller does not
-  own. **Not covered:** per-tenant persistent memory (keyed by tenant root +
-  namespace, so a tenant's non-lineage pods can share a store —
-  `crates/nucleus-node/src/memory_provisioning.rs` `Stores::provision`, with the
-  owner taken from `plan.owner()` in `crates/nucleus-node/src/main.rs`
-  `create_pod_internal`), clearing-auction prices
+  own. **Not covered:** persistent memory as content (below), clearing-auction prices
   (`crates/nucleus-tool-proxy/src/authority_round.rs`), lockdown delivery
   (filtered per watcher, not mechanized), and the 2 node fields the
   compile-checked census leaves `Unclassified` (`request_proofs`, `authority`).
   The census is `crates/nucleus-node/src/node_state_census.rs`: it destructures
   all 56 `NodeState` fields with no `..`, so a new field fails to compile until
   it is classified.
+
+  **Persistent memory is content, shared only through declared channels**
+  (Program B, M3). A memory space is an object (`memory_space.rs`: tenant,
+  space id, schema) with a hash-chained history; a run never inherits a parent's
+  powers over it. At pod creation the node mints the run its own binding from
+  the policy that admits it (`memory_binding.rs`), pins the space's head, and
+  hands the run a private copy of that version as the policy's view sees it.
+  Audiences: `Lineage(root)` by default (runs of one lineage share the base and
+  never each other's writes until one is published); `Workspace(selector)` over
+  labels only the tenant's own identity wrote; `TenantAll`, only when named; and
+  `TenantAll-legacy`, the declared, receipted form migration gives a store the
+  owner-keyed layout already shared. Lineage, workspace and tenant audiences
+  are declared channels between pods, not a confidentiality the runtime
+  withholds. Every delivery is a node-signed receipt kept before the pod is
+  handed the bytes; reads of a delivered snapshot are local and are not
+  observed. Revoking a space or a policy refuses new mediated operations
+  (`ForeignEpoch`, by name); **revocation does not erase what was already
+  disclosed.** The publish verdict's quota half depends only on the binding's
+  own allocation (a budget split); the bind-time allocation refusal, a stale
+  base and a keyed conflict on the run's own records remain declared channels.
+  Tests: `sibling_runs_share_the_base_and_never_each_others_writes`,
+  `a_workspace_policy_gives_run_b_what_run_a_published`,
+  `a_child_is_never_handed_its_parents_binding`,
+  `a_journal_truncated_below_a_pin_is_refused_by_name`,
+  `a_publish_verdict_depends_only_on_the_bindings_own_allocation`,
+  `migration_declares_each_legacy_store_once_and_never_widens`. This does not
+  promote C2: the Lean model of the memory surface (`MemoryContext.lean`) is not
+  yet linked to this code, and the mediated propose/publish path through the
+  tool-proxy is M4.
 
   *History.* The first mechanization landed 2026-08-11. The design
   (`docs/cross-pod-view.md`, after Nickel/OSDI-2018: the view relation is
@@ -389,18 +414,17 @@ What each status means, and what it deliberately does not:
   2. **Classify the 22 new fields** in the revelation form the KILL assessment
      prescribes: what B's action reveals to A, not what shape the counter has.
      - Expected classes:
-       - availability: `node_capacity`, `staging_budget`, `memory`
+       - availability: `node_capacity`, `staging_budget`
        - cardinality: `decision_epochs`, which reveals a node-wide count of
          decision channels
        - lineage-keyed and needing a model: `authority`, `eval_cells`,
          `lockdowns`
      - Size: S–M, a reading pass.
-     - **Census result (step 1):** `memory` is not availability. A store is
-       keyed by the tenant root and a namespace, so two of a tenant's pods
-       outside each other's lineage can read each other's writes. It is
-       `TenantShared`, and whether it is keyed by lineage root or kept and
-       modelled is an owner decision. `authority` and `request_proofs` are
-       `Unclassified`.
+     - **Census result (step 1):** `memory` is not availability: it is
+       content. It is `TenantShared` as a declared channel: one space per
+       lineage by default, crossed only under a tenant-declared (or migrated,
+       receipted) policy, each run bound to a pinned snapshot of its own (C2
+       note above). `authority` and `request_proofs` are `Unclassified`.
      - **DoD:** no field is left without a stated revelation.
      - **Red:** a field whose projection varies with another pod's *contents*
        fires the KILL condition, and C2 stays NOT-YET until it is fixed.
@@ -431,7 +455,7 @@ What each status means, and what it deliberately does not:
          Not yet mechanized.
        - **Red:** the pre-#2203 broadcast `delivery` breaks local-respect.
      - **Availability, cardinality and contention fields (S):** the pools,
-       `node_capacity`, `staging_budget`, `memory`, `network_allocator`,
+       `node_capacity`, `staging_budget`, `network_allocator`,
        `decision_epochs`, `docker` and `http_client`. List them in Lean as an
        `Excluded` enumeration that step 1's census must equal.
        - **Red:** a census field that is in neither list.
