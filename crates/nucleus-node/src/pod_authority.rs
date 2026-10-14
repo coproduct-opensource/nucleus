@@ -101,7 +101,10 @@
 //!   around a binding's ceiling.
 //! * **Budget.** One ledger per binding trust domain, bounded by the binding's
 //!   ceiling — not one per presented chain, which would give every exchange a
-//!   fresh budget and make the ceiling's budget a per-token allowance.
+//!   fresh budget and make the ceiling's budget a per-token allowance. The
+//!   ceiling is the registry's CURRENT one, re-applied at each admission
+//!   (`registry.rs`), and a binding may also set an allowance per UTC day
+//!   (`daily.rs`), checked beside the ledger, never instead of it.
 //! * **Upstreams.** Clamped to the binding's list.
 //!
 //! # Persistence
@@ -145,6 +148,10 @@ use portcullis::{BudgetLedger, PermissionLattice};
 pub(crate) mod budget;
 pub(crate) mod egress;
 use budget::SharedBudget;
+mod binding_ledger;
+use binding_ledger::{charge_day, receil};
+mod daily;
+pub(crate) mod registry;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -191,6 +198,15 @@ pub(crate) struct AuthorityArgs {
     /// no pod is admitted any credentialed upstream.
     #[arg(long = "upstreams", env = "NUCLEUS_NODE_UPSTREAMS")]
     pub upstreams: Option<PathBuf>,
+    /// How often, in seconds, the `--upstreams` file is checked for a new
+    /// digest and reloaded if it changed (`pod_authority/registry.rs`). Zero
+    /// checks never; SIGHUP reloads either way.
+    #[arg(
+        long = "upstreams-poll-secs",
+        env = "NUCLEUS_NODE_UPSTREAMS_POLL_SECS",
+        default_value_t = 10
+    )]
+    pub upstreams_poll_secs: u64,
     /// The `iss` this node signs federated-credential assertions under (an
     /// https URL whose discovery document and JWKS upstreams register; ADR
     /// 0010). Required when the `--upstreams` registry has a `federated` entry:
@@ -500,6 +516,12 @@ async fn release(
         Parent::External(fp) => match inner.external.get_mut(&fp) {
             Some(chain) => match chain.ledger.release(pod_id.as_u128(), consumed) {
                 Ok(_) => {
+                    // The day agrees with the ledger: a refund is credited to
+                    // the day it was charged to, a pod that ran keeps its charge.
+                    match kind {
+                        ReleaseKind::Unspawned => chain.days.refund(pod_id),
+                        ReleaseKind::Exited => chain.days.settle(pod_id),
+                    }
                     chain.retired.push(pod_id);
                     retain_unremoved(state_dir, &mut chain.retired);
                     persist_external(state_dir, &fp, chain).await
@@ -632,6 +654,8 @@ fn verified_host_kernel(
 struct ChainLedger {
     ledger: BudgetLedger,
     retired: Vec<Uuid>,
+    /// Allocations per UTC day. Charged only for a binding's ledger.
+    days: daily::Days,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -684,13 +708,23 @@ struct LedgerRecord {
 }
 
 /// `authority/external/<fingerprint>.json`.
+///
+/// Version 1 has no `days`; version 2 adds them, and a version-1 file reads as
+/// a ledger with no day charged. A version this code does not know is refused
+/// as unreadable rather than read as a guess.
 #[derive(Serialize, Deserialize)]
 struct PersistedChain {
     version: u8,
-    /// The chain's ceiling, in micro-USD: its verified budget when first charged.
+    /// The chain's ceiling, in micro-USD: its verified budget when first
+    /// charged, or for a binding the ceiling last applied (`receil`).
     max_micro: u64,
     ledger: LedgerRecord,
+    /// A binding's allocations per UTC day (`daily.rs`).
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    days: std::collections::BTreeMap<String, u64>,
 }
+
+const CHAIN_VERSION: u8 = 2;
 
 impl LedgerRecord {
     fn of(ledger: &BudgetLedger, retired: &[Uuid]) -> Self {
@@ -921,13 +955,15 @@ pub(crate) struct PodAuthority {
     state_dir: PathBuf,
     /// How long every pod's host effect approvals live.
     approval_timing: crate::host_decide::effects::ApprovalTiming,
-    /// The operator's upstream registry; `None` when `--upstreams` is unset.
-    registry: Option<std::sync::Arc<UpstreamRegistry>>,
+    /// The operator's upstream registry (`None` when `--upstreams` is unset)
+    /// and its `[[caller]]` bindings (empty when there are none), reloadable
+    /// while the node runs (`registry.rs`).
+    registry: registry::Registry,
     /// The node's federation issuer; `None` when `--federation-issuer` is unset,
     /// which is refused at start-up if the registry has a federated entry.
     federation: Option<std::sync::Arc<FederatedSource>>,
-    /// The `[[caller]]` bindings; empty when there are none.
-    bindings: std::sync::Arc<CallerBindings>,
+    /// Today's UTC date, for the per-day allowance (`daily.rs`).
+    day_clock: daily::DayClock,
     /// The node's own DLC-D provisioning (its `NUCLEUS_DLC_*` environment, read once by `main`).
     /// A pod whose labels ask for none is admitted under it (`DlcProvisioning::admitted`).
     node_dlc: Option<DlcProvisioning>,
@@ -980,21 +1016,22 @@ impl PodAuthority {
             .clone()
             .unwrap_or_else(|| format!("spiffe://{trust_domain}/ns/system/sa/cli"));
 
-        let registry = match &args.upstreams {
+        let (registry, digest) = match &args.upstreams {
             Some(path) => {
-                let reg = UpstreamRegistry::load(path)?;
+                let (reg, digest) = registry::load(path)?;
                 tracing::info!(
                     upstreams = reg.entries().len(),
                     path = %path.display(),
+                    sha256 = %hex::encode(digest),
                     "loaded the operator upstream registry"
                 );
-                Some(std::sync::Arc::new(reg))
+                (Some(std::sync::Arc::new(reg)), Some(digest))
             }
             None => {
                 tracing::info!(
                     "no --upstreams registry: a pod requesting credentialed_egress is refused at admission"
                 );
-                None
+                (None, None)
             }
         };
 
@@ -1025,9 +1062,17 @@ impl PodAuthority {
             max_children: args.max_children_per_pod,
             state_dir: state_dir.to_path_buf(),
             approval_timing,
-            registry,
+            registry: registry::Registry::new(
+                args.upstreams.clone(),
+                trust_domain,
+                registry::Loaded {
+                    upstreams: registry,
+                    bindings: std::sync::Arc::new(bindings),
+                },
+                digest,
+            ),
             federation,
-            bindings: std::sync::Arc::new(bindings),
+            day_clock: daily::utc_today(),
             node_dlc: None,
             inner: std::sync::Arc::new(tokio::sync::Mutex::new(Inner {
                 pods: HashMap::new(),
@@ -1068,11 +1113,31 @@ impl PodAuthority {
         )
     }
 
-    /// The operator's upstream registry, for the broker to take its entries
-    /// from. `None` when `--upstreams` is unset.
+    /// The operator's upstream registry in force, for the broker to take its
+    /// entries from. `None` when `--upstreams` is unset.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    pub fn upstream_registry(&self) -> Option<&UpstreamRegistry> {
-        self.registry.as_deref()
+    pub fn upstream_registry(&self) -> Option<std::sync::Arc<UpstreamRegistry>> {
+        self.registry.current().upstreams.clone()
+    }
+
+    /// Re-read `--upstreams` and put it in force if it passes start-up's
+    /// validation; otherwise keep what is in force. `force` re-reads an
+    /// unchanged file. See `registry.rs`.
+    pub fn reload_registry(&self, force: bool) -> registry::ReloadOutcome {
+        self.registry.reload(force, self.federation.is_some())
+    }
+
+    /// The registry's part of `/v1/health`.
+    pub fn registry_health(&self) -> serde_json::Value {
+        self.registry.health()
+    }
+
+    /// Today's UTC date as the per-day allowance reads it, replaced for a test
+    /// that turns the day over without waiting for one.
+    #[cfg(test)]
+    pub(crate) fn with_day_clock(mut self, clock: daily::DayClock) -> Self {
+        self.day_clock = clock;
+        self
     }
 
     /// The node's federation issuer, for the broker to mint with. `None` when
@@ -1138,13 +1203,13 @@ impl PodAuthority {
     /// operator's current file is the one that should win. No registry is an
     /// empty ceiling.
     fn admit_upstreams(
-        &self,
+        loaded: &registry::Loaded,
         requested: &[CredentialedEgressSpec],
         parent: Option<&[CredentialedEgressSpec]>,
         child_id: Uuid,
     ) -> Result<Vec<CredentialedEgressSpec>, ApiError> {
-        let registry = self
-            .registry
+        let registry = loaded
+            .upstreams
             .as_deref()
             .map_or(&[][..], UpstreamRegistry::entries);
         let (mut kept, mut dropped) = CredentialedEgressSpec::clamp(requested.to_vec(), registry);
@@ -1172,9 +1237,9 @@ impl PodAuthority {
         }
     }
 
-    /// The `[[caller]]` bindings (possibly none).
-    pub fn caller_bindings(&self) -> &CallerBindings {
-        &self.bindings
+    /// The `[[caller]]` bindings in force (possibly none).
+    pub fn caller_bindings(&self) -> std::sync::Arc<CallerBindings> {
+        std::sync::Arc::clone(&self.registry.current().bindings)
     }
 
     /// Mint the node-rooted delegation a federated caller presents at
@@ -1337,6 +1402,8 @@ impl PodAuthority {
         let child_key = Ed25519KeyPair::from_pkcs8(child_pkcs8.as_ref())
             .map_err(|_| ApiError::Authority("holder key parse failed".into()))?;
 
+        // One reading of the registry for the whole decision (`registry.rs`).
+        let loaded = self.registry.current();
         let mut guard = self.inner.lock().await;
         let inner = &mut *guard;
         let delegated = admission.caller_pod.is_some() || admission.header_cert.is_some();
@@ -1421,7 +1488,7 @@ impl PodAuthority {
             // binding: see the module docs. Decided by the AUTHENTICATED
             // identity, not by anything in the presented chain.
             let binding = crate::federation_ingress::trust_domain_of(&admission.caller_spiffe_id)
-                .and_then(|td| self.bindings.by_trust_domain(td));
+                .and_then(|td| loaded.bindings.by_trust_domain(td));
             // The trust decision is against OUR anchors, never the token's
             // own embedded root key (which is self-asserted) — and for a
             // federated tenant, against this node's own root key alone.
@@ -1467,10 +1534,26 @@ impl PodAuthority {
                     "this node could not restore the caller chain's ledger; refused".into(),
                 ));
             }
-            let chain = inner.external.entry(key).or_insert_with(|| ChainLedger {
-                ledger: BudgetLedger::for_parent(&budget),
-                retired: Vec::new(),
-            });
+            // A binding's ledger takes the registry's current ceiling first;
+            // its live children are the pods it parents.
+            let live: Vec<u128> = match binding {
+                Some(_) => inner
+                    .pods
+                    .iter()
+                    .filter(|(_, p)| p.parent == parent)
+                    .map(|(id, _)| id.as_u128())
+                    .collect(),
+                None => Vec::new(),
+            };
+            let chain = inner
+                .external
+                .entry(key)
+                .or_insert_with(|| ChainLedger::new(BudgetLedger::for_parent(&budget)));
+            if binding.is_some() {
+                // `budget` is the binding's ceiling here; rounded as a new ledger's is.
+                let ceiling = BudgetLedger::for_parent(&budget).core().parent_max_units();
+                receil(chain, ceiling, &live)?;
+            }
             let ledger = &mut chain.ledger;
             if ledger.live_children() >= self.max_children {
                 return Err(ApiError::Authority(format!(
@@ -1482,6 +1565,9 @@ impl PodAuthority {
             ledger
                 .try_allocate(child_id.as_u128(), requested.budget.max_cost_usd)
                 .map_err(ledger_denial)?;
+            if let Some(b) = binding {
+                charge_day(chain, b, child_id, (self.day_clock)())?;
+            }
             let not_after = (now + ttl).min(cert_not_after(token.certificate()));
             let bridge = ephemeral_key()?;
             let rerooted = LatticeCertificate::mint_with_holder_key(
@@ -1540,7 +1626,8 @@ impl PodAuthority {
             )));
         };
 
-        let upstreams = match self.admit_upstreams(
+        let upstreams = match Self::admit_upstreams(
+            &loaded,
             &spec.spec.credentialed_egress,
             parent_upstreams.as_deref(),
             child_id,
@@ -1720,7 +1807,7 @@ impl PodAuthority {
     /// cannot mint a fresh history. Certificate restore alone is insufficient.
     /// The registry's `[[egress]]` routes, or none without a registry.
     pub(crate) fn egress_routes(&self) -> std::sync::Arc<crate::egress_proxy::EgressRoutes> {
-        match &self.registry {
+        match &self.registry.current().upstreams {
             Some(registry) => std::sync::Arc::clone(registry.egress()),
             None => std::sync::Arc::new(crate::egress_proxy::EgressRoutes::none()),
         }
@@ -1980,11 +2067,10 @@ impl PodAuthority {
                     // Only a node that ran before chain ledgers were persisted
                     // has a child and no record: treat what was restored as the
                     // whole ceiling, so nothing more is admitted under it.
-                    .or_insert_with(|| ChainLedger {
-                        ledger: BudgetLedger::for_parent(
+                    .or_insert_with(|| {
+                        ChainLedger::new(BudgetLedger::for_parent(
                             &portcullis::BudgetLattice::with_cost_limit_decimal(amount),
-                        ),
-                        retired: Vec::new(),
+                        ))
                     })
                     .ledger
                     .try_allocate(child.as_u128(), amount)
@@ -2020,6 +2106,7 @@ fn unreserve(inner: &mut Inner, parent: Parent, child_id: Uuid) {
                 let _ = c
                     .ledger
                     .release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+                c.days.refund(child_id);
             }
         }
     }
@@ -2112,14 +2199,20 @@ async fn read_chains(state_dir: &Path) -> Vec<([u8; 32], Option<ChainLedger>)> {
             .await
             .ok()
             .and_then(|b| serde_json::from_slice::<PersistedChain>(&b).ok())
-            .map(|p| ChainLedger {
-                ledger: charged(
-                    BudgetLedger::for_parent(&portcullis::BudgetLattice::with_cost_limit_decimal(
-                        micro_usd(p.max_micro),
-                    )),
-                    p.ledger.consumed_micro,
-                ),
-                retired: p.ledger.retired,
+            .filter(|p| (1..=CHAIN_VERSION).contains(&p.version))
+            .and_then(|p| {
+                Some(ChainLedger {
+                    ledger: charged(
+                        BudgetLedger::for_parent(
+                            &portcullis::BudgetLattice::with_cost_limit_decimal(micro_usd(
+                                p.max_micro,
+                            )),
+                        ),
+                        p.ledger.consumed_micro,
+                    ),
+                    retired: p.ledger.retired,
+                    days: daily::Days::restore(p.days)?,
+                })
             });
         if chain.is_none() {
             tracing::error!(
@@ -2159,9 +2252,10 @@ async fn persist_external(
     chain: &ChainLedger,
 ) -> std::io::Result<()> {
     let persisted = PersistedChain {
-        version: 1,
+        version: CHAIN_VERSION,
         max_micro: chain.ledger.core().parent_max_units(),
         ledger: LedgerRecord::of(&chain.ledger, &chain.retired),
+        days: chain.days.record(),
     };
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
     write_whole(&chain_path(state_dir, fp), &bytes).await
@@ -2221,8 +2315,7 @@ fn federation_source(
     let needed = registry.is_some_and(UpstreamRegistry::has_federated);
     let Some(issuer) = issuer else {
         if needed {
-            return Err("the --upstreams registry has a `federated` credential, but                         --federation-issuer is not set: the node cannot mint assertions for it.                         Set --federation-issuer (NUCLEUS_FEDERATION_ISSUER) to the https URL                         upstreams register as this node's issuer."
-                .into());
+            return Err(registry::issuer_required());
         }
         return Ok(None);
     };

@@ -1231,6 +1231,10 @@ async fn main() -> Result<(), ApiError> {
     let reaped = start_pod_reaper(state.clone());
 
     federation_ingress::spawn(&state, &args.authority.ingress).await?;
+    pod_authority::registry::spawn(
+        state.authority.clone(),
+        Duration::from_secs(args.authority.upstreams_poll_secs),
+    );
     public_evidence::spawn(&state, &args.node_evidence.public).await?;
     // Serve until a stop signal, then drain. Leaving the select drops the listener, so no new
     // connection is accepted; the drain's intake gate is what refuses new pods on connections
@@ -1251,10 +1255,23 @@ async fn main() -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn health(State(state): State<NodeState>) -> Json<nucleus_spec::guest_release::NodeHealth> {
-    Json(nucleus_spec::guest_release::NodeHealth {
-        status: "ok".to_string(),
-        guest: Some(state.guest_report.current()),
+/// `/v1/health`: the shared [`NodeHealth`](nucleus_spec::guest_release::NodeHealth)
+/// reply, plus the upstream registry's reload state. A reader of the shared
+/// shape ignores `registry`.
+#[derive(serde::Serialize)]
+struct HealthReply {
+    #[serde(flatten)]
+    node: nucleus_spec::guest_release::NodeHealth,
+    registry: serde_json::Value,
+}
+
+async fn health(State(state): State<NodeState>) -> Json<HealthReply> {
+    Json(HealthReply {
+        node: nucleus_spec::guest_release::NodeHealth {
+            status: "ok".to_string(),
+            guest: Some(state.guest_report.current()),
+        },
+        registry: state.authority.registry_health(),
     })
 }
 

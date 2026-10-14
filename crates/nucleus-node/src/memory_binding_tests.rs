@@ -2,7 +2,7 @@
 //! hands: who is bound to what, what each run is given, and when a publish is refused.
 use super::*;
 use crate::memory_space::{
-    Audience, Ceiling, PodLabels, PolicyRequest, SchemaAtom, SpaceRequest, ViewSpec,
+    Audience, Ceiling, PodLabels, PolicyRequest, PolicyState, SchemaAtom, SpaceRequest, ViewSpec,
 };
 use nucleus_provenance_memory::recompute::derive_label;
 use nucleus_provenance_memory::{MemoryDerivation, SchemaType, SourceClass};
@@ -201,6 +201,34 @@ impl Lab {
             })
     }
 
+    /// A policy an earlier node recorded (before C0 any audience could be created), read back
+    /// after a restart: what an upgraded node finds in its registry.
+    fn recorded_policy(&mut self, space: &SpaceId, audience: Audience) -> Uuid {
+        let id = Uuid::new_v4();
+        let epoch = self.registry.space(&tenant(), space).unwrap().epoch;
+        self.registry.policies.insert(
+            id,
+            BindingPolicy {
+                id,
+                tenant: tenant(),
+                space: space.clone(),
+                audience,
+                mode: Mode::ReadPropose,
+                view: ViewSpec::everything(),
+                may_publish: true,
+                allocation_bytes: 1 << 20,
+                expiry: Expiry::UntilRevoked,
+                epoch,
+                state: PolicyState::Live,
+                authority: PolicyAuthority::TenantRoot,
+                issued_unix: NOW,
+            },
+        );
+        self.registry.persist().unwrap();
+        self.restart();
+        id
+    }
+
     fn revoke_space(&mut self, space: &SpaceId) -> u32 {
         let (receipts, refuse) = (&mut self.receipts, self.refuse);
         self.registry
@@ -316,6 +344,16 @@ fn labels(team: &str) -> BTreeMap<String, String> {
     BTreeMap::from([("team".to_owned(), team.to_owned())])
 }
 
+/// The refusal names cross-run memory as unavailable, and why, and the reach it refused.
+fn assert_cross_run(refused: &ApiError, reach: &str) {
+    let text = refused.to_string();
+    assert!(
+        text.contains("CrossRunMemoryUnavailable: record labels are not yet dependency-stamped")
+            && text.contains(reach),
+        "{text}"
+    );
+}
+
 /// The lineage default, stated precisely: runs of one lineage (siblings under one parent) are
 /// given the same base and write private branches. Nothing one writes reaches the other, nor a
 /// later run, until it is published; after that a new run is given it and an existing run's
@@ -393,26 +431,34 @@ fn separate_lineages_are_bound_to_separate_spaces_by_default() {
     );
 }
 
-/// Normal cross-run continuity: a workspace policy over tenant-authenticated labels gives run
-/// B what run A published, in another lineage; a pod outside the selector is refused by name.
+/// Program C, C0: a workspace policy would deliver one run's records to runs of other
+/// lineages, and a record's label does not yet say what its writer had read. So the tenant root
+/// cannot create one, and one an earlier node recorded mints no binding: refused by name before
+/// anything is delivered or receipted. A pod outside the selector is still refused as unadmitted,
+/// and a declared space is never swapped for a lineage store the pod did not ask for.
 #[test]
-fn a_workspace_policy_gives_run_b_what_run_a_published() {
+fn a_workspace_policy_is_refused_until_labels_are_stamped() {
     in_own_process(
         module_path!(),
-        "a_workspace_policy_gives_run_b_what_run_a_published",
+        "a_workspace_policy_is_refused_until_labels_are_stamped",
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
-            lab.policy(&notes, read_propose(workspace("a"), 1 << 20))
-                .unwrap();
-            let a = lab.bind_labelled("notes", &labels("a")).unwrap();
-            write(&a, &[raw("from run a")]);
-            lab.publish(a.binding).unwrap();
-            let b = lab.bind_labelled("notes", &labels("a")).unwrap();
-            assert_eq!(values(&given(&b)), values(&[raw("from run a")]));
-            assert_ne!(
-                lab.binding(&a).principal.lineage,
-                lab.binding(&b).principal.lineage
+            let refused = lab
+                .policy(&notes, read_propose(workspace("a"), 1 << 20))
+                .unwrap_err();
+            assert_cross_run(&refused, "a workspace audience");
+            assert!(lab.registry.policies.is_empty(), "nothing was recorded");
+
+            lab.recorded_policy(&notes, workspace("a"));
+            let receipts = lab.receipts.len();
+            let refused = lab.bind_labelled("notes", &labels("a")).unwrap_err();
+            assert_cross_run(&refused, "a workspace audience");
+            assert!(lab.registry.bindings.is_empty(), "no binding was minted");
+            assert_eq!(lab.receipts.len(), receipts, "no delivery was receipted");
+            assert!(
+                !lab.root.join("bindings").exists(),
+                "no snapshot was written"
             );
             let refused = lab.bind_labelled("notes", &labels("b")).unwrap_err();
             assert!(
@@ -429,41 +475,103 @@ fn a_workspace_policy_gives_run_b_what_run_a_published() {
     );
 }
 
-/// Every pod of the tenant only when a policy names `TenantAll`.
+/// Program C, C0: a `TenantAll` policy is refused at creation (and the legacy audience is still
+/// for migration only). A binding an earlier node minted under one cannot publish — refused by
+/// name, nothing appended, nothing receipted — and mints no new binding.
 #[test]
-fn tenant_all_admits_only_when_a_policy_names_it() {
+fn a_tenant_all_policy_is_refused_at_creation_bind_and_publish() {
     in_own_process(
         module_path!(),
-        "tenant_all_admits_only_when_a_policy_names_it",
+        "a_tenant_all_policy_is_refused_at_creation_bind_and_publish",
         || {
             let mut lab = Lab::new();
             let shared = lab.declare("shared", MAX_JOURNAL_BYTES);
             let owner = Uuid::new_v4();
+            let policy = lab
+                .policy(
+                    &shared,
+                    read_propose(Audience::Lineage { root: owner }, 1 << 20),
+                )
+                .unwrap();
+            let held = lab.bind("shared", owner).unwrap();
+            assert!(lab.bind("shared", Uuid::new_v4()).is_err());
+            let refused = lab
+                .policy(&shared, read_propose(Audience::TenantAll, 1 << 20))
+                .unwrap_err();
+            assert_cross_run(&refused, "a tenant-wide audience");
+            let refused = lab
+                .policy(&shared, read_propose(Audience::TenantAllLegacy, 1 << 20))
+                .unwrap_err();
+            assert!(
+                refused.to_string().contains("only migration records"),
+                "{refused}"
+            );
+
+            // The binding was minted by an earlier node, under a policy it recorded as TenantAll.
+            write(&held, &[raw("written before the upgrade")]);
+            lab.registry.policies.get_mut(&policy).unwrap().audience = Audience::TenantAll;
+            lab.registry.persist().unwrap();
+            lab.restart();
+            let journal = lab.space_location(&shared);
+            let before = std::fs::read(journal.path()).unwrap();
+            let refused = lab.publish(held.binding).unwrap_err();
+            assert_cross_run(&refused, "a tenant-wide audience");
+            assert_eq!(
+                std::fs::read(journal.path()).unwrap(),
+                before,
+                "nothing was published"
+            );
+            assert!(!lab.kinds().contains(&"publish_authorized".to_owned()));
+            assert_eq!(lab.binding(&held).spent_bytes, 0);
+            let refused = lab.bind("shared", Uuid::new_v4()).unwrap_err();
+            assert_cross_run(&refused, "a tenant-wide audience");
+        },
+    );
+}
+
+/// Lineage audiences keep working under C0: a later run of the lineage is given what an earlier
+/// one published, over a declared space. A policy admitting a second lineage is refused at
+/// creation, and one an earlier node recorded refuses both lineages at bind and at publish,
+/// since the space may already hold the other lineage's writes.
+#[test]
+fn lineage_policies_still_bind_and_publish_and_never_reach_another_lineage() {
+    in_own_process(
+        module_path!(),
+        "lineage_policies_still_bind_and_publish_and_never_reach_another_lineage",
+        || {
+            let mut lab = Lab::new();
+            let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            let owner = Uuid::new_v4();
             lab.policy(
-                &shared,
+                &notes,
                 read_propose(Audience::Lineage { root: owner }, 1 << 20),
             )
             .unwrap();
-            assert!(lab.bind("shared", owner).is_ok());
-            assert!(lab.bind("shared", Uuid::new_v4()).is_err());
-            lab.policy(&shared, read_propose(Audience::TenantAll, 1 << 20))
-                .unwrap();
-            let stranger = lab.bind("shared", Uuid::new_v4()).unwrap();
+            let first = lab.bind("notes", owner).unwrap();
+            write(&first, &[raw("first run's")]);
+            lab.publish(first.binding).unwrap();
+            let second = lab.bind("notes", owner).unwrap();
             assert_eq!(
-                lab.registry.policies[&lab.binding(&stranger).policy].audience,
-                Audience::TenantAll
+                values(&given(&second)),
+                values(&[raw("first run's")]),
+                "a later run of the lineage is given what an earlier one published"
             );
-            let own = lab.bind("shared", owner).unwrap();
-            assert_eq!(
-                lab.registry.policies[&lab.binding(&own).policy].audience,
-                Audience::Lineage { root: owner },
-                "the narrowest audience that admits a pod decides"
-            );
-            // Only migration records the legacy audience.
-            assert!(
-                lab.policy(&shared, read_propose(Audience::TenantAllLegacy, 1 << 20))
-                    .is_err()
-            );
+
+            let other = Uuid::new_v4();
+            let beyond = "whose policies admit another lineage";
+            let refused = lab
+                .policy(
+                    &notes,
+                    read_propose(Audience::Lineage { root: other }, 1 << 20),
+                )
+                .unwrap_err();
+            assert_cross_run(&refused, beyond);
+
+            lab.recorded_policy(&notes, Audience::Lineage { root: other });
+            write(&second, &[raw("second run's")]);
+            assert_cross_run(&lab.publish(second.binding).unwrap_err(), beyond);
+            assert_cross_run(&lab.bind("notes", other).unwrap_err(), beyond);
+            assert_cross_run(&lab.bind("notes", owner).unwrap_err(), beyond);
         },
     );
 }
@@ -479,11 +587,16 @@ fn a_child_is_never_handed_its_parents_binding() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
-            lab.policy(&notes, read_propose(workspace("a"), 1 << 20))
-                .unwrap();
+            lab.recorded_policy(&notes, workspace("a"));
             let team = labels("a");
-            let parent = lab.bind_labelled("notes", &team).unwrap();
-            let lineage = lab.binding(&parent).principal.lineage;
+            // C0: the parent itself is refused a workspace binding (see
+            // `a_workspace_policy_is_refused_until_labels_are_stamped`); its child is not even
+            // admitted, since a pod wrote its labels.
+            assert_cross_run(
+                &lab.bind_labelled("notes", &team).unwrap_err(),
+                "a workspace audience",
+            );
+            let lineage = Uuid::new_v4();
             let refused = lab
                 .bind_with("notes", lineage, PodLabels::PodAuthored, NOW, None)
                 .unwrap_err();
@@ -570,13 +683,14 @@ fn an_old_epoch_binding_is_refused_and_what_it_was_given_stays() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            let root = Uuid::new_v4();
             let policy = lab
-                .policy(&notes, read_propose(Audience::TenantAll, 1 << 20))
+                .policy(&notes, read_propose(Audience::Lineage { root }, 1 << 20))
                 .unwrap();
-            let seed = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let seed = lab.bind("notes", root).unwrap();
             write(&seed, &[raw("disclosed")]);
             lab.publish(seed.binding).unwrap();
-            let held = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let held = lab.bind("notes", root).unwrap();
             write(&held, &[raw("late")]);
             let before = given(&held);
             assert_eq!(lab.revoke_space(&notes), 1);
@@ -588,7 +702,7 @@ fn an_old_epoch_binding_is_refused_and_what_it_was_given_stays() {
             );
             assert_eq!(given(&held), before, "the delivered snapshot is untouched");
             assert!(lab.kinds().contains(&"snapshot_delivery".to_owned()));
-            let refused = lab.bind("notes", Uuid::new_v4()).unwrap_err();
+            let refused = lab.bind("notes", root).unwrap_err();
             assert!(
                 refused
                     .to_string()
@@ -608,10 +722,11 @@ fn a_revoked_policy_refuses_its_bindings_by_name() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            let root = Uuid::new_v4();
             let policy = lab
-                .policy(&notes, read_propose(Audience::TenantAll, 1 << 20))
+                .policy(&notes, read_propose(Audience::Lineage { root }, 1 << 20))
                 .unwrap();
-            let held = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let held = lab.bind("notes", root).unwrap();
             write(&held, &[raw("x")]);
             lab.revoke_policy(&notes, policy);
             let refused = lab.publish(held.binding).unwrap_err();
@@ -621,7 +736,7 @@ fn a_revoked_policy_refuses_its_bindings_by_name() {
                     .contains(&format!("binding policy {policy} is revoked")),
                 "{refused}"
             );
-            assert!(lab.bind("notes", Uuid::new_v4()).is_err());
+            assert!(lab.bind("notes", root).is_err());
         },
     );
 }
@@ -749,10 +864,11 @@ fn a_publish_verdict_depends_only_on_the_bindings_own_allocation() {
             for other_publishes in [false, true] {
                 let mut lab = Lab::new();
                 let notes = lab.declare("notes", 4 * allocation);
-                lab.policy(&notes, read_propose(Audience::TenantAll, allocation))
+                let root = Uuid::new_v4();
+                lab.policy(&notes, read_propose(Audience::Lineage { root }, allocation))
                     .unwrap();
-                let other = lab.bind("notes", Uuid::new_v4()).unwrap();
-                let b = lab.bind("notes", Uuid::new_v4()).unwrap();
+                let other = lab.bind("notes", root).unwrap();
+                let b = lab.bind("notes", root).unwrap();
                 if other_publishes {
                     let filler: Vec<MemoryRecord> =
                         (0..6).map(|i| raw(&format!("other{i:0>300}"))).collect();
@@ -807,12 +923,13 @@ fn allocations_never_exceed_the_space_quota() {
             let mut lab = Lab::new();
             let allocation = 8192;
             let notes = lab.declare("notes", 2 * allocation + 512);
-            lab.policy(&notes, read_propose(Audience::TenantAll, allocation))
+            let root = Uuid::new_v4();
+            lab.policy(&notes, read_propose(Audience::Lineage { root }, allocation))
                 .unwrap();
-            let first = lab.bind("notes", Uuid::new_v4()).unwrap();
-            let second = lab.bind("notes", Uuid::new_v4()).unwrap();
-            let refused = lab.bind("notes", Uuid::new_v4()).unwrap_err();
-            assert!(refused.to_string().contains("unreserved"), "{refused}");
+            let first = lab.bind("notes", root).unwrap();
+            let second = lab.bind("notes", root).unwrap();
+            let refused = lab.bind("notes", root).unwrap_err();
+            assert!(refused.to_string().contains("fully allocated"), "{refused}");
             for (run, tag) in [(&first, "a"), (&second, "b")] {
                 let patch: Vec<MemoryRecord> =
                     (0..10).map(|i| raw(&format!("{tag}{i:0>300}"))).collect();
@@ -829,6 +946,39 @@ fn allocations_never_exceed_the_space_quota() {
     );
 }
 
+/// The bind-time quota refusal is one bit: it names the policy's own allocation and no
+/// unreserved byte count, which is the quota less every reservation and every published record,
+/// Secret ones included (Program C, C0).
+#[test]
+fn a_fully_allocated_refusal_names_no_byte_count() {
+    in_own_process(
+        module_path!(),
+        "a_fully_allocated_refusal_names_no_byte_count",
+        || {
+            let mut lab = Lab::new();
+            let allocation = 8192;
+            let notes = lab.declare("notes", 2 * allocation + 512);
+            let root = Uuid::new_v4();
+            lab.policy(&notes, read_propose(Audience::Lineage { root }, allocation))
+                .unwrap();
+            let first = lab.bind("notes", root).unwrap();
+            write(&first, &[raw("published, and counted against the quota")]);
+            lab.publish(first.binding).unwrap();
+            lab.bind("notes", root).unwrap();
+            let refused = lab.bind("notes", root).unwrap_err().to_string();
+            assert!(
+                refused.contains("QuotaFullyAllocated") && refused.contains("fully allocated"),
+                "{refused}"
+            );
+            let rest = refused.replace(&allocation.to_string(), "");
+            assert!(
+                !rest.bytes().any(|b| b.is_ascii_digit()),
+                "the refusal states no byte count but the policy's own allocation: {refused}"
+            );
+        },
+    );
+}
+
 /// A Read binding is given the snapshot, and nothing it writes can be published.
 #[test]
 fn a_read_binding_cannot_publish_and_its_writes_stay_in_its_copy() {
@@ -838,10 +988,11 @@ fn a_read_binding_cannot_publish_and_its_writes_stay_in_its_copy() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            let root = Uuid::new_v4();
             lab.policy(
                 &notes,
                 PolicyRequest {
-                    audience: Audience::TenantAll,
+                    audience: Audience::Lineage { root },
                     mode: Mode::Read,
                     view: ViewSpec::everything(),
                     may_publish: false,
@@ -851,21 +1002,23 @@ fn a_read_binding_cannot_publish_and_its_writes_stay_in_its_copy() {
                 },
             )
             .unwrap();
-            let reader = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let reader = lab.bind("notes", root).unwrap();
             write(&reader, &[raw("scribble")]);
             let refused = lab.publish(reader.binding).unwrap_err();
             assert!(refused.to_string().contains("may not publish"), "{refused}");
-            assert!(given(&lab.bind("notes", Uuid::new_v4()).unwrap()).is_empty());
-            assert!(
-                lab.policy(
+            assert!(given(&lab.bind("notes", root).unwrap()).is_empty());
+            let refused = lab
+                .policy(
                     &notes,
                     PolicyRequest {
                         mode: Mode::Read,
-                        ..read_propose(Audience::TenantAll, 1)
-                    }
+                        ..read_propose(Audience::Lineage { root }, 1)
+                    },
                 )
-                .is_err(),
-                "a Read policy that may publish is refused"
+                .unwrap_err();
+            assert!(
+                refused.to_string().contains("a Read policy cannot publish"),
+                "a Read policy that may publish is refused: {refused}"
             );
         },
     );
@@ -934,7 +1087,8 @@ fn a_view_withholds_records_outside_it_and_what_derives_from_them() {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
             let root = Uuid::new_v4();
-            lab.policy(&notes, read_propose(Audience::Lineage { root }, 1 << 20))
+            let wide = lab
+                .policy(&notes, read_propose(Audience::Lineage { root }, 1 << 20))
                 .unwrap();
             let json = record("{\"k\":1}", SchemaType::Json);
             let writer = lab.bind("notes", root).unwrap();
@@ -943,6 +1097,7 @@ fn a_view_withholds_records_outside_it_and_what_derives_from_them() {
                 &[raw("text"), json.clone(), derived("summary", &json)],
             );
             lab.publish(writer.binding).unwrap();
+            lab.revoke_policy(&notes, wide);
             let text_only = ViewSpec {
                 schema: BTreeSet::from([SchemaAtom::String]),
                 ceiling: Ceiling::Secret,
@@ -951,11 +1106,11 @@ fn a_view_withholds_records_outside_it_and_what_derives_from_them() {
                 &notes,
                 PolicyRequest {
                     view: text_only,
-                    ..read_propose(Audience::TenantAll, 1 << 20)
+                    ..read_propose(Audience::Lineage { root }, 1 << 20)
                 },
             )
             .unwrap();
-            let narrow = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let narrow = lab.bind("notes", root).unwrap();
             assert_eq!(values(&given(&narrow)), values(&[raw("text")]));
             write(&narrow, &[record("{\"k\":2}", SchemaType::Json)]);
             let refused = lab.publish(narrow.binding).unwrap_err();
@@ -1024,12 +1179,13 @@ fn a_decision_policy_is_re_cited_at_every_bind_and_publish() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            let root = Uuid::new_v4();
             let policy = lab
                 .policy(
                     &notes,
                     PolicyRequest {
                         authority: PolicyAuthority::Decision { id: "d".repeat(64) },
-                        ..read_propose(Audience::TenantAll, 1 << 20)
+                        ..read_propose(Audience::Lineage { root }, 1 << 20)
                     },
                 )
                 .unwrap();
@@ -1038,22 +1194,17 @@ fn a_decision_policy_is_re_cited_at_every_bind_and_publish() {
                 not_after: NOW + 60,
             };
             let held = lab
-                .bind_with(
-                    "notes",
-                    Uuid::new_v4(),
-                    PodLabels::PodAuthored,
-                    NOW,
-                    Some(&citer),
-                )
+                .bind_with("notes", root, PodLabels::PodAuthored, NOW, Some(&citer))
                 .unwrap();
             assert_eq!(
                 lab.binding(&held).not_after,
                 NOW + 60,
                 "the decision's window bounds it"
             );
+            let refused = lab.bind("notes", root).unwrap_err();
             assert!(
-                lab.bind("notes", Uuid::new_v4()).is_err(),
-                "a node that verifies no decisions cannot bind under one"
+                refused.to_string().contains("verifies no owner decisions"),
+                "a node that verifies no decisions cannot bind under one: {refused}"
             );
             write(&held, &[raw("x")]);
             citer.covers.set(false);
@@ -1068,13 +1219,7 @@ fn a_decision_policy_is_re_cited_at_every_bind_and_publish() {
                 "{refused}"
             );
             let refused = lab
-                .bind_with(
-                    "notes",
-                    Uuid::new_v4(),
-                    PodLabels::PodAuthored,
-                    NOW,
-                    Some(&citer),
-                )
+                .bind_with("notes", root, PodLabels::PodAuthored, NOW, Some(&citer))
                 .unwrap_err();
             assert!(
                 refused.to_string().contains("no longer covers"),
@@ -1107,17 +1252,20 @@ fn legacy_store(root: &Path, space: &str, records: &[MemoryRecord]) -> PathBuf {
 
 /// The owner-keyed layout gave every lineage of a tenant the same store. Migration declares
 /// each such store a space, in place, under one `TenantAll-legacy` policy, and says so in a
-/// receipt, once. Reach is kept (two unrelated lineages are both given its records); writes
-/// become private until published, which narrows. A second migration changes nothing, and a
-/// revoked migrated policy stays revoked rather than being re-migrated.
+/// receipt, once. Program C, C0: the store records no lineage that owns it and its labels are
+/// not dependency-stamped, so until C1 it is delivered to NO run — every bind is refused by name,
+/// nothing is receipted, and the store stays in place untouched. (Before C0 its reach was kept
+/// across lineages.) A second migration changes nothing, and a revoked migrated policy stays
+/// revoked rather than being re-migrated.
 #[test]
-fn migration_declares_each_legacy_store_once_and_never_widens() {
+fn migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_stamped() {
     in_own_process(
         module_path!(),
-        "migration_declares_each_legacy_store_once_and_never_widens",
+        "migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_stamped",
         || {
             let mut lab = Lab::new();
-            legacy_store(&lab.root, "project-a", &[raw("legacy")]);
+            let store = legacy_store(&lab.root, "project-a", &[raw("legacy")]);
+            let kept = std::fs::read(store.join(JOURNAL)).unwrap();
             let migrated = lab.registry.migrate(NOW).unwrap();
             let [event] = migrated.as_slice() else {
                 panic!("one migration, got {migrated:?}");
@@ -1134,15 +1282,19 @@ fn migration_declares_each_legacy_store_once_and_never_widens() {
             lab.restart();
             assert!(lab.registry.migrate(NOW).unwrap().is_empty(), "idempotent");
 
-            let a = lab.bind("project-a", Uuid::new_v4()).unwrap();
-            let b = lab.bind("project-a", Uuid::new_v4()).unwrap();
-            assert_eq!(values(&given(&a)), values(&[raw("legacy")]));
-            assert_eq!(given(&a), given(&b), "the legacy reach is kept");
-            write(&a, &[raw("a's private")]);
+            let receipts = lab.receipts.len();
+            for _ in 0..2 {
+                assert_cross_run(
+                    &lab.bind("project-a", Uuid::new_v4()).unwrap_err(),
+                    "records no lineage that owns it",
+                );
+            }
+            assert!(lab.registry.bindings.is_empty(), "no run was bound to it");
+            assert_eq!(lab.receipts.len(), receipts, "nothing was delivered");
             assert_eq!(
-                values(&given(&b)),
-                values(&[raw("legacy")]),
-                "and writes no longer cross"
+                std::fs::read(store.join(JOURNAL)).unwrap(),
+                kept,
+                "the legacy store is kept in place, untouched"
             );
             assert!(
                 lab.bind("project-b", Uuid::new_v4())

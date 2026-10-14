@@ -406,6 +406,33 @@ async fn the_same_token_twice_is_a_replay() {
     );
 }
 
+/// A reloaded binding is a new validator. Built by `succeeding` it shares the
+/// old one's replay cache, so a reload is not a second chance for a spent token;
+/// built fresh (the control) the same token passes again.
+#[tokio::test]
+async fn a_token_spent_before_a_reload_is_still_spent_after_it() {
+    let (k, v) = fixture();
+    let tok = sign(es256_header("k1"), claims(), &k);
+    v.validate(&tok, NOW).await.unwrap();
+    let keys = || inline(vec![ec_jwk("k1", "P-256", &k)]);
+    let cfg = || ExternalIssuerConfig::new(ISS, AUD, [VerifyAlg::Es256], keys());
+    let reloaded = ExternalIssuerValidator::succeeding(cfg(), client(), Some(&v)).unwrap();
+    assert_eq!(reason(&reloaded, &tok).await, RefusalReason::Replayed);
+    // And the reverse direction: a token the successor spends, the
+    // predecessor (still held by an exchange in flight) refuses.
+    let second = {
+        let mut c = claims();
+        c["sub"] = json!("agent-session-2");
+        sign(es256_header("k1"), c, &k)
+    };
+    reloaded.validate(&second, NOW).await.unwrap();
+    assert_eq!(reason(&v, &second).await, RefusalReason::Replayed);
+    // Control: without a predecessor the cache is empty, so the sharing above
+    // is what refused the replay.
+    let fresh = ExternalIssuerValidator::succeeding(cfg(), client(), None).unwrap();
+    fresh.validate(&tok, NOW).await.unwrap();
+}
+
 /// ECDSA signatures are malleable: if `(r, s)` verifies, so does `(r, n − s)`,
 /// and anyone holding a token can compute it without the key. A replay cache
 /// keyed on the whole compact token sees a NEW token and admits it — so a

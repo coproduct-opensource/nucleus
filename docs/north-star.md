@@ -256,7 +256,16 @@ What each status means, and what it deliberately does not:
   `TenantAll-legacy`, the declared, receipted form migration gives a store the
   owner-keyed layout already shared. Lineage, workspace and tenant audiences
   are declared channels between pods, not a confidentiality the runtime
-  withholds. Every delivery is a node-signed receipt kept before the pod is
+  withholds. **Cross-run memory is paused** (Program C, C0) until records carry
+  dependency-stamped writer labels (Program C, C1): a record's label is derived
+  from its derivation alone, so a run that read Secret data writes Public
+  records, and no view ceiling can withhold what its label does not say. Until
+  then the node refuses `Workspace`, `TenantAll` and `TenantAll-legacy` policies
+  by name (`CrossRunMemoryUnavailable`) at creation, at bind and at publish, and
+  a `Lineage` policy over a space any of whose policies admits another lineage;
+  a migrated owner-keyed store, which records no owning lineage, is delivered to
+  no run. Lineage audiences keep working. The bind-time `QuotaFullyAllocated`
+  refusal names no unreserved byte count (it would count Secret bytes). Every delivery is a node-signed receipt kept before the pod is
   handed the bytes; reads of a delivered snapshot are local and are not
   observed. Revoking a space or a policy refuses new mediated operations
   (`ForeignEpoch`, by name); **revocation does not erase what was already
@@ -264,11 +273,14 @@ What each status means, and what it deliberately does not:
   own allocation (a budget split); the bind-time allocation refusal, a stale
   base and a keyed conflict on the run's own records remain declared channels.
   Tests: `sibling_runs_share_the_base_and_never_each_others_writes`,
-  `a_workspace_policy_gives_run_b_what_run_a_published`,
+  `a_workspace_policy_is_refused_until_labels_are_stamped`,
+  `a_tenant_all_policy_is_refused_at_creation_bind_and_publish`,
+  `lineage_policies_still_bind_and_publish_and_never_reach_another_lineage`,
+  `a_fully_allocated_refusal_names_no_byte_count`,
   `a_child_is_never_handed_its_parents_binding`,
   `a_journal_truncated_below_a_pin_is_refused_by_name`,
   `a_publish_verdict_depends_only_on_the_bindings_own_allocation`,
-  `migration_declares_each_legacy_store_once_and_never_widens`. This does not
+  `migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_stamped`. This does not
   promote C2: the Lean model of the memory surface (`MemoryContext.lean`) is not
   yet linked to this code, and the mediated propose/publish path through the
   tool-proxy is M4.
