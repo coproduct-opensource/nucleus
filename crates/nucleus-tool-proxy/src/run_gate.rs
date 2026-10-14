@@ -1040,6 +1040,7 @@ pub(crate) fn endpoint_operation(path: &str) -> Option<Operation> {
         | "/v1/pod/cancel" => Some(Operation::ManagePods),
         "/v1/memory/write" => Some(Operation::WriteFiles),
         "/v1/memory/recall" => Some(Operation::ReadFiles),
+        "/v1/decision/read" | "/v1/decision/list" => Some(Operation::ReadFiles),
         p if p.starts_with("/v1/egress/") => Some(Operation::WebFetch),
         _ => None,
     }
