@@ -12,6 +12,15 @@ pub(crate) fn pod_dir(state_dir: &Path, id: uuid::Uuid) -> std::path::PathBuf {
     state_dir.join("pods").join(id.to_string())
 }
 
+/// The workload door a host-side (local-driver) proxy binds: in the pod's own
+/// directory, because the guest default under `/run` is not writable there.
+/// One function, so the launch flag and the admission record's injected
+/// environment (#3219) name the same socket.
+#[cfg(feature = "local-driver")]
+pub(crate) fn local_workload_door(pod_dir: &Path) -> std::io::Result<std::path::PathBuf> {
+    std::path::absolute(pod_dir.join("workload.sock"))
+}
+
 /// Append a node-side pod-lifecycle event to `<pod_dir>/lifecycle.log`.
 ///
 /// Ensures every pod — including direct-task pods that never run a tool-proxy —

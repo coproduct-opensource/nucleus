@@ -524,7 +524,9 @@ pub struct ExternalIssuerValidator {
     cfg: ExternalIssuerConfig,
     http: reqwest::Client,
     keys: Mutex<KeyState>,
-    replay: Mutex<ReplayCache>,
+    /// Shared with a successor built by [`Self::succeeding`], so a token spent
+    /// before a binding is reloaded stays spent after it.
+    replay: Arc<Mutex<ReplayCache>>,
 }
 
 impl fmt::Debug for ExternalIssuerValidator {
@@ -588,8 +590,31 @@ impl ExternalIssuerValidator {
             cfg,
             http,
             keys: Mutex::new(state),
-            replay: Mutex::new(replay),
+            replay: Arc::new(Mutex::new(replay)),
         })
+    }
+
+    /// [`Self::new`] for a binding that replaces `previous` while the process
+    /// runs (a configuration reload). When both name the same issuer, the new
+    /// validator records spent tokens in the SAME replay cache as `previous`,
+    /// which an exchange already holding `previous` may still be writing to.
+    ///
+    /// Without this a reload would be a replay window: every token validated
+    /// before it could be presented once more after it. Keyed on the issuer
+    /// because a token names exactly one, so no other binding can accept it.
+    ///
+    /// # Errors
+    /// As [`Self::new`].
+    pub fn succeeding(
+        cfg: ExternalIssuerConfig,
+        http: reqwest::Client,
+        previous: Option<&Self>,
+    ) -> Result<Self, ConfigError> {
+        let mut next = Self::new(cfg, http)?;
+        if let Some(previous) = previous.filter(|p| p.cfg.issuer == next.cfg.issuer) {
+            next.replay = Arc::clone(&previous.replay);
+        }
+        Ok(next)
     }
 
     /// The configured issuer.

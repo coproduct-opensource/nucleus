@@ -109,16 +109,17 @@ fn every_memory_route_is_an_operation_and_no_pod_declares_a_space() {
     );
 }
 
-/// Over the real handlers: the tenant root declares a space and a workspace policy, a run is
-/// bound and its branch published, a later run of the workspace is given it, and every step is
+/// Over the real handlers: the tenant root declares a space and a lineage policy, a run is
+/// bound and its branch published, a later run of the lineage is given it, and every step is
 /// receipted in the node's log. A pod cannot declare a space, nor publish a binding it does not
-/// hold, and a publish onto a head that moved is a conflict naming the head.
+/// hold, and a publish onto a head that moved is a conflict naming the head. A workspace policy
+/// is refused by name until record labels are dependency-stamped (Program C, C0).
 #[cfg(feature = "local-driver")]
 #[test]
-fn the_tenant_root_declares_binds_and_publishes_over_http() {
+fn the_tenant_root_declares_binds_and_publishes_over_http_within_one_lineage() {
     crate::memory_binding::tests::in_own_process(
         module_path!(),
-        "the_tenant_root_declares_binds_and_publishes_over_http",
+        "the_tenant_root_declares_binds_and_publishes_over_http_within_one_lineage",
         || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -206,17 +207,34 @@ async fn declares_binds_and_publishes_over_http() {
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");
 
-    let policy = r#"{"audience":{"kind":"workspace","selector":{"team":"a"}},"mode":"read_propose","view":{"schema":["string"],"ceiling":"secret"},"may_publish":true,"allocation_bytes":65536,"expiry":{"kind":"until_revoked"},"authority":{"kind":"tenant_root"}}"#;
+    let workspace = r#"{"audience":{"kind":"workspace","selector":{"team":"a"}},"mode":"read_propose","view":{"schema":["string"],"ceiling":"secret"},"may_publish":true,"allocation_bytes":65536,"expiry":{"kind":"until_revoked"},"authority":{"kind":"tenant_root"}}"#;
+    let (status, refused) = call(
+        Method::POST,
+        "/v1/memory/spaces/notes/policies".into(),
+        CallerScope::NodeWide,
+        workspace.into(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    assert!(
+        refused.to_string().contains("CrossRunMemoryUnavailable"),
+        "{refused}"
+    );
+    let lineage = Uuid::new_v4();
+    let policy = workspace.replace(
+        r#"{"kind":"workspace","selector":{"team":"a"}}"#,
+        &format!(r#"{{"kind":"lineage","root":"{lineage}"}}"#),
+    );
     let (status, created) = call(
         Method::POST,
         "/v1/memory/spaces/notes/policies".into(),
         CallerScope::NodeWide,
-        policy.into(),
+        policy,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");
 
-    // A run of the workspace, created by the tenant root.
+    // A run of the lineage, created by the tenant root.
     let team = std::collections::BTreeMap::from([("team".to_owned(), "a".to_owned())]);
     let mut spec: nucleus_spec::PodSpec = serde_json::from_str(
         r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#,
@@ -241,7 +259,7 @@ async fn declares_binds_and_publishes_over_http() {
                 &Subject {
                     pod: Uuid::new_v4(),
                     owner: root,
-                    lineage: LineageRoot::Known(Uuid::new_v4()),
+                    lineage: LineageRoot::Known(lineage),
                     labels: PodLabels::TenantAuthenticated(&team),
                     run_ends: crate::memory_provisioning::now_unix() + 3600,
                 },
@@ -335,7 +353,11 @@ async fn declares_binds_and_publishes_over_http() {
         &TransformRegistry::new(),
     )
     .unwrap();
-    assert_eq!(given, vec![note], "run B is given what run A published");
+    assert_eq!(
+        given,
+        vec![note],
+        "run B of the lineage is given what run A published"
+    );
 
     let log = std::fs::read_to_string(crate::memory_flow::flow_log_path(&state.state_dir)).unwrap();
     for event in [

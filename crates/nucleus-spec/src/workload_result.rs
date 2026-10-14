@@ -10,6 +10,12 @@ pub const MAX_ARTIFACT_BYTES: usize = 256 * 1024 * 1024;
 /// every byte when retention overflows; a partial stream must not be exported.
 pub const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
 
+/// The two mediator-injected bindings the environment's `inputs_sha256` omits:
+/// per-attempt values, not inputs. Written once; [`EnvironmentIdentity::of`]
+/// skips them and a verifier refuses inputs that name them.
+pub const MEDIATOR_BINDINGS: [&str; 2] =
+    ["NUCLEUS_TOOL_PROXY_URL", "NUCLEUS_TOOL_PROXY_AUTH_SECRET"];
+
 /// The exact admitted environment, split into stable inputs and a complete
 /// per-attempt commitment. Only the two mediator-injected bindings are omitted
 /// from inputs; an arbitrary `NUCLEUS_*` name is still an input.
@@ -30,10 +36,7 @@ impl EnvironmentIdentity {
         let mut complete = Sha256::new();
         complete.update(b"nucleus.workload-environment.complete.v1\n");
         for (name, value) in env {
-            let runtime_binding = matches!(
-                name.as_str(),
-                "NUCLEUS_TOOL_PROXY_URL" | "NUCLEUS_TOOL_PROXY_AUTH_SECRET"
-            );
+            let runtime_binding = MEDIATOR_BINDINGS.contains(&name.as_str());
             // Length prefixes distinguish boundaries without escaping. BTreeMap
             // fixes order; no secret value is emitted by this commitment.
             for bytes in [name.as_bytes(), value.as_bytes()] {

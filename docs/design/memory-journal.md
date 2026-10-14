@@ -139,8 +139,33 @@ A new run of the same audience is given what was published; a run already bound
 keeps its pinned snapshot. Runs of one lineage share the base and never each
 other's writes. Stores left at `<memory-root>/<sha256(owner)>/<namespace>` by the
 owner-keyed layout become spaces in place under a `TenantAll-legacy` policy at
-node start, once, receipted; their reach is kept and their writes become private
-until published.
+node start, once, receipted; their writes become private until published.
+
+**Cross-run memory is paused until labels are dependency-stamped** (Program C,
+phase C0; lifted per space by C1). A record's label is derived from its
+derivation alone, so every root is Public whatever its writer had read: a
+session that read Secret data writes Public records, and a view ceiling cannot
+withhold what the label does not say. Until a space's records carry their
+writer's dependency context, the node refuses, by name
+(`CrossRunMemoryUnavailable: record labels are not yet dependency-stamped`):
+
+- creating a `Workspace` or `TenantAll` policy, or a `Lineage` policy over a
+  space any of whose policies (live or revoked) admits another lineage;
+- minting a binding under such a policy, or one an earlier node recorded, before
+  any snapshot is written or receipted;
+- admitting a publish from a binding under one.
+
+The one decider is `Registry::cross_run_reach` (`memory_space.rs`). Lineage
+audiences keep working: the runs of one lineage share one space. A migrated
+owner-keyed store records no lineage that owns it, so it is delivered to **no**
+run until C1: its `TenantAll-legacy` policy is still recorded, and its journal is
+kept in place, untouched. This pauses the legacy layout's cross-run persistence.
+The bind-time `QuotaFullyAllocated` refusal names the policy's own allocation
+and no unreserved byte count, which would count bytes the caller cannot see. The
+refusal itself is still a one-bit bind-time availability channel (C3 replaces
+it). None of this is a confidentiality claim for memory: it withholds a channel
+the labels cannot yet decide, and says nothing of timing or of what a
+delivered snapshot does once a run holds it.
 
 The local development driver passes explicit proxy arguments and clears ambient
 memory environment settings. A mediated container receives a dedicated bind at
