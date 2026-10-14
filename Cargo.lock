@@ -6351,6 +6351,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-memory-context"
+version = "1.0.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "nucleus-microvm-host"
 version = "1.0.0"
 dependencies = [
