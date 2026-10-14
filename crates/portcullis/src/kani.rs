@@ -184,7 +184,8 @@ fn proof_normalize_monotone() {
 /// #2907: the syscall classes a pod's children are denied are monotone in the
 /// lattice. A tighter capability lattice (`a = b ∧ c`, so `a ≤ b`) with less
 /// egress denies at least every class the looser one does, over every
-/// assignment of all thirteen core dimensions.
+/// assignment of all thirteen core dimensions and all three egress cases
+/// (`None < Ipv4Only < Declared`).
 #[kani::proof]
 #[kani::solver(cadical)]
 #[kani::unwind(4)]
