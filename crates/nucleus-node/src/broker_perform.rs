@@ -539,6 +539,10 @@ pub(crate) fn resolve<'u>(
     if !label_matches_effect(asked, entry) {
         return None;
     }
+    // 2c. The operator's `paths`, when it listed any: exactly those.
+    if !entry.admits_path(asked.path) {
+        return None;
+    }
     // 3. The path may pick a resource under the base. It may not pick the base,
     //    and a query may not carry a credential (one rule, shared with the
     //    guest: `url_for_request`).
@@ -1201,6 +1205,74 @@ mod tests {
         let reply = handle_perform(&request(), &repriced, NOW, net.caller()).await;
         assert_eq!(reply.reason, "idempotency key names a different effect");
         assert_eq!(net.count(), 0);
+    }
+
+    /// An operator who lists `paths` grants exactly those: a guest that holds a model
+    /// credential cannot reach another model, or another API under the same base.
+    #[tokio::test]
+    async fn an_upstream_with_paths_refuses_every_other_path() {
+        let registry = crate::upstreams::UpstreamRegistry::from_toml_str(
+            r#"
+[[upstream]]
+name = "model-api"
+base_url = "https://model-api.example/v1"
+header = "authorization"
+call_charge_micro_usd = 0
+paths = ["/models/small:generate"]
+[upstream.credential.env]
+var = "LLM_API_TOKEN"
+"#,
+        )
+        .unwrap();
+        let pinned = registry.resolve(registry.entries());
+        let policy = PermissionLattice::permissive();
+        let credentials = store();
+        let ledger = IdempotencyLedger::new();
+        let identity = who();
+        let context = ctx(&policy, &credentials, &pinned, &ledger, &identity);
+        let net = Upstream::default();
+        for (n, path) in [
+            "/models/large:generate",
+            "/datasets",
+            "/models/small:generate/x",
+            "/messages",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let asked = PerformRequest {
+                path: path.into(),
+                idempotency_key: format!("off-{n}"),
+                ..request()
+            };
+            assert!(
+                !handle_perform(&asked, &context, NOW, net.caller())
+                    .await
+                    .granted,
+                "{path}"
+            );
+        }
+        assert_eq!(net.count(), 0);
+        let asked = PerformRequest {
+            path: "/models/small:generate".into(),
+            ..request()
+        };
+        assert!(
+            handle_perform(&asked, &context, NOW, net.caller())
+                .await
+                .granted
+        );
+        assert_eq!(net.count(), 1);
+        // A listed path must be absolute, plain and exact.
+        for bad in ["models/x", "/a/*", "/a?b", "/a/../b", ""] {
+            let text = format!(
+                "[[upstream]]\nname='x'\nbase_url='https://a.invalid'\nheader='h'\npaths=['{bad}']\n[upstream.credential.env]\nvar='V'\n"
+            );
+            assert!(
+                crate::upstreams::UpstreamRegistry::from_toml_str(&text).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ members = [
     "crates/nucleus-cred-broker",   # CB4A: Credential Delivery Point (holds creds, decides nothing)
     "crates/nucleus-cred-protocol", # CB4A: wire types only, safe for the guest to link
     "crates/nucleus-decision-protocol", # L-1 P7: the per-pod decision channel's one wire declaration (guest + host)
+    "crates/nucleus-signed-decision", # Owner decisions an agent can verify: signed record, canonical bytes, the one verifier
     "crates/nucleus-oci-rootfs",    # OCI image -> one verified, normalized, deterministic rootfs tar (local layouts/archives only)
     "crates/nucleus-jsonl",       # One atomic append per record for every line-oriented evidence log
     "crates/nucleus-yaml",        # The one YAML reader/writer: serde-saphyr with every setting pinned (G-1)
@@ -57,6 +58,7 @@ members = [
     "crates/ck-kernel",                 # Constitutional Kernel: admission engine + lineage
     "crates/nucleus-lineage",            # Per-call SPIFFE-derived data lineage
     "crates/nucleus-provenance-memory",  # Provenance-backed, taint-labeled, recompute-verified, CRDT-mergeable agent memory
+    "crates/nucleus-memory-context",     # Program B M1: pure kernel of context-indexed, versioned memory (views, candidates, CAS, epochs); Lean model MemoryContext.lean
     "crates/nucleus-provenance",          # Fail-closed third-party artifact provenance (DSSE/in-toto) at the spawn boundary
     "crates/nucleus-envelope",           # Portable provenance bundle: payload + IFC envelope
     "crates/nucleus-receipt",            # Colimit receipt envelope: Session + Projection[] + Ed25519/BLAKE3 Receipt (upstream home of platform's substrate-core envelope)

@@ -31,7 +31,7 @@ pub(crate) async fn read(
     }
     crate::validation::validate_path(&request.path).map_err(ApiError::Validation)?;
     let auth = auth.map(|value| value.0);
-    let decision =
+    let admitted =
         crate::http_kernel_decide(&state, Operation::ReadFiles, &request.path, auth.as_ref())
             .await?;
     let authority = {
@@ -50,6 +50,17 @@ pub(crate) async fn read(
             }
         }
     };
+    // An obligated read has no approved form here, so the sandbox's own ask is
+    // refused before anything is spent. Then the monitor's approvals are
+    // spent, once, immediately before the read (#3446).
+    if let Some(key) = state.runtime.sandbox().read_consent(&request.path)? {
+        return Err(ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired {
+            operation: key,
+        }));
+    }
+    let decision = admitted.spend(state.approvals.as_ref()).map_err(|key| {
+        ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation: key })
+    })?;
     let runtime = state.runtime.clone();
     let path = request.path.clone();
     let result = tokio::task::spawn_blocking(move || {

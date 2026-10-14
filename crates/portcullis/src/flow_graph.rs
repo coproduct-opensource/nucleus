@@ -4,8 +4,12 @@
 //! label accumulator (where reading web content blocks ALL subsequent writes),
 //! the DAG tracks actual causal dependencies. An action that depends only on
 //! local files is unaffected by web content read elsewhere in the session.
+//!
+//! An action's authority comes from its control chain alone; every other
+//! label dimension from all its ancestry. See [`ActionParents`] and
+//! `flow_graph_authority.rs` (#3459).
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use tracing::warn;
 
@@ -14,16 +18,16 @@ use crate::kernel::VerifiedDeclassification;
 
 use portcullis_core::effect::EffectKind;
 use portcullis_core::flow::{
-    check_flow, intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind,
-    QuarantineVerdict, TrustAncestryResult, MAX_PARENTS,
+    intrinsic_label, propagate_label, FlowNode, FlowVerdict, NodeId, NodeKind, QuarantineVerdict,
+    TrustAncestryResult, MAX_PARENTS,
 };
 use portcullis_core::ifc_api::SafetyCheck;
 use portcullis_core::receipt::{
     build_receipt, FlowReceipt, TombstonedAncestor, MAX_RECEIPT_ANCESTORS,
 };
 use portcullis_core::{
-    default_sink_class, ConfLevel, ContentHash, DerivationClass, IFCLabel, IntegLevel, Operation,
-    SinkClass,
+    default_sink_class, AuthorityLevel, ConfLevel, ContentHash, DerivationClass, IFCLabel,
+    IntegLevel, Operation, SinkClass,
 };
 
 /// Errors during graph operations.
@@ -211,8 +215,14 @@ pub struct FlowDecision {
     pub verdict: FlowVerdict,
     /// The NodeId assigned to this action in the graph.
     pub node_id: NodeId,
-    /// The propagated label for this action.
+    /// The propagated label for this action: the full join over every
+    /// parent, control and data. Its `authority` is that join too, which is
+    /// NOT what the verdict was judged by — see [`Self::authority`].
     pub label: IFCLabel,
+    /// The authority the verdict was judged by: what the control chain
+    /// conferred (#3459), lowered by the judged label's own authority only
+    /// when that is `NoAuthority` or the label is `Adversarial`.
+    pub authority: AuthorityLevel,
 }
 
 const MAX_DENIED_NODES: usize = 1024;
@@ -367,6 +377,20 @@ pub struct FlowGraph {
     /// in a side map (like `field_lineage`) so the `Copy` extracted `FlowNode`
     /// is untouched.
     content_hashes: HashMap<NodeId, ContentHash>,
+    /// The authority each node's CONTROL chain conferred (#3459), for the two
+    /// kinds of node that have one:
+    ///
+    /// - a rooted [`NodeKind::ModelPlan`]: what it confers when an action
+    ///   names it as control. A plan with no entry is not rooted and confers
+    ///   `NoAuthority`.
+    /// - an action: the chain authority its verdict was judged by, so a
+    ///   receipt recomputed later ([`build_receipt_for`](Self::build_receipt_for))
+    ///   judges by the same authority the insert did. An action never confers
+    ///   authority itself — its kind decides that, not this entry.
+    ///
+    /// A side map for the same reason as `declass_scopes`: `FlowNode` is the
+    /// extracted `Copy` struct, and its parents do not record their role.
+    control_authority: BTreeMap<NodeId, AuthorityLevel>,
     /// Monotonic session taint ceiling — the join of every observed node's
     /// `derivation`. A **ratchet field updated at observe time**, not a scan of
     /// live nodes, so `maybe_compact()` tombstoning can never launder it. Mirrors
@@ -527,6 +551,7 @@ impl FlowGraph {
             frozen: BTreeSet::new(),
             declass_scopes: HashMap::new(),
             content_hashes: HashMap::new(),
+            control_authority: BTreeMap::new(),
             // Bottom of each lattice / clean session (mirrors FlowTracker::new).
             session_taint_ceiling: DerivationClass::Deterministic,
             session_conf_ceiling: ConfLevel::Public,
@@ -649,27 +674,28 @@ impl FlowGraph {
         Ok(propagate_label(&self.gather_labels(parents), intrinsic))
     }
 
-    /// [`check_flow`] over a node's EFFECTIVE label: where the node carries
+    /// [`check_flow`](portcullis_core::flow::check_flow) over a node's
+    /// EFFECTIVE label: where the node carries
     /// a declass scope admitting its own operation, the released view
     /// governs; everywhere else (no scope, out-of-mask operation, or a
     /// non-action node) the strict stored label does. This is the single
     /// verdict path — insert-time decisions and receipt-time
     /// recomputations both come here, so they cannot disagree.
+    ///
+    /// For an action the authority is the one its control chain conferred
+    /// (recorded at insert; `NoAuthority` if absent), so a recomputation
+    /// judges by the authority the insert did.
     fn check_flow_effective(
         &self,
         node: &FlowNode,
         now: u64,
     ) -> portcullis_core::flow::FlowVerdict {
-        use portcullis_core::extracted::declassify::mask_admits;
-        use portcullis_core::extracted::mediation::med_of;
-        if let (Some(op), Some(scope)) = (node.operation, self.declass_scopes.get(&node.id)) {
-            if mask_admits(scope.sink_mask, med_of(op)) {
-                let mut shadow = *node;
-                shadow.label = scope.released_label;
-                return check_flow(&shadow, now);
-            }
-        }
-        check_flow(node, now)
+        let chain = self
+            .control_authority
+            .get(&node.id)
+            .copied()
+            .unwrap_or(AuthorityLevel::NoAuthority);
+        Self::judge(node, self.declass_scopes.get(&node.id), chain, now).0
     }
 
     /// Insert a data-source observation. NOT flow-checked.
@@ -708,9 +734,16 @@ impl FlowGraph {
         // into the child for exactly the operations every scoped ancestor
         // granted. The child's STORED label above is the strict join.
         let scope = self.inherited_scope(parents, intrinsic);
+        let plan_authority = match kind {
+            NodeKind::ModelPlan => self.rooted_plan_authority(parents, label, intrinsic.authority),
+            _ => None,
+        };
         let id = self.alloc_node(kind, label, parents, None);
         if let Some(s) = scope {
             self.declass_scopes.insert(id, s);
+        }
+        if let Some(a) = plan_authority {
+            self.control_authority.insert(id, a);
         }
 
         // Raise the monotonic session aggregates (mirrors FlowTracker's
@@ -788,11 +821,21 @@ impl FlowGraph {
         self.validate_parents(parents)?;
         // Start from the caller's label and join parents (mirrors
         // `FlowTracker::observe_with_label_and_content_hash_inner`'s fold exactly).
+        let caller_authority = label.authority;
         let label = self
             .gather_labels(parents)
             .into_iter()
             .fold(label, |acc, l| acc.join(l));
+        // A caller-labelled plan is rooted by the same rule as any other, the
+        // caller's authority standing in for the intrinsic one.
+        let plan_authority = match kind {
+            NodeKind::ModelPlan => self.rooted_plan_authority(parents, label, caller_authority),
+            _ => None,
+        };
         let id = self.alloc_node(kind, label, parents, None);
+        if let Some(a) = plan_authority {
+            self.control_authority.insert(id, a);
+        }
         // Raise the monotonic session aggregates — identical block to
         // `insert_observation`, so the caller-labelled path preserves every check
         // `FlowTracker` performs and adds none. Ratchets, not live scans, so
@@ -1098,10 +1141,33 @@ impl FlowGraph {
     ///
     /// If any parent is quarantined (directly or via ancestry), the new
     /// action node automatically inherits quarantine status (#639).
+    ///
+    /// # Authority (#3459)
+    ///
+    /// The stored label is the full join over every parent, control and data.
+    /// The verdict is judged on that label with one dimension replaced —
+    /// authority — by what the control chain confers:
+    ///
+    /// 1. each control parent confers: a `UserPrompt` its label's authority; a
+    ///    `ModelPlan` what it was rooted with when observed (a plan with a
+    ///    `UserPrompt` or rooted-plan parent), else `NoAuthority`; any other
+    ///    node `NoAuthority`;
+    /// 2. the chain authority is the meet of those, capped by the action's
+    ///    intrinsic authority, and `NoAuthority` when there is no control
+    ///    parent;
+    /// 3. when the label being judged (strict, or released by a declass scope)
+    ///    has `NoAuthority` or `Adversarial` integrity, its own authority caps
+    ///    the chain too, so content that may not steer a privileged action,
+    ///    and adversarial content, are judged exactly as before the split.
+    ///
+    /// Data parents therefore cannot raise authority, and `Informational` or
+    /// `Suggestive` data (context) cannot lower it; integrity,
+    /// confidentiality, provenance, freshness and derivation are judged on the
+    /// full join, unchanged.
     pub fn insert_action(
         &mut self,
         operation: Operation,
-        parents: &[NodeId],
+        parents: ActionParents<'_>,
         now: u64,
     ) -> Result<FlowDecision, FlowGraphError> {
         self.insert_action_with_effect(operation, parents, now, None)
@@ -1111,10 +1177,12 @@ impl FlowGraph {
     pub fn insert_action_with_effect(
         &mut self,
         operation: Operation,
-        parents: &[NodeId],
+        action_parents: ActionParents<'_>,
         now: u64,
         effect_kind: Option<EffectKind>,
     ) -> Result<FlowDecision, FlowGraphError> {
+        let all = action_parents.all();
+        let parents = all.as_slice();
         self.validate_parents(parents)?;
 
         // Check if any parent is quarantined (directly or transitively)
@@ -1122,6 +1190,7 @@ impl FlowGraph {
 
         let intrinsic = intrinsic_label(NodeKind::OutboundAction, now);
         let label = propagate_label(&self.gather_labels(parents), intrinsic);
+        let chain = self.chain_authority(action_parents.control, intrinsic.authority);
         let sink_class = Some(default_sink_class(operation));
         let node = self.build_node_with_effect(
             NodeKind::OutboundAction,
@@ -1137,20 +1206,11 @@ impl FlowGraph {
         // does. The stored node keeps the strict label either way, so
         // session taint, lineage, and `FlowDecision::label` never launder.
         // This is the same computation `check_flow_effective` performs from
-        // stored state (the scope recorded below), so a later receipt
-        // recomputation cannot disagree with the decision made here.
+        // stored state (the scope and chain authority recorded below), so a
+        // later receipt recomputation cannot disagree with the decision made
+        // here: both go through `judge`.
         let scope = self.inherited_scope(parents, intrinsic);
-        let verdict = {
-            use portcullis_core::extracted::declassify::mask_admits;
-            use portcullis_core::extracted::mediation::med_of;
-            let mut verdict_node = node;
-            if let Some(s) = &scope {
-                if mask_admits(s.sink_mask, med_of(operation)) {
-                    verdict_node.label = s.released_label;
-                }
-            }
-            check_flow(&verdict_node, now)
-        };
+        let (verdict, authority) = Self::judge(&node, scope.as_ref(), chain, now);
         self.maybe_compact();
         let id = self.next_id;
         self.nodes.push(Some(node));
@@ -1158,6 +1218,7 @@ impl FlowGraph {
         if let Some(s) = scope {
             self.declass_scopes.insert(id, s);
         }
+        self.control_authority.insert(id, chain);
 
         // Propagate quarantine to the new action node
         if any_parent_quarantined {
@@ -1179,6 +1240,7 @@ impl FlowGraph {
                     if let Some(slot) = self.nodes.get_mut(oldest as usize) {
                         *slot = None;
                     }
+                    self.control_authority.remove(&oldest);
                 }
             }
         }
@@ -1186,6 +1248,7 @@ impl FlowGraph {
             verdict,
             node_id: id,
             label,
+            authority,
         })
     }
 
@@ -1540,6 +1603,14 @@ impl FlowGraph {
         // node's label, and a compacted node's label survives only in the
         // compaction log — strict, which is the conservative direction.
         self.declass_scopes.retain(|nid, _| {
+            let idx = *nid as usize;
+            idx < self.nodes.len() && self.nodes[idx].is_some()
+        });
+
+        // A tombstoned node's control authority can no longer be read: a
+        // tombstoned plan cannot be named as a parent, and a tombstoned action
+        // has no receipt to recompute.
+        self.control_authority.retain(|nid, _| {
             let idx = *nid as usize;
             idx < self.nodes.len() && self.nodes[idx].is_some()
         });
@@ -2257,6 +2328,10 @@ impl Default for FlowGraph {
     }
 }
 
+#[path = "flow_graph_authority.rs"]
+mod authority;
+pub use authority::ActionParents;
+
 #[cfg(test)]
 #[path = "flow_graph_tests.rs"]
 mod tests;
@@ -2268,3 +2343,7 @@ mod walk;
 #[cfg(test)]
 #[path = "flow_graph_quarantine_tests.rs"]
 mod quarantine_tests;
+
+#[cfg(test)]
+#[path = "flow_graph_authority_tests.rs"]
+mod authority_tests;

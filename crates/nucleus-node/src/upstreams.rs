@@ -66,6 +66,9 @@
 //! header       = "authorization"
 //! value_prefix = "Bearer "
 //! call_charge_micro_usd = 1000 # operator tariff per authorized dispatch attempt
+//! # Optional: exact paths a guest may call under base_url (default: any path
+//! # under it). Absolute and plain: no wildcard, query or traversal.
+//! paths = ["/models/small:generate"]
 //!
 //! [upstream.credential.federated]
 //! token_endpoint     = "https://auth.model-api.example/oauth/token"
@@ -235,6 +238,11 @@ struct EntryFile {
     /// The operator's effect classification (#3229).
     #[serde(default)]
     effects: Vec<nucleus_spec::DeclaredEffect>,
+    /// Exact request paths a guest may call under `base_url`. Empty (the default) is any
+    /// path under it; listing one grants only the listed, so a model credential reaches one
+    /// model's method and not every API that shares the base.
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 /// `value_encoding = "raw"` or `value_encoding = { basic = { username = "…" } }`.
@@ -402,6 +410,8 @@ pub(crate) struct RegistryEntry {
     request_headers: BTreeSet<String>,
     /// The operator's fixed headers and secret names, validated at load.
     header_policy: HeaderPolicy,
+    /// Exact paths the guest may call; empty is any path under the base. Validated at load.
+    paths: BTreeSet<String>,
 }
 
 /// What the operator fixed about an upstream's request headers beyond the
@@ -511,6 +521,15 @@ impl RegistryEntry {
     /// it at all, and it is not the header this entry injects the credential
     /// in. All three, every call: the load-time check is not relied on alone,
     /// so a rule tightened later applies to a registry loaded earlier.
+    /// Whether the guest may call `path` on this upstream: any path when the operator listed
+    /// none, otherwise exactly a listed one (a leading `/` is not significant).
+    pub fn admits_path(&self, path: &str) -> bool {
+        self.paths.is_empty()
+            || self
+                .paths
+                .contains(&format!("/{}", path.trim_start_matches('/')))
+    }
+
     pub fn forwards_header(&self, name: &str) -> bool {
         self.request_headers.contains(name)
             && nucleus_spec::workload_egress::guest_may_propose_header(name)
@@ -562,6 +581,7 @@ impl RegistryEntry {
             call_charge: Some(CallCharge::free()),
             request_headers: BTreeSet::new(),
             header_policy: HeaderPolicy::none(),
+            paths: BTreeSet::new(),
         }
     }
 }
@@ -651,8 +671,10 @@ impl UpstreamRegistry {
                 request_headers(&up.name, &up.header, up.request_headers, &header_policy)?;
             let effects = nucleus_spec::EffectTable::from_parts(up.kind, up.effects)
                 .map_err(|e| format!("upstream {:?}: {e}", up.name))?;
+            let paths = paths(&up.name, up.paths)?;
             entries.push(RegistryEntry {
                 value_encoding,
+                paths,
                 request_headers,
                 header_policy,
                 call_charge: up.call_charge_micro_usd.map(CallCharge),
@@ -995,6 +1017,25 @@ const RESERVED_FOR_CLIENT_CERTIFICATE: &[&str] = &[
     "audience",
     "scope",
 ];
+
+/// The operator's `paths`, each absolute and plain: no wildcard, query, fragment,
+/// traversal or percent-encoding, so a listed path means exactly what it says.
+fn paths(name: &str, listed: Vec<String>) -> Result<BTreeSet<String>, String> {
+    let mut paths = BTreeSet::new();
+    for path in listed {
+        let plain = path.starts_with('/')
+            && path.len() > 1
+            && !path.contains(['*', '?', '#', '%', '\\'])
+            && !path.split('/').any(|s| s == ".." || s == ".");
+        if !plain {
+            return Err(format!(
+                "upstream {name:?}: paths entry {path:?} must be an absolute, plain path"
+            ));
+        }
+        paths.insert(path);
+    }
+    Ok(paths)
+}
 
 #[cfg(test)]
 mod tests {

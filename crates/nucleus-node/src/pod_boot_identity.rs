@@ -44,6 +44,7 @@ impl PreparedIdentity {
             spec,
             crate::lifecycle::pod_dir(&state.state_dir, id),
             id,
+            state.authority.egress_record_signer(),
         );
         let broker = broker_launch::start_broker_for_pod(broker_launch::BrokerInputs {
             state,
@@ -178,6 +179,9 @@ pub(crate) struct Inputs<'a> {
     pub state: &'a NodeState,
     pub pod_dir: &'a Path,
     pub spec: &'a PodSpec,
+    /// The spec bytes this guest is served, prepared with the plan (`delivered_spec`): the same
+    /// bytes the pod's receipt hashes.
+    pub delivered: &'a crate::delivered_spec::DeliveredSpec,
     pub image: &'a crate::rootfs_source::HostImage,
     pub id: Uuid,
     pub grant: &'a net::IdentityGrant,
@@ -210,6 +214,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
         state,
         pod_dir,
         spec,
+        delivered,
         image,
         id,
         grant,
@@ -287,6 +292,7 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
                             measured: &attestation,
                             leaf_der: cert.leaf().der(),
                             trust_bundle: manager.trust_bundle(),
+                            quotes: state.node_platform.as_ref(),
                         },
                     )?,
                     Err(e) => {
@@ -314,9 +320,8 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             }
         }
 
-        let (guest_spec, withheld) =
-            crate::cred_split::guest_spec_yaml(spec, state.broker_enforcing.is_required())
-                .map_err(|e| ApiError::Driver(format!("guest spec serialization failed: {e}")))?;
+        let guest_spec = delivered.yaml().to_owned();
+        let withheld = delivered.withheld().cloned();
         let bridge = workload_api_vsock::WorkloadApiVsockBridge::start(
             vsock_path,
             id,

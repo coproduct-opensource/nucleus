@@ -726,15 +726,28 @@ impl WorkloadApiVsockBridge {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.send(());
         }
-        let _ = self.task.await;
+        // The task's own connection drain is bounded (CONNECTION_DRAIN); this bounds
+        // the rest, and an aborted task serves no further frame.
+        crate::teardown_bound::join(
+            "workload API bridge",
+            &mut self.task,
+            CONNECTION_DRAIN + std::time::Duration::from_secs(3),
+        )
+        .await;
         // Clean up socket file
         let _ = tokio::fs::remove_file(&self.socket_path).await;
 
         // And the SPIFFE listener. Leaving it up would keep serving SVIDs for
-        // a pod that is gone.
-        if let Some((tx, task, path)) = self.spiffe.take() {
+        // a pod that is gone. Its graceful shutdown waits for open streams, so it
+        // is bounded and then aborted.
+        if let Some((tx, mut task, path)) = self.spiffe.take() {
             let _ = tx.send(());
-            let _ = task.await;
+            crate::teardown_bound::join(
+                "SPIFFE workload API",
+                &mut task,
+                std::time::Duration::from_secs(2),
+            )
+            .await;
             let _ = tokio::fs::remove_file(&path).await;
         }
     }

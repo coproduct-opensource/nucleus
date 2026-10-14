@@ -37,7 +37,9 @@ use crate::{NodeState, PodHandle, PodState};
 /// The receipt schema version this node issues.
 ///
 /// **3**: `manifest_hash` is [`nucleus_spec::PodSpec::manifest_hash`] — SHA-256 over a domain
-/// tag and the spec's RFC 8785 JSON. **2** (still in circulation, verify-only): `manifest_hash`
+/// tag and the spec's RFC 8785 JSON — of the spec **as delivered to the pod's guest**
+/// (`delivered_spec`): the hash the guest's approval check computes from the file it reads, not
+/// the node's host-side record, which keeps credential values and host paths. **2** (still in circulation, verify-only): `manifest_hash`
 /// was the SHA-256 of serde_yaml 0.9's rendering of the spec. Both are covered by the same
 /// signature over [`Receipt::preimage`], which absorbs this number, so an issued v2 receipt
 /// still verifies; only recomputing a v2 `manifest_hash` from a spec needs the retired emitter.
@@ -152,9 +154,6 @@ pub(crate) enum ReceiptError {
     NoExitReport(String),
     /// The report is there and unreadable.
     Malformed(String),
-    /// The pod's spec has no canonical form, so it has no manifest hash. Never a receipt
-    /// carrying the hash of nothing (A-2, B-4).
-    Unhashable(String),
 }
 
 impl std::fmt::Display for ReceiptError {
@@ -163,7 +162,6 @@ impl std::fmt::Display for ReceiptError {
             Self::NotExited => write!(f, "pod has not exited yet; receipt not available"),
             Self::NoExitReport(why) => write!(f, "exit report not found: {why}"),
             Self::Malformed(why) => write!(f, "failed to parse exit report: {why}"),
-            Self::Unhashable(why) => write!(f, "pod spec has no manifest hash: {why}"),
         }
     }
 }
@@ -207,11 +205,9 @@ pub(crate) async fn build(
     let provenance = claim.provenance();
     let report = claim.0;
 
-    let manifest_hash = handle
-        .spec
-        .manifest_hash()
-        .map_err(|e| ReceiptError::Unhashable(e.to_string()))?
-        .into_string();
+    // Decided at admission with the bytes the guest was handed, never recomputed from the host
+    // record (`delivered_spec`): a spec with no canonical form was refused before it launched.
+    let manifest_hash = handle.manifest_hash.as_str().to_owned();
     let v1_content_hash =
         crate::trust_gate::compute_v1_content_hash(&id.to_string(), &manifest_hash, &report);
 
@@ -551,7 +547,6 @@ mod tests {
             ReceiptError::NotExited,
             ReceiptError::NoExitReport("/w/.nucleus-exit-report.json: ENOENT".into()),
             ReceiptError::Malformed("expected value at line 1".into()),
-            ReceiptError::Unhashable("NaN".into()),
         ]
         .iter()
         .map(ToString::to_string)
@@ -562,9 +557,17 @@ mod tests {
             "{rendered:?}"
         );
         assert!(rendered[2].contains("failed to parse"), "{rendered:?}");
-        assert!(rendered[3].contains("no manifest hash"), "{rendered:?}");
+        // The parser's own reason survives rendering: "malformed" alone sends nobody anywhere.
+        assert!(
+            rendered[2].contains("expected value at line 1"),
+            "{rendered:?}"
+        );
         let unique: std::collections::BTreeSet<&String> = rendered.iter().collect();
-        assert_eq!(unique.len(), 4, "each must read differently: {rendered:?}");
+        assert_eq!(
+            unique.len(),
+            rendered.len(),
+            "each must read differently: {rendered:?}"
+        );
     }
 
     // ── `build`, against a real exited pod ──────────────────────────────────
@@ -713,6 +716,7 @@ mod tests {
             let handle = Arc::new(crate::PodHandle {
                 id: uuid::Uuid::new_v4(),
                 execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
+                manifest_hash: crate::delivered_spec::fixture_hash(&spec),
                 spec,
                 created_at: 1_757_000_000,
                 log_path: work_dir.join("pod.log"),
@@ -824,8 +828,8 @@ mod tests {
             assert_eq!(built.exit_code, 0, "/bin/true exits 0");
             assert_eq!(
                 r.manifest_hash,
-                handle.spec.manifest_hash().unwrap().into_string(),
-                "the receipt carries the spec's v3 manifest hash, and only that"
+                handle.manifest_hash.as_str(),
+                "the receipt carries the delivered spec's v3 manifest hash, and only that"
             );
             assert!(
                 !r.v1_content_hash.is_empty(),

@@ -12,9 +12,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router, middleware};
 use clap::Parser;
 use nucleus::portcullis::escalation::{EscalationError, SpiffeTraceChain, SpiffeTraceLink};
-use nucleus::portcullis::kernel::{DecisionToken, Kernel};
+use nucleus::portcullis::kernel::Kernel;
 use nucleus::portcullis::{CapabilityLevel, NodeKind, Operation, PermissionLattice};
-use nucleus::{ApprovalRequest, CallbackApprover, NucleusError, PodRuntime};
+use nucleus::{NucleusError, PodRuntime};
 use nucleus_authority_exchange::{Charger, RoundScheduler};
 use nucleus_permission_market::{PermissionDimension, PermissionGrant, PermissionMarket};
 use nucleus_spec::PodSpec;
@@ -37,6 +37,7 @@ mod authority_round;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
+mod child_reach;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
@@ -58,6 +59,7 @@ mod memory;
 mod memory_store;
 mod node_client;
 mod node_identity;
+mod owner_decision;
 mod pod_cert;
 mod pod_mgmt;
 mod policy;
@@ -65,6 +67,7 @@ mod proposal;
 mod retired;
 mod run_gate;
 mod sandbox_proof;
+mod secret_census;
 mod session_token;
 mod spend_shipper;
 mod startup_trace;
@@ -84,8 +87,8 @@ mod workload_door;
 mod workload_supervisor;
 
 use approval::{
-    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, ConsentHold, approval_lapsed,
-    approve_operation, load_approval_bundle,
+    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, approval_lapsed, approve_operation,
+    load_approval_bundle,
 };
 use attestation::AttestationVerifier;
 use audit_log::AuditLog;
@@ -139,6 +142,8 @@ fn workload_landlock_verdict(
 struct Args {
     #[command(flatten)]
     memory: memory_store::MemoryStoreArgs,
+    #[command(flatten)]
+    decisions: owner_decision::DecisionArgs,
     /// Pod spec YAML path.
     #[arg(long, env = "NUCLEUS_POD_SPEC")]
     spec: PathBuf,
@@ -700,6 +705,9 @@ pub(crate) struct AppState {
     /// Deterministic transforms used to recompute-verify `Deterministic` memory
     /// records. Empty by default ⇒ deterministic records fail closed (`Invalid`).
     pub(crate) memory_transforms: Arc<nucleus_provenance_memory::TransformRegistry>,
+    /// Verified owner decisions (`owner_decision.rs`). `None` when no trust roots are
+    /// provisioned, and then the decision routes do not exist.
+    pub(crate) decisions: Option<Arc<owner_decision::DecisionDesk>>,
     /// The governor keys that verify a token or cosign a memory declassification
     /// (`NUCLEUS_DECLASSIFY_TRUSTED_KEYS`); empty or withheld from an eval cell ⇒
     /// every declassify fails closed (ADR 0013 rule 8).
@@ -1027,6 +1035,16 @@ fn console_line(msg: &str) {
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // First, before a secret is read or a child spawned (#3461): no process at
+    // this uid may open /proc/<pid>/environ, mem or fd. (No descriptor this
+    // process holds survives into a child: every spawn sweeps them.)
+    let seal = match nucleus::seal_runtime() {
+        Ok(seal) => seal,
+        Err(e) => {
+            eprintln!("FATAL: could not seal the runtime against its own children: {e}");
+            std::process::exit(78);
+        }
+    };
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let mut st = startup_trace::Startup::new();
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1055,7 +1073,11 @@ async fn main() -> Result<(), ApiError> {
     #[cfg(feature = "otel")]
     let _memory_metrics = telemetry::init_memory_metrics().map_err(ApiError::Spec)?;
 
-    let args = Args::parse();
+    // The matches are kept: where clap found a secret (flag or environment)
+    // decides who can read it (`secret_census`).
+    let matches = <Args as clap::CommandFactory>::command().get_matches();
+    let args =
+        <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     st.mark("args_parse");
 
     // === Retired shared secret (#2446 step 3) ===
@@ -1173,6 +1195,41 @@ async fn main() -> Result<(), ApiError> {
     ) {
         console_line(&verdict.line());
     }
+    // The children this proxy can spawn, from the deciders their spawns ask,
+    // and everything it holds that they must not reach (#3454, #3461). Before
+    // any of it is opened or created: a refusal names the item.
+    let children = child_reach::ChildReach::of(
+        spec.spec.workload.as_ref(),
+        containment,
+        args.unsandboxed,
+        args.workload_without_landlock,
+    );
+    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let held = secret_census::held(
+        &args,
+        &matches,
+        &secret_census::Facts {
+            guest_proof: guest_proof_config.is_some(),
+            workload: spec.spec.workload.is_some(),
+            env_set: &env_set,
+        },
+    );
+    if let Err(why) = children.admit(&held, &seal) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
+    let declared = children.declared(&held);
+    if !declared.is_empty() {
+        console_line(&format!(
+            "[nucleus-tool-proxy] bare host tier: a child at this proxy's uid can read or \
+             replace {}",
+            declared
+                .iter()
+                .map(|h| h.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     let runtime = pod_mgmt::build_runtime(
         &spec,
         containment,
@@ -1187,11 +1244,7 @@ async fn main() -> Result<(), ApiError> {
         std::process::exit(78);
     }
 
-    let approver = CallbackApprover::new({
-        let approvals = approvals.clone();
-        move |request: &ApprovalRequest| approvals.consume(request.operation())
-    });
-    let runtime = runtime.with_approver(Arc::new(approver))?;
+    let runtime = runtime.with_approver(Arc::new(approval::effect_approver(approvals.clone())))?;
     // Every refusal from here on is redacted against this root (#2402).
     api_error::register_sandbox_root(runtime.sandbox().root_path())
         .map_err(|e| ApiError::Spec(e.to_string()))?;
@@ -1590,14 +1643,13 @@ async fn main() -> Result<(), ApiError> {
         memory_transforms.as_ref(),
         // The children the journal must be closed to (#3454): every
         // `/v1/run` child and the workload, as their spawns decide them.
-        &memory_store::ChildReach::of(
-            spec.spec.workload.as_ref(),
-            containment,
-            args.unsandboxed,
-            args.workload_without_landlock,
-        ),
+        &children,
     )?));
     let declassify_threshold = startup_trace::declassify_threshold();
+    let decisions = args.decisions.open(&spec.spec.work_dir)?.map(Arc::new);
+    if let Some(d) = &decisions {
+        eprintln!("owner decisions: {} trust root(s) pinned", d.root_count());
+    }
 
     // Live-path session task token (PR-2, present-not-consumed). Read the
     // host-injected token/nonce/issuer off the boot channel and verify ONCE.
@@ -1715,6 +1767,7 @@ async fn main() -> Result<(), ApiError> {
         flow_graph,
         provenance_memory,
         memory_transforms,
+        decisions,
         governor_keys,
         declassify_threshold,
         session_task_token,
@@ -1827,6 +1880,13 @@ async fn main() -> Result<(), ApiError> {
         // Safe on the workload-facing surface because the Ed25519 signature —
         // not the transport — is the authority (see declassify.rs).
         .route("/v1/declassify", post(declassify::apply_declassification));
+
+    // Owner decisions exist only on a pod with trust roots (owner_decision.rs).
+    if state.decisions.is_some() {
+        app = app
+            .route("/v1/decision/read", post(owner_decision::decision_read))
+            .route("/v1/decision/list", post(owner_decision::decision_list));
+    }
 
     // Conditionally add pod management routes for orchestrator mode
     if state.node_client.is_some() {
@@ -2437,7 +2497,7 @@ async fn http_kernel_decide(
     operation: Operation,
     subject: &str,
     auth_ctx: Option<&auth::AuthContext>,
-) -> Result<DecisionToken, ApiError> {
+) -> Result<mediation::Admitted, ApiError> {
     let mut kernel = state.kernel.lock().await;
     // The single authoritative FlowGraph is the live verdict source (Phase 2
     // retirement: the FlowTracker oracle is gone). Lock order (kernel, graph)
@@ -2536,9 +2596,9 @@ async fn read_file(
         return Err(ApiError::Validation(e));
     }
 
-    // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O
-    let decision_token =
-        http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
+    // Kernel mediation + IFC flow consult: the admission carries the token for
+    // sandbox I/O and any approval the decision relied on.
+    let admitted = http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
 
     let path = req.path.clone();
     // Survives the sink record below, which consumes `path`.
@@ -2548,89 +2608,50 @@ async fn read_file(
     // unmediated on this path: it went from `http_kernel_decide` straight to the
     // sandbox, so a read never cleared the obligations that `FileEffect::read`
     // enforces on the other filesystem path.
-    macro_rules! read_authority {
-        () => {{
-            use nucleus_ifc_kernel::discharge::PreflightResult;
-            let verified_scope = state.session_task_token.verified_scope();
-            let ceiling = state.ceiling(Operation::ReadFiles, certified.as_ref());
-            let flow = state.flow_graph.lock().await;
-            let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
-            drop(flow);
-            match r {
-                PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
-                PreflightResult::Denied { reason, .. }
-                | PreflightResult::RequiresApproval { reason } => {
-                    return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
-                }
+    let authority = {
+        use nucleus_ifc_kernel::discharge::PreflightResult;
+        let verified_scope = state.session_task_token.verified_scope();
+        let ceiling = state.ceiling(Operation::ReadFiles, certified.as_ref());
+        let flow = state.flow_graph.lock().await;
+        let r = run_gate::preflight_read_fs(verified_scope, ceiling, &path, &flow);
+        drop(flow);
+        match r {
+            PreflightResult::Allowed(b) => portcullis_effects::authority::Authority::new(b),
+            PreflightResult::Denied { reason, .. }
+            | PreflightResult::RequiresApproval { reason } => {
+                return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
             }
-        }};
-    }
-    let first_authority = read_authority!();
+        }
+    };
 
-    let contents =
-        match state
-            .runtime
-            .sandbox()
-            .read_to_string(&path, decision_token, first_authority)
-        {
-            Ok(contents) => contents,
-            Err(NucleusError::ApprovalRequired { operation: op }) => {
-                // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-                // PEEK. The spend is the sandbox approver reached through
-                // `request_approval` on the next line, and this guard used to
-                // consume as well — two spends per attempt, so a grant of
-                // `count: 1` never sufficed (#2406).
-                if check_identity_policy(&state, auth_ctx.as_ref(), &format!("read {}", path))
-                    || state.approvals.is_granted(&op)
-                {
-                    let approval = state.runtime.sandbox().request_approval(op.clone())?;
-                    let approved_dt = {
-                        let mut kernel = state.kernel.lock().await;
-                        kernel.issue_approved_token(operation, &format!("approved: read {}", path))
-                    };
-                    // A fresh discharge for the approved retry: one discharge
-                    // authorizes one attempt.
-                    let retry_authority = read_authority!();
-                    state.runtime.sandbox().read_to_string_approved(
-                        &path,
-                        approved_dt,
-                        &approval,
-                        retry_authority,
-                    )?
-                } else {
-                    if let Err(e) = sink.record(VerdictContext {
-                        operation,
-                        subject: path.clone(),
-                        outcome: VerdictOutcome::Deny {
-                            reason: "approval_required".to_string(),
-                        },
-                        actor,
-                        policy_rule: None,
-                        extensions: BTreeMap::new(),
-                    }) {
-                        warn!(error = %e, "verdict recording failed -- audit gap");
-                    }
-                    return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                        operation: op,
-                    }));
-                }
-            }
-            Err(err) => {
-                if let Err(e) = sink.record(VerdictContext {
-                    operation,
-                    subject: path.clone(),
-                    outcome: VerdictOutcome::Error {
-                        error: format!("{err:?}"),
-                    },
-                    actor,
-                    policy_rule: None,
-                    extensions: BTreeMap::new(),
-                }) {
-                    warn!(error = %e, "verdict recording failed -- audit gap");
-                }
-                return Err(ApiError::Nucleus(err));
-            }
-        };
+    // Every approval this read needs, the monitor's and the sandbox's own,
+    // spent once, all or none, immediately before the read (#3446). The
+    // sandbox is asked which approval it will want BEFORE anything is spent;
+    // it used to be found out by attempting the read, refused, and retried.
+    let sandbox = state.runtime.sandbox();
+    let consented = approval::consent_for_effect(
+        &state,
+        admitted,
+        sandbox.read_consent(&path),
+        |key| sandbox.request_approval(key),
+        (operation, &path, actor.clone()),
+    )?;
+    let read = match consented.approval {
+        Some(approval) => {
+            sandbox.read_to_string_approved(&path, consented.token, &approval, authority)
+        }
+        None => sandbox.read_to_string(&path, consented.token, authority),
+    };
+    let contents = match read {
+        Ok(contents) => contents,
+        Err(err) => {
+            return Err(approval::effect_failed(
+                sink.as_ref(),
+                (operation, &path, actor),
+                err,
+            ));
+        }
+    };
 
     if let Err(e) = sink.record(VerdictContext {
         operation,
@@ -2706,8 +2727,7 @@ async fn write_file(
     // Kernel mediation + IFC flow consult — obtain DecisionToken for sandbox I/O.
     // WriteFiles is an OutboundAction: denied with IfcUnsafe once the session is
     // tainted by web content (lethal-trifecta guard, #1633).
-    let decision_token =
-        http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
+    let admitted = http_kernel_decide(&state, operation, &req.path, auth_ctx.as_ref()).await?;
 
     let path = req.path.clone();
     // Survives the sink record below, which consumes `path`.
@@ -2752,127 +2772,45 @@ async fn write_file(
     };
     let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    match state.runtime.sandbox().write(
-        &path,
-        contents.as_bytes(),
-        decision_token,
-        portcullis_effects::authority::Authority::new(discharge_bundle),
-    ) {
-        Ok(()) => {}
-        Err(NucleusError::ApprovalRequired { operation: op }) => {
-            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            //
-            // The two ways this can refuse are indistinguishable from outside:
-            // "no grant was found" and "a grant was found, then the sandbox
-            // approver refused anyway" both surface as the same
-            // `ApprovalRequired` with the same operation string. That ambiguity
-            // cost four wrong diagnoses of #2406, so the distinction is logged.
-            //
-            // `http_kernel_decide` runs earlier and can also return
-            // `requires_approval`. It used to propagate before `sandbox.write`
-            // was ever called, so a grant made through `/v1/approve` never
-            // reached this registry at all — that was #2406, and it is why
-            // adding the log here first proved the point by staying silent.
-            // That gate now consults the same registry, so an operation can
-            // reach this arm with a grant already on file.
-            //
-            // Which makes it load-bearing that this guard PEEKS. The grant is
-            // spent exactly once per attempt, inside `request_approval`, whose
-            // approver is `move |req| approvals.consume(req.operation())`. This
-            // used to `consume` as well — two spends per attempt, so `count: 1`
-            // never sufficed and the caller had to approve twice what they meant
-            // to approve once.
-            let policy_ok =
-                check_identity_policy(&state, auth_ctx.as_ref(), &format!("write {}", path));
-            // `op` is the same string the kernel gate refused with and the
-            // caller posted to `/v1/approve`: both gates name an approval
-            // `{Operation:?} {subject}` (`Sandbox::approval_key`). One human
-            // decision, one name, so one grant carries the operation through
-            // every gate that asks about it.
-            let pre_granted = !policy_ok && state.approvals.is_granted(&op);
-            if policy_ok || pre_granted {
-                // A fresh discharge for the approved retry: the first attempt
-                // spent the authority minted above. One discharge authorizes one
-                // attempt, and the approved write is a distinct action that must
-                // clear the obligations on its own.
-                //
-                // It runs BEFORE `request_approval`, whose approver spends the
-                // grant: a re-discharge that refuses must leave the person's
-                // approval unspent (#3443).
-                let retry_bundle = {
-                    use nucleus_ifc_kernel::discharge::PreflightResult;
-                    let verified_scope = state.session_task_token.verified_scope();
-                    let fs_ceiling = state.ceiling(operation, certified.as_ref());
-                    let flow = state.flow_graph.lock().await;
-                    let r =
-                        run_gate::preflight_fs(operation, verified_scope, fs_ceiling, &path, &flow);
-                    drop(flow);
-                    match r {
-                        PreflightResult::Allowed(b) => b,
-                        _ => {
-                            return Err(ApiError::IfcDenied(
-                                "approved write failed re-discharge".to_string(),
-                            ));
-                        }
-                    }
-                };
-                // The spend, immediately before the write it pays for.
-                let approval = match state.runtime.sandbox().request_approval(op.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!(
-                            operation = %op,
-                            policy_ok,
-                            pre_granted,
-                            "a grant was accepted here but the sandbox approver then refused"
-                        );
-                        return Err(e.into());
-                    }
-                };
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(operation, &format!("approved: write {}", path))
-                };
-                state.runtime.sandbox().write_approved(
-                    &path,
-                    contents.as_bytes(),
-                    approved_dt,
-                    &approval,
-                    portcullis_effects::authority::Authority::new(retry_bundle),
-                )?;
-            } else {
-                if let Err(e) = sink.record(VerdictContext {
-                    operation,
-                    subject: path.clone(),
-                    outcome: VerdictOutcome::Deny {
-                        reason: "approval_required".to_string(),
-                    },
-                    actor,
-                    policy_rule: None,
-                    extensions: BTreeMap::new(),
-                }) {
-                    warn!(error = %e, "verdict recording failed -- audit gap");
-                }
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                    operation: op,
-                }));
-            }
-        }
-        Err(err) => {
-            if let Err(e) = sink.record(VerdictContext {
-                operation,
-                subject: path.clone(),
-                outcome: VerdictOutcome::Error {
-                    error: format!("{err:?}"),
-                },
-                actor,
-                policy_rule: None,
-                extensions: BTreeMap::new(),
-            }) {
-                warn!(error = %e, "verdict recording failed -- audit gap");
-            }
-            return Err(ApiError::Nucleus(err));
-        }
+    // Every approval this write needs, spent once, all or none, immediately
+    // before the write (#3446): the one the monitor relied on, whichever gate
+    // asked for it (a static obligation, a policy rule, the exposure gate),
+    // and the one the sandbox will ask for, which is the same name when both
+    // ask, so it costs one approval. The monitor's used to be left for the
+    // sandbox's approver to spend, and the sandbox asks only for a static
+    // obligation or an execute-on-consume path, so an approval that cleared
+    // an exposure-gate or policy-rule hold was never spent: it authorized the
+    // same write again on every retry until it expired.
+    //
+    // The sandbox is asked which approval it will want BEFORE anything is
+    // spent. It used to be found out by attempting the write, being refused,
+    // re-discharging and retrying, which minted a second decision token and
+    // counted the write twice in the exposure accumulator.
+    let sandbox = state.runtime.sandbox();
+    let consented = approval::consent_for_effect(
+        &state,
+        admitted,
+        sandbox.write_consent(&path),
+        |key| sandbox.request_approval(key),
+        (operation, &path, actor.clone()),
+    )?;
+    let authority = portcullis_effects::authority::Authority::new(discharge_bundle);
+    let written = match consented.approval {
+        Some(approval) => sandbox.write_approved(
+            &path,
+            contents.as_bytes(),
+            consented.token,
+            &approval,
+            authority,
+        ),
+        None => sandbox.write(&path, contents.as_bytes(), consented.token, authority),
+    };
+    if let Err(err) = written {
+        return Err(approval::effect_failed(
+            sink.as_ref(),
+            (operation, &path, actor),
+            err,
+        ));
     }
 
     if let Err(e) = sink.record(VerdictContext {
@@ -2981,7 +2919,7 @@ async fn run_command(
     // Kernel mediation + IFC flow consult — obtain DecisionToken for executor I/O.
     // RunBash is an OutboundAction: denied with IfcUnsafe once the session is
     // tainted by web content (lethal-trifecta guard, #1633).
-    let decision_token =
+    let admitted =
         http_kernel_decide(&state, operation, &display_command, auth_ctx.as_ref()).await?;
 
     let executor = state.runtime.executor();
@@ -3045,85 +2983,31 @@ async fn run_command(
     // handler's `discharge_bundle` verdict extension).
     let discharge_note = run_gate::discharge_witness(&discharge_bundle);
 
-    let output = match executor.run_args(
-        &req.args,
-        stdin,
-        directory,
-        decision_token,
-        portcullis_effects::authority::Authority::new(discharge_bundle),
-    ) {
+    // Every approval this run needs, the monitor's and the executor's own,
+    // spent once, all or none, immediately before the spawn (#3446). The
+    // executor is asked which approval it will want before anything is
+    // spent, rather than found out by a refused first attempt and a retry.
+    let consented = approval::consent_for_effect(
+        &state,
+        admitted,
+        executor.consent(&req.args),
+        |key| executor.request_approval(key),
+        (operation, &display_command, actor.clone()),
+    )?;
+    let authority = portcullis_effects::authority::Authority::new(discharge_bundle);
+    let ran = match consented.approval {
+        Some(approval) => executor.run_args_with_approval(
+            &req.args,
+            stdin,
+            directory,
+            consented.token,
+            &approval,
+            authority,
+        ),
+        None => executor.run_args(&req.args, stdin, directory, consented.token, authority),
+    };
+    let output = match ran {
         Ok(output) => output,
-        Err(NucleusError::ApprovalRequired { operation: op }) => {
-            // Check if policy allows this operation (zero-prompt mode) or if approval was pre-granted
-            // PEEK, for the same reason as the read and write paths: the
-            // executor's own approver spends it on the next line. Measured on
-            // a live pod after the naming was unified — the gate then asked by
-            // the right name (`RunBash echo ...`) and still refused, because
-            // the grant had already been spent here.
-            if check_identity_policy(
-                &state,
-                auth_ctx.as_ref(),
-                &format!("execute {}", display_command),
-            ) || state.approvals.is_granted(&op)
-            {
-                let approval = executor.request_approval(&op)?;
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(
-                        operation,
-                        &format!("approved: execute {}", display_command),
-                    )
-                };
-                executor.run_args_with_approval(
-                    &req.args,
-                    stdin,
-                    directory,
-                    approved_dt,
-                    &approval,
-                    // A fresh discharge for the retry. The first attempt spent
-                    // the authority minted above — one discharge authorizes one
-                    // attempt, and the approved retry is a distinct action that
-                    // must clear the obligations on its own.
-                    portcullis_effects::authority::Authority::new({
-                        use nucleus_ifc_kernel::discharge::PreflightResult;
-                        let verified_scope = state.session_task_token.verified_scope();
-                        let ceiling = state.ceiling(Operation::RunBash, certified.as_ref());
-                        let flow = state.flow_graph.lock().await;
-                        let r = run_gate::preflight_runbash(
-                            verified_scope,
-                            ceiling,
-                            &display_command,
-                            &flow,
-                        );
-                        drop(flow);
-                        match r {
-                            PreflightResult::Allowed(b) => b,
-                            _ => {
-                                return Err(ApiError::Body(
-                                    "approved retry failed re-discharge".to_string(),
-                                ));
-                            }
-                        }
-                    }),
-                )?
-            } else {
-                if let Err(e) = sink.record(VerdictContext {
-                    operation,
-                    subject: display_command.clone(),
-                    outcome: VerdictOutcome::Deny {
-                        reason: "approval_required".to_string(),
-                    },
-                    actor,
-                    policy_rule: None,
-                    extensions: BTreeMap::new(),
-                }) {
-                    warn!(error = %e, "verdict recording failed -- audit gap");
-                }
-                return Err(ApiError::Nucleus(NucleusError::ApprovalRequired {
-                    operation: op,
-                }));
-            }
-        }
         Err(err) => {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
@@ -3196,7 +3080,9 @@ async fn web_fetch(
 
     // Kernel mediation + IFC flow consult. WebFetch is itself a taint source
     // (observed below on success); the consult still runs for capability/exposure.
-    let _ = http_kernel_decide(&state, operation, &url_str, auth_ctx.as_ref()).await?;
+    // The admission's approvals (a hold the monitor released with a grant)
+    // join this handler's own and are spent with them at the effect (#3446).
+    let monitor = http_kernel_decide(&state, operation, &url_str, auth_ctx.as_ref()).await?;
 
     // Check web_fetch capability
     let policy = state.runtime.policy();
@@ -3223,8 +3109,8 @@ async fn web_fetch(
 
     // Approvals this fetch needs are checked here and spent only immediately
     // before the fetch, so a refusal by any check in between leaves them
-    // unspent (#3443).
-    let mut consent = ConsentHold::empty();
+    // unspent (#3443). The monitor's are among them (#3446).
+    let mut consent = monitor.into_consent();
 
     // Check if uninhabitable_state requires approval for web_fetch
     if policy.requires_approval(Operation::WebFetch) {
@@ -3493,8 +3379,7 @@ async fn glob_search(
 
     // Kernel mediation + IFC flow consult. GlobSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let decision_token =
-        http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
+    let admitted = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check glob_search capability
     let policy = state.runtime.policy();
@@ -3519,8 +3404,9 @@ async fn glob_search(
         }));
     }
 
-    // Checked here, spent only immediately before the effect (#3443).
-    let mut consent = ConsentHold::empty();
+    // Checked here, spent only immediately before the effect (#3443), with
+    // the approvals the monitor's admission relied on (#3446).
+    let mut consent = admitted;
 
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GlobSearch) {
@@ -3573,16 +3459,20 @@ async fn glob_search(
     // type and 0 keeps meaning one.
     let max = std::num::NonZeroUsize::new(req.max_results.unwrap_or(1000))
         .unwrap_or(std::num::NonZeroUsize::MIN);
-    // Every check that can refuse has run: spend, then list.
-    if let Err(key) = consent.spend(&state.approvals) {
-        return Err(approval_lapsed(
-            sink.as_ref(),
-            operation,
-            &req.pattern,
-            actor,
-            key,
-        ));
-    }
+    // Every check that can refuse has run: spend, then list. The decision
+    // token is released only by the spend (#3446).
+    let decision_token = match consent.spend(&state.approvals) {
+        Ok(token) => token,
+        Err(key) => {
+            return Err(approval_lapsed(
+                sink.as_ref(),
+                operation,
+                &req.pattern,
+                actor,
+                key,
+            ));
+        }
+    };
     let listing = state
         .runtime
         .sandbox()
@@ -3655,7 +3545,9 @@ async fn grep_search(
 
     // Kernel mediation + IFC flow consult. GrepSearch is a FileRead (observed
     // below on success); not an outbound action, so never IFC-denied.
-    let _ = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
+    // The admission's approvals (a hold the monitor released with a grant)
+    // join this handler's own and are spent with them at the effect (#3446).
+    let monitor = http_kernel_decide(&state, operation, &req.pattern, auth_ctx.as_ref()).await?;
 
     // Check grep_search capability
     let policy = state.runtime.policy();
@@ -3680,8 +3572,9 @@ async fn grep_search(
         }));
     }
 
-    // Checked here, spent only immediately before the effect (#3443).
-    let mut consent = ConsentHold::empty();
+    // Checked here, spent only immediately before the effect (#3443), with
+    // the approvals the monitor's admission relied on (#3446).
+    let mut consent = monitor.into_consent();
 
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GrepSearch) {
@@ -3897,7 +3790,9 @@ async fn web_search(
 
     // Kernel mediation + IFC flow consult. WebSearch is a taint source
     // (observed below on success); the consult still runs for capability/exposure.
-    let _ = http_kernel_decide(&state, operation, &req.query, auth_ctx.as_ref()).await?;
+    // The admission's approvals (a hold the monitor released with a grant)
+    // join this handler's own and are spent with them at the effect (#3446).
+    let monitor = http_kernel_decide(&state, operation, &req.query, auth_ctx.as_ref()).await?;
 
     // Check web_search capability
     let policy = state.runtime.policy();
@@ -3922,8 +3817,9 @@ async fn web_search(
         }));
     }
 
-    // Checked here, spent only immediately before the effect (#3443).
-    let mut consent = ConsentHold::empty();
+    // Checked here, spent only immediately before the effect (#3443), with
+    // the approvals the monitor's admission relied on (#3446).
+    let mut consent = monitor.into_consent();
 
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::WebSearch) {

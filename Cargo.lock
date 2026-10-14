@@ -5785,7 +5785,6 @@ dependencies = [
  "dirs 7.0.0",
  "ed25519-dalek 3.0.0",
  "hex",
- "hmac 0.13.0",
  "iroh",
  "iroh-blobs",
  "nucleus-bundle-cas",
@@ -6352,6 +6351,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-memory-context"
+version = "1.0.0"
+dependencies = [
+ "proptest",
+]
+
+[[package]]
 name = "nucleus-microvm-host"
 version = "1.0.0"
 dependencies = [
@@ -6608,7 +6614,6 @@ dependencies = [
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
- "hmac 0.13.0",
  "nucleus-authority-exchange",
  "nucleus-client",
  "nucleus-creditworthiness",
@@ -6829,6 +6834,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nucleus-signed-decision"
+version = "1.0.0"
+dependencies = [
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "p256",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "nucleus-spec"
 version = "1.0.0"
 dependencies = [
@@ -6913,6 +6932,7 @@ dependencies = [
  "nucleus-provenance-memory",
  "nucleus-recompute",
  "nucleus-request-proof",
+ "nucleus-signed-decision",
  "nucleus-spec",
  "nucleus-yaml",
  "opentelemetry",

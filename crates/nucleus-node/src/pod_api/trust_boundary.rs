@@ -406,10 +406,22 @@ fn witness_forged_decision() -> Result<String, String> {
 
 fn witness_taint(s: &BrokerScenario) -> Result<String, String> {
     let mut kernel = Kernel::new(s.policy.clone());
+    // The commit is the user's instruction acting on the fetched content, so
+    // the refusal is the content's doing, not a missing instruction (#3459).
+    let instruction = kernel
+        .observe(NodeKind::UserPrompt, &[])
+        .map_err(|e| format!("could not record the instruction: {e:?}"))?;
     let fetched = kernel
         .observe(NodeKind::WebContent, &[])
         .map_err(|e| format!("could not record the fetched content: {e:?}"))?;
-    let (decision, _token) = kernel.decide_with_parents(Operation::GitCommit, "commit", &[fetched]);
+    let (decision, _token) = kernel.decide_with_parents(
+        Operation::GitCommit,
+        "commit",
+        portcullis::flow_graph::ActionParents {
+            control: &[instruction],
+            data: &[fetched],
+        },
+    );
     refuses(decision.verdict, "GitCommit of fetched web content")
 }
 
@@ -843,6 +855,13 @@ impl Host for Node {
             state: &st,
             pod_dir: &pod_dir,
             spec: &spec,
+            delivered: &crate::delivered_spec::DeliveredSpec::of(
+                &spec,
+                crate::delivered_spec::Delivery::Firecracker {
+                    withhold: st.broker_enforcing.is_required(),
+                },
+            )
+            .map_err(|e| e.to_string())?,
             image: &image,
             id,
             grant: &crate::net::IdentityGrant::Granted,
@@ -1237,9 +1256,7 @@ impl GuestFacing for NodePod {
             }
             Ok(_) => Probe::Admitted("guest report promoted beyond guest provenance".into()),
             Err(ReceiptError::Malformed(why)) => Probe::Refused(format!("malformed report: {why}")),
-            Err(ReceiptError::NotExited)
-            | Err(ReceiptError::NoExitReport(_))
-            | Err(ReceiptError::Unhashable(_)) => {
+            Err(ReceiptError::NotExited) | Err(ReceiptError::NoExitReport(_)) => {
                 Probe::Inconclusive("parser answered a different question".into())
             }
         }

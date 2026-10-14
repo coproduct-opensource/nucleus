@@ -20,6 +20,10 @@ use nucleus_spec::PodSpec;
 /// Serialize only the copy prepared for this delivery mode. The admitted host
 /// spec retains its original values for host-side admission and evidence.
 /// Serialization failure refuses preparation; it is never an absent spec.
+///
+/// `Clone` copies the evidence of one delivery's fact; it mints nothing. Only this module
+/// constructs it (C-1).
+#[derive(Clone)]
 pub(crate) struct Withheld(());
 
 pub(crate) fn guest_spec_yaml(

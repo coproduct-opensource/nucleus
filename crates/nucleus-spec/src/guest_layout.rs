@@ -375,6 +375,10 @@ pub const WORKLOAD_DOOR: &str = "/run/nucleus-door/workload.sock";
 /// fail in ways that look like the workload's own bugs.
 pub const WORKLOAD_HOME_NAME: &str = ".home";
 
+/// The companion's `HOME` (`WorkloadSpec::companion`), beside the workload's and handed to the
+/// companion's uid. The work dir itself stays the workload's.
+pub const COMPANION_HOME_NAME: &str = ".companion-home";
+
 /// Every path the guest layer owns. See the module docs for why this is the
 /// only list.
 pub const RESERVED: &[Reserved] = &[
