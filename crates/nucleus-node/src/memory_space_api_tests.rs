@@ -114,8 +114,23 @@ fn every_memory_route_is_an_operation_and_no_pod_declares_a_space() {
 /// receipted in the node's log. A pod cannot declare a space, nor publish a binding it does not
 /// hold, and a publish onto a head that moved is a conflict naming the head.
 #[cfg(feature = "local-driver")]
-#[tokio::test]
-async fn the_tenant_root_declares_binds_and_publishes_over_http() {
+#[test]
+fn the_tenant_root_declares_binds_and_publishes_over_http() {
+    crate::memory_binding::tests::in_own_process(
+        module_path!(),
+        "the_tenant_root_declares_binds_and_publishes_over_http",
+        || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(declares_binds_and_publishes_over_http());
+        },
+    );
+}
+
+#[cfg(feature = "local-driver")]
+async fn declares_binds_and_publishes_over_http() {
     use crate::memory_provisioning::{LineageRoot, MemoryArgs, Subject};
     use crate::memory_space::PodLabels;
     use axum::body::Body;

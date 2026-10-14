@@ -691,4 +691,4 @@ impl CandidateValidator for BindingValidator<'_> {
 
 #[cfg(test)]
 #[path = "memory_binding_tests.rs"]
-mod tests;
+pub(crate) mod tests;
