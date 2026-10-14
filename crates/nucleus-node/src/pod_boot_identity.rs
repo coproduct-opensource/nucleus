@@ -41,7 +41,7 @@ impl PreparedIdentity {
         jail_owner: Option<(u32, u32)>,
     ) -> Result<PreparedBroker, ApiError> {
         let egress = crate::egress_meter::EgressMeter::for_pod(
-            spec,
+            state.authority.egress_chain(id).await?,
             crate::lifecycle::pod_dir(&state.state_dir, id),
             id,
             state.authority.egress_record_signer(),

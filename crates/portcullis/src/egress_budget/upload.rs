@@ -13,6 +13,27 @@ pub struct EgressUploadHold {
     remaining: EgressBytes,
 }
 
+/// What a pace decision reads of an [`EgressUploadHold`]: a copy, so no
+/// decision borrows the hold it is deciding about.
+#[derive(Debug, Clone, Copy)]
+struct UploadSlot {
+    id: ChildId,
+    bytes: EgressBytes,
+    epoch: u64,
+    remaining: EgressBytes,
+}
+
+impl EgressUploadHold {
+    const fn slot(&self) -> UploadSlot {
+        UploadSlot {
+            id: self.id,
+            bytes: self.bytes,
+            epoch: self.epoch,
+            remaining: self.remaining,
+        }
+    }
+}
+
 /// The next upload slice, or the time until another pace decision can help.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UploadPace {
@@ -59,35 +80,64 @@ impl EgressLedger {
         requested: EgressBytes,
         now_unix: u64,
     ) -> Result<(EgressUploadHold, UploadPace), EgressRefusal> {
+        let (pace, window) = self.upload_step(upload.slot(), requested, now_unix)?;
+        if let Some(window) = window {
+            self.window = window;
+        }
+        if let UploadPace::Ready(bytes) = pace {
+            upload.remaining -= bytes;
+        }
+        Ok((upload, pace))
+    }
+
+    /// What [`Self::pace_upload`] would admit now, without admitting it: for a
+    /// caller that must ask several ledgers before any of them admits. The
+    /// hold is taken and handed back by value, as every step takes it (C-4);
+    /// a refusal drops it and retains its allocation, as [`Self::pace_upload`]
+    /// does.
+    pub fn upload_allowance(
+        &self,
+        upload: EgressUploadHold,
+        requested: EgressBytes,
+        now_unix: u64,
+    ) -> Result<(EgressUploadHold, UploadPace), EgressRefusal> {
+        let (pace, _) = self.upload_step(upload.slot(), requested, now_unix)?;
+        Ok((upload, pace))
+    }
+
+    /// The one decision behind [`Self::pace_upload`] and
+    /// [`Self::upload_allowance`]: the pace, and the window as admitting it
+    /// would leave it (`None` when the window is untouched).
+    fn upload_step(
+        &self,
+        upload: UploadSlot,
+        requested: EgressBytes,
+        now_unix: u64,
+    ) -> Result<(UploadPace, Option<Window>), EgressRefusal> {
         if upload.epoch != self.epoch || self.core.allocation_of(upload.id) != Some(upload.bytes) {
             return Err(EgressRefusal::LedgerFault);
         }
         if upload.remaining == 0 {
-            return Ok((upload, UploadPace::Complete));
+            return Ok((UploadPace::Complete, None));
         }
-        let mut bytes = requested.min(upload.remaining);
-        if let EgressPace::PerWindow {
+        let bytes = requested.min(upload.remaining);
+        let EgressPace::PerWindow {
             bytes: per_window,
             window_secs,
         } = self.ceiling.pace
-        {
-            let len = u64::from(window_secs.get());
-            self.refresh_window(now_unix, len);
-            let available = per_window.saturating_sub(self.window.counted);
-            if available == 0 {
-                return Ok((
-                    upload,
-                    UploadPace::Wait {
-                        seconds: len
-                            .saturating_sub(now_unix.saturating_sub(self.window.started_at)),
-                    },
-                ));
-            }
-            bytes = bytes.min(available);
-            self.window.counted = self.window.counted.saturating_add(bytes);
+        else {
+            return Ok((UploadPace::Ready(bytes), None));
+        };
+        let len = u64::from(window_secs.get());
+        let mut window = self.window.at(now_unix, len);
+        let available = per_window.saturating_sub(window.counted);
+        if available == 0 {
+            let seconds = len.saturating_sub(now_unix.saturating_sub(window.started_at));
+            return Ok((UploadPace::Wait { seconds }, Some(window)));
         }
-        upload.remaining -= bytes;
-        Ok((upload, UploadPace::Ready(bytes)))
+        let bytes = bytes.min(available);
+        window.counted = window.counted.saturating_add(bytes);
+        Ok((UploadPace::Ready(bytes), Some(window)))
     }
 
     /// Settle the entire upload. Use `NotSent` only when no bytes were handed to
@@ -150,6 +200,28 @@ mod tests {
             .unwrap();
         assert_eq!(ledger.counted(), 280);
         assert!(ledger.core().conserves());
+    }
+
+    /// The allowance is what pacing would admit, and asking for it admits
+    /// nothing: a caller can ask every ledger before any of them counts.
+    #[test]
+    fn an_upload_allowance_is_the_pace_and_admits_nothing() {
+        let mut ledger = ledger();
+        let mut upload = ledger.reserve_upload(250).unwrap();
+        for _ in 0..3 {
+            let (back, pace) = ledger.upload_allowance(upload, 250, 10).unwrap();
+            assert_eq!(pace, UploadPace::Ready(100));
+            upload = back;
+        }
+        let (upload, pace) = ledger.pace_upload(upload, 250, 10).unwrap();
+        assert_eq!(pace, UploadPace::Ready(100), "the allowance was not spent");
+        let (upload, pace) = ledger.upload_allowance(upload, 250, 11).unwrap();
+        assert_eq!(pace, UploadPace::Wait { seconds: 1 });
+        let (upload, pace) = ledger.upload_allowance(upload, 250, 12).unwrap();
+        assert_eq!(pace, UploadPace::Ready(100), "a later window is fresh");
+        ledger
+            .settle_upload(upload, EgressSettlement::Sent)
+            .unwrap();
     }
 
     #[test]

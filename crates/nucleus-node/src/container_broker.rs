@@ -240,7 +240,7 @@ pub(crate) async fn prepare(
         id,
         capability: verify,
         egress: crate::egress_meter::EgressMeter::for_pod(
-            spec,
+            state.authority.egress_chain(id).await?,
             pod_dir.to_path_buf(),
             id,
             state.authority.egress_record_signer(),

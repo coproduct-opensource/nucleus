@@ -2,55 +2,49 @@ use super::*;
 use portcullis::{EgressUploadHold, UploadPace};
 
 impl EgressMeter {
-    /// Reserve the full staged upload before credentials or upstream I/O.
+    /// Reserve the full staged upload before credentials or upstream I/O, from
+    /// every account on the pod's chain, all or nothing.
     pub async fn reserve_upload(
         self: &Arc<Self>,
         bytes: u64,
     ) -> Result<UploadCharge, EgressRefusal> {
-        let decision = match self.ledger.lock() {
-            Ok(mut ledger) => ledger
-                .as_mut()
-                .ok_or((EgressRefusal::LedgerFault, EgressNovelty::Repeat))
-                .and_then(|ledger| ledger.reserve_upload(bytes)),
-            Err(_) => Err((EgressRefusal::LedgerFault, EgressNovelty::First)),
-        };
-        match decision {
-            Ok(hold) => Ok(UploadCharge {
-                meter: self.clone(),
-                hold: Some(hold),
-            }),
-            Err((reason, novelty)) => {
-                if novelty == EgressNovelty::First {
-                    self.record(&reason).await;
+        let mut holds = Vec::with_capacity(self.chain.accounts().len());
+        for account in self.chain.accounts() {
+            match account.reserve_upload(bytes).await {
+                Ok(hold) => holds.push(hold),
+                Err((reason, novelty)) => {
+                    for (account, hold) in self.chain.accounts().iter().zip(holds) {
+                        account.settle_upload(hold, EgressSettlement::NotSent);
+                    }
+                    if novelty == EgressNovelty::First {
+                        self.record(&reason).await;
+                    }
+                    return Err(reason);
                 }
-                Err(reason)
             }
         }
+        Ok(UploadCharge {
+            meter: self.clone(),
+            holds,
+        })
     }
 }
 
 /// Owned by the HTTP body: cancellation after handoff charges the whole upload.
 pub struct UploadCharge {
     meter: Arc<EgressMeter>,
-    hold: Option<EgressUploadHold>,
+    /// One hold per account on the meter's chain, in order. Empty once settled,
+    /// or once a pace step failed (the allocation is then retained).
+    holds: Vec<EgressUploadHold>,
 }
 
 impl UploadCharge {
+    /// The next slice: the least every account on the chain admits
+    /// (`EgressChain::pace_upload`).
     pub fn pace(&mut self, bytes: u64, now: u64) -> Result<UploadPace, EgressRefusal> {
-        let mut ledger = self
-            .meter
-            .ledger
-            .lock()
-            .map_err(|_| EgressRefusal::LedgerFault)?;
-        let (hold, pace) = ledger
-            .as_mut()
-            .ok_or(EgressRefusal::LedgerFault)?
-            .pace_upload(
-                self.hold.take().ok_or(EgressRefusal::LedgerFault)?,
-                bytes,
-                now,
-            )?;
-        self.hold = Some(hold);
+        let holds = std::mem::take(&mut self.holds);
+        let (holds, pace) = self.meter.chain.pace_upload(holds, bytes, now)?;
+        self.holds = holds;
         Ok(pace)
     }
 
@@ -59,14 +53,14 @@ impl UploadCharge {
     }
 
     fn settle(&mut self, outcome: EgressSettlement) {
-        if let Some(hold) = self.hold.take() {
-            if let Ok(mut state) = self.meter.ledger.lock() {
-                if let Some(ledger) = state.as_mut() {
-                    if let Err(error) = ledger.settle_upload(hold, outcome) {
-                        tracing::error!(pod = %self.meter.pod_id, "upload settle refused: {error}");
-                    }
-                }
-            }
+        for (account, hold) in self
+            .meter
+            .chain
+            .accounts()
+            .iter()
+            .zip(std::mem::take(&mut self.holds))
+        {
+            account.settle_upload(hold, outcome);
         }
     }
 }
