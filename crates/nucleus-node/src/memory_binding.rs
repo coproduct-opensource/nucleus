@@ -110,14 +110,14 @@ pub(crate) enum Publisher<'a> {
 }
 
 /// A binding admitted for one publish: minted only by [`Registry::admit_publish`], consumed by
-/// [`Registry::publish`] (ADR 0007 C-1, C-4). Carries the epoch and `not_after` it was admitted
-/// under.
+/// [`Registry::publish`] (ADR 0007 C-1, C-4), under the registry lock that admitted it, so the
+/// admission is decided once (by the kernel's slice) and not restated at use. Carries the epoch
+/// it was admitted under, which its commit records.
 #[must_use = "an admitted publish that is never used is a publish that was decided and not made"]
 #[derive(Debug)]
 pub(crate) struct AdmittedPublish {
     binding: Uuid,
     epoch: u32,
-    not_after: u64,
     allocation_left: u64,
 }
 
@@ -506,7 +506,6 @@ impl Registry {
         Ok(AdmittedPublish {
             binding,
             epoch: held.epoch,
-            not_after: held.not_after,
             allocation_left: held.allocation_bytes.saturating_sub(held.spent_bytes),
         })
     }
@@ -528,16 +527,8 @@ impl Registry {
         let AdmittedPublish {
             binding: binding_id,
             epoch,
-            not_after,
             allocation_left,
         } = admitted;
-        if now > not_after {
-            return Err(MemoryRefusal::Expired {
-                binding: binding_id,
-                not_after,
-            }
-            .into());
-        }
         let binding = self
             .bindings
             .get(&binding_id)
