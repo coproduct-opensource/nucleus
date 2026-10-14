@@ -718,6 +718,17 @@ pub struct PublishedJournal {
     history: History,
 }
 
+#[cfg(any(test, feature = "test-helpers"))]
+impl PublishedJournal {
+    /// Test-only: swap in a read-only handle, so the next append fails part-way
+    /// as an I/O error would (and releases the lock). Drives the uncertain-write
+    /// latch from a caller's tests.
+    pub fn fail_next_write_for_test(&mut self) -> Result<(), JournalError> {
+        self.log.file = File::open(self.location.path())?;
+        Ok(())
+    }
+}
+
 impl PublishedJournal {
     /// Open (creating, or migrating a v1 journal) and replay the journal at
     /// `location`, holding its lock until drop. `reach` is asked about the

@@ -129,6 +129,41 @@ async fn restart_replays_parent_before_derived_record() {
 }
 
 #[tokio::test]
+async fn uncertain_write_latches_reads_and_writes_without_publishing_candidate() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let args = configured(dir.path());
+    let mut store = args
+        .open(workspace.path(), &TransformRegistry::new(), &separated())
+        .unwrap();
+    match &mut store.journal {
+        Journal::Persistent(journal) => journal.fail_next_write_for_test().unwrap(),
+        Journal::Ephemeral(_) => panic!("persistent journal required"),
+    }
+    let prepared = prepare(&mut store, "a note");
+    assert!(prepared.commit(&TransformRegistry::new()).is_err());
+    assert!(store.records().is_err());
+    let req = request("another note");
+    let authority = Authority::new(bundle_for_subject(
+        Operation::WriteFiles,
+        SinkClass::MemoryPersist,
+        &crate::memory::write_subject(&req),
+    ))
+    .witnessed_by(Arc::new(ReceiptLog::new()));
+    assert!(
+        store
+            .prepare(&TransformRegistry::new(), req, authority)
+            .is_err()
+    );
+    // The candidate was never published: a restart finds no record.
+    drop(store);
+    let reopened = args
+        .open(workspace.path(), &TransformRegistry::new(), &separated())
+        .unwrap();
+    assert!(reopened.records().unwrap().is_empty());
+}
+
+#[tokio::test]
 #[expect(
     clippy::disallowed_methods,
     reason = "recovery fixture truncates only its temporary journal"

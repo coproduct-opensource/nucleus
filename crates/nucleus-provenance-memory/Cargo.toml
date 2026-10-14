@@ -9,6 +9,11 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 keywords = ["ai", "security", "memory", "provenance", "ifc"]
 categories = ["development-tools"]
 
+[features]
+# `PublishedJournal::fail_next_write_for_test`, so a caller's tests can drive the
+# uncertain-write latch. Off in every production graph.
+test-helpers = []
+
 [dependencies]
 portcullis-core = { version = "1.0.0", path = "../portcullis-core", features = ["serde"] }
 nucleus-lineage = { path = "../nucleus-lineage" }

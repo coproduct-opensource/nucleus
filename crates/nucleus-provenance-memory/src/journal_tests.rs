@@ -566,7 +566,7 @@ fn a_failed_append_latches_reads_and_publishes() {
     let mut journal = PublishedJournal::open(loc.clone(), &Anyone, &registry()).unwrap();
     let v1 = publish_now(&mut journal, vec![raw("a")]);
     // Swap in a read-only handle: the next write fails part-way.
-    journal.log.file = File::open(loc.path()).unwrap();
+    journal.fail_next_write_for_test().unwrap();
     assert!(matches!(
         publish(&mut journal, &Patch::new(v1, vec![raw("b")]), v1),
         Err(PublishRefusal::Uncertain(_))

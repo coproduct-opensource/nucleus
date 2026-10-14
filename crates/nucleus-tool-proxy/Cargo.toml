@@ -161,6 +161,9 @@ portcullis-core = { path = "../portcullis-core", features = ["test-helpers"] }
 # Resolver v2 keeps this test-only feature out of the published binary's
 # dependency graph; the real `[dependencies]` entry above stays unchanged.
 nucleus-identity = { path = "../nucleus-identity", features = ["tpm-devid", "test-helpers"] }
+# PublishedJournal::fail_next_write_for_test, for the store's uncertain-write
+# latch test. Dev-only; the published binary's graph is unchanged.
+nucleus-provenance-memory = { path = "../nucleus-provenance-memory", features = ["test-helpers"] }
 
 [lints]
 workspace = true
