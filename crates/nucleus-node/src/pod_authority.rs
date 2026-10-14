@@ -1343,17 +1343,7 @@ impl PodAuthority {
                 )));
             }
             // Egress before cost, so a refusal here reserves nothing to undo.
-            // RED-FIRST PROBE: as on main, admission never reads the child's
-            // egress against the parent's, and the child's account stands alone.
-            let parent_egress_probe = std::hint::black_box(true);
             let chain = match &parent.egress {
-                _ if parent_egress_probe => {
-                    egress::EgressChain::root(egress::EgressAccount::admitted(
-                        nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref()),
-                        child_id,
-                        &self.state_dir.join("pods").join(child_id.to_string()),
-                    ))
-                }
                 egress::PodEgress::Live(chain) => chain.clone(),
                 egress::PodEgress::Unrecoverable(why) => {
                     return Err(ApiError::Authority(format!(
@@ -1368,11 +1358,8 @@ impl PodAuthority {
                      not create children"
                 ))
             })?;
-            let child_egress = if parent_egress_probe {
-                nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref())
-            } else {
-                egress::meet(declared_egress, remaining).map_err(ApiError::Authority)?
-            };
+            let child_egress =
+                egress::meet(declared_egress, remaining).map_err(ApiError::Authority)?;
             parent
                 .ledger
                 .try_allocate(child_id.as_u128(), requested.budget.max_cost_usd)
@@ -1556,7 +1543,6 @@ impl PodAuthority {
         };
         let own_egress = egress::EgressAccount::admitted(egress_ceiling, child_id, &pod_dir);
         let egress_chain = match parent_egress {
-            Some(_) if std::hint::black_box(true) => egress::EgressChain::root(own_egress),
             Some((parent_chain, _)) => parent_chain.child(own_egress),
             None => egress::EgressChain::root(own_egress),
         };
