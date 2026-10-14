@@ -356,7 +356,7 @@ pub(crate) async fn memory_write(
     let preflight = crate::run_gate::preflight_memory_write(scope, levels, &subject, &flow);
     drop(flow);
     let authority = preflight
-        .authorize(std::sync::Arc::clone(&state.receipts))
+        .authorize(|b| Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts)))
         .map_err(|reason| ApiError::IfcDenied(format!("discharge denied: {reason}")))?;
     let mut set = state.provenance_memory.lock().await;
     let registry = state.memory_transforms.as_ref();

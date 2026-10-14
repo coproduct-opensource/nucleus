@@ -473,16 +473,18 @@ pub(crate) struct MemoryWritePreflight {
 }
 
 impl MemoryWritePreflight {
-    /// The write authority, bound to its floor by value, or the refusal's reason. The floor is
-    /// never separated from the authority it was decided with: a write is reachable only by
-    /// spending a [`MemoryWriteAuthority`], and that is the only place its record gets a floor.
+    /// The write authority, bound to its floor by value, or the refusal's reason. `mint` turns
+    /// the discharged bundle into the `Authority` (the handler mints it, witnessed by its
+    /// receipt log); the floor is never separated from the authority it was decided with: a
+    /// write is reachable only by spending a [`MemoryWriteAuthority`], and that is the only
+    /// place its record gets a floor.
     pub(crate) fn authorize(
         self,
-        receipts: std::sync::Arc<portcullis_effects::receipt::ReceiptLog>,
+        mint: impl FnOnce(DischargedBundle) -> Authority,
     ) -> Result<MemoryWriteAuthority, String> {
         match self.result {
             PreflightResult::Allowed(bundle) => Ok(MemoryWriteAuthority {
-                authority: Authority::new(bundle).witnessed_by(receipts),
+                authority: mint(bundle),
                 floor: self.floor,
             }),
             PreflightResult::Denied { reason, .. }

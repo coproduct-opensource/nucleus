@@ -460,7 +460,7 @@ fn a_session_that_read_secret_writes_a_secret_record_that_replays_secret() {
     assert!(preflight.result().is_allowed(), "{preflight:?}");
     assert_eq!(preflight.floor().level(), ConfLevel::Secret);
     let authority = preflight
-        .authorize(Arc::new(ReceiptLog::new()))
+        .authorize(|b| Authority::new(b).witnessed_by(Arc::new(ReceiptLog::new())))
         .expect("the write is authorized");
     let reply = store
         .prepare(&registry, req(), authority)
