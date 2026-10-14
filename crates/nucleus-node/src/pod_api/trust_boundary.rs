@@ -843,6 +843,13 @@ impl Host for Node {
             state: &st,
             pod_dir: &pod_dir,
             spec: &spec,
+            delivered: &crate::delivered_spec::DeliveredSpec::of(
+                &spec,
+                crate::delivered_spec::Delivery::Firecracker {
+                    withhold: st.broker_enforcing.is_required(),
+                },
+            )
+            .map_err(|e| e.to_string())?,
             image: &image,
             id,
             grant: &crate::net::IdentityGrant::Granted,

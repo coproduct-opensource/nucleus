@@ -64,6 +64,12 @@ async fn prepare_labelled_for_test(
         state: st,
         pod_dir: dir,
         spec: &spec,
+        delivered: &crate::delivered_spec::DeliveredSpec::of(
+            &spec,
+            crate::delivered_spec::Delivery::Firecracker {
+                withhold: st.broker_enforcing.is_required(),
+            },
+        )?,
         image: &crate::rootfs_source::HostImage::resolve(&image).unwrap(),
         id,
         grant: &crate::net::IdentityGrant::Granted,
