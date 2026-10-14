@@ -266,9 +266,12 @@ population_floor = 278
 # 2026-10-12 (request proofs, merged with the above): nucleus-request-proof parses DPoP
 # proofs from any client before authority is granted and declares all seven from its first
 # commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
-floor_bp = 4183
+# 2026-10-13 (Program B M1): new crate nucleus-memory-context, the pure kernel that decides
+# what a run may see of shared memory and whether a publish is valid, declares all seven
+# from its first commit. 42 of 99 = 42.42%; the ratio rose, so the floor follows it up.
+floor_bp = 4242
 floor_set = "measurement"
-population_floor = 98
+population_floor = 99
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -407,9 +410,14 @@ population_floor = 98
 # and arm() past it arms nothing and fails the launch by name
 # (PeerRefused::ArmExpired, an_arm_used_after_its_window_admits_nobody). 15/22 on its own branch;
 # with the two DPoP rights above (#3385), 17 of 24 = 70.83%.
-floor_bp = 7083
+# 2026-10-13 (Program B M1): two new affine rights in nucleus-memory-context, each bounded
+# from its first commit. AdmittedOp (one admitted mediated memory op) carries the epoch
+# and not_after it was admitted under; ValidCandidate (a whole-candidate-validated
+# publish) carries the generation it was validated against, and History::commit refuses
+# it unless that is still the head. 19 of 26 = 73.07%.
+floor_bp = 7307
 floor_set = "measurement"
-population_floor = 24
+population_floor = 26
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
