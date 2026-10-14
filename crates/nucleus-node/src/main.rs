@@ -2933,7 +2933,7 @@ async fn serve_grpc(
         NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
             // The peer's launch is admitted against the listener's own client CA
             // before any handler runs (ADR 0016 D4).
-            let auth_ctx = auth::authenticate_grpc_request(&req, &client_trust)
+            let auth_ctx = auth::authenticate_grpc_request(&req, &client_trust) // hmac-allow: the second argument is the listener's client-CA TrustBundle for the launch decision (ADR 0016 D4), not an HMAC config
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers
