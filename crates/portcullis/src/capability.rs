@@ -72,6 +72,11 @@ impl Obligations {
         self.approvals.insert(op);
     }
 
+    /// Remove an operation from the set. Returns whether it was present.
+    pub fn remove(&mut self, op: Operation) -> bool {
+        self.approvals.remove(&op)
+    }
+
     /// Get the number of obligations.
     pub fn len(&self) -> usize {
         self.approvals.len()
@@ -346,6 +351,33 @@ impl CapabilityLattice {
             Operation::CreatePr => self.create_pr,
             Operation::ManagePods => self.manage_pods,
             Operation::SpawnAgent => self.spawn_agent,
+        }
+    }
+
+    /// Every core operation whose level is above `Never`, in declaration order.
+    pub fn permitted_operations(&self) -> Vec<Operation> {
+        Operation::ALL
+            .into_iter()
+            .filter(|&op| self.level_for(op) > CapabilityLevel::Never)
+            .collect()
+    }
+
+    /// The field [`Self::level_for`] reads, for writing.
+    pub fn level_mut(&mut self, op: Operation) -> &mut CapabilityLevel {
+        match op {
+            Operation::ReadFiles => &mut self.read_files,
+            Operation::WriteFiles => &mut self.write_files,
+            Operation::EditFiles => &mut self.edit_files,
+            Operation::RunBash => &mut self.run_bash,
+            Operation::GlobSearch => &mut self.glob_search,
+            Operation::GrepSearch => &mut self.grep_search,
+            Operation::WebSearch => &mut self.web_search,
+            Operation::WebFetch => &mut self.web_fetch,
+            Operation::GitCommit => &mut self.git_commit,
+            Operation::GitPush => &mut self.git_push,
+            Operation::CreatePr => &mut self.create_pr,
+            Operation::ManagePods => &mut self.manage_pods,
+            Operation::SpawnAgent => &mut self.spawn_agent,
         }
     }
 

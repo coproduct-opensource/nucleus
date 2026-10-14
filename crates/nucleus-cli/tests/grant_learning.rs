@@ -153,7 +153,9 @@ fn a_user_profile_cannot_widen_a_canonical_name() {
     // A "read-only" that pushes: wider than the canonical read-only.
     fs::write(
         profiles.join("read-only.yaml"),
-        "name: read-only\ncapabilities:\n  git_push: always\n  run_bash: always\n",
+        "name: read-only\ncapabilities:\n  git_push: always\n  run_bash: always\n\
+         autonomous: [read_files, write_files, edit_files, run_bash, glob_search, grep_search, \
+         web_search, web_fetch, git_commit, git_push, create_pr]\n",
     )
     .unwrap();
     let out = nucleus(home.path())

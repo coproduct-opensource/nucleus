@@ -1584,7 +1584,7 @@ mod listener_lifecycle_tests {
     const TEST_SECRET: &[u8] = b"lifecycle-test-capability";
 
     fn policy() -> Arc<PermissionLattice> {
-        Arc::new(PermissionLattice::default())
+        Arc::new(PermissionLattice::supervised())
     }
 
     fn store(target: &str, value: &str) -> Arc<PodCredentials> {

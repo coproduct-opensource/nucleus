@@ -77,6 +77,13 @@ fn base_permission() -> PermissionLattice {
         derived_from: None,
         capabilities: CapabilityLattice::default(),
         obligations: Obligations::default(),
+        // Every operation `CapabilityLattice::default()` permits, autonomous.
+        autonomous: Obligations {
+            approvals: CapabilityLattice::default()
+                .permitted_operations()
+                .into_iter()
+                .collect(),
+        },
         paths: PathLattice::block_sensitive(),
         budget: BudgetLattice::with_cost_limit(1.0),
         commands: CommandLattice::restrictive(),
@@ -2109,13 +2116,15 @@ fn proof_delegation_monotone_attenuation() {
 
     let parent = PermissionLattice::builder()
         .description("parent")
-        .capabilities(parent_caps.clone())
-        .build();
+        .capabilities_with(parent_caps.clone(), crate::ConsentMode::Autonomous)
+        .build()
+        .expect("consent is declared");
 
     let child = PermissionLattice::builder()
         .description("child")
-        .capabilities(child_caps.clone())
-        .build();
+        .capabilities_with(child_caps.clone(), crate::ConsentMode::Autonomous)
+        .build()
+        .expect("consent is declared");
 
     // The meet of parent and child should always be ≤ parent (deflationary)
     let delegated = parent.meet(&child);
@@ -2195,9 +2204,10 @@ fn proof_io_confinement_never_capability_blocks() {
 
     let perms = PermissionLattice::builder()
         .description("io-confinement-test")
-        .capabilities(caps)
+        .capabilities_with(caps, crate::ConsentMode::Autonomous)
         .commands(CommandLattice::permissive())
-        .build();
+        .build()
+        .expect("consent is declared");
 
     let mut kernel = Kernel::new(perms);
     let (decision, _token) = kernel.decide(operation, "test-subject");

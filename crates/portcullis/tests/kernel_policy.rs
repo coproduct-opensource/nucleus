@@ -35,11 +35,12 @@ fn kernel_with_policy(rules: PolicyRuleSet) -> Kernel {
     };
     let mut perms = PermissionLattice::builder()
         .description("policy-test: all caps, policy is the gate")
-        .capabilities(all_caps)
+        .capabilities_with(all_caps, portcullis::ConsentMode::Autonomous)
         .commands(CommandLattice::permissive())
-        .build();
+        .build()
+        .expect("consent is declared");
     // Clear obligations so the uninhabitable state doesn't interfere.
-    perms.obligations.approvals.clear();
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
     let mut kernel = Kernel::new(perms);
     kernel.enable_flow_control();
     kernel.set_policy_rules(rules);

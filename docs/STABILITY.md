@@ -62,9 +62,55 @@ When adding a new `UninhabitableState`, the implementor must demonstrate:
 
 No Verus re-verification is needed for extensions that follow these rules.
 
+## Breaking Changes
+
+### Explicit consent on `PermissionLattice` (after v2.7.0)
+
+Every operation whose capability level is above `never` must now be declared
+`Autonomous` or `RequiresApproval`:
+
+- A serialized `PermissionLattice` (an inline pod policy, a certificate's
+  lattice, a task grant's lattice) has a required `autonomous` field: the list
+  of operations that run without approval, beside the existing `obligations`
+  (the operations that require it). There is no default. A lattice without the
+  field, with a permitted operation in neither list, or with one in both, is
+  refused when it is read, and the error names each operation.
+- A profile (`ProfileSpec`, YAML or TOML) gains an `autonomous:` list with the
+  same rule, checked when the profile is loaded or built. A profile on disk
+  that relied on implicit autonomy is refused (a user profile directory reports
+  it and is ignored) until its autonomous operations are listed.
+- `PermissionLattice::default()`, `PermissionLattice::new(..)` and
+  `EffectivePermissions::default()` are gone (ADR 0007 B-1): the old default is
+  `PermissionLattice::supervised()`. `PermissionLatticeBuilder::build()` and
+  `build_unnormalized()` return `Result<_, ConsentError>`.
+- `PermissionLattice::requires_approval(op)` is now true for a permitted
+  operation that is not declared autonomous, and false for a forbidden one.
+
+**Migration.** List, under `autonomous`, each permitted operation that ran
+without approval before — every one at `low_risk` or `always` not already in
+`obligations`. The built-in profiles were migrated this way and decide exactly
+as they did (pinned per profile by `portcullis/tests/consent_preserved.rs`).
+
+**Compatibility with an older guest.** A node at this version still runs a
+pinned v2.7.0 guest: that guest ignores the `autonomous` key, and the bytes it
+hashes — `canonical_permissions_hash` (certificate signatures) and
+`program_checksum` (`program_digest`) — are unchanged. A node persists its pods'
+certificates; records written by a node before this change have no
+`autonomous` field and are refused on restore, so drain pods before upgrading
+a node.
+
+**Release note.** *Breaking: consent is explicit. Every permitted operation in
+a policy must be listed under `obligations` (requires approval) or `autonomous`
+(runs without approval); a policy that leaves one undeclared, or lists one
+twice, is refused by name. Inline pod policies and on-disk profiles that relied
+on implicit autonomy must add an `autonomous:` list. Built-in profiles are
+unchanged in behaviour. Drain pods before upgrading a node.*
+
 ## Serde Compatibility
 
-All extension fields use `#[serde(default)]` and `#[serde(skip_serializing_if = "...")]]`:
+All extension fields use `#[serde(default)]` and `#[serde(skip_serializing_if = "...")]]`
+(the consent declaration, above, is deliberately not an extension field: it
+has no default):
 
 - Old YAML/JSON without extension fields deserializes correctly (defaults to empty)
 - New YAML/JSON with extension fields is ignored by old consumers

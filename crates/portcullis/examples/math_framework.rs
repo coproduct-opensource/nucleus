@@ -68,8 +68,8 @@ fn example_frame_and_nucleus() {
     );
 
     // Demonstrate idempotence (compare capabilities, not UUIDs)
-    let twice = nucleus.apply(&nucleus.apply(&PermissionLattice::default()));
-    let once = nucleus.apply(&PermissionLattice::default());
+    let twice = nucleus.apply(&nucleus.apply(&PermissionLattice::supervised()));
+    let once = nucleus.apply(&PermissionLattice::supervised());
     println!(
         "\nIdempotence verified: j(j(x)) = j(x): {}",
         once.capabilities == twice.capabilities && once.obligations == twice.obligations

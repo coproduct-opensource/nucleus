@@ -27,8 +27,8 @@
 
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
 use portcullis::{
-    CapabilityLattice, CapabilityLevel, CommandLattice, ExposureLabel, ExposureSet, Obligations,
-    Operation, PermissionLattice,
+    CapabilityLattice, CapabilityLevel, CommandLattice, ExposureLabel, ExposureSet, Operation,
+    PermissionLattice,
 };
 use proptest::prelude::*;
 use rust_decimal::Decimal;
@@ -173,12 +173,14 @@ proptest! {
     ) {
         let initial = PermissionLattice::builder()
             .description("initial")
-            .capabilities(caps_initial)
-            .build();
+            .capabilities_with(caps_initial, portcullis::ConsentMode::Autonomous)
+            .build()
+        .expect("consent is declared");
         let ceiling = PermissionLattice::builder()
             .description("ceiling")
-            .capabilities(caps_ceiling)
-            .build();
+            .capabilities_with(caps_ceiling, portcullis::ConsentMode::Autonomous)
+            .build()
+        .expect("consent is declared");
 
         let mut kernel = Kernel::new(initial);
         let pre_effective = kernel.effective().clone();
@@ -208,10 +210,11 @@ proptest! {
     ) {
         let mut perms = PermissionLattice::builder()
             .description("exposure-test")
-            .capabilities(caps)
+            .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
             .commands(CommandLattice::permissive())
-            .build();
-        perms.obligations = Obligations::default();
+            .build()
+        .expect("consent is declared");
+        perms.declare_all(portcullis::ConsentMode::Autonomous);
 
         let mut kernel = Kernel::new(perms);
 
@@ -262,9 +265,10 @@ proptest! {
     ) {
         let perms = PermissionLattice::builder()
             .description("mediation-test")
-            .capabilities(caps)
+            .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
             .commands(CommandLattice::permissive())
-            .build();
+            .build()
+        .expect("consent is declared");
 
         let mut kernel = Kernel::new(perms);
 
@@ -302,11 +306,12 @@ proptest! {
     ) {
         let mut perms = PermissionLattice::builder()
             .description("exposure-gate-test")
-            .capabilities(caps)
+            .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
             .commands(CommandLattice::permissive())
-            .build();
+            .build()
+        .expect("consent is declared");
         // Clear static obligations to isolate dynamic gating
-        perms.obligations = Obligations::default();
+        perms.declare_all(portcullis::ConsentMode::Autonomous);
 
         let mut kernel = Kernel::new(perms);
 
@@ -354,10 +359,11 @@ proptest! {
     ) {
         let mut perms = PermissionLattice::builder()
             .description("exposure-allow-test")
-            .capabilities(caps)
+            .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
             .commands(CommandLattice::permissive())
-            .build();
-        perms.obligations = Obligations::default();
+            .build()
+        .expect("consent is declared");
+        perms.declare_all(portcullis::ConsentMode::Autonomous);
 
         let mut kernel = Kernel::new(perms);
 
@@ -436,9 +442,10 @@ proptest! {
     ) {
         let perms = PermissionLattice::builder()
             .description("trace-test")
-            .capabilities(caps)
+            .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
             .commands(CommandLattice::permissive())
-            .build();
+            .build()
+        .expect("consent is declared");
 
         let mut kernel = Kernel::new(perms);
 
@@ -483,9 +490,10 @@ proptest! {
     ) {
         let perms = PermissionLattice::builder()
             .description("label-test")
-            .capabilities(caps)
+            .capabilities_with(caps, portcullis::ConsentMode::Autonomous)
             .commands(CommandLattice::permissive())
-            .build();
+            .build()
+        .expect("consent is declared");
 
         let mut kernel = Kernel::new(perms);
 
@@ -512,25 +520,29 @@ proptest! {
 fn spec_clinejection_blocked() {
     let mut perms = PermissionLattice::builder()
         .description("clinejection-test")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Never,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Always,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
+        .capabilities_with(
+            CapabilityLattice {
+                read_files: CapabilityLevel::Never,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Always,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            },
+            portcullis::ConsentMode::Autonomous,
+        )
         .commands(CommandLattice::permissive())
-        .build();
-    perms.obligations = Obligations::default();
+        .build()
+        .expect("consent is declared");
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate exposure gating from flow control.
     // (With Kernel::new(), flow control blocks this attack even earlier
@@ -559,25 +571,29 @@ fn spec_clinejection_blocked() {
 fn spec_toxic_agent_flow_blocked() {
     let mut perms = PermissionLattice::builder()
         .description("toxic-flow-test")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
+        .capabilities_with(
+            CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            },
+            portcullis::ConsentMode::Autonomous,
+        )
         .commands(CommandLattice::permissive())
-        .build();
-    perms.obligations = Obligations::default();
+        .build()
+        .expect("consent is declared");
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate exposure gating from flow control.
     let mut kernel = Kernel::capability_only(perms);
@@ -605,25 +621,29 @@ fn spec_toxic_agent_flow_blocked() {
 fn spec_pre_approval_consumed_exactly() {
     let mut perms = PermissionLattice::builder()
         .description("approval-test")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Never,
-            edit_files: CapabilityLevel::Never,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Never,
-            grep_search: CapabilityLevel::Never,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Never,
-            git_push: CapabilityLevel::Always,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Never,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
+        .capabilities_with(
+            CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Never,
+                edit_files: CapabilityLevel::Never,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Never,
+                grep_search: CapabilityLevel::Never,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Never,
+                git_push: CapabilityLevel::Always,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Never,
+                spawn_agent: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            },
+            portcullis::ConsentMode::Autonomous,
+        )
         .commands(CommandLattice::permissive())
-        .build();
-    perms.obligations = Obligations::default();
+        .build()
+        .expect("consent is declared");
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate exposure gating from flow control.
     let mut kernel = Kernel::capability_only(perms);
@@ -659,25 +679,29 @@ fn spec_pre_approval_consumed_exactly() {
 fn spec_local_sinks_gated_at_high_exposure() {
     let mut perms = PermissionLattice::builder()
         .description("neutral-test")
-        .capabilities(CapabilityLattice {
-            read_files: CapabilityLevel::Always,
-            write_files: CapabilityLevel::Always,
-            edit_files: CapabilityLevel::Always,
-            run_bash: CapabilityLevel::Never,
-            glob_search: CapabilityLevel::Always,
-            grep_search: CapabilityLevel::Always,
-            web_search: CapabilityLevel::Never,
-            web_fetch: CapabilityLevel::Always,
-            git_commit: CapabilityLevel::Always,
-            git_push: CapabilityLevel::Never,
-            create_pr: CapabilityLevel::Never,
-            manage_pods: CapabilityLevel::Always,
-            spawn_agent: CapabilityLevel::Never,
-            extensions: std::collections::BTreeMap::new(),
-        })
+        .capabilities_with(
+            CapabilityLattice {
+                read_files: CapabilityLevel::Always,
+                write_files: CapabilityLevel::Always,
+                edit_files: CapabilityLevel::Always,
+                run_bash: CapabilityLevel::Never,
+                glob_search: CapabilityLevel::Always,
+                grep_search: CapabilityLevel::Always,
+                web_search: CapabilityLevel::Never,
+                web_fetch: CapabilityLevel::Always,
+                git_commit: CapabilityLevel::Always,
+                git_push: CapabilityLevel::Never,
+                create_pr: CapabilityLevel::Never,
+                manage_pods: CapabilityLevel::Always,
+                spawn_agent: CapabilityLevel::Never,
+                extensions: std::collections::BTreeMap::new(),
+            },
+            portcullis::ConsentMode::Autonomous,
+        )
         .commands(CommandLattice::permissive())
-        .build();
-    perms.obligations = Obligations::default();
+        .build()
+        .expect("consent is declared");
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
 
     // Use capability_only() to isolate exposure gating from flow control.
     let mut kernel = Kernel::capability_only(perms);

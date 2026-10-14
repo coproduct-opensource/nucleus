@@ -2007,10 +2007,10 @@ mod tests {
     /// or command restrictions. This allows testing dynamic exposure gating
     /// in isolation without command-lattice or static-obligation interference.
     fn permissive_no_static_obligations() -> PermissionLattice {
-        use portcullis::{CommandLattice, Obligations};
+        use portcullis::CommandLattice;
         let mut lattice = PermissionLattice::permissive();
         lattice = lattice.with_uninhabitable_disabled();
-        lattice.obligations = Obligations::default();
+        lattice.declare_all(portcullis::ConsentMode::Autonomous);
         lattice.commands = CommandLattice::empty();
         lattice
     }

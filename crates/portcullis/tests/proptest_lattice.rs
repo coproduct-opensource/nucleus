@@ -322,9 +322,9 @@ proptest! {
         enforce in any::<bool>()
     ) {
         let perms = {
-            let mut p = PermissionLattice::default();
+            let mut p = PermissionLattice::supervised();
             p.capabilities = a;
-            p.obligations = Default::default();
+            p.declare_all(portcullis::ConsentMode::Autonomous);
             // uninhabitable_constraint is private — enforce param unused
             let _ = enforce;
             p
@@ -341,9 +341,9 @@ proptest! {
         a in arb_capability_lattice()
     ) {
         let perms = {
-            let mut p = PermissionLattice::default();
+            let mut p = PermissionLattice::supervised();
             p.capabilities = a;
-            p.obligations = Default::default();
+            p.declare_all(portcullis::ConsentMode::Autonomous);
             p
         };
 
@@ -367,15 +367,15 @@ proptest! {
     ) {
         // Build two permission lattices with uninhabitable_state constraint enforced
         let perms_a = {
-            let mut p = PermissionLattice::default();
+            let mut p = PermissionLattice::supervised();
             p.capabilities = a;
-            p.obligations = Default::default();
+            p.declare_all(portcullis::ConsentMode::Autonomous);
             p
         };
         let perms_b = {
-            let mut p = PermissionLattice::default();
+            let mut p = PermissionLattice::supervised();
             p.capabilities = b;
-            p.obligations = Default::default();
+            p.declare_all(portcullis::ConsentMode::Autonomous);
             p
         };
 

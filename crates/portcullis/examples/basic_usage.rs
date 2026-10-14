@@ -40,9 +40,9 @@ fn main() {
     println!("\n3. Using PermissionLattice with automatic uninhabitable_state enforcement:");
     #[allow(clippy::field_reassign_with_default)]
     let perms = {
-        let mut p = PermissionLattice::default();
+        let mut p = PermissionLattice::supervised();
         p.capabilities = dangerous.clone();
-        p.obligations = Default::default();
+        p.declare_all(portcullis::ConsentMode::Autonomous);
         p
     };
 

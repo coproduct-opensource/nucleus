@@ -518,7 +518,7 @@ pub trait ToolCallGuard: Send + Sync {
     ///     Act, FilePath, GradedExposureGuard, Operation, PermissionLattice, ReadSink,
     ///     ToolCallGuard,
     /// };
-    /// let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    /// let guard = GradedExposureGuard::new(PermissionLattice::supervised(), "schema");
     /// let act = Act::Read {
     ///     path: FilePath::new("/workspace/main.rs"),
     ///     sink: ReadSink::AuditLog,
@@ -540,7 +540,7 @@ pub trait ToolCallGuard: Send + Sync {
     ///     Act, FilePath, GradedExposureGuard, Operation, PermissionLattice, ReadSink,
     ///     ToolCallGuard,
     /// };
-    /// let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    /// let guard = GradedExposureGuard::new(PermissionLattice::supervised(), "schema");
     /// let act = Act::Read {
     ///     path: FilePath::new("/workspace/main.rs"),
     ///     sink: ReadSink::AuditLog,

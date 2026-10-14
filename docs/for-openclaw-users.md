@@ -47,12 +47,12 @@ manage_pods: Never        (blocked entirely)
 
 A level is permission, not consent: `LowRisk` and `Always` both permit the
 operation, and neither means "asks first". Whether a person must approve is
-the policy's separate **obligations** set — an operation listed there is held
-until approved, and one not listed runs without approval. Nucleus adds
-obligations automatically (for each permitted `git_push`, `create_pr`,
-`run_bash`) when private-data access, untrusted content and an exfiltration
-channel are all present. A later release makes this consent choice an explicit
-per-operation declaration.
+declared per operation: one listed under **obligations** is held until
+approved, one listed under **autonomous** runs without approval, and every
+permitted operation must be in exactly one of the two — a policy that leaves
+one out is refused by name. Nucleus adds obligations automatically (for each
+permitted `git_push`, `create_pr`, `run_bash`) when private-data access,
+untrusted content and an exfiltration channel are all present.
 
 The lattice has three operations that are formally verified:
 

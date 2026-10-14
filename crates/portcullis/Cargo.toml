@@ -147,6 +147,14 @@ required-features = ["dlc"]
 name = "profile_namespace_parity"
 required-features = ["spec"]
 
+[[test]]
+name = "consent_preserved"
+required-features = ["spec"]
+
+[[test]]
+name = "consent_declaration"
+required-features = ["spec"]
+
 [build-dependencies]
 # The profile provider validates profiles/*.yaml at BUILD time, so a malformed
 # built-in profile fails `cargo build` instead of panicking in a booting pod.

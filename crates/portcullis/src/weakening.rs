@@ -905,7 +905,7 @@ mod tests {
     #[test]
     fn test_compute_gap_no_weakening() {
         let config = WeakeningCostConfig::default();
-        let floor = crate::PermissionLattice::default();
+        let floor = crate::PermissionLattice::supervised();
         let actual = floor.clone();
 
         let gap = config.compute_gap(&floor, &actual);
@@ -932,7 +932,7 @@ mod tests {
     #[test]
     fn test_compute_gap_path_weakening() {
         let config = WeakeningCostConfig::default();
-        let floor = crate::PermissionLattice::default();
+        let floor = crate::PermissionLattice::supervised();
         let mut actual = floor.clone();
         actual.paths.allowed.insert("/extra/path".to_string());
 
@@ -943,7 +943,7 @@ mod tests {
     #[test]
     fn test_compute_gap_command_weakening() {
         let config = WeakeningCostConfig::default();
-        let floor = crate::PermissionLattice::default();
+        let floor = crate::PermissionLattice::supervised();
         let mut actual = floor.clone();
         actual.commands.allowed.insert("docker build".to_string());
 
@@ -954,7 +954,7 @@ mod tests {
     #[test]
     fn test_compute_gap_budget_weakening() {
         let config = WeakeningCostConfig::default();
-        let floor = crate::PermissionLattice::default();
+        let floor = crate::PermissionLattice::supervised();
         let mut actual = floor.clone();
         actual.budget.max_cost_usd = floor.budget.max_cost_usd * Decimal::new(10, 0);
 

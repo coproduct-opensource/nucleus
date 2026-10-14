@@ -43,6 +43,7 @@ const KNOWN_KEYS: &[&str] = &[
     "description",
     "capabilities",
     "obligations",
+    "autonomous",
     "paths",
     "budget",
     "time",
