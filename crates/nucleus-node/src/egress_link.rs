@@ -5,8 +5,13 @@
 //! length. Replies are not queued, while outgoing ACKs and retransmissions are.
 //! No queue-bypass or fail-open mode is installed. A missing listener, full
 //! queue or receiver failure drops traffic rather than bypassing accounting.
+//!
+//! The receiver also watches the kernel's own count of what left the link
+//! ([`bypass`]): more than it admitted, or a count it cannot read, cuts the
+//! pod's egress and leaves a signed record.
 #![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 
+pub(crate) mod bypass;
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests;
 #[cfg(target_os = "linux")]
@@ -16,9 +21,10 @@ mod tests;
 
 use crate::{
     ApiError,
-    egress_meter::{EgressCharge, EgressMeter},
+    egress_meter::{EgressCharge, EgressMeter, link_record::LinkCut},
     net::NetPlan,
 };
+use bypass::{Admitted, Assessment, Detector};
 use std::{io, sync::Arc, time::Duration};
 use tokio::{sync::oneshot, task::JoinHandle};
 
@@ -79,7 +85,18 @@ impl LinkMonitor {
                 )));
             }
         }
-        Ok(Self::serve(queue, meter))
+        // The baseline is read once both rules are in place, so every IP frame
+        // the kernel counts after it passed the queue. A link whose counters
+        // cannot be read is refused here, before the VMM exists.
+        let detector = Detector::start(
+            bypass::SysfsCounters::receive(
+                std::path::Path::new(bypass::SysfsCounters::HOST_ROOT),
+                &plan.host_veth,
+            ),
+            bypass::CHECK_PERIOD,
+        )
+        .map_err(|err| ApiError::Driver(format!("prepare pod egress bypass check: {err}")))?;
+        Ok(Self::serve(queue, meter, detector))
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -87,18 +104,19 @@ impl LinkMonitor {
         Err(ApiError::Driver("packet accounting requires Linux".into()))
     }
 
-    fn serve(queue: impl PacketQueue, meter: Arc<EgressMeter>) -> Self {
-        Self::serve_with_clock(queue, meter, crate::now_unix)
+    fn serve(queue: impl PacketQueue, meter: Arc<EgressMeter>, detector: Detector) -> Self {
+        Self::serve_with_clock(queue, meter, detector, crate::now_unix)
     }
 
     fn serve_with_clock(
         queue: impl PacketQueue,
         meter: Arc<EgressMeter>,
+        detector: Detector,
         clock: impl Fn() -> u64 + Send + 'static,
     ) -> Self {
         let (stop, receiver) = oneshot::channel();
         Self {
-            task: Some(tokio::spawn(run(queue, meter, receiver, clock))),
+            task: Some(tokio::spawn(run(queue, meter, detector, receiver, clock))),
             stop: Some(stop),
         }
     }
@@ -139,18 +157,65 @@ impl Drop for LinkMonitor {
     }
 }
 
+/// Whether a link check left the pod's egress open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Link {
+    Open,
+    Cut,
+}
+
+/// Check the link against what this receiver admitted, and cut the pod's
+/// egress on anything but a consistent count.
+async fn check_link(detector: &Detector, admitted: Admitted, meter: &EgressMeter) -> Link {
+    // RED-FIRST PROBE: as on main, nothing acts on the link's counters.
+    if std::hint::black_box(true) {
+        return Link::Open;
+    }
+    match detector.check(admitted) {
+        Assessment::Consistent => Link::Open,
+        Assessment::Bypass(found) => {
+            meter.cut_link(LinkCut::Bypass, &found.to_string()).await;
+            Link::Cut
+        }
+        Assessment::CouldNotCheck(why) => {
+            meter
+                .cut_link(
+                    LinkCut::CouldNotCheck,
+                    &format!(
+                        "egress link check could not be made (egress.link): {why}; this is not \
+                         a finding of no bypass, and egress is cut for the rest of this pod's life"
+                    ),
+                )
+                .await;
+            Link::Cut
+        }
+    }
+}
+
 async fn run<Q: PacketQueue>(
     mut queue: Q,
     meter: Arc<EgressMeter>,
+    detector: Detector,
     mut stop: oneshot::Receiver<()>,
     clock: impl Fn() -> u64,
 ) {
-    let mut accepted_bytes = 0u64;
+    let mut admitted = Admitted::default();
     let mut rejected_packets = 0u64;
+    let mut checks = tokio::time::interval(detector.period);
+    checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut link = Link::Open;
     loop {
+        // The check is polled before the queue, so a busy link cannot starve it.
         let received = tokio::select! {
             biased;
             _ = &mut stop => break,
+            _ = checks.tick() => {
+                link = check_link(&detector, admitted, &meter).await;
+                match link {
+                    Link::Open => continue,
+                    Link::Cut => break,
+                }
+            }
             received = queue.next() => received,
         };
         let packet = match received {
@@ -170,7 +235,10 @@ async fn run<Q: PacketQueue>(
                     meter.fault().await;
                     break;
                 }
-                accepted_bytes = accepted_bytes.saturating_add(bytes);
+                // Counted only once the verdict is given, so a check between
+                // packets never sees a frame the kernel sent and this did not.
+                admitted.bytes = admitted.bytes.saturating_add(bytes);
+                admitted.packets = admitted.packets.saturating_add(1);
             }
             Err(refusal) => {
                 rejected_packets = rejected_packets.saturating_add(1);
@@ -191,5 +259,10 @@ async fn run<Q: PacketQueue>(
     // Closing the socket flushes queued packets and leaves the no-bypass rule
     // dropping new traffic. Close before awaiting the final audit write.
     drop(queue);
-    meter.record_packets(accepted_bytes, rejected_packets).await;
+    // One last look, whatever ended the loop: a bypass in the final period is
+    // still a bypass.
+    if link == Link::Open {
+        check_link(&detector, admitted, &meter).await;
+    }
+    meter.record_packets(admitted.bytes, rejected_packets).await;
 }

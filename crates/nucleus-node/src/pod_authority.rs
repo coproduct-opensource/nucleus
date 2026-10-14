@@ -747,6 +747,9 @@ pub(crate) enum SignedRecord {
     /// An egress-meter exhaustion record (`egress_meter::record::EgressRecord::preimage`,
     /// #2905).
     EgressExhaustion,
+    /// The egress cut a pod's link check made: a bypass, or counters it could not read
+    /// (`egress_meter::link_record::LinkRecord::preimage`, #2905).
+    EgressLink,
 }
 
 impl SignedRecord {
@@ -754,6 +757,7 @@ impl SignedRecord {
         match self {
             Self::PodReceipt => b"nucleus/pod-receipt/v1\0",
             Self::EgressExhaustion => b"nucleus/egress-exhaustion/v1\0",
+            Self::EgressLink => b"nucleus/egress-link/v1\0",
         }
     }
 
@@ -820,8 +824,9 @@ pub(crate) fn verify_record(
     vk.verify_strict(&msg, &sig).is_ok()
 }
 
-/// Signs egress-exhaustion records with the node's root key, in
-/// [`SignedRecord::EgressExhaustion`]'s space and no other. Minted only by
+/// Signs a pod's egress records with the node's root key: exhaustion records in
+/// [`SignedRecord::EgressExhaustion`]'s space and link records in
+/// [`SignedRecord::EgressLink`]'s, and no other. Minted only by
 /// [`PodAuthority::egress_record_signer`] (ADR 0007 C-1).
 #[derive(Clone)]
 pub(crate) struct EgressRecordSigner(std::sync::Arc<PodAuthority>);
@@ -831,6 +836,14 @@ impl EgressRecordSigner {
     pub(crate) fn sign(&self, preimage: &[u8]) -> (String, String) {
         (
             self.0.sign_record(SignedRecord::EgressExhaustion, preimage),
+            self.0.root_pubkey_hex(),
+        )
+    }
+
+    /// As [`Self::sign`], for a link record (a bypass, or a check that could not be made).
+    pub(crate) fn sign_link(&self, preimage: &[u8]) -> (String, String) {
+        (
+            self.0.sign_record(SignedRecord::EgressLink, preimage),
             self.0.root_pubkey_hex(),
         )
     }
