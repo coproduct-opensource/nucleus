@@ -5,6 +5,7 @@
 //! public GitHub issue, attempts to exfiltrate private repo data via PR
 //! creation, and is blocked. The receipt is Ed25519-signed and verifiable.
 
+use portcullis::flow_graph::ActionParents;
 use portcullis::kernel::Kernel;
 // sign_receipt and verify_receipt are used by the kernel internally
 // when set_signing_key() is configured — imported here for documentation.
@@ -28,6 +29,11 @@ fn invariant_exploit_blocked_with_signed_receipt() {
 
     // ── Simulate the Invariant exploit scenario ──
     //
+    // 0. The user's instruction to the agent: the control chain (#3459).
+    let user = kernel
+        .observe(NodeKind::UserPrompt, &[])
+        .expect("observe user prompt");
+
     // 1. User opens a GitHub issue containing a malicious prompt
     //    (public content → Adversarial integrity, NoAuthority)
     let malicious_issue = kernel
@@ -43,7 +49,7 @@ fn invariant_exploit_blocked_with_signed_receipt() {
     //    and the private data (this is where the attack happens —
     //    the model's plan is tainted by the malicious issue)
     let tainted_plan = kernel
-        .observe(NodeKind::ModelPlan, &[malicious_issue, private_data])
+        .observe(NodeKind::ModelPlan, &[user, malicious_issue, private_data])
         .expect("observe model plan");
 
     // 4. Agent attempts to create a PR that exfiltrates private data.
@@ -52,7 +58,10 @@ fn invariant_exploit_blocked_with_signed_receipt() {
     let (decision, _token) = kernel.decide_with_parents(
         Operation::CreatePr,
         "Create PR with private data",
-        &[tainted_plan],
+        ActionParents {
+            control: &[tainted_plan],
+            data: &[],
+        },
     );
 
     // ── Verify the verdict ──
@@ -98,8 +107,14 @@ fn invariant_exploit_blocked_with_signed_receipt() {
     let clean_file = kernel
         .observe(NodeKind::FileRead, &[])
         .expect("observe clean file");
-    let (clean_decision, _) =
-        kernel.decide_with_parents(Operation::WriteFiles, "/workspace/fix.rs", &[clean_file]);
+    let (clean_decision, _) = kernel.decide_with_parents(
+        Operation::WriteFiles,
+        "/workspace/fix.rs",
+        ActionParents {
+            control: &[user],
+            data: &[clean_file],
+        },
+    );
     assert!(
         clean_decision.verdict.is_allowed(),
         "Clean-parented write should be allowed"

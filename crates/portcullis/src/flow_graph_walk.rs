@@ -203,8 +203,15 @@ fn run(cmds: &[Cmd]) -> Result<Seen, TestCaseError> {
                     ),
                     _ => (
                         NodeKind::OutboundAction,
-                        g.insert_action(OPS[*k], &parents, NOW)
-                            .map(|d| (d.node_id, Some(d.verdict))),
+                        g.insert_action(
+                            OPS[*k],
+                            ActionParents {
+                                control: &[],
+                                data: &parents,
+                            },
+                            NOW,
+                        )
+                        .map(|d| (d.node_id, Some(d.verdict))),
                     ),
                 };
                 // `causal_label` validates exactly as an insert does.

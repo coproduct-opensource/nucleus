@@ -1789,7 +1789,7 @@ fn proof_approved_token_bypass_is_audited() {
 // FlowGraph BMC harnesses — causal DAG invariants
 // ═══════════════════════════════════════════════════════════════════════════
 
-use crate::flow_graph::{FlowGraph, FlowGraphError};
+use crate::flow_graph::{ActionParents, FlowGraph, FlowGraphError};
 use portcullis_core::flow::{FlowVerdict, NodeKind};
 
 /// **G1 — Sentinel parent is always rejected.**
@@ -1835,7 +1835,14 @@ fn proof_denied_nodes_cannot_be_parents() {
         .insert_observation(NodeKind::WebContent, &[], 1000)
         .unwrap();
     let denied = g
-        .insert_action(Operation::WriteFiles, &[web], 1000)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[web],
+            },
+            1000,
+        )
         .unwrap();
     // Verify it was actually denied
     kani::assume(matches!(denied.verdict, FlowVerdict::Deny(_)));
@@ -1877,6 +1884,11 @@ fn proof_graph_propagation_monotone() {
 #[kani::proof]
 fn proof_web_ancestor_blocks_privileged_action() {
     let mut g = FlowGraph::new();
+    // The user's instruction is the control chain, so the deny below is the
+    // web content's doing and not the absence of authority (#3459).
+    let user = g
+        .insert_observation(NodeKind::UserPrompt, &[], 1000)
+        .unwrap();
     let web = g
         .insert_observation(NodeKind::WebContent, &[], 1000)
         .unwrap();
@@ -1892,7 +1904,16 @@ fn proof_web_ancestor_blocks_privileged_action() {
         _ => Operation::CreatePr,
     };
 
-    let result = g.insert_action(op, &[web], 1000).unwrap();
+    let result = g
+        .insert_action(
+            op,
+            ActionParents {
+                control: &[user],
+                data: &[web],
+            },
+            1000,
+        )
+        .unwrap();
     assert!(
         matches!(result.verdict, FlowVerdict::Deny(_)),
         "Web-tainted privileged action must be denied"
@@ -1914,7 +1935,14 @@ fn proof_clean_parents_allow_action() {
         .unwrap();
 
     let result = g
-        .insert_action(Operation::WriteFiles, &[file], 1000)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[user],
+                data: &[file],
+            },
+            1000,
+        )
         .unwrap();
     assert_eq!(
         result.verdict,
@@ -1963,7 +1991,14 @@ fn proof_denied_node_cannot_be_parent() {
 
     // Insert an action that depends on web content — should be denied
     let decision = g
-        .insert_action(Operation::WriteFiles, &[web_id], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[web_id],
+            },
+            now,
+        )
         .unwrap();
 
     // The action should be denied due to authority escalation
@@ -1979,7 +2014,14 @@ fn proof_denied_node_cannot_be_parent() {
         );
 
         // Also verify it fails for insert_action
-        let result2 = g.insert_action(Operation::ReadFiles, &[denied_id], now);
+        let result2 = g.insert_action(
+            Operation::ReadFiles,
+            ActionParents {
+                control: &[],
+                data: &[denied_id],
+            },
+            now,
+        );
         assert!(
             matches!(result2, Err(FlowGraphError::DeniedParent(id)) if id == denied_id),
             "Denied node must not be usable as action parent"
@@ -2003,11 +2045,27 @@ fn proof_denied_set_persists() {
         .insert_observation(NodeKind::WebContent, &[], now)
         .unwrap();
     let d1 = g
-        .insert_action(Operation::WriteFiles, &[web_id], now)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[web_id],
+            },
+            now,
+        )
         .unwrap();
 
     // Setup: another denied action
-    let d2 = g.insert_action(Operation::GitPush, &[web_id], now).unwrap();
+    let d2 = g
+        .insert_action(
+            Operation::GitPush,
+            ActionParents {
+                control: &[],
+                data: &[web_id],
+            },
+            now,
+        )
+        .unwrap();
 
     // Insert a valid observation (should work)
     let ok_id = g.insert_observation(NodeKind::FileRead, &[], now).unwrap();
