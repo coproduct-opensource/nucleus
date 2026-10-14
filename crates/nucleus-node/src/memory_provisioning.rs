@@ -100,7 +100,7 @@ pub(crate) fn now_unix() -> u64 {
 
 impl MemoryArgs {
     /// The flags with `--memory-root` set, for fixtures that need a node with persistent memory.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "local-driver"))]
     pub(crate) fn rooted(memory_root: PathBuf) -> Self {
         Self {
             memory_root: Some(memory_root),

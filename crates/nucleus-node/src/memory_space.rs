@@ -152,13 +152,6 @@ pub(crate) enum SpaceId {
 }
 
 impl SpaceId {
-    /// The name a pod asks for.
-    pub(crate) fn name(&self) -> &SpaceName {
-        match self {
-            SpaceId::Named { name } | SpaceId::Lineage { name, .. } => name,
-        }
-    }
-
     /// The space's spelling in a URL and a capability: `name`, or `lineage.<root>.<name>`. A
     /// name cannot contain `.`, so the two never collide.
     pub(crate) fn reference(&self) -> String {

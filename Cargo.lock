@@ -6413,6 +6413,7 @@ dependencies = [
  "nucleus-ifc-kernel",
  "nucleus-jsonl",
  "nucleus-lineage",
+ "nucleus-memory-context",
  "nucleus-microvm-host",
  "nucleus-node-evidence",
  "nucleus-oidc-core",
