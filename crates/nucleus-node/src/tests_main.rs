@@ -1316,3 +1316,14 @@ async fn a_sink_without_a_minter_is_refused_at_create_by_name() {
         "nothing was registered for a refused create"
     );
 }
+
+/// #3208: `--version` is the decided version (the release tag, else
+/// the Cargo version marked `+dev`), never the bare workspace Cargo version every
+/// release used to print.
+#[test]
+fn version_flag_is_the_decided_version_not_the_bare_cargo_version() {
+    let cmd = <Args as clap::CommandFactory>::command();
+    let decided = nucleus_spec::reported_version!().to_string();
+    assert_eq!(cmd.get_version(), Some(decided.as_str()));
+    assert_ne!(cmd.get_version(), Some(env!("CARGO_PKG_VERSION")));
+}
