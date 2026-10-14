@@ -915,21 +915,49 @@ pub(crate) fn rlimit_policy(spec: &nucleus_spec::PodSpecInner) -> nucleus::Rlimi
     )
 }
 
-/// Whether the pod declares any network egress (#2907): a host or DNS name
-/// on its network allowlist, or a credentialed upstream (whose guest adapter
-/// gives the workload a loopback origin). The ONE place the spec's fields
-/// become a [`portcullis::NetworkEgress`]. No network section lists nothing,
-/// as the node reads it (`NetworkSpec::nothing_listed`).
+/// Which address families the pod declares network egress in (#2907): a
+/// host or DNS name on its network allowlist, or a credentialed upstream
+/// (whose guest adapter gives the workload an IPv4 loopback origin,
+/// `nucleus-egress-http`'s `SocketAddrV4` listener). The ONE place the spec's
+/// fields become a [`portcullis::NetworkEgress`]. No network section lists
+/// nothing, as the node reads it (`NetworkSpec::nothing_listed`).
+///
+/// IPv4 only when every declared destination is: each `allow` entry an IPv4
+/// address or CIDR ([`is_ipv4_entry`]), and `dns_allow` names, which the node
+/// resolves and pins to their IPv4 addresses alone (`resolve_host_ipv4`).
+/// Anything else, an IPv6 entry or one this cannot read, is
+/// [`portcullis::NetworkEgress::Declared`]: both families, never a denial the
+/// pod's declaration does not support.
 pub(crate) fn network_egress(spec: &nucleus_spec::PodSpecInner) -> portcullis::NetworkEgress {
-    let listed = spec
-        .network
-        .as_ref()
-        .is_some_and(|n| !n.allow.is_empty() || !n.dns_allow.is_empty());
-    if listed || !spec.credentialed_egress.is_empty() {
-        portcullis::NetworkEgress::Declared
-    } else {
+    let (allow, dns): (&[String], &[String]) =
+        spec.network.as_ref().map_or((&[][..], &[][..]), |n| {
+            (n.allow.as_slice(), n.dns_allow.as_slice())
+        });
+    if allow.is_empty() && dns.is_empty() && spec.credentialed_egress.is_empty() {
         portcullis::NetworkEgress::None
+    } else if allow.iter().all(|entry| is_ipv4_entry(entry)) {
+        portcullis::NetworkEgress::Ipv4Only
+    } else {
+        portcullis::NetworkEgress::Declared
     }
+}
+
+/// Whether a `network.allow` entry names IPv4 destinations: an IPv4 address
+/// or CIDR, with or without `:port`, in the node's grammar
+/// (`net::parse_entry`). A bracketed or bare IPv6 entry, and anything that
+/// does not parse, is not.
+fn is_ipv4_entry(entry: &str) -> bool {
+    let entry = entry.trim();
+    let addr = match entry.rsplit_once(':') {
+        Some((addr, port)) if !addr.contains(':') && port.parse::<u16>().is_ok() => addr,
+        _ => entry,
+    };
+    let addr = match addr.split_once('/') {
+        Some((addr, prefix)) if prefix.parse::<u8>().is_ok_and(|p| p <= 32) => addr,
+        Some(_) => return false,
+        None => addr,
+    };
+    addr.parse::<std::net::Ipv4Addr>().is_ok()
 }
 
 /// The syscall classes every child this pod spawns is denied beyond the
@@ -1169,10 +1197,10 @@ mod tests {
         };
         let profile = |name: &str| format!("  policy:\n    type: profile\n    name: {name}\n");
         let untrusted = profile("untrusted-model");
-        assert_eq!(canonical(&untrusted), "exec,inet_socket");
+        assert_eq!(canonical(&untrusted), "exec,inet_socket,inet6_socket");
         assert_eq!(
             canonical(&format!("{untrusted}  network:\n    allow: []\n")),
-            "exec,inet_socket"
+            "exec,inet_socket,inet6_socket"
         );
         assert_eq!(
             canonical(&format!(
@@ -1184,10 +1212,75 @@ mod tests {
             canonical(&format!(
                 "{untrusted}  network:\n    dns_allow: [\"example.com\"]\n"
             )),
-            "exec"
+            "exec,inet6_socket"
         );
-        assert_eq!(canonical(&profile("codegen")), "inet_socket");
+        assert_eq!(canonical(&profile("codegen")), "inet_socket,inet6_socket");
         assert_eq!(canonical(&profile("demo")), "none");
+    }
+
+    /// #2907, A-19: the socket classes are narrowed to the address family the
+    /// pod declares. An all-IPv4 allowlist, a DNS name (pinned to IPv4 by the
+    /// node) or a credentialed upstream (an IPv4 loopback adapter) gives back
+    /// `AF_INET` and keeps `AF_INET6` denied. An IPv6 entry, or one that is
+    /// not an IPv4 address, gives back both. Red on a rule that reads only
+    /// "is anything declared": every declared case derives `exec` there.
+    #[test]
+    fn the_socket_classes_are_narrowed_to_the_declared_family() {
+        let canonical = |network: &str| {
+            let spec: nucleus_spec::PodSpec = nucleus_yaml::from_str(&format!(
+                "apiVersion: nucleus/v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  \
+                 timeout_seconds: 60\n  policy:\n    type: profile\n    name: untrusted-model\n\
+                 {network}"
+            ))
+            .expect("spec parses");
+            seccomp_policy(&spec.spec)
+                .unwrap_or_else(|e| panic!("{network}: {e}"))
+                .canonical()
+        };
+        let allow = |entries: &str| format!("  network:\n    allow: [{entries}]\n");
+        for v4 in [
+            allow("\"10.0.0.1\""),
+            allow("\"10.0.0.1:443\""),
+            allow("\"10.0.0.0/8\", \"192.0.2.7/32:8443\""),
+            "  network:\n    dns_allow: [\"example.com\"]\n".to_string(),
+            "  credentialed_egress:\n  - name: model-api\n    upstream: https://model-api.invalid/v1\n    header: authorization\n"
+                .to_string(),
+        ] {
+            assert_eq!(canonical(&v4), "exec,inet6_socket", "{v4}");
+        }
+        for both in [
+            allow("\"[2001:db8::1]:443\""),
+            allow("\"2001:db8::/32\""),
+            allow("\"10.0.0.1\", \"2001:db8::1\""),
+            allow("\"example.com:443\""),
+            allow("\"10.0.0.0/33\""),
+        ] {
+            assert_eq!(canonical(&both), "exec", "{both}");
+        }
+    }
+
+    #[test]
+    fn an_allow_entry_is_ipv4_only_in_the_nodes_ipv4_grammar() {
+        for yes in [
+            "10.0.0.1",
+            "10.0.0.1:443",
+            "10.0.0.0/8",
+            "10.0.0.0/8:443",
+            " 1.2.3.4 ",
+        ] {
+            assert!(is_ipv4_entry(yes), "{yes}");
+        }
+        for no in [
+            "::1",
+            "[::1]:443",
+            "2001:db8::/32",
+            "example.com",
+            "10.0.0.1/40",
+            "10.0.0.1:99999",
+            "",
+        ] {
+            assert!(!is_ipv4_entry(no), "{no}");
+        }
     }
 
     fn spec_with(env: &[(&str, &str)]) -> WorkloadSpec {

@@ -184,18 +184,17 @@ fn proof_normalize_monotone() {
 /// #2907: the syscall classes a pod's children are denied are monotone in the
 /// lattice. A tighter capability lattice (`a = b ∧ c`, so `a ≤ b`) with less
 /// egress denies at least every class the looser one does, over every
-/// assignment of all thirteen core dimensions.
+/// assignment of all thirteen core dimensions and all three egress cases
+/// (`None < Ipv4Only < Declared`).
 #[kani::proof]
 #[kani::solver(cadical)]
 #[kani::unwind(4)]
 fn proof_seccomp_policy_monotone() {
     use crate::seccomp_policy::{NetworkEgress, SeccompPolicy};
-    let egress = |declared: bool| {
-        if declared {
-            NetworkEgress::Declared
-        } else {
-            NetworkEgress::None
-        }
+    let egress = |pick: u8| match pick % 3 {
+        0 => NetworkEgress::None,
+        1 => NetworkEgress::Ipv4Only,
+        _ => NetworkEgress::Declared,
     };
     let b = arbitrary_caps();
     let c = arbitrary_caps();
