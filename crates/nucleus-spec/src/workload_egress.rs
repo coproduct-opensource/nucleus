@@ -39,6 +39,25 @@ pub fn upstream_url(base: &str, name: &str) -> String {
     format!("{}{ROUTE_PREFIX}{name}", base.trim_end_matches('/'))
 }
 
+/// Every `NUCLEUS_EGRESS_<NAME>_URL` entry the runtime puts in a workload's
+/// environment for `egress`, under the workload door URL `door_url`.
+///
+/// The one decider of this set (ADR 0007 G-1). The tool-proxy calls it to
+/// build the environment it launches the workload with, and the node calls it
+/// to publish the same set in the workload admission record, so a verifier
+/// derives these environment inputs from that record instead of restating the
+/// runtime's spelling of a value it never set (#3219).
+#[must_use]
+pub fn injected_env(
+    egress: &[crate::CredentialedEgressSpec],
+    door_url: &str,
+) -> std::collections::BTreeMap<String, String> {
+    egress
+        .iter()
+        .map(|s| (url_env(&s.name), upstream_url(door_url, &s.name)))
+        .collect()
+}
+
 // ── What a call may carry besides its path (#3210) ─────────────────────────
 //
 // The guest's adapter, the tool-proxy that composes the host frame, and the

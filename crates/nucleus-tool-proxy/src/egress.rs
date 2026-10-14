@@ -136,11 +136,9 @@ pub(crate) fn workload_egress_env(
     specs: &[CredentialedEgressSpec],
     door_url: &str,
 ) -> std::collections::BTreeMap<String, String> {
-    use nucleus_spec::workload_egress::{upstream_url, url_env};
-    specs
-        .iter()
-        .map(|s| (url_env(&s.name), upstream_url(door_url, &s.name)))
-        .collect()
+    // The node publishes this same set in the workload admission record, from
+    // the same function, so a verifier derives it rather than restating it.
+    nucleus_spec::workload_egress::injected_env(specs, door_url)
 }
 
 /// The host of a credentialed upstream, for allowlist checking.

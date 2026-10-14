@@ -14,7 +14,10 @@
 //! diverge for one content hash, [`ProvenanceMemorySet::join`] resolves
 //! **fail-closed** to the most-restrictive label (conf-join, integ-meet,
 //! derivation-join) — a deterministic, convergent lattice merge — rather than
-//! converging on the more-trusting of the two.
+//! converging on the more-trusting of the two. The writer stamps (Program C, C1)
+//! merge the same way ([`crate::LabelStamp::join`]): an unstamped copy of a stamped
+//! record is unknown, so the merge is stamped Secret, never the stamped copy's
+//! lower floor.
 
 use std::collections::BTreeMap;
 
@@ -37,6 +40,24 @@ fn most_restrictive(a: MemoryLabel, b: MemoryLabel) -> MemoryLabel {
         integ_meet(a.integ_level(), b.integ_level()),
         a.derivation.join(b.derivation),
     )
+}
+
+/// The fail-closed merge of two admitted copies of one content hash: labels by
+/// [`most_restrictive`], stamps by [`crate::LabelStamp::join`], and the merged label's
+/// confidentiality raised to the merged stamp's floor, so the result re-derives
+/// wherever either copy did. A join on (label, stamp): the floor is monotone in
+/// the stamp, so the merge stays idempotent, commutative and associative.
+fn merged(existing: &MemoryRecord, incoming: &MemoryRecord) -> MemoryRecord {
+    let stamp = existing.stamp.join(incoming.stamp);
+    let label = most_restrictive(existing.label.clone(), incoming.label.clone());
+    let mut resolved = incoming.clone();
+    resolved.label = MemoryLabel::from_levels_with_derivation(
+        conf_join(label.conf_level(), stamp.admission_floor()),
+        label.integ_level(),
+        label.derivation,
+    );
+    resolved.stamp = stamp;
+    resolved
 }
 
 /// Whether `new` is at least as restrictive as `old` in every component: the
@@ -92,24 +113,22 @@ impl ProvenanceMemorySet {
     /// commutative, associative. On a shared content hash with divergent labels,
     /// resolves fail-closed to [`most_restrictive`].
     pub fn join(&self, other: &Self) -> Self {
-        let mut merged = self.records.clone();
+        let mut out = self.records.clone();
         for (hash, incoming) in &other.records {
-            match merged.get(hash) {
+            match out.get(hash) {
                 Some(existing) if existing == incoming => { /* idempotent */ }
                 Some(existing) => {
-                    let label = most_restrictive(existing.label.clone(), incoming.label.clone());
                     // value/schema/derivation are identical (same content hash);
-                    // only the label could differ, and we take the safe one.
-                    let mut resolved = incoming.clone();
-                    resolved.label = label;
-                    merged.insert(*hash, resolved);
+                    // only the label and stamp could differ, and we take the safe one.
+                    let resolved = merged(existing, incoming);
+                    out.insert(*hash, resolved);
                 }
                 None => {
-                    merged.insert(*hash, incoming.clone());
+                    out.insert(*hash, incoming.clone());
                 }
             }
         }
-        Self { records: merged }
+        Self { records: out }
     }
 
     /// **Fail-closed admission gate.** Re-derive `record` from its cited parents
@@ -152,9 +171,7 @@ impl ProvenanceMemorySet {
         match self.records.get(&key) {
             Some(existing) if *existing == record => { /* idempotent */ }
             Some(existing) => {
-                let label = most_restrictive(existing.label.clone(), record.label.clone());
-                let mut resolved = record;
-                resolved.label = label;
+                let resolved = merged(existing, &record);
                 self.records.insert(key, resolved);
             }
             None => {
@@ -189,7 +206,7 @@ mod tests {
             source_class: sc,
             source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
         };
-        let label = crate::recompute::derive_label(&d, &[]);
+        let label = crate::recompute::derive_label(&d, &[], crate::record::LabelStamp::Unstamped);
         MemoryRecord::new(value, SchemaType::String, label, d)
     }
 
@@ -213,7 +230,7 @@ mod tests {
             input_hashes: vec![a.content_hash()],
             transform: TransformId::new("concat"),
         };
-        let label = crate::recompute::derive_label(&d, &[&a]);
+        let label = crate::recompute::derive_label(&d, &[&a], crate::record::LabelStamp::Unstamped);
         let rec = MemoryRecord::new("foo", SchemaType::String, label, d);
         assert!(matches!(
             set.verified_admit(&rec, &registry()),
@@ -233,7 +250,8 @@ mod tests {
             input_hashes: vec![a.content_hash(), b.content_hash()],
             transform: TransformId::new("concat"),
         };
-        let label = crate::recompute::derive_label(&d, &[&a, &b]);
+        let label =
+            crate::recompute::derive_label(&d, &[&a, &b], crate::record::LabelStamp::Unstamped);
         let forged = MemoryRecord::new("evil", SchemaType::String, label, d);
         assert!(matches!(
             set.verified_admit(&forged, &registry()),
