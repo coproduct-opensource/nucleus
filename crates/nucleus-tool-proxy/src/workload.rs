@@ -1845,12 +1845,12 @@ mod tests {
         // fds), so it also proves the close_range call actually fires rather
         // than relying on the parent's fds happening to be CLOEXEC.
         //
-        // Only where the confinement sweeps fds: a dropped workload. Since
-        // #3120 a non-root harness runs the workload on the declared,
-        // opted-in bare tier, which sweeps nothing by design (it is not a uid
-        // boundary either); the same `ChildConfinement` mechanism is asserted
-        // on a non-root runtime by
-        // `nucleus::command::tests::a_confined_child_inherits_no_fd_beyond_its_stdio`.
+        // Only for a dropped workload here. Since #3120 a non-root harness
+        // runs the workload on the declared, opted-in bare tier, whose only
+        // confinement is the same sweep (#3461), asserted on a real spawn by
+        // `child_reach::tests::a_workload_child_inherits_no_descriptor_the_proxy_holds`;
+        // the `ChildConfinement` mechanism is asserted on a non-root runtime
+        // by `nucleus::command::tests::a_confined_child_inherits_no_fd_beyond_its_stdio`.
         #[cfg(target_os = "linux")]
         {
             if receipt.hardening.is_hardened() {

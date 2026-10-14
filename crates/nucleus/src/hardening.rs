@@ -688,14 +688,16 @@ impl ChildConfinement {
         }
     }
 
-    /// Whether inherited descriptors above stdio are closed at exec.
+    /// Whether inherited descriptors above stdio are closed at exec. The
+    /// bare tier sweeps them too on Linux (#3461), the one step of the hook
+    /// it takes; off Linux it has no hook.
     #[must_use]
     pub fn closes_inherited_fds(&self) -> bool {
         match self.posture {
             Posture::Restricted(_) | Posture::DropTo(..) | Posture::Isolated { uid: _, gid: _ } => {
                 true
             }
-            Posture::Unsandboxed => false,
+            Posture::Unsandboxed => cfg!(target_os = "linux"),
         }
     }
 
@@ -748,7 +750,10 @@ impl ChildConfinement {
         syscalls: SeccompPolicy,
     ) -> SpawnHardening {
         match self.posture {
-            Posture::Unsandboxed => SpawnHardening::Unhardened(Unhardened::DeclaredBareTier),
+            Posture::Unsandboxed => {
+                imp::sweep_inherited(cmd);
+                SpawnHardening::Unhardened(Unhardened::DeclaredBareTier)
+            }
             Posture::Restricted(filter) => Self::restrict(
                 cmd,
                 Isolation::None,
@@ -920,6 +925,68 @@ enum Hook {
     NoneOnThisPlatform,
 }
 
+/// What the runtime did to keep its own children out of it (#3461).
+///
+/// A child that shares the runtime's uid (the declared bare tier, or a
+/// `Restricted` child of a non-root runtime) can open
+/// `/proc/<runtime>/environ`, `mem` and `fd/*`. [`seal_runtime`] makes the
+/// process non-dumpable, so the kernel refuses those files and `ptrace` to
+/// every process without `CAP_SYS_PTRACE`. (Descriptors are the spawn's
+/// half: every posture on Linux, the bare tier included, marks those above
+/// stdio close-on-exec in the child.)
+///
+/// Evidence (ADR 0007 C-1): [`Self::environment`] answers
+/// [`EnvironmentReach::ClosedToSameUid`] only for a value [`seal_runtime`]
+/// minted after the kernel confirmed the seal. [`Self::unsealed`] claims
+/// nothing, so a caller can always hold the weaker value.
+#[derive(Debug)]
+pub struct RuntimeSeal {
+    /// True only when the kernel confirmed the process non-dumpable.
+    sealed: bool,
+}
+
+/// Whether a process at the runtime's own uid can read the runtime's
+/// environment and memory. A process at another non-root uid never can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentReach {
+    /// The runtime is non-dumpable: `/proc/<pid>/environ` and `mem` refuse
+    /// a same-uid process.
+    ClosedToSameUid,
+    /// Nothing keeps a same-uid process out (no seal, or a platform where
+    /// the environment of a same-uid process is readable regardless).
+    OpenToSameUid,
+}
+
+impl RuntimeSeal {
+    /// A value that claims no seal: what a platform without one holds.
+    #[must_use]
+    pub fn unsealed() -> Self {
+        Self { sealed: false }
+    }
+
+    /// What a same-uid child can read of this process.
+    #[must_use]
+    pub fn environment(&self) -> EnvironmentReach {
+        if self.sealed {
+            EnvironmentReach::ClosedToSameUid
+        } else {
+            EnvironmentReach::OpenToSameUid
+        }
+    }
+}
+
+/// Seal this process against its own children; see [`RuntimeSeal`]. Call it
+/// first, before the process reads a secret or spawns anything.
+///
+/// # Errors
+/// On Linux, the kernel's errno when it refused, or an
+/// [`std::io::ErrorKind::Other`] error when the process still reads as
+/// dumpable afterwards. Off Linux nothing is attempted and the answer is
+/// [`RuntimeSeal::unsealed`].
+pub fn seal_runtime() -> std::io::Result<RuntimeSeal> {
+    imp::seal_self().map(|sealed| RuntimeSeal { sealed })
+}
+
 /// The runtime's own uid.
 ///
 /// Read through `std` (the owner of `/proc/self`) so this needs neither
@@ -1083,6 +1150,15 @@ mod imp {
         Refuse,
     }
 
+    /// How much of the hook runs. Two named cases rather than an `Option`
+    /// of limits (ADR 0007 B-2).
+    enum Restrict<'a> {
+        /// Every step: `no_new_privs`, these limits, Landlock, the filter.
+        Full(&'a HookLimits),
+        /// The descriptor sweep only (the declared bare tier, #3461).
+        SweepOnly,
+    }
+
     /// Who execs the child once the hook is done (#2907). Two named cases
     /// rather than an `Option` (ADR 0007 B-2).
     enum Start {
@@ -1100,7 +1176,7 @@ mod imp {
         isolation: Isolation,
         seccomp: &mut Seccomp,
         landlock: &mut Landlock,
-        limits: &HookLimits,
+        restrict: Restrict<'_>,
         start: &Start,
     ) -> io::Result<()> {
         // SAFETY: every call below is an async-signal-safe libc syscall taking
@@ -1166,6 +1242,11 @@ mod imp {
                     _ => return Err(err),
                 }
             }
+            // The bare tier stops here: descriptors swept, nothing else.
+            let limits = match restrict {
+                Restrict::Full(limits) => limits,
+                Restrict::SweepOnly => return Ok(()),
+            };
             // What any process may do to itself — the uid, if it was to
             // change, already has.
             // No new privileges: defeats setuid/file-capability escalation,
@@ -1282,7 +1363,13 @@ mod imp {
             }
         };
         super::hook::pre_exec(cmd, move || {
-            harden_child(isolation, &mut seccomp, &mut landlock, &limits, &start)
+            harden_child(
+                isolation,
+                &mut seccomp,
+                &mut landlock,
+                Restrict::Full(&limits),
+                &start,
+            )
         });
         Hook::Installed
     }
@@ -1307,6 +1394,35 @@ mod imp {
         let program = Program::workload(syscalls, pin).map_err(|e| e.to_string())?;
         Ok((program, start))
     }
+
+    /// The runtime's seal (#3461): non-dumpable, confirmed by reading it
+    /// back. Through `rustix`'s safe `prctl` wrappers, so no `unsafe`.
+    pub(super) fn seal_self() -> io::Result<bool> {
+        use rustix::process::{DumpableBehavior, dumpable_behavior, set_dumpable_behavior};
+        set_dumpable_behavior(DumpableBehavior::NotDumpable)?;
+        if matches!(dumpable_behavior()?, DumpableBehavior::NotDumpable) {
+            Ok(true)
+        } else {
+            Err(io::Error::other("the process still reads as dumpable"))
+        }
+    }
+
+    /// The bare tier's one confinement (#3461): every descriptor above stdio
+    /// marked close-on-exec at the child's exec, so a descriptor the runtime
+    /// inherited without close-on-exec (from a careless launcher, or a build
+    /// tool's jobserver) does not pass on to a command the agent runs. No
+    /// `no_new_privs`, no limits, no filter: the tier's stated meaning stands.
+    pub(super) fn sweep_inherited(cmd: &mut std::process::Command) {
+        super::hook::pre_exec(cmd, || {
+            harden_child(
+                Isolation::None,
+                &mut Seccomp::NotRequested,
+                &mut Landlock::NotRequested,
+                Restrict::SweepOnly,
+                &Start::ByStd,
+            )
+        });
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -1315,6 +1431,18 @@ mod imp {
 
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
     use super::{AppliedRlimits, FilesystemConfinement, Hook, Isolation, SyscallFilter};
+
+    /// No seal off Linux (#3461): there is no `PR_SET_DUMPABLE`, and a
+    /// same-uid process can read another's environment regardless, so the
+    /// runtime says so (`false`) rather than claiming one. `Result` for one
+    /// signature with the Linux seal, which can fail.
+    pub(super) fn seal_self() -> std::io::Result<bool> {
+        Ok(false)
+    }
+
+    /// No sweep off Linux: there is no hook here for the bare tier, and
+    /// installing the refusing one would refuse every bare spawn.
+    pub(super) fn sweep_inherited(_cmd: &mut std::process::Command) {}
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
@@ -1961,7 +2089,8 @@ mod tests {
         assert!(c.is_unsandboxed());
         assert_eq!(c.drop_uid(), None);
         assert!(!c.restricts());
-        assert!(!c.closes_inherited_fds());
+        // #3461: its one step of the hook, where there is a hook.
+        assert_eq!(c.closes_inherited_fds(), cfg!(target_os = "linux"));
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
                 ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent, LL, NO)
@@ -1969,6 +2098,22 @@ mod tests {
                 "{mode:?}"
             );
         }
+    }
+
+    /// #3461: the bare posture restricts nothing, yet on Linux its child
+    /// inherits no descriptor above stdio; off Linux it has no hook to do it.
+    #[test]
+    fn the_bare_posture_sweeps_inherited_fds_where_it_can() {
+        let c = ChildConfinement::decide(
+            ContainmentMode::Unsandboxed,
+            1000,
+            UnsandboxedOptIn::Explicit,
+            LL,
+            NO,
+        )
+        .unwrap();
+        assert!(!c.restricts());
+        assert_eq!(c.closes_inherited_fds(), cfg!(target_os = "linux"));
     }
 
     /// #2572: only an installed hook claims hardening, and the claim carries

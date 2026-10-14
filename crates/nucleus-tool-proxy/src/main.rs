@@ -37,6 +37,7 @@ mod authority_round;
 mod boot_report;
 mod broker_client;
 mod cert_bridge;
+mod child_reach;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
@@ -66,6 +67,7 @@ mod proposal;
 mod retired;
 mod run_gate;
 mod sandbox_proof;
+mod secret_census;
 mod session_token;
 mod spend_shipper;
 mod startup_trace;
@@ -1033,6 +1035,16 @@ fn console_line(msg: &str) {
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // First, before a secret is read or a child spawned (#3461): no process at
+    // this uid may open /proc/<pid>/environ, mem or fd. (No descriptor this
+    // process holds survives into a child: every spawn sweeps them.)
+    let seal = match nucleus::seal_runtime() {
+        Ok(seal) => seal,
+        Err(e) => {
+            eprintln!("FATAL: could not seal the runtime against its own children: {e}");
+            std::process::exit(78);
+        }
+    };
     // Install rustls crypto provider before any TLS connections (web_fetch, etc.).
     let mut st = startup_trace::Startup::new();
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -1061,7 +1073,11 @@ async fn main() -> Result<(), ApiError> {
     #[cfg(feature = "otel")]
     let _memory_metrics = telemetry::init_memory_metrics().map_err(ApiError::Spec)?;
 
-    let args = Args::parse();
+    // The matches are kept: where clap found a secret (flag or environment)
+    // decides who can read it (`secret_census`).
+    let matches = <Args as clap::CommandFactory>::command().get_matches();
+    let args =
+        <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     st.mark("args_parse");
 
     // === Retired shared secret (#2446 step 3) ===
@@ -1178,6 +1194,41 @@ async fn main() -> Result<(), ApiError> {
         args.workload_without_landlock,
     ) {
         console_line(&verdict.line());
+    }
+    // The children this proxy can spawn, from the deciders their spawns ask,
+    // and everything it holds that they must not reach (#3454, #3461). Before
+    // any of it is opened or created: a refusal names the item.
+    let children = child_reach::ChildReach::of(
+        spec.spec.workload.as_ref(),
+        containment,
+        args.unsandboxed,
+        args.workload_without_landlock,
+    );
+    let env_set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+    let held = secret_census::held(
+        &args,
+        &matches,
+        &secret_census::Facts {
+            guest_proof: guest_proof_config.is_some(),
+            workload: spec.spec.workload.is_some(),
+            env_set: &env_set,
+        },
+    );
+    if let Err(why) = children.admit(&held, &seal) {
+        eprintln!("FATAL: {why}");
+        std::process::exit(78);
+    }
+    let declared = children.declared(&held);
+    if !declared.is_empty() {
+        console_line(&format!(
+            "[nucleus-tool-proxy] bare host tier: a child at this proxy's uid can read or \
+             replace {}",
+            declared
+                .iter()
+                .map(|h| h.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     let runtime = pod_mgmt::build_runtime(
         &spec,
@@ -1587,10 +1638,13 @@ async fn main() -> Result<(), ApiError> {
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
     // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
     let memory_transforms = Arc::new(nucleus_provenance_memory::TransformRegistry::new());
-    let provenance_memory = Arc::new(tokio::sync::Mutex::new(
-        args.memory
-            .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
-    ));
+    let provenance_memory = Arc::new(tokio::sync::Mutex::new(args.memory.open(
+        &spec.spec.work_dir,
+        memory_transforms.as_ref(),
+        // The children the journal must be closed to (#3454): every
+        // `/v1/run` child and the workload, as their spawns decide them.
+        &children,
+    )?));
     let declassify_threshold = startup_trace::declassify_threshold();
     let decisions = args.decisions.open(&spec.spec.work_dir)?.map(Arc::new);
     if let Some(d) = &decisions {
