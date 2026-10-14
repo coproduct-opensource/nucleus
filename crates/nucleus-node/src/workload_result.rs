@@ -105,6 +105,15 @@ pub(crate) fn sign_claim(
     id: Uuid,
     claim: ExecutionClaim,
 ) -> Result<Receipt, ApiError> {
+    // The key decides the mark (Program C, C0): a claim is signed only under
+    // the signing domain it declares, so the insecure key never signs a claim
+    // without the insecure tier, nor the executor key a claim with it.
+    if claim.sandbox_tier != state.trust_gate.tier.claim_tier() {
+        return Err(ApiError::Driver(format!(
+            "execution claim declares {:?}, but this node signs as {:?}",
+            claim.sandbox_tier, state.trust_gate.tier
+        )));
+    }
     let projection = claim
         .to_projection()
         .map_err(|e| ApiError::Driver(format!("encoding execution claim: {e}")))?;

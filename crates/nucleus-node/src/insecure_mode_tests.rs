@@ -406,3 +406,78 @@ async fn a_bare_tier_child_forging_with_every_key_it_can_read_gains_nothing() {
         }
     }
 }
+
+/// The node's own execution receipts in insecure mode: signed only when the
+/// claim declares the insecure tier, and then refused by name by the verifier
+/// a controller runs against the node's own admission pin.
+#[cfg(feature = "local-driver")]
+#[tokio::test]
+async fn the_nodes_own_insecure_mode_receipt_is_marked_and_refused() {
+    use nucleus_ci_verdict::execution::{
+        Backend, ExecutionClaim, ExecutionError, ExecutionSchema, NodePlatform, RecordedExecution,
+        verify_execution,
+    };
+    const DIGEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let dir = tempfile::tempdir().unwrap();
+    let state = crate::pod_api::handler_tests::state(&dir);
+    assert_eq!(state.trust_gate.tier, EvidenceTier::InsecureSharedUid);
+    let id = uuid::Uuid::new_v4();
+    let claim = |sandbox_tier| ExecutionClaim {
+        schema: ExecutionSchema::V1,
+        pod_id: id.to_string(),
+        source_commit: "commit-1".into(),
+        source_tree: "tree-1".into(),
+        gate: "gate-1".into(),
+        program_digest: DIGEST.into(),
+        architecture: "x86_64".into(),
+        backend: Backend::Firecracker,
+        uid_isolated: true,
+        exit_code: Some(0),
+        stdout_sha256: DIGEST.into(),
+        stderr_sha256: DIGEST.into(),
+        launch_hash: DIGEST.into(),
+        environment_inputs_sha256: DIGEST.into(),
+        environment_complete_sha256: DIGEST.into(),
+        artifacts: Default::default(),
+        node_platform: NodePlatform::Unattested {
+            reason: "test node".into(),
+        },
+        sandbox_tier,
+    };
+
+    // The insecure key does not sign a claim without the insecure mark.
+    assert!(crate::workload_result::sign_claim(&state, id, claim(SandboxTier::Driver)).is_err());
+
+    let receipt =
+        crate::workload_result::sign_claim(&state, id, claim(SandboxTier::InsecureSharedUid))
+            .expect("the node signs its own declared claim");
+    assert!(
+        receipt
+            .session
+            .issuer_kid
+            .starts_with(INSECURE_SHARED_UID_KID_PREFIX)
+    );
+    let pinned = RecordedExecution {
+        pod_id: id.to_string(),
+        source_commit: "commit-1".into(),
+        source_tree: "tree-1".into(),
+        gate: "gate-1".into(),
+        program_digest: DIGEST.into(),
+        architecture: "x86_64".into(),
+        environment_inputs_sha256: DIGEST.into(),
+        artifacts: Default::default(),
+        session_id: id.to_string(),
+        issuer_kid: state.trust_gate.executor_id.clone(),
+        verifying_key: state
+            .trust_gate
+            .executor_signing_key
+            .verifying_key()
+            .to_bytes(),
+        issued_not_before_micros: 0,
+        issued_not_after_micros: u64::MAX,
+    };
+    assert_eq!(
+        verify_execution(&receipt, &pinned.as_expected()).unwrap_err(),
+        ExecutionError::InsecureSharedUid
+    );
+}
