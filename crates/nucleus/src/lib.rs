@@ -81,9 +81,11 @@ pub use error::{NucleusError, Result};
 pub use hardening::{
     AppliedRlimits, ChildConfinement, ChildUid, DEFAULT_CHILD_UID, EnvironmentReach,
     FilesystemConfinement, Hardened, InstalledFilter, LandlockSupport, LandlockWaiver,
-    MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector, RuntimeSeal, SpawnHardening, SyscallFilter,
-    Unhardened, UnsandboxedOptIn, WorkspaceHold, WorkspaceWrites, runtime_uid, seal_runtime,
+    LocalRealization, MIN_LANDLOCK_ABI, RlimitPolicy, RlimitVector, RuntimeSeal, SeparationUnmet,
+    SpawnHardening, SubordinateIds, SubordinateRange, SyscallFilter, Unhardened, UnsandboxedOptIn,
+    WorkspaceHold, WorkspaceWrites, grant_workspace, map_is_exactly, runtime_uid, seal_runtime,
 };
+pub use hardening::{FIRST_POD_OFFSET, PROBE_OFFSET};
 pub use pod::{PodRuntime, PodSpec};
 pub use sandbox::{Completeness, GlobListing, Sandbox};
 pub use time::MonotonicGuard;

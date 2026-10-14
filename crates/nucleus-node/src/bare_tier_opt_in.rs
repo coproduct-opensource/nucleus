@@ -25,7 +25,9 @@ pub(crate) fn local_driver_opt_in(driver: &DriverKind, allowed: bool) -> nucleus
 /// flag for `Explicit`, nothing for `Absent`.
 pub(crate) fn unsandboxed_proxy_flag(opt_in: nucleus::UnsandboxedOptIn) -> Option<&'static str> {
     match opt_in {
-        nucleus::UnsandboxedOptIn::Explicit => Some("--unsandboxed"),
+        nucleus::UnsandboxedOptIn::Explicit | nucleus::UnsandboxedOptIn::Subordinate(_) => {
+            Some("--unsandboxed")
+        }
         nucleus::UnsandboxedOptIn::Absent => None,
     }
 }
@@ -77,7 +79,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = crate::pod_api::handler_tests::state(&dir);
         assert_eq!(
-            state.local_driver_opt_in,
+            state.local_children.opt_in(),
             nucleus::UnsandboxedOptIn::Explicit
         );
     }

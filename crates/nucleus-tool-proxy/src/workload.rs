@@ -2356,3 +2356,7 @@ mod companion_tests {
         assert_eq!(std::fs::metadata(home).unwrap().uid(), COMPANION_UID);
     }
 }
+
+/// Program C, C2: the canary experiment through `spawn_admitted`.
+#[cfg(all(test, target_os = "linux"))]
+mod subordinate_canary_tests;

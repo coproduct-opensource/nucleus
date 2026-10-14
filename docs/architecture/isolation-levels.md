@@ -64,11 +64,14 @@ Nucleus supports multiple isolation levels depending on the deployment environme
 nucleus-node --driver local --allow-local-driver
 ```
 
-**The bare tier is insecure.** With `--allow-local-driver` the node runs in a
-declared insecure mode: its workloads can read the node's keys, so the node
-refuses to start with any trusted authority configured, and everything it
-signs is marked and rejected by verifiers. See
-[Bare tier is insecure](../bare-tier-insecure.md).
+**The bare tier is separated or insecure, never a microVM.** With
+`--allow-local-driver`, a host that delegates subordinate ids to the node's
+user (and passes the realization contract's probe) runs each pod's children at
+their own subordinate host uid; the node's evidence states `separated-local`.
+Anywhere else the node runs in a declared insecure mode: its workloads can read
+the node's keys, so the node refuses to start with any trusted authority
+configured, and everything it signs is marked and rejected by verifiers. See
+[Bare tier: separated or insecure](../bare-tier-insecure.md).
 
 ## Lima VM as Development Environment
 

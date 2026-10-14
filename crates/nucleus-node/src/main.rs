@@ -87,9 +87,10 @@ use api_error::ApiError;
 use container_mediation::container_driver_reject_unsupported_network_policy;
 #[cfg(feature = "local-driver")]
 mod bare_tier_opt_in;
+mod bare_tier_separation;
 mod boot_trace;
 #[cfg(feature = "local-driver")]
-use bare_tier_opt_in::{local_driver_opt_in, unsandboxed_proxy_flag};
+use bare_tier_opt_in::local_driver_opt_in;
 #[cfg(feature = "local-driver")]
 mod local_transport;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
@@ -129,6 +130,7 @@ mod jailer_limits;
 mod launch_resources;
 mod lifecycle;
 mod node_drain;
+mod operator_identity;
 mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
@@ -184,6 +186,8 @@ struct Args {
     /// State directory for pod metadata/logs.
     #[arg(long, env = "NUCLEUS_NODE_STATE_DIR", default_value = "./nucleus-node")]
     state_dir: PathBuf,
+    #[command(flatten)]
+    operator_identity: operator_identity::OperatorIdentityArgs,
     #[command(flatten)]
     authority: pod_authority::AuthorityArgs,
     #[command(flatten)]
@@ -486,13 +490,10 @@ struct NodeState {
     driver: DriverKind,
     #[cfg(feature = "local-driver")]
     tool_proxy_path: PathBuf,
-    /// Whether this node's local driver deliberately runs its tool-proxies
-    /// on the bare host tier, decided once at startup by
-    /// [`local_driver_opt_in`]. It is what puts `--unsandboxed` on a proxy's
-    /// command line, so the flag traces to the operator's
-    /// `--driver local --allow-local-driver` and to nothing else.
+    /// What local-driver children run as, decided at startup (Program C, C2): what puts
+    /// `--unsandboxed` and any `--subordinate-ids` on a proxy's command line.
     #[cfg(feature = "local-driver")]
-    local_driver_opt_in: nucleus::UnsandboxedOptIn,
+    local_children: bare_tier_separation::LocalChildren,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     firecracker_path: PathBuf,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -789,7 +790,8 @@ async fn main() -> Result<(), ApiError> {
         ));
     }
     // The bare tier is a declared insecure mode (Program C, C0).
-    let evidence_tier = insecure_mode::start(&args).map_err(ApiError::Driver)?;
+    #[cfg_attr(not(feature = "local-driver"), allow(unused_variables))]
+    let (evidence_tier, local_children) = insecure_mode::start(&args).map_err(ApiError::Driver)?;
     // What #2446 step 3 deleted, refused by name rather than ignored.
     retired_config::refuse(&retired_config::Retired {
         proxy_auth_secret: args.proxy_auth_secret.as_deref(),
@@ -843,6 +845,7 @@ async fn main() -> Result<(), ApiError> {
             "identity manager initialized with trust domain '{}'",
             args.identity_trust_domain
         );
+        operator_identity::write(&args, &manager).await?;
         Some(manager)
     };
 
@@ -991,7 +994,7 @@ async fn main() -> Result<(), ApiError> {
         #[cfg(feature = "local-driver")]
         tool_proxy_path: args.tool_proxy_path.clone(),
         #[cfg(feature = "local-driver")]
-        local_driver_opt_in: local_driver_opt_in(&args.driver, args.allow_local_driver),
+        local_children,
         firecracker_path: args.firecracker_path.clone(),
         firecracker_pool: build_firecracker_pool(&args),
         firecracker_api_boot: args.firecracker_api_boot,
@@ -1661,9 +1664,10 @@ async fn spawn_local_pod(
         .append(true)
         .open(&log_path)?;
 
+    let bare_tier = bare_tier_separation::proxy_args(state, pod_dir, &spec.spec.work_dir)?;
     let mut command = Command::new(&state.tool_proxy_path);
     command
-        .args(unsandboxed_proxy_flag(state.local_driver_opt_in))
+        .args(bare_tier)
         .arg("--spec")
         .arg(&spec_path)
         // The peer-verified socket, not loopback TCP and a shared secret: that
@@ -1671,12 +1675,7 @@ async fn spawn_local_pod(
         .arg("--listen-unix")
         .arg(&socket)
         .arg("--announce-path")
-        .arg(&announce_path)
-        // The workload door, in the pod's own directory: the guest default
-        // (`guest_layout::WORKLOAD_DOOR`, under /run) is not writable by a
-        // host-side proxy. Bound only when the pod has a workload.
-        .arg("--workload-door")
-        .arg(std::path::absolute(pod_dir.join("workload.sock"))?);
+        .arg(&announce_path); // the workload door is `proxy_args`'s, not the guest default
     // No shared secret, and none inherited from the node's own environment.
     command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
     command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");

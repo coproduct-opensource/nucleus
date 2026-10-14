@@ -108,6 +108,32 @@ fn unsandboxed_opt_in(given: bool) -> nucleus::UnsandboxedOptIn {
     }
 }
 
+/// `--subordinate-ids UID:GID` (Program C, C2), resolved against the opt-in
+/// it realizes: only the bare-tier opt-in carries them, and they must be
+/// delegated to this runtime's user (`nucleus::SubordinateIds::delegated`).
+/// A node that asked for separated children and cannot have them is refused,
+/// never run at the runtime's uid in their place.
+fn subordinate_opt_in(
+    opt_in: nucleus::UnsandboxedOptIn,
+    ids: Option<&str>,
+) -> Result<nucleus::UnsandboxedOptIn, String> {
+    let Some(given) = ids else {
+        return Ok(opt_in);
+    };
+    let (uid, gid) = given
+        .split_once(':')
+        .and_then(|(u, g)| Some((u.parse::<u32>().ok()?, g.parse::<u32>().ok()?)))
+        .ok_or_else(|| format!("--subordinate-ids {given:?} is not UID:GID"))?;
+    match opt_in {
+        nucleus::UnsandboxedOptIn::Explicit => nucleus::SubordinateIds::delegated(uid, gid)
+            .map(nucleus::UnsandboxedOptIn::Subordinate)
+            .map_err(|e| format!("--subordinate-ids {uid}:{gid}: {e}")),
+        nucleus::UnsandboxedOptIn::Absent | nucleus::UnsandboxedOptIn::Subordinate(_) => {
+            Err("--subordinate-ids requires --unsandboxed".to_string())
+        }
+    }
+}
+
 /// `--workload-without-landlock` as the typed waiver it is (ADR 0007 A).
 fn landlock_waiver(given: bool) -> nucleus::LandlockWaiver {
     if given {
@@ -162,6 +188,16 @@ struct Args {
     /// always admitted; an out-of-namespace peer is the host).
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_PEER_UIDS", value_delimiter = ',')]
     peer_uids: Vec<u32>,
+    /// The local driver's node (Program C, C2): `--listen-unix` admits this
+    /// process alone, while it is this proxy's parent, instead of every
+    /// process at an admitted uid. A flag only, and it must be the parent.
+    #[arg(long = "node-peer-pid")]
+    node_peer_pid: Option<u32>,
+    /// The subordinate host ids, `UID:GID`, this proxy's bare-tier children
+    /// run at (Program C, C2): handed over by a local-driver node whose user
+    /// is delegated them. Requires `--unsandboxed`. A flag only.
+    #[arg(long = "subordinate-ids")]
+    subordinate_ids: Option<String>,
     /// Where to bind the workload door: the Unix socket on which this proxy
     /// serves its workload's tool calls and egress, and nothing else (#3031
     /// option B). Bound only when the pod spec has a workload. The default is
@@ -1100,9 +1136,14 @@ async fn main() -> Result<(), ApiError> {
     // The matches are kept: where clap found a secret (flag or environment)
     // decides who can read it (`secret_census`).
     let matches = <Args as clap::CommandFactory>::command().get_matches();
-    let args =
+    let mut args =
         <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     st.mark("args_parse");
+    args.unsandboxed = subordinate_opt_in(args.unsandboxed, args.subordinate_ids.as_deref())
+        .unwrap_or_else(|why| {
+            eprintln!("FATAL: {why}");
+            std::process::exit(78);
+        });
 
     // The pod key a launcher delivered on stdin (#3471), read now: the runtime
     // is sealed, and nothing has been spawned to inherit stdin.
@@ -1212,6 +1253,16 @@ async fn main() -> Result<(), ApiError> {
     // Copied out once: the executor's children and the workload are confined
     // under the same containment, and `sandbox_proof` moves into the state.
     let containment = sandbox_proof.containment();
+    if let nucleus::UnsandboxedOptIn::Subordinate(ids) = args.unsandboxed {
+        console_line(&format!(
+            "[nucleus-tool-proxy] --unsandboxed --subordinate-ids: bare host tier, separated. \
+             Commands and a workload run at subordinate host uid {} / gid {} in their own user \
+             namespace, not at this process's uid ({}).",
+            ids.uid(),
+            ids.gid(),
+            nucleus::runtime_uid()
+        ));
+    }
     if args.unsandboxed == nucleus::UnsandboxedOptIn::Explicit {
         console_line(&format!(
             "[nucleus-tool-proxy] --unsandboxed: bare host tier opted in (containment {containment:?}, \
@@ -1712,7 +1763,11 @@ async fn main() -> Result<(), ApiError> {
     // describe how this server will actually be bound, not be patched in later.
     // A request can never influence it.
     let vsock_binding = pod_mgmt::resolve_vsock(&args, &spec)?;
-    let unix_binding = host_socket::resolve_unix(args.listen_unix.as_deref(), &args.peer_uids)?;
+    let unix_binding = host_socket::resolve_unix(
+        args.listen_unix.as_deref(),
+        &args.peer_uids,
+        args.node_peer_pid,
+    )?;
     let host_verified = vsock_binding.is_some() || unix_binding.is_some();
 
     // === A transport that can authenticate something (#2446 step 3) ===

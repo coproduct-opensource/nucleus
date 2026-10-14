@@ -65,6 +65,19 @@
 //! keeps the tier `Unbound` and a certificate header on it is refused — because
 //! a uid is not a SPIFFE leaf. The ceiling a peer bids under is the POD's own
 //! certificate, which is exactly the authority it was already acting under.
+//!
+//! # The local driver: the node's process, not its uid (Program C, C2)
+//!
+//! On the local driver the socket is not mounted into one pod: it sits in the
+//! pod directory on the host, and every process at the node's uid shares the
+//! proxy's pid namespace. A uid rule admitted all of them as a pod peer:
+//! another pod's proxy, and every bare-tier child at the node's uid, could
+//! drive this pod's control plane. The node therefore names itself
+//! (`--node-peer-pid`), and the socket admits that process alone, and only
+//! while it is still this proxy's parent ([`PeerBinding::NodeProcess`]), so a
+//! recycled pid after the node is gone admits nobody. The pattern is the
+//! container broker's (`nucleus-node`'s `ArmContainerInit`): a pid the
+//! launcher knows, checked against `SO_PEERCRED` at accept.
 
 use std::path::{Path, PathBuf};
 
@@ -82,6 +95,21 @@ use crate::startup_trace::Startup;
 pub(crate) struct UnixConfig {
     pub(crate) path: PathBuf,
     pub(crate) peer_uids: Vec<u32>,
+    pub(crate) binding: PeerBinding,
+}
+
+/// Which in-namespace processes a `--listen-unix` socket serves (Program C,
+/// C2). Two named cases, no `Default` (ADR 0007 B-1, B-2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PeerBinding {
+    /// Any process at an admitted uid: a container or a guest, where the
+    /// socket's directory belongs to one pod.
+    AdmittedUids,
+    /// Only the node's own process (`--node-peer-pid`), and only while it is
+    /// this proxy's parent: the local driver. Every other process at the
+    /// node's uid is refused, and so is the out-of-namespace host rule, which
+    /// no local peer can need.
+    NodeProcess(u32),
 }
 
 /// Resolve the Unix-socket binding from the CLI. `None` when not configured.
@@ -92,14 +120,34 @@ pub(crate) struct UnixConfig {
 pub(crate) fn resolve_unix(
     listen_unix: Option<&Path>,
     peer_uids: &[u32],
+    node_peer_pid: Option<u32>,
 ) -> Result<Option<UnixConfig>, ApiError> {
     let Some(path) = listen_unix else {
-        if !peer_uids.is_empty() {
+        if !peer_uids.is_empty() || node_peer_pid.is_some() {
             return Err(ApiError::Spec(
-                "--peer-uids requires --listen-unix".to_string(),
+                "--peer-uids and --node-peer-pid require --listen-unix".to_string(),
             ));
         }
         return Ok(None);
+    };
+    let binding = match node_peer_pid {
+        None => PeerBinding::AdmittedUids,
+        Some(_) if !peer_uids.is_empty() => {
+            return Err(ApiError::Spec(
+                "--node-peer-pid admits the node alone; it cannot be combined with --peer-uids"
+                    .to_string(),
+            ));
+        }
+        Some(pid) if pid == std::os::unix::process::parent_id() && pid > 1 => {
+            PeerBinding::NodeProcess(pid)
+        }
+        Some(pid) => {
+            return Err(ApiError::Spec(format!(
+                "--node-peer-pid {pid} is not this proxy's parent ({}): only the node that \
+                 started this proxy may be named",
+                std::os::unix::process::parent_id()
+            )));
+        }
     };
     if !path.is_absolute() {
         return Err(ApiError::Spec(format!(
@@ -110,6 +158,7 @@ pub(crate) fn resolve_unix(
     Ok(Some(UnixConfig {
         path: path.to_path_buf(),
         peer_uids: peer_uids.to_vec(),
+        binding,
     }))
 }
 
@@ -122,11 +171,23 @@ pub(crate) struct PeerPolicy {
     /// Operator-listed additional uids (e.g. an agent running as a dedicated
     /// unprivileged user in the same container).
     peer_uids: Vec<u32>,
+    /// Which in-namespace processes, of those uids, are served.
+    binding: PeerBinding,
 }
 
 impl PeerPolicy {
+    /// The uid binding, as the tests name it.
+    #[cfg(test)]
     pub(crate) fn new(own_uid: u32, peer_uids: Vec<u32>) -> Self {
-        Self { own_uid, peer_uids }
+        Self::bound(own_uid, peer_uids, PeerBinding::AdmittedUids)
+    }
+
+    pub(crate) fn bound(own_uid: u32, peer_uids: Vec<u32>, binding: PeerBinding) -> Self {
+        Self {
+            own_uid,
+            peer_uids,
+            binding,
+        }
     }
 
     /// Is a peer with these kernel-reported credentials admitted?
@@ -139,11 +200,28 @@ impl PeerPolicy {
     ///
     /// `pid == None` (a platform that does not report it) falls through to the
     /// uid rule, never to the host rule.
+    ///
+    /// Under [`PeerBinding::NodeProcess`] only the named node, at this proxy's
+    /// own uid, while it is still this proxy's parent.
     pub(crate) fn admits(&self, uid: u32, pid: Option<i32>) -> bool {
-        if pid == Some(0) {
-            return true;
+        self.admits_under_parent(uid, pid, std::os::unix::process::parent_id())
+    }
+
+    /// [`Self::admits`], with this proxy's parent pid as an input.
+    pub(crate) fn admits_under_parent(&self, uid: u32, pid: Option<i32>, parent: u32) -> bool {
+        match self.binding {
+            PeerBinding::AdmittedUids => {
+                if pid == Some(0) {
+                    return true;
+                }
+                uid == self.own_uid || self.peer_uids.contains(&uid)
+            }
+            PeerBinding::NodeProcess(node) => {
+                uid == self.own_uid
+                    && pid.and_then(|p| u32::try_from(p).ok()) == Some(node)
+                    && parent == node
+            }
         }
-        uid == self.own_uid || self.peer_uids.contains(&uid)
     }
 }
 
@@ -182,7 +260,7 @@ pub(crate) async fn bind_unix(
     if let Some(path) = announce_path {
         tokio::fs::write(path, unix_url(&cfg.path)).await?;
     }
-    let policy = PeerPolicy::new(current_uid(), cfg.peer_uids);
+    let policy = PeerPolicy::bound(current_uid(), cfg.peer_uids, cfg.binding);
     Ok(BoundUnix {
         listener,
         path: cfg.path,
@@ -458,15 +536,16 @@ mod tests {
 
     #[test]
     fn resolve_refuses_relative_and_orphaned_configs() {
-        let err = resolve_unix(Some(Path::new("rel.sock")), &[]).unwrap_err();
+        let err = resolve_unix(Some(Path::new("rel.sock")), &[], None).unwrap_err();
         assert!(err.to_string().contains("absolute"), "{err}");
-        let err = resolve_unix(None, &[7]).unwrap_err();
-        assert!(err.to_string().contains("requires --listen-unix"), "{err}");
-        assert_eq!(resolve_unix(None, &[]).unwrap(), None);
-        let ok = resolve_unix(Some(Path::new("/run/x.sock")), &[7, 8])
+        let err = resolve_unix(None, &[7], None).unwrap_err();
+        assert!(err.to_string().contains("require --listen-unix"), "{err}");
+        assert_eq!(resolve_unix(None, &[], None).unwrap(), None);
+        let ok = resolve_unix(Some(Path::new("/run/x.sock")), &[7, 8], None)
             .unwrap()
             .unwrap();
         assert_eq!(ok.peer_uids, vec![7, 8]);
+        assert_eq!(ok.binding, PeerBinding::AdmittedUids);
     }
 
     /// A directory the listed peers cannot traverse makes the allowlist inert,
@@ -646,6 +725,102 @@ mod tests {
         assert!(
             !reply.contains("pong"),
             "an unadmitted peer must never be answered, got {reply:?}"
+        );
+        h.abort();
+    }
+
+    /// Program C, C2: on the local driver the socket admits the node's own
+    /// process and nothing else at its uid. Another pod's proxy, or a
+    /// bare-tier child at the node's uid, is the same uid with another pid,
+    /// and is refused; so is the node's pid once it is no longer this proxy's
+    /// parent (it exited and the pid can be recycled), and the out-of-namespace
+    /// host rule (pid 0), which no local peer needs.
+    #[test]
+    fn the_node_binding_admits_the_node_process_alone() {
+        const OWN: u32 = 1000;
+        const NODE: u32 = 4242;
+        let p = PeerPolicy::bound(OWN, vec![], PeerBinding::NodeProcess(NODE));
+        let node = Some(i32::try_from(NODE).unwrap());
+        assert!(p.admits_under_parent(OWN, node, NODE));
+        // Another process at the node's uid: a sibling pod's proxy or child.
+        assert!(!p.admits_under_parent(OWN, Some(4243), NODE));
+        // The node's pid, at another uid (a subordinate child cannot be it).
+        assert!(!p.admits_under_parent(OWN + 1, node, NODE));
+        // The node is gone: this proxy was reparented, the pid is free.
+        assert!(!p.admits_under_parent(OWN, node, 1));
+        // The host rule does not apply to a local proxy.
+        assert!(!p.admits_under_parent(OWN, Some(0), NODE));
+        assert!(!p.admits_under_parent(OWN, None, NODE));
+        // Control: the uid binding admits the sibling, which is the defect.
+        let by_uid = PeerPolicy::new(OWN, vec![]);
+        assert!(by_uid.admits_under_parent(OWN, Some(4243), NODE));
+    }
+
+    /// The flag is resolved against the real parent: only the process that
+    /// started this proxy may be named, and never beside `--peer-uids`.
+    #[test]
+    fn the_node_peer_pid_must_be_the_parent() {
+        let sock = Some(Path::new("/run/x.sock"));
+        let parent = std::os::unix::process::parent_id();
+        let ok = resolve_unix(sock, &[], Some(parent)).unwrap().unwrap();
+        assert_eq!(ok.binding, PeerBinding::NodeProcess(parent));
+        let err = resolve_unix(sock, &[], Some(parent.wrapping_add(1))).unwrap_err();
+        assert!(err.to_string().contains("not this proxy's parent"), "{err}");
+        let err = resolve_unix(sock, &[7], Some(parent)).unwrap_err();
+        assert!(err.to_string().contains("cannot be combined"), "{err}");
+        let err = resolve_unix(None, &[], Some(parent)).unwrap_err();
+        assert!(err.to_string().contains("require --listen-unix"), "{err}");
+    }
+
+    /// Cross-pod, on a real socket: a peer at the node's uid that is not the
+    /// node (this test process connecting, standing for another pod's child)
+    /// is closed at accept under the node binding, and served under the uid
+    /// binding the local driver used before.
+    #[tokio::test]
+    async fn a_same_uid_process_that_is_not_the_node_is_refused_at_accept() {
+        async fn serve(policy: PeerPolicy) -> (PathBuf, tokio::task::JoinHandle<()>) {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("proxy.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            let app = Router::new().route("/ping", axum::routing::get(|| async { "pong" }));
+            let l = PeerVerifiedUnixListener {
+                inner: listener,
+                policy,
+            };
+            let h = tokio::spawn(async move {
+                let _keep = dir;
+                let _ = axum::serve(l, app.into_make_service_with_connect_info::<PodPeer>()).await;
+            });
+            (path, h)
+        }
+        async fn ping(path: &Path) -> String {
+            let Ok(mut s) = UnixStream::connect(path).await else {
+                return String::new();
+            };
+            let _ = s.write_all(b"GET /ping HTTP/1.0\r\nHost: x\r\n\r\n").await;
+            let mut buf = String::new();
+            let _ = s.read_to_string(&mut buf).await;
+            buf
+        }
+        // The "node" is this process's parent; the peer is this process.
+        let node = std::os::unix::process::parent_id();
+        let (path, h) = serve(PeerPolicy::bound(
+            current_uid(),
+            vec![],
+            PeerBinding::NodeProcess(node),
+        ))
+        .await;
+        let reply = ping(&path).await;
+        assert!(
+            !reply.contains("pong"),
+            "a same-uid non-node peer was served: {reply:?}"
+        );
+        h.abort();
+
+        let (path, h) = serve(PeerPolicy::new(current_uid(), vec![])).await;
+        assert!(
+            ping(&path).await.contains("pong"),
+            "control: the uid rule serves it"
         );
         h.abort();
     }

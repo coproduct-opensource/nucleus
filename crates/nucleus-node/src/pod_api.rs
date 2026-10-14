@@ -1224,7 +1224,14 @@ pub(crate) mod handler_tests {
             node_capacity: crate::node_capacity::Capacity::new(65536, 128),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
-            local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
+            local_children: match crate::local_driver_opt_in(&a.driver, a.allow_local_driver) {
+                nucleus::UnsandboxedOptIn::Absent => {
+                    crate::bare_tier_separation::LocalChildren::NotOptedIn
+                }
+                nucleus::UnsandboxedOptIn::Explicit | nucleus::UnsandboxedOptIn::Subordinate(_) => {
+                    crate::bare_tier_separation::LocalChildren::SharedUid
+                }
+            },
             firecracker_path: a.firecracker_path.clone(),
             firecracker_pool: None,
             firecracker_api_boot: a.firecracker_api_boot,

@@ -60,43 +60,31 @@ fi
 for b in "$NODE" "$CLI" "$TP"; do [[ -x "$b" ]] || { echo "ERROR: missing binary $b"; exit 1; }; done
 TP="$(cd "$(dirname "$TP")" && pwd)/$(basename "$TP")"
 
-# `nucleus-identity`'s `mint_test_client_cert` example: mints a CLI-usable
-# mTLS identity signed by an ALREADY-PERSISTED local CA — the missing piece
-# post-Move-B for a bare local node+CLI pair with no VM/Tier2Host to carry a
-# provisioned identity over SSH. See the example's own doc comment for why
-# `nucleus-cli`'s `provision::provision_mtls_identity` doesn't fit here.
-MINT="target/debug/examples/mint_test_client_cert"
-if [[ ! -x "$MINT" ]]; then
-    echo "building nucleus-identity's mint_test_client_cert example…"
-    cargo build -p nucleus-identity --example mint_test_client_cert \
-        >/dev/null 2>&1 || { echo "ERROR: build failed"; exit 1; }
-fi
-[[ -x "$MINT" ]] || { echo "ERROR: missing binary $MINT"; exit 1; }
-
 # ── Boot the real node (local driver, no KVM) ───────────────────────────────
+# The CLI's mTLS identity is the node's to mint (Program C, C2): with
+# --operator-identity-dir the node writes a client certificate for exactly
+# --root-minter-spiffe-id into an operator-only directory at start-up. This
+# check no longer reads the node's CA key (`state/ca/ca-key.pem`) to sign one.
+IDENTITY_DIR="$WORK/operator"
 "$NODE" \
     --listen "127.0.0.1:$PORT" --state-dir "$WORK/state" --driver local --allow-local-driver \
     --root-minter-spiffe-id "spiffe://$TRUST_DOMAIN/ns/default/sa/test-cli" \
+    --operator-identity-dir "$IDENTITY_DIR" \
     --tool-proxy-path "$TP" >"$WORK/node.log" 2>&1 &
 NODE_PID=$!
 
-# The node persists its CA (state-dir/ca/{ca-cert,ca-key}.pem) during
-# identity_manager construction, near the START of boot — well before the
-# HTTP listener binds. Wait for those files on disk (fast, local, no
-# network) before minting, so `mint_test_client_cert` loads the SAME root
-# the node is about to serve, not a fresh unrecognized one.
 ca_ready=0
 for _ in $(seq 1 40); do
-    if [[ -f "$WORK/state/ca/ca-cert.pem" && -f "$WORK/state/ca/ca-key.pem" ]]; then
+    if [[ -f "$IDENTITY_DIR/cert.pem" && -f "$IDENTITY_DIR/key.pem" && -f "$IDENTITY_DIR/trust-bundle.pem" ]]; then
         ca_ready=1; break
     fi
     sleep 0.25
 done
 if [[ "$ca_ready" -ne 1 ]]; then
-    echo "ERROR: node never persisted its CA under $WORK/state/ca"; tail -20 "$WORK/node.log"; exit 1
+    echo "ERROR: node never wrote the operator identity under $IDENTITY_DIR"; tail -20 "$WORK/node.log"; exit 1
 fi
 
-# Mint the CLI's identity under `ns/default/sa/*` — an ORCHESTRATOR prefix
+# The CLI's identity is under `ns/default/sa/*` — an ORCHESTRATOR prefix
 # (crates/nucleus-node/src/auth.rs's `AuthorizationPolicy::default`), which
 # is what pod create/list/cancel actually require. `ns/system/sa/cli`
 # (nucleus-cli's own Tier2Host-provisioned-identity convention) is NOT
@@ -106,11 +94,6 @@ fi
 # The SAME identity is passed to the node as --root-minter-spiffe-id above:
 # since pod_authority, exactly one identity may create a pod from a bare
 # (certificate-less) policy, and every other caller must prove authority.
-
-IDENTITY_DIR="$WORK/cli-identity"
-"$MINT" --ca-dir "$WORK/state/ca" --trust-domain "$TRUST_DOMAIN" \
-    --namespace default --service-account test-cli --out-dir "$IDENTITY_DIR" \
-    >"$WORK/mint.log" 2>&1 || { echo "ERROR: minting the CLI's client cert failed"; cat "$WORK/mint.log"; exit 1; }
 
 N() {
     "$CLI" node --url "$URL" \

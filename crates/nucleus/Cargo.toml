@@ -88,8 +88,10 @@ libc = "0.2"
 landlock = "0.4.7"
 # The exec pin (#2907) raises the runtime's own RLIMIT_NOFILE and places a
 # descriptor at a floor (`F_DUPFD_CLOEXEC`) without `unsafe`. Already in the
-# lockfile (1.1.4, through tempfile).
-rustix = { version = "1.1.4", features = ["process"] }
+# lockfile (1.1.4, through tempfile). `fs`, `pipe`, `thread`: the separated
+# bare tier (Program C, C2) reads and writes POSIX ACL xattrs, and its child
+# hook makes its pipe, ids and map reads through rustix's safe wrappers.
+rustix = { version = "1.1.4", features = ["process", "fs", "pipe", "thread"] }
 
 [dev-dependencies]
 proptest = { workspace = true }

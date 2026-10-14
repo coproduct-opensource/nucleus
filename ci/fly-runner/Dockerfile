@@ -22,8 +22,12 @@ USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential clang lld llvm pkg-config cmake libssl-dev protobuf-compiler \
     musl-tools e2fsprogs git zstd xz-utils python3 python-is-python3 python3-dev \
-    python3-requests ca-certificates curl jq procps time xxd bc patchelf \
+    python3-requests ca-certificates curl jq procps time xxd bc patchelf uidmap \
  && rm -rf /var/lib/apt/lists/*
+# Program C, C2: newuidmap/newgidmap (uidmap, above) and a subordinate range for
+# the runner user, so the local-driver live gates run the separated bare tier.
+# Same range as docker/Dockerfile.runner. docs/bare-tier-insecure.md.
+RUN usermod --add-subuids 200000-265535 --add-subgids 200000-265535 runner
 
 # gh: release downloads the hosted path uses, and any `gh api` a gate script makes.
 RUN set -eux; \
