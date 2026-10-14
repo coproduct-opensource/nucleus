@@ -127,6 +127,13 @@ impl View {
         self.scope.is_subset_of(wider.scope) && self.ceiling.at_most(wider.ceiling)
     }
 
+    /// Does this view see an entry in scope atom `atom` carrying label `label`? The one
+    /// visibility decision: [`crate::observe`] asks it per key, and a store that maps
+    /// its records onto atoms and ranks asks it per record.
+    pub const fn admits(self, atom: ScopeAtom, label: LabelRank) -> bool {
+        self.scope.contains(atom) && label.at_most(self.ceiling)
+    }
+
     /// Every view of the finite model.
     pub fn all() -> impl Iterator<Item = View> {
         Scope::all().flat_map(|scope| {

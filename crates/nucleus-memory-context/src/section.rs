@@ -135,7 +135,7 @@ impl Section {
 
 /// Is `entry`, stored under `key`, visible through `view`?
 pub(crate) const fn visible(view: View, key: Key, entry: Entry) -> bool {
-    view.scope.contains(key.atom()) && entry.label.at_most(view.ceiling)
+    view.admits(key.atom(), entry.label)
 }
 
 /// What `view` observes of `section`: every visible entry, unchanged — label

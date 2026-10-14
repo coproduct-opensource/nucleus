@@ -1,52 +1,162 @@
-//! Persistent memory is selected by namespace, then bound to the issued owner.
-use crate::{ApiError, container_mediation::ContainerMediation, driver::DriverKind};
-use nucleus_spec::PodSpec;
-use sha2::{Digest, Sha256};
-use std::{
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
-    path::{Path, PathBuf},
+//! Persistent memory at pod creation: a pod names a space, and the node binds the run to it.
+//!
+//! The pod asks with `nucleus.io/memory-namespace: <name>`. The node resolves that name to a
+//! memory space and the binding policy that admits the pod (`memory_space`), mints the run its
+//! own binding, and hands its tool-proxy the binding's directory: a pinned snapshot for a `Read`
+//! binding, the pinned base its private branch grows from for a `ReadPropose` one
+//! (`memory_binding`). The proxy opens that journal exactly as it opened a store before, by the
+//! same two variables or flags, so no guest behaviour changes.
+//!
+//! Stores left by the owner-keyed layout (every lineage of a tenant reached them) and by the
+//! held lineage-scoped layout are declared as spaces at start (`MemoryArgs::load`), each
+//! receipted once.
+use crate::{
+    ApiError,
+    container_mediation::ContainerMediation,
+    driver::DriverKind,
+    memory_binding::{BindRequest, JOURNAL, private_directory},
+    memory_flow::{self, FlowClaim},
+    memory_space::{DecisionCiter, PodLabels, PodMatch, Registry, SpaceName, TenantKey},
+    pod_authority::PodAuthority,
 };
+use nucleus_spec::PodSpec;
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+use uuid::Uuid;
 
 const LABEL: &str = "nucleus.io/memory-namespace";
 const GUEST_DIRECTORY: &str = "/run/nucleus/memory";
 const ENV: [&str; 2] = ["NUCLEUS_MEMORY_STORE", "NUCLEUS_MEMORY_NAMESPACE"];
+/// How long after a run's own deadline its binding may still publish its branch, so the
+/// tenant can publish a finished run's work.
+pub(crate) const PUBLISH_WINDOW_SECS: u64 = 15 * 60;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct MemoryArgs {
-    /// Existing private directory for owner-bound persistent proxy memory.
+    /// Existing private directory for persistent memory spaces and their bindings.
     #[arg(long, env = "NUCLEUS_NODE_MEMORY_ROOT")]
     memory_root: Option<PathBuf>,
 }
 
 pub(crate) struct Stores {
-    root: Option<PathBuf>,
+    root: Option<Root>,
+}
+struct Root {
+    registry: Mutex<Registry>,
 }
 pub(crate) struct Requested {
-    namespace: String,
+    name: SpaceName,
 }
-pub(crate) struct Grant {
+/// A binding provisioned for one pod: the directory its proxy journals into, and the namespace
+/// that journal's header carries.
+pub(crate) struct Attachment {
     directory: PathBuf,
     namespace: String,
 }
 
+/// Which lineage a pod belongs to: the root of the parent chain the node recorded at creation
+/// (`pod_api::parent_for_create`, the same edge `caller_may_manage` reads), folded once at
+/// creation so it never depends on an ancestor still being registered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LineageRoot {
+    Known(Uuid),
+    /// The recorded parent was not registered when the pod was created, so its lineage cannot be
+    /// named. A pod in this state is refused persistent memory rather than given a guess.
+    Unresolved {
+        parent: Uuid,
+    },
+}
+
+impl LineageRoot {
+    /// The lineage of pod `id`, from its recorded parent and that parent's own lineage if the
+    /// parent is registered (`Some(root)`) or not (`None`).
+    pub(crate) fn of(id: Uuid, parent: Option<(Uuid, Option<LineageRoot>)>) -> Self {
+        match parent {
+            None => LineageRoot::Known(id),
+            Some((_, Some(root))) => root,
+            Some((parent, None)) => LineageRoot::Unresolved { parent },
+        }
+    }
+}
+
+/// Who a binding is being minted for.
+pub(crate) struct Subject<'a> {
+    pub(crate) pod: Uuid,
+    /// The issued root identity: the pod's tenant (ADR 0001).
+    pub(crate) owner: &'a str,
+    pub(crate) lineage: LineageRoot,
+    pub(crate) labels: PodLabels<'a>,
+    /// When the run's binding stops being honoured: its deadline plus the publish window.
+    pub(crate) run_ends: u64,
+}
+
+pub(crate) fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 impl MemoryArgs {
-    pub(crate) fn load(&self, roots: &crate::host_paths::Roots) -> Result<Stores, ApiError> {
-        let root = self
-            .memory_root
-            .as_ref()
-            .map(|path| {
-                let root = path.canonicalize()?;
-                private_directory(&root)?;
-                let workspace = roots.workspace_root().canonicalize()?;
-                if root.starts_with(&workspace) || workspace.starts_with(&root) {
-                    return Err(ApiError::Driver(
-                        "memory root must be separate from the workspace root".into(),
-                    ));
-                }
-                Ok(root)
-            })
-            .transpose()?;
-        Ok(Stores { root })
+    /// The flags with `--memory-root` set, for fixtures that need a node with persistent memory.
+    #[cfg(test)]
+    pub(crate) fn rooted(memory_root: PathBuf) -> Self {
+        Self {
+            memory_root: Some(memory_root),
+        }
+    }
+
+    /// Open the memory root, and declare every store an earlier layout left as a space.
+    ///
+    /// Each migration is receipted in the node's `lifecycle.log` before the registry that
+    /// records it is written, so an interrupted migration re-issues the same decision (its
+    /// policy id is derived from the store) rather than losing its receipt.
+    pub(crate) fn load(
+        &self,
+        roots: &crate::host_paths::Roots,
+        state_dir: &Path,
+        authority: &PodAuthority,
+    ) -> Result<Stores, ApiError> {
+        let Some(path) = self.memory_root.as_ref() else {
+            return Ok(Stores { root: None });
+        };
+        let root = path.canonicalize()?;
+        private_directory(&root)?;
+        let workspace = roots.workspace_root().canonicalize()?;
+        if root.starts_with(&workspace) || workspace.starts_with(&root) {
+            return Err(ApiError::Driver(
+                "memory root must be separate from the workspace root".into(),
+            ));
+        }
+        let mut registry = Registry::load(&root)?;
+        let now = now_unix();
+        let migrated = registry.migrate(now)?;
+        for event in &migrated {
+            match event.policy {
+                Some(policy) => tracing::info!(
+                    tenant = event.tenant.as_str(),
+                    space = %event.space.reference(),
+                    layout = event.layout,
+                    %policy,
+                    "a memory store from an earlier layout became a declared memory space"
+                ),
+                None => tracing::warn!(
+                    tenant = event.tenant.as_str(),
+                    space = %event.space.reference(),
+                    layout = event.layout,
+                    "a memory store from an earlier layout collides with a space of the same id; it is not migrated and stays unreachable"
+                ),
+            }
+            let claim: FlowClaim<'_> = registry.migration_claim(event, now);
+            memory_flow::record(state_dir, authority, &claim)?;
+        }
+        registry.commit_migration(&migrated)?;
+        Ok(Stores {
+            root: Some(Root {
+                registry: Mutex::new(registry),
+            }),
+        })
     }
 }
 
@@ -57,19 +167,14 @@ impl Stores {
         driver: &DriverKind,
         mediation: ContainerMediation,
     ) -> Result<Option<Requested>, ApiError> {
-        let Some(namespace) = spec.metadata.labels.get(LABEL) else {
+        let Some(name) = spec.metadata.labels.get(LABEL) else {
             return Ok(None);
         };
-        if namespace.is_empty()
-            || namespace.len() > 64
-            || !namespace
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        {
-            return Err(ApiError::InvalidSpec(format!(
+        let name = SpaceName::new(name).map_err(|_| {
+            ApiError::InvalidSpec(format!(
                 "{LABEL} must contain 1 to 64 ASCII letters, digits, underscores or hyphens"
-            )));
-        }
+            ))
+        })?;
         let supported = match driver {
             #[cfg(feature = "local-driver")]
             DriverKind::Local => true,
@@ -84,74 +189,86 @@ impl Stores {
                 "persistent memory requires an operator --memory-root".into(),
             ));
         }
-        Ok(Some(Requested {
-            namespace: namespace.clone(),
-        }))
+        Ok(Some(Requested { name }))
     }
 
+    /// Mint the run's binding to the space its request names, and return what the pod is
+    /// handed. The binding's snapshot is written and its delivery receipt kept before this
+    /// returns, so the pod never reaches bytes whose disclosure is unrecorded.
     pub(crate) fn provision(
         &self,
         requested: Option<Requested>,
-        owner: &str,
-    ) -> Result<Option<Grant>, ApiError> {
-        let Some(Requested { namespace }) = requested else {
+        subject: &Subject<'_>,
+        state_dir: &Path,
+        authority: &PodAuthority,
+        citer: Option<&dyn DecisionCiter>,
+    ) -> Result<Option<Attachment>, ApiError> {
+        let Some(Requested { name }) = requested else {
             return Ok(None);
         };
         let root = self
             .root
             .as_ref()
             .ok_or_else(|| ApiError::Driver("memory root unavailable".into()))?;
-        let owner_hash = hex::encode(Sha256::digest(owner.as_bytes()));
-        let owner_dir = root.join(&owner_hash);
-        ensure_directory(&owner_dir)?;
-        let directory = owner_dir.join(&namespace);
-        ensure_directory(&directory)?;
-        Ok(Some(Grant {
-            directory,
-            namespace: format!("{owner_hash}/{namespace}"),
+        let lineage = match subject.lineage {
+            LineageRoot::Known(lineage) => lineage,
+            LineageRoot::Unresolved { parent } => {
+                return Err(ApiError::InvalidSpec(format!(
+                    "persistent memory is bound per lineage, and this pod's recorded parent {parent} is not registered"
+                )));
+            }
+        };
+        let tenant = TenantKey::of(subject.owner);
+        let mut registry = root
+            .registry
+            .lock()
+            .map_err(|_| ApiError::Driver("memory space registry unavailable".into()))?;
+        let delivered = registry.bind(
+            BindRequest {
+                tenant: &tenant,
+                name: &name,
+                pod: subject.pod,
+                matched: PodMatch {
+                    lineage,
+                    labels: subject.labels,
+                },
+                run_ends: subject.run_ends,
+                now: now_unix(),
+            },
+            citer,
+            &mut |claim: &FlowClaim<'_>| memory_flow::record(state_dir, authority, claim),
+        )?;
+        tracing::debug!(pod = %subject.pod, binding = %delivered.binding, "memory binding delivered");
+        Ok(Some(Attachment {
+            directory: delivered.directory,
+            namespace: delivered.namespace,
         }))
     }
-}
 
-fn private_directory(path: &Path) -> Result<(), ApiError> {
-    let metadata = std::fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
-        return Err(ApiError::Driver(
-            "memory directories must be private real directories (mode 0700)".into(),
-        ));
+    /// The memory space registry, for the API. `None` without a memory root.
+    pub(crate) fn registry(&self) -> Option<&Mutex<Registry>> {
+        self.root.as_ref().map(|root| &root.registry)
     }
-    Ok(())
-}
-fn ensure_directory(path: &Path) -> Result<(), ApiError> {
-    match std::fs::DirBuilder::new().mode(0o700).create(path) {
-        Ok(()) => {
-            if let Some(parent) = path.parent() {
-                std::fs::File::open(parent)?.sync_all()?;
-            }
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => return Err(e.into()),
-    }
-    private_directory(path)
 }
 
 #[cfg(feature = "local-driver")]
-pub(crate) fn local_command(command: &mut tokio::process::Command, grant: Option<&Grant>) {
+pub(crate) fn local_command(command: &mut tokio::process::Command, memory: Option<&Attachment>) {
     for key in ENV {
         command.env_remove(key);
     }
-    if let Some(grant) = grant {
+    if let Some(memory) = memory {
         command
             .arg("--memory-store")
-            .arg(grant.directory.join("memory.jsonl"))
+            .arg(memory.directory.join(JOURNAL))
             .arg("--memory-namespace")
-            .arg(&grant.namespace);
+            .arg(&memory.namespace);
     }
 }
-impl Grant {
+
+impl Attachment {
     pub(crate) fn container_env(&self) -> [String; 2] {
         [
-            format!("{}={GUEST_DIRECTORY}/memory.jsonl", ENV[0]),
+            format!("{}={GUEST_DIRECTORY}/{JOURNAL}", ENV[0]),
             format!("{}={}", ENV[1], self.namespace),
         ]
     }
@@ -161,168 +278,5 @@ impl Grant {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn spec(namespace: &str) -> PodSpec {
-        let mut spec: PodSpec =
-            serde_json::from_str(r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#).unwrap();
-        spec.metadata.labels.insert(LABEL.into(), namespace.into());
-        spec
-    }
-    fn stores(dir: &Path) -> Stores {
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        Stores {
-            root: Some(dir.to_owned()),
-        }
-    }
-    #[test]
-    fn stable_owner_namespace_reuses_storage_and_other_owners_stay_separate() {
-        let dir = tempfile::tempdir().unwrap();
-        let stores = stores(dir.path());
-        let request = || {
-            stores
-                .request(
-                    &spec("project-a"),
-                    &DriverKind::Container,
-                    ContainerMediation::ToolProxy,
-                )
-                .unwrap()
-        };
-        let first = stores
-            .provision(request(), "spiffe://test/owner-a")
-            .unwrap()
-            .unwrap();
-        let second = stores
-            .provision(request(), "spiffe://test/owner-a")
-            .unwrap()
-            .unwrap();
-        let other = stores
-            .provision(request(), "spiffe://test/owner-b")
-            .unwrap()
-            .unwrap();
-        assert_eq!(first.directory, second.directory);
-        assert_eq!(first.namespace, second.namespace);
-        assert_ne!(first.directory, other.directory);
-        assert_ne!(first.namespace, other.namespace);
-        assert!(first.container_env()[0].ends_with("/run/nucleus/memory/memory.jsonl"));
-        assert!(first.container_bind().ends_with(":/run/nucleus/memory:rw"));
-        private_directory(&first.directory).unwrap();
-    }
-    #[test]
-    fn namespace_and_backend_are_checked_before_storage_is_created() {
-        let dir = tempfile::tempdir().unwrap();
-        let stores = stores(dir.path());
-        for name in ["", "../project", "project/a", "project.a"] {
-            assert!(
-                stores
-                    .request(
-                        &spec(name),
-                        &DriverKind::Container,
-                        ContainerMediation::ToolProxy
-                    )
-                    .is_err()
-            );
-        }
-        assert!(
-            stores
-                .request(
-                    &spec("project"),
-                    &DriverKind::Firecracker,
-                    ContainerMediation::ToolProxy
-                )
-                .is_err()
-        );
-        assert!(
-            stores
-                .request(
-                    &spec("project"),
-                    &DriverKind::Container,
-                    ContainerMediation::Unmediated
-                )
-                .is_err()
-        );
-        assert!(
-            Stores { root: None }
-                .request(
-                    &spec("project"),
-                    &DriverKind::Container,
-                    ContainerMediation::ToolProxy
-                )
-                .is_err()
-        );
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
-    }
-    #[test]
-    fn configured_memory_root_must_be_private_and_separate_from_workspaces() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let roots = crate::host_paths::HostPathArgs {
-            scratch_root: None,
-            artifacts_root: state_dir.path().join("artifacts"),
-            data_root: None,
-            workspace_root: None,
-        }
-        .ensure(state_dir.path())
-        .unwrap();
-        let memory = tempfile::tempdir().unwrap();
-        std::fs::set_permissions(memory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let args = MemoryArgs {
-            memory_root: Some(memory.path().to_owned()),
-        };
-        assert!(args.load(&roots).is_ok());
-        std::fs::set_permissions(memory.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(args.load(&roots).is_err());
-        let workspace = roots.workspace_root();
-        std::fs::set_permissions(workspace, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(
-            MemoryArgs {
-                memory_root: Some(workspace.to_owned())
-            }
-            .load(&roots)
-            .is_err()
-        );
-    }
-    #[cfg(feature = "local-driver")]
-    #[tokio::test]
-    async fn container_environment_uses_only_the_provisioned_grant() {
-        let state_dir = tempfile::tempdir().unwrap();
-        let state = crate::pod_api::handler_tests::state(&state_dir);
-        let memory = tempfile::tempdir().unwrap();
-        let stores = stores(memory.path());
-        let spec = spec("project-a");
-        let request = stores
-            .request(&spec, &DriverKind::Container, ContainerMediation::ToolProxy)
-            .unwrap();
-        let grant = stores
-            .provision(request, "spiffe://test/owner-a")
-            .unwrap()
-            .unwrap();
-        let env =
-            crate::container_env(&state, &spec, uuid::Uuid::new_v4(), "", None, Some(&grant)).await;
-        for expected in grant.container_env() {
-            assert!(env.contains(&expected));
-        }
-        let empty = crate::container_env(&state, &spec, uuid::Uuid::new_v4(), "", None, None).await;
-        assert!(
-            !empty
-                .iter()
-                .any(|value| value.starts_with("NUCLEUS_MEMORY_"))
-        );
-    }
-    #[cfg(feature = "local-driver")]
-    #[test]
-    fn local_launch_does_not_inherit_an_ambient_memory_namespace() {
-        let mut command = tokio::process::Command::new("proxy");
-        command
-            .env(ENV[0], "/operator/memory.jsonl")
-            .env(ENV[1], "operator");
-        local_command(&mut command, None);
-        for name in ENV {
-            assert!(
-                command
-                    .as_std()
-                    .get_envs()
-                    .any(|(key, value)| key == name && value.is_none())
-            );
-        }
-    }
-}
+#[path = "memory_provisioning_tests.rs"]
+mod tests;

@@ -30,6 +30,7 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest as _;
 
 use crate::crdt::ProvenanceMemorySet;
 use crate::hash::ContentHash;
@@ -194,6 +195,10 @@ pub enum PublishRefusal {
     /// This write failed part-way; the journal is now latched.
     #[error("uncertain write: {0}")]
     Uncertain(std::io::Error),
+    /// The caller's record of the commit (its receipt) was not kept, so the commit
+    /// was not appended. The journal is exactly as it was.
+    #[error("the commit's receipt was not kept: {0}")]
+    NotRecorded(String),
 }
 
 /// A validated journal location: an absolute path in a private, existing
@@ -576,6 +581,17 @@ impl History {
         registry: &dyn RecomputeMemory,
         stop_at: Option<u64>,
     ) -> Result<Self, JournalError> {
+        Self::replay_with(lines, space, registry, stop_at, &mut |_| {})
+    }
+
+    /// [`Self::replay`], handing each applied commit to `applied`, in order.
+    fn replay_with(
+        lines: &[&[u8]],
+        space: &str,
+        registry: &dyn RecomputeMemory,
+        stop_at: Option<u64>,
+        applied: &mut dyn FnMut(&Commit),
+    ) -> Result<Self, JournalError> {
         let mut history = Self::genesis(space);
         for (index, line) in lines.iter().enumerate() {
             if stop_at.is_some_and(|stop| history.head().version() >= stop) {
@@ -596,6 +612,7 @@ impl History {
                     reason,
                 },
             })?;
+            applied(&commit);
         }
         Ok(history)
     }
@@ -807,6 +824,13 @@ impl PublishedJournal {
         Ok(self.history.head())
     }
 
+    /// The journal's size in bytes, unless a write was uncertain. The writer holds
+    /// the file's lock, so nothing else changes it between this and a publish.
+    pub fn bytes(&self) -> Result<u64, JournalError> {
+        self.log.available()?;
+        Ok(self.log.bytes)
+    }
+
     /// Compare-and-swap publish. Refuses unless the head is `expected`; then
     /// validates the whole candidate (the head plus the patch's records that are
     /// not already there) through `validator` and provenance replay, and appends
@@ -820,6 +844,34 @@ impl PublishedJournal {
         validator: &dyn CandidateValidator,
         registry: &dyn RecomputeMemory,
     ) -> Result<Pin, PublishRefusal> {
+        self.publish_with(
+            patch,
+            expected,
+            (publisher, epoch),
+            validator,
+            registry,
+            &mut |_| Ok(()),
+        )
+    }
+
+    /// [`Self::publish`], with `record` called on the sealed commit after every
+    /// check has passed and immediately before it is appended: the caller's
+    /// receipt is kept first. If `record` fails, nothing is appended and the
+    /// journal is unchanged ([`PublishRefusal::NotRecorded`]). A receipt kept for
+    /// a commit whose append then fails names a commit that may not exist: that
+    /// is the at-least-once side, and the journal latches
+    /// ([`PublishRefusal::Uncertain`]). `by` is who publishes and the epoch they
+    /// publish under, as for [`Self::publish`].
+    pub fn publish_with(
+        &mut self,
+        patch: &Patch,
+        expected: Pin,
+        by: (PublisherBinding, Epoch),
+        validator: &dyn CandidateValidator,
+        registry: &dyn RecomputeMemory,
+        record: &mut dyn FnMut(&Commit) -> Result<(), String>,
+    ) -> Result<Pin, PublishRefusal> {
+        let (publisher, epoch) = by;
         if self.log.failed {
             return Err(PublishRefusal::Unavailable);
         }
@@ -865,6 +917,7 @@ impl PublishedJournal {
             ApplyError::Restated => PublishRefusal::NothingToPublish,
             ApplyError::Admission { hash, reason } => PublishRefusal::Provenance { hash, reason },
         })?;
+        record(&commit).map_err(PublishRefusal::NotRecorded)?;
         self.log
             .append(&line, next_bytes)
             .map_err(PublishRefusal::Uncertain)?;
@@ -948,6 +1001,86 @@ impl PinnedSnapshot {
     pub fn records(&self) -> &ProvenanceMemorySet {
         &self.set
     }
+}
+
+/// Every record of the journal at `location`, in admission order, as of its last
+/// complete line: a v1 journal (one record per line) or a v2 journal (one commit
+/// per line, replayed through the chain check). Takes no lock, so it reads a
+/// journal another process is writing (a branch its run's proxy holds), and only
+/// newline-terminated lines count. Every record is re-verified by provenance
+/// replay; nothing is trusted from the file. `reach` is asked about the directory
+/// and the file before it is read.
+pub fn read_unlocked(
+    location: &JournalLocation,
+    reach: &dyn ReachCheck,
+    registry: &dyn RecomputeMemory,
+) -> Result<Vec<MemoryRecord>, JournalError> {
+    admit_directory(reach, location.parent())?;
+    match std::fs::symlink_metadata(location.path()) {
+        Ok(meta) if !meta.is_file() => {
+            return Err(JournalError::Location(
+                "journal must be a regular file, not a symlink",
+            ));
+        }
+        Ok(_) => {}
+        Err(e) => return Err(e.into()),
+    }
+    let file = File::open(location.path())?;
+    check_names_file(location.path(), &file)?;
+    admit_file(reach, &file)?;
+    let bytes = read_capped(&file)?;
+    let lines = terminated_lines(&bytes);
+    let (header, body) = lines.split_first().ok_or(JournalError::Incomplete)?;
+    match header_format(header, location.namespace())? {
+        Format::V1 => replay_v1(body, registry),
+        Format::V2 => {
+            let mut ordered = Vec::new();
+            History::replay_with(body, location.namespace(), registry, None, &mut |commit| {
+                ordered.extend(commit.records().iter().cloned());
+            })?;
+            Ok(ordered)
+        }
+    }
+}
+
+/// Write `records` (in admission order: a derived record after the records it
+/// cites) as a fresh journal at `location`, in the v1 layout (a header, then one
+/// record per line), and return the SHA-256 of the bytes written.
+///
+/// The v1 layout because every proxy opens it: a v1 writer reads it as it is,
+/// and a v2 writer migrates it on open into one v2 commit. The records are
+/// replayed through provenance admission first, so a delivery a proxy would
+/// refuse on open is refused here instead. The file must not exist yet; it is
+/// created private (0600), written in one write, synced, and its directory synced.
+pub fn write_delivery(
+    location: &JournalLocation,
+    records: &[MemoryRecord],
+    registry: &dyn RecomputeMemory,
+) -> Result<[u8; 32], JournalError> {
+    let mut body = encode_line(&Header {
+        schema: SCHEMA_V1.into(),
+        namespace: location.namespace().into(),
+    })?;
+    for record in records {
+        body.extend(encode_line(record)?);
+    }
+    if over_cap(body.len()) {
+        return Err(JournalError::Capacity);
+    }
+    let lines = terminated_lines(&body);
+    let (_, written) = lines.split_first().ok_or(JournalError::Incomplete)?;
+    replay_v1(written, registry)?;
+    let mut file = match open_locked(location.path(), Create::New)? {
+        Opened::Fresh(file) => file,
+        Opened::Existing(_) => return Err(JournalError::Replaced),
+    };
+    file.write_all(&body)?;
+    file.sync_all()?;
+    sync_dir(location.parent())?;
+    let digest = sha2::Sha256::digest(&body);
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
 }
 
 #[cfg(test)]

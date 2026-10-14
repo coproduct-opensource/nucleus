@@ -786,6 +786,9 @@ pub(crate) enum SignedRecord {
     /// The egress cut a pod's link check made: a bypass, or counters it could not read
     /// (`egress_meter::link_record::LinkRecord::preimage`, #2905).
     EgressLink,
+    /// A memory-space flow decision: a space, policy or revocation, a migration, a snapshot
+    /// delivered to a run's binding, or a publish it authorized (`memory_flow::FlowClaim`).
+    MemoryFlow,
 }
 
 impl SignedRecord {
@@ -794,6 +797,7 @@ impl SignedRecord {
             Self::PodReceipt => b"nucleus/pod-receipt/v1\0",
             Self::EgressExhaustion => b"nucleus/egress-exhaustion/v1\0",
             Self::EgressLink => b"nucleus/egress-link/v1\0",
+            Self::MemoryFlow => b"nucleus/memory-flow/v1\0",
         }
     }
 
@@ -1238,6 +1242,13 @@ impl PodAuthority {
     /// whether the workload told the truth in them.
     pub fn sign_pod_receipt(&self, preimage: &[u8]) -> String {
         self.sign_record(SignedRecord::PodReceipt, preimage)
+    }
+
+    /// Sign a memory-flow claim (`memory_flow::FlowClaim`) in its own signature space, so a
+    /// flow receipt is never a byte string that also verifies as a pod receipt, an egress
+    /// record or a certificate body.
+    pub fn sign_memory_flow(&self, preimage: &[u8]) -> String {
+        self.sign_record(SignedRecord::MemoryFlow, preimage)
     }
 
     /// The one place the root key signs a record: under `kind`'s domain tag, so no record

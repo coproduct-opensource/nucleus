@@ -783,3 +783,104 @@ fn reach_is_asked_before_anything_is_created_or_read() {
     ));
     assert!(!scratch.file("branch.jsonl").exists());
 }
+
+/// What the node delivers to a run is a v1 journal: a v2 writer migrates it on open into
+/// one commit holding exactly those records, and the returned digest is the file's bytes.
+#[test]
+fn a_delivery_is_a_journal_every_writer_opens_and_its_digest_is_its_bytes() {
+    let scratch = Scratch::new();
+    let loc = scratch.location();
+    let parent = raw("a");
+    let child = derived("b", &parent);
+    let digest = write_delivery(&loc, &[parent.clone(), child.clone()], &registry()).unwrap();
+    let bytes = std::fs::read(loc.path()).unwrap();
+    assert_eq!(bytes, v1_bytes("space-a", &[parent.clone(), child.clone()]));
+    assert_eq!(
+        digest.as_slice(),
+        <sha2::Sha256 as sha2::Digest>::digest(&bytes).as_slice()
+    );
+    assert!(
+        matches!(
+            write_delivery(&loc, std::slice::from_ref(&parent), &registry()),
+            Err(JournalError::Io(_))
+        ),
+        "a delivery never overwrites"
+    );
+    let journal = PublishedJournal::open(loc, &Anyone, &registry()).unwrap();
+    assert_eq!(journal.head().unwrap().version(), 1);
+    assert_eq!(journal.records().unwrap().len(), 2);
+}
+
+/// A delivery a proxy would refuse on open is refused before it is written: a derived record
+/// whose cited parent was left out does not re-derive.
+#[test]
+fn a_delivery_missing_a_cited_parent_is_refused_and_not_written() {
+    let scratch = Scratch::new();
+    let loc = scratch.location();
+    let child = derived("b", &raw("a"));
+    assert!(matches!(
+        write_delivery(&loc, &[child], &registry()),
+        Err(JournalError::Replay { .. })
+    ));
+    assert!(!loc.path().exists());
+}
+
+/// The unlocked reader returns every record in admission order, from a v1 journal and from a
+/// v2 journal whose writer still holds the lock, and ignores a torn tail.
+#[test]
+fn the_unlocked_reader_reads_v1_and_v2_in_admission_order_beside_the_writer() {
+    let scratch = Scratch::new();
+    let loc = scratch.location();
+    let (a, b) = (raw("a"), raw("b"));
+    let child = derived("c", &a);
+    write_private(
+        loc.path(),
+        &v1_bytes("space-a", &[a.clone(), child.clone()]),
+    );
+    assert_eq!(
+        read_unlocked(&loc, &Anyone, &registry()).unwrap(),
+        vec![a.clone(), child.clone()]
+    );
+    let mut journal = PublishedJournal::open(loc.clone(), &Anyone, &registry()).unwrap();
+    publish_now(&mut journal, vec![b.clone()]);
+    let mut torn = std::fs::OpenOptions::new()
+        .append(true)
+        .open(loc.path())
+        .unwrap();
+    torn.write_all(b"{\"version\":").unwrap();
+    assert_eq!(
+        read_unlocked(&loc, &Anyone, &registry()).unwrap(),
+        vec![a, child, b],
+        "the writer still holds the lock; the torn tail is not a line yet"
+    );
+}
+
+/// The receipt hook runs on the sealed commit before the append: refusing it leaves the
+/// journal byte for byte as it was, and a kept receipt names the head the commit creates.
+#[test]
+fn a_publish_whose_receipt_is_not_kept_appends_nothing() {
+    let scratch = Scratch::new();
+    let loc = scratch.location();
+    let mut journal = PublishedJournal::open(loc.clone(), &Anyone, &registry()).unwrap();
+    let head = journal.head().unwrap();
+    let before = std::fs::read(loc.path()).unwrap();
+    let size = journal.bytes().unwrap();
+    assert_eq!(size, u64::try_from(before.len()).unwrap());
+    let patch = Patch::new(head, vec![raw("a")]);
+    let by = (PublisherBinding::from_bytes([1; 32]), Epoch::new(1));
+    let refused = journal.publish_with(&patch, head, by, &unbounded(), &registry(), &mut |_| {
+        Err("the receipt log is full".into())
+    });
+    assert!(matches!(refused, Err(PublishRefusal::NotRecorded(_))));
+    assert_eq!(std::fs::read(loc.path()).unwrap(), before);
+    assert_eq!(journal.head().unwrap(), head);
+    let mut named = None;
+    let next = journal
+        .publish_with(&patch, head, by, &unbounded(), &registry(), &mut |commit| {
+            named = Some(commit.head());
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(named, Some(next));
+    assert!(journal.bytes().unwrap() > size);
+}

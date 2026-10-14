@@ -259,6 +259,51 @@ impl NodeDecisions {
     }
 }
 
+/// The node's own verifier, for the one thing the node itself decides on an owner decision: a
+/// memory binding policy (`memory_space`). The tool-proxy stays the verifier of everything a pod
+/// does; this answers only whether a standing decision covers `memory.bind:<space>` or
+/// `memory.publish:<space>` now.
+///
+/// Every bundle in the directory is verified and held, so a decision that a present one
+/// supersedes is refused as superseded. A bundle filed under another decision's id is not that
+/// decision, and one that does not verify is not held.
+impl crate::memory_space::DecisionCiter for NodeDecisions {
+    fn cite(&self, decision: &str, capability: &str, now: u64) -> Result<u64, String> {
+        use nucleus_signed_decision::{
+            Action, DecisionBundle, DecisionLedger, LedgerError, OwnerDecisionId, TrustRoots,
+            WriteSet,
+        };
+        let id = OwnerDecisionId::from_hex(decision).map_err(|e| e.to_string())?;
+        let roots = TrustRoots::from_json(&self.roots_text).map_err(|e| e.to_string())?;
+        let material = self.material().map_err(|e| e.to_string())?;
+        let mut ledger = DecisionLedger::empty();
+        for file in &material.bundles {
+            let Ok(bundle) = DecisionBundle::from_slice(file.json.as_bytes()) else {
+                continue;
+            };
+            let Ok(verified) = nucleus_signed_decision::verify(&bundle, &roots, now, &self.tenant)
+            else {
+                continue;
+            };
+            if verified.id().to_hex() != file.id {
+                continue;
+            }
+            match ledger.hold(verified) {
+                Ok(_) => {}
+                Err(LedgerError::Full) => return Err(LedgerError::Full.to_string()),
+                // Retired (superseded by one already held) or malformed: not held.
+                Err(_) => {}
+            }
+        }
+        let action = Action {
+            capability,
+            writes: WriteSet::Known(&[]),
+        };
+        let cited = ledger.cite(id, &action, now).map_err(|e| e.to_string())?;
+        Ok(cited.record().not_after)
+    }
+}
+
 /// `DecisionGatedSinks (in no published release yet: <change>)`, from the table.
 fn capability_name() -> String {
     let when = match CAPABILITY.first_shipped() {

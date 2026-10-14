@@ -443,6 +443,25 @@ pub enum CandidateRefusal {
         /// The cap.
         cap: u64,
     },
+    /// A record lies outside what the publisher's binding may write: a schema
+    /// outside its view's scope. Decided by a caller's validator over the
+    /// publisher's own additions.
+    #[error("record {} is outside the publisher's view", .hash.to_hex())]
+    OutsideView {
+        /// The record's content hash.
+        hash: ContentHash,
+    },
+    /// The commit would spend more than the publisher's own allocation. Decided by
+    /// a caller's validator from the publisher's allocation alone, so the verdict
+    /// does not depend on what anyone else holds (a budget split, not a global
+    /// count).
+    #[error("the commit spends {spend} bytes; the publisher has {allocation} left")]
+    AllocationExceeded {
+        /// Bytes this commit adds to the journal.
+        spend: u64,
+        /// What remains of the publisher's allocation.
+        allocation: u64,
+    },
 }
 
 /// Validates a whole candidate before it is committed. The pure memory-context
