@@ -1246,24 +1246,65 @@ mod tests {
         assert_eq!(v["error"], "invalid_grant");
     }
 
+    /// Every single-bit flip of a valid subject_token's signature is refused.
+    ///
+    /// The tamper is made on the decoded 64 signature bytes, so it is a
+    /// change by construction. The test this replaces overwrote the last
+    /// four base64url characters with `"AAAA"`, which is the identity
+    /// whenever those characters already were `"AAAA"`: those characters
+    /// carry 20 signature bits, the top four are bits 252..255 of the
+    /// scalar `s < L < 2^253` and are always zero, so a fresh random
+    /// `jti` made the "tampered" token the valid token with probability
+    /// 2^-16. That happened once (HTTP 200, merge_group run 38498786759).
+    /// The verifier was right to accept it; the fixture had not tampered.
+    ///
+    /// Positions cover both halves of the signature: `R` (bytes 0..32,
+    /// the encoded curve point) and `S` (bytes 32..64, the scalar),
+    /// including the scalar's most significant byte, whose high bits a
+    /// lenient decoder would be most likely to ignore.
     #[tokio::test]
-    async fn tampered_signature_returns_invalid_grant() {
-        // Build a valid token then corrupt the last 4 chars of the
-        // signature segment — must fail signature verify.
+    async fn every_flipped_signature_bit_returns_invalid_grant() {
         let subject = make_subject_jwt("spiffe://prod.example.com/ns/x/sa/y", 300, None);
-        let parts: Vec<&str> = subject.splitn(3, '.').collect();
-        let tampered_sig = format!("{}AAAA", &parts[2][..parts[2].len().saturating_sub(4)]);
-        let tampered = format!("{}.{}.{tampered_sig}", parts[0], parts[1]);
+        let (signing_input, sig_b64) = subject.rsplit_once('.').unwrap();
+        let sig = URL_SAFE_NO_PAD.decode(sig_b64).unwrap();
+        assert_eq!(sig.len(), 64, "fixture must produce an Ed25519 signature");
+
+        let mut probed = 0usize;
+        for (byte, bit) in [(0, 0), (0, 7), (31, 7), (32, 0), (47, 3), (63, 0), (63, 7)] {
+            let mut bad = sig.clone();
+            bad[byte] ^= 1 << bit;
+            assert_ne!(bad, sig, "the tamper must change the signature");
+            let tampered = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(&bad));
+            assert_ne!(tampered, subject, "the tamper must change the token");
+
+            let body = form_body(&[
+                ("grant_type", TOKEN_EXCHANGE_GRANT),
+                ("subject_token", &tampered),
+                ("subject_token_type", TOKEN_TYPE_JWT),
+                ("audience", "https://rp-a.example/api"),
+            ]);
+            let resp = post_token(app(), body).await;
+            assert_eq!(
+                resp.status(),
+                StatusCode::BAD_REQUEST,
+                "signature byte {byte} bit {bit} flipped must be refused"
+            );
+            let v = body_to_value(resp.into_body()).await;
+            assert_eq!(v["error"], "invalid_grant", "byte {byte} bit {bit}");
+            probed += 1;
+        }
+        assert_eq!(probed, 7, "every listed bit position must be probed");
+
+        // The untampered token is accepted by the same fixture, so each
+        // refusal above is the flipped bit and not a broken fixture.
         let body = form_body(&[
             ("grant_type", TOKEN_EXCHANGE_GRANT),
-            ("subject_token", &tampered),
+            ("subject_token", &subject),
             ("subject_token_type", TOKEN_TYPE_JWT),
             ("audience", "https://rp-a.example/api"),
         ]);
         let resp = post_token(app(), body).await;
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let v = body_to_value(resp.into_body()).await;
-        assert_eq!(v["error"], "invalid_grant");
+        assert_eq!(resp.status(), StatusCode::OK, "control: valid token");
     }
 
     #[tokio::test]
