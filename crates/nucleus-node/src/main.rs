@@ -30,6 +30,10 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+// ADR 0016 D4: the census of every TLS acceptor in the workspace. Here, in the
+// shard whose scope is the whole repository, because it reads every crate.
+#[cfg(test)]
+mod acceptor_census_tests;
 mod api_error;
 mod art12_collector;
 mod audit_sink;

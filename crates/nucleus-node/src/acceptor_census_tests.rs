@@ -11,8 +11,8 @@
 //!
 //! # How a site is found
 //!
-//! Text, over every `.rs` file under `crates/`, counting the [`NEEDLES`] in the
-//! part of each file before its first column-0 `#[cfg(test)]`. Test files
+//! Text, over every `.rs` file under `crates/`, counting the [`NEEDLES`] in
+//! each file outside its inline test modules ([`production_part`]). Test files
 //! (`tests/`, `*_tests.rs`, `tests.rs`), examples and benches are skipped: a
 //! test that builds a raw acceptor grants nothing. Comments and doc examples
 //! count too, which errs toward listing a site, never toward missing one.
@@ -231,16 +231,46 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The text of `src` before its first column-0 `#[cfg(test)]`.
-fn production_part(src: &str) -> &str {
-    let mut at = 0;
-    for line in src.split_inclusive('\n') {
-        if line.trim_end() == "#[cfg(test)]" {
-            return &src[..at];
+/// `src` without its inline test modules: a column-0 `#[cfg(test)]` (and any
+/// attributes after it) on a `mod name {` drops the module up to its column-0
+/// `}`. Any other `#[cfg(test)]` item (`mod name;`, a helper) is kept, which
+/// errs toward listing a site. `main.rs` has `#[cfg(test)] mod x;` lines above
+/// its production code, so cutting at the first one would hide the file.
+fn production_part(src: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_end() == "#[cfg(test)]" {
+            let mut item = i + 1;
+            while lines.get(item).is_some_and(|l| l.starts_with("#[")) {
+                item += 1;
+            }
+            let inline_module = lines
+                .get(item)
+                .is_some_and(|l| l.starts_with("mod ") && l.trim_end().ends_with('{'));
+            if inline_module {
+                let close = (item + 1..lines.len())
+                    .find(|&k| lines[k].trim_end() == "}")
+                    .unwrap_or(lines.len());
+                i = close + 1;
+            } else {
+                i += 1;
+            }
+            continue;
         }
-        at += line.len();
+        out.push_str(lines[i]);
+        out.push('\n');
+        i += 1;
     }
-    src
+    out
+}
+
+#[test]
+fn production_part_drops_inline_test_modules_only() {
+    let src =
+        "a\n#[cfg(test)]\nmod x;\nb\n#[cfg(test)]\n#[path = \"t.rs\"]\nmod tests {\n    c\n}\nd\n";
+    assert_eq!(production_part(src), "a\nmod x;\nb\nd\n");
 }
 
 /// `(file, needle) → count` over the workspace's production sources.

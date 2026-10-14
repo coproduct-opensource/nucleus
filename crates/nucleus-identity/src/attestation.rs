@@ -1078,14 +1078,19 @@ impl SvidProfile {
     }
 
     /// The extension value: the DER `UTF8String` of [`Self::as_str`].
-    pub fn extension_value(self) -> Vec<u8> {
+    ///
+    /// # Errors
+    ///
+    /// A name too long for a short-form DER length (none of today's).
+    pub fn extension_value(self) -> Result<Vec<u8>> {
         let name = self.as_str().as_bytes();
-        // Both names are under 0x80 bytes, so the length is short-form. The
-        // cast cannot truncate: `ALL` is fixed and each name is a literal.
-        #[allow(clippy::cast_possible_truncation)]
-        let mut der = vec![0x0c, name.len() as u8];
+        let len = u8::try_from(name.len())
+            .ok()
+            .filter(|l| *l < 0x80)
+            .ok_or_else(|| Error::Internal(format!("profile `{}` is too long", self.as_str())))?;
+        let mut der = vec![0x0c, len];
         der.extend_from_slice(name);
-        der
+        Ok(der)
     }
 }
 

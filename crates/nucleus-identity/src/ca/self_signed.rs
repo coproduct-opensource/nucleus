@@ -873,7 +873,7 @@ impl CaClient for SelfSignedCa {
         } = *claims;
         let mut profile = CustomExtension::from_oid_content(
             oid::OID_NUCLEUS_ISOLATION_PROFILE_TUPLE,
-            isolation_profile.extension_value(),
+            isolation_profile.extension_value()?,
         );
         // Non-critical: a verifier that predates `.1.8` (a pinned guest) must
         // ignore it, not refuse the leaf.

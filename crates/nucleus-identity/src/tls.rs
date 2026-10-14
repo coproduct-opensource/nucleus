@@ -149,7 +149,7 @@ impl TlsServerConfig {
 /// statements cannot be read. A leaf that states no launch (a node, an
 /// operator) is admitted, as the chain alone admitted it before.
 ///
-/// The census `tests/acceptor_census.rs` holds every acceptor in the workspace
+/// The census `nucleus-node/src/acceptor_census_tests.rs` holds every acceptor in the workspace
 /// to this verifier, or to a named exception.
 #[derive(Debug)]
 pub struct LaunchCheckingClientVerifier {

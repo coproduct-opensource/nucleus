@@ -61,7 +61,7 @@ fn eval_cell_without_launch(ca: &SelfSignedCa) -> WorkloadCertificate {
         "eval-no-launch",
         &[(
             oid::OID_NUCLEUS_ISOLATION_PROFILE_TUPLE,
-            SvidProfile::EvalCell.extension_value(),
+            SvidProfile::EvalCell.extension_value().unwrap(),
         )],
     )
 }
@@ -146,7 +146,7 @@ async fn an_eval_cell_without_a_verified_launch_is_refused_by_name() {
         &[
             (
                 oid::OID_NUCLEUS_ISOLATION_PROFILE_TUPLE,
-                SvidProfile::EvalCell.extension_value(),
+                SvidProfile::EvalCell.extension_value().unwrap(),
             ),
             (
                 oid::OID_NUCLEUS_UNMEASURED_LAUNCH_TUPLE,
@@ -213,7 +213,7 @@ async fn unreadable_launch_statements_are_refused() {
         "standard-no-launch",
         &[(
             oid::OID_NUCLEUS_ISOLATION_PROFILE_TUPLE,
-            SvidProfile::Standard.extension_value(),
+            SvidProfile::Standard.extension_value().unwrap(),
         )],
     );
     let err = admit(&standard_without_launch, &ca).expect_err("a profile with no launch");
