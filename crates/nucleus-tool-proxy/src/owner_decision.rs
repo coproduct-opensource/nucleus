@@ -25,7 +25,6 @@
 //! subject before reading anything, as memory recall does: a read brings bytes in, so any
 //! session may read a decision, and its label is what the graph carries afterwards.
 
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use axum::{Extension, Json, extract::State};
@@ -86,16 +85,23 @@ pub(crate) struct DecisionDesk {
     ledger: tokio::sync::Mutex<DecisionLedger>,
 }
 
+/// Read an operator-provisioned file of at most `cap` bytes: a regular file (not a symlink), its
+/// size checked before the read and the bytes read checked after it.
 fn read_capped(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
-    let mut out = Vec::new();
-    std::fs::File::open(path)?
-        .take(cap.saturating_add(1))
-        .read_to_end(&mut out)?;
-    if !u64::try_from(out.len()).is_ok_and(|n| n <= cap) {
+    let too_big = || std::io::Error::new(std::io::ErrorKind::InvalidData, "over the size cap");
+    let meta = std::fs::symlink_metadata(path)?;
+    if !meta.is_file() {
         return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "file is over the size cap",
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
         ));
+    }
+    if meta.len() > cap {
+        return Err(too_big());
+    }
+    let out = std::fs::read(path)?;
+    if !u64::try_from(out.len()).is_ok_and(|n| n <= cap) {
+        return Err(too_big());
     }
     Ok(out)
 }
