@@ -1002,3 +1002,13 @@ mod request_ceiling_tests {
 pub fn mutants_red_first_probe(x: u32) -> u32 {
     x.wrapping_add(7)
 }
+
+/// THROWAWAY (A-19 green half for #3480): kills every mutant of the probe above.
+#[cfg(test)]
+mod mutants_red_first_probe_tests {
+    #[test]
+    fn the_probe_adds_seven() {
+        assert_eq!(super::mutants_red_first_probe(1), 8);
+        assert_eq!(super::mutants_red_first_probe(u32::MAX), 6);
+    }
+}
