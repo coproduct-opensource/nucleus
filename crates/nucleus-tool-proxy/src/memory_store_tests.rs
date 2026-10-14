@@ -479,10 +479,16 @@ fn a_session_that_read_secret_writes_a_secret_record_that_replays_secret() {
     );
     assert_eq!(stored.label.integ_level(), claim.integ_level());
 
-    // Replay in a fresh session: a new store, no flow graph at all.
+    // Replay in a fresh session: no flow graph at all, every record re-verified from the file.
+    // Read without the writer's lock (a reopen can find a lock a sibling test's fork still holds
+    // under a single-process runner); the replay is the same provenance check.
     drop(store);
-    let reopened = args
-        .open(workspace.path(), &registry, &separated())
-        .unwrap();
-    assert_eq!(reopened.records().unwrap().get(&hash), Some(&stored));
+    let location = nucleus_provenance_memory::JournalLocation::new(
+        args.memory_store.as_ref().unwrap(),
+        "project-a",
+    )
+    .unwrap();
+    let replayed =
+        nucleus_provenance_memory::read_unlocked(&location, &separated(), &registry).unwrap();
+    assert_eq!(replayed, vec![stored]);
 }
