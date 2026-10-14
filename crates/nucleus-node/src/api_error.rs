@@ -29,6 +29,10 @@ pub(crate) enum ApiError {
     Driver(String),
     #[error("workload supervisor unavailable: {0}")]
     SupervisorUnavailable(String),
+    /// The node is full and started nothing: a definite refusal (429, as a provider answers
+    /// `RESOURCE_EXHAUSTED`), with a hint of when to try again. Checked before any spawn.
+    #[error("node capacity exhausted: {0}")]
+    CapacityExhausted(String),
     #[error("auth error: {0}")]
     Auth(#[from] AuthError),
     /// A pod id and caller token were presented and do not verify. It is
@@ -45,6 +49,9 @@ pub(crate) enum ApiError {
     Body(String),
 }
 
+/// How long a caller refused for capacity should wait: about one pod teardown.
+const CAPACITY_RETRY_SECONDS: &str = "30";
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self {
@@ -55,14 +62,24 @@ impl IntoResponse for ApiError {
             ApiError::Serde(_) => StatusCode::BAD_REQUEST,
             ApiError::Driver(_) => StatusCode::BAD_REQUEST,
             ApiError::SupervisorUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::CapacityExhausted(_) => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Auth(_) | ApiError::CallerToken(_) => StatusCode::UNAUTHORIZED,
             ApiError::Authorization(_) => StatusCode::FORBIDDEN,
             ApiError::Authority(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
         };
+        let retry = matches!(self, ApiError::CapacityExhausted(_));
         let body = Json(ErrorBody {
             error: self.to_string(),
         });
+        if retry {
+            return (
+                status,
+                [(axum::http::header::RETRY_AFTER, CAPACITY_RETRY_SECONDS)],
+                body,
+            )
+                .into_response();
+        }
         (status, body).into_response()
     }
 }
