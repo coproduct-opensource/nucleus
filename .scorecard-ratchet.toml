@@ -421,9 +421,13 @@ population_floor = 100
 # and not_after it was admitted under; ValidCandidate (a whole-candidate-validated
 # publish) carries the generation it was validated against, and History::commit refuses
 # it unless that is still the head. Combined with SignedDecision above, 20 of 27 = 74.07%.
-floor_bp = 7407
+# 2026-10-14 (#3471): nucleus_identity::pod_files::PodKey, a pod's private key that no
+# launcher writes to a file, enters as an affine right taken by value to deliver. Unbounded
+# it reddened this family at 20/28 (71.42%). It carries not_after (its certificate's expiry)
+# from the commit that adds it, and into_pipe refuses a stale key by name. 21 of 28 = 75.00%.
+floor_bp = 7500
 floor_set = "measurement"
-population_floor = 27
+population_floor = 28
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
