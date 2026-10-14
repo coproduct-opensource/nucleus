@@ -283,6 +283,16 @@ mod tests {
         .to_string();
         assert!(rendered.contains("write_files: never"), "{rendered}");
         assert!(rendered.contains("/work"), "{rendered}");
+        // Actionable (owner decision 2026-10-14): what was refused and why,
+        // the way to proceed, and that nothing runs unconfined instead.
+        for needed in [
+            "cannot enforce a read-only workspace",
+            "--profile codegen",
+            "Linux host with Landlock",
+            "nothing will run unconfined",
+        ] {
+            assert!(rendered.contains(needed), "missing {needed:?}: {rendered}");
+        }
     }
 
     /// The enforcement half of the refusal: `apply` without the preflight

@@ -268,11 +268,13 @@ pub enum NucleusError {
     /// a writable workspace. The operator's Landlock waiver does not cover
     /// this, because the pod itself asked for it.
     #[error(
-        "this pod's policy says write_files: never and edit_files: never, so its children \
-         may not write the workspace {workspace}, and this host cannot enforce that: it \
-         offers {kernel}, and Landlock ABI {minimum} or newer is required. The child was not \
-         started. Run the pod on a Linux kernel with Landlock (a microVM, or a Linux host or \
-         container driver), or give the pod a policy that permits writes"
+        "refused: this pod's profile says write_files: never and edit_files: never, so its \
+         workspace {workspace} must be read-only to every command it runs, and this host \
+         cannot enforce a read-only workspace (it offers {kernel}; Landlock ABI {minimum} or \
+         newer is required). Nothing was started, and nothing will run unconfined in its \
+         place. To proceed, either choose a profile that declares workspace writes, e.g. \
+         `--profile codegen`, or run on a Linux host with Landlock (a Linux host or container \
+         driver, or a microVM)"
     )]
     WorkspaceReadOnlyUnenforceable {
         /// The workspace that would have been writable.
