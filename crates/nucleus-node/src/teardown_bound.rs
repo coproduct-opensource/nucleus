@@ -21,7 +21,7 @@ pub(crate) async fn join<T>(what: &str, task: &mut JoinHandle<T>, bound: Duratio
     task.abort();
     tracing::warn!(
         what,
-        bound_ms = bound.as_millis() as u64,
+        bound_ms = u64::try_from(bound.as_millis()).unwrap_or(u64::MAX),
         "teardown wait passed its bound; task aborted and not awaited"
     );
     false

@@ -60,7 +60,7 @@ impl FirecrackerPod {
             .is_err()
         {
             tracing::error!(
-                bound_ms = IDENTITY_DRAIN.as_millis() as u64,
+                bound_ms = u64::try_from(IDENTITY_DRAIN.as_millis()).unwrap_or(u64::MAX),
                 "identity cleanup passed its bound after revocation; stopping the VMM anyway"
             );
         }

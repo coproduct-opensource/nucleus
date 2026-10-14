@@ -1610,9 +1610,12 @@ impl FlowGraph {
         // A tombstoned node's control authority can no longer be read: a
         // tombstoned plan cannot be named as a parent, and a tombstoned action
         // has no receipt to recompute.
+        // An id that does not fit `usize` names no node, so its entry is dropped.
         self.control_authority.retain(|nid, _| {
-            let idx = *nid as usize;
-            idx < self.nodes.len() && self.nodes[idx].is_some()
+            usize::try_from(*nid)
+                .ok()
+                .and_then(|idx| self.nodes.get(idx))
+                .is_some_and(Option::is_some)
         });
     }
 
