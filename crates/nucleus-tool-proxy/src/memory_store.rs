@@ -7,24 +7,25 @@
 //! open, append to or replace it. [`ChildReach`] (`child_reach`, the one
 //! decider of what a child reaches, #3461) is that last clause as evidence,
 //! and [`MemoryStoreArgs::open`] cannot open a persistent journal without it.
+//!
+//! The journal format (schema v2), its v1 -> v2 migration, pinned readers,
+//! branch overlays and compare-and-swap publish live in
+//! `nucleus_provenance_memory::journal`, which asks [`ChildReach`] about the
+//! directory before anything is created and about the file before it is read.
+//! This module binds the journal to the proxy's configuration and to its live
+//! write path.
 use crate::child_reach::ChildReach;
 use crate::{
     api_error::ApiError,
     memory::{MemoryWriteReq, MemoryWriteResp},
 };
-use nucleus_provenance_memory::{ContentHash, MemoryRecord, ProvenanceMemorySet, RecomputeMemory};
-use portcullis_effects::authority::Authority;
-use serde::{Deserialize, Serialize};
-use std::{
-    fs::OpenOptions,
-    io::{Read, Write},
-    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::PathBuf,
+use nucleus_provenance_memory::{
+    ContentHash, Epoch, JournalError, JournalLocation, JournalPart, MAX_JOURNAL_BYTES, Patch,
+    ProvenanceMemorySet, PublishRefusal, PublishedJournal, PublisherBinding, ReachCheck,
+    RecomputeMemory, StoreInvariants,
 };
-use tokio::io::AsyncWriteExt;
-
-const MAX_BYTES: u64 = 64 * 1024 * 1024;
-const SCHEMA: &str = "nucleus.memory-journal.v1";
+use portcullis_effects::authority::Authority;
+use std::path::PathBuf;
 
 #[derive(clap::Args, Debug)]
 pub(crate) struct MemoryStoreArgs {
@@ -36,32 +37,36 @@ pub(crate) struct MemoryStoreArgs {
     memory_namespace: Option<String>,
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Header {
-    schema: String,
-    namespace: String,
-}
-
+/// Process-local memory, or the versioned journal.
 enum Journal {
-    Ephemeral,
-    Persistent {
-        file: tokio::fs::File,
-        bytes: u64,
-        failed: bool,
-    },
+    Ephemeral(ProvenanceMemorySet),
+    Persistent(PublishedJournal),
 }
 
 pub(crate) struct Store {
-    set: ProvenanceMemorySet,
     journal: Journal,
 }
 
+impl ReachCheck for ChildReach {
+    fn admit(&self, part: JournalPart, owner_uid: u32) -> Result<(), String> {
+        let what = match part {
+            JournalPart::Directory => "directory",
+            JournalPart::File => "file",
+        };
+        self.excludes(what, owner_uid)
+    }
+}
+
+impl From<JournalError> for ApiError {
+    fn from(e: JournalError) -> Self {
+        match e {
+            JournalError::Io(io) => ApiError::Io(io),
+            other => ApiError::Spec(format!("memory store: {other}")),
+        }
+    }
+}
+
 impl MemoryStoreArgs {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "ADR 0007 G-1: exclusive operator journal, one writer under the memory mutex; each append is synced before publication"
-    )]
     pub(crate) fn open(
         &self,
         workspace: &std::path::Path,
@@ -72,8 +77,7 @@ impl MemoryStoreArgs {
         let (path, namespace) = match (&self.memory_store, &self.memory_namespace) {
             (None, None) => {
                 return Ok(Store {
-                    set: ProvenanceMemorySet::new(),
-                    journal: Journal::Ephemeral,
+                    journal: Journal::Ephemeral(ProvenanceMemorySet::new()),
                 });
             }
             (Some(path), Some(namespace)) => (path, namespace),
@@ -83,119 +87,21 @@ impl MemoryStoreArgs {
                 ));
             }
         };
-        if !path.is_absolute() || namespace.is_empty() || namespace.len() > 256 {
-            return Err(fail(
-                "requires an absolute path and a namespace of 1 to 256 bytes",
-            ));
-        }
-        let parent = path
-            .parent()
-            .ok_or_else(|| fail("missing parent directory"))?
-            .canonicalize()?;
-        let parent_meta = parent.metadata()?;
-        if parent_meta.permissions().mode() & 0o077 != 0 {
-            return Err(fail(
-                "parent directory must not grant group or other access",
-            ));
-        }
-        // Before anything is created in it: a directory a child can write is
-        // a journal the child can replace (#3454).
-        children
-            .excludes("directory", parent_meta.uid())
-            .map_err(|e| fail(&e))?;
-        let path = parent.join(
-            path.file_name()
-                .ok_or_else(|| fail("missing journal filename"))?,
-        );
-        crate::art12_sink::reject_workspace_path(&path, workspace)
+        let location = JournalLocation::new(path, namespace)?;
+        crate::art12_sink::reject_workspace_path(location.path(), workspace)
             .map_err(|_| fail("journal must be outside the workspace"))?;
-        match std::fs::symlink_metadata(&path) {
-            Ok(meta) if !meta.is_file() => {
-                return Err(fail("journal must be a regular file, not a symlink"));
-            }
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        let (mut file, fresh) = match OpenOptions::new()
-            .read(true)
-            .append(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(file) => (file, true),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (
-                OpenOptions::new().read(true).append(true).open(&path)?,
-                false,
-            ),
-            Err(e) => return Err(e.into()),
-        };
-        file.try_lock()
-            .map_err(|_| fail("journal is already owned by another proxy"))?;
-        let file_meta = file.metadata()?;
-        if file_meta.permissions().mode() & 0o077 != 0 {
-            return Err(fail("journal must be private"));
-        }
-        // The opened file's owner, not the path's: what is checked is what is
-        // read and appended.
-        children
-            .excludes("file", file_meta.uid())
-            .map_err(|e| fail(&e))?;
-        let set = if fresh {
-            let mut header = serde_json::to_vec(&Header {
-                schema: SCHEMA.into(),
-                namespace: namespace.clone(),
-            })
-            .map_err(|_| fail("cannot encode header"))?;
-            header.push(b'\n');
-            file.write_all(&header)?;
-            file.sync_all()?;
-            std::fs::File::open(&parent)?.sync_all()?;
-            ProvenanceMemorySet::new()
-        } else {
-            let mut bytes = Vec::new();
-            (&mut file).take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > MAX_BYTES || bytes.last() != Some(&b'\n') {
-                return Err(fail("journal is oversized or incomplete"));
-            }
-            let mut lines = bytes[..bytes.len() - 1].split(|b| *b == b'\n');
-            let header: Header =
-                serde_json::from_slice(lines.next().ok_or_else(|| fail("missing header"))?)
-                    .map_err(|_| fail("invalid header"))?;
-            if header.schema != SCHEMA || header.namespace != *namespace {
-                return Err(fail("schema or namespace differs"));
-            }
-            let mut set = ProvenanceMemorySet::new();
-            for line in lines {
-                let record: MemoryRecord =
-                    serde_json::from_slice(line).map_err(|_| fail("invalid record"))?;
-                if !set.verified_admit(&record, registry).is_match() {
-                    return Err(fail("record failed provenance replay"));
-                }
-            }
-            set
-        };
-        let bytes = file.metadata()?.len();
         Ok(Store {
-            set,
-            journal: Journal::Persistent {
-                file: tokio::fs::File::from_std(file),
-                bytes,
-                failed: false,
-            },
+            journal: Journal::Persistent(PublishedJournal::open(location, children, registry)?),
         })
     }
 }
 
 impl Store {
     pub(crate) fn records(&self) -> Result<&ProvenanceMemorySet, ApiError> {
-        if matches!(&self.journal, Journal::Persistent { failed: true, .. }) {
-            return Err(ApiError::Spec(
-                "memory journal unavailable after an uncertain write".into(),
-            ));
+        match &self.journal {
+            Journal::Ephemeral(set) => Ok(set),
+            Journal::Persistent(journal) => Ok(journal.records()?),
         }
-        Ok(&self.set)
     }
 
     pub(crate) fn prepare(
@@ -215,7 +121,16 @@ impl Store {
 }
 
 impl PreparedWrite<'_> {
-    pub(crate) async fn commit(self) -> Result<MemoryWriteResp, ApiError> {
+    /// Persist an admitted write as one commit on the current head, synced
+    /// before the new state is visible. The write is not made under a
+    /// node-minted binding, so it carries the fixed operator publisher and the
+    /// pre-binding epoch. `registry` replays the record's provenance once more
+    /// against the head it is committed on. Synchronous, so a cancelled request
+    /// cannot stop it part-way.
+    pub(crate) fn commit(
+        self,
+        registry: &dyn RecomputeMemory,
+    ) -> Result<MemoryWriteResp, ApiError> {
         let PreparedWrite {
             store,
             candidate,
@@ -230,29 +145,28 @@ impl PreparedWrite<'_> {
         let record = candidate
             .get(&hash)
             .ok_or_else(|| ApiError::Spec("admitted record missing".into()))?;
-        if store.set.get(&hash) != Some(record) {
-            if let Journal::Persistent {
-                file,
-                bytes,
-                failed,
-            } = &mut store.journal
-            {
-                let mut encoded = serde_json::to_vec(record)
-                    .map_err(|_| ApiError::Spec("memory record encoding failed".into()))?;
-                encoded.push(b'\n');
-                let next = bytes
-                    .checked_add(encoded.len() as u64)
-                    .filter(|n| *n <= MAX_BYTES)
-                    .ok_or_else(|| ApiError::Spec("memory journal capacity exhausted".into()))?;
-                *failed = true;
-                file.write_all(&encoded).await?;
-                file.flush().await?;
-                file.sync_all().await?;
-                *bytes = next;
-                *failed = false;
+        match &mut store.journal {
+            Journal::Ephemeral(set) => *set = candidate,
+            Journal::Persistent(journal) => {
+                let head = journal.head()?;
+                let patch = Patch::new(head, vec![record.clone()]);
+                match journal.publish(
+                    &patch,
+                    head,
+                    PublisherBinding::operator_direct(),
+                    Epoch::PRE_BINDING,
+                    &StoreInvariants::new(usize::MAX, MAX_JOURNAL_BYTES),
+                    registry,
+                ) {
+                    // A duplicate accepted record adds no commit.
+                    Ok(_) | Err(PublishRefusal::NothingToPublish) => {}
+                    Err(PublishRefusal::Uncertain(io)) => return Err(ApiError::Io(io)),
+                    Err(refused) => {
+                        return Err(ApiError::Spec(format!("memory journal: {refused}")));
+                    }
+                }
             }
         }
-        store.set = candidate;
         Ok(response)
     }
 }

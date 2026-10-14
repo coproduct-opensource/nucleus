@@ -4,6 +4,8 @@ use nucleus_provenance_memory::{
     MemoryDerivation, SchemaType, SourceClass, TransformRegistry, recompute::derive_label,
 };
 use portcullis_effects::receipt::ReceiptLog;
+use std::fs::OpenOptions;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 fn configured(dir: &std::path::Path) -> MemoryStoreArgs {
@@ -56,14 +58,14 @@ async fn restart_retains_records_labels_and_provenance() {
         .open(workspace.path(), &TransformRegistry::new(), &separated())
         .unwrap();
     let prepared = prepare(&mut store, "ordinary project note");
-    let reply = prepared.commit().await.unwrap();
+    let reply = prepared.commit(&TransformRegistry::new()).unwrap();
     let hash = ContentHash::from_hex(&reply.content_hash).unwrap();
     let expected = store.records().unwrap().get(&hash).unwrap().clone();
     let size = std::fs::metadata(args.memory_store.as_ref().unwrap())
         .unwrap()
         .len();
     let duplicate = prepare(&mut store, "ordinary project note");
-    duplicate.commit().await.unwrap();
+    duplicate.commit(&TransformRegistry::new()).unwrap();
     assert_eq!(
         std::fs::metadata(args.memory_store.as_ref().unwrap())
             .unwrap()
@@ -101,7 +103,7 @@ async fn restart_replays_parent_before_derived_record() {
         .open(workspace.path(), &registry, &separated())
         .unwrap();
     let prepared = prepare(&mut store, "project source note");
-    let first = prepared.commit().await.unwrap();
+    let first = prepared.commit(&TransformRegistry::new()).unwrap();
     let parent_hash = ContentHash::from_hex(&first.content_hash).unwrap();
     let parent = store.records().unwrap().get(&parent_hash).unwrap();
     let derivation = MemoryDerivation::OpaqueLlm {
@@ -115,7 +117,7 @@ async fn restart_replays_parent_before_derived_record() {
         derivation,
     };
     let prepared = prepare_request(&mut store, req);
-    let second = prepared.commit().await.unwrap();
+    let second = prepared.commit(&TransformRegistry::new()).unwrap();
     let hash = ContentHash::from_hex(&second.content_hash).unwrap();
     let expected = store.records().unwrap().get(&hash).unwrap().clone();
     drop(store);
@@ -127,10 +129,6 @@ async fn restart_replays_parent_before_derived_record() {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "ordinary I/O failure fixture replaces only its temporary journal handle"
-)]
 async fn uncertain_write_latches_reads_and_writes_without_publishing_candidate() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
@@ -138,17 +136,13 @@ async fn uncertain_write_latches_reads_and_writes_without_publishing_candidate()
     let mut store = args
         .open(workspace.path(), &TransformRegistry::new(), &separated())
         .unwrap();
-    if let Journal::Persistent { file, .. } = &mut store.journal {
-        *file = tokio::fs::File::from_std(
-            std::fs::File::open(args.memory_store.as_ref().unwrap()).unwrap(),
-        );
-    } else {
-        panic!("persistent journal required");
+    match &mut store.journal {
+        Journal::Persistent(journal) => journal.fail_next_write_for_test().unwrap(),
+        Journal::Ephemeral(_) => panic!("persistent journal required"),
     }
     let prepared = prepare(&mut store, "a note");
-    assert!(prepared.commit().await.is_err());
+    assert!(prepared.commit(&TransformRegistry::new()).is_err());
     assert!(store.records().is_err());
-    assert!(store.set.is_empty());
     let req = request("another note");
     let authority = Authority::new(bundle_for_subject(
         Operation::WriteFiles,
@@ -161,6 +155,12 @@ async fn uncertain_write_latches_reads_and_writes_without_publishing_candidate()
             .prepare(&TransformRegistry::new(), req, authority)
             .is_err()
     );
+    // The candidate was never published: a restart finds no record.
+    drop(store);
+    let reopened = args
+        .open(workspace.path(), &TransformRegistry::new(), &separated())
+        .unwrap();
+    assert!(reopened.records().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -328,7 +328,7 @@ async fn a_workload_child_cannot_read_or_append_the_journal() {
             let before = std::fs::read(&journal).unwrap();
             let seen = run_probe(spec, workspace.path()).await;
             assert!(
-                !seen.contains("READ") && !seen.contains(SCHEMA),
+                !seen.contains("READ") && !seen.contains("nucleus.memory-journal"),
                 "child read: {seen}"
             );
             assert!(!seen.contains("APPENDED"), "child appended: {seen}");
@@ -346,4 +346,52 @@ async fn a_workload_child_cannot_read_or_append_the_journal() {
             assert!(seen.contains("READ") && seen.contains("APPENDED"), "{seen}");
         }
     }
+}
+
+#[test]
+fn each_live_write_is_one_commit_on_the_head_and_a_v1_journal_is_migrated() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let args = configured(dir.path());
+    let path = args.memory_store.clone().unwrap();
+    // A journal a v1 proxy wrote: header, then one record per line.
+    let v1 = request("written by a v1 proxy");
+    let record =
+        nucleus_provenance_memory::MemoryRecord::new(v1.value, v1.schema, v1.label, v1.derivation);
+    let mut bytes =
+        b"{\"schema\":\"nucleus.memory-journal.v1\",\"namespace\":\"project-a\"}\n".to_vec();
+    bytes.extend(serde_json::to_vec(&record).unwrap());
+    bytes.push(b'\n');
+    std::fs::write(&path, &bytes).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let mut store = args
+        .open(workspace.path(), &TransformRegistry::new(), &separated())
+        .unwrap();
+    assert!(store.records().unwrap().contains(&record.content_hash()));
+    for value in ["first live note", "second live note", "second live note"] {
+        prepare(&mut store, value)
+            .commit(&TransformRegistry::new())
+            .unwrap();
+    }
+    drop(store);
+    let text = std::fs::read_to_string(&path).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].contains("\"nucleus.memory-journal.v2\""));
+    let versions: Vec<u64> = lines[1..]
+        .iter()
+        .map(|l| {
+            serde_json::from_str::<serde_json::Value>(l).unwrap()["version"]
+                .as_u64()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        versions,
+        vec![1, 2, 3],
+        "migration, then one commit per distinct write"
+    );
+    let reopened = args
+        .open(workspace.path(), &TransformRegistry::new(), &separated())
+        .unwrap();
+    assert_eq!(reopened.records().unwrap().len(), 3);
 }

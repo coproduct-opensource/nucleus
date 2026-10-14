@@ -39,6 +39,14 @@ fn most_restrictive(a: MemoryLabel, b: MemoryLabel) -> MemoryLabel {
     )
 }
 
+/// Whether `new` is at least as restrictive as `old` in every component: the
+/// fail-closed merge of the two is `new` itself. A label that fails this has been
+/// lowered — confidentiality dropped, integrity raised, or a derivation class
+/// laundered away.
+pub fn label_not_lower(old: &MemoryLabel, new: &MemoryLabel) -> bool {
+    most_restrictive(old.clone(), new.clone()) == *new
+}
+
 /// A conflict-free replicated set of recompute-verified [`MemoryRecord`]s, keyed
 /// by [`ContentHash`]. Replicas that admitted the same records converge on the
 /// same set regardless of gossip order or duplication.

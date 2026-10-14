@@ -17,23 +17,89 @@ would run at the proxy's own uid (the bare host tier: a non-root proxy given
 `--unsandboxed`, as the local driver does with `--allow-local-driver`), or when a
 child's uid owns the journal or its directory (that child could replace it).
 A non-root proxy without `--unsandboxed` spawns no child at all, and a root proxy
-drops its children to a distinct uid, so both may open one.
+drops its children to a distinct uid, so both may open one. The same check runs,
+through the store layer's `ReachCheck`, for pinned readers and branch overlays:
+on the directory before anything is created, and on the file before it is read.
 
-The journal begins with a versioned namespace header. Each subsequent line is
-one accepted memory record, including its value, label, and derivation. Startup
-checks the namespace and replays records in admission order through the same
-provenance validator used for new writes. It never deserializes a pretrusted
-memory set. Missing parents, unavailable transforms, invalid provenance,
-malformed records, and incomplete trailing writes stop startup. The journal
-has a 64 MiB limit; capacity exhaustion refuses additional writes.
+The journal begins with a header naming the schema
+(`nucleus.memory-journal.v2`) and the namespace. Each subsequent line is one
+**commit**: `{version, parent_head, records, publisher, epoch, commit_hash}`.
+`version` is the parent's plus one, and version 0 is the empty space, whose head
+is a domain-tagged hash of the namespace. `commit_hash` is the new head: a
+domain-tagged SHA-256 over the parent head, the version, each record's content
+hash and label in content-hash order, the publisher binding and the epoch. Records
+keep their own content hash, so publishing one changes no record hash. The
+publisher binding and epoch are opaque here; the node will mint them per run.
+Writes the proxy makes directly carry a fixed operator publisher and epoch 0.
+
+Startup checks the namespace, then replays every commit: it must follow its
+parent and hash to its stored head, and each of its records goes in admission
+order through the same provenance validator used for new writes. It never
+deserializes a pretrusted memory set. Reordered, dropped or edited commits,
+missing parents, unavailable transforms, invalid provenance, malformed lines,
+unknown header fields, and incomplete trailing writes stop startup. A header
+naming any other schema is refused by name. The journal has a 64 MiB limit;
+capacity exhaustion refuses additional writes.
+
+### Versions, branches and publish
+
+The store layer is `nucleus_provenance_memory::journal` and `::overlay`:
+
+- **Pinned reader.** `PinnedSnapshot::open(location, pin)` replays the journal up
+  to `pin = (version, head)` and owns the records it saw, so later commits cannot
+  change what it observes. It refuses a version not yet published, and a pin whose
+  head differs from the journal's. A truncated journal is a valid prefix by
+  itself; only a holder of the later pin can detect the rollback, and the pinned
+  reader does. The reader takes no lock and counts only newline-terminated lines.
+- **Branch overlay.** `Overlay::open(path, journal, snapshot)` is a separate
+  private file with its own lock. Its header names the namespace and the base pin,
+  and each line is one record, admitted against base plus overlay. Reopening it
+  over a different base is refused. Writes go to the overlay only.
+  `patch()` returns the overlay's records that are not in its base. Two overlays
+  over one base share the base and never each other's writes.
+- **Publish (compare-and-swap).** `publish(patch, expected_head, publisher,
+  epoch, validator)` refuses unless the head is `expected_head`. A stale base
+  returns the current head, so the caller can rebase and try again. It then
+  validates the **whole candidate**: the head plus the patch's records that are not
+  already there. `StoreInvariants` refuses a lowered label, a key published after
+  the patch's base that the patch did not explicitly resolve, and a candidate over
+  the record or byte cap. The validator is a trait, so the memory-context kernel's
+  candidate check can plug in. Every record must then re-derive from provenance.
+  The commit is then one write, flushed and synced, before the new head is
+  visible. Each patch can be under a cap that the two together exceed. Six
+  records then six over a cap of ten is refused at the rebase.
+
+### v1 journals
+
+A v1 journal (`nucleus.memory-journal.v1`: header, then one record per line) is
+first replayed and verified exactly as before. If that fails, the file is left
+untouched. If it passes, the journal is rewritten as v2, and its version 1 commit
+holds every v1 record in admission order. The rewrite goes to a locked staging
+file beside it, which is synced, renamed over the journal, and then the parent
+directory is synced. A crash at any step leaves either the original v1 file or the
+complete v2 file. A leftover staging file is removed on the next open, and
+reopening a v2 journal rewrites nothing. A pinned reader never migrates; it
+refuses a v1 journal by name.
+
+The format change is in the guest-side proxy. A proxy older than this change
+refuses a v2 journal (`schema or namespace differs`) rather than misreading it,
+so a pod that falls back to an older guest image cannot reuse a journal that a
+newer one has migrated. The node does not depend on the journal format.
+
+After taking its lock, every writer checks that the path still names the file it
+locked (same device and inode). A writer that opened the old v1 file before
+another writer's rename therefore refuses, rather than migrating an orphan.
 
 The live memory-write handler spends its authority and validates a candidate
-state, then appends, flushes, and syncs the record before publishing the state or
-returning success. A duplicate accepted record does not add another journal line.
+state. It then publishes the record as one commit on the current head, appending,
+flushing and syncing it before it publishes the state or returns success. A
+duplicate accepted record does not add another commit.
 Any uncertain write latches the store unavailable for both writes and recalls
-until restart; it cannot be hidden by serving a stale in-memory state. Cancellation
-during persistence also leaves that latch set. An interrupted caller may have
-committed a record, so a retry remains content-addressed and idempotent.
+until restart; it cannot be hidden by serving a stale in-memory state. The commit
+is synchronous under the memory mutex, with no await point, so a cancelled request
+cannot stop it part-way. A panic during the write leaves the latch set. An
+interrupted caller may have committed a record, so a retry remains
+content-addressed and idempotent.
 
 Recall uses the restored record's label through the existing flow-graph path.
 The journal does not persist a promoted recall label or turn a saved record into
@@ -42,7 +108,7 @@ storage adds no external attestation of their truth.
 
 The operator owns the file and namespace assignment. This is single-proxy durable
 storage, not a shared multi-tenant memory service. Firecracker provisioning of storage
-across pod lifetimes, host-mediated memory authority, migration/compaction,
+across pod lifetimes, host-mediated memory authority, compaction and retention,
 automated recovery of incomplete writes, and durable declassification burn
 history still need implementation. A disposable guest root filesystem does not
 become persistent merely by setting these options.

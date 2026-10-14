@@ -215,9 +215,11 @@ async fn live_memory_write_survives_proxy_restart_and_recall_preserves_label() {
     assert_eq!(recall["label"], serde_json::to_value(label).unwrap());
     assert_eq!(recall["declassified"], false);
     let journal = std::fs::read_to_string(state.join("memory.jsonl")).unwrap();
-    let record: Value = serde_json::from_str(journal.lines().nth(1).unwrap()).unwrap();
+    assert!(journal.starts_with("{\"schema\":\"nucleus.memory-journal.v2\""));
+    let commit: Value = serde_json::from_str(journal.lines().nth(1).unwrap()).unwrap();
+    assert_eq!(commit["version"], 1);
     assert_eq!(
-        record["derivation"],
+        commit["records"][0]["derivation"],
         serde_json::to_value(derivation).unwrap()
     );
 }
