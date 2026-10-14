@@ -11,7 +11,7 @@ is the format and the only verifier.
 |---|---|---|
 | `OptionBody` | `nucleus/owner-option/v1\n` + JSON | one option as shown; its SHA-256 is `option_sha256` |
 | `QuestionCore` | `nucleus/owner-question/v1\n` + JSON | the frozen question, options and recommendation; `question_sha256` |
-| `OwnerDecision` | `nucleus/owner-decision/v1\n` + JSON | one decision; its SHA-256 is the `DecisionId` |
+| `OwnerDecision` | `nucleus/owner-decision/v1\n` + JSON | one decision; its SHA-256 is the `OwnerDecisionId` |
 | `DecisionBatch` | `nucleus/owner-decision-batch/v1\n` + JSON | what the owner's key signs: kid, aud, nonce, 1 to 25 decisions |
 
 JSON is `serde_json` of the struct in declared field order, which is the `gate approve`

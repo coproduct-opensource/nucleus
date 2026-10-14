@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{Action, Coverage, DecisionId, SignedDecision, Window};
+use crate::{Action, Coverage, OwnerDecisionId, SignedDecision, Window};
 
 /// Most decisions one ledger holds at once.
 pub const MAX_HELD: usize = 256;
@@ -22,14 +22,14 @@ pub const MAX_RETIRED: usize = 4096;
 #[derive(Debug, PartialEq, Eq)]
 #[must_use = "a Spent is the record that the decision was used; carry it to the receipt"]
 pub struct Spent {
-    decision: DecisionId,
+    decision: OwnerDecisionId,
     capability: String,
     at: u64,
 }
 
 impl Spent {
     /// The decision spent.
-    pub const fn decision(&self) -> DecisionId {
+    pub const fn decision(&self) -> OwnerDecisionId {
         self.decision
     }
 
@@ -49,47 +49,47 @@ impl Spent {
 pub enum LedgerError {
     /// This one-shot decision was already spent in this ledger: a replay.
     #[error("decision {0} was already spent")]
-    Spent(DecisionId),
+    Spent(OwnerDecisionId),
     /// A later decision replaced this one.
     #[error("decision {id} is superseded by {by}")]
     Superseded {
         /// The refused decision.
-        id: DecisionId,
+        id: OwnerDecisionId,
         /// The one that replaced it.
-        by: DecisionId,
+        by: OwnerDecisionId,
     },
     /// No decision with this id is held.
     #[error("decision {0} is not held")]
-    NotHeld(DecisionId),
+    NotHeld(OwnerDecisionId),
     /// A standing decision is cited, not spent.
     #[error("decision {0} is standing; cite it instead of spending it")]
-    Standing(DecisionId),
+    Standing(OwnerDecisionId),
     /// A one-shot decision is spent, not cited: citing it would let it be used without limit.
     #[error("decision {0} is one-shot; spend it instead of citing it")]
-    OneShot(DecisionId),
+    OneShot(OwnerDecisionId),
     /// `now` is before the window.
     #[error("decision {0} is not valid yet")]
-    NotYetValid(DecisionId),
+    NotYetValid(OwnerDecisionId),
     /// `now` is after the window.
     #[error("decision {0} has expired")]
-    Expired(DecisionId),
+    Expired(OwnerDecisionId),
     /// The action is outside the signed scope.
     #[error("decision {0} does not cover this action")]
-    OutOfScope(DecisionId),
+    OutOfScope(OwnerDecisionId),
     /// The ledger cannot tell whether the action is in scope, which is not "covered".
     #[error("decision {0} cannot be shown to cover this action")]
-    CannotTell(DecisionId),
+    CannotTell(OwnerDecisionId),
     /// A decision names, as superseded, a held decision for a different question.
     #[error("decision {id} supersedes {old}, which answers another question")]
     SupersedesAnotherQuestion {
         /// The superseding decision.
-        id: DecisionId,
+        id: OwnerDecisionId,
         /// The one it names.
-        old: DecisionId,
+        old: OwnerDecisionId,
     },
     /// The decision's `supersedes` is not a decision id ([`crate::verify`] refuses this first).
     #[error("decision {0} names a malformed superseded id")]
-    BadSupersedes(DecisionId),
+    BadSupersedes(OwnerDecisionId),
     /// The ledger is at [`MAX_HELD`] or [`MAX_RETIRED`].
     #[error("decision ledger is full")]
     Full,
@@ -98,10 +98,10 @@ pub enum LedgerError {
 /// The verified decisions one process holds.
 #[derive(Debug)]
 pub struct DecisionLedger {
-    held: BTreeMap<DecisionId, SignedDecision>,
+    held: BTreeMap<OwnerDecisionId, SignedDecision>,
     /// Superseded id -> the id that replaced it.
-    superseded: BTreeMap<DecisionId, DecisionId>,
-    spent: BTreeSet<DecisionId>,
+    superseded: BTreeMap<OwnerDecisionId, OwnerDecisionId>,
+    spent: BTreeSet<OwnerDecisionId>,
 }
 
 impl DecisionLedger {
@@ -114,7 +114,7 @@ impl DecisionLedger {
         }
     }
 
-    fn retired(&self, id: DecisionId) -> Result<(), LedgerError> {
+    fn retired(&self, id: OwnerDecisionId) -> Result<(), LedgerError> {
         if self.spent.contains(&id) {
             return Err(LedgerError::Spent(id));
         }
@@ -132,7 +132,7 @@ impl DecisionLedger {
     ///
     /// A decision that supersedes another retires it: the held one is dropped, and either way
     /// its id is remembered, so a later attempt to hold or use it is refused.
-    pub fn hold(&mut self, decision: SignedDecision) -> Result<DecisionId, LedgerError> {
+    pub fn hold(&mut self, decision: SignedDecision) -> Result<OwnerDecisionId, LedgerError> {
         let id = decision.id();
         self.retired(id)?;
         if self.held.contains_key(&id) {
@@ -143,7 +143,7 @@ impl DecisionLedger {
         }
         let old = match decision.record().supersedes.as_deref() {
             Some(hex) => {
-                Some(DecisionId::from_hex(hex).map_err(|_| LedgerError::BadSupersedes(id))?)
+                Some(OwnerDecisionId::from_hex(hex).map_err(|_| LedgerError::BadSupersedes(id))?)
             }
             None => None,
         };
@@ -167,7 +167,7 @@ impl DecisionLedger {
     }
 
     /// A held decision, if any. Holding it says nothing about `now`; use [`Self::cite`].
-    pub fn get(&self, id: DecisionId) -> Option<&SignedDecision> {
+    pub fn get(&self, id: OwnerDecisionId) -> Option<&SignedDecision> {
         self.held.get(&id)
     }
 
@@ -204,7 +204,7 @@ impl DecisionLedger {
     /// use. A one-shot decision is refused here, since a citation does not use it up.
     pub fn cite(
         &self,
-        id: DecisionId,
+        id: OwnerDecisionId,
         action: &Action<'_>,
         now: u64,
     ) -> Result<&SignedDecision, LedgerError> {
@@ -221,7 +221,7 @@ impl DecisionLedger {
     /// it and remembers its id, so a second spend, or a re-verified copy, is [`LedgerError::Spent`].
     pub fn spend(
         &mut self,
-        id: DecisionId,
+        id: OwnerDecisionId,
         action: &Action<'_>,
         now: u64,
     ) -> Result<Spent, LedgerError> {

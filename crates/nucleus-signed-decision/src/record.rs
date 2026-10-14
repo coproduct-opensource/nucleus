@@ -33,7 +33,7 @@ pub const MIN_OPTIONS: usize = 2;
 /// See [`MIN_OPTIONS`].
 pub const MAX_OPTIONS: usize = 8;
 /// The longest a decision may be relied on: 365 days, in seconds.
-pub const MAX_VALIDITY_SECS: u64 = 365 * 24 * 60 * 60;
+pub const MAX_VALIDITY_SECS: u64 = 31_536_000;
 
 /// One option as proposed. All four fields are shown to the owner verbatim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,8 +182,10 @@ impl OwnerDecision {
     }
 
     /// `SHA-256(DECISION_DOMAIN || json(decision))`.
-    pub fn decision_id(&self) -> Result<crate::DecisionId, DecisionError> {
-        Ok(crate::DecisionId(Sha256::digest(self.message()?).into()))
+    pub fn decision_id(&self) -> Result<crate::OwnerDecisionId, DecisionError> {
+        Ok(crate::OwnerDecisionId(
+            Sha256::digest(self.message()?).into(),
+        ))
     }
 
     /// The option digests a question's body yields, in its order: what this decision's

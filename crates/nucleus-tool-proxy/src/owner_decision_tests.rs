@@ -57,7 +57,7 @@ fn question() -> QuestionCore {
 }
 
 /// A signed bundle for question `q-1`, choosing `b`, and its decision id.
-fn signed(key: &ed25519_dalek::SigningKey) -> (DecisionBundle, DecisionId) {
+fn signed(key: &ed25519_dalek::SigningKey) -> (DecisionBundle, OwnerDecisionId) {
     let q = question();
     let d = OwnerDecision {
         tenant: TENANT.into(),
@@ -124,7 +124,7 @@ fn pod(owner: &ed25519_dalek::SigningKey) -> Pod {
     }
 }
 
-fn file_bundle(pod: &Pod, id: DecisionId, bundle: &DecisionBundle) {
+fn file_bundle(pod: &Pod, id: OwnerDecisionId, bundle: &DecisionBundle) {
     std::fs::write(
         pod.bundles.join(format!("{id}.json")),
         serde_json::to_vec(bundle).unwrap(),

@@ -35,7 +35,7 @@ use nucleus_ifc_kernel::{
     ProvenanceSet,
 };
 use nucleus_signed_decision::{
-    DecisionBundle, DecisionId, DecisionLedger, OptionBody, Scope, SignedDecision, TrustRoots,
+    DecisionBundle, DecisionLedger, OptionBody, OwnerDecisionId, Scope, SignedDecision, TrustRoots,
     Window,
 };
 use portcullis::{Act, FilePath, ReadSink};
@@ -158,7 +158,7 @@ impl DecisionDesk {
 
     /// Read and verify the bundle for `id`. The file name is the id, and the verified decision
     /// must have that id: a bundle filed under another decision's name is refused.
-    fn load(&self, id: DecisionId, now: u64) -> Result<SignedDecision, String> {
+    fn load(&self, id: OwnerDecisionId, now: u64) -> Result<SignedDecision, String> {
         let path = self.bundles.join(format!("{id}.json"));
         let bytes = read_capped(&path, MAX_BUNDLE_BYTES).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => "no bundle for this decision id".to_string(),
@@ -329,7 +329,7 @@ pub(crate) fn decision_read_core(
     authority: Authority,
 ) -> Result<DecisionReadResp, ApiError> {
     spend_read(authority, &read_subject(&req))?;
-    let id = DecisionId::from_hex(&req.id)
+    let id = OwnerDecisionId::from_hex(&req.id)
         .map_err(|_| ApiError::Body("decision id is not 64 lowercase hex".into()))?;
     let decision = desk
         .load(id, now)
@@ -365,7 +365,7 @@ pub(crate) fn decision_list_core(
     for file in names.into_iter().take(nucleus_signed_decision::MAX_HELD) {
         let Some(id) = file
             .strip_suffix(".json")
-            .and_then(|stem| DecisionId::from_hex(stem).ok())
+            .and_then(|stem| OwnerDecisionId::from_hex(stem).ok())
         else {
             refused.push(RefusedBundle {
                 file,

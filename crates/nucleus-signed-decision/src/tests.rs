@@ -684,13 +684,13 @@ fn a_bundle_with_an_unknown_field_is_refused() {
 #[test]
 fn decision_ids_parse_only_as_lowercase_hex() {
     let id = verified(&Signer::p256(7), |_| {}).id();
-    assert_eq!(DecisionId::from_hex(&id.to_hex()), Ok(id));
+    assert_eq!(OwnerDecisionId::from_hex(&id.to_hex()), Ok(id));
     assert_eq!(
-        DecisionId::from_hex(&id.to_hex().to_uppercase()),
+        OwnerDecisionId::from_hex(&id.to_hex().to_uppercase()),
         Err(DecisionError::BadId)
     );
     assert_eq!(
-        DecisionId::from_hex("../etc/passwd"),
+        OwnerDecisionId::from_hex("../etc/passwd"),
         Err(DecisionError::BadId)
     );
 }

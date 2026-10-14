@@ -13,7 +13,7 @@ const SPKI_PREFIX: [u8; 12] = [
 /// An Ed25519 key from SPKI DER, or `None` if the DER is not exactly one, or the key is a
 /// small-order point.
 pub(crate) fn key_from_spki(der: &[u8]) -> Option<VerifyingKey> {
-    let raw = der.strip_prefix(&SPKI_PREFIX[..])?;
+    let raw = der.strip_prefix(SPKI_PREFIX.as_slice())?;
     let raw: [u8; 32] = raw.try_into().ok()?;
     let key = VerifyingKey::from_bytes(&raw).ok()?;
     (!key.is_weak()).then_some(key)

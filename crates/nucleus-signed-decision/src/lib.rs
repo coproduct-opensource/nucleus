@@ -32,6 +32,20 @@
 //!   witnessed checkpoint) are a later step; this verifies the owner's signature.
 
 #![forbid(unsafe_code)]
+// Panic-free in the shipped build: a verifier that can panic on hostile bytes is a verifier an
+// attacker can stop. All seven totality lints, or the declaration means "mostly".
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        clippy::panic,
+        clippy::unreachable,
+        clippy::todo
+    )
+)]
 
 mod key_ed25519;
 mod key_p256;
@@ -61,9 +75,9 @@ use roots::SigRefusal;
 ///
 /// An id names a decision; it authorizes nothing. Only a [`SignedDecision`] with this id does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DecisionId(pub(crate) [u8; 32]);
+pub struct OwnerDecisionId(pub(crate) [u8; 32]);
 
-impl DecisionId {
+impl OwnerDecisionId {
     /// Parse exactly 64 lowercase hex.
     pub fn from_hex(s: &str) -> Result<Self, DecisionError> {
         if s.len() != 64 || !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
@@ -85,7 +99,7 @@ impl DecisionId {
     }
 }
 
-impl std::fmt::Display for DecisionId {
+impl std::fmt::Display for OwnerDecisionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.to_hex())
     }
@@ -238,10 +252,10 @@ pub enum Window {
     Expired,
 }
 
-pub(crate) fn window_of(record: &OwnerDecision, now: u64) -> Window {
-    if now < record.valid_from {
+pub(crate) fn window_of(valid_from: u64, not_after: u64, now: u64) -> Window {
+    if now < valid_from {
         Window::NotYetValid
-    } else if now > record.not_after {
+    } else if now > not_after {
         Window::Expired
     } else {
         Window::Live
@@ -249,7 +263,7 @@ pub(crate) fn window_of(record: &OwnerDecision, now: u64) -> Window {
 }
 
 fn window_error(record: &OwnerDecision, now: u64) -> Result<(), DecisionError> {
-    match window_of(record, now) {
+    match window_of(record.valid_from, record.not_after, now) {
         Window::Live => Ok(()),
         Window::NotYetValid => Err(DecisionError::NotYetValid {
             valid_from: record.valid_from,
@@ -277,7 +291,11 @@ fn window_error(record: &OwnerDecision, now: u64) -> Result<(), DecisionError> {
 #[derive(Debug)]
 #[must_use = "a verified decision is evidence; hold it in a DecisionLedger or spend it"]
 pub struct SignedDecision {
-    id: DecisionId,
+    id: OwnerDecisionId,
+    /// The window every use re-checks, copied once from the signed record by [`verify`], the
+    /// only constructor. `record()` shows the same two values; these are the ones enforced.
+    valid_from: u64,
+    not_after: u64,
     record: OwnerDecision,
     question: QuestionCore,
     kid: String,
@@ -286,7 +304,7 @@ pub struct SignedDecision {
 
 impl SignedDecision {
     /// The decision's id.
-    pub const fn id(&self) -> DecisionId {
+    pub const fn id(&self) -> OwnerDecisionId {
         self.id
     }
 
@@ -325,7 +343,7 @@ impl SignedDecision {
 
     /// Where `now` sits in its window. Re-checked on every use, not only at [`verify`].
     pub fn window(&self, now: u64) -> Window {
-        window_of(&self.record, now)
+        window_of(self.valid_from, self.not_after, now)
     }
 
     /// Is one item inside the signed scope?
@@ -367,7 +385,7 @@ fn check_batch(batch: &DecisionBatch, tenant: &str) -> Result<(), DecisionError>
     if batch
         .decisions
         .windows(2)
-        .any(|w| w[0].question_id >= w[1].question_id)
+        .any(|w| matches!(w, [a, b] if a.question_id >= b.question_id))
     {
         return Err(DecisionError::BatchShape(
             "decisions are not strictly ascending by question_id",
@@ -416,7 +434,10 @@ fn check_decision(
     {
         return Err(DecisionError::BadSupersedes);
     }
-    if d.not_after < d.valid_from || d.not_after - d.valid_from > MAX_VALIDITY_SECS {
+    if d.not_after
+        .checked_sub(d.valid_from)
+        .is_none_or(|span| span > MAX_VALIDITY_SECS)
+    {
         return Err(DecisionError::BadWindow);
     }
     window_error(d, now)
@@ -474,6 +495,8 @@ pub fn verify(
 
     Ok(SignedDecision {
         id,
+        valid_from: record.valid_from,
+        not_after: record.not_after,
         record,
         question: bundle.question.clone(),
         kid: signer.kid.clone(),
