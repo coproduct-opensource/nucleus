@@ -151,6 +151,8 @@ use budget::SharedBudget;
 mod binding_ledger;
 use binding_ledger::{charge_day, receil};
 mod daily;
+mod settle;
+use settle::{ReleaseKind, release};
 pub(crate) mod registry;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
@@ -459,101 +461,6 @@ impl Drop for Reservation {
     }
 }
 
-// No caller-supplied spend amount can authorize a refund (ADR 0007 C-1).
-enum ReleaseKind {
-    Unspawned,
-    Exited,
-}
-
-/// Retire `pod_id`'s certificate and return its allocation to its parent's
-/// ledger. The one body [`PodAuthority::release_child`] and a dropped
-/// [`Reservation`] share.
-///
-/// The parent's record is written first, naming the child as retired, and
-/// only then is the child's file removed; see the module docs. If the parent's
-/// record cannot be written the child's file is KEPT, so a restart restores
-/// the child as a live allocation: the same budget held, never handed back.
-/// Only the reservation owner selects `Unspawned`.
-async fn release(
-    inner: &tokio::sync::Mutex<Inner>,
-    state_dir: &Path,
-    pod_id: Uuid,
-    kind: ReleaseKind,
-) {
-    let mut guard = inner.lock().await;
-    let inner = &mut *guard;
-    let Some(entry) = inner.pods.remove(&pod_id) else {
-        return;
-    };
-    if let crate::host_decide::PolicyHistory::Live(policy) = &entry.host_policy {
-        crate::host_decide::PodPolicy::revoke(policy);
-    }
-    // Its descendants still charge its account; nothing will restore it.
-    if let egress::PodEgress::Live(chain) = &entry.egress {
-        chain.own().retire();
-    }
-    let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
-    let consumed = match kind {
-        ReleaseKind::Unspawned => rust_decimal::Decimal::ZERO,
-        ReleaseKind::Exited => allocation,
-    };
-    let recorded = match entry.parent {
-        Parent::Root => Ok(()),
-        Parent::Pod(p) => match inner.pods.get_mut(&p) {
-            Some(parent) => match parent.ledger.release(pod_id.as_u128(), consumed) {
-                Ok(_) => {
-                    parent.retired.push(pod_id);
-                    retain_unremoved(state_dir, &mut parent.retired);
-                    persist_pod(state_dir, p, parent).await
-                }
-                Err(e) => {
-                    tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
-                    Ok(())
-                }
-            },
-            None => Ok(()),
-        },
-        Parent::External(fp) => match inner.external.get_mut(&fp) {
-            Some(chain) => match chain.ledger.release(pod_id.as_u128(), consumed) {
-                Ok(_) => {
-                    // The day agrees with the ledger: a refund is credited to
-                    // the day it was charged to, a pod that ran keeps its charge.
-                    match kind {
-                        ReleaseKind::Unspawned => chain.days.refund(pod_id),
-                        ReleaseKind::Exited => chain.days.settle(pod_id),
-                    }
-                    chain.retired.push(pod_id);
-                    retain_unremoved(state_dir, &mut chain.retired);
-                    persist_external(state_dir, &fp, chain).await
-                }
-                Err(e) => {
-                    tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
-                    Ok(())
-                }
-            },
-            None => Ok(()),
-        },
-    };
-    match recorded {
-        Ok(()) => {
-            let _ = tokio::fs::remove_file(authority_path(state_dir, pod_id)).await;
-        }
-        Err(e) => tracing::error!(
-            pod = %pod_id,
-            error = %e,
-            "could not record a released allocation in its parent's ledger; the pod's \
-             authority file is kept, so a restart restores it as still allocated"
-        ),
-    }
-}
-
-/// Keep, of `retired`, only the children whose authority file still exists:
-/// the ones a restore could otherwise mistake for live. Bounded by the
-/// releases whose file removal has not happened yet.
-fn retain_unremoved(state_dir: &Path, retired: &mut Vec<Uuid>) {
-    retired.retain(|id| authority_path(state_dir, *id).exists());
-}
-
 impl IssuedAuthority {
     /// Replace what the spec REQUESTED with what was ISSUED: the policy with the
     /// certificate's effective lattice, and `credentialed_egress` with the
@@ -596,7 +503,7 @@ struct PodCert {
     holder_pkcs8: Vec<u8>,
     ledger: SharedBudget,
     /// Children whose release is already in `ledger`'s consumption but whose
-    /// authority file may not be removed yet. See [`retain_unremoved`].
+    /// authority file may not be removed yet. See [`settle::retain_unremoved`].
     retired: Vec<Uuid>,
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
@@ -612,6 +519,12 @@ struct PodCert {
     /// The host's label for the pod before its guest says anything, decided at
     /// admission from what the host put into the cell (ADR 0014 §3).
     starting: crate::host_decide::StartingLabel,
+    /// Release consumes this pod's METERED spend (what the host charged its own
+    /// ledger: brokered call charges, and its live children's allocations), at
+    /// most its allocation, instead of the whole allocation. Set at admission
+    /// from the federated binding's `settle = "metered"`; `false` everywhere
+    /// else, and for a pod restored after a restart (charged in full, as before).
+    settle_metered: bool,
 }
 
 /// The starting label a Firecracker node decides for `spec`, for tests that
@@ -1679,6 +1592,13 @@ impl PodAuthority {
             egress: egress::PodEgress::Live(egress_chain),
             dlc: DlcProvisioning::admitted(&spec.metadata.labels, self.node_dlc.as_ref()),
             starting,
+            // A federated caller's pod settles to its metered spend when its
+            // binding says so (`settle = "metered"`); decided by the same
+            // authenticated trust domain admission used.
+            settle_metered: matches!(parent, Parent::External(_))
+                && crate::federation_ingress::trust_domain_of(&admission.caller_spiffe_id)
+                    .and_then(|td| loaded.bindings.by_trust_domain(td))
+                    .is_some_and(crate::federation_ingress::CallerBinding::settles_metered),
         };
         // A child that would not survive a restart would be missing from its
         // parent's ledger after one, so it is not issued. Nor is a charge to a
@@ -1960,11 +1880,26 @@ impl PodAuthority {
     /// Retire a pod's certificate and return its budget allocation to the
     /// parent's ledger.
     ///
-    /// Until host-authoritative terminal settlement exists, consume the full
-    /// allocation. Guest-signed spend totals cannot authorize budget credit.
+    /// Consumes the pod's metered spend when its federated binding settles
+    /// `metered` (host-authoritative: what the host charged its own ledger),
+    /// else the full allocation. Guest-signed spend totals cannot authorize
+    /// budget credit.
     /// An unspawned launch uses its owned `Reservation` to refund instead.
     pub async fn release_child(&self, pod_id: Uuid) {
         release(&self.inner, &self.state_dir, pod_id, ReleaseKind::Exited).await;
+    }
+
+    /// Charge `amount` to `pod_id`'s own ledger through the path the broker's
+    /// call charges take ([`SharedBudget::commit`]), for tests of settlement.
+    #[cfg(test)]
+    pub(crate) async fn meter(
+        &self,
+        pod_id: Uuid,
+        amount: rust_decimal::Decimal,
+    ) -> Result<(), String> {
+        let inner = self.inner.lock().await;
+        let entry = inner.pods.get(&pod_id).ok_or("no such pod")?;
+        entry.ledger.commit(amount, || Ok(()))
     }
 
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart,
@@ -2175,6 +2110,8 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
         starting: crate::host_decide::StartingLabel::Untrusted(
             crate::host_decide::Untrusted::Restored,
         ),
+        // In memory only: a restored pod is charged its whole allocation.
+        settle_metered: false,
     })
 }
 
