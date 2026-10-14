@@ -397,6 +397,15 @@ pub enum GuestCapability {
     /// [`Demand::Optional`]: the node depends on it only for a pod that requires a decision, and
     /// `decision_provisioning` reads it to refuse that pod on a guest known to lack it, by name.
     DecisionGatedSinks,
+    /// The tool-proxy starts a guest workload in a PID namespace of its own,
+    /// as the only child of that namespace's init, with a `/proc` mounted for
+    /// it (`hidepid=invisible`), and refuses the workload if it cannot (#3344).
+    /// The launch receipt records it (`pids=own`). [`Demand::Optional`] while
+    /// no release carries it: defence in depth under ADR 0013, and an older
+    /// guest's workload shares the runtime's PID namespace, held by its uid and
+    /// procfs access checks as before. An eval cell demands it once the pin
+    /// carries it.
+    WorkloadPidNamespace,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -452,7 +461,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 24] = [
+    pub const ALL: [GuestCapability; 25] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -477,6 +486,7 @@ impl GuestCapability {
         GuestCapability::ContainerBrokerSocket,
         GuestCapability::CanonicalManifestApproval,
         GuestCapability::DecisionGatedSinks,
+        GuestCapability::WorkloadPidNamespace,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -527,6 +537,8 @@ impl GuestCapability {
             // Only a pod whose spec requires a decision depends on it, and
             // `decision_provisioning` judges that pod alone, by name.
             GuestCapability::DecisionGatedSinks => Demand::Optional,
+            // Defence in depth; an eval cell demands it once a release has it.
+            GuestCapability::WorkloadPidNamespace => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -602,6 +614,8 @@ impl GuestCapability {
             GuestCapability::CanonicalManifestApproval => FirstShipped::NotYet,
             // Signed-decision node wiring: in this tree and in no release yet.
             GuestCapability::DecisionGatedSinks => FirstShipped::NotYet,
+            // #3344: in this tree and in no release yet.
+            GuestCapability::WorkloadPidNamespace => FirstShipped::NotYet,
         }
     }
 
@@ -745,6 +759,12 @@ impl GuestCapability {
                  requires_decision unless the call cites a verified, in-scope owner decision; an \
                  older tool-proxy refuses a spec carrying requires_decision, so the node refuses \
                  such a pod on a guest known to predate it"
+            }
+            GuestCapability::WorkloadPidNamespace => {
+                "#3344 has the tool-proxy start a guest workload in a PID namespace of its own \
+                 with its own /proc, so the workload has no pid for the tool-proxy or guest-init; \
+                 an older guest's workload shares the runtime's PID namespace, held by its uid \
+                 and procfs access checks (the node does not require it)"
             }
         }
     }
@@ -1169,6 +1189,7 @@ mod tests {
             GuestCapability::ContainerBrokerSocket,
             GuestCapability::CanonicalManifestApproval,
             GuestCapability::DecisionGatedSinks,
+            GuestCapability::WorkloadPidNamespace,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1351,7 +1372,8 @@ mod tests {
                     GuestCapability::CanonicalManifestApproval
                 }
                 GuestCapability::CanonicalManifestApproval => GuestCapability::DecisionGatedSinks,
-                GuestCapability::DecisionGatedSinks => GuestCapability::CaBundle,
+                GuestCapability::DecisionGatedSinks => GuestCapability::WorkloadPidNamespace,
+                GuestCapability::WorkloadPidNamespace => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

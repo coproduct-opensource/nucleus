@@ -201,6 +201,9 @@ pub(crate) struct AdmittedWorkloadPlan {
     /// value, so "admitted as separated, spawned at the runtime's uid" has no
     /// line of code that could express it.
     confinement: nucleus::ChildConfinement,
+    /// Whether the spawn asks for the child's own PID namespace (#3344),
+    /// decided with the confinement from the same containment.
+    pids: nucleus::PidNamespace,
     /// The exact env that will cross, already admitted. Paired with `classified`
     /// so the receipt reports the same set the admission checked.
     env: BTreeMap<String, String>,
@@ -511,6 +514,7 @@ impl WorkloadLaunch {
             args: self.args,
             work_dir: self.work_dir,
             confinement,
+            pids: nucleus::PidNamespace::for_workload(containment),
             env: self.env,
             classified: self.classified,
             home: self.home,
@@ -519,7 +523,7 @@ impl WorkloadLaunch {
     }
 }
 
-/// OS assumptions: KB-GUEST-PID-SHARED and KB-LINUX-CHILD-ISOLATION;
+/// OS assumptions: KB-GUEST-WORKLOAD-PIDNS and KB-LINUX-CHILD-ISOLATION;
 /// see docs/assumptions/kernel-behaviour.md.
 ///
 /// Spawn an admitted plan. **The only `Command::new` in the crate** — the
@@ -647,8 +651,10 @@ pub(crate) fn spawn_admitted(
     // What the hook does, as only `apply` can say it: the receipt's
     // `hardening` is this value, not a flag computed beside the spawn. It
     // carries the syscall classes the pod's lattice derived (#2907) as the
-    // filter the hook actually installs.
-    let hardening = confinement.apply(cmd.as_std_mut(), rlimits, syscalls, writes);
+    // filter the hook actually installs, and in a guest the PID namespace the
+    // hook makes (#3344).
+    let hardening =
+        confinement.apply_with_pids(cmd.as_std_mut(), rlimits, syscalls, writes, plan.pids);
 
     tracing::info!(
         command = %plan.command,
@@ -833,7 +839,8 @@ impl LaunchReceipt {
     /// derived syscall classes (#2907).
     /// 4: the preimage gained `ws=`, how the hook holds the workspace: the
     /// Landlock write layer under `write_files: never` (#2907).
-    const SCHEMA_VERSION: u32 = 4;
+    /// 5: the preimage gained `pids=`, the child's own PID namespace (#3344).
+    const SCHEMA_VERSION: u32 = 5;
 
     fn from_admitted(
         plan: &AdmittedWorkloadPlan,
@@ -867,11 +874,16 @@ impl LaunchReceipt {
         // Read off `hardening` too: what the hook installed, not what the
         // policy asked for.
         let workspace = hardening.workspace_canonical();
+        let pids = match hardening {
+            nucleus::SpawnHardening::Hardened(h) => h.pid_namespace(),
+            nucleus::SpawnHardening::Unhardened(_) => nucleus::PidNamespace::Shared,
+        }
+        .canonical();
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}|pids={pids}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
@@ -2215,6 +2227,10 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "workload_pidns_tests.rs"]
+mod pidns_tests;
 
 #[cfg(test)]
 mod companion_tests {
