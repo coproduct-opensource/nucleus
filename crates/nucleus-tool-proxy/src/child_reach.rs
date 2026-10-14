@@ -292,7 +292,8 @@ fn chain_reach(path: &Path, uid: u32, exposure: Exposure) -> Option<String> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 return writable_above.map(|dir| {
                     format!(
-                        "is not created yet, and a child at uid {uid} can write {}, so it can                          create {} first",
+                        "is not created yet, and a child at uid {uid} can write {}, so it can \
+                         create {} first",
                         dir.display(),
                         prefix.display()
                     )
