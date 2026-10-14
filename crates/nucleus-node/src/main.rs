@@ -134,7 +134,11 @@ use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
 mod decision_provisioning;
 mod guest_proof_provision;
+mod memory_binding;
+mod memory_flow;
 mod memory_provisioning;
+mod memory_space;
+mod memory_space_api;
 mod net;
 #[cfg(test)]
 mod node_state_census;
@@ -632,6 +636,9 @@ struct PodHandle {
     /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
     owner: Option<String>,
     capacity: Mutex<Option<node_capacity::Reservation>>,
+    /// The lineage a pod belongs to, folded from `parent_pod_id` at creation
+    /// (`memory_provisioning::LineageRoot`): the audience a lineage's memory policy names.
+    memory_lineage: memory_provisioning::LineageRoot,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -913,7 +920,7 @@ async fn main() -> Result<(), ApiError> {
     .map_err(ApiError::Driver)?;
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
-    let memory = Arc::new(args.memory.load(&host_roots)?);
+    let memory = Arc::new(args.memory.load(&host_roots, &args.state_dir, &authority)?);
     let decisions = args
         .decisions
         .load(host_roots.workspace_root())?
@@ -1138,6 +1145,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
         .merge(pod_api::effect_approvals::routes())
+        .merge(memory_space_api::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1392,7 +1400,47 @@ async fn create_pod_internal(
     let spec = plan.spec().clone();
     // What the receipt carries: the hash of the spec the guest is handed, not of `spec` (#3395).
     let manifest_hash = plan.delivered().manifest_hash().clone();
-    let memory = match state.memory.provision(requested_memory, &owner) {
+    // The lineage this pod belongs to: its parent's, or its own if it has none. The parent edge
+    // is the one `parent_for_create` recorded, so memory audiences and the pod view read the
+    // same fact (G-1).
+    let parent_lineage = match parent_pod_id {
+        Some(parent) => Some((
+            parent,
+            state
+                .pods
+                .lock()
+                .await
+                .get(&parent)
+                .map(|p| p.memory_lineage),
+        )),
+        None => None,
+    };
+    let memory_lineage = memory_provisioning::LineageRoot::of(id, parent_lineage);
+    // A pod's labels speak for its tenant only when the tenant's own identity created it: a
+    // pod-created child's labels were written by a pod, and match no workspace selector.
+    let labels = match (admission.caller_pod, parent_pod_id) {
+        (None, None) => memory_space::PodLabels::TenantAuthenticated(&spec.metadata.labels),
+        (Some(_), _) | (None, Some(_)) => memory_space::PodLabels::PodAuthored,
+    };
+    let subject = memory_provisioning::Subject {
+        pod: id,
+        owner: &owner,
+        lineage: memory_lineage,
+        labels,
+        run_ends: memory_provisioning::now_unix()
+            .saturating_add(spec.spec.timeout_seconds)
+            .saturating_add(memory_provisioning::PUBLISH_WINDOW_SECS),
+    };
+    let memory = match state.memory.provision(
+        requested_memory,
+        &subject,
+        &state.state_dir,
+        &state.authority,
+        state
+            .decisions
+            .as_deref()
+            .map(|d| d as &dyn memory_space::DecisionCiter),
+    ) {
         Ok(memory) => memory,
         Err(error) => {
             reservation.release().await;
@@ -1481,6 +1529,7 @@ async fn create_pod_internal(
         posture_stamp,
         owner: Some(owner),
         capacity: Mutex::new(Some(capacity)),
+        memory_lineage,
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -1552,7 +1601,7 @@ async fn spawn_local_pod(
     pod_dir: &Path,
     plan: pod_authority::AdmittedPodPlan,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
     let (spec, id) = (plan.spec(), plan.id());

@@ -297,3 +297,111 @@ fn a_firecracker_pod_is_handed_out_only_once_its_gate_is_armed() {
     );
     assert!(message(named).contains("DecisionGatedSinks"));
 }
+
+/// A standing decision for question `question_id`, choosing `b`, scoped to `capabilities`, in
+/// the bundle directory under its id; `supersedes` names an earlier one. Returns the id.
+fn file_decision(
+    n: &Node,
+    question_id: &str,
+    capabilities: &[&str],
+    supersedes: Option<String>,
+    now: u64,
+) -> String {
+    use ed25519_dalek::Signer as _;
+    use nucleus_signed_decision::{
+        DecisionBatch, DecisionBundle, OptionBody, OwnerDecision, QuestionCore, Scope,
+    };
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let option = |id: &str| OptionBody {
+        id: id.into(),
+        does: format!("option {id}"),
+        cost: "S".into(),
+        risk: "low".into(),
+    };
+    let scope = Scope {
+        refs: vec![],
+        paths: vec![],
+        capabilities: capabilities.iter().map(|c| (*c).to_owned()).collect(),
+    };
+    let q = QuestionCore {
+        tenant: TENANT.into(),
+        repo: "example/repo".into(),
+        question_id: question_id.into(),
+        question: "May runs of this workspace share memory?".into(),
+        context: vec![],
+        evidence: vec![],
+        options: vec![option("a"), option("b")],
+        recommended: None,
+        recommended_why: String::new(),
+        proposed_scope: scope.clone(),
+    };
+    let d = OwnerDecision {
+        tenant: TENANT.into(),
+        repo: q.repo.clone(),
+        question_id: q.question_id.clone(),
+        question_sha256: nucleus_signed_decision::question_sha256(&q).unwrap(),
+        options: OwnerDecision::option_digests_of(&q).unwrap(),
+        chosen: "b".into(),
+        scope,
+        conditions: vec![],
+        single_use: false,
+        supersedes,
+        valid_from: now - 10,
+        not_after: now + 1000,
+    };
+    let id = d.decision_id().unwrap().to_hex();
+    let batch = DecisionBatch {
+        kid: nucleus_signed_decision::kid_for(&pem()),
+        aud: "https://control.example/github~example~repo".into(),
+        issued_at: now - 10,
+        submit_by: now + 890,
+        nonce: "00112233445566778899aabbccddeeff".into(),
+        decisions: vec![d],
+    };
+    let message = batch.message().unwrap();
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let bundle = DecisionBundle {
+        batch_b64: b64.encode(&message),
+        signature: b64.encode(key.sign(&message).to_bytes()),
+        index: 0,
+        question: q,
+    };
+    std::fs::write(
+        n.bundles.join(format!("{id}.json")),
+        serde_json::to_vec(&bundle).unwrap(),
+    )
+    .unwrap();
+    id
+}
+
+/// The node verifies a standing decision itself for the one thing it decides on one: a memory
+/// binding policy. It covers exactly the capabilities it signed, its window bounds what it
+/// returns, a decision another present bundle supersedes is refused, and an id with no bundle
+/// is not held.
+#[test]
+fn the_node_cites_a_standing_decision_for_a_memory_capability() {
+    use crate::memory_space::DecisionCiter;
+    let n = node();
+    let now = 1_800_000_000;
+    let id = file_decision(&n, "q-mem", &["memory.bind:notes"], None, now);
+    let d = loaded(&n);
+    assert_eq!(d.cite(&id, "memory.bind:notes", now), Ok(now + 1000));
+    let refused = d.cite(&id, "memory.publish:notes", now).unwrap_err();
+    assert!(refused.contains("does not cover"), "{refused}");
+    assert!(d.cite(&id, "memory.bind:other", now).is_err());
+    assert!(
+        d.cite(&id, "memory.bind:notes", now + 1001).is_err(),
+        "expired"
+    );
+    assert!(d.cite(&"0".repeat(64), "memory.bind:notes", now).is_err());
+    let newer = file_decision(
+        &n,
+        "q-mem",
+        &["memory.bind:notes", "memory.publish:notes"],
+        Some(id.clone()),
+        now,
+    );
+    let refused = d.cite(&id, "memory.bind:notes", now).unwrap_err();
+    assert!(refused.contains("superseded"), "{refused}");
+    assert!(d.cite(&newer, "memory.publish:notes", now).is_ok());
+}

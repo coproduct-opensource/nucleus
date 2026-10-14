@@ -125,6 +125,17 @@ pub enum Operation {
     Lockdown,
     /// Inspect or decide an action-bound host approval; configured operator only.
     ApproveEffect,
+    /// Declare a memory space, revoke a binding policy or a space, or list them
+    /// (`memory_space_api`).
+    ///
+    /// Not part of the pod-management group, and never a pod's or a CI identity's: a space
+    /// and its revocations are the tenant root's declaration of who may share memory. Which
+    /// tenant a caller acts for is decided by the handler from its own identity.
+    MemorySpaces,
+    /// Record a binding policy, or publish a binding's branch (`memory_space_api`). A pod may
+    /// ask: the handler admits a pod's policy only on a cited owner decision, and a pod's
+    /// publish only for the binding it holds.
+    MemoryBinding,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -418,6 +429,8 @@ impl AuthorizationPolicy {
                 | Operation::CancelPod
                 | Operation::StreamLogs
                 | Operation::GetReceipt
+                | Operation::MemorySpaces
+                | Operation::MemoryBinding
                 | Operation::PodManagement => Ok(()),
                 // A lockdown is the operator's control (see the variant), and a
                 // tenant is never the operator.
@@ -485,7 +498,10 @@ impl AuthorizationPolicy {
                         return Ok(());
                     }
                     // Falls through to the refusal below: see the variant's doc comment.
-                    Operation::Lockdown | Operation::ApproveEffect => {}
+                    Operation::Lockdown
+                    | Operation::ApproveEffect
+                    | Operation::MemorySpaces
+                    | Operation::MemoryBinding => {}
                 }
             }
         }
@@ -501,6 +517,7 @@ impl AuthorizationPolicy {
                     | Operation::StreamLogs
                     | Operation::ListPods
                     | Operation::GetReceipt
+                    | Operation::MemoryBinding
                     | Operation::PodManagement => {
                         tracing::debug!(
                             spiffe_id = %spiffe_id,
@@ -511,7 +528,10 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod | Operation::Lockdown | Operation::ApproveEffect => {}
+                    Operation::SnapshotPod
+                    | Operation::Lockdown
+                    | Operation::ApproveEffect
+                    | Operation::MemorySpaces => {}
                 }
             }
         }
@@ -664,6 +684,15 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         | (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals", _])
         | (&axum::http::Method::POST, ["v1", "pods", _id, "effect-approvals", _]) => {
             Some(Operation::ApproveEffect)
+        }
+        (&axum::http::Method::GET | &axum::http::Method::POST, ["v1", "memory", "spaces"])
+        | (&axum::http::Method::POST, ["v1", "memory", "spaces", _, "revoke"])
+        | (&axum::http::Method::POST, ["v1", "memory", "spaces", _, "policies", _, "revoke"]) => {
+            Some(Operation::MemorySpaces)
+        }
+        (&axum::http::Method::POST, ["v1", "memory", "spaces", _, "policies"])
+        | (&axum::http::Method::POST, ["v1", "memory", "bindings", _, "publish"]) => {
+            Some(Operation::MemoryBinding)
         }
         _ => None,
     }

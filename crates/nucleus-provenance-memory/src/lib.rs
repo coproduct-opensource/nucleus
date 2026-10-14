@@ -89,7 +89,7 @@ pub use hash::ContentHash;
 pub use ifc::memory_ifc_label;
 pub use journal::{
     JournalError, JournalLocation, JournalPart, MAX_JOURNAL_BYTES, MigrationStep, PinnedSnapshot,
-    PublishRefusal, PublishedJournal, ReachCheck,
+    PublishRefusal, PublishedJournal, ReachCheck, read_unlocked, write_delivery,
 };
 pub use lineage::memory_lineage_edge;
 pub use overlay::Overlay;
