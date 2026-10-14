@@ -114,6 +114,9 @@ const INIT_NAME: &std::ffi::CStr = c"nucleus-init";
 /// dropped to `uid`/`gid` and in its own PID and mount namespaces, or with the
 /// error that stopped it before the init's fork.
 ///
+/// One `unsafe` block, like `imp::harden_child`'s: the helpers are closures
+/// inside it, so the audited surface is this function.
+///
 /// # Safety
 /// Only from a `pre_exec` hook, in the child std forked, while it is still
 /// root: everything here is a raw async-signal-safe syscall, and two of the
@@ -125,15 +128,77 @@ const INIT_NAME: &std::ffi::CStr = c"nucleus-init";
 )]
 pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
     use std::io;
-    // SAFETY: scalar and static-string arguments to async-signal-safe
-    // syscalls, in a single-threaded forked child; no allocation, no lock.
+    // SAFETY: scalar and static-string arguments, and pointers to live
+    // locals, to async-signal-safe syscalls in a single-threaded forked
+    // child; no allocation, no lock.
     unsafe {
+        // `clone(SIGCHLD)`: fork's semantics without libc's locks. No stack
+        // and no tid pointers: the child continues on a copy of this stack.
+        let fork_raw = || -> io::Result<libc::pid_t> {
+            let pid = libc::syscall(
+                libc::SYS_clone,
+                libc::c_long::from(libc::SIGCHLD),
+                0,
+                0,
+                0,
+                0,
+            );
+            if pid < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                libc::pid_t::try_from(pid)
+                    .map_err(|_| io::Error::from_raw_os_error(libc::EOVERFLOW))
+            }
+        };
+        // Every descriptor this process holds: std's status pipe and the
+        // copies of the workload's stdio, which a process that never execs
+        // would otherwise hold open for as long as it lives. Without
+        // close_range (pre-5.9), close up to the limit the hook sets.
+        let close_everything = || {
+            if libc::syscall(
+                libc::SYS_close_range,
+                0 as libc::c_long,
+                libc::c_uint::MAX as libc::c_long,
+                0 as libc::c_long,
+            ) != 0
+            {
+                for fd in 0..65_536 {
+                    libc::close(fd);
+                }
+            }
+        };
+        // Wait (for `pid`, or any child under -1) until `until` is reaped,
+        // and return its status. Leaves on any error but EINTR.
+        let wait_for = |pid: libc::pid_t, until: libc::pid_t| -> libc::c_int {
+            let mut status: libc::c_int = 0;
+            loop {
+                let r = libc::waitpid(pid, &raw mut status, 0);
+                if r == until {
+                    return status;
+                }
+                if r < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
+                    libc::_exit(127);
+                }
+            }
+        };
+
         if libc::unshare(libc::CLONE_NEWPID | libc::CLONE_NEWNS) != 0 {
             return Err(io::Error::last_os_error());
         }
         let init = fork_raw()?;
         if init > 0 {
-            wait_and_mirror(init);
+            // The waiter: leave with the init's status, a signal death as
+            // the same signal, so the runtime reads what it would have read
+            // off the init.
+            close_everything();
+            let status = wait_for(init, init);
+            if libc::WIFSIGNALED(status) {
+                let sig = libc::WTERMSIG(status);
+                libc::signal(sig, libc::SIG_DFL);
+                libc::kill(libc::getpid(), sig);
+                libc::_exit(128 + sig);
+            }
+            libc::_exit(libc::WEXITSTATUS(status));
         }
         // Pid 1. Dies with the waiter, so the runtime's kill reaches the
         // namespace. Set before anything can fail, and never cleared: this
@@ -169,7 +234,16 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
         }
         let workload = fork_raw()?;
         if workload > 0 {
-            reap_until(workload);
+            // The init: reap every child (an orphan is reparented here)
+            // until the workload exits, then leave with its status; the
+            // kernel kills what is left in the namespace.
+            libc::prctl(libc::PR_SET_NAME, INIT_NAME.as_ptr(), 0, 0, 0);
+            close_everything();
+            let status = wait_for(-1, workload);
+            if libc::WIFSIGNALED(status) {
+                libc::_exit(128 + libc::WTERMSIG(status));
+            }
+            libc::_exit(libc::WEXITSTATUS(status));
         }
         // The workload: drop here, now the privileged steps are done.
         // `setresuid` from root clears every capability set.
@@ -181,109 +255,6 @@ pub(super) unsafe fn enter(uid: u32, gid: u32) -> std::io::Result<()> {
         }
     }
     Ok(())
-}
-
-/// `clone(SIGCHLD)`: fork's semantics without libc's locks.
-#[cfg(target_os = "linux")]
-#[expect(unsafe_code, reason = "#3344: a raw clone in a pre_exec hook")]
-unsafe fn fork_raw() -> std::io::Result<libc::pid_t> {
-    // SAFETY: no stack, no tid pointers: the child continues on a copy of
-    // this stack, as after fork.
-    let pid = unsafe {
-        libc::syscall(
-            libc::SYS_clone,
-            libc::c_long::from(libc::SIGCHLD),
-            0,
-            0,
-            0,
-            0,
-        )
-    };
-    if pid < 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        libc::pid_t::try_from(pid).map_err(|_| std::io::Error::from_raw_os_error(libc::EOVERFLOW))
-    }
-}
-
-/// Close every descriptor this process holds: std's status pipe and the
-/// copies of the workload's stdio, which a process that never execs would
-/// otherwise hold open for as long as it lives.
-#[cfg(target_os = "linux")]
-#[expect(unsafe_code, reason = "#3344: close_range in a pre_exec hook")]
-unsafe fn close_everything() {
-    // SAFETY: scalar arguments. On a kernel without close_range (pre-5.9)
-    // fall back to closing up to the descriptor limit the hook sets.
-    unsafe {
-        if libc::syscall(
-            libc::SYS_close_range,
-            0 as libc::c_long,
-            libc::c_uint::MAX as libc::c_long,
-            0 as libc::c_long,
-        ) != 0
-        {
-            for fd in 0..65_536 {
-                libc::close(fd);
-            }
-        }
-    }
-}
-
-/// The waiter: wait for the init and leave with its status. Never returns.
-#[cfg(target_os = "linux")]
-#[expect(unsafe_code, reason = "#3344: waitpid and _exit in a pre_exec hook")]
-unsafe fn wait_and_mirror(init: libc::pid_t) -> ! {
-    // SAFETY: async-signal-safe syscalls on a local status word.
-    unsafe {
-        close_everything();
-        let mut status: libc::c_int = 0;
-        loop {
-            let r = libc::waitpid(init, &raw mut status, 0);
-            if r == init {
-                break;
-            }
-            if r < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                libc::_exit(127);
-            }
-        }
-        if libc::WIFSIGNALED(status) {
-            // Die of the same signal, so the runtime reads what it would
-            // have read off the init.
-            let sig = libc::WTERMSIG(status);
-            libc::signal(sig, libc::SIG_DFL);
-            libc::kill(libc::getpid(), sig);
-            libc::_exit(128 + sig);
-        }
-        libc::_exit(libc::WEXITSTATUS(status))
-    }
-}
-
-/// The init: reap every child until the workload exits, then leave with its
-/// status. Never returns.
-#[cfg(target_os = "linux")]
-#[expect(unsafe_code, reason = "#3344: waitpid and _exit in a pre_exec hook")]
-unsafe fn reap_until(workload: libc::pid_t) -> ! {
-    // SAFETY: async-signal-safe syscalls on a local status word and a
-    // static name.
-    unsafe {
-        libc::prctl(libc::PR_SET_NAME, INIT_NAME.as_ptr(), 0, 0, 0);
-        close_everything();
-        let mut status: libc::c_int = 0;
-        loop {
-            let r = libc::waitpid(-1, &raw mut status, 0);
-            if r == workload {
-                break;
-            }
-            // Another pid is an orphan, reaped; keep going.
-            if r < 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::EINTR) {
-                libc::_exit(127);
-            }
-        }
-        if libc::WIFSIGNALED(status) {
-            libc::_exit(128 + libc::WTERMSIG(status));
-        }
-        libc::_exit(libc::WEXITSTATUS(status))
-    }
 }
 
 #[cfg(test)]

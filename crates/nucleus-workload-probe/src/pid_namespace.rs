@@ -80,12 +80,8 @@ pub(crate) fn observe() -> DoorPeer {
     if cred.pid == 0 {
         return DoorPeer::Outside;
     }
-    // SAFETY: signal 0 delivers nothing; it only asks whether one could be.
-    let kill = if unsafe { libc::kill(cred.pid, 0) } == 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(-1))
-    };
+    // Signal 0 delivers nothing; it only asks whether one could be.
+    let kill = super::sys(libc::SYS_kill, [libc::c_long::from(cred.pid), 0, 0, 0, 0]).map(drop);
     DoorPeer::Visible {
         pid: cred.pid,
         kill,
