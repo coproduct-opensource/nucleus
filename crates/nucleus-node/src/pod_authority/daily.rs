@@ -10,8 +10,10 @@
 //! the admission. An allocation that is handed back because the pod never ran
 //! (an unspawned reservation, or an admission refused after reserving) is
 //! credited to the day it was charged to, whatever day it is now. A pod that
-//! ran keeps its charge: the ledger folds its whole allocation into
-//! consumption (`ReleaseKind::Exited`), and the day agrees with it.
+//! ran keeps the part of its charge it spent: the ledger folds into
+//! consumption its metered spend when its binding settles `metered`, else its
+//! whole allocation (`ReleaseKind::Exited`), and the day agrees with it,
+//! crediting the rest to the day it was charged to.
 //!
 //! Persisted beside the ledger in `authority/external/<key>.json` as
 //! `days = { "YYYY-MM-DD": micro-USD }`. Days more than [`DAY_HISTORY`] before
@@ -66,9 +68,16 @@ impl Days {
         }
     }
 
-    /// `pod` ran and was released: its charge stands.
-    pub(super) fn settle(&mut self, pod: Uuid) {
-        self.live.remove(&pod);
+    /// `pod` ran and was released having spent `spent_micro`: the day keeps that
+    /// much of its charge and is credited the rest, on the day it was charged
+    /// to. Never more than was charged: a spend above the charge keeps the
+    /// charge as it was.
+    pub(super) fn settle_spent(&mut self, pod: Uuid, spent_micro: u64) {
+        if let Some((day, charged)) = self.live.remove(&pod)
+            && let Some(total) = self.charged.get_mut(&day)
+        {
+            *total = total.saturating_sub(charged.saturating_sub(spent_micro));
+        }
     }
 
     /// The persisted form, keeping [`DAY_HISTORY`] days back from the latest.

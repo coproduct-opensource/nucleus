@@ -466,6 +466,17 @@ async fn release(
     let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
     let consumed = match kind {
         ReleaseKind::Unspawned => rust_decimal::Decimal::ZERO,
+        // Host-authoritative settlement: what the host metered into the pod's
+        // own ledger, never more than the allocation. Unreadable is the whole
+        // allocation, never zero (ADR 0007 A-1).
+        ReleaseKind::Exited if entry.settle_metered => entry
+            .ledger
+            .snapshot()
+            .map_or(allocation, |l| {
+                let core = l.core();
+                micro_usd(core.parent_consumed_units().saturating_add(core.allocated_units()))
+                    .min(allocation)
+            }),
         ReleaseKind::Exited => allocation,
     };
     let recorded = match entry.parent {
@@ -491,7 +502,7 @@ async fn release(
                     // the day it was charged to, a pod that ran keeps its charge.
                     match kind {
                         ReleaseKind::Unspawned => chain.days.refund(pod_id),
-                        ReleaseKind::Exited => chain.days.settle(pod_id),
+                        ReleaseKind::Exited => chain.days.settle_spent(pod_id, micro_of(consumed)),
                     }
                     chain.retired.push(pod_id);
                     retain_unremoved(state_dir, &mut chain.retired);
@@ -569,6 +580,12 @@ struct PodCert {
     /// The host's label for the pod before its guest says anything, decided at
     /// admission from what the host put into the cell (ADR 0014 §3).
     starting: crate::host_decide::StartingLabel,
+    /// Release consumes this pod's METERED spend (what the host charged its own
+    /// ledger: brokered call charges, and its live children's allocations), at
+    /// most its allocation, instead of the whole allocation. Set at admission
+    /// from the federated binding's `settle = "metered"`; `false` everywhere
+    /// else, and for a pod restored after a restart (charged in full, as before).
+    settle_metered: bool,
 }
 
 /// The starting label a Firecracker node decides for `spec`, for tests that
@@ -743,6 +760,16 @@ impl LedgerRecord {
 
 fn micro_usd(micro: u64) -> rust_decimal::Decimal {
     rust_decimal::Decimal::new(i64::try_from(micro).unwrap_or(i64::MAX), 6)
+}
+
+/// `usd` in micro-USD, rounded UP: a settled charge never undercounts by a
+/// fraction of a micro-dollar. Negative is zero.
+fn micro_of(usd: rust_decimal::Decimal) -> u64 {
+    use rust_decimal::prelude::ToPrimitive;
+    (usd * rust_decimal::Decimal::from(1_000_000_u32))
+        .ceil()
+        .to_u64()
+        .unwrap_or(0)
 }
 
 /// `ledger`, charged up to the `consumed_micro` its record holds. Called
@@ -1495,6 +1522,13 @@ impl PodAuthority {
             upstreams: upstreams.clone(),
             dlc: DlcProvisioning::from_labels(&spec.metadata.labels),
             starting,
+            // A federated caller's pod settles to its metered spend when its
+            // binding says so (`settle = "metered"`); decided by the same
+            // authenticated trust domain admission used.
+            settle_metered: matches!(parent, Parent::External(_))
+                && crate::federation_ingress::trust_domain_of(&admission.caller_spiffe_id)
+                    .and_then(|td| loaded.bindings.by_trust_domain(td))
+                    .is_some_and(crate::federation_ingress::CallerBinding::settles_metered),
         };
         // A child that would not survive a restart would be missing from its
         // parent's ledger after one, so it is not issued. Nor is a charge to a
@@ -1731,11 +1765,22 @@ impl PodAuthority {
     /// Retire a pod's certificate and return its budget allocation to the
     /// parent's ledger.
     ///
-    /// Until host-authoritative terminal settlement exists, consume the full
-    /// allocation. Guest-signed spend totals cannot authorize budget credit.
+    /// Consumes the pod's metered spend when its federated binding settles
+    /// `metered` (host-authoritative: what the host charged its own ledger),
+    /// else the full allocation. Guest-signed spend totals cannot authorize
+    /// budget credit.
     /// An unspawned launch uses its owned `Reservation` to refund instead.
     pub async fn release_child(&self, pod_id: Uuid) {
         release(&self.inner, &self.state_dir, pod_id, ReleaseKind::Exited).await;
+    }
+
+    /// Charge `amount` to `pod_id`'s own ledger through the path the broker's
+    /// call charges take ([`SharedBudget::commit`]), for tests of settlement.
+    #[cfg(test)]
+    pub(crate) async fn meter(&self, pod_id: Uuid, amount: rust_decimal::Decimal) -> Result<(), String> {
+        let inner = self.inner.lock().await;
+        let entry = inner.pods.get(&pod_id).ok_or("no such pod")?;
+        entry.ledger.commit(amount, || Ok(()))
     }
 
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart,
@@ -1969,6 +2014,8 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
         starting: crate::host_decide::StartingLabel::Untrusted(
             crate::host_decide::Untrusted::Restored,
         ),
+        // In memory only: a restored pod is charged its whole allocation.
+        settle_metered: false,
     })
 }
 

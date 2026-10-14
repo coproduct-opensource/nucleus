@@ -239,6 +239,10 @@ pub(crate) struct CallerFile {
     /// A `[[compartment]]` of this file the binding's delegations are confined to.
     #[serde(default)]
     compartment: Option<String>,
+    /// What a pod's release charges: `"allocation"` (the default: its whole
+    /// allocation) or `"metered"` (what the host metered into its own ledger).
+    #[serde(default)]
+    settle: Option<String>,
 }
 
 /// One `[[compartment]]` table: an operator-defined ceiling, by name. A binding that names
@@ -327,6 +331,12 @@ pub(crate) struct CallerBinding {
     daily_max_micro: Option<u64>,
     /// The named compartment key every delegation carries, if the binding names one.
     compartment: Option<portcullis::ExtensionOperation>,
+    /// `settle = "metered"`: a pod's release consumes what the host metered
+    /// into its own ledger (brokered call charges; its live children's
+    /// allocations), at most its allocation, so the ceiling and the day count
+    /// what pods spent rather than what they reserved. Default: the whole
+    /// allocation, which also stands for what nothing meters (compute time).
+    settle_metered: bool,
 }
 
 impl std::fmt::Debug for CallerBinding {
@@ -359,6 +369,11 @@ impl CallerBinding {
     /// micro-USD; `None` when the binding sets no daily allowance.
     pub fn daily_max_micro(&self) -> Option<u64> {
         self.daily_max_micro
+    }
+
+    /// Whether a pod admitted under this binding settles to its metered spend.
+    pub fn settles_metered(&self) -> bool {
+        self.settle_metered
     }
 
     /// The SPIFFE ID a validated `sub` maps to, or `None` when the `sub`
@@ -557,6 +572,11 @@ impl CallerBindings {
                         .ok_or_else(|| at("max_cost_usd_per_day must be a non-negative amount"))?,
                 ),
             };
+            let settle_metered = match f.settle.as_deref() {
+                None | Some("allocation") => false,
+                Some("metered") => true,
+                Some(_) => return Err(at("settle must be \"allocation\" or \"metered\"")),
+            };
             bindings.push(CallerBinding {
                 label: f.label.clone(),
                 trust_domain: f.trust_domain.clone(),
@@ -567,6 +587,7 @@ impl CallerBindings {
                 svid_ttl,
                 daily_max_micro,
                 compartment,
+                settle_metered,
             });
         }
         Ok(Self { bindings })
