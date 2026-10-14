@@ -538,10 +538,11 @@ mod tests {
     }
 
     /// Migration through the node's start: an owner-keyed store is declared once, and its
-    /// receipt is in the node's log; a second start declares nothing new.
+    /// receipt is in the node's log; a second start declares nothing new. Program C, C0: the
+    /// store records no owning lineage, so a pod asking for it is refused by name, not bound.
     #[cfg(feature = "local-driver")]
     #[test]
-    fn migration_is_receipted_once_across_restarts() {
+    fn migration_is_receipted_once_across_restarts_and_the_store_is_bound_to_no_pod() {
         let mut node = Node::start();
         let tenant = TenantKey::of(OWNER);
         std::fs::DirBuilder::new()
@@ -557,10 +558,17 @@ mod tests {
                 .count()
         };
         assert_eq!(migrated(), 1);
-        let attached = node
+        let refused = node
             .provision(LineageRoot::Known(Uuid::new_v4()), Uuid::new_v4())
+            .err()
             .unwrap();
-        assert_eq!(attached.namespace.split('/').next(), Some("binding"));
+        assert!(
+            refused.to_string().contains("CrossRunMemoryUnavailable")
+                && refused
+                    .to_string()
+                    .contains("records no lineage that owns it"),
+            "{refused}"
+        );
         node.reload();
         assert_eq!(
             node.receipts()
