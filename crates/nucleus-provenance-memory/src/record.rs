@@ -2,6 +2,7 @@
 //! memory object, and its [`MemoryDerivation`] (how it was produced).
 
 use nucleus_lineage::SourceClass;
+use portcullis_core::ConfLevel;
 use portcullis_core::memory::{MemoryAuthority, MemoryLabel, SchemaType};
 use serde::{Deserialize, Serialize};
 
@@ -78,8 +79,81 @@ impl MemoryDerivation {
     }
 }
 
+/// What a record's writer had read when it wrote the record (Program C, C1).
+///
+/// A record's label used to be derived from its derivation alone, so every root was Public
+/// whatever its writer's session had read: a session that read Secret data and then wrote a
+/// literal it selected wrote a Public record. A stamped record's confidentiality is joined with
+/// its writer's **floor** — the session's floating confidentiality (everything it HAS READ, a
+/// ratchet, not its clearance), captured by the writer's mediator under the same lock that
+/// decided the write. The workload never chooses it.
+///
+/// The stamp travels with the record: it is in every commit's head hash beside the label, and,
+/// like the label, outside the content hash, so one value derived one way is one record however
+/// it is stamped. Replay re-derives the label against the RECORDED floor, never a fresh session.
+///
+/// [`LabelStamp::Unstamped`] is not a floor of Public: it says the writer recorded nothing (a v1
+/// record, a guest that predates the stamp, a migrated store), so its confidentiality is
+/// unknown, and [`MemoryRecord::effective_confidentiality`] treats it as Secret. Its label is
+/// still re-derived by the rule it was written under (derivation alone), so a journal written
+/// before the stamp existed replays unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum LabelStamp {
+    /// The writer recorded no dependency context. Unknown, so Secret wherever it is delivered.
+    Unstamped,
+    /// The writer's session floor when it wrote: joined into the record's confidentiality.
+    Stamped {
+        /// The session's floating confidentiality at the write.
+        writer_floor: ConfLevel,
+    },
+}
+
+impl LabelStamp {
+    /// What a record that carries no `stamp` field is: written before stamps existed, or by a
+    /// writer that does not record them.
+    pub const fn unstamped() -> Self {
+        LabelStamp::Unstamped
+    }
+
+    /// Whether this is [`LabelStamp::Unstamped`] (the serialized form omits it, so an
+    /// unstamped record encodes exactly as it did before stamps existed).
+    pub const fn is_unstamped(&self) -> bool {
+        matches!(self, LabelStamp::Unstamped)
+    }
+
+    /// The floor joined into a derived label's confidentiality at admission: the recorded
+    /// writer floor, or Public for an unstamped record, whose label was derived from its
+    /// derivation alone and is re-derived the same way.
+    pub const fn admission_floor(&self) -> ConfLevel {
+        match self {
+            LabelStamp::Unstamped => ConfLevel::Public,
+            LabelStamp::Stamped { writer_floor } => *writer_floor,
+        }
+    }
+
+    /// The merge of two stamps on one content hash, fail closed: two floors join; an unstamped
+    /// copy is unknown, so its merge with a stamped one is stamped Secret (never the stamped
+    /// copy's lower floor, which would read an unknown record as known). A lattice join:
+    /// idempotent, commutative, associative.
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (LabelStamp::Unstamped, LabelStamp::Unstamped) => LabelStamp::Unstamped,
+            (LabelStamp::Stamped { writer_floor: a }, LabelStamp::Stamped { writer_floor: b }) => {
+                LabelStamp::Stamped {
+                    writer_floor: a.max(b),
+                }
+            }
+            (LabelStamp::Unstamped, LabelStamp::Stamped { .. })
+            | (LabelStamp::Stamped { .. }, LabelStamp::Unstamped) => LabelStamp::Stamped {
+                writer_floor: ConfLevel::Secret,
+            },
+        }
+    }
+}
+
 /// The identity-bearing fields of a record — everything the [`ContentHash`]
-/// commits to. **Excludes** `label`/`authority`: those are *derived* from the
+/// commits to. **Excludes** `label`/`stamp`/`authority`: those are *derived* from the
 /// derivation + parents and *validated* on admission, so a mislabeled record with
 /// otherwise-identical content collides on the same key and is caught fail-closed
 /// by [`crate::ProvenanceMemorySet`] rather than silently coexisting.
@@ -102,6 +176,13 @@ pub struct MemoryRecord {
     pub label: MemoryLabel,
     /// How this value was produced — the recompute claim.
     pub derivation: MemoryDerivation,
+    /// What the writer had read (Program C, C1). Omitted from the encoding when unstamped, so
+    /// a record written before stamps existed encodes, and hashes into its commit, unchanged.
+    #[serde(
+        default = "LabelStamp::unstamped",
+        skip_serializing_if = "LabelStamp::is_unstamped"
+    )]
+    pub stamp: LabelStamp,
 }
 
 impl MemoryRecord {
@@ -119,7 +200,45 @@ impl MemoryRecord {
             schema,
             label,
             derivation,
+            stamp: LabelStamp::Unstamped,
         }
+    }
+
+    /// This record carrying `stamp`. The label is not changed: admission requires it to equal
+    /// the derivation's label joined with the stamp's floor
+    /// ([`crate::recompute::derive_label`]).
+    pub fn with_stamp(mut self, stamp: LabelStamp) -> Self {
+        self.stamp = stamp;
+        self
+    }
+
+    /// The confidentiality this record is delivered and viewed at: its label's for a stamped
+    /// record, and Secret for an unstamped one, whose writer recorded nothing of what it had
+    /// read (unknown is the top, never the bottom).
+    pub fn effective_confidentiality(&self) -> ConfLevel {
+        match self.stamp {
+            LabelStamp::Unstamped => ConfLevel::Secret,
+            LabelStamp::Stamped { .. } => self.label.conf_level(),
+        }
+    }
+
+    /// This record as a stamped receiver holds one whose dependencies are unknown (it, or a
+    /// record it cites, is unstamped): stamped Secret, with its confidentiality Secret — what
+    /// [`Self::effective_confidentiality`] says an unstamped record is — and its integrity and
+    /// derivation class as stored. The content hash is unchanged, and the result re-derives
+    /// under [`crate::recompute::verify_admission`] over parents held the same way (a Secret
+    /// floor dominates every parent's confidentiality).
+    pub fn held_secret(&self) -> Self {
+        let mut held = self.clone();
+        held.label = MemoryLabel::from_levels_with_derivation(
+            ConfLevel::Secret,
+            self.label.integ_level(),
+            self.label.derivation,
+        );
+        held.stamp = LabelStamp::Stamped {
+            writer_floor: ConfLevel::Secret,
+        };
+        held
     }
 
     /// Canonical identity bytes: domain-tagged serialization of the

@@ -91,6 +91,7 @@ impl Fixture {
             node_platform: NodePlatform::Unattested {
                 reason: "test node".into(),
             },
+            sandbox_tier: nucleus_ci_verdict::execution::SandboxTier::Driver,
         };
         let receipt = Receipt::sign(
             Session {

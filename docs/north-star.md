@@ -256,15 +256,28 @@ What each status means, and what it deliberately does not:
   `TenantAll-legacy`, the declared, receipted form migration gives a store the
   owner-keyed layout already shared. Lineage, workspace and tenant audiences
   are declared channels between pods, not a confidentiality the runtime
-  withholds. **Cross-run memory is paused** (Program C, C0) until records carry
-  dependency-stamped writer labels (Program C, C1): a record's label is derived
-  from its derivation alone, so a run that read Secret data writes Public
-  records, and no view ceiling can withhold what its label does not say. Until
-  then the node refuses `Workspace`, `TenantAll` and `TenantAll-legacy` policies
-  by name (`CrossRunMemoryUnavailable`) at creation, at bind and at publish, and
-  a `Lineage` policy over a space any of whose policies admits another lineage;
-  a migrated owner-keyed store, which records no owning lineage, is delivered to
-  no run. Lineage audiences keep working. The bind-time `QuotaFullyAllocated`
+  withholds. **Cross-run memory needs dependency-stamped labels** (Program C, C0
+  then C1). The tool-proxy stamps every record it writes with its session's
+  floating confidentiality — what the session had read, read from the discharge
+  term under the flow-graph lock that decided the write and bound into the
+  write's authority by value — and joins it into the record's label, so a run
+  that read Secret data and then writes a literal that read selected writes a
+  Secret record. The stamp is in the commit's head hash, and replay re-derives
+  each label against the floor the record recorded, never a fresh session's. An
+  unstamped record (a v1 journal, a migrated store, a guest that predates
+  `GuestCapability::MemoryDependencyStamp`, the pinned 2.7.0 one among them) is
+  Secret wherever it is delivered, and so is anything derived from it: withheld
+  from every view below Secret, held stamped Secret by a stamping run, and never
+  given to a legacy run, which is given only stamped Public records. A space
+  whose every record is stamped (a declared space, which starts empty; a
+  lineage's own space created by a stamping run) refuses an unstamped publish
+  by name (`UnstampedRecords`) and admits `Workspace` and `TenantAll` policies;
+  every other space keeps C0's refusal (`CrossRunMemoryUnavailable` at
+  creation, at bind and at publish, and for a `Lineage` policy over a space any
+  of whose policies admits another lineage), and a migrated owner-keyed store is
+  delivered to no run. Nothing reclassifies a legacy record downward in C1. The
+  floor is the whole session's: implicit flows inside a session are covered only
+  by that ratchet, not tracked per value. The bind-time `QuotaFullyAllocated`
   refusal names no unreserved byte count (it would count Secret bytes). Every delivery is a node-signed receipt kept before the pod is
   handed the bytes; reads of a delivered snapshot are local and are not
   observed. Revoking a space or a policy refuses new mediated operations
@@ -274,6 +287,12 @@ What each status means, and what it deliberately does not:
   base and a keyed conflict on the run's own records remain declared channels.
   Tests: `sibling_runs_share_the_base_and_never_each_others_writes`,
   `a_workspace_policy_is_refused_until_labels_are_stamped`,
+  `a_secret_selected_record_reaches_no_public_view_of_a_stamped_workspace`,
+  `a_secret_selected_record_reaches_no_public_view_over_http_across_a_stamped_workspace`,
+  `a_session_that_read_secret_writes_a_secret_record_that_replays_secret`,
+  `replay_in_a_fresh_session_keeps_the_recorded_floor`,
+  `a_legacy_run_is_given_only_stamped_public_records_and_cannot_publish_unstamped_ones`,
+  `an_unstamped_record_and_what_derives_from_it_are_secret_wherever_delivered`,
   `a_tenant_all_policy_is_refused_at_creation_bind_and_publish`,
   `lineage_policies_still_bind_and_publish_and_never_reach_another_lineage`,
   `a_fully_allocated_refusal_names_no_byte_count`,
@@ -283,7 +302,12 @@ What each status means, and what it deliberately does not:
   `migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_stamped`. This does not
   promote C2: the Lean model of the memory surface (`MemoryContext.lean`) is not
   yet linked to this code, and the mediated propose/publish path through the
-  tool-proxy is M4.
+  tool-proxy is M4. Stamped labels decide what a view is GIVEN; they do not close
+  what a publish verdict says. A Public binding of a stamped workspace still
+  shares one head with Secret publishes (stale base, its success head, keyed
+  conflicts over records it cannot see), which Program C's C3 and C4 address,
+  and none of this says anything of timing, microarchitectural or
+  resource-contention channels.
 
   *History.* The first mechanization landed 2026-08-11. The design
   (`docs/cross-pod-view.md`, after Nickel/OSDI-2018: the view relation is

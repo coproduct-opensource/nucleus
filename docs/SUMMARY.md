@@ -22,6 +22,7 @@
   - [A Command Walk](design/command-walk.md)
   - [Security Architecture](architecture/security.md)
   - [Isolation Levels](architecture/isolation-levels.md)
+  - [Bare tier is insecure](bare-tier-insecure.md)
   - [Landscape and Rationale](architecture/landscape.md)
   - [Threat Model](architecture/threat-model.md)
   - [Acceptance Tests](architecture/acceptance-tests.md)

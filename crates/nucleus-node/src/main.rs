@@ -123,6 +123,7 @@ mod federation_ingress;
 mod guest_socket;
 mod host_decide;
 mod host_paths;
+mod insecure_mode;
 mod jail_reclaim;
 mod jailer_limits;
 mod launch_resources;
@@ -209,7 +210,9 @@ struct Args {
         default_value = "firecracker"
     )]
     driver: DriverKind,
-    /// Allow the local driver (no VM isolation).
+    /// Allow the local driver (no VM isolation). INSECURE: workloads can read the node's keys,
+    /// so the node refuses every trusted authority and its evidence is marked
+    /// `insecure-shared-uid` and rejected by verifiers. See docs/bare-tier-insecure.md.
     #[cfg(feature = "local-driver")]
     #[arg(long, env = "NUCLEUS_ALLOW_LOCAL_DRIVER", default_value_t = false)]
     allow_local_driver: bool,
@@ -751,6 +754,9 @@ pub(crate) use pod_view::{CreatePodRequest, CreatePodResponse, PodInfo, PodState
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
+    // First (#3461, Program C C0): non-dumpable, so no process at this uid can
+    // open /proc/<node>/environ, mem or fd, or ptrace the node.
+    let _seal = nucleus::seal_runtime().map_err(insecure_mode::seal_failed)?;
     // Install the ring crypto provider for rustls (must be done before any TLS operations)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -782,6 +788,8 @@ async fn main() -> Result<(), ApiError> {
                 .to_string(),
         ));
     }
+    // The bare tier is a declared insecure mode (Program C, C0).
+    let evidence_tier = insecure_mode::start(&args).map_err(ApiError::Driver)?;
     // What #2446 step 3 deleted, refused by name rather than ignored.
     retired_config::refuse(&retired_config::Retired {
         proxy_auth_secret: args.proxy_auth_secret.as_deref(),
@@ -925,8 +933,9 @@ async fn main() -> Result<(), ApiError> {
         .decisions
         .load(host_roots.workspace_root())?
         .map(Arc::new);
-    let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys)
-        .map_err(ApiError::Driver)?;
+    let trust_gate =
+        trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys, evidence_tier)
+            .map_err(ApiError::Driver)?;
     let node_platform = Arc::new(
         node_evidence::NodePlatformSource::start(
             &args.node_evidence,
@@ -1447,6 +1456,7 @@ async fn create_pod_internal(
         run_ends: memory_provisioning::now_unix()
             .saturating_add(spec.spec.timeout_seconds)
             .saturating_add(memory_provisioning::PUBLISH_WINDOW_SECS),
+        writer: memory_provisioning::writer_for(state, requested_memory.is_some()).await,
     };
     let memory = match state.memory.provision(
         requested_memory,
@@ -3278,7 +3288,7 @@ impl NodeService for GrpcService {
         let pod_id_str = req.pod_id;
         let handle = pod_api::grpc_scoped_pod(&self.state, &md, &ext, &pod_id_str).await?;
 
-        let built = pod_receipt::build(&handle, &self.state.authority)
+        let built = pod_receipt::build(&handle, pod_receipt::ReceiptSigner::of(&self.state))
             .await
             .map_err(|e| match e {
                 pod_receipt::ReceiptError::NotExited => Status::failed_precondition(e.to_string()),

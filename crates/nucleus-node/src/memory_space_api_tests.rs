@@ -109,17 +109,24 @@ fn every_memory_route_is_an_operation_and_no_pod_declares_a_space() {
     );
 }
 
-/// Over the real handlers: the tenant root declares a space and a lineage policy, a run is
-/// bound and its branch published, a later run of the lineage is given it, and every step is
-/// receipted in the node's log. A pod cannot declare a space, nor publish a binding it does not
-/// hold, and a publish onto a head that moved is a conflict naming the head. A workspace policy
-/// is refused by name until record labels are dependency-stamped (Program C, C0).
+/// Program C, C1 end to end over the real handlers: the tenant root declares a space (stamped:
+/// it starts empty) and two workspace policies over it, a Secret-ceiling view for team a and a
+/// Public-ceiling view for team b. Run A (team a) writes a literal its session's Secret read
+/// selected — stamped Secret by its proxy — and a Public note, and its branch is published.
+/// Run B, of another lineage under the Public view, is given the Public note and not the Secret
+/// record; run C, of a third lineage under the Secret view, is given both; and a run whose guest
+/// predates the stamp is given only the stamped Public note. Every step is receipted. A pod
+/// cannot declare a space, nor publish a binding it does not hold, and a publish onto a head
+/// that moved is a conflict naming the head.
+///
+/// A-19: treat an unstamped (or Secret) record as Public in `deliverable`, or drop the writer
+/// floor from the label, and run B is given the Secret record.
 #[cfg(feature = "local-driver")]
 #[test]
-fn the_tenant_root_declares_binds_and_publishes_over_http_within_one_lineage() {
+fn a_secret_selected_record_reaches_no_public_view_over_http_across_a_stamped_workspace() {
     crate::memory_binding::tests::in_own_process(
         module_path!(),
-        "the_tenant_root_declares_binds_and_publishes_over_http_within_one_lineage",
+        "a_secret_selected_record_reaches_no_public_view_over_http_across_a_stamped_workspace",
         || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -133,13 +140,13 @@ fn the_tenant_root_declares_binds_and_publishes_over_http_within_one_lineage() {
 #[cfg(feature = "local-driver")]
 async fn declares_binds_and_publishes_over_http() {
     use crate::memory_provisioning::{LineageRoot, MemoryArgs, Subject};
-    use crate::memory_space::PodLabels;
+    use crate::memory_space::{MemoryWriter, PodLabels};
     use axum::body::Body;
     use axum::http::{Method, Request, StatusCode};
     use nucleus_provenance_memory::{
-        ContentHash, Epoch, JournalLocation, MAX_JOURNAL_BYTES, MemoryDerivation, MemoryRecord,
-        Patch, PublishedJournal, PublisherBinding, SchemaType, SourceClass, StoreInvariants,
-        TransformRegistry, read_unlocked, recompute::derive_label,
+        ConfLevel, ContentHash, Epoch, JournalLocation, LabelStamp, MAX_JOURNAL_BYTES,
+        MemoryDerivation, MemoryRecord, Patch, PublishedJournal, PublisherBinding, SchemaType,
+        SourceClass, StoreInvariants, TransformRegistry, read_unlocked, recompute::derive_label,
     };
     use std::os::unix::fs::PermissionsExt;
     use tower::ServiceExt;
@@ -207,35 +214,28 @@ async fn declares_binds_and_publishes_over_http() {
     .await;
     assert_eq!(status, StatusCode::OK, "{created}");
 
-    let workspace = r#"{"audience":{"kind":"workspace","selector":{"team":"a"}},"mode":"read_propose","view":{"schema":["string"],"ceiling":"secret"},"may_publish":true,"allocation_bytes":65536,"expiry":{"kind":"until_revoked"},"authority":{"kind":"tenant_root"}}"#;
-    let (status, refused) = call(
-        Method::POST,
-        "/v1/memory/spaces/notes/policies".into(),
-        CallerScope::NodeWide,
-        workspace.into(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
-    assert!(
-        refused.to_string().contains("CrossRunMemoryUnavailable"),
-        "{refused}"
-    );
-    let lineage = Uuid::new_v4();
-    let policy = workspace.replace(
-        r#"{"kind":"workspace","selector":{"team":"a"}}"#,
-        &format!(r#"{{"kind":"lineage","root":"{lineage}"}}"#),
-    );
-    let (status, created) = call(
-        Method::POST,
-        "/v1/memory/spaces/notes/policies".into(),
-        CallerScope::NodeWide,
-        policy,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{created}");
+    let team_a = r#"{"audience":{"kind":"workspace","selector":{"team":"a"}},"mode":"read_propose","view":{"schema":["string"],"ceiling":"secret"},"may_publish":true,"allocation_bytes":65536,"expiry":{"kind":"until_revoked"},"authority":{"kind":"tenant_root"}}"#;
+    let team_b = team_a
+        .replace(r#""team":"a""#, r#""team":"b""#)
+        .replace(r#""ceiling":"secret""#, r#""ceiling":"public""#);
+    for policy in [team_a.to_owned(), team_b] {
+        let (status, created) = call(
+            Method::POST,
+            "/v1/memory/spaces/notes/policies".into(),
+            CallerScope::NodeWide,
+            policy,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a workspace policy over a stamped space: {created}"
+        );
+    }
 
-    // A run of the lineage, created by the tenant root.
+    // Runs of three lineages, created by the tenant root.
     let team = std::collections::BTreeMap::from([("team".to_owned(), "a".to_owned())]);
+    let other_team = std::collections::BTreeMap::from([("team".to_owned(), "b".to_owned())]);
     let mut spec: nucleus_spec::PodSpec = serde_json::from_str(
         r#"{"apiVersion":"nucleus/v1","kind":"Pod","spec":{"policy":{"type":"profile","name":"default"}}}"#,
     )
@@ -243,7 +243,7 @@ async fn declares_binds_and_publishes_over_http() {
     spec.metadata
         .labels
         .insert("nucleus.io/memory-namespace".into(), "notes".into());
-    let bind = || {
+    let bind = |labels: &std::collections::BTreeMap<String, String>, writer: MemoryWriter| {
         let request = state
             .memory
             .request(
@@ -259,9 +259,10 @@ async fn declares_binds_and_publishes_over_http() {
                 &Subject {
                     pod: Uuid::new_v4(),
                     owner: root,
-                    lineage: LineageRoot::Known(lineage),
-                    labels: PodLabels::TenantAuthenticated(&team),
+                    lineage: LineageRoot::Known(Uuid::new_v4()),
+                    labels: PodLabels::TenantAuthenticated(labels),
                     run_ends: crate::memory_provisioning::now_unix() + 3600,
+                    writer,
                 },
                 &state.state_dir,
                 &state.authority,
@@ -270,7 +271,7 @@ async fn declares_binds_and_publishes_over_http() {
             .unwrap()
             .unwrap()
     };
-    let run_a = bind();
+    let run_a = bind(&team, MemoryWriter::Stamping);
     let (binding, namespace, directory) = {
         let registry = state.memory.registry().unwrap().lock().unwrap();
         let held = registry.bindings.values().next().unwrap();
@@ -285,12 +286,20 @@ async fn declares_binds_and_publishes_over_http() {
         )
     };
     let _ = run_a;
-    let derivation = MemoryDerivation::RawIngest {
-        source_class: SourceClass::Web,
-        source_hash: ContentHash::of_canonical_bytes(b"from run a"),
+    // What run A's proxy writes: each record stamped with its session's floor when written.
+    let stamped = |value: &str, floor: ConfLevel| {
+        let derivation = MemoryDerivation::RawIngest {
+            source_class: SourceClass::Web,
+            source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
+        };
+        let stamp = LabelStamp::Stamped {
+            writer_floor: floor,
+        };
+        let label = derive_label(&derivation, &[], stamp);
+        MemoryRecord::new(value, SchemaType::String, label, derivation).with_stamp(stamp)
     };
-    let label = derive_label(&derivation, &[]);
-    let note = MemoryRecord::new("from run a", SchemaType::String, label, derivation);
+    let note = stamped("from run a", ConfLevel::Public);
+    let selected = stamped("deploy-window: tuesday", ConfLevel::Secret);
     {
         let transforms = TransformRegistry::new();
         let loc = JournalLocation::new(&directory.join("memory.jsonl"), &namespace).unwrap();
@@ -298,7 +307,7 @@ async fn declares_binds_and_publishes_over_http() {
         let head = branch.head().unwrap();
         branch
             .publish(
-                &Patch::new(head, vec![note.clone()]),
+                &Patch::new(head, vec![note.clone(), selected.clone()]),
                 head,
                 PublisherBinding::operator_direct(),
                 Epoch::PRE_BINDING,
@@ -346,17 +355,33 @@ async fn declares_binds_and_publishes_over_http() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "{conflict}");
 
-    let run_b = bind();
-    let given = read_unlocked(
-        &JournalLocation::new(&run_b.directory.join("memory.jsonl"), &run_b.namespace).unwrap(),
-        &Anyone,
-        &TransformRegistry::new(),
-    )
-    .unwrap();
+    let given = |run: &crate::memory_provisioning::Attachment| {
+        let mut records = read_unlocked(
+            &JournalLocation::new(&run.directory.join("memory.jsonl"), &run.namespace).unwrap(),
+            &Anyone,
+            &TransformRegistry::new(),
+        )
+        .unwrap();
+        records.sort_by(|a, b| a.value.cmp(&b.value));
+        records
+    };
+    let run_b = bind(&other_team, MemoryWriter::Stamping);
     assert_eq!(
-        given,
+        given(&run_b),
+        vec![note.clone()],
+        "run B's Public view is given the Public note and not the Secret-selected record"
+    );
+    let run_c = bind(&team, MemoryWriter::Stamping);
+    assert_eq!(
+        given(&run_c),
+        vec![selected.clone(), note.clone()],
+        "run C's Secret view is given both, the Secret one still Secret"
+    );
+    let legacy = bind(&team, MemoryWriter::Legacy);
+    assert_eq!(
+        given(&legacy),
         vec![note],
-        "run B of the lineage is given what run A published"
+        "a guest that predates the stamp is given only stamped Public records"
     );
 
     let log = std::fs::read_to_string(crate::memory_flow::flow_log_path(&state.state_dir)).unwrap();
