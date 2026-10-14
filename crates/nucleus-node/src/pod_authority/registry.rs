@@ -81,13 +81,21 @@ pub(crate) enum ReloadOutcome {
     Refused(String),
 }
 
-#[derive(Default)]
+/// What the latest reload attempt refused (ADR 0007 A-1: "could not read the
+/// file" is its own case, not an absent digest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Refused {
+    /// The file could not be read at all.
+    Unreadable,
+    /// The file with this digest was read and did not validate.
+    File([u8; 32]),
+}
+
 struct Status {
     /// Digest of the file in force.
     active: Option<[u8; 32]>,
-    /// The latest attempt that failed, if the latest attempt failed: the
-    /// digest of what was refused, `None` when the file could not be read.
-    refused: Option<Option<[u8; 32]>>,
+    /// `Some` when the latest attempt failed.
+    refused: Option<Refused>,
 }
 
 /// The reloadable registry. See the module docs.
@@ -111,13 +119,24 @@ pub(crate) struct Registry {
 /// refused" is a worse way to learn about a typo than "the node will not
 /// start". On a RELOAD the registry in force stays in force instead.
 pub(crate) fn load(path: &Path) -> Result<(UpstreamRegistry, [u8; 32]), String> {
+    let bytes = std::fs::read(path).map_err(|e| at(path, &e))?;
+    Ok((parse(path, &bytes)?, digest_of(&bytes)))
+}
+
+fn at(path: &Path, e: &dyn std::fmt::Display) -> String {
+    format!("upstream registry {}: {e}", path.display())
+}
+
+fn digest_of(bytes: &[u8]) -> [u8; 32] {
     use sha2::Digest as _;
-    let at = |e: &dyn std::fmt::Display| format!("upstream registry {}: {e}", path.display());
-    let bytes = std::fs::read(path).map_err(|e| at(&e))?;
-    let digest: [u8; 32] = sha2::Sha256::digest(&bytes).into();
-    let text = std::str::from_utf8(&bytes).map_err(|e| at(&e))?;
-    let registry = UpstreamRegistry::from_toml_str(text).map_err(|e| at(&e))?;
-    Ok((registry, digest))
+    sha2::Sha256::digest(bytes).into()
+}
+
+/// The bytes [`load`] read, parsed: one reading is digested and validated, so
+/// the digest reported for a file is always the digest of what was judged.
+fn parse(path: &Path, bytes: &[u8]) -> Result<UpstreamRegistry, String> {
+    let text = std::str::from_utf8(bytes).map_err(|e| at(path, &e))?;
+    UpstreamRegistry::from_toml_str(text).map_err(|e| at(path, &e))
 }
 
 /// The start-up refusal for a federated upstream on a node with no issuer,
@@ -167,20 +186,31 @@ impl Registry {
             return ReloadOutcome::NotConfigured;
         };
         let _one = self.reloading.lock().unwrap_or_else(|p| p.into_inner());
-        let digest = file_digest(path).ok();
+        // One read: what is digested is what is validated.
+        let read = std::fs::read(path);
+        let seen = match &read {
+            Ok(bytes) => Refused::File(digest_of(bytes)),
+            Err(_) => Refused::Unreadable,
+        };
         if !force {
             let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
-            if digest.is_some() && status.active == digest {
+            if let Refused::File(digest) = seen
+                && status.active == Some(digest)
+            {
                 // The file is the one in force (perhaps put back after a bad
                 // edit): nothing on disk is refused any more.
                 status.refused = None;
                 return ReloadOutcome::Unchanged;
             }
-            if status.refused == Some(digest) {
+            if status.refused == Some(seen) {
                 return ReloadOutcome::Unchanged;
             }
         }
-        match self.validate(path, has_issuer) {
+        let judged = match read {
+            Ok(bytes) => self.validate(path, &bytes, has_issuer),
+            Err(e) => Err(at(path, &e)),
+        };
+        match judged {
             Ok((loaded, digest)) => {
                 *self.current.write().unwrap_or_else(|p| p.into_inner()) = Arc::new(loaded);
                 let mut status = self.status.lock().unwrap_or_else(|p| p.into_inner());
@@ -197,7 +227,7 @@ impl Registry {
                 self.status
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .refused = Some(digest);
+                    .refused = Some(seen);
                 tracing::error!(
                     path = %path.display(),
                     error = %why,
@@ -208,8 +238,13 @@ impl Registry {
         }
     }
 
-    fn validate(&self, path: &Path, has_issuer: bool) -> Result<(Loaded, [u8; 32]), String> {
-        let (registry, digest) = load(path)?;
+    fn validate(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        has_issuer: bool,
+    ) -> Result<(Loaded, [u8; 32]), String> {
+        let (registry, digest) = (parse(path, bytes)?, digest_of(bytes));
         if registry.has_federated() && !has_issuer {
             return Err(issuer_required());
         }
@@ -249,16 +284,14 @@ impl Registry {
             "active_sha256": status.active.map(hex::encode),
             "reload": if status.refused.is_some() { "refused" } else { "ok" },
         });
-        if let Some(refused) = status.refused {
-            v["refused_sha256"] = serde_json::json!(refused.map(hex::encode));
+        match status.refused {
+            None => {}
+            // `null`: there was no file to digest.
+            Some(Refused::Unreadable) => v["refused_sha256"] = serde_json::Value::Null,
+            Some(Refused::File(digest)) => v["refused_sha256"] = hex::encode(digest).into(),
         }
         v
     }
-}
-
-fn file_digest(path: &Path) -> std::io::Result<[u8; 32]> {
-    use sha2::Digest as _;
-    Ok(sha2::Sha256::digest(std::fs::read(path)?).into())
 }
 
 /// Reload on SIGHUP, and on a digest change seen every `poll` (none when
@@ -271,7 +304,7 @@ pub(crate) fn spawn(authority: Arc<super::PodAuthority>, poll: Duration) {
             Ok(mut hup) => {
                 tokio::spawn(async move {
                     while hup.recv().await.is_some() {
-                        on_signal.reload_registry(true);
+                        reload_off_runtime(&on_signal, true).await;
                     }
                 });
             }
@@ -286,8 +319,17 @@ pub(crate) fn spawn(authority: Arc<super::PodAuthority>, poll: Duration) {
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 tick.tick().await;
-                authority.reload_registry(false);
+                reload_off_runtime(&authority, false).await;
             }
         });
+    }
+}
+
+/// A reload reads a file and builds validators: blocking work, kept off the
+/// runtime's worker threads. The outcome is logged by the reload itself.
+async fn reload_off_runtime(authority: &Arc<super::PodAuthority>, force: bool) {
+    let authority = Arc::clone(authority);
+    if let Err(e) = tokio::task::spawn_blocking(move || authority.reload_registry(force)).await {
+        tracing::error!(error = %e, "upstream registry reload task failed; the registry in force is unchanged");
     }
 }

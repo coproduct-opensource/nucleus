@@ -34,8 +34,10 @@ pub(super) fn utc_today() -> DayClock {
     Arc::new(|| chrono::Utc::now().date_naive())
 }
 
-/// Per-day charges for one binding's ledger.
-#[derive(Debug, Default)]
+/// Per-day charges for one binding's ledger. No `Default` (ADR 0007 B-1): an
+/// empty record is "nothing charged on any day", which only a new ledger may
+/// start from, so it is named ([`Days::none_charged`]) rather than implied.
+#[derive(Debug)]
 pub(super) struct Days {
     charged: BTreeMap<NaiveDate, u64>,
     /// Pods whose charge could still be credited back: admitted, not yet
@@ -45,6 +47,14 @@ pub(super) struct Days {
 }
 
 impl Days {
+    /// A ledger no admission has charged yet.
+    pub(super) fn none_charged() -> Self {
+        Self {
+            charged: BTreeMap::new(),
+            live: HashMap::new(),
+        }
+    }
+
     /// What `day` has been charged, in micro-USD.
     pub(super) fn charged(&self, day: NaiveDate) -> u64 {
         self.charged.get(&day).copied().unwrap_or(0)

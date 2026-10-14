@@ -661,7 +661,7 @@ impl ChainLedger {
         Self {
             ledger,
             retired: Vec::new(),
-            days: daily::Days::default(),
+            days: daily::Days::none_charged(),
         }
     }
 }
@@ -2143,11 +2143,16 @@ fn charge_day(
 ) -> Result<(), ApiError> {
     // Read back from the ledger so the day is charged exactly what it reserved,
     // with the ledger's rounding.
-    let micro = chain
-        .ledger
-        .core()
-        .allocation_of(child_id.as_u128())
-        .unwrap_or(0);
+    // No allocation to read is "could not look", never "charged nothing"
+    // (ADR 0007 A-1): refused, with whatever was reserved handed back.
+    let Some(micro) = chain.ledger.core().allocation_of(child_id.as_u128()) else {
+        let _ = chain
+            .ledger
+            .release(child_id.as_u128(), rust_decimal::Decimal::ZERO);
+        return Err(ledger_denial(
+            "the reservation to charge to today's allowance is not in the ledger",
+        ));
+    };
     let spent = chain.days.charged(today);
     if let Some(limit) = binding.daily_max_micro()
         && spent.saturating_add(micro) > limit

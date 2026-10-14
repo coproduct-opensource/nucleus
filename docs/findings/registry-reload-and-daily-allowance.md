@@ -104,15 +104,7 @@ binds, as before. Driven red with the day check removed:
 a_spent_day_refuses_and_the_next_utc_day_admits ... FAILED
 ```
 
-## 7. Verifying nucleus-node on macOS: two things that fail on `main` and are not this change
-
-- `cargo test -p nucleus-node` does not compile on macOS:
-  `firecracker_config_tests.rs::the_write_extent_is_the_widest_writable_drive_or_the_memory` calls
-  `FirecrackerConfig::without_devices`, which is `#[cfg(target_os = "linux")]`. The local runs
-  behind this note gated that one test to Linux in the working tree only. It is not part of the
-  change.
-- `cargo clippy -p nucleus-node -- -D warnings` fails on macOS in `crates/nucleus/src/hardening/landlock.rs`
-  (Linux-only items, dead on macOS) before it reaches nucleus-node.
-
-Both pass on Linux, which is where CI runs them. The Linux run for this change is recorded in its
-pull request.
+The day lives in the binding's LEDGER, not in the registry, so a reload (which rebuilds every
+binding) cannot reset it, and it is persisted with the ledger at each admission, so a restart
+cannot either. `a_spent_day_stays_spent_across_a_reload_and_a_restart` drives both, and goes red
+when the restored ledger drops its `days`, or when a reload's re-ceiling resets them.

@@ -548,3 +548,102 @@ async fn a_raised_ceiling_applies_across_a_restart_too() {
         .expect("the registry's raised ceiling binds after a restart");
     assert_eq!(live.ledger_file()["ledger"]["consumed_micro"], 5_000_000);
 }
+
+/// A token exchanged before a reload is refused after it, through the node's own exchange:
+/// the reloaded binding shares its predecessor's replay cache. Without that, every token
+/// exchanged before a reload had one more use after it.
+#[tokio::test]
+async fn a_token_exchanged_before_a_reload_is_refused_by_the_reloaded_binding() {
+    let (from, until) = open_window();
+    let live = Live::new(&ceiling(5, from, until), None);
+    let sub = "spent-before-reload";
+    let bearer = format!("Bearer {}", live.a.token(sub, now()));
+    let present = || {
+        exchange(
+            &live.st,
+            Some(&bearer),
+            &body(&csr_for(&principal_a(sub)), None),
+            now(),
+        )
+    };
+    present().await.expect("first use");
+    assert!(present().await.is_err(), "a replay before any reload");
+
+    live.rewrite(&ceiling(6, from, until), None, false);
+    assert_eq!(
+        live.st.authority.reload_registry(false),
+        ReloadOutcome::Applied
+    );
+    assert_eq!(
+        present().await.err(),
+        Some(Refusal::Unauthorized("token refused by its binding")),
+        "the reloaded binding still refuses the spent token"
+    );
+    // Control: the reloaded binding admits a token it has not seen.
+    live.exchange()
+        .await
+        .expect("a fresh token after the reload");
+}
+
+/// A spent day stays spent across a reload (which rebuilds every binding) and across a
+/// restart (which rebuilds every ledger from disk): neither is a way to a second day's
+/// allowance inside one UTC day. Raising the allowance in the file is the way, and the
+/// reload alone applies it.
+#[tokio::test]
+async fn a_spent_day_stays_spent_across_a_reload_and_a_restart() {
+    let (from, until) = open_window();
+    let live = Live::new(&ceiling(100, from, until), Some("2"));
+    let who = live.exchange().await.unwrap();
+    live.admit(&who, 2).await.unwrap();
+    assert!(refused_with(&live.admit(&who, 1).await, "daily allowance"));
+
+    // A reload that changes the binding (its ceiling) but not its allowance.
+    live.rewrite(&ceiling(101, from, until), Some("2"), false);
+    assert_eq!(
+        live.st.authority.reload_registry(false),
+        ReloadOutcome::Applied
+    );
+    let who = live.exchange().await.unwrap();
+    let refused = live.admit(&who, 1).await;
+    assert!(
+        refused_with(&refused, "daily allowance"),
+        "after a reload: {refused:?}"
+    );
+
+    // A restart over the same state directory, on the same UTC day.
+    let args = AuthorityArgs {
+        root_minter_spiffe_id: None,
+        cert_trust_anchors: Vec::new(),
+        max_children_per_pod: 8,
+        upstreams: Some(live.path.clone()),
+        upstreams_poll_secs: 0,
+        federation_issuer: None,
+        ingress: FederationArgs::default(),
+        approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
+    };
+    let restarted = PodAuthority::new(
+        &args,
+        NODE_TD,
+        live.dir.path(),
+        &crate::pod_authority::NO_TPM,
+    )
+    .unwrap();
+    restarted.restore_from_disk().await;
+    let refused = restarted
+        .admit_kept(&who, &pod_spec(Vec::new(), 1), uuid::Uuid::new_v4())
+        .await;
+    assert!(
+        refused_with(&refused, "daily allowance"),
+        "after a restart: {refused:?}"
+    );
+
+    // The operator's raise, by reload: today's earlier charge still counts against it.
+    live.rewrite(&ceiling(101, from, until), Some("3"), false);
+    assert_eq!(
+        live.st.authority.reload_registry(false),
+        ReloadOutcome::Applied
+    );
+    let who = live.exchange().await.unwrap();
+    live.admit(&who, 1).await.expect("2 spent of a raised 3");
+    assert!(refused_with(&live.admit(&who, 1).await, "daily allowance"));
+}
