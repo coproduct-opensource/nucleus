@@ -1014,20 +1014,7 @@ impl PermissionLattice {
     /// the obligations.
     #[must_use]
     pub fn checksum(&self) -> String {
-        let mut hasher = Sha256::new();
-        // Field-tagged and length-prefixed: without the tags, moving a byte from
-        // one field to the next would leave the digest unchanged.
-        for (tag, part) in self.digest_parts(&self.effective_obligations()) {
-            hasher.update(tag.as_bytes());
-            hasher.update(b"\x00");
-            hasher.update((part.len() as u64).to_be_bytes());
-            hasher.update(part.as_bytes());
-        }
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        Self::hash_parts(self.digest_parts(&self.effective_obligations()))
     }
 
     /// The checksum of what a policy COMPUTES, with the validity window left out.
@@ -1056,21 +1043,9 @@ impl PermissionLattice {
     /// `autonomous` is determined by the levels and the obligations hashed here.
     #[must_use]
     pub fn program_checksum(&self) -> String {
-        let mut hasher = Sha256::new();
-        for (tag, part) in self.digest_parts(&self.obligations) {
-            if tag == "time" {
-                continue;
-            }
-            hasher.update(tag.as_bytes());
-            hasher.update(b"\x00");
-            hasher.update((part.len() as u64).to_be_bytes());
-            hasher.update(part.as_bytes());
-        }
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        let mut parts = self.digest_parts(&self.obligations);
+        parts.retain(|(tag, _)| *tag != "time");
+        Self::hash_parts(parts)
     }
 
     /// A digest of the value as stored: the raw `obligations` and the raw
@@ -1078,9 +1053,16 @@ impl PermissionLattice {
     /// equality nor a cross-version identity — it answers only "is this the
     /// exact value", for [`EffectivePermissions`]' seal.
     fn raw_checksum(&self) -> String {
-        let mut hasher = Sha256::new();
         let mut parts = self.digest_parts(&self.obligations);
         parts.push(("autonomous", Self::encode(&self.autonomous)));
+        Self::hash_parts(parts)
+    }
+
+    /// SHA-256 over tagged parts, as hex. Field-tagged and length-prefixed:
+    /// without the tags, moving a byte from one field to the next would leave
+    /// the digest unchanged. The one hashing of every lattice digest above.
+    fn hash_parts(parts: Vec<(&'static str, String)>) -> String {
+        let mut hasher = Sha256::new();
         for (tag, part) in parts {
             hasher.update(tag.as_bytes());
             hasher.update(b"\x00");
