@@ -484,23 +484,9 @@ impl PermissionLattice {
         use Operation::*;
         Self::assemble(
             "Supervised permission set",
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::LowRisk,
-                edit_files: CapabilityLevel::LowRisk,
-                run_bash: CapabilityLevel::Never,
-                glob_search: CapabilityLevel::Always,
-                grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::LowRisk,
-                web_fetch: CapabilityLevel::LowRisk,
-                git_commit: CapabilityLevel::LowRisk,
-                git_push: CapabilityLevel::Never,
-                create_pr: CapabilityLevel::LowRisk,
-                manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Never,
-                #[cfg(not(kani))]
-                extensions: std::collections::BTreeMap::new(),
-            },
+            // read, glob, grep `always`; write, edit, web, commit, PR `low_risk`;
+            // shell, push, pods, sub-agents `never`.
+            CapabilityLattice::default(),
             &[
                 WriteFiles, EditFiles, WebSearch, WebFetch, GitCommit, CreatePr,
             ],
