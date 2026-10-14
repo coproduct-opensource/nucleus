@@ -871,6 +871,57 @@ fn a_read_binding_cannot_publish_and_its_writes_stay_in_its_copy() {
     );
 }
 
+/// `set` with the stored confidentiality of the record valued `value` replaced by `level`: the
+/// shape of a set read back from a store, whose labels are whatever was persisted.
+fn relabelled(set: &ProvenanceMemorySet, value: &str, level: &str) -> ProvenanceMemorySet {
+    let mut json = serde_json::to_value(set).unwrap();
+    let records = json["records"].as_object_mut().unwrap();
+    let mut found = 0;
+    for record in records.values_mut() {
+        if record["value"] == value {
+            record["label"]["confidentiality"] = serde_json::Value::from(level);
+            found += 1;
+        }
+    }
+    assert_eq!(found, 1, "the record to relabel is in the set");
+    serde_json::from_value(json).unwrap()
+}
+
+/// The view's ceiling is decided on each record's STORED confidentiality: a Secret or Internal
+/// record is withheld from a Public-ceiling view, as is a record derived from it, and an
+/// Internal ceiling sees the Internal record and not the Secret one. (Every record admitted by
+/// provenance replay today is labelled Public — `derive_label` assigns no other confidentiality —
+/// so this is driven over a set read back with the labels a store holds.)
+#[test]
+fn a_view_ceiling_withholds_records_by_their_stored_confidentiality() {
+    let secret = raw("secret note");
+    let internal = raw("internal note");
+    let child = derived("summary of the secret", &secret);
+    let mut set = ProvenanceMemorySet::new();
+    for record in [raw("public note"), secret, internal, child] {
+        assert!(
+            set.verified_admit(&record, &TransformRegistry::new())
+                .is_match()
+        );
+    }
+    let set = relabelled(&set, "secret note", "secret");
+    let set = relabelled(&set, "summary of the secret", "secret");
+    let set = relabelled(&set, "internal note", "internal");
+    let view = |ceiling| ViewSpec {
+        schema: SchemaAtom::ALL.into_iter().collect(),
+        ceiling,
+    };
+    assert_eq!(
+        values(&deliverable(&set, &view(Ceiling::Public))),
+        values(&[raw("public note")])
+    );
+    assert_eq!(
+        values(&deliverable(&set, &view(Ceiling::Internal))),
+        values(&[raw("public note"), raw("internal note")])
+    );
+    assert_eq!(deliverable(&set, &view(Ceiling::Secret)).len(), 4);
+}
+
 /// A view gives a run only the schema classes it names, and withholds a record derived from a
 /// withheld one (it could not be re-derived without it). A publish writing outside the view is
 /// refused by name.
