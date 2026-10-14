@@ -428,7 +428,7 @@ jobs:
           # [profile.mutants] in Cargo.toml. Neither changes WHICH tests a
           # mutant must fail -- same test binaries, same proptest cases.
           # shellcheck disable=SC2086
-          timeout -s KILL 150 cargo mutants $MUTANTS_SCOPE $IN_DIFF \
+          cargo mutants $MUTANTS_SCOPE $IN_DIFF \
             --shard "$SHARD" --sharding round-robin \
             --profile mutants --jobs "$MUTANTS_JOBS" \
             --timeout 120 \
