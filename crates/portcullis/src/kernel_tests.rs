@@ -21,6 +21,20 @@ fn trusted_term_input(name: &str) -> crate::ActionInput {
     )
 }
 
+/// Every permitted operation declared autonomous: what these fixtures meant,
+/// before consent was explicit, by listing no obligations.
+fn autonomous_builder(
+    caps: crate::capability::CapabilityLattice,
+) -> crate::PermissionLatticeBuilder {
+    PermissionLattice::builder().capabilities_with(caps, crate::ConsentMode::Autonomous)
+}
+
+/// [`autonomous_builder`], built.
+fn autonomous_lattice(caps: crate::capability::CapabilityLattice) -> PermissionLattice {
+    let b = autonomous_builder(caps);
+    b.build().expect("every permitted op is declared")
+}
+
 #[test]
 fn test_basic_allow() {
     let perms = PermissionLattice::safe_pr_fixer();
@@ -621,29 +635,23 @@ fn test_pre_post_permission_hashes_stable() {
 fn test_doc_editor_kernel_session() {
     // doc-editor: read all, write docs, no network, no bash, no push
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("doc-editor-like")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::LowRisk,
-                edit_files: CapabilityLevel::LowRisk,
-                run_bash: CapabilityLevel::Never,
-                glob_search: CapabilityLevel::Always,
-                grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::Never,
-                web_fetch: CapabilityLevel::Never,
-                git_commit: CapabilityLevel::Never,
-                git_push: CapabilityLevel::Never,
-                create_pr: CapabilityLevel::Never,
-                manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Never,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::LowRisk,
+        edit_files: CapabilityLevel::LowRisk,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("doc-editor-like");
 
     let mut kernel = Kernel::new(perms);
 
@@ -724,29 +732,23 @@ fn test_exposure_starts_empty() {
 fn test_exposure_accumulates_on_allow() {
     // Use a profile that allows reads and web_fetch without uninhabitable_state obligations
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("read-and-fetch")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Never,
-                edit_files: CapabilityLevel::Never,
-                run_bash: CapabilityLevel::Never,
-                glob_search: CapabilityLevel::Never,
-                grep_search: CapabilityLevel::Never,
-                web_search: CapabilityLevel::Never,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Never,
-                git_push: CapabilityLevel::Never,
-                create_pr: CapabilityLevel::Never,
-                manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Never,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("read-and-fetch");
 
     let mut kernel = Kernel::new(perms);
 
@@ -786,29 +788,23 @@ fn test_exposure_does_not_accumulate_on_deny() {
 #[test]
 fn test_exposure_monotone_never_decreases() {
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("all-read")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Always,
-                edit_files: CapabilityLevel::Never,
-                run_bash: CapabilityLevel::Never,
-                glob_search: CapabilityLevel::Never,
-                grep_search: CapabilityLevel::Never,
-                web_search: CapabilityLevel::Never,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Never,
-                git_push: CapabilityLevel::Never,
-                create_pr: CapabilityLevel::Never,
-                manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Never,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("all-read");
 
     let mut kernel = Kernel::new(perms);
 
@@ -831,29 +827,23 @@ fn test_dynamic_exposure_gate_blocks_exfil() {
     // No uninhabitable_state obligations in the lattice because we construct one
     // without running normalize().
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Always,
-                edit_files: CapabilityLevel::Always,
-                run_bash: CapabilityLevel::Always,
-                glob_search: CapabilityLevel::Always,
-                grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Always,
-                git_push: CapabilityLevel::Always,
-                create_pr: CapabilityLevel::Always,
-                manage_pods: CapabilityLevel::Always,
-                spawn_agent: CapabilityLevel::Always,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
     // Clear any obligations the builder might have added
     perms.declare_all(crate::ConsentMode::Autonomous);
@@ -887,29 +877,23 @@ fn test_dynamic_exposure_gate_blocks_exfil() {
 #[test]
 fn test_dynamic_exposure_gate_with_pre_approval() {
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Always,
-                edit_files: CapabilityLevel::Always,
-                run_bash: CapabilityLevel::Always,
-                glob_search: CapabilityLevel::Always,
-                grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Always,
-                git_push: CapabilityLevel::Always,
-                create_pr: CapabilityLevel::Always,
-                manage_pods: CapabilityLevel::Always,
-                spawn_agent: CapabilityLevel::Always,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
     perms.declare_all(crate::ConsentMode::Autonomous);
 
@@ -938,29 +922,23 @@ fn test_dynamic_exposure_gate_with_pre_approval() {
 #[test]
 fn test_dynamic_exposure_gate_now_gates_local_sinks() {
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Always,
-                edit_files: CapabilityLevel::Always,
-                run_bash: CapabilityLevel::Always,
-                glob_search: CapabilityLevel::Always,
-                grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Always,
-                git_push: CapabilityLevel::Always,
-                create_pr: CapabilityLevel::Always,
-                manage_pods: CapabilityLevel::Always,
-                spawn_agent: CapabilityLevel::Always,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
 
     perms.declare_all(crate::ConsentMode::Autonomous);
 
@@ -987,29 +965,23 @@ fn test_dynamic_exposure_gate_now_gates_local_sinks() {
 #[test]
 fn test_exposure_transition_in_decision_trace() {
     use crate::capability::CapabilityLattice;
-    let perms = PermissionLattice::builder()
-        .description("read-only")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Never,
-                edit_files: CapabilityLevel::Never,
-                run_bash: CapabilityLevel::Never,
-                glob_search: CapabilityLevel::Never,
-                grep_search: CapabilityLevel::Never,
-                web_search: CapabilityLevel::Never,
-                web_fetch: CapabilityLevel::Never,
-                git_commit: CapabilityLevel::Never,
-                git_push: CapabilityLevel::Never,
-                create_pr: CapabilityLevel::Never,
-                manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Never,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Never,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Never,
+        web_fetch: CapabilityLevel::Never,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("read-only");
 
     let mut kernel = Kernel::new(perms);
 
@@ -1044,30 +1016,26 @@ fn test_runbash_dynamic_gate_omnibus() {
     // complete the uninhabitable_state (it projects PrivateData too).
     use crate::capability::CapabilityLattice;
     use crate::CommandLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("bash-and-web")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Never,
-                write_files: CapabilityLevel::Never,
-                edit_files: CapabilityLevel::Never,
-                run_bash: CapabilityLevel::Always,
-                glob_search: CapabilityLevel::Never,
-                grep_search: CapabilityLevel::Never,
-                web_search: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Never,
-                git_push: CapabilityLevel::Never,
-                create_pr: CapabilityLevel::Never,
-                manage_pods: CapabilityLevel::Never,
-                spawn_agent: CapabilityLevel::Never,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .commands(CommandLattice::permissive())
-        .build()
-        .expect("consent is declared");
+    let mut perms = autonomous_builder(CapabilityLattice {
+        read_files: CapabilityLevel::Never,
+        write_files: CapabilityLevel::Never,
+        edit_files: CapabilityLevel::Never,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Never,
+        grep_search: CapabilityLevel::Never,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Never,
+        git_push: CapabilityLevel::Never,
+        create_pr: CapabilityLevel::Never,
+        manage_pods: CapabilityLevel::Never,
+        spawn_agent: CapabilityLevel::Never,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .description("bash-and-web")
+    .commands(CommandLattice::permissive())
+    .build()
+    .expect("consent is declared");
 
     perms.declare_all(crate::ConsentMode::Autonomous);
 
@@ -2011,29 +1979,23 @@ fn causal_decide_key_test_write_depending_on_adversarial_denied() {
 fn causal_decide_exposure_still_tracked_for_audit() {
     // #654: ExposureTracker is still updated for audit/reporting.
     use crate::capability::CapabilityLattice;
-    let mut perms = PermissionLattice::builder()
-        .description("everything-allowed")
-        .capabilities_with(
-            CapabilityLattice {
-                read_files: CapabilityLevel::Always,
-                write_files: CapabilityLevel::Always,
-                edit_files: CapabilityLevel::Always,
-                run_bash: CapabilityLevel::Always,
-                glob_search: CapabilityLevel::Always,
-                grep_search: CapabilityLevel::Always,
-                web_search: CapabilityLevel::Always,
-                web_fetch: CapabilityLevel::Always,
-                git_commit: CapabilityLevel::Always,
-                git_push: CapabilityLevel::Always,
-                create_pr: CapabilityLevel::Always,
-                manage_pods: CapabilityLevel::Always,
-                spawn_agent: CapabilityLevel::Always,
-                extensions: std::collections::BTreeMap::new(),
-            },
-            crate::ConsentMode::Autonomous,
-        )
-        .build()
-        .expect("consent is declared");
+    let mut perms = autonomous_lattice(CapabilityLattice {
+        read_files: CapabilityLevel::Always,
+        write_files: CapabilityLevel::Always,
+        edit_files: CapabilityLevel::Always,
+        run_bash: CapabilityLevel::Always,
+        glob_search: CapabilityLevel::Always,
+        grep_search: CapabilityLevel::Always,
+        web_search: CapabilityLevel::Always,
+        web_fetch: CapabilityLevel::Always,
+        git_commit: CapabilityLevel::Always,
+        git_push: CapabilityLevel::Always,
+        create_pr: CapabilityLevel::Always,
+        manage_pods: CapabilityLevel::Always,
+        spawn_agent: CapabilityLevel::Always,
+        extensions: std::collections::BTreeMap::new(),
+    })
+    .with_description("everything-allowed");
     perms.declare_all(crate::ConsentMode::Autonomous);
 
     let mut kernel = Kernel::new(perms);

@@ -981,3 +981,79 @@ mod program_checksum_tests {
         );
     }
 }
+
+#[test]
+fn the_autonomous_getter_returns_the_declared_set() {
+    let l = PermissionLattice::supervised();
+    let declared: Vec<Operation> = l.autonomous().approvals.iter().copied().collect();
+    assert_eq!(
+        declared,
+        vec![
+            Operation::ReadFiles,
+            Operation::GlobSearch,
+            Operation::GrepSearch
+        ],
+        "supervised() declares exactly reads and searches autonomous"
+    );
+}
+
+#[test]
+fn add_obligations_moves_an_autonomous_op_to_obligated() {
+    let mut l = PermissionLattice::codegen();
+    assert!(l.autonomous().requires(Operation::RunBash));
+    assert!(!l.requires_approval(Operation::RunBash));
+
+    l.add_obligations(&Obligations::for_operation(Operation::RunBash));
+
+    assert!(l.requires_approval(Operation::RunBash), "now obligated");
+    assert!(
+        !l.autonomous().requires(Operation::RunBash),
+        "and no longer autonomous: moved, not duplicated"
+    );
+    assert_eq!(l.check_consent(), Ok(()), "still declared exactly once");
+}
+
+/// The join law at its boundary: a side whose level is `Never` says nothing
+/// about consent, even if it carries a (stale) autonomous entry for the op, so
+/// the permitting side's obligation carries over. Checked in both argument
+/// orders, so each side's `> Never` test is exercised.
+#[test]
+fn join_takes_consent_only_from_a_side_that_permits_the_op() {
+    let op = Operation::WebFetch;
+    // Forbids web_fetch, yet declares it autonomous: only `> Never` may decide.
+    let mut forbids = PermissionLattice::restrictive();
+    assert_eq!(forbids.capabilities.level_for(op), CapabilityLevel::Never);
+    forbids.declare(op, crate::ConsentMode::Autonomous);
+    // Permits web_fetch, under approval.
+    let mut permits = PermissionLattice::restrictive();
+    permits.grant(
+        op,
+        CapabilityLevel::LowRisk,
+        crate::ConsentMode::RequiresApproval,
+    );
+
+    for (j, order) in [
+        (forbids.join(&permits), "forbids ∨ permits"),
+        (permits.join(&forbids), "permits ∨ forbids"),
+    ] {
+        assert_eq!(j.capabilities.level_for(op), CapabilityLevel::LowRisk);
+        assert!(
+            j.requires_approval(op),
+            "{order}: consent comes from the permitting side only"
+        );
+    }
+
+    // Both permit: obligated only if both obligate, so one autonomous side wins.
+    let mut autonomous = PermissionLattice::restrictive();
+    autonomous.grant(op, CapabilityLevel::LowRisk, crate::ConsentMode::Autonomous);
+    assert!(!permits.join(&autonomous).requires_approval(op));
+    assert!(!autonomous.join(&permits).requires_approval(op));
+
+    // Neither permits: the join declares nothing for the op either way.
+    let a = PermissionLattice::restrictive();
+    let b = PermissionLattice::restrictive();
+    for j in [a.join(&b), b.join(&a)] {
+        assert!(!j.obligations.requires(op), "no obligation invented");
+        assert!(!j.autonomous().requires(op), "no autonomy invented");
+    }
+}
