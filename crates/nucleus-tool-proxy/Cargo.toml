@@ -90,6 +90,8 @@ portcullis = { path = "../portcullis", features = ["serde", "spec", "crypto", "d
 nucleus-ifc-kernel = { path = "../nucleus-ifc-kernel", version = "1.0.0" }
 nucleus-permission-market = { path = "../nucleus-permission-market" }
 nucleus-provenance-memory = { path = "../nucleus-provenance-memory" }
+# Owner decisions: the one verifier that mints a SignedDecision (owner_decision.rs).
+nucleus-signed-decision = { path = "../nucleus-signed-decision" }
 # Sealed effect home (B5): the agent NET-EGRESS effect (`NetEffect::fetch`, the
 # real reqwest HTTP send) lives here behind the `_proof`-gated, PolicyEnforced
 # API. `net` pulls the reqwest HTTP stack into the sealed home; the tool-proxy

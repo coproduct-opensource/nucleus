@@ -255,6 +255,7 @@ impl Run {
             Arc::new(crate::PodHandle {
                 id: p,
                 execution_deadline: crate::lifecycle::execution_deadline(&spec).unwrap(),
+                manifest_hash: crate::delivered_spec::fixture_hash(&spec),
                 spec,
                 created_at: 1_757_000_000,
                 log_path: dir.path().join("pod.log"),

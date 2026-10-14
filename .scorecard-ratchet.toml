@@ -93,9 +93,11 @@
 # 2026-10-08: ADR 0016 D5. CaClient's refusing defaults perform no act, so its row
 # is N, not debt: the one undischarged site is paid. Measured on this tree by the
 # scanner: 198/198 = 100.00%, the population and the floor both pinned to it.
+# 2026-10-13 (signed owner decisions): nucleus-signed-decision and the tool-proxy decision
+# routes add 11 bounded sites; 209/209.
 floor_bp = 10000
 floor_set = "measurement"
-population_floor = 198
+population_floor = 209
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -266,12 +268,14 @@ population_floor = 278
 # 2026-10-12 (request proofs, merged with the above): nucleus-request-proof parses DPoP
 # proofs from any client before authority is granted and declares all seven from its first
 # commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
-# 2026-10-13 (Program B M1): new crate nucleus-memory-context, the pure kernel that decides
-# what a run may see of shared memory and whether a publish is valid, declares all seven
-# from its first commit. 42 of 99 = 42.42%; the ratio rose, so the floor follows it up.
-floor_bp = 4242
+# 2026-10-13 (signed owner decisions): nucleus-signed-decision verifies bytes from outside the
+# pod and declares all seven from its first commit. 42 of 99 = 42.42%.
+# 2026-10-13 (Program B M1, merged with the above): new crate nucleus-memory-context, the
+# pure kernel that decides what a run may see of shared memory and whether a publish is
+# valid, declares all seven from its first commit. Combined 43 of 100 = 43.00%.
+floor_bp = 4300
 floor_set = "measurement"
-population_floor = 99
+population_floor = 100
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -410,14 +414,16 @@ population_floor = 99
 # and arm() past it arms nothing and fails the launch by name
 # (PeerRefused::ArmExpired, an_arm_used_after_its_window_admits_nobody). 15/22 on its own branch;
 # with the two DPoP rights above (#3385), 17 of 24 = 70.83%.
+# 2026-10-13 (signed owner decisions): SignedDecision enters as an affine right carrying the
+# signed window (valid_from, not_after) that every cite and spend re-checks. 18 of 25 = 72.00%.
 # 2026-10-13 (Program B M1): two new affine rights in nucleus-memory-context, each bounded
 # from its first commit. AdmittedOp (one admitted mediated memory op) carries the epoch
 # and not_after it was admitted under; ValidCandidate (a whole-candidate-validated
 # publish) carries the generation it was validated against, and History::commit refuses
-# it unless that is still the head. 19 of 26 = 73.07%.
-floor_bp = 7307
+# it unless that is still the head. Combined with SignedDecision above, 20 of 27 = 74.07%.
+floor_bp = 7407
 floor_set = "measurement"
-population_floor = 26
+population_floor = 27
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -640,9 +646,12 @@ population_floor = 23
 # created and rotated them, and five undischarged #[allow]s went with it (147 -> 142). As
 # with #3419, the ratio rises because the denominator shrank, not because anything was
 # discharged; pinned at the measurement. 37/142 = 26.05%.
-floor_bp = 2605
+# 2026-10-13 (#3433, C2 census, merged after #3437): the NodeState census builds its list
+# one cfg-carrying push at a time under a reasoned #[expect] of vec_init_then_push.
+# 38/143 = 26.57%; both pins follow the tree.
+floor_bp = 2657
 floor_set = "measurement"
-population_floor = 142
+population_floor = 143
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
@@ -664,6 +673,8 @@ population_floor = 142
 # escalate, each Checked on an authority of its own (signature, token, certificate chain).
 # 2026-09-30, merging main: #3038 split declassify into Kernel::verify_declassification and
 # FlowGraph::apply_verified, so its OWN_AUTHORITY row names verify_declassification. 22/25.
-floor_bp = 8800
+# 2026-10-13 (signed owner decisions): /v1/decision/{read,list} each spend a
+# (ReadFiles, AuditLogAppend) Authority before reading. 24/27.
+floor_bp = 8888
 floor_set = "measurement"
-population_floor = 25
+population_floor = 27

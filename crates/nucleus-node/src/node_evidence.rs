@@ -819,6 +819,41 @@ impl crate::federated_credential::PlatformAttestation for NodePlatformSource {
     }
 }
 
+/// The node's TPM as the root of each eval cell's launch (ADR 0016 S3): the
+/// launch quotes it stored, appraised against the same reference, anchors and
+/// binding its epoch evidence is (`OwnAppraisal`, `TpmNode::binding`).
+impl crate::eval_cell::OwnLaunchQuotes for NodePlatformSource {
+    fn appraisal(&self) -> Result<crate::eval_cell::OwnQuoteAppraisal<'_>, String> {
+        match self {
+            Self::Unattested(reason) => Err(format!("this node has no TPM: {reason}")),
+            Self::Tpm(node) => {
+                let own = node.own_appraisal.as_ref().ok_or_else(|| {
+                    "this node's TPM has no reference to appraise its launch quotes against \
+                     (--node-evidence-reference is unset)"
+                        .to_string()
+                })?;
+                Ok(crate::eval_cell::OwnQuoteAppraisal {
+                    binding: node.binding()?,
+                    reference: &own.reference,
+                    anchors: &own.anchors,
+                    now: unix_now()?,
+                })
+            }
+        }
+    }
+
+    fn document(&self, digest: &[u8; 32]) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Unattested(reason) => Err(format!("this node has no TPM: {reason}")),
+            Self::Tpm(node) => {
+                let digest = hex::encode(digest);
+                node.stored(&digest)
+                    .ok_or_else(|| format!("this node holds no launch quote {digest}"))
+            }
+        }
+    }
+}
+
 fn evidence_response(bytes: Vec<u8>) -> Response {
     ([(header::CONTENT_TYPE, "application/json")], bytes).into_response()
 }
@@ -934,6 +969,78 @@ pub(crate) fn routes() -> axum::Router<NodeState> {
         .route("/v1/node/federation-keys", get(federation_keys))
         .route("/v1/node/key-custody", get(key_custody))
         .route("/v1/node/evidence/{digest}", get(by_digest))
+}
+
+/// A node started on the TPM the composition tests name: swtpm at
+/// `NUCLEUS_SWTPM_ADDR`, or the device at `NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE`.
+/// Its own appraisal is configured (an empty-PCR reference, its AK pinned as
+/// the operator would pin it), its executor key is `executor`, and its state
+/// is under `dir`. Shared by every test that needs a real TPM node.
+#[cfg(test)]
+pub(crate) fn tpm_node_for_tests(dir: &Path, executor: [u8; 32]) -> NodePlatformSource {
+    use nucleus_node_evidence::attester::Attester;
+    use nucleus_node_evidence::tpm::AkPublic;
+    use nucleus_node_evidence::{Expect, REFERENCE_PROFILE, ReferenceValues};
+
+    let device = std::env::var("NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE").ok();
+    let endpoint = match &device {
+        Some(path) => TpmEndpoint::Device(path.into()),
+        None => {
+            TpmEndpoint::Socket(std::env::var("NUCLEUS_SWTPM_ADDR").expect("NUCLEUS_SWTPM_ADDR"))
+        }
+    };
+    // The AK the node will quote with, pinned as an operator would. swtpm
+    // serves one connection at a time, so this one is closed first.
+    let pin = {
+        let mut a = Attester::new(
+            endpoint.connect().unwrap(),
+            AkTemplate::DefaultEccP256,
+            default_pcrs(),
+            LogSources::linux(),
+            AkAnchorClaim::None,
+        );
+        let ak = AkPublic::from_tpm2b_public(&a.ak_public().unwrap()).unwrap();
+        hex::encode(ak.spki_sha256())
+    };
+    fn none<T>() -> Expect<T> {
+        Expect::NotChecked("software TPM: no firmware, no IMA".into())
+    }
+    let reference = ReferenceManifest {
+        profile: REFERENCE_PROFILE.into(),
+        tag_id: "swtpm-node".into(),
+        reference_values: ReferenceValues {
+            pcrs: Default::default(),
+            secure_boot: none(),
+            efi_applications: none(),
+            boot_files: none(),
+            kernel_cmdline: none(),
+            ima: none(),
+        },
+    };
+    let reference_path = dir.join("reference.json");
+    std::fs::write(&reference_path, serde_json::to_vec(&reference).unwrap()).unwrap();
+    // A software TPM gets no logs: the host's own event log speaks for the
+    // host's TPM, not this one. A device gets the kernel's.
+    let logs = dir.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let (tpm, software_tpm, anchor, logs) = match endpoint {
+        TpmEndpoint::Device(path) => (Some(path), None, "operator:test-device", None),
+        TpmEndpoint::Socket(addr) => (None, Some(addr), "software-tpm:swtpm-node", Some(logs)),
+    };
+    let args = NodeEvidenceArgs {
+        node_evidence_tpm: tpm,
+        node_evidence_software_tpm: software_tpm,
+        node_evidence_ak_template: "default-ecc".into(),
+        node_evidence_anchor: anchor.into(),
+        node_evidence_epoch_secs: 300,
+        node_evidence_reference: Some(reference_path),
+        node_evidence_ak_pin: Some(pin),
+        node_evidence_logs: logs,
+        allow_federation_key_in_file: false,
+        allow_node_keys_in_file: false,
+        public: Default::default(),
+    };
+    NodePlatformSource::start(&args, dir, executor, false).unwrap()
 }
 
 #[cfg(test)]
@@ -1334,73 +1441,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     #[ignore = "needs a running swtpm at NUCLEUS_SWTPM_ADDR, or NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE"]
     async fn a_tpm_node_quotes_each_launch_and_the_quote_roots_it() {
-        use nucleus_node_evidence::attester::Attester;
-        use nucleus_node_evidence::tpm::AkPublic;
-        use nucleus_node_evidence::{Expect, REFERENCE_PROFILE, ReferenceValues};
         use std::io::Write as _;
         use tower::ServiceExt as _;
 
         let device = std::env::var("NUCLEUS_LAUNCH_QUOTE_TPM_DEVICE").ok();
-        let endpoint = match &device {
-            Some(path) => TpmEndpoint::Device(path.into()),
-            None => TpmEndpoint::Socket(
-                std::env::var("NUCLEUS_SWTPM_ADDR").expect("NUCLEUS_SWTPM_ADDR"),
-            ),
-        };
-        // The AK the node will quote with, pinned as an operator would. swtpm
-        // serves one connection at a time, so this one is closed first.
-        let pin = {
-            let mut a = Attester::new(
-                endpoint.connect().unwrap(),
-                AkTemplate::DefaultEccP256,
-                default_pcrs(),
-                LogSources::linux(),
-                AkAnchorClaim::None,
-            );
-            let ak = AkPublic::from_tpm2b_public(&a.ak_public().unwrap()).unwrap();
-            hex::encode(ak.spki_sha256())
-        };
         let dir = tempfile::tempdir().unwrap();
-        fn none<T>() -> Expect<T> {
-            Expect::NotChecked("software TPM: no firmware, no IMA".into())
-        }
-        let reference = ReferenceManifest {
-            profile: REFERENCE_PROFILE.into(),
-            tag_id: "swtpm-node".into(),
-            reference_values: ReferenceValues {
-                pcrs: Default::default(),
-                secure_boot: none(),
-                efi_applications: none(),
-                boot_files: none(),
-                kernel_cmdline: none(),
-                ima: none(),
-            },
-        };
-        let reference_path = dir.path().join("reference.json");
-        std::fs::write(&reference_path, serde_json::to_vec(&reference).unwrap()).unwrap();
-        // A software TPM gets no logs: the host's own event log speaks for the
-        // host's TPM, not this one. A device gets the kernel's.
-        let logs = dir.path().join("logs");
-        std::fs::create_dir_all(&logs).unwrap();
-        let (tpm, software_tpm, anchor, logs) = match endpoint {
-            TpmEndpoint::Device(path) => (Some(path), None, "operator:test-device", None),
-            TpmEndpoint::Socket(addr) => (None, Some(addr), "software-tpm:swtpm-node", Some(logs)),
-        };
-        let args = NodeEvidenceArgs {
-            node_evidence_tpm: tpm,
-            node_evidence_software_tpm: software_tpm,
-            node_evidence_ak_template: "default-ecc".into(),
-            node_evidence_anchor: anchor.into(),
-            node_evidence_epoch_secs: 300,
-            node_evidence_reference: Some(reference_path),
-            node_evidence_ak_pin: Some(pin),
-            node_evidence_logs: logs,
-            allow_federation_key_in_file: false,
-            allow_node_keys_in_file: false,
-            public: Default::default(),
-        };
         let executor = [0x5e; 32];
-        let source = NodePlatformSource::start(&args, dir.path(), executor, false).unwrap();
+        let source = tpm_node_for_tests(dir.path(), executor);
         let NodePlatformSource::Tpm(node) = &source else {
             panic!("a software TPM node is a TPM node");
         };
@@ -1488,6 +1535,18 @@ mod tests {
             )
             .verify(verified.launch())
             .unwrap();
+            // And the eval-cell boot gate, through this node's own store and appraisal
+            // inputs (ADR 0016 S3).
+            crate::eval_cell::require_verified_launch(
+                nucleus_spec::isolation_profile::IsolationProfile::EvalCell,
+                crate::eval_cell::LaunchIdentity::Issued {
+                    measured: &measured,
+                    leaf_der: leaf,
+                    trust_bundle: manager.trust_bundle(),
+                    quotes: &source,
+                },
+            )
+            .expect("the node's TPM roots the eval cell's launch");
         }
         issue_ms.sort_by(f64::total_cmp);
         eprintln!(

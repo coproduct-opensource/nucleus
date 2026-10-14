@@ -2,7 +2,8 @@
 
 The C2 cross-pod backstop, checked on the **real** guest.
 
-`pod_api::caller_may_manage` is proved against the Lean `PodCrossView` relation
+`pod_api::caller_may_manage` is pinned by an exhaustive parity test to the Lean
+`PodCrossView` relation (a test, not a proof: the predicate is restated in Rust)
 and host-unit-tested, and `scripts/cross-pod-scoped-check.sh` exercises the same
 auth+filter composition KVM-free. What none of that checks is that a **booted**
 pod, calling the scoped `POD_LIST` over its **own real vsock socket**, is served

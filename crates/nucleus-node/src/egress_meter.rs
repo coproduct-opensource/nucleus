@@ -25,14 +25,18 @@
 //! FM-3: no effect without a receipt, and a pod losing its egress is an effect.
 //! The FIRST refusal of each kind — the call that latched the ceiling, or the
 //! first pace refusal in a window — is appended to the pod's `lifecycle.log`
-//! with the dimension and the counts. Repeats are not, so a workload hammering
-//! a latched ledger cannot grow the host's log without bound.
+//! with the dimension and the counts, as an [`EgressRecord`] signed by the
+//! node's root key: the key that signs the pod's receipt (#2905). Repeats are
+//! not, so a workload hammering a latched ledger cannot grow the host's log
+//! without bound.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub mod body;
+pub mod record;
 mod upload;
+pub use record::EgressRecord;
 pub use upload::UploadCharge;
 
 use portcullis::{
@@ -49,27 +53,55 @@ pub struct EgressMeter {
     pod_dir: PathBuf,
     /// The pod, as the record names it.
     pod_id: String,
+    /// Signs the exhaustion record with the node's root key (#2905).
+    signer: crate::pod_authority::EgressRecordSigner,
 }
 
 impl EgressMeter {
-    /// A meter for a pod granted `ceiling`, recording into `pod_dir`.
+    /// A meter for a pod granted `ceiling`, recording into `pod_dir` and
+    /// signing its records with `signer`.
     #[must_use]
-    pub fn new(ceiling: EgressCeiling, pod_dir: PathBuf, pod_id: String) -> Arc<Self> {
+    fn signed(
+        ceiling: EgressCeiling,
+        pod_dir: PathBuf,
+        pod_id: String,
+        signer: crate::pod_authority::EgressRecordSigner,
+    ) -> Arc<Self> {
         Arc::new(Self {
             ledger: Mutex::new(Some(EgressLedger::new(ceiling))),
             pod_dir,
             pod_id,
+            signer,
         })
     }
 
     /// The meter for a pod whose spec is `spec`: its declared
-    /// `network.egress`, or the finite default when it declared none.
+    /// `network.egress`, or the finite default when it declared none. Its
+    /// exhaustion record is signed by the node's root key, through `signer`.
     #[must_use]
-    pub fn for_pod(spec: &nucleus_spec::PodSpec, pod_dir: PathBuf, id: uuid::Uuid) -> Arc<Self> {
-        Self::new(
+    pub fn for_pod(
+        spec: &nucleus_spec::PodSpec,
+        pod_dir: PathBuf,
+        id: uuid::Uuid,
+        signer: crate::pod_authority::EgressRecordSigner,
+    ) -> Arc<Self> {
+        Self::signed(
             nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref()),
             pod_dir,
             id.to_string(),
+            signer,
+        )
+    }
+
+    /// A meter for tests, signing with [`test_authority`]'s key.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new(ceiling: EgressCeiling, pod_dir: PathBuf, pod_id: String) -> Arc<Self> {
+        Self::signed(
+            ceiling,
+            pod_dir,
+            pod_id,
+            test_authority().egress_record_signer(),
         )
     }
 
@@ -147,13 +179,9 @@ impl EgressMeter {
             EgressRefusal::LedgerFault => "egress_ledger_fault",
         };
         tracing::warn!(pod = %self.pod_id, dimension = refusal.dimension(), "{refusal}");
-        crate::lifecycle::write_lifecycle_audit(
-            &self.pod_dir,
-            event,
-            &self.pod_id,
-            &refusal.to_string(),
-        )
-        .await;
+        let now = crate::lifecycle::now_unix();
+        let record = EgressRecord::signed(&self.signer, now, event, &self.pod_id, refusal);
+        crate::lifecycle::write_lifecycle_record(&self.pod_dir, &record).await;
     }
 
     /// Record one host-performed call this meter charged, in the pod's
@@ -224,6 +252,34 @@ impl Drop for EgressCharge<'_> {
     }
 }
 
+/// The node authority every test meter signs with: one per test process, over
+/// a state directory kept for the process's life.
+#[cfg(test)]
+pub(crate) fn test_authority() -> &'static Arc<crate::pod_authority::PodAuthority> {
+    static AUTHORITY: std::sync::OnceLock<Arc<crate::pod_authority::PodAuthority>> =
+        std::sync::OnceLock::new();
+    AUTHORITY.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("tempdir").keep();
+        Arc::new(
+            crate::pod_authority::PodAuthority::new(
+                &crate::pod_authority::AuthorityArgs {
+                    root_minter_spiffe_id: None,
+                    cert_trust_anchors: Vec::new(),
+                    max_children_per_pod: 8,
+                    upstreams: None,
+                    federation_issuer: None,
+                    ingress: Default::default(),
+                    approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
+                },
+                "nucleus.local",
+                &dir,
+                &crate::pod_authority::NO_TPM,
+            )
+            .expect("a test authority"),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,6 +315,69 @@ mod tests {
             "the latch is recorded once, not per refusal: {log}"
         );
         assert!(log.contains("80 of 100 bytes"), "{log}");
+    }
+
+    /// #2905: the exhaustion record is a receipt, not a log line. It carries the node's
+    /// signature and the key that made it, so a reader holding the node's pinned root key can
+    /// tell a record the node wrote from one anybody with write access to the pod directory
+    /// appended.
+    #[tokio::test]
+    async fn the_exhaustion_record_is_signed_by_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = meter(10, dir.path());
+        let _ = m.admit(11, 0).await.err().expect("past the ceiling");
+
+        let log = lifecycle(dir.path());
+        let line = log
+            .lines()
+            .find(|l| l.contains("egress_budget_exhausted"))
+            .unwrap_or_else(|| panic!("the exhaustion is recorded: {log}"));
+        let entry: serde_json::Value = serde_json::from_str(line).expect("one JSON record");
+        for field in ["signature", "signer_pubkey"] {
+            assert!(
+                entry
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|v| !v.is_empty()),
+                "the exhaustion record carries no {field}: {line}"
+            );
+        }
+
+        // The key is the node's root key — the one that signs its pod receipts — and the
+        // reader checks against the key it pinned, not the one the record names.
+        let node_key = test_authority().root_pubkey_hex();
+        let record: EgressRecord = serde_json::from_str(line).expect("an EgressRecord");
+        assert_eq!(record.dimension, "egress.max_bytes");
+        assert!(record.result.contains("0 of 10 bytes"), "{}", record.result);
+        assert!(
+            record.verifies_under(&node_key),
+            "the node's key verifies it"
+        );
+
+        // Every committed field is covered: moving the counts breaks the signature.
+        let mut forged = record.clone();
+        forged.result = forged.result.replace("10 bytes", "10000 bytes");
+        assert!(
+            !forged.verifies_under(&node_key),
+            "a rewritten count verifies"
+        );
+        let mut forged = record.clone();
+        forged.subject = "pod:another".into();
+        assert!(
+            !forged.verifies_under(&node_key),
+            "a re-attributed record verifies"
+        );
+
+        // A record naming some other key is not the node's, whatever it says.
+        assert!(!record.verifies_under(&"00".repeat(32)));
+
+        // Domain-separated from the pod receipt the same key signs: the exhaustion signature
+        // is not a receipt signature over the same bytes.
+        assert!(!crate::pod_authority::verify_pod_receipt(
+            &node_key,
+            &record.preimage(),
+            &record.signature
+        ));
     }
 
     #[tokio::test]

@@ -3,7 +3,6 @@
 /// Admitted services and the original lifetime carried into container launch.
 /// Waiting for a driver slot must not start a fresh execution timeout.
 pub(crate) struct Inputs<'a> {
-    pub raw_yaml: Option<&'a str>,
     pub audit: Option<&'a crate::audit_sink::credentials::AuditGrant>,
     pub memory: Option<&'a crate::memory_provisioning::Grant>,
     pub deadline: tokio::time::Instant,

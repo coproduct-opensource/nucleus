@@ -1,0 +1,1040 @@
+{
+  "format": "nucleus/owner-question-batch/v1",
+  "status": "proposed",
+  "signed": false,
+  "spec": "docs/signed-decisions.md",
+  "note": "Unsigned proposals. Nothing here is a decision; a decision exists only as a verified OwnerDecision (signed-decisions.md section 3.3).",
+  "questions": [
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "1",
+      "question_sha256": "c009f5b3933a34eeddba2e91d95c168071bdf4d322257e373a0920af51cc6069",
+      "option_sha256": {
+        "a": "fe10d7c0c479677aa9dc0bcf79a31066fa9a9a9be48b3b0bf780b7b680a0c809",
+        "b": "8317be9663a1a2946d5027219f880f05054475b87e0f0537d23c4125d9f8b160",
+        "c": "29011b7dfebba0aa5edf6115c42ab4ff549d251c3cea6241f081713f773aa81f"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-ck-kernel-claim",
+        "question": "The constitutional kernel is documented as part of the runtime but runs only as a CI check. Which way do we close the gap?",
+        "context": [
+          "Item \"#5\" of the claims list (ck-admit.yml calls the in-repo gate \"most-paranoid #5\"). ck-kernel is invoked only by `cargo xtask policy-gate` in `.github/workflows/ck-admit.yml`, in `GateMode::Preflight`: monotonicity and `may_not_modify`, signatures skipped. `GateMode::Admit` (signed witness and trust roots) is a roadmap item.",
+          "No runtime crate depends on ck-kernel; only `crates/xtask` does. The `Constitutional Gate (in-repo)` context is not in `ci/required-checks.txt`.",
+          "The docs place it in the runtime or describe an external gate: README.md:58, docs/integrations.md:19, docs/reviews/adversarial-buyer.md:5, docs/verified-claims.md:355, docs/notes/north-star-hn.md:1."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/blob/main/.github/workflows/ck-admit.yml",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/ck-kernel/src/gate.rs",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/README.md#L58",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/docs/integrations.md#L19"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Wire ck-kernel into the runtime: the node or proxy policy loader runs `gate::decide` on every PolicyManifest amendment it loads.",
+            "cost": "L",
+            "risk": "A new runtime decider for a manifest the runtime does not read today; new failure modes at pod start."
+          },
+          {
+            "id": "b",
+            "does": "Narrow the five claims to what is true: a CI admission check on PolicyManifest.toml amendments, in preflight mode.",
+            "cost": "S",
+            "risk": "Withdraws a headline pillar from the README."
+          },
+          {
+            "id": "c",
+            "does": "Narrow the claims as in (b), and switch CI to `GateMode::Admit` with trust roots committed to the repository; make the context required.",
+            "cost": "M",
+            "risk": "Needs a signing key and a witness producer, plus one key ceremony. A required check that has never run in Admit mode must first be driven red (A-19)."
+          }
+        ],
+        "recommended": "c",
+        "recommended_why": "The claim becomes true where it already runs, and the check becomes one that can actually refuse (signatures enforced).",
+        "proposed_scope": {
+          "refs": [],
+          "paths": [
+            "README.md",
+            "docs/**",
+            ".github/workflows/ck-admit.yml",
+            "crates/ck-kernel/**",
+            "ci/required-checks.txt"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "2",
+      "question_sha256": "a5db93b15c6b2e223ef7c5ddd2ac8798f5873449c6793ea27caf48fb45b62f75",
+      "option_sha256": {
+        "a": "4ca50259431cb4484877569972b42ef2fea1497eb68a7fb76f5dd461e4af6a42",
+        "b": "04b8fc98859a07b399a58d20392cbe3387d07474d6618a51b0adb01ee15c4803",
+        "c": "794c5fb776f00eac9c9dc55e22d78052546576f569c46b096ee9f2fc6c41e146"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-app-hosting-claim",
+        "question": "Pods are egress-only, but the node is described as a kubelet analogue. Do we build ingress or narrow the claim?",
+        "context": [
+          "Item \"#7\" of the claims list. `NetworkSpec` (crates/nucleus-spec/src/lib.rs:416-449) has only egress fields: allow, deny, dns_allow, url_allow, mime_allow, max_response_bytes, egress. It is `deny_unknown_fields`, so an `ingress` key is already refused, as an unknown field.",
+          "Default-deny sets INPUT, OUTPUT and FORWARD to DROP in the pod netns (crates/nucleus-node/src/net.rs:532-534).",
+          "\"kubelet analogue\": crates/nucleus-node/Cargo.toml:7 and README.md:464."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/nucleus-spec/src/lib.rs#L416-L449",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/nucleus-node/src/net.rs#L532-L534",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/README.md#L464"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Build ingress: an IngressSpec, port publishing through the node, and an ADR on inbound to an agent sandbox.",
+            "cost": "L, plus an ADR",
+            "risk": "A new attack surface that inverts the containment story (inbound reaches a pod holding credentials)."
+          },
+          {
+            "id": "b",
+            "does": "Narrow the claim: \"pod runtime for agent workloads, egress-only, no inbound\" in README.md:464 and the Cargo description.",
+            "cost": "S",
+            "risk": "None found. It describes what is built."
+          },
+          {
+            "id": "c",
+            "does": "Narrow as in (b), and add an `IngressSpec` stub that is refused by name at admission.",
+            "cost": "S-M",
+            "risk": "Schema surface for a feature that does not exist. `deny_unknown_fields` already refuses the key, so the stub only improves the error text."
+          }
+        ],
+        "recommended": "b",
+        "recommended_why": "The claim matches the code. (c) adds schema for a better error message on something already refused.",
+        "proposed_scope": {
+          "refs": [],
+          "paths": [
+            "README.md",
+            "crates/nucleus-node/Cargo.toml",
+            "docs/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3a",
+      "question_sha256": "5d1bae81c70ff8afaff563ed151e43f0d9708c1938191227c0dec15748a8ff0c",
+      "option_sha256": {
+        "a": "71c48a78858ffc8b7649a7de7c19fe14d63c6b4fdc1ee04d52c7c2f795baa52c",
+        "b": "634c1265a6889c76ab13195f0854ab33cd77a5114d90c64cf8456deb5ffd3281",
+        "c": "5914bc6ae194a213845b6852e3c8d081aee7154a428a980e6adf5c4dcb834a94"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3216-image-reserved-paths",
+        "question": "Ratify the 2026-10-06 comment decision on #3216 (image import reserved paths)?",
+        "context": [
+          "`reserved_guest_paths()` in crates/nucleus-cli/src/image.rs is a provisional copy. It misses the `/usr/local/bin/nucleus-` prefix, `/run/`, `/tmp/`, `/work/`, `/dev/`, `/proc/`, `/sys/` and `/cache/`, and still lists the removed `guest-net.sh`.",
+          "A strict mapping refuses every common base image: debian, node, ubuntu and alpine all ship `/run/lock`. Nothing merges an imported rootfs with the guest layer yet.",
+          "An \"Owner decision (2026-10-06): approved\" comment exists. It was posted on the account the agents share, so it is unverified (docs/signed-decisions.md section 1)."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3216"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Ratify as written: drop and report the contents of must-be-empty directories, refuse `nucleus-*` name-prefix collisions, derive ReservedPath from guest_layout, and delete the provisional copy.",
+            "cost": "M",
+            "risk": "Dropping contents silently changes an image. It is mitigated by the report, and the directories are mounted over at boot anyway."
+          },
+          {
+            "id": "b",
+            "does": "Refuse every collision, including the contents of must-be-empty directories.",
+            "cost": "M",
+            "risk": "Refuses every common base image, so import is unusable in practice."
+          },
+          {
+            "id": "c",
+            "does": "Defer until a product step merges an imported rootfs with the guest layer.",
+            "cost": "none now",
+            "risk": "The two tables for one fact (G-1) persist. The hole opens on the day that step lands."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "It closes the G-1 duplication and the name-prefix hole while keeping common base images importable.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3216"
+          ],
+          "paths": [
+            "crates/nucleus-cli/src/image.rs",
+            "crates/nucleus-oci-rootfs/**",
+            "crates/nucleus-spec/src/guest_layout*"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3b",
+      "question_sha256": "fa141c91a9306c68d77d8c12f052031af912d68930015bd080624a220a9e2e55",
+      "option_sha256": {
+        "a": "67ee9ec4abb1eb89e2eb4559db9560d427f0d6a6d174cfb52d44333ab48784ac",
+        "b": "dd5441ef168951cfc841a7699e346829f9266c85e72c0a8b1fcd970b935c9d9f",
+        "c": "2f08d51a6f48e74d22e704e1d0cb3403ccb1c84058c058e912abdcc66443e0f8"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3219-egress-url-env-input",
+        "question": "How should the runtime-injected `NUCLEUS_EGRESS_<NAME>_URL` stop being an input a verifier must restate?",
+        "context": [
+          "The runtime injects `NUCLEUS_EGRESS_CODING_MODEL_URL=unix:///run/nucleus-door/...`, and `environment_inputs_sha256` binds it. `nucleus-audit prepare-execution` must be given it, or verification fails with `Binding(\"environment_inputs_sha256\")`.",
+          "`NUCLEUS_TOOL_PROXY_URL`, also runtime-injected, is excluded. A third-party verifier has to know an internal spelling the user never set."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3219"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Exclude runtime-injected egress URLs like the tool-proxy URL, and bind the declared upstream names elsewhere in the receipt.",
+            "cost": "S",
+            "risk": "The injected value is no longer bound. A runtime that injected a different socket path would not show in the receipt unless the names binding covers it."
+          },
+          {
+            "id": "b",
+            "does": "Emit the injected set in the admission record, so `prepare-execution` derives it instead of the user restating it (ADR 0007 F).",
+            "cost": "M",
+            "risk": "Changes the admission record and the verifier. nucleus-receipt is wasm-embedded, so if the change reaches it the pin moves."
+          },
+          {
+            "id": "c",
+            "does": "Leave it, and document the spelling for verifiers.",
+            "cost": "S",
+            "risk": "Every third-party verifier keeps restating a runtime internal."
+          }
+        ],
+        "recommended": "b",
+        "recommended_why": "It keeps the value bound and removes the restating, which is the stronger option.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3219"
+          ],
+          "paths": [
+            "crates/nucleus-node/**",
+            "crates/nucleus-audit/**",
+            "crates/nucleus-receipt/**",
+            "crates/nucleus-verifier-service/embedded-wasm.pins"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3c",
+      "question_sha256": "adfec355b2be9ba61d6d2c88470676f94cd8940d17148c1674665b0bbd879148",
+      "option_sha256": {
+        "a": "1bcb7c8c45ba8965769b940d70ab3c2c736eace5a8f9bf3c9146f59f993c2b3d",
+        "b": "2877278c24001e2b38e20ceac1a7ac30c6250f73495e3894b99a38578389d3d3",
+        "c": "d2a6a2f619edd5ef3d3fc87bac46786b54099391b24cde9efd142ea94bc0d194"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3274-guest-kernel-denylist",
+        "question": "What shape should refusal of a known-bad guest kernel take?",
+        "context": [
+          "The VMM has a floor, a denylist and a four-armed verdict (`nucleus_spec::vmm_version`). The guest kernel has only `Kernel { url, sha256 }`: no version, no denylist, no verdict.",
+          "A node pinned to a later-found-vulnerable kernel boots it and reports Attested, truthfully. Earlier pins shipped with Landlock compiled out, and only a spike (#3148) found it.",
+          "`NodeService::Lockdown` is the existing incident primitive, but no runbook names it as the guest zero-day response."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3274"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Denylist by digest.",
+            "cost": "S",
+            "risk": "Exact, but a rebuild of the same vulnerable source is a new digest and is admitted."
+          },
+          {
+            "id": "b",
+            "does": "Give `Kernel` a version and denylist by version, as the VMM does.",
+            "cost": "M",
+            "risk": "Relies on a version the kernel reports about itself, the weaker evidence `vmm_version` already flags."
+          },
+          {
+            "id": "c",
+            "does": "Denylist by digest, plus a `KernelVerdict` with a NotMeasured/Unknown arm so \"on neither list\" is a stated value (A-1), plus a runbook naming Lockdown. The kernel-only patch channel stays a separate decision.",
+            "cost": "S-M",
+            "risk": "The denylist still needs a nucleus-spec update to propagate. That is faster than a pin bump, but not instant."
+          }
+        ],
+        "recommended": "c",
+        "recommended_why": "Exact refusal now, with no implicit pass, and the response that already works written down.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3274"
+          ],
+          "paths": [
+            "crates/nucleus-spec/src/tier2_artifacts*",
+            "crates/nucleus-node/**",
+            "docs/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3d",
+      "question_sha256": "1b482704ad08fb0ebd2893751a7a8f29794dafeb09dc701482348f35709a36a5",
+      "option_sha256": {
+        "a": "0051b58071d2bfa7768bd7a07c7c8c2d67122bef4e4ad5480ec578eb054568f0",
+        "b": "57138ad4774c304cf49a65ceaeccbc79c9492db2b96093ba65018a5cb0777a02",
+        "c": "07532c42c6336c846dc6b3446bdad7acfb08cdce162b626aaa417597572a7fd2"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3268-journey-push-labels",
+        "question": "Journey pushes carry confidentiality `internal` and derivation `opaque_external` on a public fixture. Derive the labels from declared facts, or keep the defaults and say so?",
+        "context": [
+          "In the v2.5.0 journey, held pushes and PRs carried integrity `adversarial` (correct: model output), confidentiality `internal` and derivation `opaque_external`.",
+          "The workspace is private by default (owner decision D10). The model call was operator-declared. The approval view (#3258/#3259) does not say which labels are defaults."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3268"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Keep the conservative defaults, and have the approval view mark each label as declared or default.",
+            "cost": "S",
+            "risk": "The approver still sees `internal` on public data, but is told why."
+          },
+          {
+            "id": "b",
+            "does": "Derive confidentiality from the repository's declared visibility and derivation from the declared upstream.",
+            "cost": "M",
+            "risk": "Lowers a label from a declaration; whoever can edit that declaration can declassify."
+          },
+          {
+            "id": "c",
+            "does": "Leave it.",
+            "cost": "none",
+            "risk": "The approver can misread what is being declassified."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "Fail-closed labels stay; the misleading part is the display, and that is the cheap fix.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3268",
+            "coproduct-opensource/nucleus#3258",
+            "coproduct-opensource/nucleus#3259"
+          ],
+          "paths": [
+            "crates/nucleus-tool-proxy/**",
+            "crates/nucleus-cli/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3e",
+      "question_sha256": "a5e8a45b2952c9d64e8ec25f86c22111cfde86420d779101b15dfa5c98a791cd",
+      "option_sha256": {
+        "a": "bf92828c1b97e037a872579e98544d066afcd8d7e89063bc6b571295d1c39c09",
+        "b": "467d353a9bb821ff26f0fc0d9299be56d7c4395d310d70306e1455e6c6bc449e",
+        "c": "6a60606c09b66e52092f9c2a3a6d377647bf5aada54a6a3837e87c5dd58168cb"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3188-mcp-auth-conformance",
+        "question": "Does the MCP authorization spec (2026-07-28) apply to nucleus today, and if not, what do we commit to?",
+        "context": [
+          "Both nucleus MCP servers are stdio-only: nucleus-mcp, and the tool-proxy's `mcp` feature (`rmcp` with `transport-io`, `serve(rmcp::transport::stdio())`). The spec's protected-resource metadata and audience binding are for HTTP transports.",
+          "The only streamable-HTTP MCP server in the tree is `ctf-server`, the capture-the-flag demo.",
+          "Item 4 of #3188 (how OAuth composes with the lattice certificate) only matters once an HTTP MCP transport exists."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3188",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/nucleus-tool-proxy/Cargo.toml"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Record it as not applicable to stdio, and make the conformance suite a precondition, written in the docs, for any PR that adds an HTTP MCP transport. Close #3188.",
+            "cost": "S",
+            "risk": "None today. It depends on the precondition being honoured; a test asserting no HTTP MCP transport is compiled in makes it a gate."
+          },
+          {
+            "id": "b",
+            "does": "Build the full conformance now (metadata, audience refusal, no passthrough, certificate composition) ahead of an HTTP transport.",
+            "cost": "M-L",
+            "risk": "Code with no caller; the composition design is speculative."
+          },
+          {
+            "id": "c",
+            "does": "Apply it to ctf-server only.",
+            "cost": "S-M",
+            "risk": "Hardens a demo, not the product."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "The spec governs a transport nucleus does not ship. A gate on adding one is cheaper and exact.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3188"
+          ],
+          "paths": [
+            "docs/**",
+            "crates/nucleus-mcp/**",
+            "crates/nucleus-tool-proxy/Cargo.toml"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3f",
+      "question_sha256": "889b11f90bffa44a4cbe4e33b9f9e32ed332ddaa75de97b6d8503e00d6cce0e0",
+      "option_sha256": {
+        "a": "975e06833e6da592cb977a1ecaeabf04dd3fd4eccbcf2daa838c7d93274f4c06",
+        "b": "d4f91b8ddfb147badee917449c6cf84fa13f3a7bd236f69b9fe52623436eea4b",
+        "c": "e33c10225f4705547048d62347415fe50d82b014b24a9a7d26fccd8537fb9704"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3100-governed-memory-persistence",
+        "question": "Ratify the 2026-10-06 comment decision on #3100 (persist GovernedMemory)?",
+        "context": [
+          "#3184 added a persisted journal (crates/nucleus-tool-proxy/src/memory_store.rs) that stores `ProvenanceMemorySet`, not `GovernedMemory`: two memory models for one fact (G-1).",
+          "The comment decision: keep the journal, make its record type GovernedMemory's labelled entry, add the Firecracker mount and the policy hook, and retire the `nucleus-memory` facade. It is unverified, like 3a.",
+          "`GovernedMemory` lives in portcullis-core, which is wasm-embedded. Load and save must go in the journal, not portcullis-core, or the pin moves. Signed decisions' `todo_write`/`todo_read` build on this."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3100",
+          "https://github.com/coproduct-opensource/nucleus/pull/3184"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Ratify as written, with the constraint that load and save live in the journal (tool-proxy), not portcullis-core.",
+            "cost": "M-L",
+            "risk": "The journal format becomes a stored artifact once shipped (medium reversibility)."
+          },
+          {
+            "id": "b",
+            "does": "Declare `ProvenanceMemorySet` the answer and delete GovernedMemory and nucleus-memory.",
+            "cost": "S-M",
+            "risk": "Loses the authority classes (MayInform/MayNotAuthorize) that make governed todos possible."
+          },
+          {
+            "id": "c",
+            "does": "Defer.",
+            "cost": "none",
+            "risk": "Two memory models remain, and todos have nowhere labelled to live."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "The labels are the point, and they are what lets taint survive a persisted plan.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3100"
+          ],
+          "paths": [
+            "crates/nucleus-tool-proxy/src/memory_store*",
+            "crates/nucleus-node/src/memory_provisioning*",
+            "crates/nucleus-memory/**",
+            "crates/nucleus-spec/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3g",
+      "question_sha256": "2a3f3dc21c6f4566c7c8c975bec22349aff6cd1ef006b23c92513cce90cb0753",
+      "option_sha256": {
+        "a": "00d592e6a27a011d7e7bafeaf822f34c6e883978faa58544d5d3560f033a61a8",
+        "b": "a5c8271856b6c4551d52f41f1d7583956b1fbc86d098ec4a098f0eb2ecd7772f",
+        "c": "3aff24922d3bfcc0ee0824d20c606e9d947b93aa45782f2c30dc8d1b84d1c886"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3256-node-configuration",
+        "question": "In what order do we cut the cost of a correct node deployment (239 `NUCLEUS_*` variables, no node config file, no supported profile)?",
+        "context": [
+          "The node has no configuration file, and `node.env` holds only four secrets. A correct node needs at least nine flags.",
+          "The issue proposes four parts: one typed config and resolver (`NodeSettings`), roots derived from the state dir, a tri-state default sweep, and `nucleus setup --profile attested-firecracker`.",
+          "A-19 in the issue: a node started with only a state dir and a profile is enforcing. Red on main today."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/3256"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "All four as one programme, in issue order.",
+            "cost": "L",
+            "risk": "One long branch on the node's startup path."
+          },
+          {
+            "id": "b",
+            "does": "Profile and roots-from-state-dir first (the biggest operator win), config file later.",
+            "cost": "M, then M",
+            "risk": "The profile becomes another reader of the environment beside doctor and the node, which is the G-1 drift this issue is about."
+          },
+          {
+            "id": "c",
+            "does": "Resolver first (one `NodeSettings` that node and doctor both read), then roots from the state dir, then the profile, then the tri-state sweep, as separate PRs.",
+            "cost": "L total, in four S-M PRs",
+            "risk": "Slower to the visible win (the profile)."
+          }
+        ],
+        "recommended": "c",
+        "recommended_why": "Every later part reads the one decider, so none of them adds a second reader.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3256"
+          ],
+          "paths": [
+            "crates/nucleus-node/**",
+            "crates/nucleus-cli/src/provision*",
+            "crates/nucleus-cli/src/doctor*"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "3h",
+      "question_sha256": "5f3989f4ab7a5c0bd65ac057ac4da93139df23fcfa9346975fb4a43e3bbea0ad",
+      "option_sha256": {
+        "a": "69b7ad35b3a416ae18a35c5e9a16115096b1a594755b417c02aba67e9a83bf96",
+        "b": "5588d2f6400d9a067bafbf416784158863ca70d95da437afd4970e05b7b12dac",
+        "c": "328019a03172f609debfdedb71aa04ca7fb3210c217d9db97297ebf27d2d867d"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n2446-close-shared-secret-epic",
+        "question": "Every step of #2446 has merged. Close it, and what happens to the leftovers?",
+        "context": [
+          "Merged: step 1 (#3290, 10-07), step 2 (#3307, 10-07), 3a (#3328, 10-08), 3b (#3391, 10-13), 3c (#3389, 10-12). The shared-secret tier, the tier-3 token and `tcp-hmac` are deleted and refused by name.",
+          "Left out by #3391: the tool-proxy's legacy approval HMAC (`--approval-secret`, `AuthTier::ApprovalHmacDrand`, which no node provisions), the Keychain `proxy-auth-secret`/`approval-secret` accounts, `scripts/container/smoke-test.sh` (still signs with HMAC), the `check-no-hmac-auth.sh` header, and the Python SDK's `HmacAuth` example.",
+          "Also stale: nucleus-cli's `hmac` dependency (#3425), and README.md:462, which still lists \"HMAC requests\" for the tool-proxy."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/2446",
+          "https://github.com/coproduct-opensource/nucleus/pull/3391",
+          "https://github.com/coproduct-opensource/nucleus/pull/3389"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Close #2446. File one follow-up issue that deletes `ApprovalHmacDrand` and the leftovers above, each refused by name.",
+            "cost": "S to close; follow-up M",
+            "risk": "None found. The epic's acceptance is met; the follow-up carries the tail."
+          },
+          {
+            "id": "b",
+            "does": "Keep #2446 open until every leftover is gone.",
+            "cost": "M",
+            "risk": "An epic open over a tail of cleanups hides that the security property already holds."
+          },
+          {
+            "id": "c",
+            "does": "Close #2446 and keep the approval HMAC tier as out of scope.",
+            "cost": "S",
+            "risk": "A shared-secret approval path remains, reachable by configuration."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "The property holds now. The approval HMAC is a reachable shared-secret path with no provisioner, so it should go too.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#2446"
+          ],
+          "paths": [
+            "crates/nucleus-tool-proxy/src/auth*",
+            "crates/nucleus-cli/**",
+            "scripts/container/smoke-test.sh",
+            "sdks/python/examples/**",
+            "README.md"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "4",
+      "question_sha256": "5a2489672d57d0b4bc24c7a78a90c0c169ec32c0676499f7a0e6d895db1f72f8",
+      "option_sha256": {
+        "a": "09032dfc147ba66fcf4169625d957f8ef89567654545bfbd35a933242fbdd092",
+        "b": "5ada05622ba2c3520977f1915546eba34187c90bd3630ee4b70c308ee6fc3d5d",
+        "c": "469f8db5681eb72b2ffca786217a498c01f95d78f0543527044b81c034eec3b9"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n2519-externality-markup-criterion",
+        "question": "#2519's acceptance criterion \"markup changes price only, never allocation membership\" conflicts with truthful bidding. Restate it?",
+        "context": [
+          "The Rust subtracts the Pigou tax from the bid before allocation (`effective_minus_pigou_micro`, crates/nucleus-econ-kernels/src/vcg_pigou.rs:188-208, saturating). So any markup on that tax changes who wins.",
+          "`pigou_vickrey_truthful` (VcgPigouTruthful.lean) models the tax after allocation, over `Nat`. Saturating subtraction hides that a post-allocation charge can make winning worth less than losing, so a truthful bidder would want to lose. A price-only markup and truthful bidding cannot both hold.",
+          "The other criterion, \"omitting a dimension never lowers a charge\", is unaffected."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/issues/2519",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/nucleus-econ-kernels/src/vcg_pigou.rs#L188-L208",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/nucleus-econ-kernels/lean/Nucleus/Auctions/VcgPigouTruthful.lean"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Restate it as \"the markup never lowers a charge and never refuses a bid\" (it is not a gate, and it may change allocation through price). Keep the fee in the effective bid, and re-derive the Lean theorem over signed integers with the tax inside the allocation.",
+            "cost": "M (Rust S, Lean M)",
+            "risk": "Allocation now depends on the assurance rung. That is the intended incentive, and the doc must say so."
+          },
+          {
+            "id": "b",
+            "does": "Keep \"price only\": charge the markup after allocation and accept the loss of truthfulness (or of individual rationality), stated in the doc.",
+            "cost": "S",
+            "risk": "Bidders gain by shading. The DSIC claim would have to be withdrawn."
+          },
+          {
+            "id": "c",
+            "does": "Drop the markup. Ship only worst-case pricing of missing dimensions.",
+            "cost": "S",
+            "risk": "The assurance rung stays without effect on price."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "It keeps DSIC true and proved, matches what the Rust already does, and removes the Nat saturation that hid the conflict.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#2519"
+          ],
+          "paths": [
+            "crates/nucleus-externality/**",
+            "crates/nucleus-econ-kernels/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "5",
+      "question_sha256": "87f59b08e71af26507de71a887759d252b5ae82cf59eea7eebe0983f099ee2a5",
+      "option_sha256": {
+        "a": "1e07ca6b8cf5d9119e62a9cc32e1eb9b10f5d363f071d76e505101926f3f5101",
+        "b": "da8de218c1cac479011f486187a2b2a2332e5add10dcaf405d13a1096553dc8e",
+        "c": "5822e5aacf279b8934e097641eef16f5aed35b6f896623f182da9d68aa779f3f"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-autonomy-required",
+        "question": "Make `gatehouse/autonomy` a required check on nucleus?",
+        "context": [
+          "It is advisory today: not among nucleus's required contexts. #3411 and #3412 merged on 2026-10-13 with it red (\"Human approval required: 6 / 3 guardrail path(s)\").",
+          "It is evaluated only on `pull_request` events, not `merge_group` (approval-budget.md section 4, \"Not covered: the merge queue\"). A required context that never reports in the queue stalls every entry until the queue timeout."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-private/gatehouse/blob/main/docs/approval-budget.md",
+          "https://github.com/coproduct-opensource/nucleus/pull/3411",
+          "https://github.com/coproduct-opensource/nucleus/pull/3412"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Require it now.",
+            "cost": "S",
+            "risk": "The queue stalls: no merge_group evaluation exists, so every queued PR waits for the timeout."
+          },
+          {
+            "id": "b",
+            "does": "Build the merge_group evaluation first (each PR in a group checked against the group's predecessor, freshness included), then add the context to branch protection and `ci/required-checks.txt`.",
+            "cost": "M",
+            "risk": "Until then, merges still depend on the procedure waiting for the check."
+          },
+          {
+            "id": "c",
+            "does": "Leave it advisory, and rely on the merge procedure.",
+            "cost": "none",
+            "risk": "Guardrail PRs keep merging red, as #3411 and #3412 did."
+          }
+        ],
+        "recommended": "b",
+        "recommended_why": "Required without merge_group evaluation blocks the queue; advisory lets guardrail changes merge unapproved.",
+        "proposed_scope": {
+          "refs": [],
+          "paths": [
+            "ci/required-checks.txt",
+            "crates/gatehouse-controld/src/autonomy.rs",
+            "crates/gatehouse-autonomy/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "6",
+      "question_sha256": "752efbf5fd8e27b245c30b0861a7f4d78e8a3f127d5084ae0c91c77c6ee33a40",
+      "option_sha256": {
+        "a": "b073a509baacb4cfc56aa99fcee801a6576927ea732ef17af8b9e31c364e6751",
+        "b": "b01c0de2a8b110583946706b610d238ac5cab3e189bea29e82e423bc5c7e894c",
+        "c": "4fd2bd816d0778b59b5c482873a3fc1f8a4e4b8c81b2f73598cfc3bbce7f3fd4"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3423-admission-window-semantics",
+        "question": "Confirm the validity-window rule #3423 implements for an Inline policy at admission.",
+        "context": [
+          "The 2026-10-06 comment approved \"[now, min(valid_until, not_after)]\". Under that literal rule a window that closed in the queue is still refused, so the 8 % (#2963) becomes a named refusal rather than a success.",
+          "#3423 implements `[from, until] = [max(now, valid_from), min(from + (valid_until - valid_from), not_after)]`: a pod queued past its original end gets a fresh window of the same length. `not_after` is computed at mint (now + ttl), so it rarely binds, and a spec of any age gets a full window.",
+          "Admission waits measured on #2963: 95 s and 118 s on sampled gate steps, far longer under contention. A gatehouse job times out at 18000 s (5 h)."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/pull/3423",
+          "https://github.com/coproduct-opensource/nucleus/issues/2963"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Confirm #3423's re-stamp: same duration, measured from admission, start never moved earlier, end capped at not_after.",
+            "cost": "none (built)",
+            "risk": "An arbitrarily old spec is admitted with a full window."
+          },
+          {
+            "id": "b",
+            "does": "Use the literal rule `[now, min(valid_until, not_after)]`: a window that closed in the queue is refused by name.",
+            "cost": "S",
+            "risk": "The 8 % of gate runs still fail. They fail with a clear name and are retried."
+          },
+          {
+            "id": "c",
+            "does": "Re-stamp as in (a), but only when `now - valid_from` is within a node-configured maximum queue age (default 6 h). Older specs are refused by name.",
+            "cost": "S on top of #3423",
+            "risk": "A queue wait longer than the cap is refused. The cap must exceed real admission waits; the 5 h gatehouse job timeout is the reference."
+          }
+        ],
+        "recommended": "c",
+        "recommended_why": "It fixes the measured failure and bounds how stale a spec may be, which neither (a) nor (b) does.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3423",
+            "coproduct-opensource/nucleus#2963"
+          ],
+          "paths": [
+            "crates/nucleus-node/src/pod_authority*",
+            "crates/nucleus-node/src/pod_authority/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "6b",
+      "question_sha256": "92ab9aa3cd1efaac8befad2f76bdcfc72bb8e1002d255965c3b37ac30280b780",
+      "option_sha256": {
+        "a": "888615a72b27e1f87a89410185a0467ecc8f2bed94a96cdc0d29a0cbaf5fa111",
+        "b": "98b209449aba1b00fb55ec0d26eac93b1ed69d7873276adb0d9c921064b34bdd",
+        "c": "47de04ee47e30671d812c05034d6925f9ae8c50c3b6dec7a511e2e666ecd4172"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3423-program-digest-change",
+        "question": "#3423 changes every Firecracker pod's `program_digest` once. Accept that?",
+        "context": [
+          "Labels are part of `program_digest`. #3423 makes the `isolation.coproduct.one/enforced` label record the delivered floor (`process=microvm, file=readonly, network=namespaced`) instead of echoing the request (#3220).",
+          "The in-repo predictor (nucleus-cli setup) goes through the same decider and follows. An external predictor pinned to an older nucleus sees one identity change for every Firecracker pod."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/pull/3423",
+          "https://github.com/coproduct-opensource/nucleus/issues/3220"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Accept the one-time change, and say so in the release notes for relying parties.",
+            "cost": "S",
+            "risk": "Relying parties pinned to old predictions must update once."
+          },
+          {
+            "id": "b",
+            "does": "Take the isolation label out of `program_digest`.",
+            "cost": "M",
+            "risk": "The reported posture is no longer bound to the admitted identity. That is a weakening, and it changes the digest anyway."
+          },
+          {
+            "id": "c",
+            "does": "Hold #3423's label change for a later release with other digest-moving changes.",
+            "cost": "S",
+            "risk": "Firecracker pods keep reporting `process=shared, file=unrestricted, network=host`, a false understatement on the record, until then."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "The new label is true and the old one was not. Binding it is the point, and (b) would move the digest anyway.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3423",
+            "coproduct-opensource/nucleus#3220"
+          ],
+          "paths": [
+            "crates/nucleus-node/src/enforcement*",
+            "crates/nucleus-node/src/driver*",
+            "docs/**"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "7",
+      "question_sha256": "b303e42764a06eeaeffe49e4bca0a5b3285cc3c8f4a7a1904100a10bd81abfb8",
+      "option_sha256": {
+        "a": "d483453dd09de2c5b118ae1fabd43ec328022ffc654a3047d25e5cc849390947",
+        "b": "a47a9264c5a060a6d9ccab056d4707e649d2c6cbea85345a30d2e1a6ee507fe4",
+        "c": "c8bbc65a5ead85bd3942fb6a815125dade68ccf878545bcca874c93387bc0ce4"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-n3425-state-dir-mode",
+        "question": "#3425 creates the node's state dir 0700. Merge it before the container-driver broker socket is live-tested under 0700?",
+        "context": [
+          "The state dir is the federation KeyDir, which refuses group or other **write**. 0755 also passes that check, so it is a possible fallback.",
+          "Container pods' broker sockets live under it: `<state-dir>/pods/<id>/broker/...` (`container_broker::host_socket_base`, `lifecycle::pod_dir`), bind-mounted into the container. A runtime that resolves the bind source as a different uid cannot traverse 0700.",
+          "#3425 was validated by unit tests under umask 002 and 022. No live container-broker run under 0700 is recorded."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/pull/3425",
+          "https://github.com/coproduct-opensource/nucleus/blob/main/crates/nucleus-node/src/container_broker.rs#L72"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Keep 0700, and run the container-broker end-to-end once under it before merging.",
+            "cost": "S (one live run)",
+            "risk": "The merge waits on a live run."
+          },
+          {
+            "id": "b",
+            "does": "Keep 0700 and merge now. File the live run as a follow-up.",
+            "cost": "S",
+            "risk": "If traversal breaks, container pods lose credentialed egress until it is fixed."
+          },
+          {
+            "id": "c",
+            "does": "Create it 0755 instead (still passes KeyDir's no-group/other-write check).",
+            "cost": "S",
+            "risk": "The pod directories under it become listable by other local users."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "0700 is the stronger mode, and one live run settles the only open risk before it can strand container pods.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3425"
+          ],
+          "paths": [
+            "crates/nucleus-node/src/state_lock*"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "8",
+      "question_sha256": "06c326391211b0b84b4c27611f43a3b51a3d75d6495fa66fe2d9c1f92d5f4277",
+      "option_sha256": {
+        "a": "fb65c21f700eb427303f3fdc313d76c0770cb118db2d78f008b527cd1ff9499c",
+        "b": "ddef766fa5bc3d857626ab841c6a2cede2c0bd588610fb074124f8ed6bca03bd",
+        "c": "fb62650f318de708fe27c67e33be19faa374826acf4e54e8698cc4b7e813cf33"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-opensource~nucleus",
+        "repo": "coproduct-opensource/nucleus",
+        "question_id": "2026-10-13-clippy-ratchet-token",
+        "question": "Add a `CLIPPY_RATCHET_TOKEN` secret so the clippy ceiling ratchets down automatically (#3411)?",
+        "context": [
+          "Without the token, `cargo xtask clippy-ratchet-down` reports (\"ceiling can drop 345 -> 343\") and publishes nothing. With it, the job pushes a branch, opens a PR and enables auto-merge.",
+          "Every such PR edits `.clippy-ratchet.toml`, which matches the `*-ratchet.toml` guardrail glob. So each one waits for a key until approval-budget proposal 3a (typed monotone auto-pass) lands.",
+          "The workflow header names a fine-grained personal token or an App token, with contents and pull-requests write."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-opensource/nucleus/pull/3411",
+          "https://github.com/coproduct-private/gatehouse/blob/main/docs/approval-budget.md"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Add a fine-grained personal access token as the secret.",
+            "cost": "S",
+            "risk": "A long-lived personal credential with write access in CI, and a daily guardrail PR needing a key until 3a."
+          },
+          {
+            "id": "b",
+            "does": "Mint a GitHub App installation token per run (short-lived, scoped to nucleus contents and pull requests).",
+            "cost": "M",
+            "risk": "A new App permission grant; the PRs still need a key until 3a."
+          },
+          {
+            "id": "c",
+            "does": "Not yet: stay report-only, lower the ceiling by hand when convenient, and revisit with (b) once 3a passes tightening ratchets without a key.",
+            "cost": "none",
+            "risk": "The ceiling lags the code (345 against 343 actual) until then."
+          }
+        ],
+        "recommended": "c",
+        "recommended_why": "Automating now adds a credential and a daily approval for a two-warning gain. (b) is the right shape once 3a removes the approval.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-opensource/nucleus#3411"
+          ],
+          "paths": [
+            ".github/workflows/clippy-ratchet.yml",
+            ".clippy-ratchet.toml"
+          ],
+          "capabilities": []
+        }
+      }
+    },
+    {
+      "format": "nucleus/owner-question/v1",
+      "status": "proposed",
+      "number": "9",
+      "question_sha256": "ee5315f135ffa2b527be7b77b1c18b88306a28ac33a10890efe657441db1ba4e",
+      "option_sha256": {
+        "a": "fa8cda931a5d40ddc1e400439acd600fcab19ae9ef903c19bec4820f5e6817e5",
+        "b": "6deb60282e11e04bd88a887a3a6250413f4333177e4bbbff560c382a17073cb7",
+        "c": "8c71ca41fe809244575491434342d75931fc75e114e46491602b254293c5d604"
+      },
+      "proposed_by": "agent (unsigned; this file is a proposal, not a decision)",
+      "proposed_at": 1791918672,
+      "core": {
+        "tenant": "github~coproduct-private~gatehouse",
+        "repo": "coproduct-private/gatehouse",
+        "question_id": "2026-10-13-gatehouse-push-loss-and-prompt",
+        "question": "Record the push-loss laundering finding now, and file the fixed-text presence prompt issue now?",
+        "context": [
+          "Finding (approval-budget.md section 3): push-to-push test losses are stored per head, and only the current head is read, so one more push launders a give-back to green. It is not in FINDINGS.md (last row F-230).",
+          "The repository mandate: a finding is encoded in the change that found it. The writ predicate (`notGivenBack_b` in prelude/inventory.writ) belongs with the fix (approval-budget step 0).",
+          "The presence prompt is the fixed string \"approve a gatehouse guardrail change\", so an agent running as the owner can get any message signed with one touch. That is live today, not only under batching."
+        ],
+        "evidence": [
+          "https://github.com/coproduct-private/gatehouse/blob/main/docs/approval-budget.md",
+          "https://github.com/coproduct-private/gatehouse/blob/main/FINDINGS.md",
+          "https://github.com/coproduct-private/gatehouse/blob/main/ops/approver/se-approve/main.swift"
+        ],
+        "options": [
+          {
+            "id": "a",
+            "does": "Both now: add the FINDINGS.md row (F-231) in PR #342, file the step-0 fix issue (with the writ predicate) and file the prompt issue.",
+            "cost": "S",
+            "risk": "None found."
+          },
+          {
+            "id": "b",
+            "does": "Add the row now, and fold the prompt fix into approval-budget step 2 without a separate issue.",
+            "cost": "S",
+            "risk": "The live prompt hazard is tracked only inside a design doc until step 2."
+          },
+          {
+            "id": "c",
+            "does": "Neither: approval-budget.md already records both in markdown.",
+            "cost": "none",
+            "risk": "The finding is not where readers look for findings, and the prompt hazard has no tracker."
+          }
+        ],
+        "recommended": "a",
+        "recommended_why": "The mandate wants the finding where findings live, and the prompt hazard exists today, independent of batching.",
+        "proposed_scope": {
+          "refs": [
+            "coproduct-private/gatehouse#342"
+          ],
+          "paths": [
+            "FINDINGS.md"
+          ],
+          "capabilities": []
+        }
+      }
+    }
+  ]
+}
