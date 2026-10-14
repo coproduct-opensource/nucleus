@@ -1347,7 +1347,8 @@ mod tests {
                 GuestCapability::ContainerBrokerSocket => {
                     GuestCapability::CanonicalManifestApproval
                 }
-                GuestCapability::CanonicalManifestApproval => GuestCapability::CaBundle,
+                GuestCapability::CanonicalManifestApproval => GuestCapability::DecisionGatedSinks,
+                GuestCapability::DecisionGatedSinks => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }
