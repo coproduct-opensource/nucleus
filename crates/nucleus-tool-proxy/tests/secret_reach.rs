@@ -54,7 +54,7 @@ fn command(root: &Path, spec: &serde_json::Value, extra: &[&str]) -> (Command, P
     spec["spec"]["work_dir"] = json!(ws);
     std::fs::write(&spec_path, serde_json::to_vec(&spec).unwrap()).unwrap();
     let identity = nucleus_identity::pod_files::issue_ephemeral(
-        &root.join("identity"),
+        root,
         "secret-reach",
         Duration::from_secs(600),
     )

@@ -86,7 +86,10 @@ fn a_separated_child_is_refused_by_ownership_bits_and_directories() {
         held(Exposure::Session, at(&file)),
     )
     .unwrap_err();
-    assert!(refused.contains(&format!("uid {} ", me())), "{refused}");
+    assert!(
+        refused.contains(&format!("uid {}, which a child runs as, owns", me())),
+        "{refused}"
+    );
 
     // Other-readable: a secret is reached, a durable item is not.
     chmod(&file, 0o644);
@@ -435,7 +438,11 @@ async fn sealing_closes_the_environment_and_inherited_descriptors_to_a_child() {
         exposure: Exposure::Secret,
         at: At::Env,
     };
-    assert!(harness_reach().admit(&[item.clone()], &seal).is_ok());
+    assert!(
+        harness_reach()
+            .admit(std::slice::from_ref(&item), &seal)
+            .is_ok()
+    );
     if bare {
         assert!(
             harness_reach()
