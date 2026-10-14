@@ -2088,6 +2088,8 @@ mod tests {
         assert!(c.is_unsandboxed());
         assert_eq!(c.drop_uid(), None);
         assert!(!c.restricts());
+        // #3461: its one step of the hook, where there is a hook.
+        assert_eq!(c.closes_inherited_fds(), cfg!(target_os = "linux"));
         for mode in [ContainmentMode::HostHardened, ContainmentMode::MicroVM] {
             assert!(
                 ChildConfinement::decide(mode, 0, UnsandboxedOptIn::Absent, LL, NO)
