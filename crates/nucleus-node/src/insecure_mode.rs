@@ -192,6 +192,9 @@ pub(crate) fn configured(
         cert_trust_anchors,
         max_children_per_pod: _,
         upstreams,
+        // How often the upstream registry file is re-read. A schedule, not a
+        // source of trust: the registry it reloads is `upstreams`, refused above.
+        upstreams_poll_secs: _,
         federation_issuer,
         ingress,
         approvals: _,
