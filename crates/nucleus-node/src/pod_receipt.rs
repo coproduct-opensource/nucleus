@@ -558,7 +558,11 @@ mod tests {
         );
         assert!(rendered[2].contains("failed to parse"), "{rendered:?}");
         let unique: std::collections::BTreeSet<&String> = rendered.iter().collect();
-        assert_eq!(unique.len(), 4, "each must read differently: {rendered:?}");
+        assert_eq!(
+            unique.len(),
+            rendered.len(),
+            "each must read differently: {rendered:?}"
+        );
     }
 
     // ── `build`, against a real exited pod ──────────────────────────────────
