@@ -379,6 +379,10 @@ impl ApprovalRegistry {
         }
     }
 
+    /// Spend one use of `operation`. Test-only: in production the one spend
+    /// is [`ConsentHold::spend`], at the effect (#3446), so there is no way
+    /// for a handler or an approver to spend a grant beside it.
+    #[cfg(test)]
     pub(crate) fn consume(&self, operation: &str) -> bool {
         let mut guard = self.approvals.lock().unwrap();
         if !Self::live(&mut guard, operation) {
@@ -433,18 +437,18 @@ impl ApprovalRegistry {
     /// Whether a live grant exists for `operation`, WITHOUT spending it.
     ///
     /// One human approval must buy exactly one operation, and an operation
-    /// crosses two independent approval gates on its way through: the kernel's
-    /// `RequiresApproval` verdict at the HTTP chokepoint, and the sandbox's own
-    /// capability guard. Both used to want to `consume`, which is #2406's other
-    /// half — a grant of `count: 1` was spent by whichever gate read it first
-    /// and the next gate found nothing, so the caller had to grant more than
-    /// they meant to approve for the write to land at all.
+    /// can cross several approval gates on its way through: the kernel's
+    /// `RequiresApproval` verdict at the HTTP chokepoint (a static obligation,
+    /// a policy rule, the exposure gate, an action-bound hold), the handler's
+    /// own check, and the sandbox's or executor's capability guard. Each of
+    /// them used to decide for itself whether to `consume`, which is how one
+    /// grant was spent twice (#2406) or not at all (#3446): the monitor peeked,
+    /// and only the sandbox spent, so a hold the sandbox did not share (the
+    /// exposure gate, a policy rule) left the grant live until it expired.
     ///
-    /// So the gates split the two questions. Every gate before the last asks
-    /// *is this approved* (here); the sandbox approver, which is the last thing
-    /// between the request and the bytes, is the single site that spends it.
-    /// A peek that reports a live grant is therefore always followed by exactly
-    /// one `consume`, or by a refusal further down that spends nothing.
+    /// So every gate only asks (here), and collects what it asked for in one
+    /// [`ConsentHold`]. The handler spends that hold, by value, immediately
+    /// before the effect: once per effect, whichever gates asked.
     ///
     /// Expiry is evaluated and purged here exactly as in [`Self::consume`], so
     /// a peek cannot report a grant that a spend would then reject.
@@ -475,6 +479,13 @@ impl ConsentHold {
     /// Nothing required yet.
     pub(crate) fn empty() -> Self {
         Self { keys: Vec::new() }
+    }
+
+    /// The approval the reference monitor found live for a hold it then
+    /// released (`mediation`, which peeks through `ApprovalGrants`). Spent
+    /// with everything else the effect needs, at the effect (#3446).
+    pub(crate) fn peeked(key: String) -> Self {
+        Self { keys: vec![key] }
     }
 
     /// Require the approval for `operation` on `subject`, under the one name
@@ -513,6 +524,137 @@ impl ConsentHold {
     pub(crate) fn spend(self, registry: &ApprovalRegistry) -> Result<(), String> {
         registry.consume_all(&self.keys)
     }
+}
+
+/// What an effect's own gate (the sandbox or the command executor) will ask
+/// for, joined to what the reference monitor already asked for, and spent
+/// once, all or none, immediately before the effect (#3446).
+///
+/// `asks` is the gate's answer to "which approval will you ask for"
+/// (`Sandbox::write_consent`, `Executor::consent`, ...), asked before anything
+/// is spent. `mint` is that gate's approver, which only checks a grant is
+/// live and issues the token the approved effect presents; it spends nothing.
+/// The spend is [`crate::mediation::Admitted::spend`], so a gate that asks
+/// for the name the monitor already asked for costs no second approval, and
+/// an effect the monitor's approval cleared spends it even when the gate does
+/// not ask.
+pub(crate) fn admit_effect(
+    registry: &ApprovalRegistry,
+    mut admitted: crate::mediation::Admitted,
+    asks: Option<String>,
+    mint: impl FnOnce(&str) -> nucleus::Result<nucleus::ApprovalToken>,
+) -> Result<Consented, ConsentRefused> {
+    let approval = match asks {
+        Some(key) => {
+            admitted
+                .require_named(registry, key.clone())
+                .map_err(ConsentRefused::Required)?;
+            Some(mint(&key).map_err(ConsentRefused::Gate)?)
+        }
+        None => None,
+    };
+    let token = admitted.spend(registry).map_err(ConsentRefused::Required)?;
+    Ok(Consented { token, approval })
+}
+
+/// An effect whose approvals are spent: the decision token it redeems, and the
+/// approval token its gate asked for, when it asked.
+#[must_use = "the approvals are spent; perform the effect they paid for"]
+pub(crate) struct Consented {
+    pub(crate) token: nucleus::portcullis::kernel::DecisionToken,
+    pub(crate) approval: Option<nucleus::ApprovalToken>,
+}
+
+/// Why [`admit_effect`] spent nothing.
+#[derive(Debug)]
+pub(crate) enum ConsentRefused {
+    /// No live grant for this name: approve it and retry. Also a grant that
+    /// was live when checked and lapsed (or was spent concurrently) before
+    /// the spend.
+    Required(String),
+    /// The gate's approver refused to issue its token.
+    Gate(nucleus::NucleusError),
+}
+
+/// The approver the sandbox and the command executor ask. It only ASKS: it
+/// issues the token an approved effect presents while a grant is live, and
+/// spends nothing. Every spend is the handler's, once per effect, immediately
+/// before it ([`admit_effect`], #3446). It used to spend, which made the
+/// sandbox the only gate that ever spent a grant, so a grant that cleared a
+/// hold the sandbox did not share was never spent at all.
+pub(crate) fn effect_approver(
+    approvals: std::sync::Arc<ApprovalRegistry>,
+) -> nucleus::CallbackApprover {
+    nucleus::CallbackApprover::new(move |request: &nucleus::ApprovalRequest| {
+        approvals.is_granted(request.operation())
+    })
+}
+
+/// Spend what the monitor's admission relied on, all or none, for a handler
+/// whose effect takes a discharge rather than the decision token (memory,
+/// owner decisions). Called immediately before the effect. A lapsed approval
+/// is the approval to ask for again.
+pub(crate) fn spend_admission(
+    state: &AppState,
+    admitted: crate::mediation::Admitted,
+) -> Result<(), ApiError> {
+    admitted
+        .into_consent()
+        .spend(&state.approvals)
+        .map_err(|key| {
+            ApiError::Nucleus(nucleus::NucleusError::ApprovalRequired { operation: key })
+        })
+}
+
+/// The act a handler records its verdicts about: operation, subject, actor.
+pub(crate) type Act<'a> = (Operation, &'a str, ActorIdentity);
+
+/// [`admit_effect`] for a handler: `asks` is the effect gate's answer, and a
+/// refusal of either is recorded and returned as the error the caller sees.
+/// Nothing is spent unless this returns `Ok`.
+pub(crate) fn consent_for_effect(
+    state: &AppState,
+    admitted: crate::mediation::Admitted,
+    asks: nucleus::Result<Option<String>>,
+    mint: impl FnOnce(&str) -> nucleus::Result<nucleus::ApprovalToken>,
+    act: Act<'_>,
+) -> Result<Consented, ApiError> {
+    let sink = state.verdict_sink.as_ref();
+    let (operation, subject, actor) = act;
+    let asks = match asks {
+        Ok(asks) => asks,
+        Err(err) => return Err(effect_failed(sink, (operation, subject, actor), err)),
+    };
+    match admit_effect(&state.approvals, admitted, asks, mint) {
+        Ok(consented) => Ok(consented),
+        Err(ConsentRefused::Required(key)) => {
+            Err(approval_lapsed(sink, operation, subject, actor, key))
+        }
+        Err(ConsentRefused::Gate(err)) => {
+            Err(effect_failed(sink, (operation, subject, actor), err))
+        }
+    }
+}
+
+/// A sandbox or executor refusal, recorded as the error it is.
+pub(crate) fn effect_failed(
+    sink: &dyn portcullis::verdict_sink::VerdictSink,
+    (operation, subject, actor): Act<'_>,
+    err: nucleus::NucleusError,
+) -> ApiError {
+    if let Err(e) = sink.record(VerdictContext {
+        operation,
+        subject: subject.to_string(),
+        outcome: VerdictOutcome::Error {
+            error: format!("{err:?}"),
+        },
+        actor,
+        policy_rule: None,
+        extensions: BTreeMap::new(),
+    }) {
+        warn!(error = %e, "verdict recording failed -- audit gap");
+    }
+    ApiError::Nucleus(err)
 }
 
 /// A [`ConsentHold::spend`] that found an approval no longer live, recorded as

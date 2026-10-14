@@ -16,7 +16,7 @@
 //! identical act again.
 
 use super::*;
-use crate::mediation::{MediationEnv, decide_and_record};
+use crate::mediation::{Admitted, MediationEnv, decide_and_record};
 use nucleus::Sandbox;
 use nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject;
 use portcullis::flow_graph::FlowGraph;
@@ -31,9 +31,6 @@ use portcullis_effects::authority::Authority;
 use std::sync::Arc;
 
 const NOTES: &str = "notes.txt";
-
-/// What the monitor hands a handler on this branch: the token alone.
-type Admitted = portcullis::kernel::DecisionToken;
 
 struct NoopSink;
 impl VerdictSink for NoopSink {
@@ -95,25 +92,20 @@ fn policy() -> PermissionLattice {
     PermissionLattice::permissive().normalize()
 }
 
-/// A sandbox in a fresh directory, with the approver `main()` installs on
-/// this branch (restated: it is inline there).
+/// A sandbox in a fresh directory, with the approver the proxy installs.
 fn new_sandbox(
     policy: &PermissionLattice,
     registry: &Arc<ApprovalRegistry>,
 ) -> (tempfile::TempDir, Sandbox) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let approvals = Arc::clone(registry);
     let sandbox = Sandbox::new(policy, dir.path())
         .expect("sandbox")
-        .with_approver(Arc::new(nucleus::CallbackApprover::new(
-            move |request: &nucleus::ApprovalRequest| approvals.consume(request.operation()),
-        )));
+        .with_approver(Arc::new(effect_approver(Arc::clone(registry))));
     (dir, sandbox)
 }
 
-/// `write_file`'s composition after the monitor, as it is on this branch:
-/// attempt the write; if the sandbox asks, peek, spend through its approver,
-/// mint a second token and retry.
+/// `write_file`'s composition after the monitor: the sandbox's own ask, the
+/// one spend, the write.
 fn write(
     sandbox: &Sandbox,
     registry: &ApprovalRegistry,
@@ -121,26 +113,23 @@ fn write(
     path: &str,
 ) -> Result<(), String> {
     let operation = sandbox.write_operation_for(path);
-    let authority = || {
-        Authority::new(bundle_for_subject(
-            operation,
-            SinkClass::WorkspaceWrite,
-            path,
-        ))
-    };
-    match sandbox.write(path, b"approved", admitted, authority()) {
-        Ok(()) => Ok(()),
-        Err(nucleus::NucleusError::ApprovalRequired { operation: key })
-            if registry.is_granted(&key) =>
-        {
-            let approval = sandbox.request_approval(key).map_err(|e| e.to_string())?;
-            let retry = Kernel::new(policy()).issue_approved_token(operation, "approved retry");
-            sandbox
-                .write_approved(path, b"approved", retry, &approval, authority())
-                .map_err(|e| e.to_string())
+    let asks = sandbox.write_consent(path).map_err(|e| e.to_string())?;
+    let consented = admit_effect(registry, admitted, asks, |key| {
+        sandbox.request_approval(key)
+    })
+    .map_err(|e| format!("{e:?}"))?;
+    let authority = Authority::new(bundle_for_subject(
+        operation,
+        SinkClass::WorkspaceWrite,
+        path,
+    ));
+    match consented.approval {
+        Some(approval) => {
+            sandbox.write_approved(path, b"approved", consented.token, &approval, authority)
         }
-        Err(e) => Err(e.to_string()),
+        None => sandbox.write(path, b"approved", consented.token, authority),
     }
+    .map_err(|e| e.to_string())
 }
 
 /// Private data, then untrusted content: the exposure every exfil leg after
@@ -265,4 +254,37 @@ fn a_refusal_after_the_grant_leaves_it_unspent() {
     let admitted = decide(&mut kernel, &registry, Operation::WriteFiles, NOTES).expect("cleared");
     write(&sandbox, &registry, admitted, NOTES).expect("the approved write lands");
     assert!(!registry.is_granted(&key), "and the write spent it");
+}
+
+/// One decision, one spend: when the monitor and the sandbox both ask (a
+/// static obligation), they ask for the same name, and one write spends one
+/// use of it, not one per gate.
+#[test]
+fn one_write_spends_one_approval_when_both_gates_ask() {
+    let mut policy = policy();
+    policy.obligations.insert(Operation::WriteFiles);
+    let registry = Arc::new(ApprovalRegistry::default());
+    let (dir, sandbox) = new_sandbox(&policy, &registry);
+    let mut kernel = Kernel::new(policy);
+
+    let key = held_for(&mut kernel, &registry, Operation::WriteFiles, NOTES);
+    grant(&registry, &key, 2);
+
+    let first = decide(&mut kernel, &registry, Operation::WriteFiles, NOTES).expect("cleared");
+    write(&sandbox, &registry, first, NOTES).expect("the first write lands");
+    assert!(
+        registry.is_granted(&key),
+        "one write spent both uses: the monitor and the sandbox each spent one"
+    );
+
+    // Remove it, so the next write is a create again and asks the same name.
+    std::fs::remove_file(dir.path().join(NOTES)).expect("remove");
+    let second = decide(&mut kernel, &registry, Operation::WriteFiles, NOTES).expect("cleared");
+    write(&sandbox, &registry, second, NOTES).expect("the second write lands");
+    assert!(!registry.is_granted(&key), "two writes spent two uses");
+    assert_eq!(
+        held_for(&mut kernel, &registry, Operation::WriteFiles, NOTES),
+        key,
+        "and nothing is left"
+    );
 }

@@ -262,7 +262,7 @@ mod ifc_http_enforcement {
         operation: Operation,
         subject: &str,
     ) -> (
-        Result<portcullis::kernel::DecisionToken, ApiError>,
+        Result<crate::mediation::Admitted, ApiError>,
         Vec<(String, String, BTreeMap<String, String>)>,
     ) {
         let sink = CapturingSink::default();
@@ -1981,23 +1981,6 @@ mod consent_spent_at_the_effect {
         );
     }
 
-    /// `write_file`'s approved retry re-discharges BEFORE `request_approval`
-    /// (whose approver spends the grant), so a failed re-discharge leaves the
-    /// grant unspent.
-    #[test]
-    fn write_file_spends_only_after_the_re_discharge() {
-        let body = handler("write_file");
-        let spend = at(&body, "request_approval(", "write_file");
-        assert!(
-            last_at(&body, "preflight_fs(", "write_file") < spend,
-            "the approved write's re-discharge can refuse after the approval is spent"
-        );
-        assert!(
-            spend < at(&body, "write_approved(", "write_file"),
-            "the spend must precede the write it pays for"
-        );
-    }
-
     /// The sandbox and executor handlers spend every approval the effect
     /// needs, the monitor's included, in one `consent_for_effect` after every
     /// check that can refuse and before the effect (#3446). There is no
@@ -2054,22 +2037,34 @@ mod consent_spent_at_the_effect {
     /// token, which left the approval live.
     #[test]
     fn every_admission_is_carried_to_its_effect() {
+        // Every file that calls the monitor. An admission bound to `_` or
+        // `_name` is dropped unspent the moment the effect runs.
+        let mut calls = 0;
         for (file, src) in [
             ("main.rs", include_str!("main.rs")),
             ("artifact.rs", include_str!("artifact.rs")),
             ("memory.rs", include_str!("memory.rs")),
+            ("owner_decision.rs", include_str!("owner_decision.rs")),
         ] {
             let src = code(src);
-            for dropped in [
-                "let _ = http_kernel_decide(",
-                "let _dt = crate::http_kernel_decide(",
-            ] {
+            for (at, _) in src.match_indices("http_kernel_decide(") {
+                let before = &src[..at];
+                let statement = &before[before.rfind([';', '{', '}']).unwrap_or(0)..];
+                let Some(binding) = statement.split("let ").nth(1) else {
+                    continue; // the definition, or a tail expression
+                };
+                calls += 1;
                 assert!(
-                    !src.contains(dropped),
-                    "{file} drops an admission: `{dropped}`"
+                    !binding.trim_start_matches("mut ").starts_with('_'),
+                    "{file} drops an admission: `let {}`",
+                    binding.trim()
                 );
             }
         }
+        assert!(
+            calls >= 12,
+            "found only {calls} monitor calls; the scan reached nothing"
+        );
         for name in ["web_fetch", "grep_search", "web_search"] {
             let body = handler(name);
             assert!(
@@ -2094,12 +2089,18 @@ mod consent_spent_at_the_effect {
                 < at(&artifact, ".read_bounded(", "artifact::read"),
             "artifact::read: the read's token must come out of the spend"
         );
-        let memory = code(include_str!("memory.rs"));
-        assert_eq!(
-            memory.matches("spend_admission(&state, admitted)?").count(),
-            2,
-            "memory write and recall each spend their admission"
-        );
+        for (file, src, handlers) in [
+            ("memory.rs", include_str!("memory.rs"), 2),
+            ("owner_decision.rs", include_str!("owner_decision.rs"), 2),
+        ] {
+            assert_eq!(
+                code(src)
+                    .matches("approval::spend_admission(&state, admitted)?")
+                    .count(),
+                handlers,
+                "{file}: each handler spends its admission"
+            );
+        }
     }
 
     /// The approver the sandbox and executor ask only asks. If it spent too,
