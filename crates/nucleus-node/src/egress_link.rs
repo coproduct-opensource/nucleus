@@ -167,10 +167,6 @@ enum Link {
 /// Check the link against what this receiver admitted, and cut the pod's
 /// egress on anything but a consistent count.
 async fn check_link(detector: &Detector, admitted: Admitted, meter: &EgressMeter) -> Link {
-    // RED-FIRST PROBE: as on main, nothing acts on the link's counters.
-    if std::hint::black_box(true) {
-        return Link::Open;
-    }
     match detector.check(admitted) {
         Assessment::Consistent => Link::Open,
         Assessment::Bypass(found) => {
