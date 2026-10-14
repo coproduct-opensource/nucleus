@@ -117,6 +117,12 @@ fn scratch(parent: &Path, tag: &str) -> Scratch {
 /// sandbox that writes only `target/` included); if the target dir is itself
 /// under `/tmp`, `/var/tmp`, which is not scratch.
 fn workspace_parent() -> PathBuf {
+    // A root run's children drop to an unprivileged uid, which may not be
+    // able to traverse a home directory holding `target/`; root can always
+    // write `/var/tmp`, which every dropped uid can reach.
+    if nucleus::runtime_uid() == 0 {
+        return PathBuf::from("/var/tmp");
+    }
     let target_tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     std::fs::create_dir_all(&target_tmp).unwrap();
     let resolved = std::fs::canonicalize(&target_tmp).unwrap();
