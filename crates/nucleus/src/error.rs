@@ -261,6 +261,30 @@ pub enum NucleusError {
         minimum: u32,
     },
 
+    /// The pod's lattice says `write_files: never` and `edit_files: never`,
+    /// so no child may write its workspace, and this host cannot hold that
+    /// (#2907): the kernel has no Landlock at the minimum ABI (a kernel
+    /// without it, or not Linux). Fail closed: the child is not started with
+    /// a writable workspace. The operator's Landlock waiver does not cover
+    /// this, because the pod itself asked for it.
+    #[error(
+        "refused: this pod's profile says write_files: never and edit_files: never, so its \
+         workspace {workspace} must be read-only to every command it runs, and this host \
+         cannot enforce a read-only workspace (it offers {kernel}; Landlock ABI {minimum} or \
+         newer is required). Nothing was started, and nothing will run unconfined in its \
+         place. To proceed, either choose a profile that declares workspace writes, e.g. \
+         `--profile codegen`, or run on a Linux host with Landlock (a Linux host or container \
+         driver, or a microVM)"
+    )]
+    WorkspaceReadOnlyUnenforceable {
+        /// The workspace that would have been writable.
+        workspace: String,
+        /// What the kernel offered, as `LandlockSupport` renders it.
+        kernel: String,
+        /// The lowest ABI the write layer is installed at.
+        minimum: u32,
+    },
+
     /// The kernel enforces Landlock, but this child's ruleset could not be
     /// compiled from the guest layout (#2696 P3c). Fail closed: the child is
     /// not started with a partial or no ruleset. Named, with the path and the

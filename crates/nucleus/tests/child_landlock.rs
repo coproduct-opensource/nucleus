@@ -128,6 +128,7 @@ fn run(exe: &Path, confinement: ChildConfinement, op: &str) -> String {
         &mut cmd,
         nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
         nothing,
+        &nucleus::WorkspaceWrites::Writable,
     );
     let out = cmd
         .output()

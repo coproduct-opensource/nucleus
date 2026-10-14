@@ -27,6 +27,25 @@
 //! where its target lives, so `/var/run -> /run` stays hidden and
 //! `/lib -> usr/lib` is readable through `/usr`.
 //!
+//! # The write layer: a read-only workspace (#2907)
+//!
+//! A pod whose lattice says `write_files: never` and `edit_files: never` must
+//! not have its workspace written by a child either. Before this, the tool
+//! proxy refused the agent's own write tool while `run_bash` children wrote
+//! `/work` freely. Seccomp cannot see paths, so the rule is a second Landlock
+//! layer, [`write_scope`]: it handles every WRITE right (write, truncate,
+//! make, remove, refer) and nothing else, and grants those rights only to the
+//! runtime's scratch, [`WRITE_SCRATCH`], each entry with its reason. Reading,
+//! listing and exec are left to the layer beneath (the guest layout above, in
+//! a microVM) or to DAC (a host child). Landlock layers intersect, so the
+//! workspace stays readable and becomes unwritable wherever it is.
+//!
+//! The layer is an allowlist, so no hole has to be cut in it: anything not in
+//! [`WRITE_SCRATCH`] is unwritable, the workspace included. The one way it
+//! could still grant the workspace is by overlap (a workspace under `/tmp`,
+//! say), and that refuses the compile by name rather than holding less than
+//! it claims.
+//!
 //! # ABI
 //!
 //! The kernel side is the upstream `landlock` crate, which carries the
@@ -40,7 +59,8 @@
 use std::path::{Path, PathBuf};
 
 use nucleus_spec::guest_layout::{
-    WORKLOAD_DEVICES, WorkloadFs, reserved_at, workload_must_descend,
+    COMPANION_HOME_NAME, WORKLOAD_DEVICES, WORKLOAD_HOME_NAME, WorkloadFs, reserved_at,
+    workload_must_descend,
 };
 
 /// The lowest Landlock ABI a confined child is started under (#3148's
@@ -97,6 +117,9 @@ pub(crate) enum Grant {
     Read,
     /// Every right the ABI handles.
     ReadWrite,
+    /// Every WRITE right the ABI handles, and no read, list or execute right:
+    /// the write layer's one grant (#2907).
+    Write,
 }
 
 /// What a directory entry is, as the walk sees it (not following links).
@@ -175,6 +198,135 @@ fn push_unless_link(rules: &mut Vec<Rule>, path: PathBuf, kind: Kind, grant: Gra
     }
 }
 
+/// Where an entry of the write layer's scratch lives (#2907).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScratchRoot {
+    /// A fixed absolute path, resolved first, so a `/tmp` that is a link is
+    /// granted where it leads. If it is absent, it grants nothing.
+    Absolute(&'static str),
+    /// Each of `guest_layout::WORKLOAD_DEVICES` under `/dev`, and nothing else
+    /// there.
+    Devices,
+    /// A directory directly under the workspace that the RUNTIME makes, by a
+    /// name fixed here, never one the pod chose.
+    InWorkspace(&'static str),
+}
+
+/// One path the write layer leaves writable, and why the runtime needs it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Scratch {
+    pub(crate) root: ScratchRoot,
+    pub(crate) why: &'static str,
+}
+
+/// Everything a child of a read-only-workspace pod may still write (#2907):
+/// the runtime's own scratch, never the workspace. Each entry says why it is
+/// here. A child writes nothing else, wherever it runs.
+pub(crate) const WRITE_SCRATCH: &[Scratch] = &[
+    Scratch {
+        root: ScratchRoot::Absolute("/tmp"),
+        why: "temporary files: shells and toolchains assume a writable /tmp (the guest's \
+              boot tmpfs; the container's or the host's /tmp elsewhere)",
+    },
+    Scratch {
+        root: ScratchRoot::Absolute("/cache"),
+        why: "the guest's pinned compiler cache; absent off the guest, where it grants nothing",
+    },
+    Scratch {
+        root: ScratchRoot::Devices,
+        why: "the data sinks every program opens for writing (`>/dev/null`): \
+              guest_layout::WORKLOAD_DEVICES and nothing else under /dev",
+    },
+    Scratch {
+        root: ScratchRoot::InWorkspace(WORKLOAD_HOME_NAME),
+        why: "the workload's default HOME, which the runtime makes and hands to its uid: a \
+              HOME that cannot be written makes ordinary tools fail as if broken",
+    },
+    Scratch {
+        root: ScratchRoot::InWorkspace(COMPANION_HOME_NAME),
+        why: "the companion's HOME, which the runtime makes beside the workload's",
+    },
+];
+
+/// The write layer's rules for a pod whose workspace is `workspace` (#2907):
+/// each [`WRITE_SCRATCH`] entry granted [`Grant::Write`], and nothing else.
+/// Pure except for `resolve`, which is `std::fs::canonicalize` in production
+/// and a fixed map in the tests.
+///
+/// # Errors
+/// * The workspace cannot be resolved. A layer that does not know where the
+///   workspace is cannot say it is not granting it.
+/// * An absolute entry exists and cannot be resolved (anything but `ENOENT`).
+/// * The workspace and an absolute entry or a device overlap, in either
+///   direction. Granting that entry would grant part of the workspace, so the
+///   layer would hold less than it claims. This is refused, never narrowed
+///   silently.
+pub(crate) fn write_scope(
+    workspace: &Path,
+    resolve: &mut dyn FnMut(&Path) -> std::io::Result<PathBuf>,
+) -> Result<Vec<Rule>, CompileError> {
+    let ws = resolve(workspace).map_err(|e| CompileError {
+        path: workspace.to_path_buf(),
+        error: format!("the workspace cannot be resolved: {e}"),
+    })?;
+    let overlaps = |granted: &Path| -> Result<(), CompileError> {
+        if ws.starts_with(granted) || granted.starts_with(&ws) {
+            Err(CompileError {
+                path: ws.clone(),
+                error: format!(
+                    "the workspace overlaps the writable scratch {}, so it cannot be held \
+                     read-only; place the workspace outside the runtime's scratch",
+                    granted.display()
+                ),
+            })
+        } else {
+            Ok(())
+        }
+    };
+    let mut rules = Vec::new();
+    for scratch in WRITE_SCRATCH {
+        tracing::debug!(root = ?scratch.root, why = scratch.why, "write layer: scratch the workspace does not own");
+        match scratch.root {
+            ScratchRoot::Absolute(path) => {
+                let path = Path::new(path);
+                let resolved = match resolve(path) {
+                    Ok(resolved) => resolved,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(e) => {
+                        return Err(CompileError {
+                            path: path.to_path_buf(),
+                            error: e.to_string(),
+                        });
+                    }
+                };
+                overlaps(&resolved)?;
+                rules.push(Rule {
+                    path: resolved,
+                    grant: Grant::Write,
+                });
+            }
+            ScratchRoot::Devices => {
+                for device in WORKLOAD_DEVICES {
+                    let path = Path::new("/dev").join(device);
+                    overlaps(&path)?;
+                    rules.push(Rule {
+                        path,
+                        grant: Grant::Write,
+                    });
+                }
+            }
+            // Beneath the resolved workspace, by a fixed name. The rule's fd
+            // is opened `O_NOFOLLOW` and a link gets no rule, so a link the
+            // workspace planted at this name grants nothing.
+            ScratchRoot::InWorkspace(name) => rules.push(Rule {
+                path: ws.join(name),
+                grant: Grant::Write,
+            }),
+        }
+    }
+    Ok(rules)
+}
+
 /// The filesystem ABI levels this ruleset is designed for, newest first: the
 /// levels at which Landlock gained a filesystem right (`REFER` at 2,
 /// `TRUNCATE` at 3, `IOCTL_DEV` at 5). The ruleset never asks for more than
@@ -241,7 +393,9 @@ mod imp {
         RulesetCreated, RulesetCreatedAttr, RulesetStatus,
     };
 
-    use super::{CompileError, FS_ABI_LEVELS, Grant, Kind, LandlockSupport, Rule, plan};
+    use super::{
+        CompileError, FS_ABI_LEVELS, Grant, Kind, LandlockSupport, Rule, plan, write_scope,
+    };
 
     fn abi(level: u32) -> ABI {
         ABI::from(i32::try_from(level).unwrap_or(0))
@@ -253,12 +407,22 @@ mod imp {
         AccessFs::from_all(abi(level))
     }
 
+    /// Every WRITE right `level` can govern, and no other: what the write
+    /// layer handles (#2907). `IoctlDev` (ABI 5) does not write the
+    /// filesystem, so it is left to the layer beneath.
+    pub(super) fn write_rights(level: u32) -> BitFlags<AccessFs> {
+        let mut rights = AccessFs::from_write(abi(level));
+        rights.remove(AccessFs::IoctlDev);
+        rights
+    }
+
     /// The rights one rule carries, masked to what the kernel accepts for the
     /// kind of file it is on (a directory right on a file rule is refused).
     pub(super) fn rights(grant: Grant, level: u32, is_dir: bool) -> BitFlags<AccessFs> {
         let wanted = match grant {
             Grant::Read => AccessFs::from_read(abi(level)),
             Grant::ReadWrite => handled(level),
+            Grant::Write => write_rights(level),
         };
         if is_dir {
             wanted
@@ -338,6 +502,21 @@ mod imp {
             Self::compile_rules(level, &rules)
         }
 
+        /// Compile the write layer for a pod whose workspace is `workspace`
+        /// (#2907). It handles only [`write_rights`] and grants them only to
+        /// [`super::WRITE_SCRATCH`].
+        ///
+        /// # Errors
+        /// Everything [`write_scope`] refuses, and every failure
+        /// [`Self::compile_rules`] names.
+        pub(crate) fn compile_write_scope(
+            level: u32,
+            workspace: &Path,
+        ) -> Result<Self, CompileError> {
+            let rules = write_scope(workspace, &mut |p: &Path| std::fs::canonicalize(p))?;
+            Self::compile_handling(level, write_rights(level), &rules)
+        }
+
         /// # Absent paths
         ///
         /// A rule whose path is absent when it is opened (`ENOENT`), or which
@@ -351,8 +530,18 @@ mod imp {
         /// OTHER failure (a path that exists and cannot be opened, a right the
         /// kernel refuses) still fails the compile, and the spawn with it.
         pub(crate) fn compile_rules(level: u32, rules: &[Rule]) -> Result<Self, CompileError> {
+            Self::compile_handling(level, handled(level), rules)
+        }
+
+        /// [`Self::compile_rules`] with the handled rights stated: every right
+        /// in `handled` that no rule grants is denied.
+        fn compile_handling(
+            level: u32,
+            handled: BitFlags<AccessFs>,
+            rules: &[Rule],
+        ) -> Result<Self, CompileError> {
             let mut created = hard()
-                .handle_access(handled(level))
+                .handle_access(handled)
                 .and_then(landlock::Ruleset::create)
                 .map_err(|e| failed(Path::new("/"), e))?;
             for rule in rules {
@@ -446,6 +635,18 @@ mod imp {
         pub(crate) fn compile(_level: u32) -> Result<Self, CompileError> {
             Err(CompileError {
                 path: std::path::PathBuf::from("/"),
+                error: "no Landlock off Linux".to_string(),
+            })
+        }
+
+        /// Never reached either: a read-only workspace is refused by name
+        /// where the probe answered `Unavailable` (#2907).
+        pub(crate) fn compile_write_scope(
+            _level: u32,
+            workspace: &std::path::Path,
+        ) -> Result<Self, CompileError> {
+            Err(CompileError {
+                path: workspace.to_path_buf(),
                 error: "no Landlock off Linux".to_string(),
             })
         }
@@ -801,6 +1002,149 @@ mod tests {
             super::imp::handled(5),
             <landlock::AccessFs as landlock::Access>::from_all(landlock::ABI::V5)
         );
+    }
+
+    /// A resolver over a fixed host: every path resolves to itself except
+    /// those named absent.
+    fn resolver(absent: &'static [&'static str]) -> impl FnMut(&Path) -> std::io::Result<PathBuf> {
+        move |p: &Path| {
+            if absent.iter().any(|a| p == Path::new(a)) {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            } else {
+                Ok(p.to_path_buf())
+            }
+        }
+    }
+
+    /// THE write layer (#2907): what a child of a read-only-workspace pod may
+    /// write is the runtime's scratch and nothing else. No rule is the
+    /// workspace or above it, and the only rules beneath it are the two HOMEs
+    /// the runtime makes. Red if the layer grants the workspace, or any write
+    /// right is granted outside the table.
+    #[test]
+    fn the_write_layer_grants_only_the_runtime_scratch() {
+        let rules = write_scope(Path::new("/work"), &mut resolver(&[])).unwrap();
+        assert!(rules.iter().all(|r| r.grant == Grant::Write), "{rules:?}");
+        let mut paths: Vec<_> = rules.iter().map(|r| r.path.clone()).collect();
+        paths.sort();
+        let mut expected: Vec<PathBuf> = ["/tmp", "/cache", "/work/.home", "/work/.companion-home"]
+            .iter()
+            .map(PathBuf::from)
+            .chain(WORKLOAD_DEVICES.iter().map(|d| Path::new("/dev").join(d)))
+            .collect();
+        expected.sort();
+        assert_eq!(paths, expected);
+        for rule in &rules {
+            assert!(
+                !Path::new("/work").starts_with(&rule.path),
+                "{} grants the workspace",
+                rule.path.display()
+            );
+        }
+        for scratch in WRITE_SCRATCH {
+            assert!(
+                !scratch.why.is_empty(),
+                "{:?} states no reason",
+                scratch.root
+            );
+        }
+    }
+
+    /// The scratch is granted where it RESOLVES (a `/tmp` link is granted at
+    /// its target), and an absent entry grants nothing rather than failing.
+    #[test]
+    fn the_write_layer_resolves_its_scratch_and_skips_what_is_absent() {
+        let rules = write_scope(Path::new("/work"), &mut |p: &Path| {
+            if p == Path::new("/tmp") {
+                Ok(PathBuf::from("/private/tmp"))
+            } else if p == Path::new("/cache") {
+                Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+            } else {
+                Ok(p.to_path_buf())
+            }
+        })
+        .unwrap();
+        assert!(rules.iter().any(|r| r.path == Path::new("/private/tmp")));
+        assert!(rules.iter().all(|r| r.path != Path::new("/tmp")));
+        assert!(rules.iter().all(|r| r.path != Path::new("/cache")));
+    }
+
+    /// Fail closed on overlap (#2907): a workspace under the scratch, or a
+    /// workspace the scratch lies under, cannot be held read-only by a layer
+    /// that grants the scratch. Refused BY NAME, naming the workspace and the
+    /// entry, never narrowed silently. Red if either direction compiles.
+    #[test]
+    fn a_workspace_that_overlaps_the_scratch_is_refused_by_name() {
+        for (workspace, entry) in [
+            ("/tmp/nucleus-ws", "/tmp"),
+            ("/", "/tmp"),
+            ("/dev", "/dev/null"),
+        ] {
+            let err = write_scope(Path::new(workspace), &mut resolver(&[])).unwrap_err();
+            assert_eq!(err.path, Path::new(workspace));
+            assert!(err.error.contains(entry), "{workspace}: {}", err.error);
+            assert!(err.error.contains("read-only"), "{}", err.error);
+        }
+        // The overlap is checked where the workspace RESOLVES: a link into
+        // the scratch is the scratch.
+        let err = write_scope(Path::new("/srv/ws"), &mut |p: &Path| {
+            if p == Path::new("/srv/ws") {
+                Ok(PathBuf::from("/tmp/ws"))
+            } else {
+                Ok(p.to_path_buf())
+            }
+        })
+        .unwrap_err();
+        assert!(err.error.contains("/tmp"), "{}", err.error);
+    }
+
+    /// A workspace that cannot be resolved is refused, never assumed disjoint.
+    #[test]
+    fn an_unresolvable_workspace_refuses_the_write_layer() {
+        let err = write_scope(Path::new("/gone"), &mut resolver(&["/gone"])).unwrap_err();
+        assert_eq!(err.path, Path::new("/gone"));
+        let err = write_scope(Path::new("/work"), &mut |p: &Path| {
+            if p == Path::new("/tmp") {
+                Err(std::io::Error::from_raw_os_error(libc::EACCES))
+            } else {
+                Ok(p.to_path_buf())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(err.path, Path::new("/tmp"), "EACCES is not absence");
+    }
+
+    /// The write layer handles writes and only writes: no read, list or exec
+    /// right (those stay with the layer beneath, so the workspace stays
+    /// readable), and no `IoctlDev`. Red if it handles a read right.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_write_layer_handles_writes_alone() {
+        use super::imp::write_rights;
+        use landlock::AccessFs;
+        for level in FS_ABI_LEVELS {
+            let w = write_rights(level);
+            for read in [
+                AccessFs::ReadFile,
+                AccessFs::ReadDir,
+                AccessFs::Execute,
+                AccessFs::IoctlDev,
+            ] {
+                assert!(!w.contains(read), "level {level} handles {read:?}");
+            }
+            for write in [
+                AccessFs::WriteFile,
+                AccessFs::MakeReg,
+                AccessFs::MakeDir,
+                AccessFs::MakeSym,
+                AccessFs::RemoveFile,
+                AccessFs::RemoveDir,
+            ] {
+                assert!(w.contains(write), "level {level} misses {write:?}");
+            }
+        }
+        assert!(write_rights(2).contains(AccessFs::Refer));
+        assert!(write_rights(3).contains(AccessFs::Truncate));
     }
 
     #[test]

@@ -275,6 +275,7 @@ async fn run_probe(spec: nucleus_spec::WorkloadSpec, work_dir: &std::path::Path)
             &portcullis::PermissionLattice::permissive(),
             portcullis::NetworkEgress::Declared,
         ),
+        &nucleus::WorkspaceWrites::Writable,
     )
     .unwrap();
     let out = child.wait_with_output().await.unwrap();

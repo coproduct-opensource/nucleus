@@ -432,6 +432,7 @@ async fn run_probe(script: String, work_dir: &Path) -> String {
             &portcullis::PermissionLattice::permissive(),
             portcullis::NetworkEgress::Declared,
         ),
+        &nucleus::WorkspaceWrites::Writable,
     )
     .unwrap();
     let out = child.wait_with_output().await.unwrap();
