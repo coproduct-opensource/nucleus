@@ -537,19 +537,23 @@ fn generate_session_id() -> String {
 /// Returns `None` for tools that don't map to exposure-relevant operations
 /// (e.g., pod management, which is classified as ManagePods but has no exposure
 /// contribution in the current exposure_core model).
-/// The content identity of a session's policy: its SHA-256 checksum, decoded
-/// from the hex `PermissionLattice::checksum` returns. A checksum of any other
-/// shape is refused rather than recorded as some other identity.
+/// The content identity of a session's policy: its SHA-256 checksum (which
+/// covers the grant's validity window, so it names this grant), decoded from
+/// the hex `PermissionLattice::checksum` returns. A checksum of any other shape
+/// is refused rather than recorded as some other identity.
 fn policy_content_hash(policy: &PermissionLattice) -> Result<portcullis_core::ContentHash> {
     let hex = policy.checksum();
     let mut digest = [0u8; 32];
-    if !hex.is_ascii() || hex.len() != 2 * digest.len() {
+    let pairs = hex.as_bytes().chunks_exact(2);
+    if pairs.len() != digest.len() || !pairs.remainder().is_empty() {
         return Err(anyhow!(
             "policy checksum is not a SHA-256 hex digest: {hex}"
         ));
     }
-    for (i, byte) in digest.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+    for (byte, pair) in digest.iter_mut().zip(pairs) {
+        let pair = std::str::from_utf8(pair)
+            .map_err(|e| anyhow!("policy checksum is not hex ({e}): {hex}"))?;
+        *byte = u8::from_str_radix(pair, 16)
             .map_err(|e| anyhow!("policy checksum is not hex ({e}): {hex}"))?;
     }
     Ok(portcullis_core::ContentHash::from_bytes(digest))
@@ -2022,11 +2026,21 @@ mod tests {
 
     #[test]
     fn the_session_root_is_content_addressed_by_its_policy() {
-        let a = policy_content_hash(&PermissionLattice::permissive()).unwrap();
-        let again = policy_content_hash(&PermissionLattice::permissive()).unwrap();
-        let b = policy_content_hash(&PermissionLattice::read_only()).unwrap();
-        assert_eq!(a, again, "one policy, one identity");
-        assert_ne!(a, b, "different policies, different identities");
+        let policy = PermissionLattice::permissive();
+        let a = policy_content_hash(&policy).unwrap();
+        assert_eq!(
+            a,
+            policy_content_hash(&policy).unwrap(),
+            "one grant, one identity"
+        );
+        let hex: String = a.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            hex,
+            policy.checksum(),
+            "the identity is the policy's checksum"
+        );
+        let other = policy_content_hash(&PermissionLattice::read_only()).unwrap();
+        assert_ne!(a, other, "different grants, different identities");
     }
 
     /// Create a permissive lattice without static uninhabitable_state obligations
