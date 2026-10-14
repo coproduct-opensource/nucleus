@@ -61,6 +61,63 @@ pub struct ExecutionClaim {
     /// receipt from before this field reads as `Unattested`, never as more.
     #[serde(default = "NodePlatform::not_recorded")]
     pub node_platform: NodePlatform,
+    /// What the signing node declares about the isolation between this
+    /// workload and the node itself (Program C, C0). Absent on the wire for
+    /// [`SandboxTier::Driver`], so every receipt issued before the field
+    /// existed, and every receipt from a separating driver, is byte-identical
+    /// to before. Present only for [`SandboxTier::InsecureSharedUid`], which a
+    /// verifier predating the field refuses as an unknown field.
+    #[serde(
+        default = "SandboxTier::driver",
+        skip_serializing_if = "SandboxTier::is_driver"
+    )]
+    pub sandbox_tier: SandboxTier,
+}
+
+/// The issuer-kid prefix of every key a node in declared insecure mode signs
+/// with (Program C, C0). One definition: the node mints its kid from it and
+/// every verifier here refuses by it.
+///
+/// A bare-tier node's workloads run at the node's own uid and can read every
+/// file the node can, its signing keys included, so nothing such a node signs
+/// distinguishes the node from its workload. Its key is therefore one no
+/// verifier here accepts, whatever the claim it signed says.
+pub const INSECURE_SHARED_UID_KID_PREFIX: &str = "nucleus-insecure-shared-uid/";
+
+/// Whether `kid` names a declared-insecure node key.
+#[must_use]
+pub fn is_insecure_kid(kid: &str) -> bool {
+    kid.starts_with(INSECURE_SHARED_UID_KID_PREFIX)
+}
+
+/// The node's own declaration of the isolation between a workload and the
+/// node. Not a grant: [`SandboxTier::Driver`] says only that the node declared
+/// nothing weaker, and `backend` / `uid_isolated` still decide.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SandboxTier {
+    /// No declaration beyond the driver's: `backend` and `uid_isolated` state
+    /// the isolation.
+    #[serde(rename = "driver")]
+    Driver,
+    /// The node ran on the bare tier (local driver, `--allow-local-driver`):
+    /// the workload shared the node's uid and could read its signing keys.
+    #[serde(rename = "insecure-shared-uid")]
+    InsecureSharedUid,
+}
+
+impl SandboxTier {
+    /// What a receipt that carries no declaration reads as.
+    pub fn driver() -> Self {
+        Self::Driver
+    }
+
+    /// For `skip_serializing_if`: only the insecure declaration is written.
+    pub fn is_driver(&self) -> bool {
+        match self {
+            Self::Driver => true,
+            Self::InsecureSharedUid => false,
+        }
+    }
 }
 
 /// The node's platform evidence as a receipt records it. The digest names an
@@ -220,6 +277,10 @@ pub enum ExecutionError {
     InvalidWindow,
     OutsideWindow,
     NotProtectedMicroVm,
+    /// Evidence from a node in declared insecure mode (the bare tier), named
+    /// by its key or by its own declaration. Refused before anything else is
+    /// considered: that key is readable by the workload it describes.
+    InsecureSharedUid,
     InvalidDigest(&'static str),
     Artifact(&'static str),
     Log(&'static str),
@@ -283,6 +344,11 @@ pub fn verify_execution(
     if issued_not_before_micros > issued_not_after_micros {
         return Err(ExecutionError::InvalidWindow);
     }
+    // By name, first: a pinned insecure key verifies whatever its holder (any
+    // workload on that node) signed, so no later check could mean anything.
+    if is_insecure_kid(issuer_kid) || is_insecure_kid(&receipt.session.issuer_kid) {
+        return Err(ExecutionError::InsecureSharedUid);
+    }
     if receipt.version != RECEIPT_VERSION {
         return Err(ExecutionError::Authentication("envelope version".into()));
     }
@@ -342,7 +408,12 @@ pub fn verify_execution(
         environment_complete_sha256,
         artifacts,
         node_platform,
+        sandbox_tier,
     } = &claim;
+    match sandbox_tier {
+        SandboxTier::Driver => {}
+        SandboxTier::InsecureSharedUid => return Err(ExecutionError::InsecureSharedUid),
+    }
     for (field, actual, wanted) in [
         ("pod_id", actual_pod.as_str(), *pod_id),
         ("program_digest", actual_program.as_str(), *program_digest),

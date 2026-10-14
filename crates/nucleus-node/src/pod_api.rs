@@ -607,7 +607,7 @@ pub(crate) async fn get_receipt(
 ) -> Result<Json<crate::pod_receipt::Receipt>, ApiError> {
     use crate::pod_receipt::ReceiptError;
     let pod = get_pod_for_caller(&state, id, &caller).await?;
-    match crate::pod_receipt::build(&pod, &state.authority).await {
+    match crate::pod_receipt::build(&pod, crate::pod_receipt::ReceiptSigner::of(&state)).await {
         Ok(built) => Ok(Json(built.receipt)),
         // A present pod may have no available exit report. Keep that distinct
         // from lookup's NotFound; neither is the same as a still-running pod.
@@ -1297,6 +1297,10 @@ pub(crate) mod handler_tests {
             trust_gate: crate::trust_gate::TrustGateConfig::from_env(
                 &a.state_dir,
                 &crate::pod_authority::NO_TPM.node_keys,
+                crate::insecure_mode::EvidenceTier::of(crate::local_driver_opt_in(
+                    &a.driver,
+                    a.allow_local_driver,
+                )),
             )
             .expect("trust gate"),
             node_platform: std::sync::Arc::new(
