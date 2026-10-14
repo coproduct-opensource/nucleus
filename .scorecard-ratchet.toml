@@ -93,9 +93,11 @@
 # 2026-10-08: ADR 0016 D5. CaClient's refusing defaults perform no act, so its row
 # is N, not debt: the one undischarged site is paid. Measured on this tree by the
 # scanner: 198/198 = 100.00%, the population and the floor both pinned to it.
+# 2026-10-13 (signed owner decisions): nucleus-signed-decision and the tool-proxy decision
+# routes add 11 bounded sites; 209/209.
 floor_bp = 10000
 floor_set = "measurement"
-population_floor = 198
+population_floor = 209
 
 [family.alg]
 # 110 of 278 (type, law) obligations are discharged by a `lattice_laws!`
@@ -266,9 +268,11 @@ population_floor = 278
 # 2026-10-12 (request proofs, merged with the above): nucleus-request-proof parses DPoP
 # proofs from any client before authority is granted and declares all seven from its first
 # commit; a panic on a crafted proof would take down the listener it guards. 41 of 98 = 41.83%.
-floor_bp = 4183
+# 2026-10-13 (signed owner decisions): nucleus-signed-decision verifies bytes from outside the
+# pod and declares all seven from its first commit. 42 of 99 = 42.42%.
+floor_bp = 4242
 floor_set = "measurement"
-population_floor = 98
+population_floor = 99
 
 [family.life]
 # 7 affine rights, 0 with a validity interval.
@@ -407,9 +411,11 @@ population_floor = 98
 # and arm() past it arms nothing and fails the launch by name
 # (PeerRefused::ArmExpired, an_arm_used_after_its_window_admits_nobody). 15/22 on its own branch;
 # with the two DPoP rights above (#3385), 17 of 24 = 70.83%.
-floor_bp = 7083
+# 2026-10-13 (signed owner decisions): SignedDecision enters as an affine right carrying the
+# signed window (valid_from, not_after) that every cite and spend re-checks. 18 of 25 = 72.00%.
+floor_bp = 7200
 floor_set = "measurement"
-population_floor = 24
+population_floor = 25
 
 [family.typed]
 # 2 of 23 runtime flow kinds are distinguished at COMPILE time.
@@ -656,6 +662,8 @@ population_floor = 142
 # escalate, each Checked on an authority of its own (signature, token, certificate chain).
 # 2026-09-30, merging main: #3038 split declassify into Kernel::verify_declassification and
 # FlowGraph::apply_verified, so its OWN_AUTHORITY row names verify_declassification. 22/25.
-floor_bp = 8800
+# 2026-10-13 (signed owner decisions): /v1/decision/{read,list} each spend a
+# (ReadFiles, AuditLogAppend) Authority before reading. 24/27.
+floor_bp = 8888
 floor_set = "measurement"
-population_floor = 25
+population_floor = 27
