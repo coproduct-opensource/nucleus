@@ -15,6 +15,7 @@
 //! This module binds the journal to the proxy's configuration and to its live
 //! write path.
 use crate::child_reach::ChildReach;
+use crate::run_gate::MemoryWriteAuthority;
 use crate::{
     api_error::ApiError,
     memory::{MemoryWriteReq, MemoryWriteResp},
@@ -24,7 +25,6 @@ use nucleus_provenance_memory::{
     ProvenanceMemorySet, PublishRefusal, PublishedJournal, PublisherBinding, ReachCheck,
     RecomputeMemory, StoreInvariants,
 };
-use portcullis_effects::authority::Authority;
 use std::path::PathBuf;
 
 #[derive(clap::Args, Debug)]
@@ -108,7 +108,7 @@ impl Store {
         &mut self,
         registry: &dyn RecomputeMemory,
         req: MemoryWriteReq,
-        authority: Authority,
+        authority: MemoryWriteAuthority,
     ) -> Result<PreparedWrite<'_>, ApiError> {
         let mut candidate = self.records()?.clone();
         let response = crate::memory::memory_write_core(&mut candidate, registry, req, authority)?;

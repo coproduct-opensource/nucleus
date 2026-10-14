@@ -1,8 +1,11 @@
 use super::*;
+use crate::run_gate::MemoryWriteAuthority;
 use nucleus_ifc_kernel::{Operation, SinkClass, discharge::test_helpers::bundle_for_subject};
 use nucleus_provenance_memory::{
-    MemoryDerivation, SchemaType, SourceClass, TransformRegistry, recompute::derive_label,
+    ConfLevel, LabelStamp, MemoryDerivation, SchemaType, SourceClass, TransformRegistry,
+    recompute::derive_label,
 };
+use portcullis_effects::authority::Authority;
 use portcullis_effects::receipt::ReceiptLog;
 use std::fs::OpenOptions;
 use std::os::unix::fs::PermissionsExt;
@@ -30,20 +33,27 @@ fn request(value: &str) -> MemoryWriteReq {
     MemoryWriteReq {
         value: value.into(),
         schema: SchemaType::String,
-        label: derive_label(&derivation, &[]),
+        label: derive_label(&derivation, &[], LabelStamp::Unstamped),
         derivation,
     }
 }
 fn prepare<'a>(store: &'a mut Store, value: &str) -> PreparedWrite<'a> {
     prepare_request(store, request(value))
 }
+/// The authority the handler mints for `req` on a session that has read nothing above Public.
+fn public_authority(req: &MemoryWriteReq) -> MemoryWriteAuthority {
+    MemoryWriteAuthority::for_test(
+        Authority::new(bundle_for_subject(
+            Operation::WriteFiles,
+            SinkClass::MemoryPersist,
+            &crate::memory::write_subject(req),
+        ))
+        .witnessed_by(Arc::new(ReceiptLog::new())),
+        ConfLevel::Public,
+    )
+}
 fn prepare_request(store: &mut Store, req: MemoryWriteReq) -> PreparedWrite<'_> {
-    let authority = Authority::new(bundle_for_subject(
-        Operation::WriteFiles,
-        SinkClass::MemoryPersist,
-        &crate::memory::write_subject(&req),
-    ))
-    .witnessed_by(Arc::new(ReceiptLog::new()));
+    let authority = public_authority(&req);
     store
         .prepare(&TransformRegistry::new(), req, authority)
         .unwrap()
@@ -113,7 +123,7 @@ async fn restart_replays_parent_before_derived_record() {
     let req = MemoryWriteReq {
         value: "project summary".into(),
         schema: SchemaType::String,
-        label: derive_label(&derivation, &[parent]),
+        label: derive_label(&derivation, &[parent], LabelStamp::Unstamped),
         derivation,
     };
     let prepared = prepare_request(&mut store, req);
@@ -144,12 +154,7 @@ async fn uncertain_write_latches_reads_and_writes_without_publishing_candidate()
     assert!(prepared.commit(&TransformRegistry::new()).is_err());
     assert!(store.records().is_err());
     let req = request("another note");
-    let authority = Authority::new(bundle_for_subject(
-        Operation::WriteFiles,
-        SinkClass::MemoryPersist,
-        &crate::memory::write_subject(&req),
-    ))
-    .witnessed_by(Arc::new(ReceiptLog::new()));
+    let authority = public_authority(&req);
     assert!(
         store
             .prepare(&TransformRegistry::new(), req, authority)
@@ -395,4 +400,89 @@ fn each_live_write_is_one_commit_on_the_head_and_a_v1_journal_is_migrated() {
         .open(workspace.path(), &TransformRegistry::new(), &separated())
         .unwrap();
     assert_eq!(reopened.records().unwrap().len(), 3);
+}
+
+/// Program C, C1, the write half through the handler's own path: a session reads a Secret
+/// value, then writes a literal that read SELECTED (control dependence: the bytes written carry
+/// nothing Secret). The floor is read from the discharge term under the flow-graph lock, bound
+/// into the authority, and the record is Secret and stamped Secret — although the request
+/// claims a Public label and names a Public floor of its own, which nothing reads. The journal,
+/// reopened by a store that has observed nothing (a fresh session), still holds it Secret.
+///
+/// A-19: drop the session join (the floor read as Public) and the record is Public; take the
+/// floor from the request's claim and it is Public; replay from a fresh session's floor and the
+/// reopen refuses it. Each reds an assertion below.
+#[test]
+fn a_session_that_read_secret_writes_a_secret_record_that_replays_secret() {
+    use nucleus_provenance_memory::TokenScope;
+    use portcullis::NodeKind;
+    use portcullis::flow_graph::FlowGraph;
+
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let args = configured(dir.path());
+    let registry = TransformRegistry::new();
+    let mut store = args
+        .open(workspace.path(), &registry, &separated())
+        .unwrap();
+
+    // The literal and the request, as a workload sends it: a Public claim, and a floor field
+    // of its own choosing that the request type does not have.
+    let value = "deploy-window: tuesday";
+    let derivation = MemoryDerivation::RawIngest {
+        source_class: SourceClass::LocalFile,
+        source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
+    };
+    let claim = derive_label(&derivation, &[], LabelStamp::Unstamped);
+    assert_eq!(claim.conf_level(), ConfLevel::Public);
+    let req = || -> MemoryWriteReq {
+        serde_json::from_value(serde_json::json!({
+            "value": value,
+            "schema": SchemaType::String,
+            "derivation": derivation,
+            "label": claim,
+            "writer_floor": "public",
+            "stamp": {"kind": "stamped", "writer_floor": "public"},
+        }))
+        .unwrap()
+    };
+
+    let scope = TokenScope::new(vec![Operation::WriteFiles], vec![]);
+    let levels = crate::run_gate::GateLevels::honest(portcullis::CapabilityLevel::LowRisk);
+    let subject = crate::memory::write_subject(&req());
+    let mut flow = FlowGraph::new();
+    let clean = crate::run_gate::preflight_memory_write(Some(&scope), levels, &subject, &flow);
+    assert_eq!(clean.floor().level(), ConfLevel::Public, "non-vacuity");
+
+    // The session reads a Secret value.
+    flow.insert_observation(NodeKind::Secret, &[], 0).unwrap();
+    let preflight = crate::run_gate::preflight_memory_write(Some(&scope), levels, &subject, &flow);
+    assert!(preflight.result().is_allowed(), "{preflight:?}");
+    assert_eq!(preflight.floor().level(), ConfLevel::Secret);
+    let authority = preflight
+        .authorize(Arc::new(ReceiptLog::new()))
+        .expect("the write is authorized");
+    let reply = store
+        .prepare(&registry, req(), authority)
+        .unwrap()
+        .commit(&registry)
+        .unwrap();
+    assert!(reply.admitted, "{reply:?}");
+    let hash = ContentHash::from_hex(&reply.content_hash).unwrap();
+    let stored = store.records().unwrap().get(&hash).unwrap().clone();
+    assert_eq!(stored.label.conf_level(), ConfLevel::Secret);
+    assert_eq!(
+        stored.stamp,
+        LabelStamp::Stamped {
+            writer_floor: ConfLevel::Secret
+        }
+    );
+    assert_eq!(stored.label.integ_level(), claim.integ_level());
+
+    // Replay in a fresh session: a new store, no flow graph at all.
+    drop(store);
+    let reopened = args
+        .open(workspace.path(), &registry, &separated())
+        .unwrap();
+    assert_eq!(reopened.records().unwrap().get(&hash), Some(&stored));
 }

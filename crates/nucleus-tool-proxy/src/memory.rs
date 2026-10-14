@@ -34,6 +34,16 @@
 //! before `verified_admit` and before any `observe`, so a refused spend leaves
 //! the set and the graph exactly as they were.
 //!
+//! **A write is stamped with what its session had read (Program C, C1).** The
+//! write's authority carries the session's floating confidentiality, read from the
+//! same discharge term under the same flow-graph lock
+//! ([`crate::run_gate::preflight_memory_write`]); the record's confidentiality is
+//! its claim joined with that floor, and it is stamped with it, so admission (here,
+//! on replay and on every node that reads it) re-derives it against the recorded
+//! floor. A session that read Secret data and then writes a literal that read
+//! selected writes a Secret record: the value need not carry the Secret bytes for
+//! the record to be labelled by them.
+//!
 //! The write is Acting and the recall is a pure read, and that asymmetry is what
 //! keeps the quarantine flow above true: a TAINTED session cannot write memory
 //! (the `MemoryPersist` floor and `NoAdversarialAncestry` refuse it), while any
@@ -45,14 +55,15 @@ use nucleus::portcullis::NodeKind;
 use nucleus::portcullis::flow_graph::{FlowGraph, ReleaseAuth};
 use nucleus_ifc_kernel::Operation;
 use nucleus_provenance_memory::{
-    ContentHash, MemoryDerivation, MemoryLabel, MemoryRecord, ProvenanceMemorySet, RecomputeMemory,
-    RecomputeVerdict, SchemaType, SignedDeclassify, declassify, memory_ifc_label,
+    ContentHash, LabelStamp, MemoryDerivation, MemoryLabel, MemoryRecord, ProvenanceMemorySet,
+    RecomputeMemory, RecomputeVerdict, SchemaType, SignedDeclassify, declassify, memory_ifc_label,
 };
 use portcullis::{Act, FilePath, ReadSink, WriteSink};
 use portcullis_effects::authority::Authority;
 use serde::{Deserialize, Serialize};
 
 use crate::ApiError;
+use crate::run_gate::MemoryWriteAuthority;
 
 /// Persist a memory record (provenance-verified admission).
 #[derive(Debug, Deserialize)]
@@ -63,7 +74,10 @@ pub struct MemoryWriteReq {
     pub schema: SchemaType,
     /// How the value was produced (the recompute claim).
     pub derivation: MemoryDerivation,
-    /// The claimed IFC label (validated against the recomputed label on admit).
+    /// The claimed IFC label (validated against the recomputed label on admit). Its
+    /// confidentiality is joined with the session's floor before admission: a claim can
+    /// raise a record's confidentiality only as far as the lineage earns, and never lower
+    /// it below what the session had read.
     pub label: MemoryLabel,
 }
 
@@ -126,13 +140,16 @@ pub fn recall_subject(req: &MemoryRecallReq) -> String {
 ///
 /// `authority` is taken **by value** (C-4) and spent before the record is even
 /// built. An authority for any other pair, or for a different value, is refused
-/// with the set untouched.
-pub fn memory_write_core(
+/// with the set untouched. The record is stamped with the floor the authority
+/// carries (Program C, C1) and its confidentiality joined with it; the request
+/// has no field that names a floor.
+pub(crate) fn memory_write_core(
     set: &mut ProvenanceMemorySet,
     registry: &dyn RecomputeMemory,
     req: MemoryWriteReq,
-    authority: Authority,
+    authority: MemoryWriteAuthority,
 ) -> Result<MemoryWriteResp, ApiError> {
+    let (authority, floor) = authority.into_parts();
     let act = Act::Write {
         path: FilePath::new(write_subject(&req)),
         sink: WriteSink::Memory,
@@ -140,7 +157,17 @@ pub fn memory_write_core(
     let _spent = authority
         .spend_on(&act)
         .map_err(|e| ApiError::IfcDenied(format!("memory write refused: {e}")))?;
-    let record = MemoryRecord::new(req.value, req.schema, req.label, req.derivation);
+    let floor = floor.level();
+    let label = MemoryLabel::from_levels_with_derivation(
+        req.label.conf_level().max(floor),
+        req.label.integ_level(),
+        req.label.derivation,
+    );
+    let record = MemoryRecord::new(req.value, req.schema, label, req.derivation).with_stamp(
+        LabelStamp::Stamped {
+            writer_floor: floor,
+        },
+    );
     let content_hash = record.content_hash().to_hex();
     let verdict = set.verified_admit(&record, registry);
     Ok(MemoryWriteResp {
@@ -314,7 +341,6 @@ pub(crate) async fn memory_write(
     certified: Option<Extension<crate::pod_cert::CertifiedPermissions>>,
     Json(req): Json<MemoryWriteReq>,
 ) -> Result<Json<MemoryWriteResp>, ApiError> {
-    use nucleus_ifc_kernel::discharge::PreflightResult;
     let admitted = crate::http_kernel_decide(
         &state,
         Operation::WriteFiles,
@@ -326,16 +352,12 @@ pub(crate) async fn memory_write(
     let levels = state.ceiling(Operation::WriteFiles, certified.as_ref());
     let flow = state.flow_graph.lock().await;
     let scope = state.session_task_token.verified_scope();
+    // The floor is read from the same term, under this same lock, as the verdict.
     let preflight = crate::run_gate::preflight_memory_write(scope, levels, &subject, &flow);
     drop(flow);
-    let authority = match preflight {
-        PreflightResult::Allowed(b) => {
-            Authority::new(b).witnessed_by(std::sync::Arc::clone(&state.receipts))
-        }
-        PreflightResult::Denied { reason, .. } | PreflightResult::RequiresApproval { reason } => {
-            return Err(ApiError::IfcDenied(format!("discharge denied: {reason}")));
-        }
-    };
+    let authority = preflight
+        .authorize(std::sync::Arc::clone(&state.receipts))
+        .map_err(|reason| ApiError::IfcDenied(format!("discharge denied: {reason}")))?;
     let mut set = state.provenance_memory.lock().await;
     let registry = state.memory_transforms.as_ref();
     let prepared = set.prepare(registry, req, authority)?;
@@ -437,12 +459,16 @@ mod tests {
         )
     }
 
-    /// The write authority the handler would mint for `req`.
-    fn write_authority(req: &MemoryWriteReq) -> Authority {
-        authority(
-            Operation::WriteFiles,
-            SinkClass::MemoryPersist,
-            &write_subject(req),
+    /// The write authority the handler would mint for `req` on a session that has read
+    /// nothing above Public.
+    fn write_authority(req: &MemoryWriteReq) -> MemoryWriteAuthority {
+        MemoryWriteAuthority::for_test(
+            authority(
+                Operation::WriteFiles,
+                SinkClass::MemoryPersist,
+                &write_subject(req),
+            ),
+            nucleus_provenance_memory::ConfLevel::Public,
         )
     }
 
@@ -472,7 +498,7 @@ mod tests {
             source_class: SourceClass::Web,
             source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
         };
-        let label = derive_label(&d, &[]);
+        let label = derive_label(&d, &[], LabelStamp::Unstamped);
         let rec = MemoryRecord::new(value, SchemaType::String, label, d);
         assert!(
             set.verified_admit(&rec, &TransformRegistry::new())
@@ -792,7 +818,7 @@ mod tests {
         MemoryWriteReq {
             value: value.to_string(),
             schema: SchemaType::String,
-            label: derive_label(&derivation, &[]),
+            label: derive_label(&derivation, &[], LabelStamp::Unstamped),
             derivation,
         }
     }
@@ -821,6 +847,9 @@ mod tests {
             SinkClass::MemoryPersist,
             &write_subject(&req()),
         ));
+        let public = nucleus_provenance_memory::ConfLevel::Public;
+        let wrong_pair = MemoryWriteAuthority::for_test(wrong_pair, public);
+        let unwitnessed = MemoryWriteAuthority::for_test(unwitnessed, public);
         for (why, bad) in [
             ("an authority for another value", other),
             ("an authority for a workspace write", wrong_pair),
@@ -832,6 +861,7 @@ mod tests {
         }
         let r = req();
         let stored = MemoryRecord::new(r.value, r.schema, r.label, r.derivation);
+        // (The content hash excludes label and stamp, so this locates the stamped record.)
         assert!(
             set.get(&stored.content_hash()).is_none(),
             "a refused spend admits nothing"

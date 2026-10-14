@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 
 use crate::crdt::{ProvenanceMemorySet, label_not_lower};
 use crate::hash::ContentHash;
-use crate::record::MemoryRecord;
+use crate::record::{LabelStamp, MemoryRecord};
 
 /// Domain tag for the head of version 0 of a space (no commits yet).
 const GENESIS_DOMAIN: &[u8] = b"nucleus-provenance-memory/genesis/v2\0";
@@ -33,6 +33,7 @@ const COMMIT_DOMAIN: &[u8] = b"nucleus-provenance-memory/commit/v2\0";
 const MIGRATION_PUBLISHER_DOMAIN: &[u8] = b"nucleus-provenance-memory/publisher/v1-migration\0";
 /// Domain tag for the publisher identity of an operator-direct write.
 const OPERATOR_PUBLISHER_DOMAIN: &[u8] = b"nucleus-provenance-memory/publisher/operator-direct\0";
+const STAMP_SEPARATOR: &[u8] = b"\0nucleus-provenance-memory/stamp/v1\0";
 
 fn tagged(domain: &[u8], body: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
@@ -327,8 +328,22 @@ fn head_hash(
     let mut entries = std::collections::BTreeMap::new();
     for record in records {
         let hash = record.content_hash();
-        let label =
+        let mut label =
             serde_json::to_vec(&record.label).map_err(|e| CommitError::Encoding(e.to_string()))?;
+        // The writer stamp (Program C, C1) is part of what a commit binds, beside the label.
+        // An unstamped record's entry is its label alone, exactly as before stamps existed, so
+        // every head already published is unchanged. JSON never holds a raw NUL, so a stamped
+        // entry (label, NUL tag, stamp) can never equal an unstamped one.
+        match record.stamp {
+            LabelStamp::Unstamped => {}
+            LabelStamp::Stamped { .. } => {
+                label.extend_from_slice(STAMP_SEPARATOR);
+                label.extend(
+                    serde_json::to_vec(&record.stamp)
+                        .map_err(|e| CommitError::Encoding(e.to_string()))?,
+                );
+            }
+        }
         if entries.insert(hash, label).is_some() {
             return Err(CommitError::DuplicateRecord(hash));
         }
