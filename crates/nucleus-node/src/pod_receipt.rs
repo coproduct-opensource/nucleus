@@ -174,6 +174,61 @@ pub(crate) struct Built {
     pub exit_code: i32,
 }
 
+/// Who signs a pod receipt, and what tier it states: decided by the node's
+/// evidence tier (`insecure_mode`, Program C C0), never per receipt.
+pub(crate) enum ReceiptSigner<'a> {
+    /// The node's certificate root, on a node whose driver keeps workloads
+    /// away from it. `sandbox_tier` is empty, as since #2512.
+    Root(&'a crate::pod_authority::PodAuthority),
+    /// Declared insecure mode: the insecure evidence key, which the node's
+    /// workloads can read, and `sandbox_tier = "insecure-shared-uid"`.
+    InsecureSharedUid(&'a ed25519_dalek::SigningKey),
+}
+
+impl<'a> ReceiptSigner<'a> {
+    /// This node's signer.
+    pub(crate) fn of(state: &'a NodeState) -> Self {
+        Self::for_tier(&state.trust_gate, &state.authority)
+    }
+
+    /// The signer `trust_gate`'s tier decides.
+    pub(crate) fn for_tier(
+        trust_gate: &'a crate::trust_gate::TrustGateConfig,
+        authority: &'a crate::pod_authority::PodAuthority,
+    ) -> Self {
+        match trust_gate.tier {
+            crate::insecure_mode::EvidenceTier::Separated => Self::Root(authority),
+            crate::insecure_mode::EvidenceTier::InsecureSharedUid => {
+                Self::InsecureSharedUid(&trust_gate.executor_signing_key)
+            }
+        }
+    }
+
+    fn tier(&self) -> crate::insecure_mode::EvidenceTier {
+        match self {
+            Self::Root(_) => crate::insecure_mode::EvidenceTier::Separated,
+            Self::InsecureSharedUid(_) => crate::insecure_mode::EvidenceTier::InsecureSharedUid,
+        }
+    }
+
+    /// `(signature, signer_pubkey)`, both hex.
+    fn sign(&self, preimage: &[u8]) -> (String, String) {
+        match self {
+            // The node signs, not the pod. See `PodAuthority::sign_pod_receipt` for why
+            // this is the one place the MediationReceipt pattern is deliberately not
+            // followed.
+            Self::Root(authority) => (
+                authority.sign_pod_receipt(preimage),
+                authority.root_pubkey_hex(),
+            ),
+            Self::InsecureSharedUid(key) => (
+                crate::pod_authority::sign_pod_receipt_with(key, preimage),
+                hex::encode(key.verifying_key().as_bytes()),
+            ),
+        }
+    }
+}
+
 /// Assemble the receipt for an exited pod.
 ///
 /// # Errors
@@ -181,7 +236,7 @@ pub(crate) struct Built {
 /// [`ReceiptError`] — still running, no exit report, or an unreadable one.
 pub(crate) async fn build(
     handle: &Arc<PodHandle>,
-    authority: &crate::pod_authority::PodAuthority,
+    signer: ReceiptSigner<'_>,
 ) -> Result<Built, ReceiptError> {
     let id = handle.id;
     let state = handle.status().await;
@@ -230,19 +285,13 @@ pub(crate) async fn build(
         audit_entry_count: report.audit_entry_count,
         timestamp_unix: report.timestamp_unix,
         manifest_hash,
-        // EMPTY, and deliberately so since #2512. This field's only producer
-        // was `trust.coproduct.one/profile`, a label the deleted reputation
-        // lookup wrote from an external service's letter bracket. With that
-        // path gone nothing produces a tier, and an empty string is the honest
-        // report of that — the alternative was leaving a label read that can
-        // never match, which reads like a live source.
-        //
-        // The field stays in the signed content (`absorb("sandbox_tier", …)`)
-        // rather than being removed: it is in `nucleus-sdk`'s public `Receipt`
-        // and dropping it is a wire change this issue did not scope. Feeding it
-        // from the isolation level the pod ACTUALLY got would be better data
-        // and is the natural follow-up; it is new behaviour, not a deletion.
-        sandbox_tier: String::new(),
+        // EMPTY on a node whose driver separates its workloads, as since #2512
+        // (the field's only earlier producer was a deleted reputation label).
+        // `insecure-shared-uid` on a node in declared insecure mode (Program
+        // C, C0): the one tier this field now states, decided by the same
+        // value that chose the signing key, so a receipt cannot carry the
+        // insecure key without the mark, or the mark under the root.
+        sandbox_tier: signer.tier().receipt_label().to_owned(),
         spiffe_id,
         version: RECEIPT_VERSION,
         report_provenance: provenance,
@@ -257,11 +306,7 @@ pub(crate) async fn build(
         signature: String::new(),
         signer_pubkey: String::new(),
     };
-    // The node signs, not the pod. See `PodAuthority::sign_pod_receipt` for why
-    // this is the one place the MediationReceipt pattern is deliberately not
-    // followed.
-    receipt.signature = authority.sign_pod_receipt(&receipt.preimage());
-    receipt.signer_pubkey = authority.root_pubkey_hex();
+    (receipt.signature, receipt.signer_pubkey) = signer.sign(&receipt.preimage());
 
     Ok(Built {
         receipt,
@@ -618,15 +663,22 @@ mod tests {
             write_report(dir.path(), &serde_json::to_string(&report).unwrap());
             assert!(
                 matches!(
-                    build(&pod(dir.path(), true, &[]).await, &authority(dir.path())).await,
+                    build(
+                        &pod(dir.path(), true, &[]).await,
+                        ReceiptSigner::Root(&authority(dir.path()))
+                    )
+                    .await,
                     Err(ReceiptError::Malformed(_))
                 ),
                 "guest-authored provenance is not a report field"
             );
             write_report(dir.path(), REPORT);
-            let built = build(&pod(dir.path(), true, &[]).await, &authority(dir.path()))
-                .await
-                .unwrap();
+            let built = build(
+                &pod(dir.path(), true, &[]).await,
+                ReceiptSigner::Root(&authority(dir.path())),
+            )
+            .await
+            .unwrap();
             assert_eq!(built.receipt.version, RECEIPT_VERSION);
             assert_eq!(
                 built.receipt.report_provenance,
@@ -652,9 +704,12 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), REPORT);
             let auth = authority(dir.path());
-            let built = build(&pod(dir.path(), true, &[]).await, &auth)
-                .await
-                .expect("built");
+            let built = build(
+                &pod(dir.path(), true, &[]).await,
+                ReceiptSigner::Root(&auth),
+            )
+            .await
+            .expect("built");
             let r = &built.receipt;
 
             assert!(
@@ -687,6 +742,63 @@ mod tests {
                 ),
                 "a rewritten workspace hash still verified — the signature is not binding the content"
             );
+        }
+
+        /// Program C, C0: on a node in declared insecure mode the receipt says
+        /// so, inside the signature, and is signed by the insecure evidence
+        /// key, never by the root that anchors the node's certificates.
+        #[tokio::test]
+        async fn an_insecure_mode_receipt_carries_its_tier_and_the_insecure_key() {
+            use crate::insecure_mode::{EvidenceTier, INSECURE_RECEIPT_TIER};
+            use crate::pod_authority::verify_pod_receipt;
+            let dir = tempfile::tempdir().expect("tempdir");
+            write_report(dir.path(), REPORT);
+            let auth = authority(dir.path());
+            let gate = crate::trust_gate::TrustGateConfig::from_env(
+                dir.path(),
+                &crate::pod_authority::NO_TPM.node_keys,
+                EvidenceTier::InsecureSharedUid,
+            )
+            .expect("insecure trust gate");
+            let signer = ReceiptSigner::for_tier(&gate, &auth);
+            let r = build(&pod(dir.path(), true, &[]).await, signer)
+                .await
+                .expect("built")
+                .receipt;
+            assert_eq!(r.sandbox_tier, INSECURE_RECEIPT_TIER);
+            assert_eq!(
+                r.signer_pubkey,
+                hex::encode(gate.executor_signing_key.verifying_key().as_bytes())
+            );
+            assert_ne!(r.signer_pubkey, auth.root_pubkey_hex());
+            assert!(verify_pod_receipt(
+                &r.signer_pubkey,
+                &r.preimage(),
+                &r.signature
+            ));
+            assert!(
+                !verify_pod_receipt(&auth.root_pubkey_hex(), &r.preimage(), &r.signature),
+                "an insecure-mode receipt verifies under the node's root"
+            );
+            // The tier is signed: stripping it breaks the signature.
+            let mut stripped = r.clone();
+            stripped.sandbox_tier.clear();
+            assert!(!verify_pod_receipt(
+                &stripped.signer_pubkey,
+                &stripped.preimage(),
+                &stripped.signature
+            ));
+
+            // Control: a separating node's receipt states no tier, under the root.
+            let separated = build(
+                &pod(dir.path(), true, &[]).await,
+                ReceiptSigner::Root(&auth),
+            )
+            .await
+            .expect("built")
+            .receipt;
+            assert_eq!(separated.sandbox_tier, "");
+            assert_eq!(separated.signer_pubkey, auth.root_pubkey_hex());
         }
 
         async fn pod(
@@ -768,7 +880,7 @@ mod tests {
             let handle = pod(dir.path(), false, &[]).await;
             // `let Err(..) else` rather than `expect_err`: `Built` has no
             // `Debug`, and a test is not a reason to add one to a production type.
-            let Err(err) = build(&handle, &authority(dir.path())).await else {
+            let Err(err) = build(&handle, ReceiptSigner::Root(&authority(dir.path()))).await else {
                 panic!("a running pod must not produce a receipt");
             };
             assert!(matches!(err, ReceiptError::NotExited), "{err:?}");
@@ -781,7 +893,7 @@ mod tests {
         async fn an_exited_pod_with_no_report_says_which_file_is_missing() {
             let dir = tempfile::tempdir().expect("tempdir");
             let handle = pod(dir.path(), true, &[]).await;
-            let Err(err) = build(&handle, &authority(dir.path())).await else {
+            let Err(err) = build(&handle, ReceiptSigner::Root(&authority(dir.path()))).await else {
                 panic!("no report on disk, so no receipt");
             };
             let ReceiptError::NoExitReport(why) = err else {
@@ -800,7 +912,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), "{not json");
             let handle = pod(dir.path(), true, &[]).await;
-            let Err(err) = build(&handle, &authority(dir.path())).await else {
+            let Err(err) = build(&handle, ReceiptSigner::Root(&authority(dir.path()))).await else {
                 panic!("malformed json must not produce a receipt");
             };
             assert!(matches!(err, ReceiptError::Malformed(_)), "{err:?}");
@@ -813,7 +925,7 @@ mod tests {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), REPORT);
             let handle = pod(dir.path(), true, &[]).await;
-            let built = build(&handle, &authority(dir.path()))
+            let built = build(&handle, ReceiptSigner::Root(&authority(dir.path())))
                 .await
                 .expect("a receipt is produced");
 
@@ -850,12 +962,18 @@ mod tests {
             let b = tempfile::tempdir().expect("tempdir");
             write_report(a.path(), REPORT);
             write_report(b.path(), REPORT);
-            let one = build(&pod(a.path(), true, &[]).await, &authority(a.path()))
-                .await
-                .expect("built");
-            let two = build(&pod(b.path(), true, &[]).await, &authority(b.path()))
-                .await
-                .expect("built");
+            let one = build(
+                &pod(a.path(), true, &[]).await,
+                ReceiptSigner::Root(&authority(a.path())),
+            )
+            .await
+            .expect("built");
+            let two = build(
+                &pod(b.path(), true, &[]).await,
+                ReceiptSigner::Root(&authority(b.path())),
+            )
+            .await
+            .expect("built");
 
             assert_ne!(
                 one.receipt.v1_content_hash, two.receipt.v1_content_hash,
@@ -883,7 +1001,9 @@ mod tests {
                 ],
             )
             .await;
-            let built = build(&handle, &authority(dir.path())).await.expect("built");
+            let built = build(&handle, ReceiptSigner::Root(&authority(dir.path())))
+                .await
+                .expect("built");
 
             assert_eq!(built.agent_identity, "agent-7");
             assert_eq!(
@@ -904,9 +1024,12 @@ mod tests {
         async fn an_unlabelled_pod_still_names_itself() {
             let dir = tempfile::tempdir().expect("tempdir");
             write_report(dir.path(), REPORT);
-            let built = build(&pod(dir.path(), true, &[]).await, &authority(dir.path()))
-                .await
-                .expect("built");
+            let built = build(
+                &pod(dir.path(), true, &[]).await,
+                ReceiptSigner::Root(&authority(dir.path())),
+            )
+            .await
+            .expect("built");
             assert_eq!(
                 built.agent_identity, "probe",
                 "the spec's name is the next-best identity"

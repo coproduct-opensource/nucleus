@@ -4,7 +4,7 @@
 
 use axum::Json;
 use axum::extract::{Extension, Path, State};
-use nucleus_ci_verdict::execution::{Backend, ExecutionClaim, ExecutionSchema};
+use nucleus_ci_verdict::execution::{Backend, ExecutionClaim, ExecutionSchema, SandboxTier};
 use nucleus_receipt::{Receipt, Session};
 use nucleus_spec::workload_result::WorkloadResult;
 use nucleus_spec::workload_result::{ProgramBinding, WorkloadIsolation};
@@ -94,6 +94,8 @@ pub(crate) async fn observe_claim(
         backend,
         observed,
         state.node_platform.platform(),
+        // The same value that chose the key `sign_claim` signs with.
+        state.trust_gate.tier.claim_tier(),
     )?;
     Ok((claim, address))
 }
@@ -129,6 +131,7 @@ fn completed_claim(
     backend: Backend,
     observed: WorkloadResult,
     node_platform: nucleus_ci_verdict::execution::NodePlatform,
+    sandbox_tier: SandboxTier,
 ) -> Result<ExecutionClaim, ApiError> {
     if backend == Backend::Firecracker {
         require_image_pins(spec)?;
@@ -195,6 +198,7 @@ fn completed_claim(
         environment_complete_sha256: environment.complete_sha256,
         artifacts: Default::default(),
         node_platform,
+        sandbox_tier,
     })
 }
 
@@ -363,6 +367,7 @@ mod tests {
             Backend::Local,
             observed(&spec),
             unattested(),
+            SandboxTier::Driver,
         )
         .unwrap();
         assert_eq!(claim.exit_code, Some(23));
@@ -386,7 +391,15 @@ mod tests {
             },
         ] {
             assert!(
-                completed_claim(&spec, Uuid::nil(), Backend::Local, result, unattested()).is_err()
+                completed_claim(
+                    &spec,
+                    Uuid::nil(),
+                    Backend::Local,
+                    result,
+                    unattested(),
+                    SandboxTier::Driver
+                )
+                .is_err()
             );
         }
         let mut observation = observed(&spec);
@@ -401,7 +414,8 @@ mod tests {
                 Uuid::nil(),
                 Backend::Local,
                 observation,
-                unattested()
+                unattested(),
+                SandboxTier::Driver
             )
             .is_err()
         );

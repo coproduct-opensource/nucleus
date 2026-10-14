@@ -831,6 +831,18 @@ pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_he
     )
 }
 
+/// Sign a pod receipt's preimage with a key that is NOT the node's root, in
+/// the pod-receipt signature space: a node in declared insecure mode's
+/// evidence key (`insecure_mode`, Program C C0). Verifies with
+/// [`verify_pod_receipt`] under that key's public half, and under no root.
+pub(crate) fn sign_pod_receipt_with(key: &ed25519_dalek::SigningKey, preimage: &[u8]) -> String {
+    use ed25519_dalek::Signer as _;
+    hex::encode(
+        key.sign(&SignedRecord::PodReceipt.message(preimage))
+            .to_bytes(),
+    )
+}
+
 /// Verify a signature a node's root key made over `preimage` in `kind`'s signature space.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_record(

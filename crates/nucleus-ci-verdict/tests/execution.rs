@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use nucleus_ci_verdict::execution::{
-    Backend, ExecutionClaim, ExecutionError, ExecutionSchema, ExpectedExecution, NodePlatform,
-    verify_execution,
+    Backend, ExecutionClaim, ExecutionError, ExecutionSchema, ExpectedExecution,
+    INSECURE_SHARED_UID_KID_PREFIX, NodePlatform, SandboxTier, verify_execution,
 };
 use nucleus_receipt::{Projection, Receipt, Session};
 
@@ -130,7 +130,78 @@ fn claim() -> ExecutionClaim {
             evidence_sha256: DIGEST.into(),
             epoch: 4,
         },
+        sandbox_tier: SandboxTier::Driver,
     }
+}
+
+/// C0: a bare-tier node's key is readable by its workloads, so its evidence is
+/// refused by name, even pinned, even claiming a protected microVM, and even
+/// when everything else about the claim binds.
+#[test]
+fn insecure_tier_evidence_is_refused_by_its_key_and_by_its_declaration() {
+    let key = SigningKey::from_bytes(&[9; 32]);
+    let public = key.verifying_key().to_bytes();
+    let insecure_kid = format!("{INSECURE_SHARED_UID_KID_PREFIX}0011223344556677");
+
+    // The node's own declaration, under an otherwise ordinary kid.
+    let mut declared = claim();
+    declared.sandbox_tier = SandboxTier::InsecureSharedUid;
+    assert_eq!(
+        verify_execution(&sign(&declared, &key), &expected(&public)).unwrap_err(),
+        ExecutionError::InsecureSharedUid
+    );
+
+    // The insecure kid, pinned by a controller that took the node's
+    // admission at its word, over a forged Firecracker / uid-isolated claim
+    // that omits the declaration.
+    let forged = claim();
+    assert_eq!(forged.backend, Backend::Firecracker);
+    assert!(forged.uid_isolated);
+    let receipt = sign_body_as(serde_json::to_value(&forged).unwrap(), &key, &insecure_kid);
+    let mut pinned = expected(&public);
+    pinned.issuer_kid = &insecure_kid;
+    assert_eq!(
+        verify_execution(&receipt, &pinned).unwrap_err(),
+        ExecutionError::InsecureSharedUid
+    );
+    // And the same receipt against an ordinary pin is refused by name too,
+    // not merely as a kid mismatch.
+    assert_eq!(
+        verify_execution(&receipt, &expected(&public)).unwrap_err(),
+        ExecutionError::InsecureSharedUid
+    );
+
+    // Control: the identical claim under an ordinary kid verifies, so the
+    // refusals above are the tier's and nothing else's.
+    assert!(verify_execution(&sign(&forged, &key), &expected(&public)).is_ok());
+}
+
+/// The declaration is on the wire only when it says something, so every
+/// receipt from a separating driver is byte-identical to before the field,
+/// and a verifier predating it refuses an insecure claim as an unknown field.
+#[test]
+fn only_the_insecure_declaration_is_serialized() {
+    let body = serde_json::to_value(claim()).unwrap();
+    assert!(body.get("sandbox_tier").is_none());
+    let mut insecure = claim();
+    insecure.sandbox_tier = SandboxTier::InsecureSharedUid;
+    let body = serde_json::to_value(&insecure).unwrap();
+    assert_eq!(body["sandbox_tier"], "insecure-shared-uid");
+    let back: ExecutionClaim = serde_json::from_value(body).unwrap();
+    assert_eq!(back.sandbox_tier, SandboxTier::InsecureSharedUid);
+}
+
+fn sign_body_as(body: serde_json::Value, key: &SigningKey, kid: &str) -> Receipt {
+    Receipt::sign(
+        Session {
+            session_id: "pod-1".into(),
+            issuer_kid: kid.into(),
+            issued_at_micros: 150,
+            parent_chain: vec![],
+        },
+        vec![Projection::Ci(body)],
+        key,
+    )
 }
 
 #[test]
