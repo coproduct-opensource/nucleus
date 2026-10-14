@@ -35,7 +35,10 @@
 //! (`--upstreams`), because a binding names the upstreams its callers may be
 //! admitted to and one file is one atomic statement of what this node offers.
 //! Unknown fields are refused and a bad binding stops the node from starting,
-//! for the same reason `upstreams.rs` gives:
+//! for the same reason `upstreams.rs` gives. A running node re-reads the file
+//! on SIGHUP or when its digest changes (`pod_authority/registry.rs`), with the
+//! same rules; a bad file then keeps the bindings in force rather than stopping
+//! anything.
 //!
 //! ```toml
 //! [[caller]]
@@ -51,7 +54,13 @@
 //! ceiling           = { profile = "codegen" }         # or { inline = { …lattice… } }
 //! upstreams         = ["model-api"]                   # names from [[upstream]]; optional
 //! svid_ttl_secs     = 600                             # optional; default 600, at most 3600
+//! max_cost_usd_per_day = "50"                         # optional; allocations per UTC day
 //! ```
+//!
+//! `max_cost_usd_per_day` bounds what pods admitted under the binding may be
+//! allocated within one UTC day, beside the ceiling's `max_cost_usd`, which
+//! bounds the binding's whole life. Absent, there is no day dimension and the
+//! ceiling alone binds, as before the field existed.
 //!
 //! Load-time rules, each stopping the node:
 //!
@@ -225,6 +234,8 @@ pub(crate) struct CallerFile {
     upstreams: Vec<String>,
     #[serde(default)]
     svid_ttl_secs: Option<u64>,
+    #[serde(default)]
+    max_cost_usd_per_day: Option<rust_decimal::Decimal>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -269,6 +280,9 @@ pub(crate) struct CallerBinding {
     ceiling: PermissionLattice,
     upstreams: Vec<CredentialedEgressSpec>,
     svid_ttl: Duration,
+    /// `max_cost_usd_per_day`, in micro-USD rounded down as a ledger's ceiling
+    /// is. `None`: no day dimension (the ceiling still bounds the total).
+    daily_max_micro: Option<u64>,
 }
 
 impl std::fmt::Debug for CallerBinding {
@@ -295,6 +309,12 @@ impl CallerBinding {
     /// The registry upstreams a pod created under this binding may be admitted.
     pub fn upstreams(&self) -> &[CredentialedEgressSpec] {
         &self.upstreams
+    }
+
+    /// The most pods under this binding may be allocated in one UTC day, in
+    /// micro-USD; `None` when the binding sets no daily allowance.
+    pub fn daily_max_micro(&self) -> Option<u64> {
+        self.daily_max_micro
     }
 
     /// The SPIFFE ID a validated `sub` maps to, or `None` when the `sub`
@@ -348,6 +368,22 @@ impl CallerBindings {
         files: &[CallerFile],
         registry: &UpstreamRegistry,
         node_trust_domain: &str,
+    ) -> Result<Self, String> {
+        Self::succeeding(files, registry, node_trust_domain, None)
+    }
+
+    /// [`Self::from_files`] for a reload: every rule is the same, and a binding
+    /// whose issuer `previous` also binds shares its replay cache
+    /// (`ExternalIssuerValidator::succeeding`), so a token spent before the
+    /// reload stays spent after it.
+    ///
+    /// # Errors
+    /// As [`Self::from_files`].
+    pub fn succeeding(
+        files: &[CallerFile],
+        registry: &UpstreamRegistry,
+        node_trust_domain: &str,
+        previous: Option<&Self>,
     ) -> Result<Self, String> {
         if files.is_empty() {
             return Ok(Self::default());
@@ -417,8 +453,13 @@ impl CallerBindings {
                 cfg.leeway = Duration::from_secs(l);
             }
             cfg.required_claims = f.required_claims.clone();
-            let validator = ExternalIssuerValidator::new(cfg, http.clone())
-                .map_err(|e| at(&format!("issuer settings: {e}")))?;
+            let before = previous.and_then(|p| p.by_issuer(&f.issuer));
+            let validator = ExternalIssuerValidator::succeeding(
+                cfg,
+                http.clone(),
+                before.map(|b| &b.validator),
+            )
+            .map_err(|e| at(&format!("issuer settings: {e}")))?;
             let ceiling = f
                 .ceiling
                 .resolve()
@@ -438,6 +479,13 @@ impl CallerBindings {
             if svid_ttl.as_secs() < MIN_SVID_TTL_SECS || svid_ttl > MAX_SVID_TTL {
                 return Err(at("svid_ttl_secs must be between 5 and 3600"));
             }
+            let daily_max_micro = match f.max_cost_usd_per_day {
+                None => None,
+                Some(usd) => Some(
+                    usd_to_micro_floor(usd)
+                        .ok_or_else(|| at("max_cost_usd_per_day must be a non-negative amount"))?,
+                ),
+            };
             bindings.push(CallerBinding {
                 label: f.label.clone(),
                 trust_domain: f.trust_domain.clone(),
@@ -446,6 +494,7 @@ impl CallerBindings {
                 ceiling,
                 upstreams,
                 svid_ttl,
+                daily_max_micro,
             });
         }
         Ok(Self { bindings })
@@ -473,6 +522,19 @@ impl CallerBindings {
     pub fn trust_domains(&self) -> impl Iterator<Item = &str> {
         self.bindings.iter().map(|b| b.trust_domain.as_str())
     }
+}
+
+/// USD to micro-USD rounded down, the rounding a ledger's ceiling gets
+/// (`BudgetLedger::for_parent`): an allowance never rounds up into more than
+/// was written. `None` for a negative or unrepresentable amount.
+fn usd_to_micro_floor(usd: rust_decimal::Decimal) -> Option<u64> {
+    use rust_decimal::prelude::ToPrimitive as _;
+    if usd.is_sign_negative() {
+        return None;
+    }
+    usd.checked_mul(rust_decimal::Decimal::from(1_000_000))?
+        .floor()
+        .to_u64()
 }
 
 /// The trust domain of a SPIFFE ID, or `None` for something that is not one.
@@ -863,6 +925,9 @@ mod tests {
     use ring::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair};
     use serde_json::{Value, json};
 
+    // Reloading the registry, and the per-day allowance, through the exchange.
+    mod reload;
+
     const NODE_TD: &str = "node.local";
     const ISS_A: &str = "https://issuer-a.example.invalid";
     const ISS_B: &str = "https://issuer-b.example.invalid";
@@ -1001,6 +1066,7 @@ ceiling = {{ profile = "read_only" }}
             cert_trust_anchors: Vec::new(),
             max_children_per_pod: 8,
             upstreams: Some(path),
+            upstreams_poll_secs: 0,
             federation_issuer: None,
             ingress: FederationArgs::default(),
             approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
@@ -1257,12 +1323,8 @@ ceiling = {{ profile = "read_only" }}
             .await
             .unwrap(),
         );
-        let ceiling =
-            f.st.authority
-                .caller_bindings()
-                .by_trust_domain(TD_A)
-                .unwrap()
-                .ceiling();
+        let bindings = f.st.authority.caller_bindings();
+        let ceiling = bindings.by_trust_domain(TD_A).unwrap().ceiling();
         assert!(
             !ceiling.leq(&PermissionLattice::read_only()),
             "fixture: narrowing is visible"
@@ -1368,11 +1430,8 @@ ceiling = {{ profile = "read_only" }}
                 .admit(&admission(&resp), &pod_spec(granted, 1), pod)
                 .await
                 .expect("admitted through case 2");
-        let binding =
-            f.st.authority
-                .caller_bindings()
-                .by_trust_domain(TD_A)
-                .unwrap();
+        let bindings = f.st.authority.caller_bindings();
+        let binding = bindings.by_trust_domain(TD_A).unwrap();
         assert!(
             issued.effective.leq(binding.ceiling()),
             "clamped to the ceiling"

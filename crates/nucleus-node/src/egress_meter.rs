@@ -273,6 +273,7 @@ pub(crate) fn test_authority() -> &'static Arc<crate::pod_authority::PodAuthorit
                     cert_trust_anchors: Vec::new(),
                     max_children_per_pod: 8,
                     upstreams: None,
+                    upstreams_poll_secs: 0,
                     federation_issuer: None,
                     ingress: Default::default(),
                     approvals: crate::host_decide::effects::ApprovalTimingArgs::HUMAN,
