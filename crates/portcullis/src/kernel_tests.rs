@@ -2127,3 +2127,332 @@ fn scope_is_checked_before_currency() {
         Err(RedeemError::ScopeMismatch { .. })
     ));
 }
+
+// ── #2701 / #2575: the four deciders agree ──────────────────────────────────
+//
+// `Kernel::decide`, `Kernel::decide_term`, `Kernel::decide_term_with_flow`
+// (no tracker) and `portcullis_core::decide_pure` are four statements of one
+// decision. `decide_pure` is the proof target; the three kernel paths are what
+// ships. This drives all four over generated policies and generated action
+// sequences across every one of the 13 operations, and requires the same
+// verdict from each at every step.
+//
+// The correspondence between their inputs, stated once:
+//
+// * `decide_pure` reads the capability LEVEL; the kernel reads the level for
+//   denial and the policy's approval OBLIGATIONS for static approval. A
+//   policy here carries an obligation for every `LowRisk` operation, plus the
+//   ones `normalize` adds when the capabilities form the uninhabitable state,
+//   and an `Always` operation under an obligation is `LowRisk` to
+//   `decide_pure`. (A `LowRisk` operation WITHOUT an obligation is allowed by
+//   the kernel and held by `decide_pure`; that divergence is real and outside
+//   this input space, reported on #2701.)
+// * `decide_pure` takes the exposure as an argument; each kernel accumulates
+//   its own. The pure decision is taken on `decide`'s pre-decision exposure,
+//   and the three kernels' exposures are required equal after every step.
+// * Everything else the kernel checks (time, budget, isolation, paths,
+//   commands, egress, sink scope, rules) is held passing: a denial for any
+//   reason but capability fails the test as outside the modelled space, not
+//   as a parity failure.
+//
+// One divergence is real, and pinned rather than modelled away: the kernel's
+// exposure gate projects `RunBash` as OMNIBUS (`exposure_core::project_exposure`:
+// a shell can read private data as well as send it), while `decide_pure`
+// projects only its `ExfilVector`. So after untrusted content and with no
+// private read yet, the kernel holds `RunBash` and `decide_pure` allows it —
+// the shipping decider is the stricter one, and the proof target does not
+// state its rule. For `RunBash` the kernel must equal `decide_pure` on the
+// omnibus exposure; the divergence is required to be REACHED, so a change
+// that makes the two agree (either side) reds here and this pin is revisited.
+mod decider_parity {
+    use super::*;
+    use crate::guard::ExposureLabel as GuardLabel;
+    use portcullis_core::{
+        decide_pure, ExposureLabel as CoreLabel, ExposureSet as CoreExposure, PureVerdict,
+    };
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, TestRunner};
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    /// `decide_pure`'s verdict space, which each kernel decider is read into.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum Class {
+        Allow,
+        DenyCapability,
+        RequiresApproval,
+        GateExfil,
+    }
+
+    /// What the runs reached: every (operation, verdict) pair, and how often
+    /// the pinned `RunBash` divergence was the deciding difference.
+    #[derive(Default)]
+    struct Reached {
+        pairs: BTreeSet<(Operation, Class)>,
+        omnibus_divergences: usize,
+    }
+
+    fn pure_class(v: PureVerdict) -> Class {
+        match v {
+            PureVerdict::Allow => Class::Allow,
+            PureVerdict::DenyCapability => Class::DenyCapability,
+            PureVerdict::RequiresApproval => Class::RequiresApproval,
+            PureVerdict::GateExfil => Class::GateExfil,
+        }
+    }
+
+    /// A kernel decision in `decide_pure`'s terms. The kernel reports both
+    /// approval kinds as `RequiresApproval`; `dynamic_gate_applied` is what
+    /// tells the exposure gate from a static obligation.
+    fn kernel_class(d: &Decision) -> Class {
+        match &d.verdict {
+            Verdict::Allow => Class::Allow,
+            Verdict::RequiresApproval if d.exposure_transition.dynamic_gate_applied => {
+                Class::GateExfil
+            }
+            Verdict::RequiresApproval => Class::RequiresApproval,
+            Verdict::Deny(DenyReason::InsufficientCapability) => Class::DenyCapability,
+            // The term paths refuse a `Never` operation at preflight, by the
+            // ceiling obligation, before the lattice step is reached.
+            Verdict::Deny(DenyReason::ActionTermRejected { detail })
+                if detail.contains("WithinDelegationCeiling") =>
+            {
+                Class::DenyCapability
+            }
+            Verdict::Deny(other) => {
+                panic!(
+                    "{:?} denied outside the modelled space: {other:?}",
+                    d.operation
+                )
+            }
+        }
+    }
+
+    fn core_exposure(s: &crate::guard::ExposureSet) -> CoreExposure {
+        let mut out = CoreExposure::empty();
+        for label in [
+            GuardLabel::PrivateData,
+            GuardLabel::UntrustedContent,
+            GuardLabel::ExfilVector,
+        ] {
+            if s.contains(label) {
+                out.set(match label {
+                    GuardLabel::PrivateData => CoreLabel::PrivateData,
+                    GuardLabel::UntrustedContent => CoreLabel::UntrustedContent,
+                    GuardLabel::ExfilVector => CoreLabel::ExfilVector,
+                });
+            }
+        }
+        out
+    }
+
+    /// A subject every non-capability check passes, per operation.
+    fn subject_for(op: Operation) -> &'static str {
+        match op {
+            Operation::ReadFiles | Operation::WriteFiles | Operation::EditFiles => "src/lib.rs",
+            Operation::RunBash => "cargo test",
+            Operation::GlobSearch | Operation::GrepSearch => "src",
+            Operation::WebSearch => "lattice decision procedures",
+            Operation::WebFetch => "https://example.com/doc",
+            Operation::GitCommit => "fix: parity",
+            Operation::GitPush => "origin",
+            Operation::CreatePr => "fix: parity",
+            Operation::ManagePods => "pod-1",
+            Operation::SpawnAgent => "agent-1",
+        }
+    }
+
+    fn set_level(caps: &mut crate::CapabilityLattice, op: Operation, level: CapabilityLevel) {
+        let field = match op {
+            Operation::ReadFiles => &mut caps.read_files,
+            Operation::WriteFiles => &mut caps.write_files,
+            Operation::EditFiles => &mut caps.edit_files,
+            Operation::RunBash => &mut caps.run_bash,
+            Operation::GlobSearch => &mut caps.glob_search,
+            Operation::GrepSearch => &mut caps.grep_search,
+            Operation::WebSearch => &mut caps.web_search,
+            Operation::WebFetch => &mut caps.web_fetch,
+            Operation::GitCommit => &mut caps.git_commit,
+            Operation::GitPush => &mut caps.git_push,
+            Operation::CreatePr => &mut caps.create_pr,
+            Operation::ManagePods => &mut caps.manage_pods,
+            Operation::SpawnAgent => &mut caps.spawn_agent,
+        };
+        *field = level;
+    }
+
+    fn policy(levels: &[CapabilityLevel; 13]) -> PermissionLattice {
+        let mut policy = PermissionLattice::permissive();
+        policy.commands = crate::CommandLattice::permissive();
+        // `permissive()` is itself normalized, so it arrives holding the
+        // uninhabitable-state obligations for ITS all-`Always` capabilities.
+        // They are recomputed below for the generated ones.
+        policy.obligations = crate::Obligations::default();
+        for (op, level) in Operation::ALL.into_iter().zip(levels.iter().copied()) {
+            set_level(&mut policy.capabilities, op, level);
+            if level == CapabilityLevel::LowRisk {
+                policy.obligations.insert(op);
+            }
+        }
+        policy.normalize()
+    }
+
+    /// The level `decide_pure` sees: an obligation on an `Always` operation
+    /// is the static approval `decide_pure` spells `LowRisk`.
+    fn pure_level(policy: &PermissionLattice, op: Operation) -> CapabilityLevel {
+        match policy.capabilities.level_for(op) {
+            CapabilityLevel::Always if policy.requires_approval(op) => CapabilityLevel::LowRisk,
+            level => level,
+        }
+    }
+
+    /// What the kernel must answer, from `decide_pure`: on the exposure as it
+    /// stands, except `RunBash`, which is decided on the omnibus exposure (see
+    /// the module comment). Returns the verdict and whether the omnibus
+    /// projection is what made the difference.
+    fn expected(level: CapabilityLevel, exposure: CoreExposure, op: Operation) -> (Class, bool) {
+        let plain = pure_class(decide_pure(level, &exposure, op));
+        match op {
+            Operation::RunBash => {
+                let mut omnibus = exposure;
+                omnibus.set(CoreLabel::PrivateData);
+                let omnibus = pure_class(decide_pure(level, &omnibus, op));
+                (omnibus, omnibus != plain)
+            }
+            Operation::ReadFiles
+            | Operation::WriteFiles
+            | Operation::EditFiles
+            | Operation::GlobSearch
+            | Operation::GrepSearch
+            | Operation::WebSearch
+            | Operation::WebFetch
+            | Operation::GitCommit
+            | Operation::GitPush
+            | Operation::CreatePr
+            | Operation::ManagePods
+            | Operation::SpawnAgent => (plain, false),
+        }
+    }
+
+    /// Run one policy and one sequence through all four deciders.
+    fn run(levels: &[CapabilityLevel; 13], sequence: &[Operation], reached: &mut Reached) {
+        let policy = policy(levels);
+        let mut by_op = Kernel::new(policy.clone());
+        let mut by_term = Kernel::new(policy.clone());
+        let mut by_flow = Kernel::new(policy.clone());
+        for &op in sequence {
+            let subject = subject_for(op);
+            let (want, omnibus) =
+                expected(pure_level(&policy, op), core_exposure(by_op.exposure()), op);
+            let (d_op, _) = by_op.decide(op, subject);
+            let (d_term, _) = by_term.decide_term(crate::ActionTerm::from_operation(op, subject));
+            let (d_flow, _) = by_flow
+                .decide_term_with_flow::<portcullis_core::ifc_api::FlowTracker>(
+                    crate::ActionTerm::from_operation(op, subject),
+                    None,
+                );
+            let got = [
+                kernel_class(&d_op),
+                kernel_class(&d_term),
+                kernel_class(&d_flow),
+            ];
+            assert_eq!(
+                got,
+                [want; 3],
+                "{op:?} at {:?} after {sequence:?}: decide / decide_term / \
+                 decide_term_with_flow against decide_pure",
+                policy.capabilities.level_for(op)
+            );
+            assert_eq!(
+                by_op.exposure(),
+                by_term.exposure(),
+                "{op:?}: exposure drift"
+            );
+            assert_eq!(
+                by_op.exposure(),
+                by_flow.exposure(),
+                "{op:?}: exposure drift"
+            );
+            reached.pairs.insert((op, want));
+            reached.omnibus_divergences += usize::from(omnibus);
+        }
+    }
+
+    fn level() -> impl Strategy<Value = CapabilityLevel> {
+        prop_oneof![
+            Just(CapabilityLevel::Never),
+            Just(CapabilityLevel::LowRisk),
+            Just(CapabilityLevel::Always),
+        ]
+    }
+
+    /// Generated policies and sequences; every case ends with a sweep of all
+    /// 13 operations, so each is decided under every generated policy. The
+    /// runner is seeded, so the cases (and the coverage asserted below) are
+    /// the same on every run.
+    #[test]
+    fn decide_decide_term_decide_term_with_flow_and_decide_pure_agree() {
+        let reached = RefCell::new(Reached::default());
+
+        // The divergence, at the minimal case the generator first shrank to:
+        // `RunBash` and `WebSearch` granted, nothing else; search, then shell.
+        let mut minimal = [CapabilityLevel::Never; 13];
+        for (slot, op) in minimal.iter_mut().zip(Operation::ALL) {
+            if matches!(op, Operation::RunBash | Operation::WebSearch) {
+                *slot = CapabilityLevel::Always;
+            }
+        }
+        run(
+            &minimal,
+            &[Operation::WebSearch, Operation::RunBash],
+            &mut reached.borrow_mut(),
+        );
+        assert_eq!(
+            reached.borrow().omnibus_divergences,
+            1,
+            "after untrusted content, decide_pure allows RunBash and the kernel holds it"
+        );
+
+        let mut runner = TestRunner::new_with_rng(
+            Config {
+                cases: 512,
+                ..Config::default()
+            },
+            proptest::test_runner::TestRng::deterministic_rng(
+                proptest::test_runner::RngAlgorithm::ChaCha,
+            ),
+        );
+        let ops = proptest::sample::select(Operation::ALL.to_vec());
+        runner
+            .run(
+                &(
+                    proptest::array::uniform13(level()),
+                    proptest::collection::vec(ops, 0..12),
+                ),
+                |(levels, prefix)| {
+                    let sequence: Vec<Operation> =
+                        prefix.into_iter().chain(Operation::ALL).collect();
+                    run(&levels, &sequence, &mut reached.borrow_mut());
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        // Non-vacuity: every operation reached allow, capability denial and
+        // static approval, and the exposure gate fired on some operation. A
+        // parity check over a space where everything is denied agrees too.
+        let reached = reached.into_inner();
+        for op in Operation::ALL {
+            for class in [Class::Allow, Class::DenyCapability, Class::RequiresApproval] {
+                assert!(
+                    reached.pairs.contains(&(op, class)),
+                    "{op:?} never reached {class:?}"
+                );
+            }
+        }
+        assert!(
+            reached.pairs.iter().any(|(_, c)| *c == Class::GateExfil),
+            "the exposure gate never fired"
+        );
+    }
+}

@@ -45,6 +45,7 @@ mod firecracker_config;
 mod firecracker_lifecycle;
 mod grpc_tls;
 mod guest_diagnosis;
+mod guest_report;
 mod http_serve;
 mod identity;
 mod image_identity;
@@ -151,9 +152,14 @@ pub use nucleus_proto::nucleus_node as proto;
 
 use proto::node_service_server::{NodeService, NodeServiceServer};
 
+/// What `--version` prints: the release tag this binary was built for, else
+/// the Cargo version marked `+dev` (#3208).
+static VERSION: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| nucleus_spec::reported_version!().to_string());
+
 #[derive(Parser, Debug)]
 #[command(name = "nucleus-node", mut_args = |a| a.hide_env_values(true))]
-#[command(version, about = "Node daemon (kubelet analogue) for nucleus pods")]
+#[command(version = VERSION.as_str(), about ="Node daemon (kubelet analogue) for nucleus pods")]
 struct Args {
     /// Listen address for the node HTTP API.
     #[arg(long, env = "NUCLEUS_NODE_LISTEN", default_value = "127.0.0.1:8080")]
@@ -454,6 +460,8 @@ struct NodeState {
     intake: node_drain::Intake,
     state_dir: PathBuf,
     host_roots: host_paths::Roots,
+    /// Which guest the default rootfs is, measured once at startup (#3223).
+    guest_report: Arc<guest_report::GuestReport>,
     /// The most memory, vCPUs and huge pages one pod may ask for (#3130).
     pod_ceilings: pod_resources::PodCeilings,
     node_capacity: node_capacity::Capacity,
@@ -916,6 +924,17 @@ async fn main() -> Result<(), ApiError> {
             )
             .map_err(ApiError::Driver)?;
     }
+    // Which guest the default rootfs is, for `/v1/health` (#3223). Read once,
+    // here: the health route is public and never reads the rootfs itself.
+    let guest_report = {
+        let root = args.host_paths.artifacts_root.clone();
+        Arc::new(
+            tokio::task::spawn_blocking(move || guest_report::GuestReport::measure(&root))
+                .await
+                .map_err(|e| ApiError::Driver(format!("measuring the guest rootfs: {e}")))?,
+        )
+    };
+    info!(guest = %guest_report, "default guest rootfs");
     let state = NodeState {
         request_proofs: request_proof::RequestProofs::open(
             &args.authority.ingress,
@@ -926,6 +945,7 @@ async fn main() -> Result<(), ApiError> {
         intake: node_drain::Intake::open(),
         state_dir: args.state_dir.clone(),
         host_roots,
+        guest_report,
         memory,
         pod_ceilings: args.pod_ceilings.ceilings(),
         node_capacity: args.node_capacity.build()?,
@@ -1192,8 +1212,11 @@ async fn main() -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({"status": "ok"}))
+async fn health(State(state): State<NodeState>) -> Json<nucleus_spec::guest_release::NodeHealth> {
+    Json(nucleus_spec::guest_release::NodeHealth {
+        status: "ok".to_string(),
+        guest: Some(state.guest_report.current()),
+    })
 }
 
 async fn create_pod(

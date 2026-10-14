@@ -3,7 +3,7 @@
 use anyhow::Result;
 use std::process::Command;
 
-use crate::keychain::{self, SecretKind, SecretStore};
+use crate::keychain;
 use crate::provision;
 #[cfg(target_os = "macos")]
 use crate::setup::{AppleChip, MacOSVersion};
@@ -576,6 +576,12 @@ fn check_docker() -> bool {
     }
 }
 
+/// Secrets an earlier `setup` stored that nothing reads any more.
+///
+/// Setup creates no secret (#3294, #3436), so there is nothing to find
+/// missing. A retired item still stored is a warning naming the remedy: it is
+/// only something to leak, but nothing breaks. "Could not look" is said as
+/// such, never as "none stored" (ADR 0007 A-1).
 fn check_secrets() -> bool {
     println!("Secrets");
     println!("-------");
@@ -589,38 +595,29 @@ fn check_secrets() -> bool {
     #[cfg(target_os = "macos")]
     println!("  (macOS may ask to authorise Keychain access; this waits for you)");
 
-    let mut all_ok = true;
-
-    for kind in SecretKind::all() {
-        let exists = SecretStore::exists(*kind).unwrap_or(false);
-        let status = if exists { Status::Ok } else { Status::Error };
-
-        all_ok &= print_check(
-            kind.account_name(),
-            status,
-            if exists { "configured" } else { "missing" },
-        );
-
-        // Check rotation status
-        if exists && let Ok(Some(metadata)) = keychain::MetadataStore::get(*kind) {
-            let days = metadata.days_until_rotation();
-            if days <= 0 {
-                print_check(
-                    &format!("  {} rotation", kind.account_name()),
-                    Status::Warning,
-                    "overdue",
-                );
-            } else if days <= 14 {
-                print_check(
-                    &format!("  {} rotation", kind.account_name()),
-                    Status::Warning,
-                    &format!("due in {} days", days),
-                );
-            }
+    let mut quiet = true;
+    for (account, found) in keychain::retired_present() {
+        if let Some((status, message)) = retired_secret_finding(&found) {
+            quiet = false;
+            print_check(account, status, &message);
         }
     }
+    if quiet {
+        print_check("retired secrets", Status::Ok, "none stored");
+    }
+    true
+}
 
-    all_ok
+/// What `doctor` says about one retired account: nothing when it is gone.
+fn retired_secret_finding(found: &Result<bool>) -> Option<(Status, String)> {
+    match found {
+        Ok(false) => None,
+        Ok(true) => Some((
+            Status::Warning,
+            "retired, nothing reads it — `nucleus setup` removes it".into(),
+        )),
+        Err(e) => Some((Status::Warning, format!("could not check: {e:#}"))),
+    }
 }
 
 /// Do the Tier 2 components exist WHERE THEY ARE USED?
@@ -860,6 +857,24 @@ mod tests {
             reason: "timed out".into(),
         };
         assert_eq!(unservable_release_status(&unreachable), Status::Warning);
+    }
+
+    /// #3436: a stored retired secret is reported with its remedy, an absent
+    /// one is not mentioned, and a store that could not be read says so rather
+    /// than reading as absent. None of them is an error: nothing needs them.
+    #[test]
+    fn a_retired_secret_is_a_warning_and_could_not_look_is_not_absent() {
+        assert_eq!(retired_secret_finding(&Ok(false)), None);
+        let (status, message) = retired_secret_finding(&Ok(true)).unwrap();
+        assert_eq!(status, Status::Warning);
+        assert!(message.contains("nucleus setup"), "{message}");
+        let (status, message) =
+            retired_secret_finding(&Err(anyhow::anyhow!("keychain locked"))).unwrap();
+        assert_eq!(status, Status::Warning);
+        assert!(
+            message.contains("could not check: keychain locked"),
+            "{message}"
+        );
     }
 
     // The platform helpers `check_chip` and `check_macos_version` each spawn a

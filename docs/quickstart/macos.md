@@ -38,9 +38,9 @@ nucleus setup
 > identity-proving pod, with `gh attestation verify` passing on every downloaded
 > artifact. `--artifacts local` uses this working tree's build instead.
 >
-> If your Mac has installed nucleus before, setup pauses once at "Setting up
-> secrets" on a macOS Keychain dialog and waits until you answer it — a changed
-> binary is not on the existing items' ACL. See
+> If your Mac has installed nucleus before, setup may pause once at "Removing
+> retired secrets" on a macOS Keychain dialog and wait until you answer it — a
+> changed binary is not on the existing items' ACL. See
 > [Troubleshooting](#troubleshooting).
 
 ---
@@ -76,18 +76,21 @@ name. If the probe says available, Tier 2 works, whatever else the output guesse
    Firecracker + jailer, the guest kernel (SHA-256 verified against a constant
    compiled into the binary), the nucleus rootfs, `nucleus-node`, and the Linux
    `nucleus` CLI.
-3. Writes a root-owned `0600` `/etc/nucleus/node.env` in the VM, which carries
-   no shared secret (the node's API is mTLS-only, and its pods are reached over
-   transports that authenticate the node), along with a systemd unit that reads
-   it.
+3. Writes a root-owned `0600` `/etc/nucleus/node.env` in the VM, along with a
+   systemd unit that reads it. Setup stores no shared secret: the node and the
+   CLI authenticate with mTLS identities. Any HMAC secret an earlier release left
+   in the Keychain (`proxy-auth-secret`, `approval-secret`, `node-auth-secret`)
+   has no reader, so setup deletes it, and `nucleus doctor` warns while one is
+   still there.
 4. Boots a real pod and verifies it (below).
 
 The VM template names **no** artifact versions or URLs. Those live in one place
 in the code, so the template cannot drift from what the node enforces — which is
 how the published template came to pin a kernel URL that returns HTTP 404.
 
-> **Keychain prompt.** The first run of a new or rebuilt `nucleus` binary makes
-> macOS ask permission to read the secrets it stored. Setup waits at that dialog.
+> **Keychain prompt.** On a Mac where an earlier release stored secrets, the first
+> run of a new or rebuilt `nucleus` binary makes macOS ask permission to touch
+> them while setup removes them. Setup waits at that dialog.
 > It prints a line before touching the Keychain so a pause there is explicable.
 
 ## The proof: `nucleus verify --tier2`
@@ -177,8 +180,8 @@ happened rather than implying both.
 |---|---|---|
 | `no /dev/kvm` in the VM | chip older than M3, or macOS older than 15 | no fix on that hardware; use a Linux host with KVM |
 | `no /dev/vhost-vsock` | the host vsock module is not loaded | `sudo modprobe vhost_vsock` — the guest fetches its SVID and task token over vsock, so without it a pod fails at device setup |
-| setup pauses with no output after "Setting up secrets" | macOS Keychain dialog awaiting an answer | answer it; it recurs when the binary changes |
-| `nucleus-node did not become healthy` | a missing secret — the node exits at startup without all three | `nucleus setup` rewrites `/etc/nucleus/node.env`; the error quotes the node's own log |
+| setup pauses with no output after "Removing retired secrets" | macOS Keychain dialog awaiting an answer | answer it; it recurs when the binary changes |
+| `nucleus-node did not become healthy` | the node refused its configuration — for example a retired shared-secret flag left in `node.env` | `nucleus setup` rewrites `/etc/nucleus/node.env`; the error quotes the node's own log |
 | `pinned guest release ... is not published yet` | `GUEST_RELEASE` points past the newest release | `nucleus setup --artifacts local` |
 | `ip netns exec ... failed` | fixed — iproute2 execs a `--` separator as the command | update; regression-guarded in `net.rs` |
 | pod created but `Connection reset by peer` in the guest log | fixed — the workload API socket was root-owned while Firecracker runs jailed | update; the node now chowns it to the jailer uid |

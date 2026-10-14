@@ -7,7 +7,7 @@ use std::process::Command;
 use tracing::{info, warn};
 
 use crate::config;
-use crate::keychain::{self, SecretKind, SecretStore};
+use crate::keychain;
 use crate::provision::{self, ArtifactSource, Tier2Host};
 
 mod apple_host;
@@ -42,8 +42,8 @@ pub struct SetupArgs {
     #[arg(long, default_value = "50")]
     pub vm_disk_gib: u32,
 
-    /// Rotate existing secrets
-    #[arg(long)]
+    /// Retired (#3436): setup stores no secrets to rotate. Refused by name.
+    #[arg(long, hide = true)]
     pub rotate_secrets: bool,
 
     /// Skip artifact download (for offline setup)
@@ -198,6 +198,7 @@ impl MacOSVersion {
 
 /// Execute the setup command
 pub async fn execute(args: SetupArgs, config_path: &str) -> Result<()> {
+    refuse_retired_flags(&args)?;
     let configured = config::Config::load(config_path)?;
     if let Some(path) = args
         .apple_host_config
@@ -253,9 +254,9 @@ pub async fn execute(args: SetupArgs, config_path: &str) -> Result<()> {
         }
     }
 
-    // Step 3: Generate and store secrets
-    println!("\nSetting up secrets...");
-    setup_secrets(&args)?;
+    // Step 3: Remove secrets earlier releases stored. Setup creates none.
+    println!("\nRemoving retired secrets...");
+    remove_retired_secrets()?;
 
     // An earlier setup wrote the node's retired API secret into node.env.
     // Nothing reads it any more; take it out even when this run will not
@@ -655,8 +656,10 @@ fn delete_lima_vm(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn setup_secrets(args: &SetupArgs) -> Result<()> {
-    // Say this BEFORE the first Keychain call. Reading an existing item from a
+/// Delete every secret an earlier `setup` stored that nothing reads any more.
+/// Setup creates none (#3294, #3436).
+fn remove_retired_secrets() -> Result<()> {
+    // Say this BEFORE the first Keychain call. Touching an existing item from a
     // binary the Keychain has not authorised opens a GUI dialog, and until it is
     // answered the process simply stops — no output, no timeout, no hint. Hit
     // while testing this very command: a rebuilt `nucleus` hung here for minutes
@@ -666,42 +669,26 @@ fn setup_secrets(args: &SetupArgs) -> Result<()> {
     #[cfg(target_os = "macos")]
     println!("   `nucleus` needs approving once. Setup waits here until you answer.)");
 
-    for account in keychain::RETIRED_ACCOUNTS {
-        if SecretStore::delete_retired(account)? {
-            println!("  Removed retired secret: {account} (nothing reads it any more)");
-        }
+    let removed = keychain::remove_retired()?;
+    for account in &removed {
+        println!("  Removed retired secret: {account} (nothing reads it any more)");
     }
-
-    for kind in SecretKind::all() {
-        let exists = SecretStore::exists(*kind)?;
-
-        if exists && args.rotate_secrets {
-            keychain::rotate_secret(*kind)?;
-            println!("  Rotated: {}", kind.description());
-        } else if exists {
-            println!("  Exists: {}", kind.description());
-        } else {
-            let (_, _) = SecretStore::get_or_create(*kind)?;
-            keychain::MetadataStore::set(*kind, keychain::SecretMetadata::new())?;
-            println!("  Created: {}", kind.description());
-        }
+    if removed.is_empty() {
+        println!("  No retired secrets stored");
     }
+    Ok(())
+}
 
-    for (kind, days) in keychain::check_rotation_status()? {
-        if days <= 0 {
-            warn!(
-                "Secret '{}' is overdue for rotation! Run: nucleus setup --rotate-secrets",
-                kind.description()
-            );
-        } else {
-            info!(
-                "Secret '{}' will need rotation in {} days",
-                kind.description(),
-                days
-            );
-        }
+/// `--rotate-secrets` rotated the HMAC secrets setup used to store. There are
+/// none any more, so the flag is refused by name rather than silently doing
+/// nothing (#3436).
+fn refuse_retired_flags(args: &SetupArgs) -> Result<()> {
+    if args.rotate_secrets {
+        bail!(
+            "--rotate-secrets is retired (#3436): setup stores no shared secrets to rotate. \
+             The node and CLI authenticate with mTLS identities; drop the flag."
+        );
     }
-
     Ok(())
 }
 
@@ -997,6 +984,22 @@ mod tests {
             args: SetupArgs,
         }
         Only::parse_from(["setup"]).args
+    }
+
+    /// #3436: `--rotate-secrets` has nothing left to rotate, so it is refused by
+    /// name instead of being accepted and doing nothing; a run without it is not.
+    #[test]
+    fn rotate_secrets_is_refused_by_name() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Only {
+            #[command(flatten)]
+            args: SetupArgs,
+        }
+        let args = Only::parse_from(["setup", "--rotate-secrets"]).args;
+        let err = refuse_retired_flags(&args).unwrap_err().to_string();
+        assert!(err.contains("--rotate-secrets is retired"), "{err}");
+        refuse_retired_flags(&summary_args()).unwrap();
     }
 
     /// **The claim may only appear when something was actually verified.**

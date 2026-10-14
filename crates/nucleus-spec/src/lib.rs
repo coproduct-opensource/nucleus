@@ -1,5 +1,6 @@
 //! PodSpec definitions shared by nucleus-node and nucleus-tool-proxy.
 
+pub mod approval_binding;
 pub mod boot_args;
 pub mod boot_budget;
 pub mod dlc_admission;
@@ -7,6 +8,7 @@ pub mod egress_budget;
 pub mod egress_fence;
 pub mod exit_report_auth;
 pub mod guest_layout;
+pub mod guest_release;
 pub mod host_decide_telemetry;
 pub mod host_effect;
 pub mod host_effect_approval;
@@ -17,6 +19,7 @@ pub mod manifest_hash;
 pub mod microvm_host;
 #[cfg(test)]
 mod policy_required_tests;
+pub mod release_version;
 mod rootfs_source;
 pub mod tier2_artifacts;
 pub mod tool_proxy_audit;
