@@ -84,8 +84,8 @@ mod workload_door;
 mod workload_supervisor;
 
 use approval::{
-    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, approve_operation,
-    load_approval_bundle,
+    ApprovalNonceCache, ApprovalRateLimiter, ApprovalRegistry, ConsentHold, approval_lapsed,
+    approve_operation, load_approval_bundle,
 };
 use attestation::AttestationVerifier;
 use audit_log::AuditLog;
@@ -2783,26 +2783,14 @@ async fn write_file(
             // every gate that asks about it.
             let pre_granted = !policy_ok && state.approvals.is_granted(&op);
             if policy_ok || pre_granted {
-                let approval = match state.runtime.sandbox().request_approval(op.clone()) {
-                    Ok(a) => a,
-                    Err(e) => {
-                        warn!(
-                            operation = %op,
-                            policy_ok,
-                            pre_granted,
-                            "a grant was accepted here but the sandbox approver then refused"
-                        );
-                        return Err(e.into());
-                    }
-                };
-                let approved_dt = {
-                    let mut kernel = state.kernel.lock().await;
-                    kernel.issue_approved_token(operation, &format!("approved: write {}", path))
-                };
                 // A fresh discharge for the approved retry: the first attempt
                 // spent the authority minted above. One discharge authorizes one
                 // attempt, and the approved write is a distinct action that must
                 // clear the obligations on its own.
+                //
+                // It runs BEFORE `request_approval`, whose approver spends the
+                // grant: a re-discharge that refuses must leave the person's
+                // approval unspent (#3443).
                 let retry_bundle = {
                     use nucleus_ifc_kernel::discharge::PreflightResult;
                     let verified_scope = state.session_task_token.verified_scope();
@@ -2819,6 +2807,23 @@ async fn write_file(
                             ));
                         }
                     }
+                };
+                // The spend, immediately before the write it pays for.
+                let approval = match state.runtime.sandbox().request_approval(op.clone()) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        warn!(
+                            operation = %op,
+                            policy_ok,
+                            pre_granted,
+                            "a grant was accepted here but the sandbox approver then refused"
+                        );
+                        return Err(e.into());
+                    }
+                };
+                let approved_dt = {
+                    let mut kernel = state.kernel.lock().await;
+                    kernel.issue_approved_token(operation, &format!("approved: write {}", path))
                 };
                 state.runtime.sandbox().write_approved(
                     &path,
@@ -3208,15 +3213,24 @@ async fn web_fetch(
         }));
     }
 
+    // Approvals this fetch needs are checked here and spent only immediately
+    // before the fetch, so a refusal by any check in between leaves them
+    // unspent (#3443).
+    let mut consent = ConsentHold::empty();
+
     // Check if uninhabitable_state requires approval for web_fetch
     if policy.requires_approval(Operation::WebFetch) {
         // Check if policy allows this operation (zero-prompt mode)
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("web_fetch {}", url_str));
 
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("web_fetch {}", url_str);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &url_str)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: url_str.clone(),
@@ -3260,7 +3274,7 @@ async fn web_fetch(
         {
             web_fetch_policy::HostAdmission::Declared | web_fetch_policy::HostAdmission::Open => {}
             web_fetch_policy::HostAdmission::NeedsApproval(key) => {
-                if !state.approvals.consume(&key) {
+                if let Err(key) = consent.require_named(&state.approvals, key) {
                     if let Err(e) = sink.record(VerdictContext {
                         operation,
                         subject: url_str.clone(),
@@ -3339,6 +3353,18 @@ async fn web_fetch(
         }
     };
     let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    // Every check that can refuse has run: spend the approvals this fetch
+    // needs, all or none, immediately before it.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &url_str,
+            actor,
+            key,
+        ));
+    }
 
     // Execute the request through the sealed, `_proof`-gated net effect. Passing
     // the bundle is the type-level authorization; `PolicyEnforced` re-checks the
@@ -3485,13 +3511,20 @@ async fn glob_search(
         }));
     }
 
+    // Checked here, spent only immediately before the effect (#3443).
+    let mut consent = ConsentHold::empty();
+
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GlobSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("glob {}", req.pattern));
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("glob {}", req.pattern);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &req.pattern)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
@@ -3532,6 +3565,16 @@ async fn glob_search(
     // type and 0 keeps meaning one.
     let max = std::num::NonZeroUsize::new(req.max_results.unwrap_or(1000))
         .unwrap_or(std::num::NonZeroUsize::MIN);
+    // Every check that can refuse has run: spend, then list.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &req.pattern,
+            actor,
+            key,
+        ));
+    }
     let listing = state
         .runtime
         .sandbox()
@@ -3629,13 +3672,20 @@ async fn grep_search(
         }));
     }
 
+    // Checked here, spent only immediately before the effect (#3443).
+    let mut consent = ConsentHold::empty();
+
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::GrepSearch) {
         let policy_allows =
             check_identity_policy(&state, auth_ctx.as_ref(), &format!("grep {}", req.pattern));
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("grep {}", req.pattern);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &req.pattern)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.pattern.clone(),
@@ -3726,6 +3776,17 @@ async fn grep_search(
             .map(|e| e.into_path())
             .collect()
     };
+
+    // Every check that can refuse the call has run: spend, then read.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &req.pattern,
+            actor,
+            key,
+        ));
+    }
 
     // Search each file. One discharge per file: an `Authority` buys one read.
     // A file this session may not read is skipped, as an unreadable one is.
@@ -3853,6 +3914,9 @@ async fn web_search(
         }));
     }
 
+    // Checked here, spent only immediately before the effect (#3443).
+    let mut consent = ConsentHold::empty();
+
     // Check if uninhabitable_state requires approval
     if policy.requires_approval(Operation::WebSearch) {
         let policy_allows = check_identity_policy(
@@ -3860,9 +3924,13 @@ async fn web_search(
             auth_ctx.as_ref(),
             &format!("web_search {}", req.query),
         );
-        // One binding for the name a human approves and the name spent.
-        let approval_key = format!("web_search {}", req.query);
-        if !policy_allows && !state.approvals.consume(&approval_key) {
+        // The name the monitor asked for and the name spent are one name.
+        let required = if policy_allows {
+            Ok(())
+        } else {
+            consent.require(&state.approvals, operation, &req.query)
+        };
+        if let Err(approval_key) = required {
             if let Err(e) = sink.record(VerdictContext {
                 operation,
                 subject: req.query.clone(),
@@ -3956,6 +4024,17 @@ async fn web_search(
         }
     };
     let _discharge_note = run_gate::discharge_witness(&discharge_bundle);
+
+    // Every check that can refuse has run: spend, then search.
+    if let Err(key) = consent.spend(&state.approvals) {
+        return Err(approval_lapsed(
+            sink.as_ref(),
+            operation,
+            &req.query,
+            actor,
+            key,
+        ));
+    }
 
     use portcullis_effects::{NetCapability, NetEffect};
     let effects =

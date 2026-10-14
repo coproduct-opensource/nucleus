@@ -70,8 +70,18 @@ hasn't drifted from the committed code.
 **What's proved (11 theorems in DeclassifyProofs.lean):**
 - Declassification rule safety properties
 
-**What's proved (12 theorems in DecidePureProofs.lean):**
-- `decide_pure()` correctness properties
+**What's proved (11 theorems in DecidePureProofs.lean):**
+- `decide_pure()` correctness properties, over a **hand-written Lean model** of
+  the function — not over Aeneas-extracted Rust. An extraction exists
+  (`crates/portcullis-core/lean/generated-decide/`) but no proof imports it.
+- **Scope limit:** these theorems describe the model, not shipping behaviour.
+  No production code calls `decide_pure` (only tests do). The shipping kernel
+  (`Kernel::decide`) holds a `LowRisk` operation only when the policy's
+  obligations name it; a `LowRisk` operation with no obligation is allowed. So
+  `lowrisk_always_requires_approval` is true of the model and **false of the
+  shipping kernel** for unobligated operations. Making consent an explicit
+  input, moving the proofs onto the extraction, and having the kernel call the
+  proved function are planned work.
 
 ### 4. DecisionToken Linearity (Kani BMC — bounded)
 
@@ -197,7 +207,7 @@ These are important security properties that have NO formal verification:
 | IFC labels + flow kernel | Lean 4 | Authority, integrity, Invariant exploit | Unbounded | 39 theorems | Every PR |
 | Flow graph DAG | Lean 4 | Semilattice, label propagation | Unbounded | 15 theorems (†) | Every PR |
 | Declassification rules | Lean 4 | Rule safety properties | Unbounded | 19 theorems | Every PR |
-| Decision logic | Lean 4 | `decide_pure()` correctness | Unbounded | 11 theorems | Every PR |
+| Decision logic | Lean 4 | `decide_pure()` correctness — hand-written model, not extracted; not the shipping kernel's decider | Unbounded | 11 theorems | Every PR |
 | Bridge/correspondence | Lean 4 | Aeneas fn = lattice op | Unbounded | 24 theorems (overlap) | Every PR |
 | DecisionToken | Kani BMC | Token issuance, audit, exposure | Bounded | 5 harnesses | Every PR |
 | FlowGraph DAG | Kani BMC | Denied-parent, structural invariants | Bounded | 8 harnesses | Every PR |
@@ -303,6 +313,8 @@ lake build PortcullisCoreBridge FlowProofs ExposureProofs DeclassifyProofs \
            SemanticIFC ConstructiveSecurity WasiWorldFunctor WasiIfcBoundary \
            CertChainMonotoneExtracted \
            BelnapDecisionProofs                # ... the proven tier (CONJECTURES.md, Tier 1)
+# Proven tier is not the same as "over extracted Rust": DecidePureProofs, for
+# one, proves a hand-written model of decide_pure (see "What's proved" above).
 # A bare `lake build` of the WHOLE tree also compiles the research libs, but it
 # exits 0 even with open holes, because `sorry` is a WARNING, not an error. Do
 # NOT use a bare whole-tree build as a regression gate — use the proof-hole scan.

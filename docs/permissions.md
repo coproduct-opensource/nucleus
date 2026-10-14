@@ -6,11 +6,16 @@
 You have a permission profile. Check it before acting.
 
 - "Never" = blocked, don't try
-- "LowRisk" = allowed for safe operations
-- "Always" = always allowed
+- "LowRisk" = permitted (within path/command/network limits)
+- "Always" = permitted (within the same limits)
 
-If you have read_files + web access + git push all enabled,
-exfiltration actions (git push, create PR, bash) require human approval.
+A level says whether an operation is PERMITTED, not whether a person must
+approve it. Approval comes from the policy's obligations: an operation listed
+there needs a human approval first, whatever its level.
+
+If you have private-data access (read/glob/grep) + web access + an exfil
+channel (git push, create PR, bash) all enabled, each of those exfil
+operations that is enabled gains an obligation and requires human approval.
 This is the "uninhabitable state protection" - it prevents prompt injection attacks
 from stealing secrets.
 ```
@@ -68,25 +73,72 @@ Each tool capability has one of three levels:
 ```
 Never     →  Blocked entirely
     ↓
-LowRisk   →  Auto-approved for safe operations
+LowRisk   →  Permitted
     ↓
-Always    →  Always auto-approved
+Always    →  Permitted
 ```
+
+The level is **permission**, not **consent**. When the kernel decides an
+operation it reads the level only to tell `Never` from permitted; `LowRisk`
+and `Always` differ in the lattice order (how `meet`, `join` and delegation
+narrow a policy), not in whether a person is asked. Whether a person is asked
+is decided by the policy's `obligations` — see
+[Permission and consent](#permission-and-consent).
+
+### Permission and consent
+
+Two separate questions are answered for every operation:
+
+1. **Is it permitted?** The capability level. `never` refuses it; `low_risk`
+   and `always` permit it, still subject to the path, command, network and
+   flow (IFC) checks.
+2. **Must a human approve it first?** The policy's `obligations`. An operation
+   in that set is held until a matching approval exists
+   (`Kernel::decide` reads `obligations.requires(op)`); an operation not in it
+   runs without asking anyone, **even when its level is `low_risk`**.
+
+Obligations come from two places today:
+
+- the policy itself (a profile's `obligations:` list, or an inline policy's
+  obligation set), and
+- the uninhabitable-state (trifecta) rule: when private-data access
+  (`read_files`, `glob_search` or `grep_search` ≥ `low_risk`), untrusted
+  content (`web_fetch` or `web_search` ≥ `low_risk`) and an exfiltration
+  channel (`git_push`, `create_pr` or `run_bash` ≥ `low_risk`) are all
+  present, normalization adds an obligation for each of `git_push`,
+  `create_pr` and `run_bash` that is permitted. It only ever adds
+  obligations; it never removes one.
+
+So a policy that sets `write_files: low_risk` and lists no obligation for it
+lets the agent write without approval. If you want a person in the loop, list
+the operation under `obligations`.
+
+**This is changing.** Consent is implicit today: an operation that is
+permitted and not obligated is autonomous by omission. A later release makes
+consent an explicit per-operation declaration (autonomous or requires
+approval) for every permitted operation, and refuses a policy that leaves one
+undeclared. That is a breaking change for inline policies and will be called
+out in the release notes and `docs/STABILITY.md`.
 
 ### Example
 
 ```yaml
 capabilities:
   read_files: always      # Can always read files
-  write_files: low_risk   # Can write to safe locations
+  write_files: low_risk   # Can write (within path limits); no approval unless obligated
   run_bash: never         # Cannot run shell commands
-  web_fetch: low_risk     # Can fetch approved URLs
-  git_push: low_risk      # Can push (but may need approval)
+  web_fetch: low_risk     # Can fetch (within host limits)
+  git_push: low_risk      # Can push; needs approval if obligated (e.g. by the trifecta rule)
 ```
 
 ---
 
 ## Built-in Profiles
+
+The tables below give each profile's capability **levels**. A `*` marks an
+operation that requires approval (an obligation, declared or added by the
+uninhabitable-state rule); a `low_risk` operation without a `*` runs without
+asking anyone. See [Permission and consent](#permission-and-consent).
 
 ### `filesystem-readonly`
 Read-only with sensitive paths blocked.
@@ -128,9 +180,11 @@ edit_files: never     git_commit: never     run_bash: never
 Read code, search web for context, but no modifications.
 
 ```
-read_files: always    web_search: low_risk  git_push: never
+read_files: always    web_search: low_risk* git_push: never
 write_files: never    web_fetch: never      create_pr: never
 edit_files: never     git_commit: never
+
+* Requires approval (declared obligation)
 ```
 
 ### `edit-only`
@@ -155,12 +209,14 @@ edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 Full development workflow with uninhabitable state protection.
 
 ```
-read_files: always    web_search: low_risk  git_push: low_risk*
-write_files: low_risk web_fetch: low_risk   create_pr: low_risk*
-edit_files: low_risk  git_commit: low_risk
-run_bash: low_risk
+read_files: always    web_search: low_risk* git_push: low_risk*
+write_files: low_risk web_fetch: low_risk*  create_pr: low_risk*
+edit_files: low_risk  git_commit: low_risk*
+run_bash: low_risk*
 
-* Requires approval due to uninhabitable state detection
+* Requires approval: web_search, web_fetch, git_commit, git_push and
+  create_pr are declared obligations; run_bash is added by the
+  uninhabitable-state rule. Unmarked operations need no approval.
 ```
 
 ### `release`
@@ -169,9 +225,11 @@ Release/publish workflow with approvals on exfiltration.
 ```
 read_files: always    web_search: low_risk  git_push: low_risk*
 write_files: low_risk web_fetch: low_risk   create_pr: low_risk*
-edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
+edit_files: low_risk  git_commit: low_risk  run_bash: low_risk*
 
-* Requires approval
+* Requires approval: git_push and create_pr are declared obligations;
+  run_bash is added by the uninhabitable-state rule (read + web + exfil).
+  Unmarked operations need no approval.
 ```
 
 ### `database-client`
@@ -187,10 +245,13 @@ edit_files: never     git_commit: never     run_bash: low_risk
 For live demos - blocks shell interpreters.
 
 ```
-read_files: always    web_search: low_risk  git_push: low_risk
-write_files: low_risk web_fetch: low_risk   create_pr: low_risk
-edit_files: low_risk  git_commit: low_risk
-run_bash: low_risk    (blocked: python, node, bash, etc.)
+read_files: always    web_search: low_risk  git_push: low_risk*
+write_files: low_risk* web_fetch: low_risk  create_pr: low_risk*
+edit_files: low_risk* git_commit: low_risk
+run_bash: low_risk*   (blocked: python, node, bash, etc.)
+
+* Requires approval: write_files and edit_files are declared obligations;
+  git_push, create_pr and run_bash are added by the uninhabitable-state rule.
 ```
 
 ---
@@ -225,6 +286,10 @@ edit_files: low_risk  git_commit: low_risk  run_bash: low_risk
 
 ** Uninhabitable state status**: NOT vulnerable (no untrusted content exposure)
 
+No obligations: the effective obligation set is empty, so writes, edits,
+shell commands and local commits run **without approval**. `low_risk` here
+means permitted, not "asks first".
+
 Use case: Implement features in a Firecracker microVM, run tests, commit locally.
 Network isolation prevents prompt injection attacks from web content.
 
@@ -256,10 +321,9 @@ Your permissions:
   web_fetch: low_risk    ← Untrusted content ✓
   git_push: low_risk     ← Exfiltration vector ✓
 
- Uninhabitable state detected! Adding approval requirement:
+ Uninhabitable state detected! Adding an obligation to each permitted
+exfil operation (git_push, create_pr, run_bash) — here only git_push:
   git_push: requires approval
-  create_pr: requires approval
-  run_bash: requires approval
 ```
 
 This happens automatically. You don't configure it. You can't disable it (even via malicious JSON payloads - the constraint is enforced on deserialization).
@@ -285,12 +349,16 @@ When you receive a permission profile, check:
 
 1. **What level is each capability?**
    - `never` = don't attempt
-   - `low_risk` = safe operations okay
-   - `always` = go ahead
+   - `low_risk` = permitted
+   - `always` = permitted
+   - A level does not tell you whether approval is needed — see step 2.
 
-2. **Is uninhabitable state active?**
-   - If `read_files >= low_risk` AND `web_* >= low_risk` AND `git_push >= low_risk`
-   - Then `git_push`, `create_pr`, `run_bash` need approval
+2. **Which operations need approval?**
+   - Any operation listed in the policy's `obligations`.
+   - Plus, if the uninhabitable state is active — (`read_files` OR `glob_search` OR
+     `grep_search`) `>= low_risk` AND `web_* >= low_risk` AND (`git_push` OR
+     `create_pr` OR `run_bash`) `>= low_risk` — each of `git_push`, `create_pr`,
+     `run_bash` that is permitted needs approval
 
 3. **Check path restrictions**
    - `allowed_paths`: only these directories
@@ -611,15 +679,15 @@ This is enforced mathematically via lattice meet operation.
 │                    PERMISSION LEVELS                        │
 ├─────────────────────────────────────────────────────────────┤
 │  never     Blocked. Don't attempt.                          │
-│  low_risk  Allowed for safe operations.                     │
-│  always    Always allowed.                                  │
+│  low_risk  Permitted. Approval only if obligated.           │
+│  always    Permitted. Approval only if obligated.           │
 ├─────────────────────────────────────────────────────────────┤
 │                    uninhabitable state RULE                            │
 ├─────────────────────────────────────────────────────────────┤
-│  IF   read_files ≥ low_risk                                 │
+│  IF   (read_files OR glob/grep_search) ≥ low_risk           │
 │  AND  (web_fetch OR web_search) ≥ low_risk                  │
 │  AND  (git_push OR create_pr OR run_bash) ≥ low_risk        │
-│  THEN exfiltration actions require approval                 │
+│  THEN each permitted exfil action gains an obligation       │
 ├─────────────────────────────────────────────────────────────┤
 │                    BUILT-IN PROFILES                        │
 ├─────────────────────────────────────────────────────────────┤

@@ -23,11 +23,10 @@ pub(crate) fn pod_dir(state_dir: &Path, id: uuid::Uuid) -> std::path::PathBuf {
 /// `nucleus-audit verify` (its `AuditRecord` requires
 /// `prev_hash`/`hash`/`signature`). Keeping the two files separate preserves a
 /// verifiable chain; the lifecycle file is folded into an evidence bundle as
-/// explicitly-unsigned context. The filename lives here, in one place, so the
-/// two cannot drift back together.
+/// explicitly-unsigned context, except for the records that carry their own
+/// signature ([`write_lifecycle_record`]). The filename lives here, in one
+/// place, so the two cannot drift back together.
 pub(crate) async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &str, detail: &str) {
-    let audit_path = pod_dir.join("lifecycle.log");
-    let audit_path = audit_path.as_path();
     let entry = serde_json::json!({
         "timestamp_unix": now_unix(),
         "actor": "nucleus-node",
@@ -35,7 +34,15 @@ pub(crate) async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &
         "subject": format!("pod:{}", pod_id),
         "result": detail,
     });
-    let line = match serde_json::to_string(&entry) {
+    write_lifecycle_record(pod_dir, &entry).await;
+}
+
+/// Append one record to `<pod_dir>/lifecycle.log`: an unsigned lifecycle entry, or a record
+/// that carries its own signature (the egress meter's [`crate::egress_meter::EgressRecord`],
+/// #2905).
+pub(crate) async fn write_lifecycle_record<T: serde::Serialize>(pod_dir: &Path, record: &T) {
+    let audit_path = pod_dir.join("lifecycle.log");
+    let line = match serde_json::to_string(record) {
         Ok(l) => l,
         Err(e) => {
             error!("failed to serialize lifecycle audit entry: {e}");
@@ -44,8 +51,7 @@ pub(crate) async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &
     };
     // One O_APPEND write per entry: see `nucleus_jsonl` for the tearing this
     // replaced. A failed write is logged — it used to be dropped silently.
-    if let Err(e) = nucleus_jsonl::append_line_unsynced_async(audit_path.to_path_buf(), line).await
-    {
+    if let Err(e) = nucleus_jsonl::append_line_unsynced_async(audit_path.clone(), line).await {
         error!(
             "failed to write lifecycle audit to {}: {e}",
             audit_path.display()
@@ -53,7 +59,8 @@ pub(crate) async fn write_lifecycle_audit(pod_dir: &Path, event: &str, pod_id: &
     }
 }
 
-fn now_unix() -> u64 {
+/// The lifecycle log's clock: seconds since the epoch, 0 before it.
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

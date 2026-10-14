@@ -1069,27 +1069,43 @@ fn call_tool(
                 );
                 // Prompt the human for approval before proceeding.
                 if approval_prompt {
-                    let msg = if decision.exposure_transition.dynamic_gate_applied {
-                        format!(
-                            "uninhabitable_state({}) — exposure gate requires approval",
-                            call.name
-                        )
-                    } else {
-                        format!("approval required for {}", call.name)
+                    // One prompt per gate that holds the call. The kernel spends
+                    // approvals only on `Allow` (#3443), so a retry that is held
+                    // again spent nothing, and the exposure gate is a separate
+                    // consent from the policy's static obligation: an obligated
+                    // exfil inside the uninhabitable state asks twice. Two is
+                    // the number of distinct gates, so the loop is bounded.
+                    let mut held = decision.exposure_transition.dynamic_gate_applied;
+                    let mut first = true;
+                    let retry = loop {
+                        let msg = if held {
+                            format!(
+                                "uninhabitable_state({}) — exposure gate requires approval",
+                                call.name
+                            )
+                        } else {
+                            format!("approval required for {}", call.name)
+                        };
+                        if !prompt_approval(&msg)? {
+                            return Err(anyhow!(
+                                "operation denied: {} requires approval but was rejected. \
+                                 Subject: {}",
+                                call.name,
+                                subject
+                            ));
+                        }
+                        eprintln!("[nucleus-mcp] approved by human: tool={}", call.name);
+                        // Grant a one-time approval and re-decide
+                        kernel.grant_approval(op, 1);
+                        let (d, _token) = kernel.decide_with_parents(op, &subject, &parents);
+                        trace.record(&d);
+                        if first && matches!(d.verdict, Verdict::RequiresApproval) {
+                            first = false;
+                            held = d.exposure_transition.dynamic_gate_applied;
+                            continue;
+                        }
+                        break d;
                     };
-                    if !prompt_approval(&msg)? {
-                        return Err(anyhow!(
-                            "operation denied: {} requires approval but was rejected. \
-                             Subject: {}",
-                            call.name,
-                            subject
-                        ));
-                    }
-                    eprintln!("[nucleus-mcp] approved by human: tool={}", call.name);
-                    // Grant a one-time approval and re-decide
-                    kernel.grant_approval(op, 1);
-                    let (retry, _token) = kernel.decide_with_parents(op, &subject, &parents);
-                    trace.record(&retry);
                     if !matches!(retry.verdict, Verdict::Allow) {
                         return Err(anyhow!(
                             "operation denied after approval: {} — {:?}",
