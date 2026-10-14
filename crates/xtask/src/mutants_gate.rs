@@ -504,17 +504,7 @@ fn decide(i: &Inputs<'_>) -> Verdict {
     let mut tally = Tally::default();
     let mut survivors = Vec::new();
     for (k, dir) in &dirs {
-        let share = &plan.shares[*k];
-        read_shard(
-            *k,
-            n,
-            dir,
-            share,
-            &plan,
-            &mut tally,
-            &mut survivors,
-            &mut problems,
-        );
+        read_shard(*k, n, dir, &plan, &mut tally, &mut survivors, &mut problems);
     }
 
     if tally.missed > 0 {
@@ -580,17 +570,16 @@ fn shard_dirs(root: &Path, n: usize) -> Result<BTreeMap<usize, PathBuf>, String>
     Ok(by_k)
 }
 
-#[allow(clippy::too_many_arguments)]
 fn read_shard(
     k: usize,
     n: usize,
     dir: &Path,
-    share: &[String],
     plan: &Plan,
     tally: &mut Tally,
     survivors: &mut Vec<String>,
     problems: &mut Vec<Problem>,
 ) {
+    let share = &plan.shares[k];
     let who = format!("shard {k} of {n}");
     match fs::read_to_string(dir.join("console.log")) {
         Ok(text) => {
