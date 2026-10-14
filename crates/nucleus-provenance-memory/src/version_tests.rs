@@ -10,7 +10,7 @@ fn raw(value: &str) -> MemoryRecord {
         source_class: SourceClass::Web,
         source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
     };
-    let label = derive_label(&d, &[]);
+    let label = derive_label(&d, &[], crate::record::LabelStamp::Unstamped);
     MemoryRecord::new(value, SchemaType::String, label, d)
 }
 

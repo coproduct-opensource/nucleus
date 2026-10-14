@@ -45,6 +45,7 @@ fn collected_bundle_and_receipt_verify_without_turning_nonzero_exit_into_success
         node_platform: NodePlatform::Unattested {
             reason: "test node has no TPM".into(),
         },
+        sandbox_tier: nucleus_ci_verdict::execution::SandboxTier::Driver,
     };
     let now = u64::try_from(
         std::time::SystemTime::now()

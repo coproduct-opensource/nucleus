@@ -10,16 +10,23 @@
 //! Stores left by the owner-keyed layout (every lineage of a tenant reached them) and by the
 //! held lineage-scoped layout are declared as spaces at start (`MemoryArgs::load`), each
 //! receipted once.
+//!
+//! Whether the pod's tool-proxy stamps what it writes (Program C, C1) is the node's judgment of
+//! the guest ([`writer_of`]), from the same release table every guest capability is judged by;
+//! the pod has no say in it.
 use crate::{
     ApiError,
     container_mediation::ContainerMediation,
     driver::DriverKind,
     memory_binding::{BindRequest, JOURNAL, private_directory},
     memory_flow::{self, FlowClaim},
-    memory_space::{DecisionCiter, PodLabels, PodMatch, Registry, SpaceName, TenantKey},
+    memory_space::{
+        DecisionCiter, MemoryWriter, PodLabels, PodMatch, Registry, SpaceName, TenantKey,
+    },
     pod_authority::PodAuthority,
 };
 use nucleus_spec::PodSpec;
+use nucleus_spec::tier2_artifacts::{self, GuestCapability, GuestSkew};
 use std::{
     path::{Path, PathBuf},
     sync::Mutex,
@@ -90,6 +97,54 @@ pub(crate) struct Subject<'a> {
     pub(crate) labels: PodLabels<'a>,
     /// When the run's binding stops being honoured: its deadline plus the publish window.
     pub(crate) run_ends: u64,
+    /// Whether its tool-proxy stamps what it writes ([`writer_of`]).
+    pub(crate) writer: MemoryWriter,
+}
+
+/// Whether a pod's tool-proxy stamps every memory record with what its session had read
+/// (`GuestCapability::MemoryDependencyStamp`), judged from what the node knows of it:
+///
+/// * the local driver runs this tree's tool-proxy, which stamps;
+/// * a mediated container runs the node's tool-proxy image, judged by its OCI release label
+///   (`image_release`) against the table. A release without the capability, a label the table
+///   cannot order (a branch build) and an image with no readable label are all legacy: "could
+///   not tell" is never "stamps" (ADR 0007 A-1);
+/// * a VM driver provisions no memory (`Stores::request`), and is legacy.
+pub(crate) fn writer_of(driver: &DriverKind, image_release: Option<&str>) -> MemoryWriter {
+    match driver {
+        #[cfg(feature = "local-driver")]
+        DriverKind::Local => MemoryWriter::Stamping,
+        DriverKind::Container => match image_release
+            .map(|v| tier2_artifacts::capability_skew(v, GuestCapability::MemoryDependencyStamp))
+        {
+            Some(Ok(())) => MemoryWriter::Stamping,
+            Some(Err(GuestSkew::Lacks { .. } | GuestSkew::Unorderable { .. })) | None => {
+                MemoryWriter::Legacy
+            }
+        },
+        DriverKind::Firecracker | DriverKind::AppleVz => MemoryWriter::Legacy,
+    }
+}
+
+/// [`writer_of`] for a pod this node is creating: the container image's release label is read
+/// only when the pod asks for memory on the container driver.
+pub(crate) async fn writer_for(state: &crate::NodeState, requested: bool) -> MemoryWriter {
+    let release = match (&state.driver, requested, state.docker.as_ref()) {
+        (DriverKind::Container, true, Some(docker)) => {
+            match docker.inspect_image(&state.container_image).await {
+                Ok(inspected) => inspected.config.and_then(|c| c.labels).and_then(|labels| {
+                    crate::container_transport::image_version(Some(&labels)).map(str::to_owned)
+                }),
+                Err(error) => {
+                    tracing::info!(image = %state.container_image, %error,
+                        "could not inspect the container image; its memory writes are judged unstamped");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    writer_of(&state.driver, release.as_deref())
 }
 
 pub(crate) fn now_unix() -> u64 {
@@ -231,6 +286,7 @@ impl Stores {
                 matched: PodMatch {
                     lineage,
                     labels: subject.labels,
+                    writer: subject.writer,
                 },
                 run_ends: subject.run_ends,
                 now: now_unix(),
@@ -420,6 +476,7 @@ mod tests {
                         lineage,
                         labels: PodLabels::TenantAuthenticated(&labels),
                         run_ends: now_unix() + 3600,
+                        writer: MemoryWriter::Stamping,
                     },
                     &self.state.state_dir,
                     &self.state.authority,
@@ -509,6 +566,7 @@ mod tests {
         assert_eq!(claim["event"]["pod"], pod.to_string());
         assert_eq!(claim["event"]["lineage"], lineage.to_string());
         assert_eq!(claim["event"]["base"]["version"], 0);
+        assert_eq!(claim["event"]["writer"], "stamping");
         let bytes = std::fs::read(attached.directory.join(JOURNAL)).unwrap();
         assert_eq!(
             claim["event"]["bytes_sha256"],
@@ -628,6 +686,35 @@ mod tests {
                 .iter()
                 .any(|value| value.starts_with("NUCLEUS_MEMORY_"))
         );
+    }
+
+    /// Program C, C1: whether a run's proxy stamps is the node's judgment of its guest, from
+    /// the release table. The pinned 2.7.0 tool-proxy image predates the stamp, and so does
+    /// every published release until one ships it; a label the table cannot order and an image
+    /// with no readable label are "could not tell", which is legacy, never stamping. The local
+    /// driver runs this tree's proxy. A VM driver provisions no memory, and is legacy.
+    #[test]
+    fn a_guest_is_judged_stamping_only_when_the_node_knows_it_stamps() {
+        use nucleus_spec::tier2_artifacts::{FirstShipped, GUEST_RELEASE};
+        let container = DriverKind::Container;
+        for release in [Some("2.7.0"), Some(GUEST_RELEASE), Some("main"), None] {
+            assert_eq!(
+                writer_of(&container, release),
+                MemoryWriter::Legacy,
+                "{release:?}"
+            );
+        }
+        assert_eq!(
+            GuestCapability::MemoryDependencyStamp.first_shipped(),
+            FirstShipped::NotYet,
+            "no release ships the stamp yet; the change that pins one moves this test"
+        );
+        assert_eq!(
+            writer_of(&DriverKind::Firecracker, Some("99.0.0")),
+            MemoryWriter::Legacy
+        );
+        #[cfg(feature = "local-driver")]
+        assert_eq!(writer_of(&DriverKind::Local, None), MemoryWriter::Stamping);
     }
 
     #[cfg(feature = "local-driver")]

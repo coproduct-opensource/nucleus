@@ -171,6 +171,42 @@ fn decide<'a>(
 }
 
 impl NodeEvidenceArgs {
+    /// The trusted authorities these flags configure, for the insecure-mode
+    /// refusal (`insecure_mode`, Program C C0). Destructured without `..`
+    /// (ADR 0007 E-1): a new flag here does not compile until classified.
+    pub(crate) fn trusted_authorities(&self) -> Vec<crate::insecure_mode::TrustedAuthority> {
+        use crate::insecure_mode::TrustedAuthority as T;
+        let Self {
+            node_evidence_tpm,
+            node_evidence_software_tpm,
+            // How an AK is made and what it claims: nothing without a TPM.
+            node_evidence_ak_template: _,
+            node_evidence_anchor: _,
+            node_evidence_epoch_secs: _,
+            node_evidence_reference,
+            node_evidence_ak_pin,
+            // Only with a software TPM, which is refused by its own flag.
+            node_evidence_logs: _,
+            // Waivers weaken custody; they configure no authority.
+            allow_federation_key_in_file: _,
+            allow_node_keys_in_file: _,
+            // Classified by the caller, field by field.
+            public: _,
+        } = self;
+        [
+            (node_evidence_tpm.is_some(), T::NodeEvidenceTpm),
+            (
+                node_evidence_software_tpm.is_some(),
+                T::NodeEvidenceSoftwareTpm,
+            ),
+            (node_evidence_reference.is_some(), T::NodeEvidenceReference),
+            (node_evidence_ak_pin.is_some(), T::NodeEvidenceAkPin),
+        ]
+        .into_iter()
+        .filter_map(|(set, authority)| set.then_some(authority))
+        .collect()
+    }
+
     /// Where the federation issuer key lives, decided from the TPM flag and
     /// its waiver (ADR 0012).
     ///

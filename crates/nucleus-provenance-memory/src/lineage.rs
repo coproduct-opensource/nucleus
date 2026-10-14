@@ -50,7 +50,12 @@ mod tests {
             source_class: SourceClass::Web,
             source_hash: ContentHash::of_canonical_bytes(b"doc"),
         };
-        MemoryRecord::new("recalled", SchemaType::String, derive_label(&d, &[]), d)
+        MemoryRecord::new(
+            "recalled",
+            SchemaType::String,
+            derive_label(&d, &[], crate::record::LabelStamp::Unstamped),
+            d,
+        )
     }
 
     #[test]
@@ -85,7 +90,12 @@ mod tests {
             source_class: SourceClass::Web,
             source_hash: ContentHash::of_canonical_bytes(b"other"),
         };
-        let r2 = MemoryRecord::new("different", SchemaType::String, derive_label(&d, &[]), d);
+        let r2 = MemoryRecord::new(
+            "different",
+            SchemaType::String,
+            derive_label(&d, &[], crate::record::LabelStamp::Unstamped),
+            d,
+        );
         let e2 = memory_lineage_edge(&r2, &p).unwrap();
         assert_ne!(e1.child, e2.child);
     }

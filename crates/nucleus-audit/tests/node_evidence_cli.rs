@@ -163,6 +163,7 @@ fn receipt_naming(dir: &Path, platform: NodePlatform, issued_secs: u64) -> Recei
         environment_complete_sha256: digest.clone(),
         artifacts: Default::default(),
         node_platform: platform,
+        sandbox_tier: nucleus_ci_verdict::execution::SandboxTier::Driver,
     };
     let issued = issued_secs * 1_000_000;
     let expected = RecordedExecution {

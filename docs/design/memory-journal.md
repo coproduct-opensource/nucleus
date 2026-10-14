@@ -141,12 +141,53 @@ other's writes. Stores left at `<memory-root>/<sha256(owner)>/<namespace>` by th
 owner-keyed layout become spaces in place under a `TenantAll-legacy` policy at
 node start, once, receipted; their writes become private until published.
 
-**Cross-run memory is paused until labels are dependency-stamped** (Program C,
-phase C0; lifted per space by C1). A record's label is derived from its
-derivation alone, so every root is Public whatever its writer had read: a
-session that read Secret data writes Public records, and a view ceiling cannot
-withhold what the label does not say. Until a space's records carry their
-writer's dependency context, the node refuses, by name
+**Records carry their writer's dependency context** (Program C, phase C1). An
+unstamped record's label is derived from its derivation alone, so every root is
+Public whatever its writer had read: a session that read Secret data wrote
+Public records, and a view ceiling cannot withhold what the label does not say.
+A stamped record (`LabelStamp::Stamped { writer_floor }`) carries the floor:
+
+- **Where the floor comes from.** `preflight_memory_write` builds the write's
+  discharge term from the session's flow graph, under the lock the handler holds,
+  and reads its artifact label — the join over every live node and the
+  compaction log — joined with the graph's confidentiality ratchet
+  (`session_conf_ceiling`). That `WriterFloor` has a private constructor and is
+  bound by value into the `MemoryWriteAuthority` the write spends; the request
+  has no floor field, and a claimed label is joined with the floor, never
+  allowed below it. It is what the session HAS READ, not what it is cleared for,
+  and it is the whole session's: a value a Secret read selected (control
+  dependence), and a record whose existence a Secret read decided, are covered
+  by that ratchet, not by tracking the individual value.
+- **Admission.** `derive_label(derivation, parents, stamp)` joins the floor into
+  the derivation's confidentiality; integrity and derivation class are the
+  derivation's. Admission requires the stored label to equal it, so a label
+  below its recorded floor is refused, here and on every replay.
+- **Replay.** The stamp is in each commit's head hash beside the label (an
+  unstamped record's entry is its label alone, as before, so every existing head
+  is unchanged), and replay re-derives against the floor the record RECORDS.
+  Reopening a journal in a fresh session keeps a Secret writer's record Secret.
+- **Merge.** Two copies of one content hash merge to the join of their labels
+  and stamps; an unstamped copy of a stamped record merges to stamped Secret,
+  never the stamped copy's lower floor.
+- **v1 and legacy.** A v1 record has no stamp and migrates unstamped. An
+  unstamped record is Secret wherever the node delivers it, as is anything
+  derived from it (`deliverable`): withheld from every view below Secret, held
+  stamped Secret by a run whose proxy stamps, and never given to a run whose
+  proxy does not. Import never reclassifies it; no reclassification path exists
+  in C1.
+- **Guests.** Whether a run's proxy stamps is the node's judgment of its guest
+  (`writer_of`: the local driver's proxy does; a container image only when its
+  release carries `GuestCapability::MemoryDependencyStamp`, which no published
+  release does yet; anything the node cannot tell does not). A legacy run — the
+  pinned 2.7.0 guest refuses any delivered record that is not Public — is given
+  only stamped Public records, exactly as stored; its writes are unstamped, and
+  the binding records it (`writer`, also in the delivery receipt).
+
+A space is `Stamped` when every record it holds is: a declared space (it starts
+empty), and a lineage's own space created by a stamping run. A publish that
+would add an unstamped record to it is refused by name (`UnstampedRecords`).
+Over a stamped space, `Workspace` and `TenantAll` policies bind and publish.
+Every other space keeps C0's refusal, by name
 (`CrossRunMemoryUnavailable: record labels are not yet dependency-stamped`):
 
 - creating a `Workspace` or `TenantAll` policy, or a `Lineage` policy over a
@@ -155,17 +196,20 @@ writer's dependency context, the node refuses, by name
   any snapshot is written or receipted;
 - admitting a publish from a binding under one.
 
-The one decider is `Registry::cross_run_reach` (`memory_space.rs`). Lineage
-audiences keep working: the runs of one lineage share one space. A migrated
-owner-keyed store records no lineage that owns it, so it is delivered to **no**
-run until C1: its `TenantAll-legacy` policy is still recorded, and its journal is
-kept in place, untouched. This pauses the legacy layout's cross-run persistence.
+The one decider is `Registry::cross_run_reach` (`memory_space.rs`), an
+exhaustive match on the space's stamping and the audience. Lineage audiences
+keep working: the runs of one lineage share one space. A migrated owner-keyed
+store records no lineage that owns it and is unstamped, so it is delivered to
+**no** run: its `TenantAll-legacy` policy is still recorded, and its journal is
+kept in place, untouched. Legacy import stays quarantined.
 The bind-time `QuotaFullyAllocated` refusal names the policy's own allocation
 and no unreserved byte count, which would count bytes the caller cannot see. The
 refusal itself is still a one-bit bind-time availability channel (C3 replaces
-it). None of this is a confidentiality claim for memory: it withholds a channel
-the labels cannot yet decide, and says nothing of timing or of what a
-delivered snapshot does once a run holds it.
+it). None of this is a confidentiality claim for memory: stamped labels decide
+what a view is given, not what a publish verdict reveals (a Public binding of a
+stamped workspace shares one head with Secret publishes until C4), and it says
+nothing of timing, microarchitectural or resource-contention channels, or of
+what a delivered snapshot does once a run holds it.
 
 The local development driver passes explicit proxy arguments and clears ambient
 memory environment settings. A mediated container receives a dedicated bind at
