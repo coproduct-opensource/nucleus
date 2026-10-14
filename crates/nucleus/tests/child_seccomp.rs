@@ -626,10 +626,11 @@ fn a_child_under_web_fetch_never_without_egress_cannot_open_an_inet_socket() {
 
 /// #2907: a child under `web_fetch: never` whose pod declares only IPv4
 /// egress keeps `AF_INET` (its declared destinations) and cannot open
-/// `AF_INET6`. The filter answers at syscall entry, before the kernel looks
-/// at the family, so the denial is `EPERM` even on a host without IPv6.
-/// Red on a rule that gives both families back once anything is declared:
-/// the `AF_INET6` socket opens (or answers `EAFNOSUPPORT`), never `EPERM`.
+/// `AF_INET6`. Where the confined control opens `AF_INET6`, the filter's
+/// answer is exactly `EPERM`. Where it cannot (a sandbox without IPv6 may
+/// answer `EAFNOSUPPORT` whatever the filter says), the socket still must
+/// not open, as in the test above. Red on a rule that gives both families
+/// back once anything is declared: the `AF_INET6` socket opens.
 #[test]
 fn a_child_under_ipv4_only_egress_cannot_open_an_inet6_socket() {
     let caps = CapabilityLattice {
@@ -639,11 +640,12 @@ fn a_child_under_ipv4_only_egress_cannot_open_an_inet6_socket() {
     let policy = SeccompPolicy::from_capabilities(&caps, NetworkEgress::Ipv4Only);
     for (mode, c) in confining() {
         assert_eq!(run_under(Some(c), policy, "inet"), "ok", "{mode:?}: inet");
-        assert_eq!(
-            run_under(Some(c), policy, "inet6"),
-            denied(),
-            "{mode:?}: inet6"
-        );
+        let filtered = run_under(Some(c), policy, "inet6");
+        if run(Some(c), "inet6") == "ok" {
+            assert_eq!(filtered, denied(), "{mode:?}: inet6");
+        } else {
+            assert_ne!(filtered, "ok", "{mode:?}: inet6 without host IPv6");
+        }
         assert_eq!(run_under(Some(c), policy, "unix"), "ok", "{mode:?}: unix");
     }
 }
