@@ -473,6 +473,48 @@ fn test_effective_permissions_integrity() {
 }
 
 #[test]
+fn builder_autonomous_declares_exactly_the_named_operations() {
+    // Kills the surviving mutant `PermissionLatticeBuilder::autonomous ->
+    // Default::default()`: the declaration must reach the built lattice, and
+    // the builder state set before it (capabilities, obligations) must survive.
+    let caps = CapabilityLattice::restrictive();
+    let permitted = caps.permitted_operations();
+    let (obligated, autonomous) = permitted
+        .split_first()
+        .expect("restrictive permits an operation");
+    let mut obligations = Obligations::default();
+    obligations.insert(*obligated);
+
+    let lattice = PermissionLattice::builder()
+        .capabilities(caps.clone())
+        .obligations(obligations.clone())
+        .autonomous(autonomous.iter().copied())
+        .build()
+        .expect("every permitted operation is declared exactly once");
+
+    assert_eq!(lattice.capabilities, caps);
+    assert_eq!(
+        lattice.consent_for(*obligated),
+        crate::ConsentMode::RequiresApproval
+    );
+    for op in autonomous {
+        assert!(
+            lattice.autonomous().requires(*op),
+            "{op:?} declared autonomous"
+        );
+        assert_eq!(lattice.consent_for(*op), crate::ConsentMode::Autonomous);
+    }
+
+    // Declaring the obligated operation autonomous too is refused, not merged.
+    let both = PermissionLattice::builder()
+        .capabilities(caps)
+        .obligations(obligations)
+        .autonomous(permitted.iter().copied())
+        .build();
+    assert!(both.is_err(), "an operation declared both ways is refused");
+}
+
+#[test]
 fn test_builder_pattern() {
     let lattice = PermissionLattice::builder()
         .description("Test permissions")
