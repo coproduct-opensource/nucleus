@@ -365,8 +365,12 @@ mod tests {
             &format!("boot\n{line}\n"),
             &[a.clone(), b.clone()]
         ));
-        assert!(armed_in(&armed_line(&[a.clone()]), &[a.clone()]));
-        assert!(!armed_in(&armed_line(&[a.clone()]), &[a.clone(), b]));
+        let one = std::slice::from_ref(&a);
+        assert!(armed_in(&armed_line(one), one));
+        assert!(!armed_in(
+            &armed_line(std::slice::from_ref(&a)),
+            &[a.clone(), b]
+        ));
         assert!(!armed_in("NUCLEUS_HOST_SPEC: READY\n", &[a]));
     }
 

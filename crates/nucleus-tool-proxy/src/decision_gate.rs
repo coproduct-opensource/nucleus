@@ -55,12 +55,14 @@ pub(crate) enum Use {
 }
 
 impl Covered {
-    /// The decision that covered the effect.
+    /// The decision that covered the effect. The audit record carries it in production.
+    #[cfg(test)]
     pub(crate) const fn decision(&self) -> OwnerDecisionId {
         self.decision
     }
 
     /// How it was used.
+    #[cfg(test)]
     pub(crate) const fn used(&self) -> Use {
         self.use_
     }
