@@ -107,6 +107,12 @@ fn read_capped(path: &Path, cap: u64) -> std::io::Result<Vec<u8>> {
 }
 
 impl DecisionArgs {
+    /// The operator's trust-roots file, when configured: durable authority no
+    /// child may reach (`secret_census`, #3461).
+    pub(crate) fn trust_roots(&self) -> Option<&Path> {
+        self.decision_trust_roots.as_deref()
+    }
+
     /// Load the trust roots and check the paths. `Ok(None)` when nothing is configured; any
     /// partial or malformed configuration is fatal at startup.
     pub(crate) fn open(&self, workspace: &Path) -> Result<Option<DecisionDesk>, ApiError> {

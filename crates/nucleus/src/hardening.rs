@@ -919,6 +919,70 @@ enum Hook {
     NoneOnThisPlatform,
 }
 
+/// What the runtime did to keep its own children out of it (#3461).
+///
+/// A child that shares the runtime's uid (the declared bare tier, or a
+/// `Restricted` child of a non-root runtime) can open
+/// `/proc/<runtime>/environ`, `mem` and `fd/*`. It also inherits every
+/// descriptor that the runtime's launcher left open without close-on-exec,
+/// because those postures sweep no descriptors. [`seal_runtime`] closes both
+/// ways in. The process becomes non-dumpable, so the kernel refuses those
+/// files and `ptrace` to every process without `CAP_SYS_PTRACE`. Every
+/// descriptor above stdio that is open when it runs is marked close-on-exec,
+/// so no later spawn can pass one on.
+///
+/// Evidence (ADR 0007 C-1): [`Self::environment`] answers
+/// [`EnvironmentReach::ClosedToSameUid`] only for a value [`seal_runtime`]
+/// minted after the kernel confirmed the seal. [`Self::unsealed`] claims
+/// nothing, so a caller can always hold the weaker value.
+#[derive(Debug)]
+pub struct RuntimeSeal {
+    /// True only when the kernel confirmed the process non-dumpable.
+    sealed: bool,
+}
+
+/// Whether a process at the runtime's own uid can read the runtime's
+/// environment and memory. A process at another non-root uid never can.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentReach {
+    /// The runtime is non-dumpable: `/proc/<pid>/environ` and `mem` refuse
+    /// a same-uid process.
+    ClosedToSameUid,
+    /// Nothing keeps a same-uid process out (no seal, or a platform where
+    /// the environment of a same-uid process is readable regardless).
+    OpenToSameUid,
+}
+
+impl RuntimeSeal {
+    /// A value that claims no seal: what a platform without one holds.
+    #[must_use]
+    pub fn unsealed() -> Self {
+        Self { sealed: false }
+    }
+
+    /// What a same-uid child can read of this process.
+    #[must_use]
+    pub fn environment(&self) -> EnvironmentReach {
+        if self.sealed {
+            EnvironmentReach::ClosedToSameUid
+        } else {
+            EnvironmentReach::OpenToSameUid
+        }
+    }
+}
+
+/// Seal this process against its own children; see [`RuntimeSeal`]. Call it
+/// first, before the process reads a secret or spawns anything.
+///
+/// # Errors
+/// On Linux, the kernel's errno when it refused either step, or an
+/// [`std::io::ErrorKind::Other`] error when the process still reads as
+/// dumpable afterwards. Off Linux nothing is attempted and the answer is
+/// [`RuntimeSeal::unsealed`].
+pub fn seal_runtime() -> std::io::Result<RuntimeSeal> {
+    imp::seal_self().map(|sealed| RuntimeSeal { sealed })
+}
+
 /// The runtime's own uid.
 ///
 /// Read through `std` (the owner of `/proc/self`) so this needs neither
@@ -991,8 +1055,10 @@ mod hook {
 #[cfg(target_os = "linux")]
 // The crate denies `unsafe_code` globally; this module is an audited
 // exception. Child-side hardening is intrinsically `unsafe` FFI: it calls
-// `close_range`/`prctl`/`setrlimit`, which must be async-signal-safe. One
-// `unsafe` block: the syscall sequence. The hook install is `hook::pre_exec`.
+// `close_range`/`prctl`/`setrlimit`, which must be async-signal-safe. Two
+// `unsafe` blocks: the child's syscall sequence, and the runtime's own seal
+// (`seal_self`, the same `prctl` and `close_range` on itself). The hook
+// install is `hook::pre_exec`.
 #[allow(unsafe_code)]
 mod imp {
     use std::io;
@@ -1306,6 +1372,65 @@ mod imp {
         let program = Program::workload(syscalls, pin).map_err(|e| e.to_string())?;
         Ok((program, start))
     }
+
+    /// The runtime's seal (#3461): non-dumpable, confirmed by reading it
+    /// back, then every descriptor from 3 up marked close-on-exec.
+    ///
+    /// `CLOSE_RANGE_CLOEXEC` closes nothing, so a descriptor the runtime
+    /// itself uses (an inherited listener, the async runtime's own) keeps
+    /// working; only its passage through a later `exec` ends. On a kernel
+    /// without the flag (ENOSYS before 5.9, EINVAL on 5.9 and 5.10) each
+    /// descriptor `/proc/self/fd` listed is marked one by one, and one that
+    /// closed between the listing and the mark (EBADF) is skipped.
+    pub(super) fn seal_self() -> io::Result<bool> {
+        let listed: Vec<libc::c_int> = std::fs::read_dir("/proc/self/fd")?
+            .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+            .filter(|fd| *fd > 2)
+            .collect();
+        // SAFETY: `prctl(PR_SET_DUMPABLE | PR_GET_DUMPABLE)` and
+        // `close_range` take scalars and change only this process's own
+        // attributes. `fcntl(F_GETFD | F_SETFD)` on a raw descriptor number
+        // reads or sets that descriptor's flag word and nothing else: no
+        // memory is borrowed, and a number that is not open answers EBADF.
+        unsafe {
+            if libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            match libc::prctl(libc::PR_GET_DUMPABLE, 0, 0, 0, 0) {
+                0 => {}
+                -1 => return Err(io::Error::last_os_error()),
+                _ => return Err(io::Error::other("the process still reads as dumpable")),
+            }
+            if libc::syscall(
+                libc::SYS_close_range,
+                3 as libc::c_long,
+                libc::c_uint::MAX as libc::c_long,
+                CLOSE_RANGE_CLOEXEC,
+            ) != 0
+            {
+                let err = io::Error::last_os_error();
+                match err.raw_os_error() {
+                    Some(libc::ENOSYS | libc::EINVAL) => {
+                        for fd in listed {
+                            let flags = libc::fcntl(fd, libc::F_GETFD);
+                            if flags == -1 {
+                                let err = io::Error::last_os_error();
+                                if err.raw_os_error() == Some(libc::EBADF) {
+                                    continue;
+                                }
+                                return Err(err);
+                            }
+                            if libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) == -1 {
+                                return Err(io::Error::last_os_error());
+                            }
+                        }
+                    }
+                    _ => return Err(err),
+                }
+            }
+        }
+        Ok(true)
+    }
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
@@ -1314,6 +1439,14 @@ mod imp {
 
     pub(super) use super::uid::{chown, drop_to, runtime_uid};
     use super::{AppliedRlimits, FilesystemConfinement, Hook, Isolation, SyscallFilter};
+
+    /// No seal off Linux (#3461): there is no `PR_SET_DUMPABLE`, and a
+    /// same-uid process can read another's environment regardless, so the
+    /// runtime says so (`false`) rather than claiming one. `Result` for one
+    /// signature with the Linux seal, which can fail.
+    pub(super) fn seal_self() -> std::io::Result<bool> {
+        Ok(false)
+    }
 
     /// No `close_range`/`prctl`/seccomp off Linux. `HostHardened` is refused
     /// before any spawn there (`attest_containment`), and the guest is Linux.
