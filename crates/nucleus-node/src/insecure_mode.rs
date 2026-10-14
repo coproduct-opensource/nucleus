@@ -239,6 +239,39 @@ pub(crate) fn configured(
     out
 }
 
+/// The node's start-up step for this mode, in order: decide the tier from
+/// the same opt-in that puts `--unsandboxed` on a proxy, refuse any trusted
+/// authority, check and mark the state directory, and say so in the log.
+///
+/// # Errors
+/// [`refuse_trusted_authorities`] or [`prepare_state_dir`].
+pub(crate) fn start(args: &crate::Args) -> Result<EvidenceTier, String> {
+    #[cfg(feature = "local-driver")]
+    let tier = EvidenceTier::of(crate::local_driver_opt_in(
+        &args.driver,
+        args.allow_local_driver,
+    ));
+    #[cfg(not(feature = "local-driver"))]
+    let tier = EvidenceTier::of(nucleus::UnsandboxedOptIn::Absent);
+    refuse_trusted_authorities(tier, &configured(args, |name| std::env::var(name).ok()))?;
+    prepare_state_dir(tier, &args.state_dir)?;
+    match tier {
+        EvidenceTier::Separated => {}
+        EvidenceTier::InsecureSharedUid => tracing::warn!(
+            "INSECURE MODE (--allow-local-driver): workloads share this node's uid and can read \
+             its keys; its evidence is signed with an insecure key and verifiers reject it"
+        ),
+    }
+    Ok(tier)
+}
+
+/// The node could not make itself non-dumpable (`nucleus::seal_runtime`).
+pub(crate) fn seal_failed(e: std::io::Error) -> crate::ApiError {
+    crate::ApiError::Driver(format!(
+        "could not seal the node against its own children: {e}"
+    ))
+}
+
 /// Refuse to start in insecure mode with any trusted authority configured,
 /// naming every one.
 ///

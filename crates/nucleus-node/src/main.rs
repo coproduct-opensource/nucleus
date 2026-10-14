@@ -210,16 +210,9 @@ struct Args {
         default_value = "firecracker"
     )]
     driver: DriverKind,
-    /// Allow the local driver (no VM isolation). INSECURE: the bare tier.
-    ///
-    /// Workloads run as plain host processes at the node's own uid, with no
-    /// isolation from the node: they can read its state directory, keys
-    /// included. The node therefore runs in declared insecure mode: it refuses
-    /// to start with any trusted authority configured (federation, upstreams,
-    /// cert anchors, TPM / node evidence, public evidence, decision roots,
-    /// audit sinks, the trust API), signs all its evidence with a separate
-    /// insecure key, and marks it `insecure-shared-uid`; verifiers reject it.
-    /// See docs/bare-tier-insecure.md.
+    /// Allow the local driver (no VM isolation). INSECURE: workloads can read the node's keys,
+    /// so the node refuses every trusted authority and its evidence is marked
+    /// `insecure-shared-uid` and rejected by verifiers. See docs/bare-tier-insecure.md.
     #[cfg(feature = "local-driver")]
     #[arg(long, env = "NUCLEUS_ALLOW_LOCAL_DRIVER", default_value_t = false)]
     allow_local_driver: bool,
@@ -761,15 +754,9 @@ pub(crate) use pod_view::{CreatePodRequest, CreatePodResponse, PodInfo, PodState
 
 #[tokio::main]
 async fn main() -> Result<(), ApiError> {
-    // First, before a secret is read or a child spawned (#3461, Program C C0):
-    // non-dumpable, so no process at this uid (a bare-tier child included)
-    // can open /proc/<node>/environ, mem or fd, or ptrace the node. Off Linux
-    // nothing is attempted.
-    let _seal = nucleus::seal_runtime().map_err(|e| {
-        ApiError::Driver(format!(
-            "could not seal the node against its own children: {e}"
-        ))
-    })?;
+    // First (#3461, Program C C0): non-dumpable, so no process at this uid can
+    // open /proc/<node>/environ, mem or fd, or ptrace the node.
+    let _seal = nucleus::seal_runtime().map_err(insecure_mode::seal_failed)?;
     // Install the ring crypto provider for rustls (must be done before any TLS operations)
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -801,25 +788,8 @@ async fn main() -> Result<(), ApiError> {
                 .to_string(),
         ));
     }
-    // The bare tier is a declared insecure mode (Program C, C0): decided once
-    // from the same opt-in that puts `--unsandboxed` on a proxy.
-    #[cfg(feature = "local-driver")]
-    let evidence_tier =
-        insecure_mode::EvidenceTier::of(local_driver_opt_in(&args.driver, args.allow_local_driver));
-    #[cfg(not(feature = "local-driver"))]
-    let evidence_tier = insecure_mode::EvidenceTier::of(nucleus::UnsandboxedOptIn::Absent);
-    insecure_mode::refuse_trusted_authorities(
-        evidence_tier,
-        &insecure_mode::configured(&args, |name| std::env::var(name).ok()),
-    )
-    .map_err(ApiError::Driver)?;
-    insecure_mode::prepare_state_dir(evidence_tier, &args.state_dir).map_err(ApiError::Driver)?;
-    if evidence_tier == insecure_mode::EvidenceTier::InsecureSharedUid {
-        tracing::warn!(
-            "INSECURE MODE (--allow-local-driver): workloads share this node's uid and can read \
-             its keys; its evidence is signed with an insecure key and verifiers reject it"
-        );
-    }
+    // The bare tier is a declared insecure mode (Program C, C0).
+    let evidence_tier = insecure_mode::start(&args).map_err(ApiError::Driver)?;
     // What #2446 step 3 deleted, refused by name rather than ignored.
     retired_config::refuse(&retired_config::Retired {
         proxy_auth_secret: args.proxy_auth_secret.as_deref(),
