@@ -34,8 +34,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 pub mod body;
+pub mod link_record;
 pub mod record;
 mod upload;
+pub use link_record::LinkRecord;
 pub use record::EgressRecord;
 pub use upload::UploadCharge;
 
@@ -147,6 +149,28 @@ impl EgressMeter {
         if first {
             self.record(&EgressRefusal::LedgerFault).await;
         }
+    }
+
+    /// The pod's link check cut its egress: the kernel counted more leaving the link than this
+    /// ledger admitted (`cut` is [`LinkCut::Bypass`]), or the counters could not be read
+    /// ([`LinkCut::CouldNotCheck`]). Every path is refused from here on, as for [`Self::fault`],
+    /// and the cut leaves a [`LinkRecord`] signed by the node's root key (#2905).
+    ///
+    /// Recorded every time it is called, not once per latch: the detector calls it at most once
+    /// per pod, because it stops checking when it cuts.
+    pub async fn cut_link(&self, cut: link_record::LinkCut, finding: &str) {
+        if let Ok(mut ledger) = self.ledger.lock() {
+            ledger.take();
+        }
+        tracing::error!(pod = %self.pod_id, dimension = "egress.link", "{finding}");
+        let record = LinkRecord::signed(
+            &self.signer,
+            crate::lifecycle::now_unix(),
+            cut,
+            &self.pod_id,
+            finding.to_string(),
+        );
+        crate::lifecycle::write_lifecycle_record(&self.pod_dir, &record).await;
     }
 
     pub async fn record_packets(&self, bytes: u64, rejected: u64) {

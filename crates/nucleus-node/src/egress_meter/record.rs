@@ -19,6 +19,16 @@ use crate::pod_authority::{EgressRecordSigner, SignedRecord};
 /// new version rather than a reinterpretation of signed records.
 pub const EGRESS_RECORD_VERSION: u32 = 1;
 
+/// Append one tag-separated, length-prefixed part of a signed record's preimage, so no two
+/// distinct records share a preimage by concatenation. The one encoding every egress record
+/// uses (ADR 0007 G-1).
+pub(super) fn absorb(out: &mut Vec<u8>, tag: &str, bytes: &[u8]) {
+    out.extend_from_slice(tag.as_bytes());
+    out.push(0);
+    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
 /// One signed egress-exhaustion record, as it is written to the pod's `lifecycle.log`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,19 +95,13 @@ impl EgressRecord {
             signer_pubkey: _,
         } = self;
         let mut out = Vec::new();
-        let mut absorb = |tag: &str, bytes: &[u8]| {
-            out.extend_from_slice(tag.as_bytes());
-            out.push(0);
-            out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
-            out.extend_from_slice(bytes);
-        };
-        absorb("version", &version.to_be_bytes());
-        absorb("timestamp_unix", &timestamp_unix.to_be_bytes());
-        absorb("actor", actor.as_bytes());
-        absorb("event", event.as_bytes());
-        absorb("subject", subject.as_bytes());
-        absorb("result", result.as_bytes());
-        absorb("dimension", dimension.as_bytes());
+        absorb(&mut out, "version", &version.to_be_bytes());
+        absorb(&mut out, "timestamp_unix", &timestamp_unix.to_be_bytes());
+        absorb(&mut out, "actor", actor.as_bytes());
+        absorb(&mut out, "event", event.as_bytes());
+        absorb(&mut out, "subject", subject.as_bytes());
+        absorb(&mut out, "result", result.as_bytes());
+        absorb(&mut out, "dimension", dimension.as_bytes());
         out
     }
 

@@ -988,11 +988,17 @@ impl Kernel {
     /// The flow graph is always active; this method provides precise
     /// per-action flow checking via causal parents. The cached `flow_label`
     /// is updated from the inserted graph node's propagated label.
+    ///
+    /// `parents` names each parent's role (#3459): the action's authority
+    /// comes from its `control` parents alone — the instruction sources — and
+    /// every other label dimension from all of them. An action with no
+    /// control parent has no authority, so a write, exec or publish is
+    /// refused. See [`crate::flow_graph::FlowGraph::insert_action`].
     pub fn decide_with_parents(
         &mut self,
         operation: Operation,
         subject: &str,
-        parents: &[u64],
+        parents: crate::flow_graph::ActionParents<'_>,
     ) -> (Decision, Option<DecisionToken>) {
         let graph = &mut self.flow_graph;
 

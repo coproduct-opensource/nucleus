@@ -312,7 +312,10 @@ pub enum GuestCapability {
     /// (`portcullis::SeccompPolicy`, #2907): `execve` under `run_bash: never`,
     /// starting the child itself through one pinned descriptor, and
     /// `AF_INET`/`AF_INET6` sockets under `web_fetch: never` with no declared
-    /// egress, as `EPERM`, in the same filter as the workload denylist.
+    /// egress, as `EPERM`, in the same filter as the workload denylist. A
+    /// guest after 2.7.0 also denies `AF_INET6` alone when every declared
+    /// destination is IPv4 (`inet6_socket`); the node depends on neither, and
+    /// a guest without it denies less, never more.
     /// [`Demand::When`]`(`[`GuestUse::EvalCell`]`)`: an ordinary pod does not
     /// depend on it, and an older guest runs the denylist alone, which denies
     /// less, and its launch receipt carries no derived classes; an eval-cell pod
