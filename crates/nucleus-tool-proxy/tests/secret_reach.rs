@@ -20,6 +20,7 @@
     reason = "integration fixture launches the proxy binary itself"
 )]
 
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -28,6 +29,7 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 
+#[cfg(target_os = "linux")]
 const SECRET: &str = "broker-secret-3461-do-not-leak";
 
 struct Proxy(Child);
