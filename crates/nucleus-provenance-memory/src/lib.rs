@@ -75,19 +75,31 @@ pub mod crdt;
 pub mod declassify;
 pub mod hash;
 pub mod ifc;
+pub mod journal;
 pub mod lineage;
+pub mod overlay;
 pub mod recompute;
 pub mod record;
 pub mod taskref_token;
+pub mod version;
 
-pub use crdt::ProvenanceMemorySet;
+pub use crdt::{ProvenanceMemorySet, label_not_lower};
 pub use declassify::{DeclassifyError, DeclassifyWitness, SignedDeclassify, declassify};
 pub use hash::ContentHash;
 pub use ifc::memory_ifc_label;
+pub use journal::{
+    JournalError, JournalLocation, JournalPart, MAX_JOURNAL_BYTES, MigrationStep, PinnedSnapshot,
+    PublishRefusal, PublishedJournal, ReachCheck,
+};
 pub use lineage::memory_lineage_edge;
+pub use overlay::Overlay;
 pub use recompute::{RecomputeMemory, RecomputeVerdict, TransformRegistry};
 pub use record::{MemoryDerivation, MemoryRecord, TransformId};
 pub use taskref_token::{BlockClaim, SignedBlock, SignedTaskRef, TokenError, TokenScope};
+pub use version::{
+    Candidate, CandidateRefusal, CandidateValidator, Commit, CommitError, Epoch, HeadHash, Patch,
+    Pin, PublisherBinding, StoreInvariants,
+};
 
 // Re-export the portcullis-core memory types this crate's API surfaces, so
 // consumers (e.g. the tool-proxy memory endpoints) get one import home.

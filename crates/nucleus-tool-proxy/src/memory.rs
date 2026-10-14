@@ -339,7 +339,7 @@ pub(crate) async fn memory_write(
     let mut set = state.provenance_memory.lock().await;
     let registry = state.memory_transforms.as_ref();
     let prepared = set.prepare(registry, req, authority)?;
-    Ok(Json(prepared.commit().await?))
+    Ok(Json(prepared.commit(registry)?))
 }
 
 /// POST `/v1/memory/recall` — taint-labeled recall gated through the IFC flow
