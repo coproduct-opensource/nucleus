@@ -100,6 +100,11 @@ fn a_tampered_commit_line_fails_verification() {
     let edits = [
         line.replace("\"value\":\"a\"", "\"value\":\"z\""),
         line.replace("\"integrity\":\"adversarial\"", "\"integrity\":\"trusted\""),
+        // Same length, so only the label bytes themselves can catch it.
+        line.replace(
+            "\"confidentiality\":\"public\"",
+            "\"confidentiality\":\"secret\"",
+        ),
         line.replace("\"epoch\":0", "\"epoch\":9"),
     ];
     for edited in edits {
