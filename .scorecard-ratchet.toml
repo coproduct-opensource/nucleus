@@ -641,9 +641,12 @@ population_floor = 23
 # 2026-10-13 (#3433, C2 census, merged after #3437): the NodeState census builds its list
 # one cfg-carrying push at a time under a reasoned #[expect] of vec_init_then_push.
 # 38/143 = 26.57%; both pins follow the tree.
-floor_bp = 2657
+# 2026-10-14 (#3461): the tests that seal their process run alone in a fresh copy of the
+# test binary, under one reasoned #[expect] of the #1216 spawn ban (the umask pattern).
+# 39/144 = 27.08%; both pins follow the tree.
+floor_bp = 2708
 floor_set = "measurement"
-population_floor = 143
+population_floor = 144
 
 [family.mediate]
 # How much of what an agent can call is SEALED: the handler mints an
