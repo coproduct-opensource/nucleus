@@ -659,7 +659,8 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     let (from, until) = open_window();
     let live = Live::new(&ceiling(100, from, until), Some("5"));
     let settle = |mode: &str| {
-        let mut doc: toml::Table = toml::from_str(&std::fs::read_to_string(&live.path).unwrap()).unwrap();
+        let mut doc: toml::Table =
+            toml::from_str(&std::fs::read_to_string(&live.path).unwrap()).unwrap();
         doc["caller"].as_array_mut().unwrap()[0]
             .as_table_mut()
             .unwrap()
@@ -682,7 +683,10 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     live.st.authority.release_child(a).await;
     // The day keeps 2 + 0.5: 2 fits, then 1 more does not.
     assert_eq!(live.ledger_file()["ledger"]["consumed_micro"], 2_500_000);
-    let b = live.admit(&who, 2).await.expect("the unspent 2.5 came back to the day");
+    let b = live
+        .admit(&who, 2)
+        .await
+        .expect("the unspent 2.5 came back to the day");
     assert!(refused_with(&live.admit(&who, 1).await, "daily allowance"));
     // A pod that spent nothing is charged nothing.
     live.st.authority.release_child(b).await;
@@ -690,7 +694,10 @@ async fn a_metered_binding_charges_the_day_what_its_pods_spent() {
     live.admit(&who, 2).await.expect("b's 2 came back too");
 
     assert!(
-        !matches!(settle("everything"), ReloadOutcome::Applied | ReloadOutcome::Unchanged),
+        !matches!(
+            settle("everything"),
+            ReloadOutcome::Applied | ReloadOutcome::Unchanged
+        ),
         "an unknown settle mode refuses the registry"
     );
 }

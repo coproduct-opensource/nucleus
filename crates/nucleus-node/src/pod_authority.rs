@@ -151,6 +151,8 @@ use budget::SharedBudget;
 mod binding_ledger;
 use binding_ledger::{charge_day, receil};
 mod daily;
+mod settle;
+use settle::{ReleaseKind, release};
 pub(crate) mod registry;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
@@ -459,112 +461,6 @@ impl Drop for Reservation {
     }
 }
 
-// No caller-supplied spend amount can authorize a refund (ADR 0007 C-1).
-enum ReleaseKind {
-    Unspawned,
-    Exited,
-}
-
-/// Retire `pod_id`'s certificate and return its allocation to its parent's
-/// ledger. The one body [`PodAuthority::release_child`] and a dropped
-/// [`Reservation`] share.
-///
-/// The parent's record is written first, naming the child as retired, and
-/// only then is the child's file removed; see the module docs. If the parent's
-/// record cannot be written the child's file is KEPT, so a restart restores
-/// the child as a live allocation: the same budget held, never handed back.
-/// Only the reservation owner selects `Unspawned`.
-async fn release(
-    inner: &tokio::sync::Mutex<Inner>,
-    state_dir: &Path,
-    pod_id: Uuid,
-    kind: ReleaseKind,
-) {
-    let mut guard = inner.lock().await;
-    let inner = &mut *guard;
-    let Some(entry) = inner.pods.remove(&pod_id) else {
-        return;
-    };
-    if let crate::host_decide::PolicyHistory::Live(policy) = &entry.host_policy {
-        crate::host_decide::PodPolicy::revoke(policy);
-    }
-    // Its descendants still charge its account; nothing will restore it.
-    if let egress::PodEgress::Live(chain) = &entry.egress {
-        chain.own().retire();
-    }
-    let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
-    let consumed = match kind {
-        ReleaseKind::Unspawned => rust_decimal::Decimal::ZERO,
-        // Host-authoritative settlement: what the host metered into the pod's
-        // own ledger, never more than the allocation. Unreadable is the whole
-        // allocation, never zero (ADR 0007 A-1).
-        ReleaseKind::Exited if entry.settle_metered => entry
-            .ledger
-            .snapshot()
-            .map_or(allocation, |l| {
-                let core = l.core();
-                micro_usd(core.parent_consumed_units().saturating_add(core.allocated_units()))
-                    .min(allocation)
-            }),
-        ReleaseKind::Exited => allocation,
-    };
-    let recorded = match entry.parent {
-        Parent::Root => Ok(()),
-        Parent::Pod(p) => match inner.pods.get_mut(&p) {
-            Some(parent) => match parent.ledger.release(pod_id.as_u128(), consumed) {
-                Ok(_) => {
-                    parent.retired.push(pod_id);
-                    retain_unremoved(state_dir, &mut parent.retired);
-                    persist_pod(state_dir, p, parent).await
-                }
-                Err(e) => {
-                    tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
-                    Ok(())
-                }
-            },
-            None => Ok(()),
-        },
-        Parent::External(fp) => match inner.external.get_mut(&fp) {
-            Some(chain) => match chain.ledger.release(pod_id.as_u128(), consumed) {
-                Ok(_) => {
-                    // The day agrees with the ledger: a refund is credited to
-                    // the day it was charged to, a pod that ran keeps its charge.
-                    match kind {
-                        ReleaseKind::Unspawned => chain.days.refund(pod_id),
-                        ReleaseKind::Exited => chain.days.settle_spent(pod_id, micro_of(consumed)),
-                    }
-                    chain.retired.push(pod_id);
-                    retain_unremoved(state_dir, &mut chain.retired);
-                    persist_external(state_dir, &fp, chain).await
-                }
-                Err(e) => {
-                    tracing::debug!(pod = %pod_id, error = %e, "budget release found no live allocation");
-                    Ok(())
-                }
-            },
-            None => Ok(()),
-        },
-    };
-    match recorded {
-        Ok(()) => {
-            let _ = tokio::fs::remove_file(authority_path(state_dir, pod_id)).await;
-        }
-        Err(e) => tracing::error!(
-            pod = %pod_id,
-            error = %e,
-            "could not record a released allocation in its parent's ledger; the pod's \
-             authority file is kept, so a restart restores it as still allocated"
-        ),
-    }
-}
-
-/// Keep, of `retired`, only the children whose authority file still exists:
-/// the ones a restore could otherwise mistake for live. Bounded by the
-/// releases whose file removal has not happened yet.
-fn retain_unremoved(state_dir: &Path, retired: &mut Vec<Uuid>) {
-    retired.retain(|id| authority_path(state_dir, *id).exists());
-}
-
 impl IssuedAuthority {
     /// Replace what the spec REQUESTED with what was ISSUED: the policy with the
     /// certificate's effective lattice, and `credentialed_egress` with the
@@ -607,7 +503,7 @@ struct PodCert {
     holder_pkcs8: Vec<u8>,
     ledger: SharedBudget,
     /// Children whose release is already in `ledger`'s consumption but whose
-    /// authority file may not be removed yet. See [`retain_unremoved`].
+    /// authority file may not be removed yet. See [`settle::retain_unremoved`].
     retired: Vec<Uuid>,
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
@@ -754,16 +650,6 @@ impl LedgerRecord {
 
 fn micro_usd(micro: u64) -> rust_decimal::Decimal {
     rust_decimal::Decimal::new(i64::try_from(micro).unwrap_or(i64::MAX), 6)
-}
-
-/// `usd` in micro-USD, rounded UP: a settled charge never undercounts by a
-/// fraction of a micro-dollar. Negative is zero.
-fn micro_of(usd: rust_decimal::Decimal) -> u64 {
-    use rust_decimal::prelude::ToPrimitive;
-    (usd * rust_decimal::Decimal::from(1_000_000_u32))
-        .ceil()
-        .to_u64()
-        .unwrap_or(0)
 }
 
 /// `ledger`, charged up to the `consumed_micro` its record holds. Called
@@ -2006,7 +1892,11 @@ impl PodAuthority {
     /// Charge `amount` to `pod_id`'s own ledger through the path the broker's
     /// call charges take ([`SharedBudget::commit`]), for tests of settlement.
     #[cfg(test)]
-    pub(crate) async fn meter(&self, pod_id: Uuid, amount: rust_decimal::Decimal) -> Result<(), String> {
+    pub(crate) async fn meter(
+        &self,
+        pod_id: Uuid,
+        amount: rust_decimal::Decimal,
+    ) -> Result<(), String> {
         let inner = self.inner.lock().await;
         let entry = inner.pods.get(&pod_id).ok_or("no such pod")?;
         entry.ledger.commit(amount, || Ok(()))
