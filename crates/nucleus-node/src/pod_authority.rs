@@ -78,6 +78,15 @@
 //! `upstreams.rs` for why that is fail-closed rather than "trust the root
 //! minter".
 //!
+//! # Egress bytes are delegated here too (`egress.rs`)
+//!
+//! A pod's `network.egress` ceiling is not a policy field either, and admission
+//! bounds it in the same match: a pod caller's child is admitted the meet of
+//! what it declared and what the parent's chain of accounts has left, and every
+//! byte the child sends is charged to its parent's account and every ancestor's.
+//! A declared ceiling above what is left refuses the pod, as cost does; an
+//! undeclared one is met with what is left. See `egress.rs`.
+//!
 //! # Federated callers (`federation_ingress.rs`)
 //!
 //! A caller whose mTLS identity is in a `[[caller]]` binding's trust domain got
@@ -134,6 +143,7 @@ use portcullis::certificate::{
 use portcullis::token::AttenuationToken;
 use portcullis::{BudgetLedger, PermissionLattice};
 pub(crate) mod budget;
+pub(crate) mod egress;
 use budget::SharedBudget;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde::{Deserialize, Serialize};
@@ -292,6 +302,9 @@ pub(crate) struct IssuedAuthority {
     /// The credentialed upstreams this pod was admitted: the requested entries
     /// that survived the per-case clamp in [`PodAuthority::admit`].
     pub upstreams: Vec<CredentialedEgressSpec>,
+    /// The egress ceiling this pod was admitted: what it declared, met with
+    /// its parent's remaining bytes (`egress::meet`).
+    pub egress: portcullis::EgressCeiling,
     /// The certificate's root identity: whose authority this pod runs under,
     /// and so (by its trust domain) which tenant owns it (ADR 0001).
     pub root_identity: String,
@@ -459,6 +472,10 @@ async fn release(
     if let crate::host_decide::PolicyHistory::Live(policy) = &entry.host_policy {
         crate::host_decide::PodPolicy::revoke(policy);
     }
+    // Its descendants still charge its account; nothing will restore it.
+    if let egress::PodEgress::Live(chain) = &entry.egress {
+        chain.own().retire();
+    }
     let allocation = entry.cert.effective_permissions().budget.max_cost_usd;
     let consumed = match kind {
         ReleaseKind::Unspawned => rust_decimal::Decimal::ZERO,
@@ -536,6 +553,16 @@ impl IssuedAuthority {
             lattice: Box::new(self.effective),
         };
         spec.spec.credentialed_egress = self.upstreams;
+        // The egress ceiling too, when admission clamped it: the delivered spec
+        // (and so the receipt's manifest hash) records the clamp. Written only
+        // when it differs, so an unclamped spec is delivered as it was written.
+        // A pod with no network section has no field to write; its meter is
+        // built from the admitted account, not the spec, either way.
+        if let Some(network) = spec.spec.network.as_mut() {
+            if nucleus_spec::NetworkSpec::egress_ceiling(Some(network)) != self.egress {
+                network.egress = Some(egress::spec_of(self.egress));
+            }
+        }
         self.reservation
     }
 }
@@ -552,6 +579,9 @@ struct PodCert {
     parent: Parent,
     /// What this pod was admitted — the ceiling for its own children.
     upstreams: Vec<CredentialedEgressSpec>,
+    /// This pod's egress account and its ancestors': what its meter charges,
+    /// and what its children are met with.
+    egress: egress::PodEgress,
     /// The DLC admission the pod was admitted under (`DlcProvisioning::admitted`:
     /// its labels', else the node's own), decided at admission so the host's
     /// kernel carries the same gate the guest's does, and delivered to the guest
@@ -636,6 +666,12 @@ struct PersistedAuthority {
     /// for it.
     #[serde(default)]
     dlc: Option<DlcProvisioning>,
+    /// The egress ceiling the pod was admitted. Absent from files written
+    /// before egress was delegated here; a pod restored from one may not
+    /// delegate egress (`egress::PodEgress::Unrecoverable`) — absence refuses,
+    /// it never grants (ADR 0007 B-2).
+    #[serde(default)]
+    egress: Option<nucleus_spec::EgressBudgetSpec>,
 }
 
 /// The part of a ledger a restart cannot re-derive from live children.
@@ -1289,7 +1325,10 @@ impl PodAuthority {
             ));
         }
 
-        let (cert, parent, parent_upstreams) = if let Some(parent_id) = admission.caller_pod {
+        let declared_egress = spec.spec.network.as_ref().and_then(|n| n.egress.as_ref());
+        let (cert, parent, parent_upstreams, parent_egress) = if let Some(parent_id) =
+            admission.caller_pod
+        {
             // ── Case 1: one hop below a registered pod ──────────────────
             let parent = inner.pods.get_mut(&parent_id).ok_or_else(|| {
                 ApiError::Authority(format!(
@@ -1303,6 +1342,24 @@ impl PodAuthority {
                     self.max_children
                 )));
             }
+            // Egress before cost, so a refusal here reserves nothing to undo.
+            let chain = match &parent.egress {
+                egress::PodEgress::Live(chain) => chain.clone(),
+                egress::PodEgress::Unrecoverable(why) => {
+                    return Err(ApiError::Authority(format!(
+                        "egress conservation: pod {parent_id}'s egress account was not \
+                         restored ({why}); it may not create children"
+                    )));
+                }
+            };
+            let remaining = chain.remaining().ok_or_else(|| {
+                ApiError::Authority(format!(
+                    "egress conservation: pod {parent_id}'s egress account is faulted; it may \
+                     not create children"
+                ))
+            })?;
+            let child_egress =
+                egress::meet(declared_egress, remaining).map_err(ApiError::Authority)?;
             parent
                 .ledger
                 .try_allocate(child_id.as_u128(), requested.budget.max_cost_usd)
@@ -1327,7 +1384,12 @@ impl PodAuthority {
                     ApiError::Authority(format!("delegation refused: {e}"))
                 })?;
             let ceiling = parent.upstreams.clone();
-            (cert, Parent::Pod(parent_id), Some(ceiling))
+            (
+                cert,
+                Parent::Pod(parent_id),
+                Some(ceiling),
+                Some((chain, child_egress)),
+            )
         } else if let Some(header) = admission.header_cert.as_deref() {
             // ── Case 2: external caller proving its own chain ───────────
             let token = AttenuationToken::from_base64(header.trim())
@@ -1422,7 +1484,7 @@ impl PodAuthority {
                     ApiError::Authority(format!("delegation refused: {e}"))
                 })?;
             let ceiling = binding.map(|b| b.upstreams().to_vec());
-            (cert, parent, ceiling)
+            (cert, parent, ceiling, None)
         } else if admission.caller_spiffe_id == self.root_minter {
             // ── Case 3: the bootstrap identity ──────────────────────────
             let not_after = now + ttl;
@@ -1446,7 +1508,7 @@ impl PodAuthority {
                     &child_key,
                 )
                 .map_err(|e| ApiError::Authority(format!("root mint refused: {e}")))?;
-            (cert, Parent::Root, None)
+            (cert, Parent::Root, None, None)
         } else {
             // ── Case 4 ──────────────────────────────────────────────────
             return Err(ApiError::Authority(format!(
@@ -1472,6 +1534,25 @@ impl PodAuthority {
         let effective = cert.effective_permissions().clone();
         let chain_depth = cert.chain_depth();
         let root_identity = cert.root_identity().to_string();
+        let pod_dir = self.state_dir.join("pods").join(child_id.to_string());
+        // A pod parent's child: the meet, charged through the parent's chain.
+        // Any other pod: what it declared, or the finite default, alone.
+        let egress_ceiling = match &parent_egress {
+            Some((_, met)) => *met,
+            None => nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref()),
+        };
+        let own_egress = egress::EgressAccount::admitted(egress_ceiling, child_id, &pod_dir);
+        let egress_chain = match parent_egress {
+            Some((parent_chain, _)) => parent_chain.child(own_egress),
+            None => egress::EgressChain::root(own_egress),
+        };
+        if declared_egress.is_none() && egress_ceiling != portcullis::EgressCeiling::undeclared() {
+            tracing::info!(
+                pod = %child_id,
+                admitted_max_bytes = egress_ceiling.max_bytes(),
+                "an undeclared egress ceiling was met with the parent's remaining bytes"
+            );
+        }
         let entry = PodCert {
             host_policy: crate::host_decide::PolicyHistory::Fresh,
             ledger: SharedBudget::new(
@@ -1485,6 +1566,7 @@ impl PodAuthority {
             holder_pkcs8: child_pkcs8.as_ref().to_vec(),
             parent,
             upstreams: upstreams.clone(),
+            egress: egress::PodEgress::Live(egress_chain),
             dlc: DlcProvisioning::admitted(&spec.metadata.labels, self.node_dlc.as_ref()),
             starting,
         };
@@ -1521,6 +1603,7 @@ impl PodAuthority {
             effective,
             chain_depth,
             upstreams,
+            egress: egress_ceiling,
             reservation: Reservation {
                 release: Some(Release {
                     inner: std::sync::Arc::clone(&self.inner),
@@ -1530,6 +1613,32 @@ impl PodAuthority {
             },
             root_identity,
         })
+    }
+
+    /// The egress chain `pod_id` was admitted with: what its meter charges.
+    ///
+    /// # Errors
+    /// The node issued the pod nothing, or its account could not be restored.
+    /// Either way the pod gets no meter, so no egress (fail-closed).
+    pub(crate) async fn egress_chain(&self, pod_id: Uuid) -> Result<egress::EgressChain, ApiError> {
+        let inner = self.inner.lock().await;
+        let why = match inner.pods.get(&pod_id).map(|p| &p.egress) {
+            Some(egress::PodEgress::Live(chain)) => return Ok(chain.clone()),
+            Some(egress::PodEgress::Unrecoverable(why)) => (*why).to_string(),
+            None => HostKernelError::NoCertificate.to_string(),
+        };
+        Err(ApiError::Driver(format!(
+            "pod {pod_id} has no egress account, so no meter: {why}"
+        )))
+    }
+
+    /// Bytes `pod_id`'s own account has left; `None` when it has none, or it cannot say.
+    #[cfg(test)]
+    pub(crate) async fn egress_remaining(&self, pod_id: Uuid) -> Option<u64> {
+        match &self.inner.lock().await.pods.get(&pod_id)?.egress {
+            egress::PodEgress::Live(chain) => chain.own().remaining(),
+            egress::PodEgress::Unrecoverable(_) => None,
+        }
     }
 
     /// The env pairs a local/container pod receives its certificate in.
@@ -1832,6 +1941,7 @@ impl PodAuthority {
             inner.pods.insert(id, cert);
             restored += 1;
         }
+        egress::relink(&mut inner.pods);
         for (child, parent, amount) in children {
             let result = match parent {
                 Parent::Root => Ok(()),
@@ -1940,6 +2050,17 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
         holder_pkcs8,
         parent: persisted.parent,
         upstreams: persisted.upstreams,
+        // Its own account alone for now; `relink_egress` rebuilds the chain
+        // once every pod is loaded.
+        egress: match persisted.egress {
+            Some(declared) => match egress::EgressAccount::restore(declared.ceiling(), pod, dir) {
+                Ok(account) => egress::PodEgress::Live(egress::EgressChain::root(account)),
+                Err(why) => egress::PodEgress::Unrecoverable(why),
+            },
+            None => {
+                egress::PodEgress::Unrecoverable("its authority record predates egress delegation")
+            }
+        },
         dlc: persisted.dlc,
         starting: crate::host_decide::StartingLabel::Untrusted(
             crate::host_decide::Untrusted::Restored,
@@ -1996,6 +2117,10 @@ async fn persist_pod(state_dir: &Path, pod_id: Uuid, entry: &PodCert) -> std::io
         parent: entry.parent,
         upstreams: entry.upstreams.clone(),
         dlc: entry.dlc.clone(),
+        egress: match &entry.egress {
+            egress::PodEgress::Live(chain) => Some(egress::spec_of(chain.own().ceiling())),
+            egress::PodEgress::Unrecoverable(_) => None,
+        },
         ledger: LedgerRecord::of(
             &entry.ledger.snapshot().map_err(std::io::Error::other)?,
             &entry.retired,
