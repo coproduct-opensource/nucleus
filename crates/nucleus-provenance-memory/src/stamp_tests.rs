@@ -238,6 +238,12 @@ fn the_head_binds_the_stamp_and_an_unstamped_record_encodes_as_before() {
         seal(&unstamped),
         "a Public stamp is not the absence of one"
     );
+    // The head origin/main 3145a9071 (before stamps existed) seals for this exact commit,
+    // measured there: an unstamped record's entry is unchanged, so every published head is.
+    assert_eq!(
+        seal(&unstamped).head().to_hex(),
+        "38d9382e8826bb4613a7ecf1ffd9336e04a0e9e2624630f056fa2170530ff0f9"
+    );
     let encoded = serde_json::to_value(&unstamped).unwrap();
     assert!(encoded.get("stamp").is_none(), "{encoded}");
     let back: MemoryRecord = serde_json::from_value(encoded).unwrap();
