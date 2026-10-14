@@ -724,3 +724,6 @@ fn a_bundle_bound_to_the_spec_bytes_is_refused_by_name() {
             .to_string();
     assert!(!refusal.contains("LegacySpecBytes"), "{refusal}");
 }
+
+#[path = "grant_replay_tests.rs"]
+mod grant_replay;

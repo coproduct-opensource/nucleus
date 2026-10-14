@@ -1066,7 +1066,28 @@ impl Sandbox {
         subject: &Path,
         approval: Option<&ApprovalToken>,
     ) -> Result<()> {
-        let operation = &Self::approval_key(op, subject);
+        let Some(operation) = self.consent_required(op, capability_name, level, subject)? else {
+            return Ok(());
+        };
+        match approval {
+            Some(token) if token.matches(&operation) => Ok(()),
+            Some(_) => Err(NucleusError::InvalidApproval { operation }),
+            None => Err(NucleusError::ApprovalRequired { operation }),
+        }
+    }
+
+    /// The approval `op` on `subject` needs here, if any: `Some(key)` when
+    /// this sandbox will ask for one, `None` when it will not. Refuses a
+    /// `Never` capability outright. The ONE decider for both
+    /// [`Self::check_capability`] and the `*_consent` questions, so what a
+    /// caller is told will be asked for is what is asked for (ADR 0007 G-1).
+    fn consent_required(
+        &self,
+        op: Operation,
+        capability_name: &str,
+        level: CapabilityLevel,
+        subject: &Path,
+    ) -> Result<Option<String>> {
         if level == CapabilityLevel::Never {
             return Err(NucleusError::InsufficientCapability {
                 capability: capability_name.into(),
@@ -1080,22 +1101,46 @@ impl Sandbox {
         // Keyed by the path, so approving one hook approves that hook only.
         let executes_on_consume = matches!(op, Operation::WriteFiles | Operation::EditFiles)
             && portcullis::executes_on_consume(&subject.to_string_lossy()).is_some();
-        if self.obligations.requires(op) || executes_on_consume {
-            if let Some(token) = approval {
-                if token.matches(operation) {
-                    Ok(())
-                } else {
-                    Err(NucleusError::InvalidApproval {
-                        operation: operation.to_string(),
-                    })
-                }
-            } else {
-                Err(NucleusError::ApprovalRequired {
-                    operation: operation.to_string(),
-                })
-            }
+        Ok((self.obligations.requires(op) || executes_on_consume)
+            .then(|| Self::approval_key(op, subject)))
+    }
+
+    /// Which approval a read of `path` will ask for: `Some(key)` when this
+    /// sandbox will ask, `None` when it will not. It refuses now what the
+    /// read would refuse at its root, capability and path checks. It asks no
+    /// approver and spends nothing, so a caller can collect every approval an
+    /// effect needs and spend them together immediately before it (#3446).
+    pub fn read_consent(&self, path: impl AsRef<Path>) -> Result<Option<String>> {
+        let path = &self.root_relative(path.as_ref())?;
+        let key = self.consent_required(
+            Operation::ReadFiles,
+            "read_files",
+            self.capabilities.read_files,
+            path,
+        )?;
+        self.check_policy(path)?;
+        Ok(key)
+    }
+
+    /// [`Self::read_consent`] for a write of `path`: an edit when the path
+    /// exists, a create when it does not, as the write itself decides.
+    pub fn write_consent(&self, path: impl AsRef<Path>) -> Result<Option<String>> {
+        let path = &self.root_relative(path.as_ref())?;
+        self.check_policy(path)?;
+        if self.root.exists(path) {
+            self.consent_required(
+                Operation::EditFiles,
+                "edit_files",
+                self.capabilities.edit_files,
+                path,
+            )
         } else {
-            Ok(())
+            self.consent_required(
+                Operation::WriteFiles,
+                "write_files",
+                self.capabilities.write_files,
+                path,
+            )
         }
     }
 
