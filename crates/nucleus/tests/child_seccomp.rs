@@ -633,7 +633,12 @@ fn a_child_under_web_fetch_never_without_egress_cannot_open_an_inet_socket() {
 /// back once anything is declared: the `AF_INET6` socket opens.
 #[test]
 fn a_child_under_ipv4_only_egress_cannot_open_an_inet6_socket() {
+    // `run_bash: Always`, so the policy derives the socket class alone. The
+    // default lattice's `run_bash: Never` adds `exec`, and an exec-denied
+    // child is refused at the spawn where no exec pin fits (a gate lane's
+    // hard RLIMIT_NOFILE of 4096, `pin_fits`): the child never ran.
     let caps = CapabilityLattice {
+        run_bash: CapabilityLevel::Always,
         web_fetch: CapabilityLevel::Never,
         ..CapabilityLattice::default()
     };
