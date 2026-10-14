@@ -26,7 +26,14 @@ fn quarantine_is_not_evicted_past_the_old_ceiling() {
     // The node whose taint must survive: the first quarantined, i.e. the
     // smallest NodeId, which is precisely what the old eviction dropped.
     let first = g
-        .insert_action(Operation::ReadFiles, &[], 0)
+        .insert_action(
+            Operation::ReadFiles,
+            ActionParents {
+                control: &[],
+                data: &[],
+            },
+            0,
+        )
         .expect("root action")
         .node_id;
     assert!(g.quarantine(first), "the node is newly quarantined");
@@ -35,7 +42,14 @@ fn quarantine_is_not_evicted_past_the_old_ceiling() {
     // MAX_GRAPH_NODES (10_000) so compaction is not what is being measured.
     for _ in 0..5_000 {
         let n = g
-            .insert_action(Operation::ReadFiles, &[], 0)
+            .insert_action(
+                Operation::ReadFiles,
+                ActionParents {
+                    control: &[],
+                    data: &[],
+                },
+                0,
+            )
             .expect("filler action")
             .node_id;
         g.quarantine(n);
@@ -50,7 +64,14 @@ fn quarantine_is_not_evicted_past_the_old_ceiling() {
     // would no longer inherit the taint, because `is_quarantined` resolves
     // descendants by walking ancestry against this set.
     let descendant = g
-        .insert_action(Operation::WriteFiles, &[first], 0)
+        .insert_action(
+            Operation::WriteFiles,
+            ActionParents {
+                control: &[],
+                data: &[first],
+            },
+            0,
+        )
         .expect("child of the quarantined node")
         .node_id;
     assert!(

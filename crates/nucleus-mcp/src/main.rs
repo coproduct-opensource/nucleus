@@ -21,6 +21,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
+use portcullis::flow_graph::ActionParents;
 use portcullis::kernel::{Decision, DenyReason, Kernel, Verdict};
 use portcullis::{CapabilityLevel, Operation, PermissionLattice};
 use portcullis_core::flow::NodeKind;
@@ -743,6 +744,15 @@ fn main() -> Result<()> {
     // is no other lattice it could start from: absence was refused above.
     let mut kernel = Kernel::new(policy);
 
+    // The session's instruction source (#3459): the principal that started
+    // this session under the policy above. Every tool call names it as the
+    // CONTROL parent, so an action's authority comes from it, while the prior
+    // observations below are DATA. This is the authority an unparented action
+    // used to get implicitly; naming it makes absence mean no authority.
+    let session_root = kernel
+        .observe(NodeKind::UserPrompt, &[])
+        .map_err(|e| anyhow!("could not record the session's instruction source: {e:?}"))?;
+
     // Track the last flow graph node ID for causal chaining.
     // Each allowed operation produces an observation node; the next operation's
     // parents are the prior observations, giving session-level flow tracking.
@@ -815,6 +825,7 @@ fn main() -> Result<()> {
                     args.approval_prompt,
                     &mut kernel,
                     &trace,
+                    session_root,
                     &mut last_flow_node,
                 ) {
                     Ok(text) => json!({
@@ -1030,6 +1041,7 @@ fn call_tool(
     approval_prompt: bool,
     kernel: &mut Kernel,
     trace: &TraceWriter,
+    session_root: u64,
     last_flow_node: &mut Option<u64>,
 ) -> Result<String> {
     // Route every operation through the kernel decision engine.
@@ -1039,9 +1051,15 @@ fn call_tool(
     if let Some(op) = tool_to_operation(&call.name) {
         let subject = extract_subject(&call.name, &call.arguments);
         // Use decide_with_parents for flow-aware decisions.
-        // Each operation's parents are the prior observations in the session.
-        let parents: Vec<u64> = (*last_flow_node).into_iter().collect();
-        let (decision, _token) = kernel.decide_with_parents(op, &subject, &parents);
+        // The control parent is the session's instruction source; the data
+        // parent is the prior observation in the session's chain (#3459).
+        let data: Vec<u64> = (*last_flow_node).into_iter().collect();
+        let control = [session_root];
+        let parents = ActionParents {
+            control: &control,
+            data: &data,
+        };
+        let (decision, _token) = kernel.decide_with_parents(op, &subject, parents);
         trace.record(&decision);
 
         match &decision.verdict {
@@ -1097,7 +1115,7 @@ fn call_tool(
                         eprintln!("[nucleus-mcp] approved by human: tool={}", call.name);
                         // Grant a one-time approval and re-decide
                         kernel.grant_approval(op, 1);
-                        let (d, _token) = kernel.decide_with_parents(op, &subject, &parents);
+                        let (d, _token) = kernel.decide_with_parents(op, &subject, parents);
                         trace.record(&d);
                         if first && matches!(d.verdict, Verdict::RequiresApproval) {
                             first = false;
