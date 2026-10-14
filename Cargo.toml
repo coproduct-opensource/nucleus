@@ -329,3 +329,14 @@ opt-level = 3
 
 [profile.dev.package.sha2]
 opt-level = 3
+
+# Mutation testing (`cargo mutants --profile mutants`, the `Mutation Testing` job in
+# coverage-matrix.yml) rebuilds and relinks portcullis's test binaries once per mutant, and
+# nothing ever reads their debug info: a mutant's verdict is the test exit status. The dev
+# profile carries line tables on CI (ci/fly-runner/entrypoint.sh sets
+# CARGO_PROFILE_DEV_DEBUG=line-tables-only), which every mutant pays for in codegen and link.
+# Everything else -- opt-levels, overflow checks, debug assertions, the per-package opt-level
+# overrides above -- is inherited from dev, so the tests a mutant must fail are the same tests.
+[profile.mutants]
+inherits = "dev"
+debug = 0
