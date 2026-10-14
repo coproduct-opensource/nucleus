@@ -50,6 +50,10 @@ pub enum AuthError {
     InvalidSignature,
     #[error("no client certificate presented (mTLS is mandatory; there is no HMAC fallback)")]
     NoClientCertificate,
+    /// The client certificate chained, and its launch did not verify
+    /// (`nucleus_identity::admit_peer_launch`, ADR 0016 D4).
+    #[error("peer launch refused: {0}")]
+    LaunchRefused(String),
 }
 
 /// HMAC-SHA256 verify. NOT part of the CLI/tool-proxy/node auth tier Move B
@@ -121,6 +125,17 @@ pub enum Operation {
     Lockdown,
     /// Inspect or decide an action-bound host approval; configured operator only.
     ApproveEffect,
+    /// Declare a memory space, revoke a binding policy or a space, or list them
+    /// (`memory_space_api`).
+    ///
+    /// Not part of the pod-management group, and never a pod's or a CI identity's: a space
+    /// and its revocations are the tenant root's declaration of who may share memory. Which
+    /// tenant a caller acts for is decided by the handler from its own identity.
+    MemorySpaces,
+    /// Record a binding policy, or publish a binding's branch (`memory_space_api`). A pod may
+    /// ask: the handler admits a pod's policy only on a cited owner decision, and a pod's
+    /// publish only for the binding it holds.
+    MemoryBinding,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -414,6 +429,8 @@ impl AuthorizationPolicy {
                 | Operation::CancelPod
                 | Operation::StreamLogs
                 | Operation::GetReceipt
+                | Operation::MemorySpaces
+                | Operation::MemoryBinding
                 | Operation::PodManagement => Ok(()),
                 // A lockdown is the operator's control (see the variant), and a
                 // tenant is never the operator.
@@ -481,7 +498,10 @@ impl AuthorizationPolicy {
                         return Ok(());
                     }
                     // Falls through to the refusal below: see the variant's doc comment.
-                    Operation::Lockdown | Operation::ApproveEffect => {}
+                    Operation::Lockdown
+                    | Operation::ApproveEffect
+                    | Operation::MemorySpaces
+                    | Operation::MemoryBinding => {}
                 }
             }
         }
@@ -497,6 +517,7 @@ impl AuthorizationPolicy {
                     | Operation::StreamLogs
                     | Operation::ListPods
                     | Operation::GetReceipt
+                    | Operation::MemoryBinding
                     | Operation::PodManagement => {
                         tracing::debug!(
                             spiffe_id = %spiffe_id,
@@ -507,7 +528,10 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod | Operation::Lockdown | Operation::ApproveEffect => {}
+                    Operation::SnapshotPod
+                    | Operation::Lockdown
+                    | Operation::ApproveEffect
+                    | Operation::MemorySpaces => {}
                 }
             }
         }
@@ -574,25 +598,6 @@ pub fn extract_spiffe_id_from_cert(cert_der: &[u8]) -> Option<String> {
     nucleus_identity::spiffe_uri_from_svid(cert_der).ok()
 }
 
-/// Extracts SPIFFE ID from a tonic Request's peer certificates.
-///
-/// This is used for gRPC mTLS authentication. Returns `None` if:
-/// - No TLS connection info is available
-/// - No peer certificates were provided
-/// - The certificate doesn't contain a SPIFFE ID
-pub fn extract_spiffe_id_from_request<T>(request: &tonic::Request<T>) -> Option<String> {
-    // Use tonic's built-in peer_certs() method which extracts from TlsConnectInfo
-    let peer_certs = request.peer_certs()?;
-
-    if peer_certs.is_empty() {
-        return None;
-    }
-
-    // The first certificate is the end-entity (client) certificate
-    let client_cert_der = peer_certs[0].as_ref();
-    extract_spiffe_id_from_cert(client_cert_der)
-}
-
 /// Authenticate a gRPC request via mTLS.
 ///
 /// Move B: this used to try mTLS first and fall back to HMAC when no client
@@ -600,9 +605,27 @@ pub fn extract_spiffe_id_from_request<T>(request: &tonic::Request<T>) -> Option<
 /// requires a client certificate unconditionally (`serve_grpc` refuses to
 /// start otherwise), so a request with no extractable SPIFFE ID is refused
 /// here rather than silently degrading to a weaker check.
-pub fn authenticate_grpc_request<T>(request: &tonic::Request<T>) -> Result<AuthContext, AuthError> {
+///
+/// The peer's launch is admitted first, by the one decider every mTLS acceptor
+/// runs (`nucleus_identity::admit_peer_launch`, ADR 0016 D4), against
+/// `trust_bundle`, the bundle the listener's client CA came from. Here it runs
+/// per request, in the interceptor, before any handler: tonic's
+/// `ServerTlsConfig` takes no custom client verifier, so this acceptor is the
+/// census's one `PerRequest` site until it serves over a `TlsServerConfig`
+/// acceptor.
+pub fn authenticate_grpc_request<T>(
+    request: &tonic::Request<T>,
+    trust_bundle: &nucleus_identity::TrustBundle,
+) -> Result<AuthContext, AuthError> {
+    let peer_certs = request.peer_certs().ok_or(AuthError::NoClientCertificate)?;
+    let (leaf, rest) = peer_certs
+        .split_first()
+        .ok_or(AuthError::NoClientCertificate)?;
+    let intermediates: Vec<&[u8]> = rest.iter().map(|c| c.as_ref()).collect();
+    nucleus_identity::admit_peer_launch(leaf.as_ref(), &intermediates, trust_bundle)
+        .map_err(|e| AuthError::LaunchRefused(e.to_string()))?;
     let spiffe_id =
-        extract_spiffe_id_from_request(request).ok_or(AuthError::NoClientCertificate)?;
+        extract_spiffe_id_from_cert(leaf.as_ref()).ok_or(AuthError::NoClientCertificate)?;
     tracing::debug!(spiffe_id = %spiffe_id, "authenticated via mTLS with SPIFFE ID");
     Ok(AuthContext::from_spiffe(spiffe_id))
 }
@@ -661,6 +684,15 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         | (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals", _])
         | (&axum::http::Method::POST, ["v1", "pods", _id, "effect-approvals", _]) => {
             Some(Operation::ApproveEffect)
+        }
+        (&axum::http::Method::GET | &axum::http::Method::POST, ["v1", "memory", "spaces"])
+        | (&axum::http::Method::POST, ["v1", "memory", "spaces", _, "revoke"])
+        | (&axum::http::Method::POST, ["v1", "memory", "spaces", _, "policies", _, "revoke"]) => {
+            Some(Operation::MemorySpaces)
+        }
+        (&axum::http::Method::POST, ["v1", "memory", "spaces", _, "policies"])
+        | (&axum::http::Method::POST, ["v1", "memory", "bindings", _, "publish"]) => {
+            Some(Operation::MemoryBinding)
         }
         _ => None,
     }

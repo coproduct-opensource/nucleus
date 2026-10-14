@@ -350,6 +350,22 @@ struct Window {
     refused: bool,
 }
 
+impl Window {
+    /// This window as it stands at `now_unix` for windows `len` seconds long:
+    /// itself, or a fresh one when it has ended (or the clock went back).
+    const fn at(self, now_unix: u64, len: u64) -> Self {
+        if now_unix.saturating_sub(self.started_at) >= len || now_unix < self.started_at {
+            Self {
+                started_at: now_unix,
+                counted: 0,
+                refused: false,
+            }
+        } else {
+            self
+        }
+    }
+}
+
 /// Whether the ceiling has latched.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Latch {
@@ -395,6 +411,19 @@ impl EgressLedger {
             next_id: 0,
             epoch: NEXT_EPOCH.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    /// A ledger that has already spent `spent` bytes: one restored from a
+    /// durable record of what was spent before a restart.
+    ///
+    /// The amount is spent, not in flight, so nothing can refund it; clamped at
+    /// the ceiling like every other consumption. At the ceiling the ledger is
+    /// empty, and the next send latches it as it would have before the restart.
+    #[must_use]
+    pub fn restored(ceiling: EgressCeiling, spent: EgressBytes) -> Self {
+        let mut ledger = Self::new(ceiling);
+        let _ = ledger.core.record_parent_consumed(spent);
+        ledger
     }
 
     /// The authority this ledger enforces.
@@ -493,15 +522,7 @@ impl EgressLedger {
     }
 
     fn refresh_window(&mut self, now_unix: u64, len: u64) {
-        if now_unix.saturating_sub(self.window.started_at) >= len
-            || now_unix < self.window.started_at
-        {
-            self.window = Window {
-                started_at: now_unix,
-                counted: 0,
-                refused: false,
-            };
-        }
+        self.window = self.window.at(now_unix, len);
     }
 
     fn allocate(&mut self, bytes: EgressBytes) -> EgressDecision {
@@ -788,6 +809,26 @@ mod tests {
                 .expect("this ledger's hold");
         }
         assert_eq!(ledger.counted(), u64::try_from(EGRESS_SLOTS).expect("fits"));
+    }
+
+    /// A restored ledger keeps what was spent before the restart: it is spent,
+    /// not refundable, and clamped at the ceiling.
+    #[test]
+    fn a_restored_ledger_keeps_what_was_spent() {
+        let ceiling = EgressCeiling::new(1_000, EgressPace::Unpaced);
+        let mut ledger = EgressLedger::restored(ceiling, 600);
+        assert_eq!(ledger.counted(), 600);
+        assert_eq!(ledger.remaining(), 400);
+        let (refusal, _) = refused(ledger.reserve(401, 0));
+        assert!(matches!(
+            refusal,
+            EgressRefusal::CeilingExhausted { counted: 600, .. }
+        ));
+
+        let full = EgressLedger::restored(ceiling, 5_000);
+        assert_eq!(full.counted(), 1_000, "clamped at the ceiling");
+        assert_eq!(full.remaining(), 0);
+        assert!(full.core().conserves());
     }
 
     /// **The cross-ledger defect.** Two ledgers both number their first hold

@@ -581,6 +581,8 @@ impl EgressProxy {
             &mut cmd,
             nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
             syscalls,
+            // A host service, not a pod child: it has no workspace to hold.
+            &nucleus::WorkspaceWrites::Writable,
         ) {
             nucleus::SpawnHardening::Hardened(_) => {}
             nucleus::SpawnHardening::Unhardened(why) => {

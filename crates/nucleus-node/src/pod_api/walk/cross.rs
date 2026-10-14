@@ -199,6 +199,7 @@ impl Run {
             served,
             audit_creds: None,
             pod_spec_yaml: None,
+            decisions: None,
             at_snapshot_barrier: Arc::default(),
             personalized: Arc::clone(&personalized),
             receipt_dir: Some(dir.path().join("p")),
@@ -265,6 +266,10 @@ impl Run {
                 posture_stamp: None,
                 owner: None,
                 capacity: tokio::sync::Mutex::new(None),
+                // A fixture names no lineage: a child of it is refused memory, never given a guess.
+                memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                    parent: uuid::Uuid::nil(),
+                },
             }),
         );
         let k = register(&st, Some(p)).await;

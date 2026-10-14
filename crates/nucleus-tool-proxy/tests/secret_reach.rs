@@ -265,3 +265,90 @@ async fn a_workload_child_reaches_no_environment_secret_or_inherited_descriptor(
         "the workload inherited the launcher's descriptor:\n{seen}"
     );
 }
+
+/// **#3471: a bare-tier child cannot read an orchestrator pod's key.** The
+/// harness launches the proxy as the local driver launches an orchestrator:
+/// the public identity files, the key on a pipe as stdin
+/// (`PodKey::into_pipe`), and pod management on. The proxy starts only if it
+/// read the key (pod management exits without one), which is the positive
+/// control. Its workload, at the proxy's own uid on a non-root harness,
+/// searches everything the launcher wrote and the proxy's environment and
+/// stdin for the key.
+///
+/// Red with `PodIdentityFiles::write` writing `key.pem` again, as it did on
+/// main: the workload finds the key in the pod directory and reads it.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_bare_tier_child_cannot_read_a_delivered_pod_key() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let pod = dir.path().join("pod");
+    std::fs::create_dir(&pod).unwrap();
+    let (files, key) = nucleus_identity::pod_files::issue_ephemeral_keyed(
+        &pod,
+        "orchestrator",
+        Duration::from_secs(600),
+    )
+    .unwrap();
+    assert!(key.pem().contains("PRIVATE KEY"));
+    let report = "probe.out";
+    // The needle is assembled at run time, so the spec and the audit log
+    // that carry this script do not themselves match it.
+    let script = format!(
+        "{{ N=PRIVATE; echo FILES; grep -rl \"$N KEY\" '{pod}' 2>&1; \
+         echo ENVIRON; tr '\\0' '\\n' < /proc/$PPID/environ 2>&1 | grep -c \"$N KEY\"; \
+         echo STDIN; timeout 5 cat /proc/$PPID/fd/0 2>&1 | grep -c \"$N KEY\"; \
+         echo OWN; timeout 5 cat 2>&1 | grep -c \"$N KEY\"; echo DONE; }} > probe.tmp 2>&1; \
+         mv probe.tmp {report}",
+        pod = pod.display()
+    );
+    let mut spec = spec();
+    spec["spec"]["workload"] = json!({"command": "/bin/sh", "args": ["-c", script]});
+    let (mut command, announce, log) = command(
+        dir.path(),
+        &spec,
+        &["--enable-pod-mgmt", "--node-url", "https://127.0.0.1:9"],
+    );
+    command
+        .envs(files.env())
+        .env(nucleus_identity::pod_files::KEY_ON_STDIN_ENV, "true")
+        .stdin(Stdio::from(key.into_pipe().unwrap()));
+    let proxy = Proxy(command.spawn().unwrap());
+    let _proxy = started(proxy, &announce, &log)
+        .await
+        .unwrap_or_else(|log| panic!("proxy exited (did it read its key?): {log}"));
+    let out = dir.path().join("workspace").join(report);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !out.exists() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the workload never reported: {}",
+            std::fs::read_to_string(&log).unwrap()
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let seen = std::fs::read_to_string(&out).unwrap();
+    for section in ["FILES", "ENVIRON", "STDIN", "OWN", "DONE"] {
+        assert!(
+            seen.contains(section),
+            "the probe did not run fully: {seen}"
+        );
+    }
+    let files_found = seen
+        .split("FILES")
+        .nth(1)
+        .and_then(|s| s.split("ENVIRON").next())
+        .unwrap_or_default();
+    assert!(
+        !files_found.contains(pod.to_str().unwrap()),
+        "the workload found the pod key in a file:\n{seen}"
+    );
+    // Each `grep -c` counted no key line in the proxy's environment, its
+    // stdin, or the workload's own.
+    for line in seen
+        .lines()
+        .filter(|l| l.chars().all(|c| c.is_ascii_digit()) && !l.is_empty())
+    {
+        assert_eq!(line, "0", "the workload read the key:\n{seen}");
+    }
+}

@@ -831,9 +831,14 @@ async fn run_local(
 
     // Spawn tool-proxy as subprocess
     let mut proxy_child = transport
-        .command(&proxy_bin, &spec_path, &announce_path, &audit_path)
+        .command(
+            &proxy_bin,
+            &spec_path,
+            &announce_path,
+            &audit_path,
+            &task_token,
+        )
         .args(pod_cert_args(args))
-        .args(crate::session_token::proxy_args(&task_token))
         .kill_on_drop(true)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::inherit())
@@ -985,6 +990,7 @@ fn build_local_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
+        requires_decision: Vec::new(),
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
     Ok(spec)
@@ -1182,6 +1188,7 @@ fn build_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
     eval_cell::label(args.isolation_profile, &mut spec);

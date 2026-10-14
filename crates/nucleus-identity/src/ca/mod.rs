@@ -46,6 +46,9 @@ pub struct MeasuredClaims<'a> {
     /// `SHA-256` of the TPM launch-quote document taken over this leaf's key
     /// and measurement (OID `.1.7`, ADR 0016 D2).
     pub launch_quote_sha256: Option<&'a [u8; 32]>,
+    /// The isolation profile the launch was admitted under (OID `.1.8`, ADR
+    /// 0016 D4), so a relying party at the handshake knows an eval cell.
+    pub isolation_profile: crate::attestation::SvidProfile,
 }
 
 /// A Certificate Authority client that can sign CSRs.
@@ -214,7 +217,10 @@ pub trait CaClient: Send + Sync {
     /// The claims a CA states through the older methods go through them; a
     /// launch-quote digest, which none of them can state, is refused, never
     /// dropped: a leaf without it would read as a launch rooted in the CA alone
-    /// when the node asked for its TPM's word.
+    /// when the node asked for its TPM's word. An eval-cell profile is refused
+    /// for the same reason: without `.1.8` a relying party would hold the cell's
+    /// handshake to the standard rule. A standard profile is stated by the
+    /// extension's absence, which every relying party reads as standard.
     async fn sign_measured_csr(
         &self,
         csr: &str,
@@ -227,7 +233,14 @@ pub trait CaClient: Send + Sync {
             attestation,
             mediator_key_sha256,
             launch_quote_sha256,
+            isolation_profile,
         } = *claims;
+        match isolation_profile {
+            crate::attestation::SvidProfile::Standard => {}
+            crate::attestation::SvidProfile::EvalCell => {
+                return Err(cannot_embed(identity, "an eval-cell isolation profile"));
+            }
+        }
         match (mediator_key_sha256, launch_quote_sha256) {
             (None, None) => {
                 self.sign_attested_csr(csr, private_key, identity, ttl, attestation)

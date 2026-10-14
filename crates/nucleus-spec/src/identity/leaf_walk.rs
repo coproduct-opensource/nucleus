@@ -117,7 +117,8 @@ fn maximal(policy: &str) -> PodSpec {
             "seccomp":{{"mode":"custom","filter_path":"/f"}},
             "cgroup":{{"path":"/sys/fs/cgroup/p","settings":[{{"file":"cpu.max","value":"1"}}]}},
             "audit_sink":{{"sink":"audit","prefix":"p"}},
-            "credentials":{{"env":{{"LLM_API_TOKEN":"test-token-123"}}}}
+            "credentials":{{"env":{{"LLM_API_TOKEN":"test-token-123"}}}},
+            "requires_decision":["create_pr:model-api"]
           }}}}"#,
         d0 = D[0],
         d1 = D[1],
@@ -568,6 +569,7 @@ fn every_field() -> Vec<&'static str> {
                 cgroup: _,
                 audit_sink: _,
                 credentials: _,
+                requires_decision: _,
             },
     } = maximal(r#"{"type":"profile","name":"codegen"}"#);
     vec![
@@ -589,6 +591,7 @@ fn every_field() -> Vec<&'static str> {
         "/spec/cgroup",
         "/spec/audit_sink",
         "/spec/credentials",
+        "/spec/requires_decision",
     ]
 }
 

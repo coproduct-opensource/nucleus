@@ -1,7 +1,14 @@
 # Test Runner — execute tests and report results.
 #
 # Can read source code and run test commands, but cannot modify source
-# files or push results. Write is limited to test output artifacts.
+# files or push results.
+#
+# write_files and edit_files are never, so the workspace is read-only to
+# every child, `cargo test` included (a Landlock write layer, #2907). A
+# child writes only the runtime's scratch: /tmp, /cache, /dev/null and its
+# HOME. Build output goes there, not into the workspace: run
+# `CARGO_TARGET_DIR=/tmp/target cargo test`. A pod whose workspace cannot be
+# held read-only (no Landlock) is refused, not run with it writable.
 #
 #  Uninhabitable state analysis:
 #   - Private data: read_files=always (present)

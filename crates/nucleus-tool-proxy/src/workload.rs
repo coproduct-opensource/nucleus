@@ -540,6 +540,7 @@ pub(crate) fn spawn_admitted(
     plan: AdmittedWorkloadPlan,
     rlimits: nucleus::AppliedRlimits,
     syscalls: portcullis::SeccompPolicy,
+    writes: &nucleus::WorkspaceWrites,
 ) -> std::io::Result<(tokio::process::Child, LaunchReceipt)> {
     let mut cmd = tokio::process::Command::new(&plan.command);
     cmd.args(&plan.args)
@@ -639,14 +640,15 @@ pub(crate) fn spawn_admitted(
     // reason (`NucleusError::LandlockRuleset`), which reaches the console as
     // the workload's start error; the pre_exec hook alone could carry back only
     // an errno (the x86_64 live boot showed "Not supported (os error 95)").
+    // So is a read-only workspace this host cannot hold (#2907).
     confinement
-        .preflight_filesystem()
+        .preflight_filesystem(writes)
         .map_err(std::io::Error::other)?;
     // What the hook does, as only `apply` can say it: the receipt's
     // `hardening` is this value, not a flag computed beside the spawn. It
     // carries the syscall classes the pod's lattice derived (#2907) as the
     // filter the hook actually installs.
-    let hardening = confinement.apply(cmd.as_std_mut(), rlimits, syscalls);
+    let hardening = confinement.apply(cmd.as_std_mut(), rlimits, syscalls, writes);
 
     tracing::info!(
         command = %plan.command,
@@ -829,7 +831,9 @@ impl LaunchReceipt {
     /// 2: the preimage gained `fs=` (#2696 P3c).
     /// 3: the preimage gained `seccomp=`, the installed filter and the pod's
     /// derived syscall classes (#2907).
-    const SCHEMA_VERSION: u32 = 3;
+    /// 4: the preimage gained `ws=`, how the hook holds the workspace: the
+    /// Landlock write layer under `write_files: never` (#2907).
+    const SCHEMA_VERSION: u32 = 4;
 
     fn from_admitted(
         plan: &AdmittedWorkloadPlan,
@@ -860,11 +864,14 @@ impl LaunchReceipt {
             nucleus::SpawnHardening::Hardened(h) => h.syscalls().canonical(),
             nucleus::SpawnHardening::Unhardened(_) => "none".to_string(),
         };
+        // Read off `hardening` too: what the hook installed, not what the
+        // policy asked for.
+        let workspace = hardening.workspace_canonical();
         // Canonical preimage: field-ordered, `|`-joined, values excluded.
         // Reconstructed from the record's own fields, not serialized, so key
         // order and escaping cannot drift the hash.
         let mut preimage = format!(
-            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}",
+            "v{}|cmd={}|argv={argv_len}|stdio={}|uid={}|hardened={hardened}|fs={}|seccomp={seccomp}|ws={workspace}",
             Self::SCHEMA_VERSION,
             plan.command,
             stdio.join(","),
@@ -981,6 +988,25 @@ pub(crate) fn seccomp_policy(
     ))
 }
 
+/// Whether every child this pod spawns may write its workspace (#2907): the
+/// workload, its companion and every `/v1/run` command. The ONE place the
+/// spec becomes a [`nucleus::WorkspaceWrites`] for the workload's spawn; the
+/// rule is `WorkspaceWrites::of`'s, and the executor reads the same rule off
+/// the same normalized lattice for `/v1/run`. The workspace is the spec's
+/// `work_dir`, which every child is started in.
+///
+/// # Errors
+/// The spec's policy does not resolve.
+pub(crate) fn workspace_writes(
+    spec: &nucleus_spec::PodSpecInner,
+) -> Result<nucleus::WorkspaceWrites, crate::ApiError> {
+    let lattice = spec
+        .resolve_policy()
+        .map_err(|e| crate::ApiError::Spec(e.to_string()))?
+        .normalize();
+    Ok(nucleus::WorkspaceWrites::of(&lattice, &spec.work_dir))
+}
+
 /// Start the pod's workload if the spec asks for one.
 ///
 /// # The order is the value flow
@@ -1055,15 +1081,17 @@ pub(crate) fn start_if_configured(
 
     let rlimits = rlimit_policy(&spec.spec).at_ceiling();
     let syscalls = seccomp_policy(&spec.spec)?;
+    let writes = workspace_writes(&spec.spec)?;
 
     // Started first: the workload may call it as soon as it runs.
     let companion = match companion {
         None => None,
         Some(plan) => {
             let command = plan.command.clone();
-            let (child, receipt) = spawn_admitted(plan, rlimits, syscalls).map_err(|e| {
-                crate::ApiError::Spec(format!("failed to start companion {command:?}: {e}"))
-            })?;
+            let (child, receipt) =
+                spawn_admitted(plan, rlimits, syscalls, &writes).map_err(|e| {
+                    crate::ApiError::Spec(format!("failed to start companion {command:?}: {e}"))
+                })?;
             tracing::info!(
                 launch_receipt = %serde_json::to_string(&receipt).unwrap_or_default(),
                 "companion launch receipt"
@@ -1071,7 +1099,7 @@ pub(crate) fn start_if_configured(
             Some((child, receipt))
         }
     };
-    let (child, receipt) = spawn_admitted(plan, rlimits, syscalls).map_err(|e| {
+    let (child, receipt) = spawn_admitted(plan, rlimits, syscalls, &writes).map_err(|e| {
         crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
     })?;
 
@@ -1344,7 +1372,13 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
-        let (child, _receipt) = spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
+        let (child, _receipt) = spawn_admitted(
+            plan,
+            node_rlimits(),
+            nothing_derived(),
+            &nucleus::WorkspaceWrites::Writable,
+        )
+        .unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success(), "HOME was not a directory");
         assert_eq!(
@@ -1638,7 +1672,13 @@ mod tests {
         ];
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(mode, opt_in, NO_WAIVER)?;
-        let (child, receipt) = spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
+        let (child, receipt) = spawn_admitted(
+            plan,
+            node_rlimits(),
+            nothing_derived(),
+            &nucleus::WorkspaceWrites::Writable,
+        )
+        .unwrap();
         let out = child.wait_with_output().await.unwrap();
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let mut lines = text.lines();
@@ -1773,8 +1813,13 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .expect("a clean spec must admit");
-        let (mut child, receipt) =
-            spawn_admitted(plan, node_rlimits(), nothing_derived()).expect("sh must be spawnable");
+        let (mut child, receipt) = spawn_admitted(
+            plan,
+            node_rlimits(),
+            nothing_derived(),
+            &nucleus::WorkspaceWrites::Writable,
+        )
+        .expect("sh must be spawnable");
         let status = child.wait().await.expect("child ran");
         assert!(status.success(), "the child must actually run: {status:?}");
         let observed = std::fs::read_to_string(&f_env).expect("the child wrote its environment");
@@ -2147,7 +2192,13 @@ mod tests {
         let plan = WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", dir.path(), &[])
             .admit(HARNESS, OPTED_IN, NO_WAIVER)
             .unwrap();
-        let (child, receipt) = spawn_admitted(plan, node_rlimits(), nothing_derived()).unwrap();
+        let (child, receipt) = spawn_admitted(
+            plan,
+            node_rlimits(),
+            nothing_derived(),
+            &nucleus::WorkspaceWrites::Writable,
+        )
+        .unwrap();
         let output = child.wait_with_output().await.unwrap();
         assert!(output.status.success());
         let text = String::from_utf8(output.stdout).unwrap();
@@ -2282,7 +2333,13 @@ mod companion_tests {
             &portcullis::PermissionLattice::permissive(),
             portcullis::NetworkEgress::Declared,
         );
-        let (child, _) = spawn_admitted(admitted, rlimits, syscalls).unwrap();
+        let (child, _) = spawn_admitted(
+            admitted,
+            rlimits,
+            syscalls,
+            &nucleus::WorkspaceWrites::Writable,
+        )
+        .unwrap();
         let out = child.wait_with_output().await.unwrap();
         assert_eq!(
             String::from_utf8_lossy(&out.stdout).trim(),

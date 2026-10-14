@@ -154,6 +154,11 @@ pub fn authenticate_hail(
     min_assurance: AssuranceLevel,
 ) -> Result<VerifiedPeer> {
     let (svid_id, passport_pk, leaf_der) = verify_svid_chain(&hail.svid_chain_pem, trust_bundle)?;
+    // The launch decision every mTLS acceptor runs at its handshake (ADR 0016
+    // D4): an eval-cell SVID with no verified launch, or a standard SVID whose
+    // launch does not verify, is refused whatever `min_assurance` asks for.
+    nucleus_identity::admit_peer_launch(&leaf_der, &[], trust_bundle)
+        .map_err(|e| anyhow!("peer launch refused: {e}"))?;
     if svid_id != requested_spiffe_id {
         bail!("SVID is for {svid_id}, not the requested {requested_spiffe_id}");
     }

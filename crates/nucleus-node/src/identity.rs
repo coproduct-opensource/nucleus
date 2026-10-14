@@ -644,6 +644,7 @@ impl IdentityManager {
         &self,
         identity: &Identity,
         pod_id: &str,
+        profile: nucleus_identity::SvidProfile,
     ) -> Result<std::sync::Arc<nucleus_identity::WorkloadCertificate>, String> {
         let attestation = {
             let registry = self.attestation_registry.read().await;
@@ -672,6 +673,9 @@ impl IdentityManager {
                     attestation,
                     mediator_key_sha256,
                     rooting: self.launch_rooting.clone(),
+                    // Stated in the leaf (`.1.8`), so every relying party holds an
+                    // eval cell's handshake to a verified launch (ADR 0016 D4).
+                    profile,
                 },
             )
             .await
@@ -1103,7 +1107,11 @@ mod tests {
             .await
             .expect("attest");
         manager
-            .fetch_attested_certificate(&id, &pod.to_string())
+            .fetch_attested_certificate(
+                &id,
+                &pod.to_string(),
+                nucleus_identity::SvidProfile::Standard,
+            )
             .await
             .expect("issue attested cert via injected dyn CA");
 
@@ -1161,7 +1169,11 @@ mod tests {
             .await
             .expect("attestation computes");
         manager
-            .fetch_attested_certificate(&attested_id, &attested_pod.to_string())
+            .fetch_attested_certificate(
+                &attested_id,
+                &attested_pod.to_string(),
+                nucleus_identity::SvidProfile::Standard,
+            )
             .await
             .expect("attested cert issues");
 
@@ -1387,7 +1399,7 @@ mod tests {
 
         // Fetch attested certificate
         let cert = manager
-            .fetch_attested_certificate(&identity, pod_id)
+            .fetch_attested_certificate(&identity, pod_id, nucleus_identity::SvidProfile::Standard)
             .await
             .unwrap();
 
@@ -1405,7 +1417,7 @@ mod tests {
         // This used to return a PLAIN certificate, an SVID that read like one
         // nobody asked to check.
         let err = manager
-            .fetch_attested_certificate(&identity, pod_id)
+            .fetch_attested_certificate(&identity, pod_id, nucleus_identity::SvidProfile::Standard)
             .await
             .expect_err("no measurement, no certificate");
         assert!(err.contains("no launch measurement is registered"), "{err}");
@@ -1438,7 +1450,11 @@ mod tests {
             .await
             .unwrap();
         manager
-            .fetch_attested_certificate(&identity, &pod.to_string())
+            .fetch_attested_certificate(
+                &identity,
+                &pod.to_string(),
+                nucleus_identity::SvidProfile::Standard,
+            )
             .await
             .unwrap();
         let refreshed = manager
@@ -1501,7 +1517,7 @@ mod tests {
 
         let identity = Identity::new("test.local", "default", "bound-service");
         let cert = manager
-            .fetch_attested_certificate(&identity, pod_id)
+            .fetch_attested_certificate(&identity, pod_id, nucleus_identity::SvidProfile::Standard)
             .await
             .unwrap();
 
@@ -1545,7 +1561,7 @@ mod tests {
 
         let identity = Identity::new("test.local", "default", "unbound-service");
         let cert = manager
-            .fetch_attested_certificate(&identity, pod_id)
+            .fetch_attested_certificate(&identity, pod_id, nucleus_identity::SvidProfile::Standard)
             .await
             .unwrap();
         assert_eq!(extract_mediation_key_binding(cert.leaf().der()), None);

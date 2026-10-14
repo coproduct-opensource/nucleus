@@ -52,6 +52,18 @@ disagrees with its key is refused.
   value, once. A copy re-verified from the same bytes has the same id and is refused as `Spent`.
   A decision that `supersedes` another retires it.
 
+## Where it is enforced
+
+- `nucleus-node --decision-trust-roots <file> --decision-tenant <t> --decision-bundles <dir>`
+  parses the roots with `TrustRoots::from_json` at startup and refuses to start on a bad value.
+  Each pod's tool-proxy receives the roots and the bundles (`nucleus_spec::decision_gate`).
+- A spec's `requires_decision: [<effect>:<upstream>]` makes a credentialed `create_pr` or
+  `git_push` through that upstream run only with a decision cited (`x-nucleus-decision`) that
+  verifies, is live, is not superseded, covers the capability (`covers_action`) and, when
+  one-shot, is spent by `DecisionLedger::spend`. A push's write set is `WriteSet::Unknown`, so it
+  is always `CannotTell` and refused. The signed audit log names the decision beside the effect.
+- See `docs/permissions.md`, "Decisions".
+
 ## What it does not claim
 
 - Single use is per process. Fleet-wide single use is the merge gate's job.

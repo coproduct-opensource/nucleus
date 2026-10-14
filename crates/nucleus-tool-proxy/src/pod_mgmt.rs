@@ -230,6 +230,10 @@ pub(crate) async fn create_sub_pod(
     // keep it from the operator. See strip_requested_audit_sink.
     strip_requested_audit_sink(&mut spec);
 
+    // 4e. KEEP every decision requirement this pod holds for an upstream the child still has:
+    // delegation never sheds one. After 4c, so it is judged against the clamped upstreams.
+    crate::decision_gate::inherit(&mut spec, state.decisions.as_deref());
+
     // 5. Inject credentials from orchestrator's env (transparent to agent)
     let mut creds = spec.spec.credentials.take().unwrap_or_default();
     for (key, val) in &state.orchestrator_credentials {
@@ -243,7 +247,7 @@ pub(crate) async fn create_sub_pod(
 
     // 5c. THE DELEGATION BOUNDARY, ENFORCED BY THE COMPILER (ADR 0006 C4.2).
     //
-    // Steps 4-5 decide four of `PodSpecInner`'s fourteen fields. The other ten,
+    // Steps 4-5 decide five of `PodSpecInner`'s fifteen fields. The other ten,
     // and all four of `Metadata`'s, reach the serialized child spec exactly as
     // the requester wrote them. That enumeration IS the security boundary, and
     // until now it was maintained by hand. The comment at 4b says the quiet
@@ -267,6 +271,7 @@ pub(crate) async fn create_sub_pod(
         credentialed_egress: _credentialed_egress, // 4c clamped to the parent's upstreams
         credentials: _credentials, // 5  orchestrator env merged in
         audit_sink: _audit_sink, // 4d stripped
+        requires_decision: _requires_decision, // 4e the parent's kept
 
         // ── Forwarded as the requester wrote them ───────────────────────────
         // Each line is a standing decision to delegate that field unclamped.

@@ -181,6 +181,10 @@ pub struct Executor<'a> {
     /// said its pod has no egress keeps the internet socket, and the lattice's
     /// exec denial applies either way.
     seccomp_policy: portcullis::SeccompPolicy,
+    /// Whether this executor's children may write the sandbox root, read off
+    /// the same normalized lattice as everything above (#2907). Not settable:
+    /// the policy decides it, so no caller can widen it.
+    workspace_writes: crate::WorkspaceWrites,
     /// The sealed effects home (B1) that *both* the synchronous and the async
     /// spawns delegate to. Held as the **concrete** `PolicyEnforced<RealEffects>`
     /// (from [`production_effects_concrete`]), not a trait object, for one
@@ -222,6 +226,7 @@ impl<'a> Executor<'a> {
         )));
         let seccomp_policy =
             portcullis::SeccompPolicy::derive(&normalized, portcullis::NetworkEgress::Declared);
+        let workspace_writes = crate::WorkspaceWrites::of(&normalized, sandbox.root_path());
         Self {
             capabilities: normalized.capabilities,
             obligations: normalized.obligations,
@@ -239,6 +244,7 @@ impl<'a> Executor<'a> {
             landlock_waiver: crate::LandlockWaiver::Absent,
             rlimit_policy: crate::RlimitPolicy::node_ceiling(),
             seccomp_policy,
+            workspace_writes,
             effects,
         }
     }
@@ -538,14 +544,15 @@ impl<'a> Executor<'a> {
         // workload does; `hardening.rs` has the table.
         // The ruleset's failure, named, before the spawn turns it into an errno.
         confinement
-            .preflight_filesystem()
+            .preflight_filesystem(&self.workspace_writes)
             .map_err(io::Error::other)?;
         // The limits are the policy's, as evidence, decided before the fork.
         // The hook's `SpawnHardening` answer has no receipt to go to here.
         let rlimits = self.rlimit_policy.at_ceiling();
         let syscalls = self.seccomp_policy;
+        let writes = self.workspace_writes.clone();
         let hook = move |cmd: &mut Command| {
-            let _ = confinement.apply(cmd, rlimits, syscalls);
+            let _ = confinement.apply(cmd, rlimits, syscalls, &writes);
         };
         let harden: Option<&(dyn Fn(&mut Command) + Send + Sync)> = Some(&hook);
 
@@ -966,12 +973,13 @@ impl<'a> Executor<'a> {
     ) -> Result<Output> {
         // The same confinement as the synchronous spawn, on `tokio::process`.
         let confinement = self.child_confinement()?;
-        confinement.preflight_filesystem()?;
+        confinement.preflight_filesystem(&self.workspace_writes)?;
         self.hand_over_workspace(confinement);
         let rlimits = self.rlimit_policy.at_ceiling();
         let syscalls = self.seccomp_policy;
+        let writes = self.workspace_writes.clone();
         let hook = move |cmd: &mut tokio::process::Command| {
-            let _ = confinement.apply(cmd.as_std_mut(), rlimits, syscalls);
+            let _ = confinement.apply(cmd.as_std_mut(), rlimits, syscalls, &writes);
         };
         let harden: Option<&(dyn Fn(&mut tokio::process::Command) + Send + Sync)> = Some(&hook);
 

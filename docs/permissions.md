@@ -678,6 +678,66 @@ agent that reaches a host with `curl` rather than an MCP tool is bounded by host
 not by method and path. See `docs/adr/0004-delegation-compiler.md` for the
 milestones that close that gap.
 
+## Decisions
+
+An owner decision is a signed answer to a question: "of these options, the owner chose this
+one", with a structured scope and a validity window (`crates/nucleus-signed-decision`). A spec
+can make an effect it is already allowed run only when the call cites one:
+
+```yaml
+spec:
+  credentialed_egress:
+    - name: forge
+      upstream: https://forge.invalid/api
+      # ...
+  requires_decision:
+    - create_pr:forge   # a pull request opened through the upstream named `forge`
+```
+
+Each entry is `<effect>:<upstream>`, and that string is exactly the capability an owner's
+decision must list in `scope.capabilities`. The effects that can be gated are the two the
+credentialed-egress classifier labels: `create_pr` and `git_push`. A requirement only ever
+restricts, and a sub-pod keeps every requirement its parent holds for an upstream it keeps.
+
+The node's operator configures `nucleus-node --decision-trust-roots <file> --decision-tenant
+<tenant> --decision-bundles <dir>`. All three are checked at startup, and a bad value refuses
+the node's start by the flag's name. Each pod's tool-proxy receives the roots and the tenant's
+bundles: the node's files on the local driver, read-only bind mounts on the container driver,
+and the `FETCH_POD_SPEC` reply on Firecracker, which guest-init writes under
+`/run/nucleus/decisions`. The bundles are untrusted until the tool-proxy verifies them.
+
+A gated call cites its decision in the `x-nucleus-decision` header, which is never forwarded
+upstream. The effect runs only when all of these hold. Otherwise it is refused by name:
+
+| Checked | Refused as |
+|---|---|
+| a decision is cited, as 64 hex | none cited, or not an id |
+| a bundle for that id verifies against a pinned root, canonical, for this tenant, its options and question unaltered | the verifier's reason (unknown kid, bad signature, options not the ones shown, ...) |
+| `now` is inside its window | expired, not yet valid |
+| no bundle the pod holds supersedes it | superseded |
+| the capability is in its scope, and every path the effect writes | out of scope |
+| this proxy can read the write set | cannot be shown to cover (a push today: its pack is not read) |
+| a one-shot decision was not spent in this pod | already spent; the first use spends it, by value |
+
+The tool-proxy writes `owner_decision` to its signed audit log, naming the capability and the
+decision id (`cited <id>` or `spent <id>`), before the effect runs. The receipt's audit tail
+hash pins that record.
+
+A spec that requires a decision is refused at create when the node has no trust roots, when a
+requirement names an upstream the spec does not declare, on an unmediated container, and on a
+guest known to predate the capability (`GuestCapability::DecisionGatedSinks`, in no published
+release yet, so the pinned 2.7.0 guest is refused by name). A Firecracker pod whose guest the
+node cannot identify is handed out only after its tool-proxy prints `NUCLEUS_DECISION_GATE:
+ARMED` naming every requirement. Pods that require no decision are unchanged on every guest.
+
+**What is not enforced yet.** Single use is per pod: a one-shot decision cited in two pods is
+spent once in each. Fleet-wide single use is the merge gate's job. Supersession covers the
+bundles a pod was given, so a superseding decision filed after a pod started is unseen there
+until its window closes. No log inclusion proof is checked, and there is no fleet-wide
+revocation: removing a root from the node's file stops new pods from trusting it, not running
+ones. Whether a change is "breaking" or "picks between designs" is semantic, and no proxy
+detects it; that half is a convention.
+
 ## Delegation (Sub-agents)
 
 When delegating to a sub-agent, permissions can only go **down**, never up:

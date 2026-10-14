@@ -447,6 +447,34 @@ impl SelfSignedCa {
         ))
     }
 
+    /// A leaf this CA signs carrying exactly `extensions` (OID tuple, DER
+    /// value), each non-critical: the leaves no shipping signing path makes,
+    /// for the handshake's refusal tests (ADR 0016 D4).
+    #[cfg(test)]
+    pub(crate) fn sign_with_raw_extensions(
+        &self,
+        csr_pem: &str,
+        private_key_pem: &str,
+        identity: &Identity,
+        extensions: &[(&[u64], Vec<u8>)],
+    ) -> Result<WorkloadCertificate> {
+        let extensions = extensions
+            .iter()
+            .map(|(oid, value)| {
+                let mut ext = CustomExtension::from_oid_content(oid, value.clone());
+                ext.set_criticality(false);
+                ext
+            })
+            .collect();
+        self.sign_csr_with_extensions_now(
+            csr_pem,
+            private_key_pem,
+            identity,
+            Duration::from_secs(3600),
+            extensions,
+        )
+    }
+
     /// Signs a certificate using the provided key pair.
     #[cfg(test)]
     fn sign_with_keypair(
@@ -841,8 +869,16 @@ impl CaClient for SelfSignedCa {
             attestation,
             mediator_key_sha256,
             launch_quote_sha256,
+            isolation_profile,
         } = *claims;
-        let mut extensions = vec![Self::create_attestation_extension(attestation)];
+        let mut profile = CustomExtension::from_oid_content(
+            oid::OID_NUCLEUS_ISOLATION_PROFILE_TUPLE,
+            isolation_profile.extension_value()?,
+        );
+        // Non-critical: a verifier that predates `.1.8` (a pinned guest) must
+        // ignore it, not refuse the leaf.
+        profile.set_criticality(false);
+        let mut extensions = vec![Self::create_attestation_extension(attestation), profile];
         if let Some(binding) = mediator_key_sha256 {
             extensions.push(Self::create_mediation_key_binding_extension(binding));
         }

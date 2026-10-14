@@ -8,6 +8,7 @@ pub mod boot_budget;
 #[cfg(test)]
 #[path = "credentialed_egress_fixity_tests.rs"]
 mod credentialed_egress_fixity;
+pub mod decision_gate;
 pub mod dlc_admission;
 pub mod egress_budget;
 pub mod egress_fence;
@@ -35,8 +36,7 @@ pub mod workload_admission;
 pub mod workload_egress;
 pub mod workload_result;
 
-use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use portcullis::PermissionLattice;
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,6 @@ pub use nucleus_cred_protocol::egress::{
 use rootfs_source::ImageSpecWire;
 pub use rootfs_source::{OciDigest, OciReference, OciRootfs, RootfsSource};
 
-/// Top-level pod spec document (YAML/JSON).
 /// The only API version this build understands.
 ///
 /// A `String` here meant `apiVersion: nucleus/v2` — or a typo — parsed happily
@@ -213,6 +212,9 @@ pub struct PodSpecInner {
     /// must redact credential values in any debug output or audit logs.
     #[serde(default)]
     pub credentials: Option<CredentialsSpec>,
+    /// Effects that run only with a verified owner decision cited (`decision_gate`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requires_decision: Vec<decision_gate::DecisionCapability>,
 }
 
 impl PodSpecInner {

@@ -30,6 +30,10 @@ use tonic::{Request, Response as GrpcResponse, Status};
 use tracing::{error, info};
 use uuid::Uuid;
 
+// ADR 0016 D4: the census of every TLS acceptor in the workspace. Here, in the
+// shard whose scope is the whole repository, because it reads every crate.
+#[cfg(test)]
+mod acceptor_census_tests;
 mod api_error;
 mod art12_collector;
 mod audit_sink;
@@ -128,8 +132,13 @@ mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
+mod decision_provisioning;
 mod guest_proof_provision;
+mod memory_binding;
+mod memory_flow;
 mod memory_provisioning;
+mod memory_space;
+mod memory_space_api;
 mod net;
 #[cfg(test)]
 mod node_state_census;
@@ -182,6 +191,8 @@ struct Args {
     audit_sinks: audit_sink::AuditSinkArgs,
     #[command(flatten)]
     memory: memory_provisioning::MemoryArgs,
+    #[command(flatten)]
+    decisions: decision_provisioning::DecisionArgs,
     #[command(flatten)]
     pod_ceilings: pod_resources::PodCeilingArgs,
     #[command(flatten)]
@@ -536,6 +547,8 @@ struct NodeState {
     /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
     audit_sinks: Arc<audit_sink::AuditSinks>,
     memory: Arc<memory_provisioning::Stores>,
+    /// Owner-decision trust roots, tenant and bundles (`decision_provisioning`).
+    decisions: Option<Arc<decision_provisioning::NodeDecisions>>,
     /// Mints each pod's uploader a credential limited to its resolved sink (#3160). `None`: every
     /// audit sink is refused at create, by name; the node's own key is never the fallback.
     audit_minter: Option<Arc<dyn audit_sink::credentials::ScopedCredentialMinter>>,
@@ -623,6 +636,9 @@ struct PodHandle {
     /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
     owner: Option<String>,
     capacity: Mutex<Option<node_capacity::Reservation>>,
+    /// The lineage a pod belongs to, folded from `parent_pod_id` at creation
+    /// (`memory_provisioning::LineageRoot`): the audience a lineage's memory policy names.
+    memory_lineage: memory_provisioning::LineageRoot,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -904,7 +920,11 @@ async fn main() -> Result<(), ApiError> {
     .map_err(ApiError::Driver)?;
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
-    let memory = Arc::new(args.memory.load(&host_roots)?);
+    let memory = Arc::new(args.memory.load(&host_roots, &args.state_dir, &authority)?);
+    let decisions = args
+        .decisions
+        .load(host_roots.workspace_root())?
+        .map(Arc::new);
     let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys)
         .map_err(ApiError::Driver)?;
     let node_platform = Arc::new(
@@ -955,6 +975,7 @@ async fn main() -> Result<(), ApiError> {
         host_roots,
         guest_report,
         memory,
+        decisions,
         pod_ceilings: args.pod_ceilings.ceilings(),
         node_capacity: args.node_capacity.build()?,
         driver: args.driver.clone(),
@@ -1124,6 +1145,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
         .merge(pod_api::effect_approvals::routes())
+        .merge(memory_space_api::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1319,6 +1341,7 @@ async fn create_pod_internal(
     let requested_memory = state
         .memory
         .request(&spec, &state.driver, state.container_mediation)?;
+    decision_provisioning::admit(state, &spec)?; // requires_decision this node cannot enforce
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let profile = eval_cell::admit_on(state, &spec, parent_pod_id, id)?; // ADR 0013, by name
@@ -1377,7 +1400,47 @@ async fn create_pod_internal(
     let spec = plan.spec().clone();
     // What the receipt carries: the hash of the spec the guest is handed, not of `spec` (#3395).
     let manifest_hash = plan.delivered().manifest_hash().clone();
-    let memory = match state.memory.provision(requested_memory, &owner) {
+    // The lineage this pod belongs to: its parent's, or its own if it has none. The parent edge
+    // is the one `parent_for_create` recorded, so memory audiences and the pod view read the
+    // same fact (G-1).
+    let parent_lineage = match parent_pod_id {
+        Some(parent) => Some((
+            parent,
+            state
+                .pods
+                .lock()
+                .await
+                .get(&parent)
+                .map(|p| p.memory_lineage),
+        )),
+        None => None,
+    };
+    let memory_lineage = memory_provisioning::LineageRoot::of(id, parent_lineage);
+    // A pod's labels speak for its tenant only when the tenant's own identity created it: a
+    // pod-created child's labels were written by a pod, and match no workspace selector.
+    let labels = match (admission.caller_pod, parent_pod_id) {
+        (None, None) => memory_space::PodLabels::TenantAuthenticated(&spec.metadata.labels),
+        (Some(_), _) | (None, Some(_)) => memory_space::PodLabels::PodAuthored,
+    };
+    let subject = memory_provisioning::Subject {
+        pod: id,
+        owner: &owner,
+        lineage: memory_lineage,
+        labels,
+        run_ends: memory_provisioning::now_unix()
+            .saturating_add(spec.spec.timeout_seconds)
+            .saturating_add(memory_provisioning::PUBLISH_WINDOW_SECS),
+    };
+    let memory = match state.memory.provision(
+        requested_memory,
+        &subject,
+        &state.state_dir,
+        &state.authority,
+        state
+            .decisions
+            .as_deref()
+            .map(|d| d as &dyn memory_space::DecisionCiter),
+    ) {
         Ok(memory) => memory,
         Err(error) => {
             reservation.release().await;
@@ -1466,6 +1529,7 @@ async fn create_pod_internal(
         posture_stamp,
         owner: Some(owner),
         capacity: Mutex::new(Some(capacity)),
+        memory_lineage,
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -1537,7 +1601,7 @@ async fn spawn_local_pod(
     pod_dir: &Path,
     plan: pod_authority::AdmittedPodPlan,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
     let (spec, id) = (plan.spec(), plan.id());
@@ -1601,16 +1665,31 @@ async fn spawn_local_pod(
 
     provision_local_audit_env(&mut command, audit);
     memory_provisioning::local_command(&mut command, memory);
+    command.envs(state.decisions.iter().flat_map(|d| d.local_env()));
+
+    // Whether this pod's proxy calls the node, decided once from the admitted
+    // plan (#3471): the same value turns pod management on below and decides
+    // whether the pod's private key leaves the node at all.
+    let node_client = pod_identity_files::NodeClient::of(spec);
+    // Nothing reaches the proxy's stdin but the key it is handed, if any: not
+    // the node's own stdin, and no key variable by inheritance.
+    command
+        .stdin(std::process::Stdio::null())
+        .env_remove(nucleus_identity::pod_files::RETIRED_KEY_FILE_ENV)
+        .env_remove(nucleus_identity::pod_files::KEY_ON_STDIN_ENV);
 
     // The sandbox proof is the pod's node-issued SVID (tier 2). The HMAC'd
     // sandbox token needs a key this proxy no longer holds. Every local pod gets
-    // the files; an orchestrator pod also authenticates to the node with them.
+    // the public files; only an orchestrator pod, which authenticates to the
+    // node with them, is handed the key, on its stdin and never as a file
+    // (`pod_identity_files`).
     // `main` always builds the identity manager; without one (a unit-test
     // fixture) the real proxy finds no sandbox proof and refuses to start, which
     // `local_transport::exited` names below.
     if state.identity_manager.is_some() {
-        let identity = pod_identity_files::provision(state, pod_dir, id).await?;
-        command.envs(identity.env());
+        pod_identity_files::provision(state, pod_dir, id)
+            .await?
+            .hand_to(&mut command, node_client)?;
     }
 
     // Live-path: mint + inject the session capability token scoped to exactly
@@ -1633,14 +1712,8 @@ async fn spawn_local_pod(
     // proxy's parser owns that and fails CLOSED (partial/garbage config provisions deny-all).
     provision_local_dlc_env(&mut command, state.authority.dlc(id).await.as_ref());
 
-    // Detect orchestrator pod: inject pod management env vars
-    let enable_pod_mgmt = spec
-        .metadata
-        .labels
-        .get("enable_pod_mgmt")
-        .map(|v| v == "true")
-        .unwrap_or(false);
-    if enable_pod_mgmt {
+    // An orchestrator pod: inject pod management env vars.
+    if node_client == pod_identity_files::NodeClient::PodManagement {
         command.env("NUCLEUS_TOOL_PROXY_ENABLE_POD_MGMT", "true");
         // Point orchestrator's tool-proxy at this node's HTTP API. `https://`
         // since Move B: the node's HTTP listener is mTLS-only, unconditionally
@@ -1656,7 +1729,8 @@ async fn spawn_local_pod(
         // Node-assigned `ns/pods/sa/<uuid>`: the shape `AuthorizationPolicy`'s
         // pod class authorizes for pod management and nothing else. What the
         // pod may CREATE is decided by its certificate, not by this prefix.
-        // (The SVID files are provisioned above, for every local pod.)
+        // (The SVID's public files are provisioned above, for every local
+        // pod, and its key on this proxy's stdin.)
         // Caller identity → tool-proxy scopes the management API (env-parity with guest-init).
         command.env("NUCLEUS_POD_ID", id.to_string());
         command.env(
@@ -1762,6 +1836,7 @@ async fn spawn_container_pod(
         let version = container_transport::image_version(labels.as_ref());
         container_transport::admit_image(&state.container_image, version)?;
         container_broker::admit_image(&state.container_image, version, spec)?;
+        decision_provisioning::admit_image(&state.container_image, version, spec)?;
     }
     // Before pod.yaml is written: a spec carrying a credential is refused, and the host performs
     // the pod's credentialed calls over a broker the proxy is told how to reach (#2906).
@@ -1783,8 +1858,12 @@ async fn spawn_container_pod(
     let mut env = container_env(state, spec, id, spec_yaml, audit, memory).await;
     // The identity files are the proxy's sandbox proof (tier 2); the HMAC'd
     // token that used to stand in for them is deleted (#2446 step 3).
+    // No key: this driver enables no node client in its proxy, so the pod's
+    // private key is dropped unwritten (#3471).
     if proxy_mode {
-        pod_identity_files::provision(state, pod_dir, id).await?;
+        let _public = pod_identity_files::provision(state, pod_dir, id)
+            .await?
+            .without_key();
         env.extend(
             pod_identity_files::Files::at(Path::new("/data/pod"))
                 .env()
@@ -1812,6 +1891,9 @@ async fn spawn_container_pod(
     ];
     if let Some(grant) = memory {
         binds.push(grant.container_bind());
+    }
+    if proxy_mode {
+        binds.extend(state.decisions.iter().flat_map(|d| d.container_binds()));
     }
 
     // Network mode: the node's, or `none` if the pod asks for it; any other label is refused.
@@ -2920,19 +3002,20 @@ async fn serve_grpc(
     // practice. Asserted rather than assumed: HMAC has no fallback any more
     // (Move B), so a caller lacking a client cert would otherwise be
     // silently unauthenticatable instead of loudly refused at startup.
-    let mtls_enabled = tls_config.mtls_enabled();
-    if !mtls_enabled {
+    let Some(client_trust) = tls_config.client_trust_bundle().cloned() else {
         return Err(ApiError::Driver(
             "gRPC TLS is configured without a client CA (--grpc-tls-ca) — with no HMAC \
              fallback, no caller could ever authenticate. Pass --grpc-tls-ca, or omit \
              --grpc-tls-cert/--grpc-tls-key to use the self-issued mTLS default."
                 .to_string(),
         ));
-    }
+    };
 
     let service =
         NodeServiceServer::with_interceptor(GrpcService { state }, move |mut req: Request<()>| {
-            let auth_ctx = auth::authenticate_grpc_request(&req)
+            // The peer's launch is admitted against the listener's own client CA
+            // before any handler runs (ADR 0016 D4).
+            let auth_ctx = auth::authenticate_grpc_request(&req, &client_trust) // hmac-allow: the second argument is the listener's client-CA TrustBundle for the launch decision (ADR 0016 D4), not an HMAC config
                 .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
             // Store the auth context in request extensions for use in handlers

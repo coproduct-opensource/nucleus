@@ -116,6 +116,7 @@ impl Nucleus {
             cgroup: None,
             audit_sink: None,
             credentials: None,
+            requires_decision: Vec::new(),
         });
 
         let result = node.create_pod(&spec).await?;

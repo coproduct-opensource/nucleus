@@ -342,7 +342,7 @@ pub(crate) async fn memory_write(
     // The approvals the admission relied on, spent once, immediately before
     // the commit (#3446). The token itself is not redeemed here.
     crate::approval::spend_admission(&state, admitted)?;
-    Ok(Json(prepared.commit().await?))
+    Ok(Json(prepared.commit(registry)?))
 }
 
 /// POST `/v1/memory/recall` — taint-labeled recall gated through the IFC flow

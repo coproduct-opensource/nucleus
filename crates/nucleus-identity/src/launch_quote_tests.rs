@@ -123,6 +123,7 @@ async fn leaf(
             attestation: launch,
             mediator_key_sha256: None,
             launch_quote_sha256: quote,
+            isolation_profile: crate::SvidProfile::Standard,
         },
     )
     .await
@@ -388,6 +389,7 @@ async fn the_secret_manager_quotes_the_key_each_leaf_carries() {
         attestation: measured(),
         mediator_key_sha256: None,
         rooting: LaunchRooting::Tpm(quoter.clone()),
+        profile: crate::SvidProfile::Standard,
     };
     let first = manager.issue_for_launch(&identity(), launch).await.unwrap();
     let again = manager.refresh_certificate(&identity()).await.unwrap();
@@ -411,6 +413,7 @@ async fn the_secret_manager_quotes_the_key_each_leaf_carries() {
             asked: std::sync::Mutex::new(Vec::new()),
             answer: None,
         })),
+        profile: crate::SvidProfile::Standard,
     };
     let other = Identity::for_pod("test.local", "unquotable");
     let err = manager

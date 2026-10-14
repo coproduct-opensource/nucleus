@@ -729,6 +729,10 @@ mod tests {
                 posture_stamp: None,
                 owner: None,
                 capacity: tokio::sync::Mutex::new(None),
+                // A fixture names no lineage: a child of it is refused memory, never given a guess.
+                memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                    parent: uuid::Uuid::nil(),
+                },
             });
 
             if exit {

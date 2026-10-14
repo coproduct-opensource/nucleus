@@ -38,6 +38,7 @@ mod boot_report;
 mod broker_client;
 mod cert_bridge;
 mod child_reach;
+mod decision_gate;
 mod declassify;
 mod dlc_admission;
 mod drand_setup;
@@ -423,6 +424,19 @@ struct Args {
     #[arg(long, env = "NUCLEUS_IDENTITY_KEY")]
     identity_key: Option<std::path::PathBuf>,
 
+    /// The pod's private key arrives on stdin instead (#3471): the launcher
+    /// wrote it whole and closed the pipe. Read to its end once, at startup,
+    /// after the runtime sealed itself and before anything is spawned, and
+    /// held only in this process's memory. The local driver hands an
+    /// orchestrator pod its key this way, so no key file exists at a uid the
+    /// proxy's children share.
+    #[arg(
+        long,
+        env = nucleus_identity::pod_files::KEY_ON_STDIN_ENV,
+        conflicts_with = "identity_key"
+    )]
+    identity_key_on_stdin: bool,
+
     /// Trust bundle (the node's CA root) used to validate nucleus-node's
     /// server certificate when calling its pod-management HTTP API and
     /// lockdown gRPC stream over mTLS. Falls back to `--trust-bundle` if not
@@ -772,11 +786,21 @@ pub(crate) fn core_capabilities(
 /// Extract an ActorIdentity from the auth context for verdict recording.
 /// Thin adapter from `Args`' individual path fields to `node_identity::require`,
 /// which takes plain paths so it can be unit-tested without a full `Args`.
-fn require_node_identity(args: &Args, flag_hint: &str) -> node_identity::NodeIdentityPem {
+fn require_node_identity(
+    args: &Args,
+    delivered: Option<&node_identity::DeliveredKey>,
+    flag_hint: &str,
+) -> node_identity::NodeIdentityPem {
+    // `--identity-key` and `--identity-key-on-stdin` conflict (clap), so at
+    // most one of these is set.
+    let key = delivered.map(node_identity::KeySource::Delivered).or(args
+        .identity_key
+        .as_ref()
+        .map(node_identity::KeySource::File));
     node_identity::require(
         args.identity_cert.as_ref(),
         args.tls_cert.as_ref(),
-        args.identity_key.as_ref(),
+        key,
         args.identity_trust_bundle.as_ref(),
         args.trust_bundle.as_ref(),
         flag_hint,
@@ -1079,6 +1103,16 @@ async fn main() -> Result<(), ApiError> {
     let args =
         <Args as clap::FromArgMatches>::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     st.mark("args_parse");
+
+    // The pod key a launcher delivered on stdin (#3471), read now: the runtime
+    // is sealed, and nothing has been spawned to inherit stdin.
+    let delivered_key = match node_identity::DeliveredKey::from_stdin(args.identity_key_on_stdin) {
+        Ok(key) => key,
+        Err(why) => {
+            eprintln!("FATAL: {why}");
+            std::process::exit(78);
+        }
+    };
 
     // === Retired shared secret (#2446 step 3) ===
     // The shared-secret tier and the tier-3 token it keyed are deleted. A
@@ -1447,7 +1481,7 @@ async fn main() -> Result<(), ApiError> {
     // the node's HTTP listener requires a client cert unconditionally.
     let node_client = if args.enable_pod_mgmt {
         let node_url = args.node_url.as_deref().unwrap_or("https://127.0.0.1:3000");
-        let identity = require_node_identity(&args, "--enable-pod-mgmt");
+        let identity = require_node_identity(&args, delivered_key.as_ref(), "--enable-pod-mgmt");
         // cert then key, concatenated — the convention `reqwest::Identity::from_pem`
         // expects, matching `nucleus-cli`'s `load_mtls_config`.
         let mut identity_pem = identity.cert_pem.into_bytes();
@@ -1646,7 +1680,8 @@ async fn main() -> Result<(), ApiError> {
         &children,
     )?));
     let declassify_threshold = startup_trace::declassify_threshold();
-    let decisions = args.decisions.open(&spec.spec.work_dir)?.map(Arc::new);
+    let decisions =
+        decision_gate::arm(args.decisions.open(&spec.spec.work_dir)?, &spec.spec)?.map(Arc::new);
     if let Some(d) = &decisions {
         eprintln!("owner decisions: {} trust root(s) pinned", d.root_count());
     }
@@ -1819,7 +1854,7 @@ async fn main() -> Result<(), ApiError> {
     // Streaming lockdown watcher: connects to nucleus-node gRPC and receives
     // LockdownCommand messages with sub-second latency.
     if let Some(ref grpc_url) = args.node_grpc_url {
-        let identity = require_node_identity(&args, "--node-grpc-url");
+        let identity = require_node_identity(&args, delivered_key.as_ref(), "--node-grpc-url");
         let stream_flag = state.stream_lockdown.clone();
         // "nucleus.local" matches this codebase's pervasive default trust
         // domain (e.g. `SelfSignedCa::new`'s doc examples) — used only when

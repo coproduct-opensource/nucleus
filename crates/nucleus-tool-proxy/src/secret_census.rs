@@ -10,7 +10,10 @@
 //!
 //! An item is held only when this process reads it. A key path that is
 //! passed but never read (`--identity-key` with no node client to use it)
-//! is the launcher's file, not this process's secret.
+//! is the launcher's file, not this process's secret. No launcher in this
+//! repository writes one any more (#3471): the local driver delivers an
+//! orchestrator's key on stdin (`--identity-key-on-stdin`), and every other
+//! pod is handed none.
 
 use std::path::Path;
 
@@ -145,6 +148,7 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
         node_url: _,
         node_grpc_url,
         identity_key,
+        identity_key_on_stdin,
         identity_trust_bundle,
         delegation_ceiling: _,
         clearing,
@@ -158,7 +162,10 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
         // Only ever makes a refusal more informative, never an allow.
         pod_grant: _,
         // Verified once and presented nowhere (`session_token`); the node
-        // provisions it as a scoped capability, not a secret.
+        // provisions it as a scoped capability, not a secret. Every launcher
+        // passes all three in the environment, none on the command line
+        // (#3471), so the nonce is not in `/proc/<pid>/cmdline` should a
+        // later consumer make it one.
         task_token: _,
         task_token_nonce: _,
         task_token_issuer: _,
@@ -249,6 +256,15 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
                 .as_deref()
                 .map(|p| path("--identity-key", Exposure::Secret, p)),
         );
+    }
+    // Read from stdin at startup whether or not a node client uses it
+    // (`node_identity::DeliveredKey::from_stdin`), so held whenever delivered.
+    if *identity_key_on_stdin {
+        held.push(Held {
+            name: "--identity-key-on-stdin",
+            exposure: Exposure::Secret,
+            at: At::Delivered,
+        });
     }
     // Opened only when a dimension clears (`authority_round::build`).
     if !clearing.is_empty() {

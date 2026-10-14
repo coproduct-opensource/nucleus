@@ -43,6 +43,7 @@ fn spec_with(lattice: PermissionLattice) -> PodSpec {
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     })
 }
 
@@ -805,6 +806,7 @@ fn apply_to_replaces_the_requested_upstreams_with_the_admitted_ones() {
         effective: lattice(1),
         chain_depth: 1,
         upstreams: vec![registered("model-api")],
+        egress: nucleus_spec::NetworkSpec::egress_ceiling(spec.spec.network.as_ref()),
         reservation: Reservation { release: None },
         root_identity: MINTER.to_string(),
     };
@@ -1040,3 +1042,5 @@ async fn release_revokes_policy_references_already_held_by_brokers() {
 mod shared_budget;
 
 mod admission_window;
+
+mod egress_delegation;

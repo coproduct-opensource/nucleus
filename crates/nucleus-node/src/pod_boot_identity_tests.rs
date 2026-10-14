@@ -1,6 +1,20 @@
 use crate::pod_boot_identity::{self, Inputs};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
+/// Admit `id` through the node's authority, as `create_pod_internal` does before any driver
+/// runs: the pod's egress meter is built from the account admission issues (#2905).
+async fn admitted(st: &NodeState, spec: &nucleus_spec::PodSpec, id: uuid::Uuid) {
+    let root = crate::pod_authority::Admission {
+        caller_spiffe_id: st.authority.root_minter().to_string(),
+        caller_pod: None,
+        header_cert: None,
+    };
+    st.authority
+        .admit_kept(&root, spec, id)
+        .await
+        .expect("the root minter admits the pod");
+}
+
 async fn prepare_for_test(
     st: &NodeState,
     dir: &std::path::Path,
@@ -118,6 +132,7 @@ async fn host_spec_is_served_before_spawn_and_launch_error_releases_identity() {
         "metadata": {"name": "spawn-control"}, "spec": {"policy":{"type":"profile","name":"default"}},
     }))
     .unwrap();
+    admitted(&st, &spec, id).await;
     let ready = ready
         .with_broker(
             &st,
@@ -207,6 +222,7 @@ async fn dropping_a_spawned_child_during_launch_terminates_the_process() {
         "metadata": {"name": "child-cleanup"}, "spec": {"policy":{"type":"profile","name":"default"}},
     }))
     .unwrap();
+    admitted(&st, &spec, id).await;
     let ready = identity
         .with_broker(
             &st,

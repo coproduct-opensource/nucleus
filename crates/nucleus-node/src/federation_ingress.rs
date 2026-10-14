@@ -1306,6 +1306,7 @@ ceiling = {{ profile = "read_only" }}
             cgroup: None,
             audit_sink: None,
             credentials: None,
+            requires_decision: Vec::new(),
         })
     }
 

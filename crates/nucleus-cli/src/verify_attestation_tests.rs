@@ -250,6 +250,7 @@ async fn quoted_leaf(
                 attestation: &quoted(),
                 mediator_key_sha256: None,
                 launch_quote_sha256: quote,
+                isolation_profile: nucleus_identity::SvidProfile::Standard,
             },
         )
         .await

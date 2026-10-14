@@ -41,14 +41,14 @@ fn admit(children: Vec<ChildUid>, item: Held) -> Result<(), String> {
     ChildReach::for_test(children).admit(&[item], &RuntimeSeal::unsealed())
 }
 
-/// #3461, the bare host tier: a child at the proxy's own uid reaches every
-/// file the proxy holds. Durable authority is refused by name, because the
-/// proxy would go on trusting what the child wrote. A secret or session file
-/// is the launcher's, at this uid, and refusing it would not take it from the
-/// child, so it is held and named as the declared exposure. A separated
-/// child declares nothing.
+/// #3461, #3471, the bare host tier: a child at the proxy's own uid reaches
+/// every file the proxy holds. Durable authority is refused by name, because
+/// the proxy would go on trusting what the child wrote. A secret file is
+/// refused by name too, because the child reads it, and no launcher needs to
+/// leave one there any more. A session file is held and named as the
+/// declared exposure. A separated child declares nothing.
 #[test]
-fn the_bare_tier_holds_no_durable_file_and_names_the_rest() {
+fn the_bare_tier_holds_no_durable_or_secret_file_and_names_session_files() {
     let (_dir, file) = private_file();
     let bare = vec![ChildUid::SharedWithRuntime];
     let refused = admit(bare.clone(), held(Exposure::Durable, at(&file)))
@@ -57,19 +57,23 @@ fn the_bare_tier_holds_no_durable_file_and_names_the_rest() {
         refused.contains("--held (durable authority)") && refused.contains("bare host tier"),
         "{refused}"
     );
+    let refused = admit(bare.clone(), held(Exposure::Secret, at(&file)))
+        .expect_err("a bare-tier child could read it");
+    assert!(
+        refused.contains("--held (a secret)") && refused.contains("bare host tier"),
+        "{refused}"
+    );
     let items = [
-        held(Exposure::Secret, at(&file)),
         held(Exposure::Session, at(&file)),
         held(Exposure::Secret, At::Env),
+        held(Exposure::Secret, At::Delivered),
     ];
     let bare_reach = ChildReach::for_test(bare.clone());
-    for item in &items[..2] {
-        assert!(admit(bare.clone(), item.clone()).is_ok(), "{item:?}");
-    }
+    assert!(admit(bare.clone(), items[0].clone()).is_ok());
     assert_eq!(
         bare_reach.declared(&items),
-        [&items[0], &items[1]],
-        "the declared exposure names every held file, and no environment item"
+        [&items[0]],
+        "the declared exposure names the session file, and no secret"
     );
     assert!(
         ChildReach::for_test(vec![ChildUid::Distinct(stranger())])
@@ -205,6 +209,31 @@ fn argv_is_reached_by_every_child_and_the_environment_only_unsealed() {
     }
 }
 
+/// #3471: a key delivered on stdin is in this process's memory only, so it
+/// is reached exactly as the environment is: never by a child at another
+/// uid, and by a same-uid child while the runtime is unsealed. (Sealed, it
+/// is admitted; `secret_reach::a_bare_tier_child_cannot_read_a_delivered_pod_key`
+/// drives that on the real binary.)
+#[test]
+fn a_delivered_key_is_reached_only_as_the_environment_is() {
+    assert!(
+        admit(
+            vec![ChildUid::Distinct(stranger())],
+            held(Exposure::Secret, At::Delivered)
+        )
+        .is_ok()
+    );
+    let refused = admit(
+        vec![ChildUid::SharedWithRuntime],
+        held(Exposure::Secret, At::Delivered),
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("--held (a secret) is in this process's memory"),
+        "{refused}"
+    );
+}
+
 /// #3461: `--peer-uids` naming a child's uid serves that child as the host.
 #[test]
 fn a_front_door_peer_that_is_a_child_is_refused() {
@@ -320,6 +349,26 @@ fn the_census_holds_what_is_read_where_clap_found_it() {
         exposure: Exposure::Secret,
         at: At::Path("/t.pem".into()),
     }));
+    // #3471: a key delivered on stdin is held, in memory, read or not.
+    let delivered = parse(&["--identity-key-on-stdin"]);
+    assert!(delivered.contains(&Held {
+        name: "--identity-key-on-stdin",
+        exposure: Exposure::Secret,
+        at: At::Delivered,
+    }));
+    // ...and is one key or the other, never both.
+    assert!(
+        crate::Args::command()
+            .try_get_matches_from([
+                "nucleus-tool-proxy",
+                "--spec",
+                "/s.yaml",
+                "--identity-key-on-stdin",
+                "--identity-key",
+                "/k.pem",
+            ])
+            .is_err()
+    );
     let flag = parse(&["--approval-secret", "s3cret"]);
     assert!(flag.contains(&Held {
         name: "NUCLEUS_TOOL_PROXY_APPROVAL_SECRET",
@@ -383,6 +432,7 @@ async fn run_probe(script: String, work_dir: &Path) -> String {
             &portcullis::PermissionLattice::permissive(),
             portcullis::NetworkEgress::Declared,
         ),
+        &nucleus::WorkspaceWrites::Writable,
     )
     .unwrap();
     let out = child.wait_with_output().await.unwrap();
@@ -417,17 +467,17 @@ fn harness_reach() -> ChildReach {
 /// the test checks the one that applies:
 ///
 /// * refused by name, and a positive control shows the child could have
-///   read and written it (the bare tier, durable);
-/// * held as the bare tier's named, declared exposure, and the child really
-///   can read it, so the name is not a false comfort (the bare tier, secret);
+///   read and written it (the bare tier, both classes since #3471);
 /// * held, and the child can neither read nor write it (a root harness,
 ///   whose child drops to 65534, both classes).
 ///
 /// Red with the reach check removed from `admit`, on a non-root harness: the
 /// durable file was admitted undeclared, and the child read and wrote it.
+/// Red on #3463's head for the secret: it was admitted as a declared
+/// exposure, and the child read it.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn a_workload_child_reaches_no_durable_file_and_only_a_declared_secret() {
+async fn a_workload_child_reaches_no_durable_or_secret_file() {
     let (dir, file) = private_file();
     // A root harness's dropped child must be able to reach the workspace
     // to run in it at all; the held file stays private.
@@ -441,12 +491,11 @@ async fn a_workload_child_reaches_no_durable_file_and_only_a_declared_secret() {
         );
         let item = [held(exposure, at(&file))];
         match reach.admit(&item, &RuntimeSeal::unsealed()) {
-            Ok(()) if !reach.declared(&item).is_empty() => {
-                assert_eq!(exposure, Exposure::Secret, "only a secret file is declared");
-                let seen = run_probe(probe, workspace.path()).await;
-                assert!(seen.contains("READ"), "declared, so reachable: {seen}");
-            }
             Ok(()) => {
+                assert!(
+                    reach.declared(&item).is_empty(),
+                    "{exposure:?}: neither class is a declared exposure"
+                );
                 let seen = run_probe(probe, workspace.path()).await;
                 assert!(
                     !seen.contains("held-bytes") && !seen.contains("READ"),
@@ -456,7 +505,6 @@ async fn a_workload_child_reaches_no_durable_file_and_only_a_declared_secret() {
                 assert_eq!(std::fs::read(&file).unwrap(), b"held-bytes");
             }
             Err(refused) => {
-                assert_eq!(exposure, Exposure::Durable, "{refused}");
                 assert!(refused.contains("bare host tier"), "{refused}");
                 // Positive control: the refusal is not vacuous.
                 let seen = run_probe(probe, workspace.path()).await;

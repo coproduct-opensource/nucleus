@@ -268,7 +268,8 @@ fn the_quota_total_matches_extracted_over_every_presence_and_units_vector() {
 
 #[test]
 fn quota_admits_is_le_over_every_reachable_total_and_quota() {
-    let max_total = u16::from(Units::MAX) * Key::ALL.len() as u16;
+    let keys = u16::try_from(Key::ALL.len()).expect("the key set fits u16");
+    let max_total = u16::from(Units::MAX) * keys;
     let mut n = 0u64;
     for total in 0..=max_total {
         for quota in 0..=u16::MAX {

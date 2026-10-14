@@ -9,6 +9,11 @@ repository = "https://github.com/coproduct-opensource/nucleus"
 keywords = ["ai", "security", "memory", "provenance", "ifc"]
 categories = ["development-tools"]
 
+[features]
+# `PublishedJournal::fail_next_write_for_test`, so a caller's tests can drive the
+# uncertain-write latch. Off in every production graph.
+test-helpers = []
+
 [dependencies]
 portcullis-core = { version = "1.0.0", path = "../portcullis-core", features = ["serde"] }
 nucleus-lineage = { path = "../nucleus-lineage" }
@@ -20,6 +25,12 @@ thiserror = { workspace = true }
 chrono = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+# Opted into the workspace lint table, so the journal's one suppression (an
+# `#[expect]` with a reason, moved here from the proxy) is held to the
+# allow-attribute mandate rather than reported as undeclared.
+[lints]
+workspace = true
 
 [package.metadata.docs.rs]
 all-features = true

@@ -286,6 +286,7 @@ async fn launch_leaf(
             attestation: measured,
             mediator_key_sha256: None,
             launch_quote_sha256: quote,
+            isolation_profile: nucleus_identity::SvidProfile::EvalCell,
         },
     )
     .await

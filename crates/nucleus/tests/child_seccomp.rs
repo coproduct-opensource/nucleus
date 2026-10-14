@@ -355,6 +355,7 @@ fn try_run_under(
             &mut cmd,
             nucleus::RlimitPolicy::node_ceiling().at_ceiling(),
             policy,
+            &nucleus::WorkspaceWrites::Writable,
         );
     }
     // Under root each test writes its own copy of this binary while other

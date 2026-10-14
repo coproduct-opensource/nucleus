@@ -11,7 +11,7 @@ pub(crate) async fn container_env(
     id: Uuid,
     spec_yaml: &str,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Vec<String> {
     // No sandbox token: the tier-3 proof it carried is deleted (#2446 step 3), and the
     // proxy's proof is the identity files `spawn_container_pod` provisions.
@@ -54,6 +54,10 @@ pub(crate) async fn container_env(
         // pods`, and never reached the tool-proxy that enforces them (#2903).
         if let Some(dlc) = state.authority.dlc(id).await {
             env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
+        }
+        // Owner-decision material, bind-mounted read-only beside it (`decision_provisioning`).
+        if let Some(decisions) = &state.decisions {
+            env.extend(decisions.container_env());
         }
     }
 
