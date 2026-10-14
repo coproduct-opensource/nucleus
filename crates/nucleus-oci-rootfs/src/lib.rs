@@ -28,6 +28,9 @@
 //! - **uid/gid are preserved exactly**; user and group *names* are dropped.
 //! - **Reserved guest paths come from the caller** ([`ReservedPaths`]). This
 //!   crate has no copy of the table, so it cannot drift from the guest layout.
+//!   An entry at a reserved path or name prefix (`usr/local/bin/nucleus-*`)
+//!   is refused; the contents of a must-be-empty directory (`/run`, `/tmp`,
+//!   ...), which the guest mounts over, are dropped and reported.
 //! - **A root image user is reported, not refused** ([`ImageUser`]). Most base
 //!   images run as root; that matters only to a caller that runs the image's
 //!   own process as the workload, and [`WorkloadConfig::for_workload`] is where
