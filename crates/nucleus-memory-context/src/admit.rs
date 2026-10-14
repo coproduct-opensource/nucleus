@@ -63,7 +63,7 @@ pub enum AdmitRefusal {
 /// admitted under.
 #[must_use = "an admission that is never used is an op that was admitted and not performed"]
 #[derive(Debug, PartialEq, Eq)]
-pub struct Admitted {
+pub struct AdmittedOp {
     binding_id: u32,
     view: View,
     base: Version,
@@ -84,7 +84,7 @@ pub enum ReadRefusal {
     },
 }
 
-impl Admitted {
+impl AdmittedOp {
     /// The binding admitted.
     pub const fn binding_id(&self) -> u32 {
         self.binding_id
@@ -133,7 +133,11 @@ impl Admitted {
 /// The epoch is checked first: a revoked binding is refused as `ForeignEpoch` even
 /// when it has also expired. Revocation does not erase what was already disclosed;
 /// it refuses what has not happened yet.
-pub fn admit(binding: &Binding, current_epoch: Epoch, now: u64) -> Result<Admitted, AdmitRefusal> {
+pub fn admit(
+    binding: &Binding,
+    current_epoch: Epoch,
+    now: u64,
+) -> Result<AdmittedOp, AdmitRefusal> {
     if binding.epoch != current_epoch {
         return Err(AdmitRefusal::ForeignEpoch {
             binding: binding.epoch,
@@ -146,7 +150,7 @@ pub fn admit(binding: &Binding, current_epoch: Epoch, now: u64) -> Result<Admitt
             now,
         });
     }
-    Ok(Admitted {
+    Ok(AdmittedOp {
         binding_id: binding.binding_id,
         view: binding.view,
         base: binding.base,

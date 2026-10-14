@@ -24,7 +24,7 @@
 //! * [`History::commit`] — compare-and-swap: a [`ValidCandidate`] commits only onto
 //!   the head it was validated against.
 //! * [`admit`] — a binding is admitted only in the current epoch and before its
-//!   `not_after`; [`Admitted`] has a private constructor.
+//!   `not_after`; [`AdmittedOp`] has a private constructor.
 //!
 //! # Finite domain
 //!
@@ -59,7 +59,7 @@ mod history;
 mod section;
 mod view;
 
-pub use admit::{AdmitRefusal, Admitted, Binding, Epoch, Mode, ReadRefusal, admit};
+pub use admit::{AdmitRefusal, AdmittedOp, Binding, Epoch, Mode, ReadRefusal, admit};
 pub use candidate::{
     Candidate, CandidateRefusal, Invariants, ValidCandidate, assemble_candidate, validate_candidate,
 };

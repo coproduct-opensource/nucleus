@@ -24,10 +24,10 @@ The kernel decides:
 | `History::commit(valid)` | Compare-and-swap. A `ValidCandidate` commits only onto the head it was validated against. |
 | `admit(binding, epoch, now)` | Admits only in the current epoch, up to `not_after` inclusive. The refusals are `ForeignEpoch` and `Expired`. |
 
-`Snapshot`, `Candidate`, `ValidCandidate` and `Admitted` all have private
-constructors. `ValidCandidate` and `Admitted` are `#[must_use]`, not `Clone`, and
+`Snapshot`, `Candidate`, `ValidCandidate` and `AdmittedOp` all have private
+constructors. `ValidCandidate` and `AdmittedOp` are `#[must_use]`, not `Clone`, and
 consumed by value. Each one carries the state it is valid against: `generation` for
-`ValidCandidate`; `epoch` and `not_after` for `Admitted`.
+`ValidCandidate`; `epoch` and `not_after` for `AdmittedOp`.
 
 ## The finite domain
 
@@ -74,7 +74,7 @@ The headline theorems depend on at most `propext`, `Classical.choice` and
     holds and validation still refuses. A validator that checks only overlap
     agreement (`overlapOnly`) accepts it.
 - **Versions:** `version_stable`, `version_stable_many` and `commit_refuses_stale`.
-- **Admission:** `admit_iff` (admitted iff the epoch is current and `now ≤ not_after`),
+- **Admission:** `admission_iff` (admitted iff the epoch is current and `now ≤ not_after`),
   `old_epoch_refused` and `revoke_refuses`.
 - **Noninterference:** contextual noninterference by unwinding over the ops
   `bind | propose | publish | revoke`. It rests on three conditions, stated directly

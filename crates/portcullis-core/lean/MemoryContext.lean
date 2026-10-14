@@ -569,15 +569,15 @@ inductive Admission
 deriving DecidableEq, Repr
 
 /-- Rust: `admit` / `extracted::admit::admit_code`. Epoch first, then expiry. -/
-def admit (bindingEpoch notAfter currentEpoch now : Nat) : Admission :=
+def admission (bindingEpoch notAfter currentEpoch now : Nat) : Admission :=
   if bindingEpoch ≠ currentEpoch then .foreignEpoch
   else if notAfter < now then .expired
   else .admitted
 
 /-- **Current-epoch admission.** Admitted iff the epoch is current and not expired. -/
-theorem admit_iff (be na ce now : Nat) :
-    admit be na ce now = .admitted ↔ be = ce ∧ now ≤ na := by
-  unfold admit
+theorem admission_iff (be na ce now : Nat) :
+    admission be na ce now = .admitted ↔ be = ce ∧ now ≤ na := by
+  unfold admission
   by_cases h1 : be = ce
   · by_cases h2 : na < now
     · simp [h1, h2] <;> omega
@@ -586,11 +586,11 @@ theorem admit_iff (be na ce now : Nat) :
 
 /-- **Revocation refuses every older binding**, whatever its expiry. -/
 theorem old_epoch_refused {be ce : Nat} (na now : Nat) (h : be < ce) :
-    admit be na ce now = .foreignEpoch := by
+    admission be na ce now = .foreignEpoch := by
   have : be ≠ ce := by omega
-  simp [admit, this]
+  simp [admission, this]
 
-theorem revoke_refuses (be na now : Nat) : admit be na (be + 1) now = .foreignEpoch :=
+theorem revoke_refuses (be na now : Nat) : admission be na (be + 1) now = .foreignEpoch :=
   old_epoch_refused na now (Nat.lt_succ_self be)
 
 /-! ## 7. Contextual noninterference, by unwinding

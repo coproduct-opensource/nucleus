@@ -300,7 +300,7 @@ fn binding(epoch: u32, not_after: u64) -> Binding {
     }
 }
 
-fn admit_class(r: &Result<crate::Admitted, AdmitRefusal>) -> u8 {
+fn admit_class(r: &Result<crate::AdmittedOp, AdmitRefusal>) -> u8 {
     match r {
         Ok(_) => extracted::admit::ADMITTED,
         Err(AdmitRefusal::ForeignEpoch { .. }) => extracted::admit::FOREIGN_EPOCH,
