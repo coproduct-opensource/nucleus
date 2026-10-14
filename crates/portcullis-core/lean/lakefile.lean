@@ -199,6 +199,14 @@ lean_lib «PodCrossView» where
 lean_lib «PodCrossViewIdentity» where
   roots := #[`PodCrossViewIdentity]
 
+-- Program B M1: context-indexed, versioned memory — restriction laws, version-stable
+-- observation, assembly recovery, whole-candidate validity (the 6 + 6 > 10 budget
+-- counterexample), current-epoch admission, and contextual noninterference by
+-- unwinding over bind/propose/publish/revoke. Hand-written model of
+-- crates/nucleus-memory-context; Mathlib-free, kernel `decide` only.
+lean_lib «MemoryContext» where
+  roots := #[`MemoryContext]
+
 -- The identity oracle mirrored in plain Lean (no Aeneas/Mathlib), proved faithful
 -- to the extracted `identity_reaches_workload` — the toolchain bridge that lets the
 -- iris-lean pod machine branch on the shipped decision. Plan: graceful-puzzling-beaver.md.
