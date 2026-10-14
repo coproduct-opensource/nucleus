@@ -11,7 +11,7 @@ pub(crate) async fn container_env(
     id: Uuid,
     spec_yaml: &str,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Vec<String> {
     // No sandbox token: the tier-3 proof it carried is deleted (#2446 step 3), and the
     // proxy's proof is the identity files `spawn_container_pod` provisions.

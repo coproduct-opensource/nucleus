@@ -1260,7 +1260,11 @@ pub(crate) mod handler_tests {
             audit_sinks: Arc::new(a.audit_sinks.load().expect("audit sinks")),
             memory: Arc::new(
                 a.memory
-                    .load(&a.host_paths.ensure(&a.state_dir).unwrap())
+                    .load(
+                        &a.host_paths.ensure(&a.state_dir).unwrap(),
+                        &a.state_dir,
+                        &authority,
+                    )
                     .unwrap(),
             ),
             audit_minter: None,
@@ -1449,6 +1453,10 @@ pub(crate) mod handler_tests {
             posture_stamp: None,
             owner: owner.map(str::to_string),
             capacity: tokio::sync::Mutex::new(None),
+            // A fixture names no lineage: a child of it is refused memory, never given a guess.
+            memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                parent: uuid::Uuid::nil(),
+            },
         });
         st.pods.lock().await.insert(id, handle);
         id
@@ -1498,6 +1506,10 @@ pub(crate) mod handler_tests {
             posture_stamp: None,
             owner: None,
             capacity: tokio::sync::Mutex::new(None),
+            // A fixture names no lineage: a child of it is refused memory, never given a guess.
+            memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+                parent: uuid::Uuid::nil(),
+            },
         };
         assert!(matches!(
             handle.status().await,

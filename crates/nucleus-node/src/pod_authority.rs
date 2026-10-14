@@ -730,6 +730,19 @@ impl LedgerView {
 /// not a silent reinterpretation of the old one.
 const RECEIPT_DOMAIN: &[u8] = b"nucleus/pod-receipt/v1\0";
 
+/// Domain tag for a memory-flow receipt (`memory_share`): disjoint from [`RECEIPT_DOMAIN`].
+const MEMORY_FLOW_DOMAIN: &[u8] = b"nucleus/memory-flow/v1\0";
+
+/// Verify a memory-flow receipt against a node's advertised root public key, by the same strict
+/// check a pod receipt gets. Its relying party is outside the node, as for a pod receipt.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn verify_memory_flow(pubkey_hex: &str, preimage: &[u8], signature_hex: &str) -> bool {
+    let mut tagged = Vec::with_capacity(MEMORY_FLOW_DOMAIN.len() + preimage.len());
+    tagged.extend_from_slice(MEMORY_FLOW_DOMAIN);
+    tagged.extend_from_slice(preimage);
+    verify_tagged(pubkey_hex, &tagged, signature_hex)
+}
+
 /// Verify a pod-receipt signature against a node's advertised root public key.
 ///
 /// Free function, not a method: a relying party has the public key and the
@@ -743,12 +756,18 @@ const RECEIPT_DOMAIN: &[u8] = b"nucleus/pod-receipt/v1\0";
 // it would be a signature no one can test against.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_hex: &str) -> bool {
-    let (Ok(pubkey), Ok(sig)) = (hex::decode(pubkey_hex), hex::decode(signature_hex)) else {
-        return false;
-    };
     let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
     msg.extend_from_slice(RECEIPT_DOMAIN);
     msg.extend_from_slice(preimage);
+    verify_tagged(pubkey_hex, &msg, signature_hex)
+}
+
+/// Strict Ed25519 verification of an already domain-tagged message.
+#[cfg_attr(not(test), allow(dead_code))]
+fn verify_tagged(pubkey_hex: &str, msg: &[u8], signature_hex: &str) -> bool {
+    let (Ok(pubkey), Ok(sig)) = (hex::decode(pubkey_hex), hex::decode(signature_hex)) else {
+        return false;
+    };
 
     // `verify_strict`, NOT `ring::signature::ED25519`.
     //
@@ -767,7 +786,7 @@ pub(crate) fn verify_pod_receipt(pubkey_hex: &str, preimage: &[u8], signature_he
     ) else {
         return false;
     };
-    vk.verify_strict(&msg, &sig).is_ok()
+    vk.verify_strict(msg, &sig).is_ok()
 }
 
 /// The node's certificate authority for pods. See the module docs.
@@ -1116,6 +1135,16 @@ impl PodAuthority {
     pub fn sign_pod_receipt(&self, preimage: &[u8]) -> String {
         let mut msg = Vec::with_capacity(RECEIPT_DOMAIN.len() + preimage.len());
         msg.extend_from_slice(RECEIPT_DOMAIN);
+        msg.extend_from_slice(preimage);
+        hex::encode(self.root_key.sign(&msg).as_ref())
+    }
+
+    /// Sign a memory-flow claim (`memory_share::FlowClaim`) with the node's root key, under its
+    /// own domain tag: for the reason [`Self::sign_pod_receipt`] gives, a flow claim must not be
+    /// a byte string that also verifies as a pod receipt or a certificate body.
+    pub fn sign_memory_flow(&self, preimage: &[u8]) -> String {
+        let mut msg = Vec::with_capacity(MEMORY_FLOW_DOMAIN.len() + preimage.len());
+        msg.extend_from_slice(MEMORY_FLOW_DOMAIN);
         msg.extend_from_slice(preimage);
         hex::encode(self.root_key.sign(&msg).as_ref())
     }

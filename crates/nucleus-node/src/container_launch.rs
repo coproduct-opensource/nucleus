@@ -5,7 +5,7 @@
 pub(crate) struct Inputs<'a> {
     pub raw_yaml: Option<&'a str>,
     pub audit: Option<&'a crate::audit_sink::credentials::AuditGrant>,
-    pub memory: Option<&'a crate::memory_provisioning::Grant>,
+    pub memory: Option<&'a crate::memory_provisioning::Attachment>,
     pub deadline: tokio::time::Instant,
 }
 

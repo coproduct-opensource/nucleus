@@ -121,6 +121,13 @@ pub enum Operation {
     Lockdown,
     /// Inspect or decide an action-bound host approval; configured operator only.
     ApproveEffect,
+    /// Mint, narrow, revoke or list a tenant's `SharedMemory` grants (`memory_share_api`).
+    ///
+    /// Not part of the pod-management group. A grant is a tenant root's declaration that two of
+    /// its lineages may share memory; a pod that could mint one could open, for itself, the
+    /// cross-lineage channel the grant exists to make deliberate. Which tenant a caller acts
+    /// for is decided by the handler from its own identity, never from the request.
+    MemoryShare,
     /// Any pod management operation (used for matching).
     PodManagement,
 }
@@ -414,6 +421,7 @@ impl AuthorizationPolicy {
                 | Operation::CancelPod
                 | Operation::StreamLogs
                 | Operation::GetReceipt
+                | Operation::MemoryShare
                 | Operation::PodManagement => Ok(()),
                 // A lockdown is the operator's control (see the variant), and a
                 // tenant is never the operator.
@@ -481,7 +489,7 @@ impl AuthorizationPolicy {
                         return Ok(());
                     }
                     // Falls through to the refusal below: see the variant's doc comment.
-                    Operation::Lockdown | Operation::ApproveEffect => {}
+                    Operation::Lockdown | Operation::ApproveEffect | Operation::MemoryShare => {}
                 }
             }
         }
@@ -507,7 +515,10 @@ impl AuthorizationPolicy {
                     }
                     // Falls through to the refusal below rather than returning: see the variant's
                     // doc comment. A workload does not get to author what its neighbours boot.
-                    Operation::SnapshotPod | Operation::Lockdown | Operation::ApproveEffect => {}
+                    Operation::SnapshotPod
+                    | Operation::Lockdown
+                    | Operation::ApproveEffect
+                    | Operation::MemoryShare => {}
                 }
             }
         }
@@ -661,6 +672,11 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
         | (&axum::http::Method::GET, ["v1", "pods", _id, "effect-approvals", _])
         | (&axum::http::Method::POST, ["v1", "pods", _id, "effect-approvals", _]) => {
             Some(Operation::ApproveEffect)
+        }
+        (&axum::http::Method::GET | &axum::http::Method::POST, ["v1", "memory", "grants"])
+        | (&axum::http::Method::POST, ["v1", "memory", "grants", _, "attenuate"])
+        | (&axum::http::Method::POST, ["v1", "memory", "shares", _, "revoke"]) => {
+            Some(Operation::MemoryShare)
         }
         _ => None,
     }

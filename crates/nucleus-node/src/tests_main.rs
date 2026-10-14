@@ -1033,6 +1033,10 @@ async fn a_cancelled_container_reports_its_exit_not_an_error() {
         posture_stamp: None,
         owner: None,
         capacity: tokio::sync::Mutex::new(None),
+        // A fixture names no lineage: a child of it is refused memory, never given a guess.
+        memory_lineage: crate::memory_provisioning::LineageRoot::Unresolved {
+            parent: uuid::Uuid::nil(),
+        },
     };
     handle.cancel().await.expect("cancel");
     let after = handle.status().await;

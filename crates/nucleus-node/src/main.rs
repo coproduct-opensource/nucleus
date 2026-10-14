@@ -127,6 +127,8 @@ use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
 mod guest_proof_provision;
 mod memory_provisioning;
+mod memory_share;
+mod memory_share_api;
 mod net;
 mod posture;
 mod session_mint;
@@ -612,6 +614,9 @@ struct PodHandle {
     /// (ADR 0001; `auth::CallerScope::Tenant`). `None` only for fixtures.
     owner: Option<String>,
     capacity: Mutex<Option<node_capacity::Reservation>>,
+    /// The lineage a pod's persistent memory is bound to, folded from `parent_pod_id` at
+    /// creation (`memory_provisioning::LineageRoot`).
+    memory_lineage: memory_provisioning::LineageRoot,
 }
 
 /// Whether a teardown has to stop the pod's process, or it already exited.
@@ -893,7 +898,7 @@ async fn main() -> Result<(), ApiError> {
     .map_err(ApiError::Driver)?;
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
-    let memory = Arc::new(args.memory.load(&host_roots)?);
+    let memory = Arc::new(args.memory.load(&host_roots, &args.state_dir, &authority)?);
     let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys)
         .map_err(ApiError::Driver)?;
     let node_platform = Arc::new(
@@ -1101,6 +1106,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
         .merge(pod_api::effect_approvals::routes())
+        .merge(memory_share_api::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -1341,7 +1347,33 @@ async fn create_pod_internal(
     let owner = plan.owner().to_string();
     // The registry's record of the spec; the plan, not this copy, is what launches.
     let spec = plan.spec().clone();
-    let memory = match state.memory.provision(requested_memory, &owner) {
+    // The lineage this pod's memory is bound to: its parent's, or its own if it has none. The
+    // parent edge is the one `parent_for_create` recorded, so memory scoping and the pod view
+    // read the same fact (G-1).
+    let parent_lineage = match parent_pod_id {
+        Some(parent) => Some((
+            parent,
+            state
+                .pods
+                .lock()
+                .await
+                .get(&parent)
+                .map(|p| p.memory_lineage),
+        )),
+        None => None,
+    };
+    let memory_lineage = memory_provisioning::LineageRoot::of(id, parent_lineage);
+    let subject = memory_provisioning::Subject {
+        pod: id,
+        owner: &owner,
+        lineage: memory_lineage,
+    };
+    let memory = match state.memory.provision(
+        requested_memory,
+        &subject,
+        &state.state_dir,
+        &state.authority,
+    ) {
         Ok(memory) => memory,
         Err(error) => {
             reservation.release().await;
@@ -1421,6 +1453,7 @@ async fn create_pod_internal(
         posture_stamp,
         owner: Some(owner),
         capacity: Mutex::new(Some(capacity)),
+        memory_lineage,
     });
 
     state.pods.lock().await.insert(id, handle);
@@ -1492,7 +1525,7 @@ async fn spawn_local_pod(
     pod_dir: &Path,
     plan: pod_authority::AdmittedPodPlan,
     audit: Option<&audit_sink::credentials::AuditGrant>,
-    memory: Option<&memory_provisioning::Grant>,
+    memory: Option<&memory_provisioning::Attachment>,
 ) -> Result<(DriverState, Option<String>, PathBuf), ApiError> {
     // Admitted by `PodAuthority::admit_pod`: the plan is the only way here (#2600).
     let (spec, id) = (plan.spec(), plan.id());
