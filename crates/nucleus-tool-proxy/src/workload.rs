@@ -205,6 +205,8 @@ pub(crate) struct AdmittedWorkloadPlan {
     /// so the receipt reports the same set the admission checked.
     env: BTreeMap<String, String>,
     classified: Vec<ClassifiedEntry>,
+    home: std::path::PathBuf,
+    owns_work_dir: bool,
 }
 
 // The plan carries secret VALUES in `env`; never let them reach a log via Debug.
@@ -305,6 +307,10 @@ pub(crate) struct WorkloadLaunch {
     uid: Option<u32>,
     env: BTreeMap<String, String>,
     classified: Vec<ClassifiedEntry>,
+    /// The child's default `HOME`, created and handed to its uid at spawn.
+    home: std::path::PathBuf,
+    /// Whether the child is handed the work dir: the workload is, a companion never.
+    owns_work_dir: bool,
 }
 
 impl WorkloadLaunch {
@@ -354,6 +360,48 @@ impl WorkloadLaunch {
             uid: spec.uid,
             env,
             classified,
+            home: workload_home(work_dir),
+            owns_work_dir: true,
+        }
+    }
+
+    /// The companion's launch (`WorkloadSpec::companion`): its own `HOME` beside the
+    /// workload's, its spec's env over it, and nothing else. No door or egress URL and no
+    /// inherited runtime variable reach it, and it is never handed the work dir. It is
+    /// admitted by the same `admit` as the workload, so the same relation and the same
+    /// uid rule decide what crosses.
+    pub(crate) fn companion(
+        spec: &nucleus_spec::CompanionSpec,
+        work_dir: &std::path::Path,
+    ) -> Self {
+        let home = work_dir.join(nucleus_spec::guest_layout::COMPANION_HOME_NAME);
+        let mut env = BTreeMap::from([("HOME".to_string(), home.to_string_lossy().into_owned())]);
+        env.extend(spec.env.clone());
+        let classified = env
+            .keys()
+            .map(|key| {
+                let material = env_key_material(key);
+                ClassifiedEntry {
+                    key: key.clone(),
+                    material,
+                    label: mat_label(material),
+                    source: if key == "HOME" && !spec.env.contains_key(key) {
+                        EnvSource::RuntimeDefault
+                    } else {
+                        EnvSource::SpecEnv
+                    },
+                }
+            })
+            .collect();
+        Self {
+            command: spec.command.clone(),
+            args: spec.args.clone(),
+            work_dir: work_dir.to_path_buf(),
+            uid: Some(spec.uid),
+            env,
+            classified,
+            home,
+            owns_work_dir: false,
         }
     }
 
@@ -465,6 +513,8 @@ impl WorkloadLaunch {
             confinement,
             env: self.env,
             classified: self.classified,
+            home: self.home,
+            owns_work_dir: self.owns_work_dir,
         })
     }
 }
@@ -550,7 +600,7 @@ pub(crate) fn spawn_admitted(
     // The default HOME, made before the chown below so the same best-effort
     // treatment covers both. Only when the admitted env still points at it: a
     // spec that chose its own HOME chose its own directory too.
-    let home = workload_home(&plan.work_dir);
+    let home = plan.home.clone();
     let default_home = plan.env.get("HOME").map(std::path::Path::new) == Some(home.as_path());
     if default_home && let Err(e) = std::fs::create_dir_all(&home) {
         tracing::warn!(
@@ -573,7 +623,10 @@ pub(crate) fn spawn_admitted(
     // work dir is read-only (a pod with no writable scratch drive, where
     // `/work` is on the read-only rootfs), and in that case the workload cannot
     // write it regardless, so the failure is not fatal: log it and proceed.
-    if let Err(e) = confinement.hand_over(&plan.work_dir) {
+    // A companion is never handed it: the work dir is the workload's.
+    if plan.owns_work_dir
+        && let Err(e) = confinement.hand_over(&plan.work_dir)
+    {
         tracing::warn!(
             work_dir = %plan.work_dir.display(),
             uid = ?drop_uid,
@@ -941,7 +994,7 @@ pub(crate) fn start_if_configured(
     containment: nucleus::ContainmentMode,
     opt_in: nucleus::UnsandboxedOptIn,
     landlock: nucleus::LandlockWaiver,
-) -> Result<Option<(tokio::process::Child, LaunchReceipt)>, crate::ApiError> {
+) -> Result<Option<Started>, crate::ApiError> {
     let Some(w) = spec.spec.workload.as_ref() else {
         return Ok(None);
     };
@@ -957,10 +1010,39 @@ pub(crate) fn start_if_configured(
         crate::ApiError::Spec(format!("refused to launch workload {:?}: {e}", w.command))
     })?;
 
+    // The companion is admitted before anything starts, so a refused one refuses the pod.
+    let companion = match w.companion.as_ref() {
+        None => None,
+        Some(c) => Some(admit_companion(
+            c,
+            &spec.spec.work_dir,
+            &plan,
+            containment,
+            opt_in,
+            landlock,
+        )?),
+    };
+
     door.serve(door_app, plan.door_uid());
 
     let rlimits = rlimit_policy(&spec.spec).at_ceiling();
     let syscalls = seccomp_policy(&spec.spec)?;
+
+    // Started first: the workload may call it as soon as it runs.
+    let companion = match companion {
+        None => None,
+        Some(plan) => {
+            let command = plan.command.clone();
+            let (child, receipt) = spawn_admitted(plan, rlimits, syscalls).map_err(|e| {
+                crate::ApiError::Spec(format!("failed to start companion {command:?}: {e}"))
+            })?;
+            tracing::info!(
+                launch_receipt = %serde_json::to_string(&receipt).unwrap_or_default(),
+                "companion launch receipt"
+            );
+            Some((child, receipt))
+        }
+    };
     let (child, receipt) = spawn_admitted(plan, rlimits, syscalls).map_err(|e| {
         crate::ApiError::Spec(format!("failed to start workload {:?}: {e}", w.command))
     })?;
@@ -969,7 +1051,61 @@ pub(crate) fn start_if_configured(
         launch_receipt = %serde_json::to_string(&receipt).unwrap_or_default(),
         "workload launch receipt"
     );
-    Ok(Some((child, receipt)))
+    Ok(Some(Started {
+        child,
+        receipt,
+        companion,
+    }))
+}
+
+/// A started workload, and its companion when the spec names one. Dropping it kills both
+/// (`kill_on_drop`), so the companion lives exactly as long as whoever holds this.
+pub(crate) struct Started {
+    pub(crate) child: tokio::process::Child,
+    pub(crate) receipt: LaunchReceipt,
+    pub(crate) companion: Option<(tokio::process::Child, LaunchReceipt)>,
+}
+
+/// Why a companion was refused. A plain function, not a closure: everything reachable from a
+/// workload-spawn root must resolve statically (`nucleus-identity-lint`, FM-5).
+fn companion_refused(command: &str, why: String) -> crate::ApiError {
+    crate::ApiError::Spec(format!("refused to launch companion {command:?}: {why}"))
+}
+
+/// Admit `WorkloadSpec::companion` beside the admitted workload `plan`. Its uid must be a
+/// distinct drop that is neither root nor the workload's: the door admits the workload's uid,
+/// and a companion that shared it would be admitted too, and could read the workload's
+/// environment through `/proc`.
+fn admit_companion(
+    companion: &nucleus_spec::CompanionSpec,
+    work_dir: &std::path::Path,
+    plan: &AdmittedWorkloadPlan,
+    containment: nucleus::ContainmentMode,
+    opt_in: nucleus::UnsandboxedOptIn,
+    landlock: nucleus::LandlockWaiver,
+) -> Result<AdmittedWorkloadPlan, crate::ApiError> {
+    if companion.uid == 0 {
+        return Err(companion_refused(
+            &companion.command,
+            "a companion never runs as root".into(),
+        ));
+    }
+    if companion.uid == plan.runs_as().uid() {
+        return Err(companion_refused(
+            &companion.command,
+            "the companion's uid is the workload's; the door would admit it".into(),
+        ));
+    }
+    let admitted = WorkloadLaunch::companion(companion, work_dir)
+        .admit(containment, opt_in, landlock)
+        .map_err(|e| companion_refused(&companion.command, e.to_string()))?;
+    if !matches!(admitted.runs_as(), RunsAs::Dropped(uid) if uid == companion.uid) {
+        return Err(companion_refused(
+            &companion.command,
+            "this runtime cannot drop to the companion's uid".into(),
+        ));
+    }
+    Ok(admitted)
 }
 
 #[cfg(test)]
@@ -1060,6 +1196,7 @@ mod tests {
             artifacts: Default::default(),
             args: vec!["--flag".into()],
             uid: None,
+            companion: None,
             env: env
                 .iter()
                 .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
@@ -1536,6 +1673,7 @@ mod tests {
             args: vec!["-c".into(), script],
             uid: None,
             env: std::collections::BTreeMap::new(),
+            companion: None,
         };
         // Through the real path: build → admit → spawn_admitted. A plan that did
         // not classify-and-admit every entry could not be constructed.
@@ -1931,5 +2069,140 @@ mod tests {
             receipt.environment,
             nucleus_spec::workload_result::EnvironmentIdentity::of(&actual)
         );
+    }
+}
+
+#[cfg(test)]
+mod companion_tests {
+    use super::*;
+
+    const WORKLOAD_UID: u32 = 65534;
+    const COMPANION_UID: u32 = 65533;
+
+    fn companion(uid: u32) -> nucleus_spec::CompanionSpec {
+        nucleus_spec::CompanionSpec {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "id -u".into()],
+            env: BTreeMap::from([("MODE".to_string(), "exec".to_string())]),
+            uid,
+        }
+    }
+
+    fn workload() -> WorkloadSpec {
+        WorkloadSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+            artifacts: BTreeMap::new(),
+            uid: Some(WORKLOAD_UID),
+            companion: Some(companion(COMPANION_UID)),
+        }
+    }
+
+    /// Its own HOME beside the workload's, its spec's env, and nothing of the runtime's:
+    /// no door URL, no egress URL, no inherited variable. Never handed the work dir.
+    #[test]
+    fn a_companion_gets_its_own_home_and_none_of_the_runtimes_variables() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = WorkloadLaunch::companion(&companion(COMPANION_UID), dir.path());
+        assert_eq!(
+            launch.env.get("HOME").map(std::path::PathBuf::from),
+            Some(
+                dir.path()
+                    .join(nucleus_spec::guest_layout::COMPANION_HOME_NAME)
+            )
+        );
+        assert_eq!(launch.env.get("MODE").map(String::as_str), Some("exec"));
+        assert_eq!(
+            launch.env.len(),
+            2,
+            "{:?}",
+            launch.env.keys().collect::<Vec<_>>()
+        );
+        assert!(!launch.owns_work_dir);
+        assert!(WorkloadLaunch::build(&workload(), "u", dir.path(), &[]).owns_work_dir);
+    }
+
+    /// Root, the workload's uid (which the door admits), and a uid this runtime cannot
+    /// drop to are refused; a distinct uid on a root runtime is admitted.
+    #[test]
+    fn a_companion_uid_must_be_a_distinct_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let mode = nucleus::ContainmentMode::MicroVM;
+        let opt_in = nucleus::UnsandboxedOptIn::Explicit;
+        let waiver = nucleus::LandlockWaiver::Absent;
+        let Ok(plan) =
+            WorkloadLaunch::build(&workload(), "u", dir.path(), &[]).admit(mode, opt_in, waiver)
+        else {
+            // A non-root runtime cannot drop to the workload's uid either: nothing to compare.
+            assert_ne!(nix_getuid(), 0);
+            return;
+        };
+        for uid in [0, WORKLOAD_UID] {
+            assert!(
+                admit_companion(&companion(uid), dir.path(), &plan, mode, opt_in, waiver).is_err(),
+                "{uid}"
+            );
+        }
+        let admitted = admit_companion(
+            &companion(COMPANION_UID),
+            dir.path(),
+            &plan,
+            mode,
+            opt_in,
+            waiver,
+        )
+        .expect("a distinct uid on a root runtime");
+        assert!(matches!(admitted.runs_as(), RunsAs::Dropped(COMPANION_UID)));
+    }
+
+    /// Spawned through the one spawn, the companion runs as its uid and leaves the work
+    /// dir's owner alone. Root only: dropping to another uid needs it.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_spawned_companion_runs_as_its_uid_and_never_owns_the_work_dir() {
+        if nix_getuid() != 0 {
+            return;
+        }
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let owner = std::fs::metadata(dir.path()).unwrap().uid();
+        let mode = nucleus::ContainmentMode::MicroVM;
+        let (opt_in, waiver) = (
+            nucleus::UnsandboxedOptIn::Explicit,
+            nucleus::LandlockWaiver::Absent,
+        );
+        let plan = WorkloadLaunch::build(&workload(), "u", dir.path(), &[])
+            .admit(mode, opt_in, waiver)
+            .unwrap();
+        let admitted = admit_companion(
+            &companion(COMPANION_UID),
+            dir.path(),
+            &plan,
+            mode,
+            opt_in,
+            waiver,
+        )
+        .unwrap();
+        let rlimits = nucleus::RlimitPolicy::node_ceiling().at_ceiling();
+        let syscalls = portcullis::SeccompPolicy::derive(
+            &portcullis::PermissionLattice::permissive(),
+            portcullis::NetworkEgress::Declared,
+        );
+        let (child, _) = spawn_admitted(admitted, rlimits, syscalls).unwrap();
+        let out = child.wait_with_output().await.unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            COMPANION_UID.to_string()
+        );
+        assert_eq!(
+            std::fs::metadata(dir.path()).unwrap().uid(),
+            owner,
+            "the work dir stays the workload's"
+        );
+        let home = dir
+            .path()
+            .join(nucleus_spec::guest_layout::COMPANION_HOME_NAME);
+        assert_eq!(std::fs::metadata(home).unwrap().uid(), COMPANION_UID);
     }
 }
