@@ -2,10 +2,11 @@
 //! hands: who is bound to what, what each run is given, and when a publish is refused.
 use super::*;
 use crate::memory_space::{
-    Audience, Ceiling, PodLabels, PolicyRequest, PolicyState, SchemaAtom, SpaceRequest, ViewSpec,
+    Audience, Ceiling, LabelStamping, PodLabels, PolicyRequest, PolicyState, SchemaAtom,
+    SpaceRequest, ViewSpec,
 };
 use nucleus_provenance_memory::recompute::derive_label;
-use nucleus_provenance_memory::{MemoryDerivation, SchemaType, SourceClass};
+use nucleus_provenance_memory::{ConfLevel, MemoryDerivation, SchemaType, SourceClass};
 use std::collections::{BTreeMap, BTreeSet};
 
 const OWNER: &str = "spiffe://test.local/ns/system/sa/tenant-a";
@@ -27,26 +28,55 @@ impl ReachCheck for Anyone {
     }
 }
 
-fn record(value: &str, schema: SchemaType) -> MemoryRecord {
+/// A stamp with writer floor `floor`: what a stamping proxy whose session had read up to
+/// `floor` records.
+const fn floor(level: ConfLevel) -> LabelStamp {
+    LabelStamp::Stamped {
+        writer_floor: level,
+    }
+}
+
+/// What a proxy writes: `value`, ingested, labelled under `stamp`.
+fn written(value: &str, schema: SchemaType, stamp: LabelStamp) -> MemoryRecord {
     let derivation = MemoryDerivation::RawIngest {
         source_class: SourceClass::Web,
         source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
     };
-    let label = derive_label(&derivation, &[]);
-    MemoryRecord::new(value, schema, label, derivation)
+    let label = derive_label(&derivation, &[], stamp);
+    MemoryRecord::new(value, schema, label, derivation).with_stamp(stamp)
+}
+
+/// What a stamping proxy writes in a session that has read nothing above Public.
+fn record(value: &str, schema: SchemaType) -> MemoryRecord {
+    written(value, schema, floor(ConfLevel::Public))
 }
 
 fn raw(value: &str) -> MemoryRecord {
     record(value, SchemaType::String)
 }
 
-fn derived(value: &str, parent: &MemoryRecord) -> MemoryRecord {
+/// What a guest that predates the stamp writes (and what every store from before it holds).
+fn unstamped(value: &str) -> MemoryRecord {
+    written(value, SchemaType::String, LabelStamp::Unstamped)
+}
+
+/// A literal a session that had read Secret data wrote: its value carries nothing Secret, its
+/// existence and choice do.
+fn secret_selected(value: &str) -> MemoryRecord {
+    written(value, SchemaType::String, floor(ConfLevel::Secret))
+}
+
+fn derived_under(value: &str, parent: &MemoryRecord, stamp: LabelStamp) -> MemoryRecord {
     let derivation = MemoryDerivation::OpaqueLlm {
         input_hashes: vec![parent.content_hash()],
         model_tag: "fixture-model".into(),
     };
-    let label = derive_label(&derivation, &[parent]);
-    MemoryRecord::new(value, SchemaType::String, label, derivation)
+    let label = derive_label(&derivation, &[parent], stamp);
+    MemoryRecord::new(value, SchemaType::String, label, derivation).with_stamp(stamp)
+}
+
+fn derived(value: &str, parent: &MemoryRecord) -> MemoryRecord {
+    derived_under(value, parent, floor(ConfLevel::Public))
 }
 
 /// Run a test body in a process of its own: the test binary re-executed for exactly this test.
@@ -86,6 +116,8 @@ struct Lab {
     receipts: Vec<serde_json::Value>,
     /// The event kind the recorder refuses to keep, to drive receipt-before-effect.
     refuse: Option<&'static str>,
+    /// Whether the runs this lab binds stamp their writes (`writer_of`'s judgment).
+    writer: MemoryWriter,
 }
 
 impl Lab {
@@ -103,6 +135,7 @@ impl Lab {
             registry,
             receipts: Vec::new(),
             refuse: None,
+            writer: MemoryWriter::Stamping,
         }
     }
 
@@ -125,7 +158,11 @@ impl Lab {
                 tenant: &tenant(),
                 name: &name(space),
                 pod: Uuid::new_v4(),
-                matched: PodMatch { lineage, labels },
+                matched: PodMatch {
+                    lineage,
+                    labels,
+                    writer: self.writer,
+                },
                 run_ends: now + 3600,
                 now,
             },
@@ -199,6 +236,18 @@ impl Lab {
             >| {
                 keep(receipts, refuse, claim)
             })
+    }
+
+    /// Space `space` as an earlier node recorded it, before stamps existed: unstamped, as every
+    /// space was, read back after a restart.
+    fn unstamped(&mut self, space: &SpaceId) {
+        self.registry
+            .spaces
+            .get_mut(&(tenant(), space.clone()))
+            .unwrap()
+            .stamping = LabelStamping::Unstamped;
+        self.registry.persist().unwrap();
+        self.restart();
     }
 
     /// A policy an earlier node recorded (before C0 any audience could be created), read back
@@ -444,6 +493,7 @@ fn a_workspace_policy_is_refused_until_labels_are_stamped() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            lab.unstamped(&notes);
             let refused = lab
                 .policy(&notes, read_propose(workspace("a"), 1 << 20))
                 .unwrap_err();
@@ -486,6 +536,7 @@ fn a_tenant_all_policy_is_refused_at_creation_bind_and_publish() {
         || {
             let mut lab = Lab::new();
             let shared = lab.declare("shared", MAX_JOURNAL_BYTES);
+            lab.unstamped(&shared);
             let owner = Uuid::new_v4();
             let policy = lab
                 .policy(
@@ -541,6 +592,7 @@ fn lineage_policies_still_bind_and_publish_and_never_reach_another_lineage() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            lab.unstamped(&notes);
             let owner = Uuid::new_v4();
             lab.policy(
                 &notes,
@@ -587,6 +639,7 @@ fn a_child_is_never_handed_its_parents_binding() {
         || {
             let mut lab = Lab::new();
             let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            lab.unstamped(&notes);
             lab.recorded_policy(&notes, workspace("a"));
             let team = labels("a");
             // C0: the parent itself is refused a workspace binding (see
@@ -1065,14 +1118,25 @@ fn a_view_ceiling_withholds_records_by_their_stored_confidentiality() {
         ceiling,
     };
     assert_eq!(
-        values(&deliverable(&set, &view(Ceiling::Public))),
+        values(&deliverable(
+            &set,
+            &view(Ceiling::Public),
+            MemoryWriter::Stamping
+        )),
         values(&[raw("public note")])
     );
     assert_eq!(
-        values(&deliverable(&set, &view(Ceiling::Internal))),
+        values(&deliverable(
+            &set,
+            &view(Ceiling::Internal),
+            MemoryWriter::Stamping
+        )),
         values(&[raw("public note"), raw("internal note")])
     );
-    assert_eq!(deliverable(&set, &view(Ceiling::Secret)).len(), 4);
+    assert_eq!(
+        deliverable(&set, &view(Ceiling::Secret), MemoryWriter::Stamping).len(),
+        4
+    );
 }
 
 /// A view gives a run only the schema classes it names, and withholds a record derived from a
@@ -1264,7 +1328,7 @@ fn migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_sta
         "migration_declares_each_legacy_store_once_and_delivers_it_to_no_run_until_stamped",
         || {
             let mut lab = Lab::new();
-            let store = legacy_store(&lab.root, "project-a", &[raw("legacy")]);
+            let store = legacy_store(&lab.root, "project-a", &[unstamped("legacy")]);
             let kept = std::fs::read(store.join(JOURNAL)).unwrap();
             let migrated = lab.registry.migrate(NOW).unwrap();
             let [event] = migrated.as_slice() else {
@@ -1350,9 +1414,9 @@ fn held_lineage_stores_stay_their_lineages_and_collisions_are_not_merged() {
                 &format!("lineage/{}/{root}/notes", tenant().as_str()),
             )
             .unwrap();
-            write_delivery(&loc, &[raw("held")], &TransformRegistry::new()).unwrap();
+            write_delivery(&loc, &[unstamped("held")], &TransformRegistry::new()).unwrap();
             lab.declare("project-a", MAX_JOURNAL_BYTES);
-            legacy_store(&lab.root, "project-a", &[raw("collides")]);
+            legacy_store(&lab.root, "project-a", &[unstamped("collides")]);
 
             let migrated = lab.registry.migrate(NOW).unwrap();
             assert_eq!(migrated.len(), 2, "{migrated:?}");
@@ -1387,6 +1451,227 @@ fn a_held_share_registry_refuses_the_start() {
             std::fs::write(lab.root.join("shares.json"), b"{}").unwrap();
             let refused = Registry::load(&lab.root).unwrap_err();
             assert!(refused.to_string().contains("shares.json"), "{refused}");
+        },
+    );
+}
+
+/// Program C, C1: a workspace policy over a stamped space delivers one run's records to runs of
+/// other lineages BY LABEL. Run A's session read Secret data and wrote a literal that read
+/// selected (stamped Secret by its proxy), a summary of it (Secret: its parent is) and a Public
+/// note, and published. After a restart (a fresh node, replaying the journal), run B under a
+/// Public-ceiling workspace view is given the Public note alone; run C under a Secret-ceiling
+/// view is given all three, the Secret ones exactly as written.
+///
+/// A-19: read an unstamped or Secret record as Public in `deliverable`, or drop the writer floor
+/// from `derive_label`, and run B is given the Secret record; refuse every audience over a
+/// stamped space (C0's decider) and no workspace policy is created.
+#[test]
+fn a_secret_selected_record_reaches_no_public_view_of_a_stamped_workspace() {
+    in_own_process(
+        module_path!(),
+        "a_secret_selected_record_reaches_no_public_view_of_a_stamped_workspace",
+        || {
+            let mut lab = Lab::new();
+            let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            assert_eq!(
+                lab.registry.space(&tenant(), &notes).unwrap().stamping,
+                LabelStamping::Stamped,
+                "a declared space starts empty, and stamped"
+            );
+            lab.policy(&notes, read_propose(workspace("a"), 1 << 20))
+                .unwrap();
+            lab.policy(
+                &notes,
+                PolicyRequest {
+                    view: ViewSpec {
+                        schema: SchemaAtom::ALL.into_iter().collect(),
+                        ceiling: Ceiling::Public,
+                    },
+                    ..read_propose(workspace("b"), 1 << 20)
+                },
+            )
+            .unwrap();
+
+            let a = lab.bind_labelled("notes", &labels("a")).unwrap();
+            let selected = secret_selected("deploy-window: tuesday");
+            let summary = derived("summary of the window", &selected);
+            assert_eq!(summary.label.conf_level(), ConfLevel::Secret);
+            write(&a, &[raw("public note"), selected.clone(), summary.clone()]);
+            lab.publish(a.binding).unwrap();
+            lab.restart();
+
+            let b = lab.bind_labelled("notes", &labels("b")).unwrap();
+            assert_ne!(
+                lab.binding(&a).principal.lineage,
+                lab.binding(&b).principal.lineage
+            );
+            assert_eq!(
+                given(&b),
+                vec![raw("public note")],
+                "a Public view of the workspace is given nothing a Secret read selected"
+            );
+            let c = lab.bind_labelled("notes", &labels("a")).unwrap();
+            let to_c = given(&c);
+            assert_eq!(
+                values(&to_c),
+                values(&[raw("public note"), selected.clone(), summary.clone()])
+            );
+            assert!(to_c.contains(&selected) && to_c.contains(&summary));
+        },
+    );
+}
+
+/// Program C, C1: a run whose guest predates the stamp (the pinned 2.7.0 tool-proxy) refuses a
+/// delivered record that is not Public and cannot hold a Secret stamp, so it is given only
+/// stamped Public records, exactly as stored. What it writes is unstamped, and a space whose
+/// records are all stamped refuses it by name, appending nothing; the record it was given and
+/// gives back without its stamp is not an addition.
+#[test]
+fn a_legacy_run_is_given_only_stamped_public_records_and_cannot_publish_unstamped_ones() {
+    in_own_process(
+        module_path!(),
+        "a_legacy_run_is_given_only_stamped_public_records_and_cannot_publish_unstamped_ones",
+        || {
+            let mut lab = Lab::new();
+            let notes = lab.declare("notes", MAX_JOURNAL_BYTES);
+            let root = Uuid::new_v4();
+            lab.policy(&notes, read_propose(Audience::Lineage { root }, 1 << 20))
+                .unwrap();
+            let seed = lab.bind("notes", root).unwrap();
+            write(&seed, &[raw("public note"), secret_selected("secret note")]);
+            lab.publish(seed.binding).unwrap();
+
+            lab.writer = MemoryWriter::Legacy;
+            let old = lab.bind("notes", root).unwrap();
+            assert_eq!(given(&old), vec![raw("public note")]);
+            assert_eq!(lab.binding(&old).writer, MemoryWriter::Legacy);
+
+            // The legacy proxy's branch: what it was given, without the stamp it does not know,
+            // and a write of its own.
+            let branch = |records: &[MemoryRecord]| {
+                std::fs::remove_file(location(&old).path()).unwrap();
+                write_delivery(&location(&old), records, &TransformRegistry::new()).unwrap();
+            };
+            branch(&[unstamped("public note")]);
+            let refused = lab.publish(old.binding).unwrap_err();
+            assert!(
+                refused.to_string().contains("nothing to publish"),
+                "a given record is not an addition: {refused}"
+            );
+            branch(&[unstamped("public note"), unstamped("a legacy write")]);
+            let journal = lab.space_location(&notes);
+            let before = std::fs::read(journal.path()).unwrap();
+            let published = lab
+                .kinds()
+                .iter()
+                .filter(|k| *k == "publish_authorized")
+                .count();
+            let refused = lab.publish(old.binding).unwrap_err();
+            assert!(
+                refused.to_string().contains("UnstampedRecords"),
+                "{refused}"
+            );
+            assert_eq!(std::fs::read(journal.path()).unwrap(), before);
+            assert_eq!(
+                lab.kinds()
+                    .iter()
+                    .filter(|k| *k == "publish_authorized")
+                    .count(),
+                published,
+                "nothing was receipted"
+            );
+        },
+    );
+}
+
+/// Program C, C1: an unstamped record, and anything derived from it, is Secret wherever it is
+/// delivered: withheld from every view below Secret, held stamped Secret by a stamping run (whose
+/// proxy then admits it, so recalling it taints that session Secret), and never given to a
+/// legacy run at all. Nothing is relabelled downward for anyone.
+#[test]
+fn an_unstamped_record_and_what_derives_from_it_are_secret_wherever_delivered() {
+    let registry = TransformRegistry::new();
+    let legacy = unstamped("legacy note");
+    let child = derived("its summary", &legacy);
+    assert_eq!(child.label.conf_level(), ConfLevel::Public);
+    let fresh = raw("fresh note");
+    let mut set = ProvenanceMemorySet::new();
+    for record in [&legacy, &child, &fresh] {
+        assert!(set.verified_admit(record, &registry).is_match());
+    }
+    let view = |ceiling| ViewSpec {
+        schema: SchemaAtom::ALL.into_iter().collect(),
+        ceiling,
+    };
+    for ceiling in [Ceiling::Public, Ceiling::Internal] {
+        assert_eq!(
+            deliverable(&set, &view(ceiling), MemoryWriter::Stamping),
+            vec![fresh.clone()],
+            "{ceiling:?}"
+        );
+    }
+    let held = deliverable(&set, &view(Ceiling::Secret), MemoryWriter::Stamping);
+    assert_eq!(
+        values(&held),
+        values(&[legacy.clone(), child.clone(), fresh.clone()])
+    );
+    let mut replay = ProvenanceMemorySet::new();
+    for record in &held {
+        assert!(replay.verified_admit(record, &registry).is_match());
+        if record.value != "fresh note" {
+            assert_eq!(record.stamp, floor(ConfLevel::Secret), "{}", record.value);
+            assert_eq!(record.label.conf_level(), ConfLevel::Secret);
+        }
+    }
+    assert_eq!(
+        deliverable(&set, &view(Ceiling::Secret), MemoryWriter::Legacy),
+        vec![fresh],
+        "a legacy run is given neither, even under a Secret view"
+    );
+}
+
+/// Program C, C1: a lineage's own space is stamped only when the run that creates it stamps. A
+/// legacy run's space takes its unstamped writes and stays unstamped, so a workspace policy over
+/// it is refused by name (C0's decider still holds there); a stamping run's space admits one.
+/// The space's stamping is in its creation receipt.
+#[test]
+fn a_lineage_space_is_stamped_only_when_the_run_that_creates_it_stamps() {
+    in_own_process(
+        module_path!(),
+        "a_lineage_space_is_stamped_only_when_the_run_that_creates_it_stamps",
+        || {
+            let mut lab = Lab::new();
+            lab.writer = MemoryWriter::Legacy;
+            let old = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let old_space = lab.binding(&old).space.clone();
+            write(&old, &[unstamped("a legacy write")]);
+            lab.publish(old.binding).unwrap();
+            assert_eq!(
+                lab.registry.space(&tenant(), &old_space).unwrap().stamping,
+                LabelStamping::Unstamped
+            );
+            assert_cross_run(
+                &lab.policy(&old_space, read_propose(workspace("a"), 1 << 20))
+                    .unwrap_err(),
+                "a workspace audience",
+            );
+
+            lab.writer = MemoryWriter::Stamping;
+            let new = lab.bind("notes", Uuid::new_v4()).unwrap();
+            let new_space = lab.binding(&new).space.clone();
+            assert_eq!(
+                lab.registry.space(&tenant(), &new_space).unwrap().stamping,
+                LabelStamping::Stamped
+            );
+            lab.policy(&new_space, read_propose(workspace("a"), 1 << 20))
+                .unwrap();
+            let stampings: Vec<serde_json::Value> = lab
+                .receipts
+                .iter()
+                .filter(|r| r["event"]["kind"] == "space_created")
+                .map(|r| r["event"]["stamping"].clone())
+                .collect();
+            assert_eq!(stampings, vec!["unstamped", "stamped"]);
         },
     );
 }

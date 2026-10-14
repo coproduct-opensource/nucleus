@@ -83,6 +83,9 @@ pub mod record;
 pub mod taskref_token;
 pub mod version;
 
+#[cfg(test)]
+mod stamp_tests;
+
 pub use crdt::{ProvenanceMemorySet, label_not_lower};
 pub use declassify::{DeclassifyError, DeclassifyWitness, SignedDeclassify, declassify};
 pub use hash::ContentHash;
@@ -94,7 +97,7 @@ pub use journal::{
 pub use lineage::memory_lineage_edge;
 pub use overlay::Overlay;
 pub use recompute::{RecomputeMemory, RecomputeVerdict, TransformRegistry};
-pub use record::{MemoryDerivation, MemoryRecord, TransformId};
+pub use record::{LabelStamp, MemoryDerivation, MemoryRecord, TransformId};
 pub use taskref_token::{BlockClaim, SignedBlock, SignedTaskRef, TokenError, TokenScope};
 pub use version::{
     Candidate, CandidateRefusal, CandidateValidator, Commit, CommitError, Epoch, HeadHash, Patch,

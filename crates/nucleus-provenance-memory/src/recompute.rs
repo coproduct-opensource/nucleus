@@ -16,7 +16,7 @@ use portcullis_core::memory::MemoryLabel;
 use portcullis_core::{ConfLevel, DerivationClass, IntegLevel};
 use serde::{Deserialize, Serialize};
 
-use crate::record::{MemoryDerivation, MemoryRecord, TransformId};
+use crate::record::{LabelStamp, MemoryDerivation, MemoryRecord, TransformId};
 
 /// Outcome of re-deriving a record from its sources — same discipline as
 /// `nucleus_recompute::RecomputeOutcome`, kept local so this crate stays
@@ -133,10 +133,34 @@ fn ingest_integrity(sc: SourceClass) -> IntegLevel {
 }
 
 /// **The taint-propagation rule.** Deterministically re-derive the label a record
-/// MUST carry, given its derivation and its (already-admitted) parent records.
-/// This is recomputed on admission and the record's claimed label must equal it
-/// — so a record cannot smuggle in a more-trusting label than its lineage earns.
-pub fn derive_label(derivation: &MemoryDerivation, parents: &[&MemoryRecord]) -> MemoryLabel {
+/// MUST carry, given its derivation, its (already-admitted) parent records, and
+/// the writer's stamp. This is recomputed on admission and the record's claimed
+/// label must equal it — so a record cannot smuggle in a more-trusting label than
+/// its lineage earns.
+///
+/// Confidentiality is the derivation's (the parents' join; Public for a raw
+/// ingest) joined with the stamp's writer floor (Program C, C1): what the writer's
+/// session had read when it wrote, so a literal a Secret read selected is not a
+/// Public root. Integrity and derivation class are the derivation's alone — the
+/// floor is a confidentiality fact. An unstamped record's floor is Public: its
+/// label was derived from its derivation alone, and is re-derived the same way
+/// (its unknown confidentiality is decided where it is delivered,
+/// [`MemoryRecord::effective_confidentiality`]).
+pub fn derive_label(
+    derivation: &MemoryDerivation,
+    parents: &[&MemoryRecord],
+    stamp: LabelStamp,
+) -> MemoryLabel {
+    let derived = derived_label(derivation, parents);
+    MemoryLabel::from_levels_with_derivation(
+        conf_join(derived.conf_level(), stamp.admission_floor()),
+        derived.integ_level(),
+        derived.derivation,
+    )
+}
+
+/// The label the derivation alone earns: [`derive_label`] before the writer floor.
+fn derived_label(derivation: &MemoryDerivation, parents: &[&MemoryRecord]) -> MemoryLabel {
     match derivation {
         // Raw ingest: integrity fixed by the source class; not yet derived, so
         // its derivation class is OpaqueExternal (came from outside the kernel).
@@ -178,8 +202,10 @@ pub fn derive_label(derivation: &MemoryDerivation, parents: &[&MemoryRecord]) ->
 
 /// Re-derive `record` from its `parents` and return the admission verdict.
 ///
-/// - **Label** is always re-derived ([`derive_label`]); a claimed label that
-///   exceeds what the lineage earns ⇒ `Mismatch{field:"label"}`.
+/// - **Label** is always re-derived ([`derive_label`]) against the floor the
+///   record's stamp RECORDS — never a fresh session's — so a replay keeps a Secret
+///   writer's record Secret; a claimed label other than what the lineage and the
+///   recorded floor earn ⇒ `Mismatch{field:"label"}`.
 /// - **Deterministic** records additionally have their **value** recomputed via
 ///   `registry`; a value that does not follow from the sources ⇒
 ///   `Mismatch{field:"value"}` (the MINJA/MemoryGraft seam). Missing parents or
@@ -191,7 +217,7 @@ pub fn verify_admission(
     parents: &[&MemoryRecord],
     registry: &dyn RecomputeMemory,
 ) -> RecomputeVerdict {
-    let expected = derive_label(&record.derivation, parents);
+    let expected = derive_label(&record.derivation, parents, record.stamp);
     if record.label != expected {
         return RecomputeVerdict::Mismatch {
             field: "label".to_string(),
@@ -243,7 +269,7 @@ mod tests {
             source_class: sc,
             source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
         };
-        let label = derive_label(&deriv, &[]);
+        let label = derive_label(&deriv, &[], LabelStamp::Unstamped);
         MemoryRecord::new(value, SchemaType::String, label, deriv)
     }
 
@@ -281,7 +307,7 @@ mod tests {
             input_hashes: vec![a.content_hash(), b.content_hash()],
             transform: TransformId::new("concat"),
         };
-        let label = derive_label(&deriv, &[&a, &b]);
+        let label = derive_label(&deriv, &[&a, &b], LabelStamp::Unstamped);
         let rec = MemoryRecord::new("foobar", SchemaType::String, label, deriv);
         assert!(verify_admission(&rec, &[&a, &b], &concat_registry()).is_match());
     }
@@ -295,7 +321,7 @@ mod tests {
             input_hashes: vec![a.content_hash(), b.content_hash()],
             transform: TransformId::new("concat"),
         };
-        let label = derive_label(&deriv, &[&a, &b]);
+        let label = derive_label(&deriv, &[&a, &b], LabelStamp::Unstamped);
         let forged = MemoryRecord::new("attacker-payload", SchemaType::String, label, deriv);
         match verify_admission(&forged, &[&a, &b], &concat_registry()) {
             RecomputeVerdict::Mismatch { field, .. } => assert_eq!(field, "value"),
@@ -312,7 +338,7 @@ mod tests {
             input_hashes: vec![trusted.content_hash(), evil.content_hash()],
             transform: TransformId::new("concat"),
         };
-        let label = derive_label(&deriv, &[&trusted, &evil]);
+        let label = derive_label(&deriv, &[&trusted, &evil], LabelStamp::Unstamped);
         assert_eq!(label.integ_level(), IntegLevel::Adversarial);
     }
 
@@ -346,7 +372,7 @@ mod tests {
             input_hashes: vec![ctx.content_hash()],
             model_tag: "some-model".to_string(),
         };
-        let label = derive_label(&deriv, &[&ctx]);
+        let label = derive_label(&deriv, &[&ctx], LabelStamp::Unstamped);
         let rec = MemoryRecord::new("llm output", SchemaType::String, label, deriv);
         assert_eq!(rec.label.integ_level(), IntegLevel::Adversarial);
         // join with the OpaqueExternal parent keeps it tainted (never Deterministic).

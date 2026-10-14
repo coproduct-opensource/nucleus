@@ -238,6 +238,17 @@ jobs:
     # Compile-class: cargo-mutants builds and tests portcullis once per mutant.
     # On the gate pool (0.5 CPU request, 2 CPU limit) it hit the 30-minute
     # timeout on every run of 2026-09-05 and reported "cancelled".
+    #
+    # MUTANTS_JOBS=3 (2026-10-14). #3467's diff yields 129 mutants; serially the
+    # build pool (8 performance CPUs, 32 GiB) tested 80 of them in 42.6 min --
+    # 32 s each after a 126 s baseline -- and the 45-minute timeout cancelled it,
+    # twice. Measured on 33 of those mutants, pinned to 8 cores: build is ~64 %
+    # of a caught mutant (15.7 s build + 8.8 s test), and each build is serial
+    # enough (one crate, then link) to leave cores idle. Wall time, serial dev
+    # 763 s; serial --profile mutants 726 s; --jobs 2: 478 s; --jobs 3: 452 s;
+    # --jobs 4: 460 s, peak memory 7.7 GiB. 3 is the knee: 4 adds a fourth cold
+    # build directory and contention for nothing. Each job copies the tree and
+    # builds in its own target dir, so memory scales with J; 32 GiB holds it.
     runs-on: ${{ vars.CI_BUILD_RUNNER || vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 45
     needs: changed-crates
@@ -324,6 +335,7 @@ jobs:
         shell: bash
         env:
           IN_DIFF: ${{ steps.mutscope.outputs.in_diff }}
+          MUTANTS_JOBS: "3"
         # pipefail so the tool's exit status is the step's (not tee's); the
         # run is allowed to fail here so the report step below can say WHY.
         run: |
@@ -335,8 +347,13 @@ jobs:
           # tests/adversarial.rs — the "cargo build failed in an unmutated
           # tree" every run showed once the gate stopped looking away.
           # IN_DIFF is "--in-diff git.diff" or empty: a deliberate word-split.
+          #
+          # --jobs / --profile mutants: see the MUTANTS_JOBS note on the job
+          # and [profile.mutants] in Cargo.toml. Neither changes WHICH tests a
+          # mutant must fail -- same test binaries, same proptest cases.
           # shellcheck disable=SC2086
           cargo mutants --package portcullis --all-features $IN_DIFF \
+            --profile mutants --jobs "$MUTANTS_JOBS" \
             --file crates/portcullis/src/capability.rs \
             --file crates/portcullis/src/guard.rs \
             --file crates/portcullis/src/lattice.rs \
@@ -362,6 +379,19 @@ jobs:
             echo "::endgroup::"
             exit 1
           fi
+      # The machine report, kept: per-mutant build and test durations live only
+      # here (the console prints just the non-caught mutants), and sizing this
+      # job -- --jobs, a timeout, sharding -- is a measurement of them. The
+      # run that asked for this had no report to download.
+      - name: Keep the mutants report
+        if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (always() && steps.mutscope.outputs.run == 'true') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: mutants-report
+          path: |
+            mutants-report/mutants.out/outcomes.json
+            mutants-report/mutants.out/*.txt
+          retention-days: 14
       - name: The mutants gate goes red on a saved failure log and a survivor
         if: ${{ (needs.changed-crates.outputs.mutate == 'true') && (always()) }}
         run: scripts/check-mutants-report.sh --self-test

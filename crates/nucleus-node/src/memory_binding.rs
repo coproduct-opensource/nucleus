@@ -12,9 +12,20 @@
 //!   runs of one space share the base and never each other's writes. A publish takes the
 //!   branch's records that are not in the delivered base as its patch.
 //!
-//! Until records carry dependency-stamped labels (Program C, C1), a binding is minted, and a
-//! publish admitted, only for a lineage audience: `Registry::cross_run_reach` refuses every
+//! A binding is minted, and a publish admitted, for a cross-run audience only over a space whose
+//! every record is dependency-stamped (Program C, C1): `Registry::cross_run_reach` refuses every
 //! other one by name before anything is delivered or published (see `memory_space`).
+//!
+//! # What a run is given, by label (Program C, C1)
+//!
+//! [`deliverable`] decides each record at its effective confidentiality: its stamped label's,
+//! or Secret when it or anything it cites is unstamped (its writer recorded nothing of what it
+//! had read). A run whose proxy stamps (`MemoryWriter::Stamping`) holds such a record stamped
+//! Secret, so its own session is tainted by it on recall and everything it writes after is
+//! Secret. A legacy run's proxy refuses any delivered record that is not Public and cannot hold
+//! a Secret stamp, so it is given only stamped Public records — withheld, never relabelled. A
+//! legacy run's branch is unstamped wherever it goes, and is refused by name
+//! (`UnstampedRecords`) by a space whose records are all stamped.
 //!
 //! Nothing here assumes the run shares a filesystem with the space: what crosses is one file,
 //! written by the node and read back by the node. (Firecracker still refuses memory, #3100.)
@@ -45,19 +56,19 @@ use std::path::{Path, PathBuf};
 
 use nucleus_memory_context::extracted::admit::{ADMITTED, EXPIRED, FOREIGN_EPOCH, admit_code};
 use nucleus_provenance_memory::{
-    Candidate, CandidateRefusal, CandidateValidator, ContentHash, Epoch, JournalError,
-    JournalLocation, JournalPart, MAX_JOURNAL_BYTES, MemoryRecord, Patch, Pin, PinnedSnapshot,
-    ProvenanceMemorySet, PublishRefusal, PublishedJournal, PublisherBinding, ReachCheck,
-    StoreInvariants, TransformRegistry, read_unlocked, write_delivery,
+    Candidate, CandidateRefusal, CandidateValidator, ConfLevel, ContentHash, Epoch, JournalError,
+    JournalLocation, JournalPart, LabelStamp, MAX_JOURNAL_BYTES, MemoryRecord, Patch, Pin,
+    PinnedSnapshot, ProvenanceMemorySet, PublishRefusal, PublishedJournal, PublisherBinding,
+    ReachCheck, StoreInvariants, TransformRegistry, read_unlocked, write_delivery,
 };
 use uuid::Uuid;
 
 use crate::ApiError;
 use crate::memory_flow::{FlowClaim, FlowEvent, Recorder};
 use crate::memory_space::{
-    Binding, BindingPolicy, DecisionCiter, Expiry, MemoryRefusal, MemorySpace, Mode, PodMatch,
-    PolicyAuthority, Principal, Registry, SpaceId, SpaceName, TenantKey, ViewSpec, bind_capability,
-    policy_liveness, publish_capability,
+    Binding, BindingPolicy, DecisionCiter, Expiry, LabelStamping, MemoryRefusal, MemorySpace,
+    MemoryWriter, Mode, PodMatch, PolicyAuthority, Principal, Registry, SpaceId, SpaceName,
+    TenantKey, ViewSpec, bind_capability, policy_liveness, publish_capability,
 };
 
 /// The journal file in every space and binding directory.
@@ -166,26 +177,57 @@ fn journal_error(e: JournalError) -> ApiError {
     }
 }
 
-/// The records `view` is given of `set`, in an order a replay admits: a visible record whose
-/// every cited input is given too. A record citing one the view does not see is withheld as
-/// well, since it could not be re-derived without it.
-pub(crate) fn deliverable(set: &ProvenanceMemorySet, view: &ViewSpec) -> Vec<MemoryRecord> {
-    let mut pending: Vec<&MemoryRecord> = set.iter().filter(|r| view.sees(r)).collect();
-    let mut given: BTreeMap<ContentHash, ()> = BTreeMap::new();
+/// The records `view` is given of `set` for a run whose proxy is `writer`, in an order a replay
+/// admits: a visible record whose every cited input is given too. A record citing one the view
+/// does not see is withheld as well, since it could not be re-derived without it.
+///
+/// Each record is seen at its effective confidentiality (Program C, C1): its stamped label's,
+/// or Secret when it or any record it cites is unstamped — unknown is the top. A stamping run
+/// is given such a record held Secret (`MemoryRecord::held_secret`); a legacy run is given only stamped
+/// records whose effective confidentiality is Public, exactly as stored, and nothing is ever
+/// relabelled downward for it.
+pub(crate) fn deliverable(
+    set: &ProvenanceMemorySet,
+    view: &ViewSpec,
+    writer: MemoryWriter,
+) -> Vec<MemoryRecord> {
+    let mut pending: Vec<&MemoryRecord> = set.iter().collect();
+    // Each given record, and whether it is held Secret because something in it is unknown.
+    let mut given: BTreeMap<ContentHash, bool> = BTreeMap::new();
     let mut out = Vec::new();
     loop {
         let before = pending.len();
         pending.retain(|record| {
-            let ready = record
-                .derivation
-                .input_record_hashes()
-                .iter()
-                .all(|input| given.contains_key(input));
-            if ready {
-                given.insert(record.content_hash(), ());
-                out.push((*record).clone());
+            let mut unknown = record.stamp.is_unstamped();
+            for input in record.derivation.input_record_hashes() {
+                match given.get(&input) {
+                    Some(held) => unknown |= *held,
+                    // Not given yet (or never): decided on a later pass, or withheld.
+                    None => return true,
+                }
             }
-            !ready
+            let level = if unknown {
+                ConfLevel::Secret
+            } else {
+                record.label.conf_level()
+            };
+            let shown = match writer {
+                MemoryWriter::Stamping => view.sees(record.schema, level).then(|| {
+                    if unknown {
+                        record.held_secret()
+                    } else {
+                        (*record).clone()
+                    }
+                }),
+                MemoryWriter::Legacy => (level == ConfLevel::Public
+                    && view.sees(record.schema, level))
+                .then(|| (*record).clone()),
+            };
+            if let Some(shown) = shown {
+                given.insert(record.content_hash(), unknown);
+                out.push(shown);
+            }
+            false
         });
         if pending.len() == before {
             return out;
@@ -364,7 +406,12 @@ impl Registry {
                 .into());
             }
         }
-        let records = deliverable(journal.records().map_err(journal_error)?, &policy.view);
+        let writer = request.matched.writer;
+        let records = deliverable(
+            journal.records().map_err(journal_error)?,
+            &policy.view,
+            writer,
+        );
         drop(journal);
 
         let binding_id = Uuid::new_v4();
@@ -386,6 +433,7 @@ impl Registry {
             allocation_bytes: allocation,
             spent_bytes: 0,
             delivered_sha256: String::new(),
+            writer,
         };
         let (segments, namespace) = binding.store();
         let delivered = self.location(&segments, &namespace)?;
@@ -430,6 +478,7 @@ impl Registry {
                     epoch: binding.epoch,
                     not_after: binding.not_after,
                     allocation_bytes: binding.allocation_bytes,
+                    writer: binding.writer,
                 },
             );
             self.keep(&[claim], record)
@@ -546,17 +595,27 @@ impl Registry {
             PublishedJournal::open(loc.clone(), &reach, &transforms).map_err(journal_error)?;
         let base = PinnedSnapshot::open(&loc, binding.base, &reach, &transforms)
             .map_err(|e| pin_refusal(space, binding.base, e))?;
-        let given: BTreeMap<ContentHash, MemoryRecord> = deliverable(base.records(), &binding.view)
-            .into_iter()
-            .map(|r| (r.content_hash(), r))
-            .collect();
+        let given: BTreeMap<ContentHash, MemoryRecord> =
+            deliverable(base.records(), &binding.view, binding.writer)
+                .into_iter()
+                .map(|r| (r.content_hash(), r))
+                .collect();
         let (segments, namespace) = binding.store();
         let branch = read_unlocked(&self.location(&segments, &namespace)?, &reach, &transforms)
             .map_err(journal_error)?;
-        let additions: Vec<MemoryRecord> = branch
-            .into_iter()
-            .filter(|r| given.get(&r.content_hash()) != Some(r))
-            .collect();
+        let additions = branch_additions(branch, &given, binding.writer);
+        match space.label_stamping() {
+            LabelStamping::Unstamped => {}
+            LabelStamping::Stamped => {
+                if additions.iter().any(|r| r.stamp.is_unstamped()) {
+                    return Err(MemoryRefusal::UnstampedRecords {
+                        space: space.id.reference(),
+                        binding: binding_id,
+                    }
+                    .into());
+                }
+            }
+        }
         let validator = BindingValidator {
             store: StoreInvariants::new(usize::MAX, MAX_JOURNAL_BYTES),
             view: &binding.view,
@@ -611,6 +670,34 @@ impl Registry {
         }
         Ok(head)
     }
+}
+
+/// A branch's records that are not what the run was given: the patch a publish proposes.
+///
+/// A legacy run's records are unstamped whatever the file says (Program C, C1: the node, not the
+/// branch, decides who stamps), and a legacy proxy drops the stamp of a record it was given, so
+/// a record it was given comes back unstamped with the label it was given: that is not an
+/// addition.
+fn branch_additions(
+    branch: Vec<MemoryRecord>,
+    given: &BTreeMap<ContentHash, MemoryRecord>,
+    writer: MemoryWriter,
+) -> Vec<MemoryRecord> {
+    branch
+        .into_iter()
+        .filter_map(|record| {
+            let record = match writer {
+                MemoryWriter::Stamping => record,
+                MemoryWriter::Legacy => record.with_stamp(LabelStamp::Unstamped),
+            };
+            let restated = match (writer, given.get(&record.content_hash())) {
+                (_, None) => false,
+                (MemoryWriter::Stamping, Some(delivered)) => *delivered == record,
+                (MemoryWriter::Legacy, Some(delivered)) => delivered.label == record.label,
+            };
+            (!restated).then_some(record)
+        })
+        .collect()
 }
 
 fn publish_refusal(space: &MemorySpace, refusal: PublishRefusal) -> ApiError {
