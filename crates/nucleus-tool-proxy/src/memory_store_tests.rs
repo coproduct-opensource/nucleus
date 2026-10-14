@@ -319,6 +319,7 @@ async fn a_workload_child_cannot_read_or_append_the_journal() {
         ],
         uid: None,
         env: Default::default(),
+        companion: None,
     };
     let spec = probe(&journal);
     let reach = ChildReach::of(Some(&spec), HARNESS, OPTED_IN, NO_WAIVER);

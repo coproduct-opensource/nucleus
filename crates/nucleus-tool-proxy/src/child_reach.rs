@@ -1,6 +1,6 @@
 //! What a child of this proxy can reach (#3454, #3461).
 //!
-//! The proxy's children are every `/v1/run` command and the pod's workload.
+//! The proxy's children are every `/v1/run` command, the pod's workload and its companion.
 //! Landlock does not hold them off the proxy's own files: the child ruleset
 //! is the guest layout's, and it applies only under `MicroVM`. What does
 //! hold them off is the uid, together with what the proxy did to itself:
@@ -29,7 +29,7 @@ use nucleus::{ChildUid, EnvironmentReach, RuntimeSeal};
 
 /// Who this proxy's children run as, asked of the deciders their spawns ask
 /// (#3454, ADR 0007 G-1): `ChildConfinement::for_containment` for every
-/// `/v1/run` child and `ChildConfinement::workload` for the pod's workload,
+/// `/v1/run` child and `ChildConfinement::workload` for the pod's workload and its companion,
 /// with the inputs the spawns pass. Evidence (C-1): minted only by
 /// [`Self::of`], so a held item is checked against the uids the children
 /// get, not against a restatement of them.
@@ -88,13 +88,19 @@ impl ChildReach {
         landlock: nucleus::LandlockWaiver,
     ) -> Self {
         let run = nucleus::ChildConfinement::for_containment(containment, opt_in, landlock);
-        let workload = workload
-            .map(|w| nucleus::ChildConfinement::workload(containment, w.uid, opt_in, landlock));
+        let decide = |uid| nucleus::ChildConfinement::workload(containment, uid, opt_in, landlock);
+        // The workload, and its companion (#3430), admitted by the same
+        // decider with `Some(companion.uid)` (`WorkloadLaunch::companion`).
+        let companion = workload
+            .and_then(|w| w.companion.as_ref())
+            .map(|c| decide(Some(c.uid)));
+        let workload = workload.map(|w| decide(w.uid));
         // A refusal is not a lookup that failed (A-1): the spawn asks the same
         // decider with the same inputs and is refused by it, so that child
         // never exists and reaches nothing.
         let children = std::iter::once(run)
             .chain(workload)
+            .chain(companion)
             .filter_map(Result::ok)
             .map(|c| c.child_uid())
             .collect();

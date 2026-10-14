@@ -213,6 +213,49 @@ fn a_front_door_peer_that_is_a_child_is_refused() {
     );
 }
 
+/// #3461 with #3430: a workload's companion is a child too, at the uid its
+/// spec names, asked of the same decider the companion's admission asks. As
+/// root, a held file that uid owns is refused. A non-root runtime cannot drop
+/// to the companion's uid, so that decider refuses the companion and it
+/// reaches nothing (the bare tier's own children may hold a session item).
+#[test]
+fn a_workload_companion_is_one_of_the_children() {
+    let (_dir, file) = private_file();
+    let companion = stranger();
+    let spec = nucleus_spec::WorkloadSpec {
+        command: "/bin/true".into(),
+        artifacts: Default::default(),
+        args: vec![],
+        uid: None,
+        env: Default::default(),
+        companion: Some(nucleus_spec::CompanionSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            env: Default::default(),
+            uid: companion,
+        }),
+    };
+    let reach = ChildReach::of(
+        Some(&spec),
+        nucleus::ContainmentMode::Unsandboxed,
+        nucleus::UnsandboxedOptIn::Explicit,
+        nucleus::LandlockWaiver::Absent,
+    );
+    let item = held(Exposure::Session, at(&file));
+    if me() == 0 {
+        std::os::unix::fs::chown(&file, Some(companion), None).unwrap();
+        let refused = reach
+            .admit(std::slice::from_ref(&item), &RuntimeSeal::unsealed())
+            .unwrap_err();
+        assert!(
+            refused.contains(&format!("uid {companion}, which a child runs as, owns")),
+            "{refused}"
+        );
+    } else {
+        assert!(reach.admit(&[item], &RuntimeSeal::unsealed()).is_ok());
+    }
+}
+
 /// The census, over a parsed command line: a key path is held only where it
 /// is read, and a secret given as a flag is held on the command line.
 #[test]
@@ -309,6 +352,7 @@ async fn run_probe(script: String, work_dir: &Path) -> String {
         args: vec!["-c".into(), script],
         uid: None,
         env: Default::default(),
+        companion: None,
     };
     let plan =
         crate::workload::WorkloadLaunch::build(&spec, "http://127.0.0.1:8080", work_dir, &[])
@@ -344,6 +388,7 @@ fn harness_reach() -> ChildReach {
             args: vec![],
             uid: None,
             env: Default::default(),
+            companion: None,
         }),
         HARNESS,
         nucleus::UnsandboxedOptIn::Explicit,
