@@ -1591,10 +1591,18 @@ async fn main() -> Result<(), ApiError> {
     // Provenance-memory state (next-bet #1). Trusted declassify keys + threshold
     // come from env; absent ⇒ empty/1 ⇒ declassification is fail-closed.
     let memory_transforms = Arc::new(nucleus_provenance_memory::TransformRegistry::new());
-    let provenance_memory = Arc::new(tokio::sync::Mutex::new(
-        args.memory
-            .open(&spec.spec.work_dir, memory_transforms.as_ref())?,
-    ));
+    let provenance_memory = Arc::new(tokio::sync::Mutex::new(args.memory.open(
+        &spec.spec.work_dir,
+        memory_transforms.as_ref(),
+        // The children the journal must be closed to (#3454): every
+        // `/v1/run` child and the workload, as their spawns decide them.
+        &memory_store::ChildReach::of(
+            spec.spec.workload.as_ref(),
+            containment,
+            args.unsandboxed,
+            args.workload_without_landlock,
+        ),
+    )?));
     let declassify_threshold = startup_trace::declassify_threshold();
     let decisions = args.decisions.open(&spec.spec.work_dir)?.map(Arc::new);
     if let Some(d) = &decisions {

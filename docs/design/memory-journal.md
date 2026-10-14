@@ -8,6 +8,17 @@ mode `0700`; the proxy creates the journal with mode `0600`. The path must be
 absolute and outside the agent workspace. Existing symlinks and non-regular
 files are refused. One proxy holds an exclusive file lock for its lifetime.
 
+Only the proxy may reach the journal. Its children (every `/v1/run` command and
+the pod workload) are not held off it by Landlock: the child ruleset is the
+guest layout's and applies only in a microVM, which provisions no memory. The
+boundary is the uid. The proxy asks the same deciders the spawns ask which uids
+its children get, and refuses to open a persistent journal, by name, when a child
+would run at the proxy's own uid (the bare host tier: a non-root proxy given
+`--unsandboxed`, as the local driver does with `--allow-local-driver`), or when a
+child's uid owns the journal or its directory (that child could replace it).
+A non-root proxy without `--unsandboxed` spawns no child at all, and a root proxy
+drops its children to a distinct uid, so both may open one.
+
 The journal begins with a versioned namespace header. Each subsequent line is
 one accepted memory record, including its value, label, and derivation. Startup
 checks the namespace and replays records in admission order through the same
@@ -57,9 +68,10 @@ memory environment settings. A mediated container receives a dedicated bind at
 `/run/nucleus/memory` and matching proxy environment. The proxy's file lock permits
 one active writer per journal. An absent selector provisions no persistent memory.
 Unmediated containers and VM drivers refuse the selector because no memory
-transport has been provisioned for them. The local driver retains its documented
-unsandboxed-host limitations; directory selection does not make it an isolation
-boundary.
+transport has been provisioned for them. A local driver whose proxies run on the bare tier
+(a non-root node with `--allow-local-driver`) therefore cannot provision memory:
+the proxy refuses the journal at startup. Directory selection does not make the
+local driver an isolation boundary.
 
 A live mediated Docker check inside Apple Container verified write → cancellation
 → node restart → replacement pod → recall with the same record and label. Unix
