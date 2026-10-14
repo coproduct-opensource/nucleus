@@ -114,6 +114,13 @@ the code that ships, re-checked on every change, and a relying party can verify
 from the outside that the pod they are talking to is the artifact the theorem is
 about.**
 
+The clause "*nor those of any other pod*" is **NOT-YET**, even inside the
+sentence's own limits (explicit flows only; timing, cache, microarchitectural,
+availability and resource-contention channels excluded). It is scoped by its row
+in the ledger below: the C2 note under the table states what of it is proved,
+what is assumed, and what is not covered. Read the sentence through that row,
+not past it.
+
 The exclusions are **inside the sentence, not a footnote**, so the claim cannot
 be quoted without its limits. Cross-pod confidentiality stated without them would
 read as "immune to co-tenancy attacks" — the worst overclaim available to this
@@ -225,7 +232,23 @@ What each status means, and what it deliberately does not:
   conformance leg is bounded by C7 ("a theorem about the code that ships"),
   itself TESTED, so the row records the proven relation with the runtime
   conformance gated beside it — the same shape as C4.
-- **C2 (NOT-YET — first mechanization landed 2026-08-11).** The design
+- **C2 (NOT-YET).** **Proved:** a pod's view of the pod registry and of its
+  served identity is unchanged by pods outside its lineage (direct children and
+  itself), for create and for identity mint/release/register/unregister.
+  **Assumed:** the runtime refuses a create naming a parent the caller does not
+  own. **Not covered:** per-tenant persistent memory (keyed by tenant root +
+  namespace, so a tenant's non-lineage pods can share a store —
+  `crates/nucleus-node/src/memory_provisioning.rs` `Stores::provision`, with the
+  owner taken from `plan.owner()` in `crates/nucleus-node/src/main.rs`
+  `create_pod_internal`), clearing-auction prices
+  (`crates/nucleus-tool-proxy/src/authority_round.rs`), lockdown delivery
+  (filtered per watcher, not mechanized), and the 2 node fields the
+  compile-checked census leaves `Unclassified` (`request_proofs`, `authority`).
+  The census is `crates/nucleus-node/src/node_state_census.rs`: it destructures
+  all 56 `NodeState` fields with no `..`, so a new field fails to compile until
+  it is classified.
+
+  *History.* The first mechanization landed 2026-08-11. The design
   (`docs/cross-pod-view.md`, after Nickel/OSDI-2018: the view relation is
   *untrusted*, so a too-coarse relation fails the proof) is now a kernel-checked
   two-run theorem for the first shared surface. `PodCrossView.lean` defines
@@ -241,9 +264,9 @@ What each status means, and what it deliberately does not:
   (⊆ `[propext, Classical.choice, Quot.sound]`), gated by the proven-lean
   workflow. **What keeps C2 NOT-YET:** (a) only `pods` and, since #3347, the
   identity surface (`PodCrossViewIdentity.lean`) are mechanized — the rest of
-  the shared-mutable fields are not yet in-Lean, and the field census they are
-  counted from is stale (see the M6 plan below: "8 shared-mutable" is no longer a
-  derived number); (b) the two fields that were excluded *because their code was
+  the shared-mutable fields are not yet in-Lean; the field census they are
+  counted from is now a compile error (`crates/nucleus-node/src/node_state_census.rs`,
+  56 fields), and it leaves 2 `Unclassified`; (b) the two fields that were excluded *because their code was
   defective* are now fixed — the `lockdown_tx` broadcast leak (#2203, server-side
   filter for `pod:` scopes; the `label:` broadcast is closed too, because the node
   now evaluates the selector per watcher in `lockdown::reaches` with
@@ -280,8 +303,8 @@ What each status means, and what it deliberately does not:
   `POD_LIST` over its own vsock, which the socket authenticates, and the host
   asserts view(A) ⊇ {A, C} without B, view(B) holds B without A or C, each root's
   view holds itself and not the other root, and both are strict subsets of the
-  operator view. What remains is the M6 plan below: a compile-checked census of
-  the node's fields and a classification of the unclassified ones; mechanizing
+  operator view. What remains is the M6 plan below: classifying the census's
+  2 `Unclassified` fields; mechanizing
   lockdown delivery and the remaining fields; linking the model to the runtime by
   extraction rather than by the parity test in (c); and the owner's sign-off.
   VM-level guest isolation (partly covered by `net-guest-isolation-check.sh`)
@@ -354,6 +377,15 @@ What each status means, and what it deliberately does not:
        the test instead of a hand list.
      - **Red:** adding a field to `NodeState` fails to compile, and deleting one
        entry from the classification fails the test.
+     - **Landed:** `crates/nucleus-node/src/node_state_census.rs`. One list
+       generates both the exhaustive `NodeState { … }` pattern and the
+       classification, so a field added without an entry (E0027) and an entry
+       naming no field (E0026) are both compile errors, which is stronger than
+       the test failure the red asked for. 56 fields: `container_proxy` has gone
+       since `827394f5a` and `guest_report` (#3438) has arrived. The classes are finer than the four above:
+       `Structural`, `Secret`, `PerPod`, `LineageScoped`, `SelectorScoped`,
+       `TenantShared`, `Contention`, `Unclassified`. The counts are pinned in the
+       test, so a reclassification is a visible edit.
   2. **Classify the 22 new fields** in the revelation form the KILL assessment
      prescribes: what B's action reveals to A, not what shape the counter has.
      - Expected classes:
@@ -363,6 +395,12 @@ What each status means, and what it deliberately does not:
        - lineage-keyed and needing a model: `authority`, `eval_cells`,
          `lockdowns`
      - Size: S–M, a reading pass.
+     - **Census result (step 1):** `memory` is not availability. A store is
+       keyed by the tenant root and a namespace, so two of a tenant's pods
+       outside each other's lineage can read each other's writes. It is
+       `TenantShared`, and whether it is keyed by lineage root or kept and
+       modelled is an owner decision. `authority` and `request_proofs` are
+       `Unclassified`.
      - **DoD:** no field is left without a stated revelation.
      - **Red:** a field whose projection varies with another pod's *contents*
        fires the KILL condition, and C2 stays NOT-YET until it is fixed.
