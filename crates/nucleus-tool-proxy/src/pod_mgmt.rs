@@ -1423,10 +1423,10 @@ mod containment_tests {
     use nucleus::portcullis::kernel::Kernel;
     use nucleus_ifc_kernel::SinkClass;
     use nucleus_ifc_kernel::discharge::test_helpers::bundle_for_subject;
-    use portcullis::{CommandLattice, IsolationLattice, Obligations};
+    use portcullis::{CommandLattice, IsolationLattice};
 
     fn microvm_policy() -> PermissionLattice {
-        let mut policy = PermissionLattice::default();
+        let mut policy = PermissionLattice::supervised();
         policy.capabilities.run_bash = CapabilityLevel::LowRisk;
         policy.commands = CommandLattice::permissive();
         // No approval obligation, and no read/web leg for the trifecta
@@ -1435,7 +1435,7 @@ mod containment_tests {
         policy.capabilities.read_files = CapabilityLevel::Never;
         policy.capabilities.web_fetch = CapabilityLevel::Never;
         policy.capabilities.web_search = CapabilityLevel::Never;
-        policy.obligations = Obligations::default();
+        policy.declare_all(portcullis::ConsentMode::Autonomous);
         policy.with_minimum_isolation(IsolationLattice::microvm())
     }
 

@@ -114,6 +114,12 @@ fn an_edited_grant_is_refused() {
     let text = fs::read_to_string(&grant).unwrap();
     let mut json: serde_json::Value = serde_json::from_str(&text).unwrap();
     json["grant"]["lattice"]["capabilities"]["git_push"] = serde_json::json!("always");
+    // Declared, so the edit is a well-formed lattice the signature must refuse —
+    // not one the parser refuses before the signature is ever checked.
+    json["grant"]["lattice"]["autonomous"]
+        .as_array_mut()
+        .expect("a lattice declares its autonomous operations")
+        .push(serde_json::json!("git_push"));
     fs::write(&grant, serde_json::to_string(&json).unwrap()).unwrap();
     let out = run_grant(dir.path(), &key, &grant);
     assert!(!out.status.success());

@@ -553,7 +553,10 @@ mod broker_tests {
         for required in [false, true] {
             let mut policy = PermissionLattice::network_only();
             if required {
-                policy.obligations.insert(Operation::WebFetch);
+                policy.declare(
+                    Operation::WebFetch,
+                    portcullis::ConsentMode::RequiresApproval,
+                );
             }
             let sink = Sink::default();
             let submission = submit(policy, &FlowGraph::new(), &sink).unwrap();

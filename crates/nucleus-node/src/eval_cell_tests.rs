@@ -683,8 +683,16 @@ fn an_eval_cell_requesting_egress_it_does_not_list_is_refused() {
         lattice.capabilities.web_fetch = CapabilityLevel::Never;
         lattice.capabilities.web_search = CapabilityLevel::Never;
         match field {
-            "web_fetch" => lattice.capabilities.web_fetch = CapabilityLevel::Always,
-            "web_search" => lattice.capabilities.web_search = CapabilityLevel::LowRisk,
+            "web_fetch" => lattice.grant(
+                portcullis::Operation::WebFetch,
+                CapabilityLevel::Always,
+                portcullis::ConsentMode::Autonomous,
+            ),
+            "web_search" => lattice.grant(
+                portcullis::Operation::WebSearch,
+                CapabilityLevel::LowRisk,
+                portcullis::ConsentMode::Autonomous,
+            ),
             other => panic!("no such field {other}"),
         }
         let policy = serde_json::to_string(&nucleus_spec::PolicySpec::Inline {

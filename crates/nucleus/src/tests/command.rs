@@ -82,12 +82,12 @@ use rust_decimal::Decimal;
 use tempfile::tempdir;
 
 fn test_policy() -> PermissionLattice {
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Never;
     policy.capabilities.run_bash = CapabilityLevel::LowRisk;
     policy.capabilities.web_fetch = CapabilityLevel::Never;
     policy.capabilities.web_search = CapabilityLevel::Never;
-    policy.obligations = Obligations::default();
+    policy.declare_all(portcullis::ConsentMode::Autonomous);
     policy.commands = CommandLattice::permissive();
     policy
 }
@@ -338,7 +338,10 @@ fn test_never_capability() {
 fn test_approval_required_without_callback() {
     let tmp = tempdir().unwrap();
     let mut policy = test_policy();
-    policy.obligations.insert(Operation::RunBash);
+    policy.declare(
+        Operation::RunBash,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let budget_policy = test_budget();
     let mut kernel = Kernel::new(policy.clone());
 
@@ -363,7 +366,10 @@ fn test_approval_required_without_callback() {
 fn test_approval_with_token() {
     let tmp = tempdir().unwrap();
     let mut policy = test_policy();
-    policy.obligations.insert(Operation::RunBash);
+    policy.declare(
+        Operation::RunBash,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let budget_policy = test_budget();
     let mut kernel = Kernel::new(policy.clone());
 
@@ -467,11 +473,11 @@ fn a_token_from_this_policy_is_accepted() {
 #[test]
 fn test_uninhabitable_requires_approval_for_exfiltration() {
     let tmp = tempdir().unwrap();
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Always; // Private data
     policy.capabilities.web_fetch = CapabilityLevel::LowRisk; // Untrusted content
     policy.capabilities.run_bash = CapabilityLevel::LowRisk; // Allows curl
-    policy.obligations = Obligations::default();
+    policy.declare_all(portcullis::ConsentMode::Autonomous);
     policy.commands = CommandLattice::permissive();
 
     let budget_policy = test_budget();
@@ -498,11 +504,11 @@ fn test_uninhabitable_requires_approval_for_exfiltration() {
 #[test]
 fn test_uninhabitable_requires_approval_for_interpreter_invocation() {
     let tmp = tempdir().unwrap();
-    let mut policy = PermissionLattice::default();
+    let mut policy = PermissionLattice::supervised();
     policy.capabilities.read_files = CapabilityLevel::Always; // Private data
     policy.capabilities.web_fetch = CapabilityLevel::LowRisk; // Untrusted content
     policy.capabilities.run_bash = CapabilityLevel::LowRisk; // Allows shell
-    policy.obligations = Obligations::default();
+    policy.declare_all(portcullis::ConsentMode::Autonomous);
     policy.commands = CommandLattice::permissive();
     let budget_policy = test_budget();
     let mut kernel = Kernel::new(policy.clone());

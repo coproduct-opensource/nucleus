@@ -90,7 +90,7 @@ fn main() {
     println!("\nScenario 4: Automatic enforcement via meet()");
     #[allow(clippy::field_reassign_with_default)]
     let perms = {
-        let mut p = PermissionLattice::default();
+        let mut p = PermissionLattice::supervised();
         p.capabilities = dangerous.clone();
         p
     };

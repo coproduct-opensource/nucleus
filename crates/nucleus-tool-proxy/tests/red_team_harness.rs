@@ -1226,7 +1226,7 @@ fn fix_issue_policy() -> PermissionLattice {
 }
 
 fn full_uninhabitable_policy() -> PermissionLattice {
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.glob_search = CapabilityLevel::Always;
     perms.capabilities.grep_search = CapabilityLevel::Always;

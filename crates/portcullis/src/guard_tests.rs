@@ -18,7 +18,7 @@ use std::path::PathBuf;
 /// would have noticed a handler that checked one path and audited another.
 #[test]
 fn a_proof_names_what_was_checked() {
-    let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    let guard = GradedExposureGuard::new(PermissionLattice::supervised(), "schema");
     let act = Act::Read {
         path: FilePath::new("/etc/shadow"),
         sink: ReadSink::AuditLog,
@@ -46,7 +46,7 @@ fn a_proof_names_what_was_checked() {
 /// apart even in principle.
 #[test]
 fn reads_of_different_files_are_distinguishable() {
-    let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    let guard = GradedExposureGuard::new(PermissionLattice::supervised(), "schema");
     let secret = guard
         .check(&Act::Read {
             path: FilePath::new("/etc/shadow"),
@@ -78,7 +78,7 @@ fn reads_of_different_files_are_distinguishable() {
 fn the_decision_still_turns_on_the_verb() {
     use crate::CapabilityLevel;
 
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities.web_fetch = CapabilityLevel::Never;
     let guard = GradedExposureGuard::new(perms, "schema");
 
@@ -92,7 +92,7 @@ fn the_decision_still_turns_on_the_verb() {
         );
     }
 
-    let guard = GradedExposureGuard::new(PermissionLattice::default(), "schema");
+    let guard = GradedExposureGuard::new(PermissionLattice::supervised(), "schema");
     assert!(
         guard
             .check(&Act::Fetch {
@@ -110,11 +110,19 @@ fn the_decision_still_turns_on_the_verb() {
 /// obligations, and this is not a hand-made lattice that could not occur.
 fn toctou_perms() -> PermissionLattice {
     use crate::CapabilityLevel;
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
-    perms.capabilities.run_bash = CapabilityLevel::LowRisk;
-    perms.capabilities.spawn_agent = CapabilityLevel::Always;
+    perms.grant(
+        Operation::RunBash,
+        CapabilityLevel::LowRisk,
+        crate::ConsentMode::Autonomous,
+    );
+    perms.grant(
+        Operation::SpawnAgent,
+        CapabilityLevel::Always,
+        crate::ConsentMode::Autonomous,
+    );
     perms.uninhabitable_constraint = true;
     perms.normalize()
 }
@@ -449,13 +457,11 @@ fn test_graded_guard_path_check() {
     use crate::PathLattice;
     use std::collections::HashSet;
 
-    let perms = PermissionLattice {
-        paths: PathLattice {
-            allowed: HashSet::from(["**/*.rs".to_string()]),
-            blocked: HashSet::from([".env*".to_string()]),
-            work_dir: None,
-        },
-        ..Default::default()
+    let mut perms = PermissionLattice::supervised();
+    perms.paths = PathLattice {
+        allowed: HashSet::from(["**/*.rs".to_string()]),
+        blocked: HashSet::from([".env*".to_string()]),
+        work_dir: None,
     };
     let guard = GradedGuard::new(perms);
 
@@ -516,7 +522,7 @@ fn test_graded_guard_compose_checks() {
 
 fn uninhabitable_perms() -> PermissionLattice {
     use crate::CapabilityLevel;
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
     perms.capabilities.run_bash = CapabilityLevel::LowRisk;
@@ -613,7 +619,7 @@ fn test_two_leg_uninhabitable_allows_exfil() {
     // If only 2 of 3 exposure legs are present in permissions,
     // exfil should be allowed (no uninhabitable_state constraint fires)
     use crate::CapabilityLevel;
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities.read_files = CapabilityLevel::Always;
     perms.capabilities.run_bash = CapabilityLevel::LowRisk;
     // No web_fetch — only 2 legs
