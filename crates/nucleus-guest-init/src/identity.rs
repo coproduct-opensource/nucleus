@@ -304,7 +304,16 @@ pub fn announce_snapshot_ready(port: u32) -> Result<(), String> {
 /// The body is NOT logged on a parse failure. It is not a secret the way a
 /// broker capability is, but it is the pod's command line and the guest console
 /// is the wrong place to reproduce it.
-pub fn fetch_pod_spec(port: u32, _past_barrier: &PastBarrier) -> Result<String, String> {
+/// What the host served for `FETCH_POD_SPEC`: the spec, and the node's decision material when it
+/// has some (`nucleus_spec::decision_gate`).
+pub struct HostSpec {
+    /// The spec's YAML.
+    pub spec: String,
+    /// Trust roots, tenant and bundles for the tool-proxy, placed by `decisions::place`.
+    pub decisions: Option<nucleus_spec::decision_gate::DecisionMaterial>,
+}
+
+pub fn fetch_pod_spec(port: u32, _past_barrier: &PastBarrier) -> Result<HostSpec, String> {
     let mut stream = VsockStream::connect_with_cid_port(VMADDR_CID_HOST, port)
         .map_err(|e| format!("failed to connect to workload API: {e}"))?;
     stream
@@ -325,14 +334,28 @@ pub fn fetch_pod_spec(port: u32, _past_barrier: &PastBarrier) -> Result<String, 
 
     let parsed: serde_json::Value = serde_json::from_str(&response)
         .map_err(|_| "pod-spec response was not valid JSON".to_string())?;
+    parse_host_spec(&parsed)
+}
+
+/// Read a `FETCH_POD_SPEC` reply. A `decisions` field that does not parse is a refusal, never
+/// "no decisions": the host meant to send some.
+fn parse_host_spec(parsed: &serde_json::Value) -> Result<HostSpec, String> {
     if let Some(err) = parsed.get("error").and_then(|e| e.as_str()) {
         return Err(err.to_string());
     }
-    parsed
+    let spec = parsed
         .get("spec")
         .and_then(|v| v.as_str())
         .map(str::to_string)
-        .ok_or_else(|| "pod-spec response named no spec".to_string())
+        .ok_or_else(|| "pod-spec response named no spec".to_string())?;
+    let decisions = match parsed.get("decisions") {
+        None => None,
+        Some(v) => Some(
+            serde_json::from_value(v.clone())
+                .map_err(|_| "pod-spec response carried malformed decision material".to_string())?,
+        ),
+    };
+    Ok(HostSpec { spec, decisions })
 }
 
 pub fn fetch_broker_secret(port: u32) -> Result<BrokerCapability, FetchError> {
@@ -756,6 +779,29 @@ pub fn parse_workload_api_port(cmdline: &str) -> Option<u32> {
 #[allow(dead_code)]
 pub fn should_fetch_identity(cmdline: &str) -> bool {
     parse_workload_api_port(cmdline).is_some()
+}
+
+#[cfg(test)]
+mod host_spec_tests {
+    use super::parse_host_spec;
+
+    /// An older node sends the spec alone; this guest reads it unchanged.
+    #[test]
+    fn a_reply_without_material_is_the_spec_alone() {
+        let host = parse_host_spec(&serde_json::json!({ "spec": "kind: Pod" })).unwrap();
+        assert_eq!(host.spec, "kind: Pod");
+        assert!(host.decisions.is_none());
+    }
+
+    /// Material that does not parse is a refusal, never "the host sent none".
+    #[test]
+    fn malformed_material_is_refused_not_dropped() {
+        let reply = serde_json::json!({ "spec": "kind: Pod", "decisions": { "tenant": 1 } });
+        assert!(parse_host_spec(&reply).is_err());
+        let ok = serde_json::json!({ "spec": "kind: Pod", "decisions": {
+            "trust_roots": "[]", "tenant": "t", "bundles": [] } });
+        assert_eq!(parse_host_spec(&ok).unwrap().decisions.unwrap().tenant, "t");
+    }
 }
 
 #[cfg(test)]

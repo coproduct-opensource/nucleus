@@ -55,6 +55,10 @@ pub(crate) async fn container_env(
         if let Some(dlc) = state.authority.dlc(id).await {
             env.extend(dlc.env().map(|(key, value)| format!("{key}={value}")));
         }
+        // Owner-decision material, bind-mounted read-only beside it (`decision_provisioning`).
+        if let Some(decisions) = &state.decisions {
+            env.extend(decisions.container_env());
+        }
     }
 
     // No credential VALUE reaches a container's environment (#2906): `docker inspect`,

@@ -122,6 +122,8 @@ census! {
     proxy_actor => Structural, "operator setting";
     trusted_postures => Structural, "operator posture registry, parsed once";
     audit_sinks => Structural, "operator audit sinks";
+    decisions => Structural,
+        "operator trust roots, tenant and bundle directory; read per pod, written by no pod (decision_provisioning)";
     memory => TenantShared,
         "persistent stores keyed by sha256(owner)/namespace with owner = the issued tenant root, so non-lineage pods of one tenant share a namespace (memory_provisioning::Stores::provision)";
     audit_minter => Secret, "holds the node's audit credential; each pod is minted only its own scoped one";
@@ -176,7 +178,7 @@ fn every_node_state_field_has_a_cross_pod_class() {
     let linux = usize::from(cfg!(target_os = "linux"));
     // Pinned in both directions: a reclassification is an edit here, in the
     // open. `Unclassified` may only shrink.
-    assert_eq!(count(Surface::Structural), 32 + local);
+    assert_eq!(count(Surface::Structural), 33 + local);
     assert_eq!(count(Surface::Secret), 4);
     assert_eq!(count(Surface::PerPod), 1);
     assert_eq!(count(Surface::LineageScoped), 2);
@@ -184,5 +186,5 @@ fn every_node_state_field_has_a_cross_pod_class() {
     assert_eq!(count(Surface::TenantShared), 1);
     assert_eq!(count(Surface::Contention), 8 + linux);
     assert_eq!(count(Surface::Unclassified), 2);
-    assert_eq!(entries.len(), 52 + local + linux);
+    assert_eq!(entries.len(), 53 + local + linux);
 }

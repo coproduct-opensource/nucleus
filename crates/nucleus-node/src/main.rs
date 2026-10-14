@@ -132,6 +132,7 @@ mod pod_reaper;
 #[cfg(all(test, feature = "local-driver"))]
 use pod_reaper::reap_once;
 use pod_reaper::start_pod_reaper;
+mod decision_provisioning;
 mod guest_proof_provision;
 mod memory_provisioning;
 mod net;
@@ -186,6 +187,8 @@ struct Args {
     audit_sinks: audit_sink::AuditSinkArgs,
     #[command(flatten)]
     memory: memory_provisioning::MemoryArgs,
+    #[command(flatten)]
+    decisions: decision_provisioning::DecisionArgs,
     #[command(flatten)]
     pod_ceilings: pod_resources::PodCeilingArgs,
     #[command(flatten)]
@@ -540,6 +543,8 @@ struct NodeState {
     /// written to with the node's credentials (#3131). Read at admission (`spec_posture::admit`).
     audit_sinks: Arc<audit_sink::AuditSinks>,
     memory: Arc<memory_provisioning::Stores>,
+    /// Owner-decision trust roots, tenant and bundles (`decision_provisioning`).
+    decisions: Option<Arc<decision_provisioning::NodeDecisions>>,
     /// Mints each pod's uploader a credential limited to its resolved sink (#3160). `None`: every
     /// audit sink is refused at create, by name; the node's own key is never the fallback.
     audit_minter: Option<Arc<dyn audit_sink::credentials::ScopedCredentialMinter>>,
@@ -909,6 +914,10 @@ async fn main() -> Result<(), ApiError> {
 
     let host_roots = args.host_paths.ensure(&args.state_dir)?;
     let memory = Arc::new(args.memory.load(&host_roots)?);
+    let decisions = args
+        .decisions
+        .load(host_roots.workspace_root())?
+        .map(Arc::new);
     let trust_gate = trust_gate::TrustGateConfig::from_env(&args.state_dir, &custody.node_keys)
         .map_err(ApiError::Driver)?;
     let node_platform = Arc::new(
@@ -959,6 +968,7 @@ async fn main() -> Result<(), ApiError> {
         host_roots,
         guest_report,
         memory,
+        decisions,
         pod_ceilings: args.pod_ceilings.ceilings(),
         node_capacity: args.node_capacity.build()?,
         driver: args.driver.clone(),
@@ -1323,6 +1333,7 @@ async fn create_pod_internal(
     let requested_memory = state
         .memory
         .request(&spec, &state.driver, state.container_mediation)?;
+    decision_provisioning::admit(state, &spec)?; // requires_decision this node cannot enforce
     let id = Uuid::new_v4();
     tracing::Span::current().record("pod_id", tracing::field::display(id));
     let profile = eval_cell::admit_on(state, &spec, parent_pod_id, id)?; // ADR 0013, by name
@@ -1605,6 +1616,7 @@ async fn spawn_local_pod(
 
     provision_local_audit_env(&mut command, audit);
     memory_provisioning::local_command(&mut command, memory);
+    command.envs(state.decisions.iter().flat_map(|d| d.local_env()));
 
     // The sandbox proof is the pod's node-issued SVID (tier 2). The HMAC'd
     // sandbox token needs a key this proxy no longer holds. Every local pod gets
@@ -1766,6 +1778,7 @@ async fn spawn_container_pod(
         let version = container_transport::image_version(labels.as_ref());
         container_transport::admit_image(&state.container_image, version)?;
         container_broker::admit_image(&state.container_image, version, spec)?;
+        decision_provisioning::admit_image(&state.container_image, version, spec)?;
     }
     // Before pod.yaml is written: a spec carrying a credential is refused, and the host performs
     // the pod's credentialed calls over a broker the proxy is told how to reach (#2906).
@@ -1816,6 +1829,9 @@ async fn spawn_container_pod(
     ];
     if let Some(grant) = memory {
         binds.push(grant.container_bind());
+    }
+    if proxy_mode {
+        binds.extend(state.decisions.iter().flat_map(|d| d.container_binds()));
     }
 
     // Network mode: the node's, or `none` if the pod asks for it; any other label is refused.

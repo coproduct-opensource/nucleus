@@ -985,6 +985,7 @@ fn build_local_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
+        requires_decision: Vec::new(),
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
     Ok(spec)
@@ -1182,6 +1183,7 @@ fn build_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     });
     spec.metadata.task_grant_id = args.task_grant_id.clone();
     eval_cell::label(args.isolation_profile, &mut spec);

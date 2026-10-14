@@ -91,6 +91,7 @@ fn container_driver_rejects_network_policy_fail_closed() {
             cgroup: None,
             audit_sink: None,
             credentials: None,
+            requires_decision: Vec::new(),
         })
     };
     let with_policy = mk(Some(
@@ -797,6 +798,7 @@ fn posture_spec(label: Option<&str>, rootfs: Option<&std::path::Path>) -> PodSpe
         cgroup: None,
         audit_sink: None,
         credentials: None,
+        requires_decision: Vec::new(),
     });
     if let Some(l) = label {
         spec.metadata

@@ -44,10 +44,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::ApiError;
 
-/// The largest bundle file read. A batch is at most 25 decisions of short strings.
-const MAX_BUNDLE_BYTES: u64 = 1024 * 1024;
+/// The largest bundle file read: the node's delivery cap, one constant for both.
+const MAX_BUNDLE_BYTES: u64 = nucleus_spec::decision_gate::MAX_BUNDLE_BYTES;
 /// The largest trust-roots file read.
-const MAX_ROOTS_BYTES: u64 = 64 * 1024;
+const MAX_ROOTS_BYTES: u64 = nucleus_spec::decision_gate::MAX_ROOTS_BYTES;
 
 /// Where owner decisions come from. All three or none.
 #[derive(clap::Args, Debug)]
@@ -56,25 +56,25 @@ pub(crate) struct DecisionArgs {
     /// outside the agent workspace. Unset means the pod has no decision tools.
     #[arg(
         long,
-        env = "NUCLEUS_DECISION_TRUST_ROOTS",
+        env = nucleus_spec::decision_gate::TRUST_ROOTS_ENV,
         requires_all = ["decision_bundles", "decision_tenant"]
     )]
-    decision_trust_roots: Option<PathBuf>,
+    pub(crate) decision_trust_roots: Option<PathBuf>,
     /// Node-provisioned directory of decision bundles, one `<decision id>.json` each, outside
     /// the agent workspace.
     #[arg(
         long,
-        env = "NUCLEUS_DECISION_BUNDLES",
+        env = nucleus_spec::decision_gate::BUNDLES_ENV,
         requires = "decision_trust_roots"
     )]
-    decision_bundles: Option<PathBuf>,
+    pub(crate) decision_bundles: Option<PathBuf>,
     /// The tenant every decision must name (`github~owner~name`).
     #[arg(
         long,
-        env = "NUCLEUS_DECISION_TENANT",
+        env = nucleus_spec::decision_gate::TENANT_ENV,
         requires = "decision_trust_roots"
     )]
-    decision_tenant: Option<String>,
+    pub(crate) decision_tenant: Option<String>,
 }
 
 /// The verified decisions this pod can read, and where they come from.
@@ -82,7 +82,9 @@ pub(crate) struct DecisionDesk {
     roots: TrustRoots,
     tenant: String,
     bundles: PathBuf,
-    ledger: tokio::sync::Mutex<DecisionLedger>,
+    pub(crate) ledger: tokio::sync::Mutex<DecisionLedger>,
+    /// The capabilities the spec requires a decision for (`decision_gate::arm`).
+    required: std::collections::BTreeSet<nucleus_spec::decision_gate::DecisionCapability>,
 }
 
 /// Read an operator-provisioned file of at most `cap` bytes: a regular file (not a symlink), its
@@ -152,6 +154,7 @@ impl DecisionArgs {
             tenant: tenant.clone(),
             bundles: bundles.clone(),
             ledger: tokio::sync::Mutex::new(DecisionLedger::empty()),
+            required: std::collections::BTreeSet::new(),
         }))
     }
 }
@@ -162,9 +165,67 @@ impl DecisionDesk {
         self.roots.len()
     }
 
+    /// This desk with the spec's requirements armed (`decision_gate::arm`).
+    pub(crate) fn requiring(
+        mut self,
+        required: std::collections::BTreeSet<nucleus_spec::decision_gate::DecisionCapability>,
+    ) -> Self {
+        self.required = required;
+        self
+    }
+
+    /// Whether the spec requires a decision for `capability`.
+    pub(crate) fn requires(
+        &self,
+        capability: &nucleus_spec::decision_gate::DecisionCapability,
+    ) -> bool {
+        self.required.contains(capability)
+    }
+
+    /// Every capability the spec requires a decision for.
+    pub(crate) fn required(
+        &self,
+    ) -> impl Iterator<Item = &nucleus_spec::decision_gate::DecisionCapability> {
+        self.required.iter()
+    }
+
+    /// Verify every bundle in the directory and hold the ones that verify, so a decision that
+    /// supersedes another retires it before either is used. Returns the files refused.
+    pub(crate) fn hold_all(
+        &self,
+        ledger: &mut DecisionLedger,
+        now: u64,
+    ) -> Result<Vec<RefusedBundle>, ApiError> {
+        let mut names: Vec<String> = std::fs::read_dir(&self.bundles)?
+            .filter_map(|e| e.ok())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        let mut refused = Vec::new();
+        for file in names.into_iter().take(nucleus_signed_decision::MAX_HELD) {
+            let Some(id) = file
+                .strip_suffix(".json")
+                .and_then(|stem| OwnerDecisionId::from_hex(stem).ok())
+            else {
+                refused.push(RefusedBundle {
+                    file,
+                    reason: "not named <decision id>.json".into(),
+                });
+                continue;
+            };
+            let held = self
+                .load(id, now)
+                .and_then(|d| ledger.hold(d).map_err(|e| e.to_string()));
+            if let Err(reason) = held {
+                refused.push(RefusedBundle { file, reason });
+            }
+        }
+        Ok(refused)
+    }
+
     /// Read and verify the bundle for `id`. The file name is the id, and the verified decision
     /// must have that id: a bundle filed under another decision's name is refused.
-    fn load(&self, id: OwnerDecisionId, now: u64) -> Result<SignedDecision, String> {
+    pub(crate) fn load(&self, id: OwnerDecisionId, now: u64) -> Result<SignedDecision, String> {
         let path = self.bundles.join(format!("{id}.json"));
         let bytes = read_capped(&path, MAX_BUNDLE_BYTES).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => "no bundle for this decision id".to_string(),
@@ -363,30 +424,7 @@ pub(crate) fn decision_list_core(
     authority: Authority,
 ) -> Result<DecisionListResp, ApiError> {
     spend_read(authority, LIST_SUBJECT)?;
-    let mut names: Vec<String> = std::fs::read_dir(&desk.bundles)?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
-    names.sort();
-    let mut refused = Vec::new();
-    for file in names.into_iter().take(nucleus_signed_decision::MAX_HELD) {
-        let Some(id) = file
-            .strip_suffix(".json")
-            .and_then(|stem| OwnerDecisionId::from_hex(stem).ok())
-        else {
-            refused.push(RefusedBundle {
-                file,
-                reason: "not named <decision id>.json".into(),
-            });
-            continue;
-        };
-        let held = desk
-            .load(id, now)
-            .and_then(|d| ledger.hold(d).map_err(|e| e.to_string()));
-        if let Err(reason) = held {
-            refused.push(RefusedBundle { file, reason });
-        }
-    }
+    let refused = desk.hold_all(ledger, now)?;
     let live: Vec<&SignedDecision> = ledger
         .iter()
         .filter(|d| d.window(now) == Window::Live)
@@ -401,7 +439,7 @@ pub(crate) fn decision_list_core(
     })
 }
 
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

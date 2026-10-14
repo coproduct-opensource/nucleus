@@ -388,6 +388,15 @@ pub enum GuestCapability {
     /// ([`crate::approval_binding::ApprovalBinding::for_guest_release`]), and a
     /// bundle bound the other way is refused by the guest, never accepted.
     CanonicalManifestApproval,
+    /// guest-init places the node's decision material (`decision_gate::DecisionMaterial`, carried
+    /// in the `FETCH_POD_SPEC` reply) under `decision_gate::GUEST_DIR` for the tool-proxy, and the
+    /// tool-proxy refuses an effect the spec lists in `requires_decision` unless the call cites a
+    /// verified, in-scope owner decision, printing `decision_gate::ARMED_PREFIX` once armed.
+    /// An older guest-init ignores the material, and an older tool-proxy refuses a spec that
+    /// carries `requires_decision` as an unknown field, so such a pod fails closed there.
+    /// [`Demand::Optional`]: the node depends on it only for a pod that requires a decision, and
+    /// `decision_provisioning` reads it to refuse that pod on a guest known to lack it, by name.
+    DecisionGatedSinks,
 }
 
 /// A use of the guest that depends on capabilities the node does not need for
@@ -443,7 +452,7 @@ pub enum FirstShipped {
 
 impl GuestCapability {
     /// Every capability, for the callers that check all of them.
-    pub const ALL: [GuestCapability; 23] = [
+    pub const ALL: [GuestCapability; 24] = [
         GuestCapability::CaBundle,
         GuestCapability::ApprovalByPublicKey,
         GuestCapability::DlcAdmission,
@@ -467,6 +476,7 @@ impl GuestCapability {
         GuestCapability::SignedArt12Log,
         GuestCapability::ContainerBrokerSocket,
         GuestCapability::CanonicalManifestApproval,
+        GuestCapability::DecisionGatedSinks,
     ];
 
     /// Whether a guest without it is refused. Exhaustive, so a new capability
@@ -514,6 +524,9 @@ impl GuestCapability {
             // bundle's minter and the guest, and a mismatch is refused in the
             // guest (fail closed), never granted.
             GuestCapability::CanonicalManifestApproval => Demand::Optional,
+            // Only a pod whose spec requires a decision depends on it, and
+            // `decision_provisioning` judges that pod alone, by name.
+            GuestCapability::DecisionGatedSinks => Demand::Optional,
             // Only the run that starts its agent under the adapter needs it.
             GuestCapability::EgressAdapterUpstreams => Demand::When(GuestUse::AgentEgress),
             // Only a pod holding an upstream WITH an effect table reads one.
@@ -587,6 +600,8 @@ impl GuestCapability {
             GuestCapability::ContainerBrokerSocket => FirstShipped::NotYet,
             // #3395: in this tree and in no release yet.
             GuestCapability::CanonicalManifestApproval => FirstShipped::NotYet,
+            // Signed-decision node wiring: in this tree and in no release yet.
+            GuestCapability::DecisionGatedSinks => FirstShipped::NotYet,
         }
     }
 
@@ -723,6 +738,13 @@ impl GuestCapability {
                  file's bytes by name; an older proxy binds the bytes of the pod.yaml the node \
                  wrote, so a bundle for it must carry that hash instead (the node does not \
                  require it)"
+            }
+            GuestCapability::DecisionGatedSinks => {
+                "signed-decision wiring has guest-init place the node's decision trust roots and \
+                 bundles for the tool-proxy, which refuses an effect the spec lists in \
+                 requires_decision unless the call cites a verified, in-scope owner decision; an \
+                 older tool-proxy refuses a spec carrying requires_decision, so the node refuses \
+                 such a pod on a guest known to predate it"
             }
         }
     }
@@ -1146,6 +1168,7 @@ mod tests {
             GuestCapability::SignedArt12Log,
             GuestCapability::ContainerBrokerSocket,
             GuestCapability::CanonicalManifestApproval,
+            GuestCapability::DecisionGatedSinks,
         ];
         for cap in GuestCapability::ALL {
             assert_eq!(
@@ -1327,7 +1350,8 @@ mod tests {
                 GuestCapability::ContainerBrokerSocket => {
                     GuestCapability::CanonicalManifestApproval
                 }
-                GuestCapability::CanonicalManifestApproval => GuestCapability::CaBundle,
+                GuestCapability::CanonicalManifestApproval => GuestCapability::DecisionGatedSinks,
+                GuestCapability::DecisionGatedSinks => GuestCapability::CaBundle,
             };
             assert!(GuestCapability::ALL.contains(&next), "{next:?} missing");
         }

@@ -401,7 +401,7 @@ fn run() -> Result<(), String> {
     // says nothing.
     if let Some(port) = workload_api_port {
         match identity::fetch_pod_spec(port, &past_barrier) {
-            Ok(spec) => match boot::place_host_spec(HOST_POD_SPEC, Some(&spec), |p, body| {
+            Ok(host) => match boot::place_host_spec(HOST_POD_SPEC, Some(&host.spec), |p, body| {
                 // The parent first: /run is a fresh tmpfs every boot.
                 if let Some(dir) = Path::new(p).parent()
                     && fs::create_dir_all(dir).is_err()
@@ -410,7 +410,18 @@ fn run() -> Result<(), String> {
                 }
                 fs::write(p, body).is_ok()
             }) {
-                Ok(true) => eprintln!("pod spec fetched from the host"),
+                Ok(true) => {
+                    eprintln!("pod spec fetched from the host");
+                    // The decision material rides the same reply; a refusal stops the boot.
+                    if let Some(material) = &host.decisions {
+                        for (k, v) in
+                            nucleus_guest_init::decisions::place(Path::new("/"), material)?
+                        {
+                            export!(k, v);
+                        }
+                        eprintln!("owner-decision material placed for the tool-proxy");
+                    }
+                }
                 Ok(false) => {}
                 // NOT a fallback to the baked spec: the host believes it
                 // dispatched a different job.
@@ -1439,8 +1450,9 @@ mod tests {
     /// Driven red by putting `Command::new("ip")` back into `configure_network`.
     #[test]
     fn the_only_programs_pid1_starts_are_the_guest_layers() {
-        const SOURCES: [(&str, &str); 6] = [
+        const SOURCES: [(&str, &str); 7] = [
             ("main.rs", include_str!("main.rs")),
+            ("decisions.rs", include_str!("decisions.rs")),
             ("identity.rs", include_str!("identity.rs")),
             ("lib.rs", include_str!("lib.rs")),
             ("boot.rs", include_str!("boot.rs")),

@@ -6422,6 +6422,7 @@ dependencies = [
  "nucleus-receipt",
  "nucleus-recompute",
  "nucleus-request-proof",
+ "nucleus-signed-decision",
  "nucleus-spec",
  "nucleus-yaml",
  "oid-registry",

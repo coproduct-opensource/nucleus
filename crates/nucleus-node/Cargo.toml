@@ -90,6 +90,8 @@ nucleus-microvm-host = { path = "../nucleus-microvm-host" }
 nucleus-otel-bootstrap = { path = "../nucleus-otel-bootstrap", optional = true }
 nucleus-proto = { path = "../nucleus-proto" }
 nucleus-spec = { path = "../nucleus-spec" }
+# Owner decisions: the node parses its trust roots at startup; the pod's tool-proxy verifies.
+nucleus-signed-decision = { path = "../nucleus-signed-decision" }
 nucleus-ci-verdict = { path = "../nucleus-ci-verdict" }
 # Node platform evidence (#2706): the TPM attester and the evidence types.
 nucleus-node-evidence = { path = "../nucleus-node-evidence", features = ["attester"] }

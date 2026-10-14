@@ -1264,6 +1264,7 @@ pub(crate) mod handler_tests {
                     .load(&a.host_paths.ensure(&a.state_dir).unwrap())
                     .unwrap(),
             ),
+            decisions: None,
             audit_minter: None,
             drand_config: None,
             identity_manager: None,

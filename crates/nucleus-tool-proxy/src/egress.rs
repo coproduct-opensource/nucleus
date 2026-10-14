@@ -379,6 +379,27 @@ pub(crate) async fn credentialed_egress(
         ));
     };
 
+    // An effect the spec requires an owner decision for runs only with one cited, verified and in
+    // scope, a one-shot one spent here (`decision_gate`). Last before the frame, so no refusal
+    // above can burn a one-shot decision, and recorded in the signed audit log before it runs.
+    // A name outside the capability grammar is one no requirement can name (both parse alike).
+    if let Some(effect) = nucleus_spec::decision_gate::DecisionGatedEffect::of_operation(operation)
+        && let Ok(capability) = nucleus_spec::decision_gate::DecisionCapability::new(effect, &name)
+        && let Some(desk) = state.decisions.as_deref()
+    {
+        let cited = headers
+            .get(crate::decision_gate::DECISION_HEADER)
+            .and_then(|v| v.to_str().ok());
+        let now = crate::owner_decision::unix_now();
+        let covered = {
+            let mut ledger = desk.ledger.lock().await;
+            crate::decision_gate::require_core(Some(desk), &mut ledger, &capability, cited, now)?
+        };
+        if let Some(covered) = covered {
+            state.audit.log(covered.into_event(now)).await?;
+        }
+    }
+
     // A STREAMED call (#2696 P4): the body goes up as it arrives from the
     // workload and the reply comes back as the upstream sends it, so a model
     // call larger than a perform frame's 256 KiB, and a server-sent-event

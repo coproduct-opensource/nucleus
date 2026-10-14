@@ -126,7 +126,11 @@ impl PreparedPod {
         id: Uuid,
         child: &mut crate::vmm_process::VmmProcess,
     ) -> Result<net::confinement::WorkloadFilesystem, ApiError> {
-        let filesystem = net::confinement::gate(addr, pod_dir, spec, id, child).await?;
+        let filesystem = net::confinement::gate(addr, pod_dir, spec, id, child)
+            .await
+            .map_err(|e| crate::decision_provisioning::name_skew(spec, e))?;
+        // A pod that requires an owner decision is handed out only once its guest armed it.
+        crate::decision_provisioning::require_armed(spec, pod_dir).await?;
         if self.identity.withholding.is_some() {
             let console = tokio::fs::read_to_string(pod_dir.join("firecracker.log"))
                 .await
@@ -341,6 +345,12 @@ pub(crate) async fn prepare(inputs: Inputs<'_>) -> Result<PreparedIdentity, ApiE
             manager.clone(),
             workload_api_vsock::PodMaterial {
                 pod_spec_yaml: Some(guest_spec),
+                // Served beside the spec, read from the bundle directory now (`decision_provisioning`).
+                decisions: state
+                    .decisions
+                    .as_deref()
+                    .map(crate::decision_provisioning::NodeDecisions::material)
+                    .transpose()?,
                 // The same token that rides the kernel command line today.
                 // Serving it here is what lets the cmdline copy go: a value
                 // fetched after boot is not baked into a snapshot base.

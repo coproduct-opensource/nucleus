@@ -382,6 +382,7 @@ fn build_shell_pod_spec(
         cgroup: None,
         audit_sink: None,
         credentials,
+        requires_decision: Vec::new(),
     }))
 }
 

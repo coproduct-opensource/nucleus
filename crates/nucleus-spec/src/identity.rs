@@ -88,6 +88,9 @@ struct Program<'a> {
     credentialed_egress: &'a [crate::CredentialedEgressSpec],
     workload: Option<&'a crate::WorkloadSpec>,
     seccomp: Option<&'a crate::SeccompSpec>,
+    // Absent when empty, so every digest minted before the field existed is unchanged.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    requires_decision: &'a [crate::decision_gate::DecisionCapability],
 }
 
 #[derive(Serialize)]
@@ -185,6 +188,9 @@ pub fn program_digest(spec: &PodSpec) -> Result<String, IdentityError> {
         // were handed are the same program; including this would give every credential rotation
         // a new identity, and would put secret-derived bytes into a value meant to be shared.
         credentials: _,
+        // IN — a gated effect is refused without an owner decision, so a pod that requires one
+        // can conclude differently from one that does not.
+        requires_decision,
     } = &spec.spec;
 
     let crate::Metadata {
@@ -219,6 +225,7 @@ pub fn program_digest(spec: &PodSpec) -> Result<String, IdentityError> {
         credentialed_egress,
         workload: workload.as_ref(),
         seccomp: seccomp.as_ref(),
+        requires_decision,
     };
 
     let canonical = serde_json_canonicalizer::to_vec(&program)
