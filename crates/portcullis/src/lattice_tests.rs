@@ -473,6 +473,35 @@ fn test_effective_permissions_integrity() {
 }
 
 #[test]
+fn consent_leq_compares_consent_on_every_permitted_operation() {
+    // Kills the surviving mutant `level_for(op) == Never -> != Never` in
+    // `PermissionLattice::consent_leq`. The mutant waves every PERMITTED
+    // operation through, so consent stops reaching `leq` at all; the
+    // proptest `leq_agrees_with_meet` only reaches this case when its two
+    // random capability vectors happen to be ordered, which 512 cases rarely
+    // produce. Two lattices equal in everything but the consent on one
+    // permitted operation pin it.
+    let autonomous = PermissionLattice::restrictive();
+    assert!(autonomous.capabilities.level_for(Operation::ReadFiles) > CapabilityLevel::Never);
+    assert_eq!(
+        autonomous.consent_for(Operation::ReadFiles),
+        crate::ConsentMode::Autonomous
+    );
+    let mut obligated = autonomous.clone();
+    obligated.declare(Operation::ReadFiles, crate::ConsentMode::RequiresApproval);
+    assert_eq!(autonomous.capabilities, obligated.capabilities);
+
+    assert!(
+        !autonomous.leq(&obligated),
+        "running read_files autonomously is not below obligating it"
+    );
+    assert!(
+        obligated.leq(&autonomous),
+        "obligating read_files is below running it autonomously"
+    );
+}
+
+#[test]
 fn builder_autonomous_declares_exactly_the_named_operations() {
     // Kills the surviving mutant `PermissionLatticeBuilder::autonomous ->
     // Default::default()`: the declaration must reach the built lattice, and
