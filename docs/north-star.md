@@ -245,7 +245,7 @@ What each status means, and what it deliberately does not:
   (filtered per watcher, not mechanized), and the 2 node fields the
   compile-checked census leaves `Unclassified` (`request_proofs`, `authority`).
   The census is `crates/nucleus-node/src/node_state_census.rs`: it destructures
-  all 55 `NodeState` fields with no `..`, so a new field fails to compile until
+  all 56 `NodeState` fields with no `..`, so a new field fails to compile until
   it is classified.
 
   *History.* The first mechanization landed 2026-08-11. The design
@@ -266,7 +266,7 @@ What each status means, and what it deliberately does not:
   identity surface (`PodCrossViewIdentity.lean`) are mechanized — the rest of
   the shared-mutable fields are not yet in-Lean; the field census they are
   counted from is now a compile error (`crates/nucleus-node/src/node_state_census.rs`,
-  55 fields), and it leaves 2 `Unclassified`; (b) the two fields that were excluded *because their code was
+  56 fields), and it leaves 2 `Unclassified`; (b) the two fields that were excluded *because their code was
   defective* are now fixed — the `lockdown_tx` broadcast leak (#2203, server-side
   filter for `pod:` scopes; the `label:` broadcast is closed too, because the node
   now evaluates the selector per watcher in `lockdown::reaches` with
@@ -381,8 +381,8 @@ What each status means, and what it deliberately does not:
        generates both the exhaustive `NodeState { … }` pattern and the
        classification, so a field added without an entry (E0027) and an entry
        naming no field (E0026) are both compile errors, which is stronger than
-       the test failure the red asked for. 55 fields, not 56: `container_proxy`
-       has gone since `827394f5a`. The classes are finer than the four above:
+       the test failure the red asked for. 56 fields: `container_proxy` has gone
+       since `827394f5a` and `guest_report` (#3438) has arrived. The classes are finer than the four above:
        `Structural`, `Secret`, `PerPod`, `LineageScoped`, `SelectorScoped`,
        `TenantShared`, `Contention`, `Unclassified`. The counts are pinned in the
        test, so a reclassification is a visible edit.

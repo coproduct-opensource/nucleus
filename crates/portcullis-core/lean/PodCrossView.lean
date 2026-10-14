@@ -17,7 +17,7 @@
 
   Scope of THIS increment. The design classified the 38 `NodeState` fields of
   2026-08: 27 structural (constants, no pod-distinguishing content), 3 secret
-  (never reach a pod), 8 shared-mutable (the subject). `NodeState` now has 55
+  (never reach a pod), 8 shared-mutable (the subject). `NodeState` now has 56
   fields; the current classification is the compile-checked census in
   `crates/nucleus-node/src/node_state_census.rs`, which supersedes these counts. It mechanizes the ONE shared-mutable field
   introduced first — `pods` — "because it is the only shared-mutable field

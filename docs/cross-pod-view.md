@@ -81,7 +81,7 @@ asserting it. Worth copying that standard.
 ## Method
 
 > **The counts in this section are historical (2026-08, 38 fields).**
-> `NodeState` has 55 fields on main at `3a240d912`, and the census is now a
+> `NodeState` has 56 fields on main at `ed3130c80`, and the census is now a
 > compile error: `crates/nucleus-node/src/node_state_census.rs` destructures every
 > field with no `..` and classifies each one, so a new field cannot merge
 > unclassified. It leaves 2 `Unclassified` (`request_proofs`, `authority`) and
@@ -132,7 +132,7 @@ state is inert, which is why a cross-pod theorem is tractable at all.
 | `proxy_auth_secret` | **Shared with every proxy.** So it is observable to all pods equally — which is precisely why it cannot distinguish them, and precisely why ownership enforcement had to move node-side (#2199). Not a cross-pod channel; it is a *reason* the node cannot trust the proxy. |
 | `proxy_approval_secret` | As above. |
 
-### Shared-mutable — 8 of 38 in 2026-08 (now 55 fields; see the census), and the entire subject
+### Shared-mutable — 8 of 38 in 2026-08 (now 56 fields; see the census), and the entire subject
 
 | Field | Written by | Cross-pod flow? |
 | --- | --- | --- |

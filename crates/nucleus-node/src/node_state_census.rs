@@ -142,6 +142,8 @@ census! {
     docker => Contention, "shared client; connection-pool contention";
     trust_gate => Secret, "receipt-reporting configuration and role-separated signing keys; keys never served";
     node_platform => Structural, "the node's platform evidence, the same for every pod";
+    guest_report => Structural,
+        "which guest the default rootfs is, measured at startup from the operator's artifacts root; served alike to every caller on /v1/health";
     authority => Unclassified,
         "per-pod certificates, budgets charged up the lineage, per-chain external ledgers and a node-wide unreadable-record refusal; mixed scopes, not yet modelled";
     #[cfg(target_os = "linux")]
@@ -174,7 +176,7 @@ fn every_node_state_field_has_a_cross_pod_class() {
     let linux = usize::from(cfg!(target_os = "linux"));
     // Pinned in both directions: a reclassification is an edit here, in the
     // open. `Unclassified` may only shrink.
-    assert_eq!(count(Surface::Structural), 31 + local);
+    assert_eq!(count(Surface::Structural), 32 + local);
     assert_eq!(count(Surface::Secret), 4);
     assert_eq!(count(Surface::PerPod), 1);
     assert_eq!(count(Surface::LineageScoped), 2);
@@ -182,5 +184,5 @@ fn every_node_state_field_has_a_cross_pod_class() {
     assert_eq!(count(Surface::TenantShared), 1);
     assert_eq!(count(Surface::Contention), 8 + linux);
     assert_eq!(count(Surface::Unclassified), 2);
-    assert_eq!(entries.len(), 51 + local + linux);
+    assert_eq!(entries.len(), 52 + local + linux);
 }
