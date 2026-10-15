@@ -47,6 +47,10 @@ pub(crate) enum ApiError {
     Authority(String),
     #[error("request body error: {0}")]
     Body(String),
+    /// The request was decided against state that has since moved (a compare-and-swap whose
+    /// expected head is stale): 409, naming the current state so the caller can retry on it.
+    #[error("conflict: {0}")]
+    Conflict(String),
 }
 
 /// How long a caller refused for capacity should wait: about one pod teardown.
@@ -67,6 +71,7 @@ impl IntoResponse for ApiError {
             ApiError::Authorization(_) => StatusCode::FORBIDDEN,
             ApiError::Authority(_) => StatusCode::FORBIDDEN,
             ApiError::Body(_) => StatusCode::BAD_REQUEST,
+            ApiError::Conflict(_) => StatusCode::CONFLICT,
         };
         let retry = matches!(self, ApiError::CapacityExhausted(_));
         let body = Json(ErrorBody {

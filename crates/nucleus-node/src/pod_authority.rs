@@ -790,6 +790,10 @@ struct Inner {
     /// it was, so no delegated admission can be charged correctly: every one
     /// is refused until the file is resolved and the node restarted.
     unreadable_pod: bool,
+    /// Every pod id with a state directory when this life restored from disk: pods of a
+    /// previous life, none of which runs in this one (`previous_life`). Read by
+    /// `pod_api::ended`; written once, by `restore_from_disk`.
+    previous_life: std::collections::HashSet<Uuid>,
 }
 
 /// A snapshot of [`PodAuthority`]'s state, from [`PodAuthority::held`].
@@ -1015,6 +1019,7 @@ impl PodAuthority {
                 external: HashMap::new(),
                 unreadable_chains: std::collections::HashSet::new(),
                 unreadable_pod: false,
+                previous_life: std::collections::HashSet::new(),
             })),
         })
     }
@@ -1783,6 +1788,12 @@ impl PodAuthority {
         entry.ledger.commit(amount, || Ok(()))
     }
 
+    /// Whether `pod_id` had a state directory when this life restored from disk: a pod of a
+    /// previous node life, which no longer runs (`previous_life`).
+    pub(crate) async fn of_previous_life(&self, pod_id: Uuid) -> bool {
+        self.inner.lock().await.previous_life.contains(&pod_id)
+    }
+
     /// Rebuild the registry from `pods/<id>/authority.json` after a restart,
     /// and every ledger with it: each holder's recorded consumption, then each
     /// live child re-allocated against its parent. See the module docs for
@@ -1791,6 +1802,7 @@ impl PodAuthority {
         let chains = read_chains(&self.state_dir).await;
         let mut loaded: Vec<(Uuid, PodCert)> = Vec::new();
         let mut unreadable_pod = false;
+        let mut previous_life = std::collections::HashSet::new();
         if let Ok(mut entries) = tokio::fs::read_dir(self.state_dir.join("pods")).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let Some(id) = entry
@@ -1800,6 +1812,7 @@ impl PodAuthority {
                 else {
                     continue;
                 };
+                previous_life.insert(id);
                 let path = entry.path().join(AUTHORITY_FILE);
                 let bytes = match tokio::fs::read(&path).await {
                     Ok(bytes) => bytes,
@@ -1830,6 +1843,7 @@ impl PodAuthority {
         let mut guard = self.inner.lock().await;
         let inner = &mut *guard;
         inner.unreadable_pod |= unreadable_pod;
+        inner.previous_life = previous_life;
         for (fp, chain) in chains {
             match chain {
                 Some(chain) => {
