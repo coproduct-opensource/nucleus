@@ -1681,10 +1681,7 @@ async fn spawn_local_pod(
         .arg(&socket)
         .arg("--announce-path")
         .arg(&announce_path); // the workload door is in `bare_tier`, not the guest default
-    // No shared secret, and none inherited from the node's own environment.
-    command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
-    command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
-    command.envs(local_transport::proxy_env(state));
+    local_transport::provision(&mut command, state); // and no shared secret
     let audit_path = pod_dir.join("audit.log");
     command.env(
         "NUCLEUS_TOOL_PROXY_AUDIT_LOG",
