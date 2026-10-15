@@ -346,6 +346,12 @@ struct ApprovalEntry {
 impl ApprovalRegistry {
     /// Register an approval. Takes the witness by value (C-4): one verified
     /// signature is one registration.
+    ///
+    /// A grant for an operation that already has a live one merges with it:
+    /// counts add, and the earlier deadline wins. A grant that has already
+    /// expired is purged first, as [`Self::live`] would at the next check, so
+    /// a lapsed, unspent grant can neither cap a fresh one at a deadline in
+    /// the past nor carry its uses into it.
     pub(crate) fn approve(&self, approval: VerifiedApproval) {
         let VerifiedApproval {
             operation,
@@ -353,30 +359,33 @@ impl ApprovalRegistry {
             expires_at_unix,
             issuer,
         } = approval;
+        let mut guard = self.approvals.lock().unwrap();
+        let merged = Self::live(&mut guard, &operation);
+        let entry = guard
+            .entry(operation.clone())
+            .and_modify(|entry| {
+                entry.count = entry.count.merge(count);
+                entry.expires_at_unix = entry.expires_at_unix.min(expires_at_unix);
+            })
+            .or_insert(ApprovalEntry {
+                count,
+                expires_at_unix,
+            });
+        let (effective_count, effective_expires_at) = (entry.count, entry.expires_at_unix);
+        drop(guard);
+        // Log what is now in force, not only what was asked for: after a
+        // merge the two differ.
         info!(
             operation = %operation,
             count = ?count,
             expires_at = expires_at_unix,
+            effective_count = ?effective_count,
+            effective_expires_at,
+            merged,
             issuer = %issuer,
             event = "approval_granted",
             "approval registered"
         );
-        let mut guard = self.approvals.lock().unwrap();
-        match guard.get_mut(&operation) {
-            Some(entry) => {
-                entry.count = entry.count.merge(count);
-                entry.expires_at_unix = entry.expires_at_unix.min(expires_at_unix);
-            }
-            None => {
-                guard.insert(
-                    operation,
-                    ApprovalEntry {
-                        count,
-                        expires_at_unix,
-                    },
-                );
-            }
-        }
     }
 
     /// Spend one use of `operation`. Test-only: in production the one spend
