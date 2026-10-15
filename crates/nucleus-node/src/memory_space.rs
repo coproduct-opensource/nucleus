@@ -30,17 +30,30 @@
 //! * `TenantAllLegacy` — the declared form of what the owner-keyed layout did implicitly; only
 //!   migration records one.
 //!
-//! # Cross-run memory is paused until labels are stamped (Program C, C0)
+//! # Cross-run memory needs dependency-stamped labels (Program C, C0 and C1)
 //!
-//! A record's label is derived from its derivation alone, so every root is Public whatever its
-//! writer had read: a run that read Secret data writes Public records. Delivered to another
-//! lineage, that is a leak no view ceiling can catch. Until a space's records carry labels
-//! stamped with their writer's dependency context (Program C, C1), [`Registry::cross_run_reach`]
-//! — the one decider — refuses, by name (`CrossRunMemoryUnavailable`), every `Workspace`,
-//! `TenantAll` and `TenantAllLegacy` policy at creation, at bind (before anything is delivered)
-//! and at publish, and a `Lineage` policy over a space any of whose policies admits another
-//! lineage. Lineage audiences keep working: the runs of one lineage share one space. A migrated
-//! owner-keyed store records no owning lineage, so it is delivered to no run at all until C1.
+//! An unstamped record's label is derived from its derivation alone, so every root is Public
+//! whatever its writer had read: a run that read Secret data wrote Public records. Delivered to
+//! another lineage, that is a leak no view ceiling can catch. A **stamped** record's
+//! confidentiality is joined with its writer's floor — what the writing session had read,
+//! captured by its tool-proxy under the flow-graph lock that decided the write
+//! (`nucleus_provenance_memory::LabelStamp`) — so its label says what the record depends on.
+//!
+//! A space is [`LabelStamping::Stamped`] when every record it holds is stamped, and stays so
+//! because a publish adding an unstamped record to it is refused by name (`UnstampedRecords`):
+//! a declared space starts empty and stamped, a lineage's own space is stamped when the run that
+//! creates it writes stamps, and a migrated store is unstamped. [`Registry::cross_run_reach`] —
+//! the one decider, asked at policy creation, at bind (before anything is delivered) and at
+//! publish — admits every audience but the migration-only `TenantAllLegacy` over a stamped
+//! space, and over an unstamped one refuses, by name (`CrossRunMemoryUnavailable`), every
+//! `Workspace`, `TenantAll` and `TenantAllLegacy` policy and a `Lineage` policy over a space any
+//! of whose policies admits another lineage. A migrated owner-keyed store records no owning
+//! lineage and is unstamped, so it is delivered to no run at all: legacy import stays
+//! quarantined.
+//!
+//! Wherever a record is delivered, an unstamped one is Secret: its writer recorded nothing of
+//! what it had read, and unknown is the top ([`ViewSpec::sees`]). Which runs write stamps is
+//! [`MemoryWriter`], decided by the node from the guest's release, never by the pod.
 //!
 //! A policy is created by the tenant's root identity (`memory_space_api`), or by citing a
 //! standing signed owner decision whose scope covers `memory.bind:<space>` (and
@@ -283,12 +296,16 @@ impl ViewSpec {
         }
     }
 
-    /// Does this view see `record`? The kernel's one visibility decision.
-    pub(crate) fn sees(&self, record: &MemoryRecord) -> bool {
-        self.kernel().admits(
-            SchemaAtom::of(record.schema).kernel(),
-            rank_of(record.label.conf_level()),
-        )
+    /// Does this view see a record of `schema` at confidentiality `level`? The kernel's one
+    /// visibility decision.
+    ///
+    /// `level` is the record's EFFECTIVE confidentiality (Program C, C1), decided by the caller
+    /// (`memory_binding::deliverable`): its stamped label's, or Secret when it or anything it
+    /// cites is unstamped, whose writer recorded nothing of what it had read. So an unstamped
+    /// record is withheld from every view below Secret, whatever its stored label.
+    pub(crate) fn sees(&self, schema: SchemaType, level: ConfLevel) -> bool {
+        self.kernel()
+            .admits(SchemaAtom::of(schema).kernel(), rank_of(level))
     }
 
     /// May a binding with this view write `record`? Its schema class must be in scope; its
@@ -356,6 +373,10 @@ pub(crate) struct MemorySpace {
     pub(crate) high_water: Option<Pin>,
     pub(crate) origin: SpaceOrigin,
     pub(crate) created_unix: u64,
+    /// Whether every record the space holds is dependency-stamped. Absent from a registry an
+    /// earlier node wrote, where it is unstamped: those spaces hold unstamped records.
+    #[serde(default = "LabelStamping::unstamped")]
+    pub(crate) stamping: LabelStamping,
 }
 
 impl MemorySpace {
@@ -405,10 +426,9 @@ impl MemorySpace {
         scope_of(&self.schema)
     }
 
-    /// Whether the space's records carry dependency-stamped writer labels. None does before
-    /// Program C's C1, which decides this per space.
+    /// Whether every record of the space carries a dependency-stamped writer label.
     pub(crate) const fn label_stamping(&self) -> LabelStamping {
-        LabelStamping::Unstamped
+        self.stamping
     }
 }
 
@@ -465,17 +485,58 @@ pub(crate) enum PodLabels<'a> {
 pub(crate) struct PodMatch<'a> {
     pub(crate) lineage: Uuid,
     pub(crate) labels: PodLabels<'a>,
+    /// Whether the pod's tool-proxy stamps what it writes, as the node judged its guest.
+    pub(crate) writer: MemoryWriter,
 }
 
-/// Whether a space's records carry labels stamped with what their writer had read (Program C,
-/// C1). C1 adds the stamped case and decides it per space; until then no space has one, and
-/// [`Registry::cross_run_reach`] matches on this exhaustively, so adding it is a compile error
-/// there rather than a silent default.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Whether a run's tool-proxy stamps every memory record it writes with what its session had
+/// read (`GuestCapability::MemoryDependencyStamp`), as the node judges the pod's guest at
+/// creation (`memory_provisioning::writer_of`). Never the pod's own claim.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MemoryWriter {
+    /// This tree's tool-proxy, or a release known to carry the capability.
+    Stamping,
+    /// A guest known to predate the capability, or one the node cannot tell: it writes
+    /// unstamped records and refuses a delivered record that is not Public. It is given only
+    /// stamped Public records, and its writes are unstamped wherever they go.
+    Legacy,
+}
+
+impl MemoryWriter {
+    /// What a binding an earlier node minted (before writers were recorded) was minted for.
+    pub(crate) const fn legacy() -> Self {
+        MemoryWriter::Legacy
+    }
+}
+
+/// Whether every record of a space carries a label stamped with what its writer had read
+/// (Program C, C1). [`Registry::cross_run_reach`] matches on this exhaustively, so a new case is
+/// a compile error there rather than a silent default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum LabelStamping {
-    /// Each record's label is derived from its derivation alone (every root Public), and says
-    /// nothing of what its writer had read.
+    /// Some record's label may be derived from its derivation alone (every root Public), and
+    /// say nothing of what its writer had read.
     Unstamped,
+    /// Every record is stamped, and a publish that would add an unstamped one is refused.
+    Stamped,
+}
+
+impl LabelStamping {
+    /// What a space a registry recorded before stamps existed is.
+    pub(crate) const fn unstamped() -> Self {
+        LabelStamping::Unstamped
+    }
+
+    /// A new space's stamping, from the writer whose run creates it: a declared space is
+    /// created empty by the tenant root, and is stamped (`Stamping`).
+    pub(crate) const fn of(writer: MemoryWriter) -> Self {
+        match writer {
+            MemoryWriter::Stamping => LabelStamping::Stamped,
+            MemoryWriter::Legacy => LabelStamping::Unstamped,
+        }
+    }
 }
 
 /// The reach [`Registry::cross_run_reach`] refused: memory crossing to a run of another lineage.
@@ -610,6 +671,10 @@ pub(crate) struct Binding {
     pub(crate) spent_bytes: u64,
     /// SHA-256 of the snapshot delivered to the run.
     pub(crate) delivered_sha256: String,
+    /// Whether the run's tool-proxy stamps its writes, as judged when the binding was minted.
+    /// Absent from a binding an earlier node minted: legacy (its branch is unstamped).
+    #[serde(default = "MemoryWriter::legacy")]
+    pub(crate) writer: MemoryWriter,
 }
 
 impl Binding {
@@ -712,9 +777,13 @@ pub(crate) enum MemoryRefusal {
     )]
     QuotaFullyAllocated { space: String, allocation: u64 },
     #[error(
-        "CrossRunMemoryUnavailable: record labels are not yet dependency-stamped. Memory space {space} would reach runs of another lineage through {reach}; until a record's label carries what its writer had read (Program C, C1), memory crosses to no run outside its lineage"
+        "CrossRunMemoryUnavailable: record labels are not yet dependency-stamped. Memory space {space} would reach runs of another lineage through {reach}; it may hold records whose labels do not carry what their writer had read (Program C, C1), so memory crosses to no run outside its lineage"
     )]
     CrossRunMemoryUnavailable { space: String, reach: CrossRun },
+    #[error(
+        "UnstampedRecords: memory space {space} holds only dependency-stamped records, and binding {binding}'s branch adds records whose labels do not carry what their writer had read (its guest predates MemoryDependencyStamp, or it wrote them unstamped); they are not published into it"
+    )]
+    UnstampedRecords { space: String, binding: Uuid },
     #[error("memory space {0} cannot be revoked again: its epoch is at its limit")]
     EpochExhausted(String),
     #[error("binding policy {policy}'s owner decision {decision} no longer covers it: {why}")]
@@ -750,9 +819,8 @@ impl From<MemoryRefusal> for ApiError {
             | MemoryRefusal::Expired { .. }
             | MemoryRefusal::MayNotPublish(_)
             | MemoryRefusal::DecisionRefused { .. }
-            | MemoryRefusal::CrossRunMemoryUnavailable { .. } => {
-                ApiError::Authority(refusal.to_string())
-            }
+            | MemoryRefusal::CrossRunMemoryUnavailable { .. }
+            | MemoryRefusal::UnstampedRecords { .. } => ApiError::Authority(refusal.to_string()),
             MemoryRefusal::QuotaFullyAllocated { .. } | MemoryRefusal::EpochExhausted(_) => {
                 ApiError::CapacityExhausted(refusal.to_string())
             }
@@ -997,6 +1065,8 @@ impl Registry {
                 high_water: None,
                 origin: SpaceOrigin::Declared,
                 created_unix: now,
+                // Empty, and every publish into it is refused unless stamped.
+                stamping: LabelStamping::Stamped,
             },
         );
         let space = &self.spaces[&key];
@@ -1009,6 +1079,7 @@ impl Registry {
                 schema: &space.schema,
                 quota_bytes: space.quota_bytes,
                 epoch: space.epoch,
+                stamping: space.stamping,
             },
         );
         let kept = claim_and_persist(self, claim, record);
@@ -1152,29 +1223,38 @@ impl Registry {
     /// of cross-run memory, asked when a policy is created, when a binding is minted (before
     /// anything is delivered) and when a publish is admitted.
     ///
-    /// Until the space's labels are stamped (Program C, C1), only a `Lineage(root)` audience
-    /// reaches it, and only when every policy the space has ever recorded (revoked ones too: their
-    /// runs may already have published) names that same lineage. Everything else is refused by
-    /// name (`CrossRunMemoryUnavailable`), never narrowed silently.
+    /// Over a stamped space (Program C, C1) every audience but `TenantAllLegacy` reaches it:
+    /// each record's label says what its writer had read, and each view withholds what is above
+    /// its ceiling. `TenantAllLegacy` is migration's alone, and a migrated store is unstamped.
+    ///
+    /// Over an unstamped space only a `Lineage(root)` audience reaches it, and only when every
+    /// policy the space has ever recorded (revoked ones too: their runs may already have
+    /// published) names that same lineage. Everything else is refused by name
+    /// (`CrossRunMemoryUnavailable`), never narrowed silently.
     pub(crate) fn cross_run_reach(
         &self,
         space: &MemorySpace,
         audience: &Audience,
     ) -> Result<(), MemoryRefusal> {
-        match space.label_stamping() {
-            LabelStamping::Unstamped => {}
-        }
         let refuse = |reach| {
             Err(MemoryRefusal::CrossRunMemoryUnavailable {
                 space: space.id.reference(),
                 reach,
             })
         };
-        let root = match audience {
-            Audience::Lineage { root } => *root,
-            Audience::Workspace { .. } => return refuse(CrossRun::Workspace),
-            Audience::TenantAll => return refuse(CrossRun::TenantAll),
-            Audience::TenantAllLegacy => return refuse(CrossRun::TenantAllLegacy),
+        let root = match (space.label_stamping(), audience) {
+            (
+                LabelStamping::Stamped,
+                Audience::Lineage { .. } | Audience::Workspace { .. } | Audience::TenantAll,
+            ) => return Ok(()),
+            (LabelStamping::Stamped | LabelStamping::Unstamped, Audience::TenantAllLegacy) => {
+                return refuse(CrossRun::TenantAllLegacy);
+            }
+            (LabelStamping::Unstamped, Audience::Lineage { root }) => *root,
+            (LabelStamping::Unstamped, Audience::Workspace { .. }) => {
+                return refuse(CrossRun::Workspace);
+            }
+            (LabelStamping::Unstamped, Audience::TenantAll) => return refuse(CrossRun::TenantAll),
         };
         let held = self
             .policies
@@ -1215,7 +1295,7 @@ impl Registry {
                 name: name.clone(),
             };
             if !self.spaces.contains_key(&(tenant.clone(), lineage.clone())) {
-                self.create_lineage_space(tenant, &lineage, pod.lineage, now, record)?;
+                self.create_lineage_space(tenant, &lineage, pod, now, record)?;
             }
             lineage
         };
@@ -1272,10 +1352,11 @@ impl Registry {
         &mut self,
         tenant: &TenantKey,
         id: &SpaceId,
-        root: Uuid,
+        pod: &PodMatch<'_>,
         now: u64,
         record: Recorder<'_>,
     ) -> Result<(), ApiError> {
+        let root = pod.lineage;
         let key = (tenant.clone(), id.clone());
         let policy = Uuid::new_v4();
         self.spaces.insert(
@@ -1290,6 +1371,9 @@ impl Registry {
                 high_water: None,
                 origin: SpaceOrigin::LineageDefault,
                 created_unix: now,
+                // Stamped only when the run that creates it writes stamps: a legacy run's first
+                // publish would add unstamped records.
+                stamping: LabelStamping::of(pod.writer),
             },
         );
         self.policies.insert(
@@ -1316,6 +1400,7 @@ impl Registry {
                         schema: &space.schema,
                         quota_bytes: space.quota_bytes,
                         epoch: space.epoch,
+                        stamping: space.stamping,
                     },
                 ),
                 FlowClaim::new(tenant, id, now, policy_created(made)),
@@ -1415,6 +1500,8 @@ impl Registry {
                     high_water: None,
                     origin,
                     created_unix: now,
+                    // An earlier layout's records were written before stamps existed.
+                    stamping: LabelStamping::Unstamped,
                 },
             );
             self.policies.insert(

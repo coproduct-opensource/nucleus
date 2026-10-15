@@ -671,6 +671,9 @@ enum DriverState {
 struct LocalPod {
     child: Mutex<tokio::process::Child>,
     signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
+    /// The workload door this pod's proxy was given (`--workload-door`): the
+    /// one the admission record's injected environment names (#3219).
+    workload_door: PathBuf,
 }
 
 #[derive(Debug)]
@@ -1459,6 +1462,7 @@ async fn create_pod_internal(
         run_ends: memory_provisioning::now_unix()
             .saturating_add(spec.spec.timeout_seconds)
             .saturating_add(memory_provisioning::PUBLISH_WINDOW_SECS),
+        writer: memory_provisioning::writer_for(state, requested_memory.is_some()).await,
     };
     let memory = match state.memory.provision(
         requested_memory,
@@ -1664,7 +1668,8 @@ async fn spawn_local_pod(
         .append(true)
         .open(&log_path)?;
 
-    let bare_tier = bare_tier_separation::proxy_args(state, pod_dir, &spec.spec.work_dir)?;
+    let (bare_tier, workload_door) =
+        bare_tier_separation::proxy_args(state, pod_dir, &spec.spec.work_dir)?;
     let mut command = Command::new(&state.tool_proxy_path);
     command
         .args(bare_tier)
@@ -1675,7 +1680,7 @@ async fn spawn_local_pod(
         .arg("--listen-unix")
         .arg(&socket)
         .arg("--announce-path")
-        .arg(&announce_path); // the workload door is `proxy_args`'s, not the guest default
+        .arg(&announce_path); // the workload door is in `bare_tier`, not the guest default
     // No shared secret, and none inherited from the node's own environment.
     command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
     command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
@@ -1814,6 +1819,7 @@ async fn spawn_local_pod(
     let handle = LocalPod {
         child: Mutex::new(child),
         signed_proxy: Mutex::new(signed_proxy),
+        workload_door,
     };
 
     info!("spawned local pod {}", id);

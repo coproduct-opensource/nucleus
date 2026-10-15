@@ -76,7 +76,7 @@ fn raw(value: &str) -> MemoryRecord {
         source_class: SourceClass::Web,
         source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
     };
-    let label = derive_label(&d, &[]);
+    let label = derive_label(&d, &[], crate::record::LabelStamp::Unstamped);
     MemoryRecord::new(value, SchemaType::String, label, d)
 }
 
@@ -85,7 +85,7 @@ fn derived(value: &str, parent: &MemoryRecord) -> MemoryRecord {
         input_hashes: vec![parent.content_hash()],
         model_tag: "fixture-model".into(),
     };
-    let label = derive_label(&d, &[parent]);
+    let label = derive_label(&d, &[parent], crate::record::LabelStamp::Unstamped);
     MemoryRecord::new(value, SchemaType::String, label, d)
 }
 

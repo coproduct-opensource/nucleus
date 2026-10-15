@@ -126,7 +126,7 @@ census! {
     decisions => Structural,
         "operator trust roots, tenant and bundle directory; read per pod, written by no pod (decision_provisioning)";
     memory => TenantShared,
-        "memory spaces: by default one per (tenant, lineage root, name), so pods outside a lineage share nothing; a Workspace, TenantAll or migrated TenantAll-legacy policy would share a space across lineages, and is refused by name (CrossRunMemoryUnavailable) until record labels are dependency-stamped (Program C, C1). Each run gets its own binding with a pinned snapshot and a private branch, receipted at delivery (memory_space, memory_binding)";
+        "memory spaces: by default one per (tenant, lineage root, name), so pods outside a lineage share nothing; a Workspace or TenantAll policy shares a space across lineages only when every record of it is dependency-stamped (Program C, C1), each view then withholding records above its ceiling and treating unstamped ones as Secret; over any other space, and for a migrated TenantAll-legacy store, it is refused by name (CrossRunMemoryUnavailable). Each run gets its own binding with a pinned snapshot and a private branch, receipted at delivery (memory_space, memory_binding)";
     audit_minter => Secret, "holds the node's audit credential; each pod is minted only its own scoped one";
     drand_config => Structural, "operator setting";
     identity_manager => PerPod,

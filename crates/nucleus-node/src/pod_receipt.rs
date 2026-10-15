@@ -842,6 +842,7 @@ mod tests {
                 driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
                     child: tokio::sync::Mutex::new(child),
                     signed_proxy: tokio::sync::Mutex::new(None),
+                    workload_door: std::path::PathBuf::from("/nonexistent/workload.sock"),
                 })),
                 parent_pod_id: None,
                 posture_stamp: None,

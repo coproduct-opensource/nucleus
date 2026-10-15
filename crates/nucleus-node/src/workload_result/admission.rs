@@ -1,4 +1,4 @@
-//! Admission inventory comes from the host's effective spec, without contacting
+//! Admission inv        DriverState::Local(local) => local.workload_door.clone(),ntory comes from the host's effective spec, without contacting
 //! a guest or reading an execution receipt. Never export workload env or secrets.
 use axum::{
     Json,
@@ -7,7 +7,21 @@ use axum::{
 use nucleus_spec::workload_admission::WorkloadAdmission;
 use uuid::Uuid;
 
-use crate::{ApiError, NodeState, pod_api};
+use crate::{ApiError, DriverState, NodeState, pod_api};
+
+/// The workload door the pod's proxy binds, by where that proxy runs. The
+/// launcher of each driver names the same path: the local driver records the
+/// door it passed on the pod (`LocalPod::workload_door`), the container driver
+/// `CONTAINER_WORKLOAD_DOOR`, and a microVM guest's proxy binds its default,
+/// `guest_layout::WORKLOAD_DOOR`, which the node does not override.
+fn workload_door(pod: &crate::PodHandle) -> std::path::PathBuf {
+    match &pod.driver_state {
+        #[cfg(feature = "local-driver")]
+        DriverState::Local(local) => local.workload_door.clone(),
+        DriverState::Container(_) => crate::container_transport::CONTAINER_WORKLOAD_DOOR.into(),
+        DriverState::Firecracker(_) => nucleus_spec::guest_layout::WORKLOAD_DOOR.into(),
+    }
+}
 
 pub(super) async fn get(
     State(state): State<NodeState>,
@@ -22,6 +36,14 @@ pub(super) async fn get(
         .as_ref()
         .ok_or_else(|| ApiError::InvalidSpec("pod has no configured workload".into()))?;
     let label = |name: &str| spec.metadata.labels.get(name).cloned().unwrap_or_default();
+    // What the runtime injects into the workload's environment, from the same
+    // function the launcher calls, so a verifier derives these inputs from this
+    // record rather than restating them (#3219).
+    let door = nucleus_client::endpoint::ProxyEndpoint::unix(&workload_door(&pod));
+    let runtime_environment_inputs = nucleus_spec::workload_egress::injected_env(
+        &spec.spec.credentialed_egress,
+        &door.to_string(),
+    );
     Ok(Json(WorkloadAdmission {
         pod_id: id.to_string(),
         created_at_unix: pod.created_at,
@@ -39,6 +61,7 @@ pub(super) async fn get(
             .executor_signing_key
             .verifying_key()
             .to_bytes(),
+        runtime_environment_inputs,
     }))
 }
 
@@ -71,6 +94,15 @@ mod tests {
                 }))
                 .unwrap(),
             );
+            // One declared upstream: the runtime injects its URL (#3219).
+            pod.spec.spec.credentialed_egress = vec![nucleus_spec::CredentialedEgressSpec {
+                name: "model-api".into(),
+                upstream: "https://model.invalid/".into(),
+                credential_env: "LLM_API_TOKEN".into(),
+                header: "authorization".into(),
+                value_prefix: "Bearer ".into(),
+                effects: nucleus_spec::EffectTable::unclassified(),
+            }];
             // Match the admitted representation, which replaces the profile.
             pod.spec.spec.policy = nucleus_spec::PolicySpec::Inline {
                 lattice: Box::new(portcullis::PermissionLattice::codegen()),
@@ -105,6 +137,19 @@ mod tests {
                 .to_bytes()
         );
         assert!(!String::from_utf8_lossy(&bytes).contains("not-for-export"));
+        // The injected egress URL names the door the local launcher passes,
+        // and nothing about the credential crosses.
+        let door =
+            crate::lifecycle::local_workload_door(&crate::lifecycle::pod_dir(&state.state_dir, id))
+                .unwrap();
+        assert_eq!(
+            admission.runtime_environment_inputs,
+            std::collections::BTreeMap::from([(
+                "NUCLEUS_EGRESS_MODEL_API_URL".to_string(),
+                format!("unix://{}/v1/egress/model-api", door.display()),
+            )])
+        );
+        assert!(!String::from_utf8_lossy(&bytes).contains("LLM_API_TOKEN"));
         state
             .pods
             .lock()

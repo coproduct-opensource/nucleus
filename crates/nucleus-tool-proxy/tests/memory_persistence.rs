@@ -194,7 +194,11 @@ async fn live_memory_write_survives_proxy_restart_and_recall_preserves_label() {
         source_class: SourceClass::Web,
         source_hash: ContentHash::of_canonical_bytes(value.as_bytes()),
     };
-    let label = derive_label(&derivation, &[]);
+    let label = derive_label(
+        &derivation,
+        &[],
+        nucleus_provenance_memory::LabelStamp::Unstamped,
+    );
     let first = launch(root.path(), 1).await;
     let write = post(
         &first,

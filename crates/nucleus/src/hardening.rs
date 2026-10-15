@@ -196,6 +196,7 @@ use crate::error::{NucleusError, Result};
 #[cfg(target_os = "linux")]
 mod exec_pin;
 mod landlock;
+mod pidns;
 mod rlimit;
 mod seal;
 #[cfg(target_os = "linux")]
@@ -207,6 +208,7 @@ mod userns;
 mod workspace;
 
 pub use landlock::{LandlockSupport, MIN_LANDLOCK_ABI};
+pub use pidns::PidNamespace;
 pub use rlimit::{AppliedRlimits, RlimitPolicy, RlimitVector};
 pub use seal::{EnvironmentReach, RuntimeSeal, seal_runtime};
 pub use spawn_record::{Hardened, InstalledFilter, SpawnHardening, Unhardened};
@@ -276,6 +278,8 @@ enum Isolation {
     None,
     /// `unshare(CLONE_NEWNET)`, then `setgroups(0)`, `setresgid`, `setresuid`.
     NetnsThenDrop { uid: u32, gid: u32 },
+    /// The workload's own PID namespace, then the drop (#3344, `pidns.rs`).
+    PidnsThenDrop { uid: u32, gid: u32 },
     /// After the descriptor sweep: `unshare(CLONE_NEWUSER)` with the setuid
     /// helpers writing a one-id map for each of these ids, then
     /// `setgroups(0)`, `setresgid`, `setresuid` to them, and the maps read
@@ -898,6 +902,21 @@ impl ChildConfinement {
         syscalls: SeccompPolicy,
         writes: &WorkspaceWrites,
     ) -> SpawnHardening {
+        self.apply_with_pids(cmd, rlimits, syscalls, writes, PidNamespace::Shared)
+    }
+
+    /// [`Self::apply`], with the child in a PID namespace of its own when
+    /// `pids` asks and this posture drops (#3344, `hardening/pidns.rs`). The
+    /// returned [`Hardened::pid_namespace`] is what the hook does; a posture
+    /// that cannot make one says [`PidNamespace::Shared`].
+    pub fn apply_with_pids(
+        &self,
+        cmd: &mut std::process::Command,
+        rlimits: AppliedRlimits,
+        syscalls: SeccompPolicy,
+        writes: &WorkspaceWrites,
+        pids: PidNamespace,
+    ) -> SpawnHardening {
         let layer = match self.write_layer(writes) {
             Ok(layer) => layer,
             Err(error) => {
@@ -933,16 +952,27 @@ impl ChildConfinement {
                 syscalls,
             ),
             Posture::DropTo(uid, filter, filesystem) => {
-                imp::drop_to(cmd, uid);
-                Self::restrict(
-                    cmd,
-                    Isolation::None,
-                    filter,
-                    filesystem,
-                    layer,
-                    rlimits,
-                    syscalls,
-                )
+                // In its own PID namespace the drop follows the mount, in the hook.
+                let isolation = match pids {
+                    PidNamespace::Own => Isolation::PidnsThenDrop { uid, gid: uid },
+                    PidNamespace::Shared => {
+                        imp::drop_to(cmd, uid);
+                        Isolation::None
+                    }
+                };
+                Self::restrict(cmd, isolation, filter, filesystem, layer, rlimits, syscalls)
+            }
+            // A subordinate-id child in its own PID namespace is not composed:
+            // `pidns::enter` drops from root, and this child is never root on the
+            // host. Refused rather than run without the namespace it asked for;
+            // the tool-proxy refuses the plan first (`admit`).
+            Posture::Subordinate(_) if pids == PidNamespace::Own => {
+                tracing::error!(
+                    "refusing the spawn: a subordinate-id child in its own PID namespace is not \
+                     supported"
+                );
+                refuse(cmd);
+                SpawnHardening::Unhardened(Unhardened::Refused)
             }
             Posture::Subordinate(ids) => Self::restrict(
                 cmd,
@@ -985,11 +1015,18 @@ impl ChildConfinement {
             SyscallFilter::Unfiltered => InstalledFilter::Unfiltered,
         };
         let workspace = layer.hold();
+        let pids = match isolation {
+            Isolation::PidnsThenDrop { uid: _, gid: _ } => PidNamespace::Own,
+            Isolation::None
+            | Isolation::NetnsThenDrop { uid: _, gid: _ }
+            | Isolation::UserNamespace(_) => PidNamespace::Shared,
+        };
         match imp::install(cmd, isolation, filter, filesystem, layer, rlimits, syscalls) {
             Hook::Installed => SpawnHardening::Hardened(Hardened {
                 rlimits,
                 syscalls: installed,
                 workspace,
+                pids,
             }),
             Hook::NoneOnThisPlatform => {
                 SpawnHardening::Unhardened(Unhardened::NoHookOnThisPlatform)
@@ -1245,6 +1282,7 @@ mod imp {
     enum Isolate {
         Nothing,
         NetnsThenDrop { uid: libc::uid_t, gid: libc::gid_t },
+        PidnsThenDrop { uid: libc::uid_t, gid: libc::gid_t },
         UserNamespace(super::userns::UserNsMap),
     }
 
@@ -1253,6 +1291,7 @@ mod imp {
             match isolation {
                 Isolation::None => Self::Nothing,
                 Isolation::NetnsThenDrop { uid, gid } => Self::NetnsThenDrop { uid, gid },
+                Isolation::PidnsThenDrop { uid, gid } => Self::PidnsThenDrop { uid, gid },
                 Isolation::UserNamespace(ids) => {
                     Self::UserNamespace(super::userns::UserNsMap::prepare(ids))
                 }
@@ -1295,6 +1334,8 @@ mod imp {
                         return Err(io::Error::last_os_error());
                     }
                 }
+                // Returns only in the workload, dropped (`pidns.rs`).
+                Isolate::PidnsThenDrop { uid, gid } => super::pidns::enter(*uid, *gid)?,
             }
             // Mark every fd from 3 up close-on-exec rather than closing it
             // HERE: std still owns a CLOEXEC status pipe in this window, used
@@ -1342,7 +1383,9 @@ mod imp {
             // The steps are `userns`'s; only `fork`, `execve`, `_exit`,
             // `unshare` and the ambient clear are here.
             match isolation {
-                Isolate::Nothing | Isolate::NetnsThenDrop { uid: _, gid: _ } => {}
+                Isolate::Nothing
+                | Isolate::NetnsThenDrop { uid: _, gid: _ }
+                | Isolate::PidnsThenDrop { uid: _, gid: _ } => {}
                 Isolate::UserNamespace(map) => {
                     let mut go = super::userns::go_pipe()?;
                     let mut helpers: [Option<libc::pid_t>; 2] = [None, None];
@@ -1422,10 +1465,22 @@ mod imp {
             // unprivileged `landlock_restrict_self` is `EPERM`) and before the
             // syscall filter, so the filter can never stand between the
             // child and its own restriction.
-            match landlock {
-                Landlock::NotRequested => {}
-                Landlock::Refuse => return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP)),
-                Landlock::Restrict(ruleset) => ruleset.restrict_self()?,
+            match (landlock, isolation) {
+                (Landlock::NotRequested, _) => {}
+                (Landlock::Refuse, _) => {
+                    return Err(io::Error::from_raw_os_error(libc::EOPNOTSUPP));
+                }
+                // Its own `/proc` is a new procfs the parent's rule is not on.
+                (Landlock::Restrict(ruleset), Isolate::PidnsThenDrop { uid: _, gid: _ }) => {
+                    ruleset.grant_own_proc()?;
+                    ruleset.restrict_self()?;
+                }
+                (
+                    Landlock::Restrict(ruleset),
+                    Isolate::Nothing
+                    | Isolate::NetnsThenDrop { uid: _, gid: _ }
+                    | Isolate::UserNamespace(_),
+                ) => ruleset.restrict_self()?,
             }
             // The write layer (#2907), a second Landlock domain over the
             // first: the two intersect, so a read-only workspace stays
@@ -1682,7 +1737,9 @@ mod imp {
         // refused here like a filter is.
         let isolated = match isolation {
             Isolation::None => false,
-            Isolation::NetnsThenDrop { uid: _, gid: _ } | Isolation::UserNamespace(_) => true,
+            Isolation::NetnsThenDrop { uid: _, gid: _ }
+            | Isolation::PidnsThenDrop { uid: _, gid: _ }
+            | Isolation::UserNamespace(_) => true,
         };
         match (filter, landlock_required || isolated) {
             (SyscallFilter::Unfiltered, false) => {}

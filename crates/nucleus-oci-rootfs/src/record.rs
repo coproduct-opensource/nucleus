@@ -38,9 +38,17 @@ pub enum DroppedKind {
     CharDevice,
     /// A block device node.
     BlockDevice,
+    /// An entry inside a directory the guest mounts over at boot (`/run`,
+    /// `/tmp`, `/dev`, ...). It would never be visible to the guest, and if a
+    /// mount failed it must not show through (#3216).
+    InsideMustBeEmptyDir,
+    /// A whiteout or opaque marker inside such a directory: nothing from the
+    /// image is there for it to remove.
+    WhiteoutInsideMustBeEmptyDir,
 }
 
-/// An entry dropped from a layer (owner decision: devices are dropped and reported, not refused).
+/// An entry dropped from a layer (owner decisions: devices, and the contents of
+/// must-be-empty directories, are dropped and reported, not refused).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DroppedEntry {
     /// Zero-based layer index.

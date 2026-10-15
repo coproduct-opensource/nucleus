@@ -456,6 +456,9 @@ mod imp {
     #[derive(Debug)]
     pub(crate) struct Ruleset {
         created: Option<RulesetCreated>,
+        /// What the ruleset grants `/proc`, for a procfs the child mounts
+        /// after this was compiled ([`Self::grant_own_proc`], #3344).
+        proc: Option<BitFlags<AccessFs>>,
     }
 
     fn list(dir: &Path) -> io::Result<Vec<(String, Kind)>> {
@@ -593,9 +596,42 @@ mod imp {
                     ))
                     .map_err(|e| failed(&rule.path, e))?;
             }
+            let proc = rules
+                .iter()
+                .find(|rule| rule.path == Path::new("/proc"))
+                .map(|rule| rights(rule.grant, level, true) & handled);
             Ok(Self {
                 created: Some(created),
+                proc,
             })
+        }
+
+        /// Grant the procfs a child mounted for its own PID namespace (#3344)
+        /// what this ruleset grants `/proc`, and nothing when it grants
+        /// nothing. The parent's rule is on the runtime's procfs, whose root
+        /// the new mount covers, and Landlock decides by inode, so the new
+        /// procfs needs a rule of its own. In the forked child, before
+        /// [`Self::restrict_self`]: one `O_PATH` open of a static path and
+        /// one `landlock_add_rule`, no allocation on success.
+        pub(crate) fn grant_own_proc(&mut self) -> io::Result<()> {
+            use rustix::fs::{Mode, OFlags};
+            let Some(rights) = self.proc else {
+                return Ok(());
+            };
+            let created = self
+                .created
+                .take()
+                .ok_or_else(|| io::Error::from_raw_os_error(libc::EBADF))?;
+            let fd = rustix::fs::open(
+                c"/proc",
+                OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::DIRECTORY,
+                Mode::empty(),
+            )?;
+            let created = created
+                .add_rule(PathBeneath::new(fd, rights))
+                .map_err(|_| io::Error::from_raw_os_error(libc::EOPNOTSUPP))?;
+            self.created = Some(created);
+            Ok(())
         }
 
         /// Restrict the calling process to the ruleset. Runs in the forked

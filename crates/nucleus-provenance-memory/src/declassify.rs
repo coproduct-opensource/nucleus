@@ -227,7 +227,7 @@ mod tests {
             source_class: SourceClass::Web,
             source_hash: ContentHash::of_canonical_bytes(b"evil-instruction"),
         };
-        let label = derive_label(&d, &[]);
+        let label = derive_label(&d, &[], crate::record::LabelStamp::Unstamped);
         MemoryRecord::new("evil-instruction", SchemaType::String, label, d)
     }
 
@@ -403,13 +403,18 @@ mod tests {
                 source_class: SourceClass::LocalFile,
                 source_hash: ContentHash::of_canonical_bytes(b"a"),
             };
-            MemoryRecord::new("a", SchemaType::String, derive_label(&d, &[]), d)
+            MemoryRecord::new(
+                "a",
+                SchemaType::String,
+                derive_label(&d, &[], crate::record::LabelStamp::Unstamped),
+                d,
+            )
         };
         let d = MemoryDerivation::Deterministic {
             input_hashes: vec![a.content_hash()],
             transform: crate::record::TransformId::new("id"),
         };
-        let label = derive_label(&d, &[&a]);
+        let label = derive_label(&d, &[&a], crate::record::LabelStamp::Unstamped);
         let rec = MemoryRecord::new("a", SchemaType::String, label, d);
         let trusted = [key(1).verifying_key().to_bytes()];
         let mut w = DeclassifyWitness {

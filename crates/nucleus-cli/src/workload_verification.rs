@@ -130,6 +130,9 @@ fn expectations(
         admission.architecture == architecture,
         "setup admission architecture differs from host inputs"
     );
+    // The declared inputs plus what the runtime injected, from the admission
+    // record (#3219): the same derivation `nucleus-audit prepare-execution` uses.
+    let inputs = admission.environment_inputs(&environment())?;
     Ok(RecordedExecution {
         pod_id: pod.to_string(),
         session_id: pod.to_string(),
@@ -138,7 +141,7 @@ fn expectations(
         gate: String::new(),
         program_digest: program,
         architecture: architecture.into(),
-        environment_inputs_sha256: EnvironmentIdentity::of(&environment()).inputs_sha256,
+        environment_inputs_sha256: EnvironmentIdentity::of(&inputs).inputs_sha256,
         artifacts: BTreeMap::new(),
         issuer_kid: admission.issuer_kid,
         verifying_key: admission.verifying_key,

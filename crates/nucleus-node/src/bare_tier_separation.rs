@@ -110,8 +110,11 @@ impl LocalChildren {
 
     /// One new local pod's tool-proxy arguments: the node's own pid for its
     /// socket (`--node-peer-pid`), the bare-tier opt-in, the pod's ids, and
-    /// its workload door. Allocates the ids and grants the workspace where
-    /// [`SubordinatePool::grant`] allows.
+    /// its workload door, and that door. Allocates the ids and grants the
+    /// workspace where [`SubordinatePool::grant`] allows. The door is
+    /// [`crate::lifecycle::local_workload_door`] unless the workspace was
+    /// granted, and the pod records the one passed, so the admission record
+    /// (#3219) names the socket the proxy binds.
     ///
     /// # Errors
     /// The pool is used up or its offset file cannot be kept, or the door
@@ -122,12 +125,12 @@ impl LocalChildren {
         state: &crate::NodeState,
         pod_dir: &Path,
         work_dir: &Path,
-    ) -> Result<Vec<OsString>, ApiError> {
+    ) -> Result<(Vec<OsString>, PathBuf), ApiError> {
         let mut args: Vec<OsString> = vec![
             "--node-peer-pid".into(),
             std::process::id().to_string().into(),
         ];
-        let mut door = std::path::absolute(pod_dir.join("workload.sock"))?;
+        let mut door = crate::lifecycle::local_workload_door(pod_dir)?;
         args.extend(
             crate::bare_tier_opt_in::unsandboxed_proxy_flag(self.opt_in()).map(OsString::from),
         );
@@ -150,8 +153,8 @@ impl LocalChildren {
             }
         }
         args.push("--workload-door".into());
-        args.push(door.into());
-        Ok(args)
+        args.push(door.clone().into());
+        Ok((args, door))
     }
 }
 
@@ -165,7 +168,7 @@ pub(crate) fn proxy_args(
     state: &crate::NodeState,
     pod_dir: &Path,
     work_dir: &Path,
-) -> Result<Vec<OsString>, ApiError> {
+) -> Result<(Vec<OsString>, PathBuf), ApiError> {
     state.local_children.proxy_args(state, pod_dir, work_dir)
 }
 

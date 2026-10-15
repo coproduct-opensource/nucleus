@@ -1493,6 +1493,12 @@ pub(crate) mod handler_tests {
             driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
                 child: Mutex::new(child),
                 signed_proxy: Mutex::new(None),
+                // What `spawn_local_pod` passes when no workspace is granted.
+                workload_door: crate::lifecycle::local_workload_door(&crate::lifecycle::pod_dir(
+                    &st.state_dir,
+                    id,
+                ))
+                .expect("door path"),
             })),
             parent_pod_id: parent,
             posture_stamp: None,
@@ -1547,6 +1553,7 @@ pub(crate) mod handler_tests {
             driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
                 child: Mutex::new(child),
                 signed_proxy: Mutex::new(Some(proxy)),
+                workload_door: std::path::PathBuf::from("/nonexistent/workload.sock"),
             })),
             parent_pod_id: None,
             posture_stamp: None,

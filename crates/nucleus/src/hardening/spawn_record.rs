@@ -3,7 +3,7 @@
 
 use portcullis::SeccompPolicy;
 
-use super::{AppliedRlimits, WorkspaceHold};
+use super::{AppliedRlimits, PidNamespace, WorkspaceHold};
 
 /// What a spawn's confinement hook does to the child, as its launch receipt
 /// states it (#2572).
@@ -60,6 +60,8 @@ pub struct Hardened {
     pub(super) syscalls: InstalledFilter,
     /// How the hook holds the workspace (#2907).
     pub(super) workspace: WorkspaceHold,
+    /// Whether the hook made the child a PID namespace (#3344).
+    pub(super) pids: PidNamespace,
 }
 
 impl Hardened {
@@ -67,6 +69,12 @@ impl Hardened {
     #[must_use]
     pub fn workspace(&self) -> WorkspaceHold {
         self.workspace
+    }
+
+    /// Whether the hook runs the child in its own PID namespace (#3344).
+    #[must_use]
+    pub fn pid_namespace(&self) -> PidNamespace {
+        self.pids
     }
 
     /// The limits the hook sets.
@@ -129,6 +137,8 @@ pub enum Unhardened {
         abi: u32,
     },
     /// The hook fails the spawn before exec: the pod's read-only workspace
-    /// cannot be held here (#2907). No child runs, so no receipt carries it.
+    /// cannot be held here (#2907), or a subordinate-id child asked for its
+    /// own PID namespace, which is not composed (#3344, Program C, C2). No
+    /// child runs, so no receipt carries it.
     Refused,
 }
