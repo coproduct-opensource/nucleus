@@ -659,6 +659,8 @@ pub fn operation_for_route(method: &axum::http::Method, path: &str) -> Option<Op
     match (method, segments.as_slice()) {
         (&axum::http::Method::POST, ["v1", "pods"]) => Some(Operation::CreatePod),
         (&axum::http::Method::GET, ["v1", "pods"]) => Some(Operation::ListPods),
+        // Whether one pod has ended: the listing's question, asked by id (`pod_api::ended`).
+        (&axum::http::Method::GET, ["v1", "pods", _id, "ended"]) => Some(Operation::ListPods),
         (&axum::http::Method::GET, ["v1", "pods", _id, "logs"]) => Some(Operation::StreamLogs),
         (&axum::http::Method::GET, ["v1", "pods", _id, "workload-logs", "stdout" | "stderr"]) => {
             Some(Operation::StreamLogs)
@@ -1155,6 +1157,10 @@ mod tests {
         assert_eq!(
             operation_for_route(&Method::GET, "/v1/pods/abc-123/receipt"),
             Some(Operation::GetReceipt)
+        );
+        assert_eq!(
+            operation_for_route(&Method::GET, "/v1/pods/abc-123/ended"),
+            Some(Operation::ListPods)
         );
         // Unmapped nested path.
         assert_eq!(

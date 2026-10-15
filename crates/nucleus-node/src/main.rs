@@ -1155,7 +1155,7 @@ async fn main() -> Result<(), ApiError> {
         .route("/v1/pods/{id}/snapshot", post(pod_api::snapshot_pod))
         .route("/v1/pods/{id}/receipt", get(pod_api::get_receipt))
         .merge(workload_result::routes())
-        .merge(pod_api::effect_approvals::routes())
+        .merge(pod_api::routes())
         .merge(memory_space_api::routes())
         .with_state(state.clone())
         .layer(middleware::from_fn_with_state(
