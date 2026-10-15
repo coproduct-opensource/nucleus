@@ -76,6 +76,30 @@ When the node is stopped by a signal:
   still alive after the kill, or its membership cannot be read, the node refuses
   to start and names it.
 
+**Give the node at least the drain deadline to stop.** A supervisor that sends
+SIGKILL before the drain finishes turns a SIGTERM into the SIGKILL case above.
+The drain can take up to 30 s (`DRAIN_DEADLINE` in `src/node_drain.rs`), and the
+node then has to exit, so allow at least 30 s plus a margin; 45 s is a
+reasonable setting. The defaults differ:
+
+| supervisor | default grace before SIGKILL | setting |
+|---|---|---|
+| systemd | 90 s (`TimeoutStopSec`) | enough as shipped |
+| `docker stop` / Compose | 10 s | `docker stop -t 45`, `docker run --stop-timeout 45`, Compose `stop_grace_period: 45s` |
+| Kubernetes | 30 s (`terminationGracePeriodSeconds`) | 45 or more; 30 leaves no time to exit |
+
+**Pod authority after an unclean stop.** Each admitted pod's authority record
+(`pods/<id>/authority.json`) holds its allocation and one of its parent's child
+slots until the pod is released. A node stopped without releasing its pods
+leaves those records. At the next start, after the driver's recovery has stopped
+the previous life's workloads, the node settles every record it restored,
+children before parents. Each pod is charged as its reaper would have charged
+it: the whole allocation, or, for a pod admitted under a binding with
+`settle = "metered"`, the spend the host metered into its ledger (checkpointed
+before each charge), at most the allocation. The settle mode is the one recorded
+when the pod was admitted. No pod is refunded as never started: the record is
+written before the spawn, and nothing durable says whether the VMM then ran.
+
 A parent-death signal does not replace the startup reclaim. The kernel clears
 `PR_SET_PDEATHSIG` when the jailer drops to `--uid`/`--gid`, so a jailed VMM never
 carries one.

@@ -151,6 +151,7 @@ use budget::SharedBudget;
 mod binding_ledger;
 use binding_ledger::{charge_day, receil};
 mod daily;
+mod previous_life;
 mod settle;
 use settle::{ReleaseKind, release};
 pub(crate) mod registry;
@@ -523,7 +524,8 @@ struct PodCert {
     /// ledger: brokered call charges, and its live children's allocations), at
     /// most its allocation, instead of the whole allocation. Set at admission
     /// from the federated binding's `settle = "metered"`; `false` everywhere
-    /// else, and for a pod restored after a restart (charged in full, as before).
+    /// else. Persisted with the pod, so a pod restored after a restart settles as
+    /// it was admitted (`previous_life.rs`).
     settle_metered: bool,
 }
 
@@ -609,6 +611,10 @@ struct PersistedAuthority {
     /// it never grants (ADR 0007 B-2).
     #[serde(default)]
     egress: Option<nucleus_spec::EgressBudgetSpec>,
+    /// Whether release settles to metered spend, as decided at admission. Absent from files
+    /// written before it was recorded, and `false` then: the whole allocation.
+    #[serde(default)]
+    settle_metered: bool,
 }
 
 /// The part of a ledger a restart cannot re-derive from live children.
@@ -635,6 +641,10 @@ struct PersistedChain {
     /// A binding's allocations per UTC day (`daily.rs`).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     days: std::collections::BTreeMap<String, u64>,
+    /// Each live pod's charge to its day, so a restart can settle it (`daily.rs`).
+    /// Absent from older records: those pods' charges are kept whole.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    day_charges: std::collections::BTreeMap<Uuid, (String, u64)>,
 }
 
 const CHAIN_VERSION: u8 = 2;
@@ -2110,8 +2120,8 @@ fn restored_pod(bytes: &[u8], pod: Uuid, dir: &Path) -> Result<PodCert, &'static
         starting: crate::host_decide::StartingLabel::Untrusted(
             crate::host_decide::Untrusted::Restored,
         ),
-        // In memory only: a restored pod is charged its whole allocation.
-        settle_metered: false,
+        // As admitted; a record that predates it settles the whole allocation.
+        settle_metered: persisted.settle_metered,
     })
 }
 
@@ -2148,7 +2158,7 @@ async fn read_chains(state_dir: &Path) -> Vec<([u8; 32], Option<ChainLedger>)> {
                         p.ledger.consumed_micro,
                     ),
                     retired: p.ledger.retired,
-                    days: daily::Days::restore(p.days)?,
+                    days: daily::Days::restore(p.days, p.day_charges)?,
                 })
             });
         if chain.is_none() {
@@ -2178,6 +2188,7 @@ async fn persist_pod(state_dir: &Path, pod_id: Uuid, entry: &PodCert) -> std::io
             &entry.ledger.snapshot().map_err(std::io::Error::other)?,
             &entry.retired,
         ),
+        settle_metered: entry.settle_metered,
     };
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
     write_whole(&authority_path(state_dir, pod_id), &bytes).await
@@ -2193,6 +2204,7 @@ async fn persist_external(
         max_micro: chain.ledger.core().parent_max_units(),
         ledger: LedgerRecord::of(&chain.ledger, &chain.retired),
         days: chain.days.record(),
+        day_charges: chain.days.live_record(),
     };
     let bytes = serde_json::to_vec(&persisted).map_err(std::io::Error::other)?;
     write_whole(&chain_path(state_dir, fp), &bytes).await

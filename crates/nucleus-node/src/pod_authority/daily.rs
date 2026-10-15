@@ -16,7 +16,9 @@
 //! crediting the rest to the day it was charged to.
 //!
 //! Persisted beside the ledger in `authority/external/<key>.json` as
-//! `days = { "YYYY-MM-DD": micro-USD }`. Days more than [`DAY_HISTORY`] before
+//! `days = { "YYYY-MM-DD": micro-USD }`, and each live pod's charge as
+//! `day_charges = { pod: ["YYYY-MM-DD", micro-USD] }` so a pod a killed node left registered
+//! is settled against its day at the next start. Days more than [`DAY_HISTORY`] before
 //! the latest charged day are dropped when written: they bound nothing, and the
 //! ledger's `consumed_micro` is the history of what was spent.
 
@@ -43,8 +45,9 @@ pub(super) fn utc_today() -> DayClock {
 pub(super) struct Days {
     charged: BTreeMap<NaiveDate, u64>,
     /// Pods whose charge could still be credited back: admitted, not yet
-    /// released. In memory only, because only an in-process reservation can
-    /// be credited, and none survives a restart.
+    /// released. Persisted with the days, so a pod a killed node left registered
+    /// is settled against the day it was charged to at the next start
+    /// (`previous_life.rs`). A record without it credits nothing back.
     live: HashMap<Uuid, (NaiveDate, u64)>,
 }
 
@@ -102,16 +105,32 @@ impl Days {
             .collect()
     }
 
+    /// The persisted form of the live charges: each pod's day and charge.
+    pub(super) fn live_record(&self) -> BTreeMap<Uuid, (String, u64)> {
+        self.live
+            .iter()
+            .map(|(pod, (day, micro))| (*pod, (day.format("%Y-%m-%d").to_string(), *micro)))
+            .collect()
+    }
+
     /// From the persisted form. A key that is not a date refuses the whole
     /// record, as any other unreadable ledger field does.
-    pub(super) fn restore(record: BTreeMap<String, u64>) -> Option<Self> {
+    pub(super) fn restore(
+        record: BTreeMap<String, u64>,
+        live: BTreeMap<Uuid, (String, u64)>,
+    ) -> Option<Self> {
+        let date = |day: &str| NaiveDate::parse_from_str(day, "%Y-%m-%d").ok();
         let mut charged = BTreeMap::new();
         for (day, micro) in record {
-            charged.insert(NaiveDate::parse_from_str(&day, "%Y-%m-%d").ok()?, micro);
+            charged.insert(date(&day)?, micro);
+        }
+        let mut pods = HashMap::new();
+        for (pod, (day, micro)) in live {
+            pods.insert(pod, (date(&day)?, micro));
         }
         Some(Self {
             charged,
-            live: HashMap::new(),
+            live: pods,
         })
     }
 }
