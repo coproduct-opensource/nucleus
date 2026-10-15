@@ -865,6 +865,41 @@ impl FirecrackerConfig {
         self
     }
 
+    /// Confirm to the guest that nothing in this VM can fetch bytes from outside the session
+    /// except through a path the tool-proxy labels (#3493).
+    ///
+    /// The NIC half is read off the configuration the VMM is about to be given, after
+    /// lowering, not off the spec: a spec with no network section that still lowered to a NIC
+    /// is never confirmed. The other two halves only ever WITHHOLD the confirmation:
+    ///
+    /// * a pod that may get an egress proxy (`egress_proxy::may_attach`), whose replies the
+    ///   tool-proxy does not observe;
+    /// * a pod with credentialed upstreams. Their replies cross vsock through the broker, and
+    ///   `egress::credentialed_egress` observes them as `NodeKind::ModelPlan`, which is not
+    ///   adversarial, so today the only adversarial label on a model reply a workload script
+    ///   fetched is the one the egress classifier gives the script's `run` output.
+    ///
+    /// When confirmed, the line carries `guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG` and
+    /// guest-init hands the tool-proxy `--workload-network-isolated`. The guest cannot add a
+    /// device the VMM was not configured with, and a snapshot base taken with the token is
+    /// named apart from one without it (`snapshot_store::Derivation::network_isolated`).
+    pub(crate) fn confirming_network_isolation(
+        mut self,
+        spec: &PodSpec,
+        egress_proxy: &crate::egress_proxy::ProxyConfig,
+    ) -> Self {
+        if network_isolation_confirmed(
+            &self.network_interfaces,
+            crate::egress_proxy::may_attach(spec, egress_proxy),
+            !spec.spec.credentialed_egress.is_empty(),
+        ) {
+            let args = self.boot_source.boot_args.get_or_insert_with(String::new);
+            args.push(' ');
+            args.push_str(nucleus_spec::guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG);
+        }
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_spec(
         spec: &PodSpec,
@@ -1152,6 +1187,20 @@ fn lower_network_interfaces(net_plan: Option<&net::NetPlan>) -> Vec<NetworkInter
         }],
         None => Vec::new(),
     }
+}
+
+/// Whether the node may confirm a VM network-isolated (#3493): it was configured with no
+/// network interface, so the guest has loopback and nothing else; no egress proxy may be
+/// attached to it; and it has no credentialed upstream, whose replies are not labelled
+/// adversarial. Vsock remains, and the workload cannot open it (the workload syscall filter
+/// refuses `AF_VSOCK`); what crosses it then is tool calls the tool-proxy labels itself.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn network_isolation_confirmed(
+    nics: &[NetworkInterface],
+    egress_proxy_may_attach: bool,
+    credentialed_upstreams: bool,
+) -> bool {
+    nics.is_empty() && !egress_proxy_may_attach && !credentialed_upstreams
 }
 
 /// ISOLATION INVARIANT (4) — seccomp is only ever disabled on explicit request.

@@ -118,6 +118,20 @@ pub const WORKLOAD_DEVICES: &[&str] = &["null", "zero", "full", "random", "urand
 /// token grants the workload nothing it could use.
 pub const WORKLOAD_LANDLOCK_WAIVED_ARG: &str = "nucleus.workload_landlock=waived";
 
+/// The kernel command-line token by which the NODE confirms that this VM was
+/// configured with no network interface, no egress proxy and no credentialed
+/// upstream (#3493), so the only network a process in it can open is loopback. The node emits it from
+/// the machine configuration it hands the VMM, never from the pod spec: a spec
+/// cannot set any `nucleus.*` key (`boot_args`), and a spec that merely
+/// omits a network section is not this fact.
+///
+/// The tool-proxy reads it, through guest-init, as the answer to "could this
+/// command's output hold bytes from outside the session?". It lowers an
+/// INTEGRITY label only, never a confidentiality one, and an absent or
+/// misspelled token is today's behaviour. Not a secret, and it grants the
+/// workload nothing.
+pub const WORKLOAD_NETWORK_ISOLATED_ARG: &str = "nucleus.workload_network=isolated";
+
 /// The prefix of the console line the tool-proxy prints once at startup,
 /// stating whether its children's filesystem is confined by Landlock. The node
 /// reads it into the pod's reported posture (#2696 P3c).

@@ -108,7 +108,11 @@ path = "crates/nucleus-node/src/main.rs"
 # was deleted; its replacement (`federation_ingress.rs`) flattens its flags into
 # `AuthorityArgs` and costs main.rs one `mod`, one spawn call, one policy line
 # and the pod's recorded owner.
-ceiling = 3548
+# Bumped 3548 -> 3549 on 2026-10-15 (#3493): one builder call on the Firecracker
+# config, confirming network isolation to the guest. The decision lives in
+# firecracker_config.rs and egress_proxy.rs; the call has to sit in the chain that
+# builds the config, which is here.
+ceiling = 3549
 target = 2000
 step = 1
 

@@ -120,6 +120,13 @@ pub(crate) struct Derivation {
     pub smt: bool,
     pub cpu_template: Option<String>,
     pub barrier_protocol: u32,
+    /// Whether the command line it booted with confirms network isolation (#3493,
+    /// `guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG`). A restored guest keeps the BASE's
+    /// command line and the tool-proxy flag guest-init derived from it, so a base must only be
+    /// restored by a pod whose own confirmation agrees. Omitted when false, so every base named
+    /// before this field existed keeps its name.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub network_isolated: bool,
 }
 
 impl Derivation {
@@ -179,6 +186,10 @@ impl SnapshotInputs {
             // is the one failure this whole type exists to prevent.
             cpu_template: None,
             barrier_protocol: BARRIER_PROTOCOL,
+            network_isolated: self
+                .boot_args
+                .split_whitespace()
+                .any(|t| t == nucleus_spec::guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG),
         }
     }
 }
@@ -482,6 +493,7 @@ mod tests {
             smt: false,
             cpu_template: None,
             barrier_protocol: BARRIER_PROTOCOL,
+            network_isolated: false,
         }
     }
 
@@ -539,6 +551,7 @@ mod tests {
             ("smt", |d| d.smt = true),
             ("cpu_template", |d| d.cpu_template = Some("T2".into())),
             ("barrier_protocol", |d| d.barrier_protocol = 99),
+            ("network_isolated", |d| d.network_isolated = true),
         ] {
             let mut d = derivation();
             f(&mut d);
@@ -551,6 +564,37 @@ mod tests {
                 "{what} decides whether a restore is valid, so it must change the name"
             );
         }
+    }
+
+    /// #3493: a base taken from a VM whose line confirms network isolation is named apart from
+    /// one that does not, so a restored guest never carries a confirmation its pod lacks, and a
+    /// base without the token keeps the name it had before the field existed.
+    #[test]
+    fn a_base_is_named_by_whether_its_line_confirms_network_isolation() {
+        let inputs = |boot_args: &str| SnapshotInputs {
+            boot_args: boot_args.to_string(),
+            vmm_version: "1.16.1".into(),
+            vcpu_count: 1,
+            mem_size_mib: 256,
+            smt: false,
+            scratch_path: None,
+        };
+        let token = nucleus_spec::guest_layout::WORKLOAD_NETWORK_ISOLATED_ARG;
+        let plain = inputs("console=ttyS0 pci=off").derivation("a".repeat(64));
+        let isolated = inputs(&format!("console=ttyS0 {token} pci=off")).derivation("a".repeat(64));
+        let misspelled = inputs(&format!("console=ttyS0 {token}x")).derivation("a".repeat(64));
+        assert!(!plain.network_isolated && isolated.network_isolated);
+        assert!(
+            !misspelled.network_isolated,
+            "only the exact token confirms"
+        );
+        assert_ne!(plain.name(), isolated.name());
+        let preimage =
+            String::from_utf8(serde_json_canonicalizer::to_vec(&plain).unwrap()).unwrap();
+        assert!(
+            !preimage.contains("network_isolated"),
+            "an unconfirmed base must keep its pre-#3493 name: {preimage}"
+        );
     }
 
     /// A published base is found again, and it is the one that was written.

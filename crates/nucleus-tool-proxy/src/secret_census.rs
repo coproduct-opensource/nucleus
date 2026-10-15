@@ -124,6 +124,7 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
         require_attestation: _,
         unsandboxed: _,
         workload_without_landlock: _,
+        workload_network_isolated: _,
         allowed_kernel_hashes: _,
         allowed_rootfs_hashes: _,
         allowed_config_hashes: _,
