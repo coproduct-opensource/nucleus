@@ -948,6 +948,8 @@ mod tests {
 
     // Reloading the registry, and the per-day allowance, through the exchange.
     mod reload;
+    // A killed node's federated pods, settled at its next start.
+    mod restart;
 
     const NODE_TD: &str = "node.local";
     const ISS_A: &str = "https://issuer-a.example.invalid";
