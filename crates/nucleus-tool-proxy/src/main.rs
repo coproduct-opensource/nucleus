@@ -117,6 +117,17 @@ fn landlock_waiver(given: bool) -> nucleus::LandlockWaiver {
     }
 }
 
+/// `--workload-network-isolated` as the confirmation it is (#3493): the flag's
+/// presence, put there by guest-init from the node's command line, is the only
+/// thing that maps to `NodeConfirmedIsolated`.
+fn workload_network(given: bool) -> ingest::WorkloadNetwork {
+    if given {
+        ingest::WorkloadNetwork::NodeConfirmedIsolated
+    } else {
+        ingest::WorkloadNetwork::Unconfirmed
+    }
+}
+
 /// What this runtime's children's filesystem confinement is, as the console
 /// verdict the node reads (#2696 P3c). Asked of the same decider every spawn
 /// asks, so the line cannot claim a posture the children do not get. `None`
@@ -320,6 +331,23 @@ struct Args {
         )
     )]
     workload_without_landlock: nucleus::LandlockWaiver,
+    /// The node's confirmation that this VM has no network interface, no
+    /// egress proxy and no credentialed upstream (#3493). With it, a `run`
+    /// command the egress classifier flags does not label the session
+    /// adversarial: it cannot have reached anything outside. guest-init passes it when the node put
+    /// `nucleus.workload_network=isolated` on the command line.
+    ///
+    /// A flag only, never an env var: ambient configuration is not a
+    /// confirmation.
+    #[arg(
+        long = "workload-network-isolated",
+        action = clap::ArgAction::SetTrue,
+        value_parser = clap::builder::TypedValueParser::map(
+            clap::builder::BoolValueParser::new(),
+            workload_network
+        )
+    )]
+    workload_network_isolated: ingest::WorkloadNetwork,
     /// Comma-separated list of allowed kernel hashes (SHA-256, hex).
     /// If empty, any kernel hash is accepted when attestation is present.
     #[arg(long, env = "NUCLEUS_TOOL_PROXY_ALLOWED_KERNEL_HASHES")]
@@ -584,6 +612,10 @@ pub(crate) struct AppState {
     /// fallback is not consulted. It is a fact about how the server was bound,
     /// never something a request can claim.
     host_verified_transport: bool,
+    /// What the node confirmed about the workload's network (#3493), from the
+    /// `--workload-network-isolated` flag only. Decides the integrity label of
+    /// `run` output (`ingest::CommandIngest`).
+    pub(crate) workload_network: ingest::WorkloadNetwork,
     approval_nonces: Arc<ApprovalNonceCache>,
     approval_rate_limiter: Arc<ApprovalRateLimiter>,
     pub(crate) web_client: reqwest::Client,
@@ -1760,6 +1792,7 @@ async fn main() -> Result<(), ApiError> {
         approval_auth,
         approval_verifier,
         host_verified_transport: host_verified,
+        workload_network: args.workload_network_isolated,
         approval_nonces: Arc::new(ApprovalNonceCache::default()),
         approval_rate_limiter: Arc::new(ApprovalRateLimiter::default()),
         web_client,
@@ -3063,17 +3096,21 @@ async fn run_command(
         }
     };
 
+    // Classified before the record, so the record carries the egress verdict (#3493).
+    let command_ingest = ingest::CommandIngest::classify(&display_command, state.workload_network);
+    let mut extensions = BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]);
+    extensions.extend(command_ingest.audit_extension());
     if let Err(e) = sink.record(VerdictContext {
         operation,
         subject: display_command.clone(),
         outcome: VerdictOutcome::Allow,
         actor,
         policy_rule: None,
-        extensions: BTreeMap::from([("discharge_bundle".to_string(), discharge_note)]),
+        extensions,
     }) {
         warn!(error = %e, "verdict recording failed -- audit gap");
     }
-    ingest::http_observe_command_output(&state, &display_command, &output).await;
+    ingest::http_observe_command_output(&state, &command_ingest, &output).await;
 
     Ok(Json(RunResponse {
         status: output.status.code().unwrap_or(-1),

@@ -350,9 +350,9 @@ impl NucleusMcpServer {
     /// privileged action (the next `run`/`git push`/`write`/`create_pr` hits the
     /// IFC egress gate, since `McpToolResult` is `Adversarial` ⇒ `is_tainted`).
     ///
-    /// Tainted by DEFAULT when `command` could reach the network — see
-    /// [`crate::ingest::command_output_is_external`] — and ALWAYS under
-    /// `NUCLEUS_PARANOID_TOOL_IO=1`.
+    /// Tainted as [`crate::ingest::CommandIngest`] decided: when the command could
+    /// reach the network and the node has not confirmed it cannot (#3493), and
+    /// ALWAYS under `NUCLEUS_PARANOID_TOOL_IO=1`.
     ///
     /// The old default was off, because blanket-tainting the proxy's own command
     /// output makes a session "one privileged action then locked" (run-tests →
@@ -368,11 +368,12 @@ impl NucleusMcpServer {
     /// Brick 3: `result_bytes` are the *actual tool-result bytes* ingested into
     /// the session; their SHA-256 is content-addressed onto the `McpToolResult`
     /// node (recomputed from the real bytes, never an agent field).
-    async fn observe_tool_result(&self, command: &str, result_bytes: &[u8]) {
-        if crate::ingest::should_observe_command_output(command) {
-            self.observe_flow(NodeKind::McpToolResult, result_bytes)
-                .await;
-        }
+    async fn observe_tool_result(
+        &self,
+        ingest: &crate::ingest::CommandIngest,
+        result_bytes: &[u8],
+    ) {
+        crate::ingest::observe_command_output(&self.flow_graph, ingest, result_bytes).await;
     }
 
     /// Check the kernel for a decision on the given operation/subject.
@@ -875,12 +876,12 @@ impl NucleusMcpServer {
             })
         }) {
             Ok(output) => {
-                self.record_verdict_ext(
-                    Operation::RunBash,
-                    &checked,
-                    VerdictOutcome::Allow,
-                    BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]),
-                );
+                let ingest =
+                    crate::ingest::CommandIngest::classify(&checked, self.state.workload_network);
+                let mut ext =
+                    BTreeMap::from([("discharge_bundle".to_string(), discharge_note.clone())]);
+                ext.extend(ingest.audit_extension());
+                self.record_verdict_ext(Operation::RunBash, &checked, VerdictOutcome::Allow, ext);
                 let run_result = RunResult {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -890,7 +891,7 @@ impl NucleusMcpServer {
                 // Most-paranoid #2: command output may carry injected instructions;
                 // taint it (opt-in) so it can't drive a later privileged action.
                 // Brick 3: content-address the exact tool-result bytes ingested.
-                self.observe_tool_result(&checked, json.as_bytes()).await;
+                self.observe_tool_result(&ingest, json.as_bytes()).await;
                 Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
             Err(e) => {
