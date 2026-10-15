@@ -727,3 +727,36 @@ fn a_bundle_bound_to_the_spec_bytes_is_refused_by_name() {
 
 #[path = "grant_replay_tests.rs"]
 mod grant_replay;
+
+/// A grant that lapsed unspent must not cap a fresh grant for the same
+/// operation. `approve` merged the new expiry with `min` into whatever entry
+/// was still in the map, and an expired entry is only purged when its key is
+/// next checked, so the fresh grant inherited a deadline already in the past
+/// and the next check refused an operation the approver had just approved.
+#[test]
+fn a_lapsed_grant_does_not_cap_a_fresh_one() {
+    let registry = ApprovalRegistry::default();
+    let op = "write repo/src/lib.rs";
+
+    let lapsed_at = now_unix() + 1;
+    let body = approve_body(op, 1, Some(lapsed_at), "n-lapsed");
+    registry.approve(mint(&approver(), &body).unwrap());
+    // Wait on the clock, not the registry: asking the registry would purge
+    // the lapsed entry and hide the defect.
+    while now_unix() <= lapsed_at {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let body = approve_body(op, 1, Some(now_unix() + 60), "n-fresh");
+    registry.approve(mint(&approver(), &body).unwrap());
+
+    assert!(
+        registry.is_granted(op),
+        "the fresh grant is live despite the lapsed one before it"
+    );
+    assert!(registry.consume(op), "the fresh grant can be spent");
+    assert!(
+        !registry.consume(op),
+        "the lapsed grant's use was not carried into the fresh one"
+    );
+}
