@@ -109,9 +109,13 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
     // Build a delegation ceiling — a true top element without normalization.
     // Normalization adds obligations that break the Galois closure-extensive
     // property. Use build_unnormalized() + uninhabitable_constraint(false).
+    // A ceiling's consent is ⊤ too: every operation it permits is declared
+    // autonomous, so a meet with it leaves the certificate's consent in force.
+    let permitted = caps.permitted_operations();
     PermissionLattice::builder()
         .description("market-grant-ceiling")
         .capabilities(caps)
+        .autonomous(permitted)
         .budget(BudgetLattice {
             max_cost_usd: Decimal::from(1_000_000),
             max_input_tokens: u64::MAX,
@@ -124,6 +128,7 @@ pub fn dimensions_to_ceiling(dimensions: &[PermissionDimension]) -> PermissionLa
         ))
         .uninhabitable_constraint(false)
         .build_unnormalized()
+        .expect("every operation the ceiling permits is declared autonomous above")
 }
 
 /// Intersect a market grant with certificate-attested permissions.
@@ -285,7 +290,8 @@ mod tests {
     fn test_alpha_all_never_requests_nothing() {
         let perms = PermissionLattice::builder()
             .capabilities(all_never_capabilities())
-            .build();
+            .build()
+            .expect("nothing is permitted, so nothing needs declaring");
         let verified = mint_and_verify(perms);
         let bid = PermissionBid::from_verified(&verified);
 
@@ -434,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_passthrough_caps_survive_intersection() {
-        let mut perms = PermissionLattice::default();
+        let mut perms = PermissionLattice::supervised();
         perms.capabilities.git_commit = CapabilityLevel::Always;
         perms.capabilities.manage_pods = CapabilityLevel::LowRisk;
         perms = perms.normalize();

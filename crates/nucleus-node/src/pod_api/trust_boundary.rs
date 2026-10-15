@@ -277,7 +277,10 @@ fn scenario_taint() -> BrokerScenario {
 
 fn approval_gated() -> PermissionLattice {
     let mut policy = PermissionLattice::permissive();
-    policy.obligations.insert(Operation::GitCommit);
+    policy.declare(
+        Operation::GitCommit,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     policy
 }
 

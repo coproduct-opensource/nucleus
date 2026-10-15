@@ -44,11 +44,15 @@ use crate::{
 /// # Product Lattice Structure
 ///
 /// ```text
-/// PermissionLattice = Caps × Obligations × Paths × Budget × Commands × Time
+/// PermissionLattice = (Caps × Consent) × Paths × Budget × Commands × Time
+///
+/// Per operation, (Caps × Consent) is `Never`, or a permitted level paired with
+/// `Autonomous` / `RequiresApproval` (Autonomous is the more permissive).
 ///
 /// Meet Operation (∧):
 /// • Caps: min(level_a, level_b)
-/// • Obligations: union with uninhabitable_state constraint
+/// • Consent: obligated if either side obligates, plus the uninhabitable_state
+///   constraint; autonomous only if both sides are
 /// • Paths(allowed): intersection
 /// • Paths(blocked): union
 /// • Budget: min(cap_a, cap_b)
@@ -65,10 +69,28 @@ pub struct PermissionLattice {
     /// ID of the parent permission this was derived from (for audit trail)
     pub derived_from: Option<Uuid>,
 
-    /// Tool capabilities (autonomous)
+    /// Tool capabilities: what each operation is ELIGIBLE for. A level above
+    /// `Never` permits the operation within scope; it says nothing about
+    /// consent, which [`Self::obligations`] and [`Self::autonomous`] declare.
     pub capabilities: CapabilityLattice,
-    /// Approval obligations for gated operations
+    /// Approval obligations: the operations declared `RequiresApproval`.
     pub obligations: Obligations,
+    /// The operations declared `Autonomous`: permitted without an approval.
+    ///
+    /// Consent is explicit. Every operation above `Never` must be in exactly
+    /// one of `obligations` and `autonomous`; an operation in neither, or in
+    /// both, is refused at construction ([`Self::check_consent`]) and by
+    /// deserialization, by name. Nothing infers autonomy from omission: an
+    /// operation absent from this set is decided `RequiresApproval`
+    /// ([`Self::consent_for`]) even on a value whose declaration was broken
+    /// after construction through the public fields.
+    ///
+    /// Private so the only writers are the ones that keep the declaration:
+    /// [`Self::declare`], [`Self::grant`], the constructors and the lattice
+    /// operations. It is serialized as a plain list of operation names, and
+    /// there is no serde default — a lattice without the field is refused.
+    #[cfg_attr(feature = "serde", serde(serialize_with = "ser_consent_set"))]
+    pub(crate) autonomous: Obligations,
     /// Path access
     pub paths: PathLattice,
     /// Budget constraints
@@ -143,10 +165,16 @@ pub struct PermissionLattice {
 /// fields, so the one production enforcement site
 /// (`certificate.rs`'s `effective_permissions.leq(prev_permissions)`) was sound
 /// throughout.
+///
+/// Consent enters through [`PermissionLattice::effective_obligations`]: the
+/// operations above `Never` that are decided `RequiresApproval`. Comparing the
+/// raw `obligations` set would make an obligation on a forbidden operation — one
+/// that changes no decision — distinguish two policies, and the per-operation
+/// consent laws (`meet`, `join`) only hold on what is decided.
 impl PartialEq for PermissionLattice {
     fn eq(&self, other: &Self) -> bool {
         self.capabilities == other.capabilities
-            && self.obligations == other.obligations
+            && self.effective_obligations() == other.effective_obligations()
             && self.paths == other.paths
             && self.budget == other.budget
             && self.commands == other.commands
@@ -208,6 +236,9 @@ struct RawPermissionLattice {
     capabilities: CapabilityLattice,
     #[serde(default)]
     obligations: Obligations,
+    /// No `#[serde(default)]`: `None` here is a lattice that never declared
+    /// consent, and it is refused — never read as an empty set.
+    autonomous: Option<std::collections::BTreeSet<Operation>>,
     paths: PathLattice,
     budget: BudgetLattice,
     commands: CommandLattice,
@@ -224,6 +255,50 @@ struct RawPermissionLattice {
     created_by: String,
 }
 
+/// The `autonomous` set on the wire: a plain list of operation names.
+#[cfg(feature = "serde")]
+fn ser_consent_set<S>(set: &Obligations, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    set.approvals.serialize(serializer)
+}
+
+/// The one way a serialized lattice becomes a value: the consent declaration
+/// is checked BEFORE `normalize` (which may move an op from autonomous to
+/// obligated, and would otherwise hide a contradiction the author wrote).
+#[cfg(feature = "serde")]
+impl PermissionLattice {
+    fn from_raw(raw: RawPermissionLattice) -> Result<Self, ConsentError> {
+        let declared = raw.autonomous.is_some();
+        let lattice = Self {
+            id: raw.id,
+            description: raw.description,
+            derived_from: raw.derived_from,
+            capabilities: raw.capabilities,
+            obligations: raw.obligations,
+            autonomous: Obligations {
+                approvals: raw.autonomous.unwrap_or_default(),
+            },
+            paths: raw.paths,
+            budget: raw.budget,
+            commands: raw.commands,
+            time: raw.time,
+            // Security: ALWAYS true after deserialization, whatever the input said.
+            uninhabitable_constraint: true,
+            minimum_isolation: raw.minimum_isolation,
+            created_at: raw.created_at,
+            created_by: raw.created_by,
+        };
+        if !declared {
+            let mut err = lattice.check_consent().err().unwrap_or_default();
+            err.missing_field = true;
+            return Err(err);
+        }
+        lattice.validated()
+    }
+}
+
 #[cfg(feature = "serde")]
 impl<'de> Deserialize<'de> for PermissionLattice {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -231,25 +306,7 @@ impl<'de> Deserialize<'de> for PermissionLattice {
         D: Deserializer<'de>,
     {
         let raw = RawPermissionLattice::deserialize(deserializer)?;
-
-        // Security: Always enforce uninhabitable_state constraint regardless of input
-        let lattice = Self {
-            id: raw.id,
-            description: raw.description,
-            derived_from: raw.derived_from,
-            capabilities: raw.capabilities,
-            obligations: raw.obligations,
-            paths: raw.paths,
-            budget: raw.budget,
-            commands: raw.commands,
-            time: raw.time,
-            uninhabitable_constraint: true, // ALWAYS true after deserialization
-            minimum_isolation: raw.minimum_isolation,
-            created_at: raw.created_at,
-            created_by: raw.created_by,
-        };
-
-        Ok(lattice.normalize())
+        Self::from_raw(raw).map_err(serde::de::Error::custom)
     }
 }
 
@@ -258,35 +315,72 @@ fn default_uninhabitable_constraint() -> bool {
     true
 }
 
-impl Default for PermissionLattice {
-    fn default() -> Self {
-        let mut obligations = Obligations::default();
-        obligations.insert(Operation::WriteFiles);
-        obligations.insert(Operation::EditFiles);
-        obligations.insert(Operation::WebSearch);
-        obligations.insert(Operation::WebFetch);
-        obligations.insert(Operation::GitCommit);
-        obligations.insert(Operation::CreatePr);
+/// Whether an operation a policy permits needs a human approval.
+///
+/// The second dimension of a policy, beside eligibility (`CapabilityLevel`):
+/// `LowRisk` and `Always` say an operation is permitted within scope, and this
+/// says whether it runs without asking. Neither implies the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum ConsentMode {
+    /// Permitted without an approval (dynamic restrictions still apply).
+    Autonomous,
+    /// Permitted only with an approval of the action.
+    RequiresApproval,
+}
 
-        let lattice = Self {
-            id: Uuid::new_v4(),
-            description: "Default permission set".to_string(),
-            derived_from: None,
-            capabilities: CapabilityLattice::default(),
-            obligations,
-            paths: PathLattice::default(),
-            budget: BudgetLattice::default(),
-            commands: CommandLattice::default(),
-            time: TimeLattice::default(),
-            uninhabitable_constraint: true,
-            minimum_isolation: None,
-            created_at: Utc::now(),
-            created_by: "system".to_string(),
-        };
+/// A consent declaration that was refused, naming every operation at fault.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsentError {
+    /// Operations above `Never` declared neither autonomous nor obligated.
+    pub undeclared: Vec<Operation>,
+    /// Operations declared both autonomous and obligated.
+    pub contradictory: Vec<Operation>,
+    /// The serialized lattice had no `autonomous` field at all.
+    pub missing_field: bool,
+}
 
-        lattice.normalize()
+impl ConsentError {
+    fn is_empty(&self) -> bool {
+        self.undeclared.is_empty() && self.contradictory.is_empty() && !self.missing_field
     }
 }
+
+impl std::fmt::Display for ConsentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names = |ops: &[Operation]| {
+            ops.iter()
+                .map(|op| op.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut parts = Vec::new();
+        if self.missing_field {
+            parts.push(
+                "the policy has no `autonomous` field (consent is explicit: list the \
+                 operations that run without approval, or `autonomous: []`)"
+                    .to_string(),
+            );
+        }
+        if !self.undeclared.is_empty() {
+            parts.push(format!(
+                "consent is not declared for {}: every operation above `never` must be listed \
+                 in exactly one of `obligations` (requires approval) or `autonomous`",
+                names(&self.undeclared)
+            ));
+        }
+        if !self.contradictory.is_empty() {
+            parts.push(format!(
+                "{} declared both `autonomous` and requiring approval (in `obligations`)",
+                names(&self.contradictory)
+            ));
+        }
+        write!(f, "{}", parts.join("; "))
+    }
+}
+
+impl std::error::Error for ConsentError {}
 
 /// Error type for delegation failures.
 #[derive(Debug, Clone, PartialEq)]
@@ -342,15 +436,201 @@ impl PermissionLattice {
         self.uninhabitable_constraint
     }
 
-    /// Create a new permission lattice with the given description.
-    pub fn new(description: impl Into<String>) -> Self {
-        let lattice = Self {
+    /// A lattice from its policy dimensions, every other field fresh.
+    ///
+    /// Private, and the only struct literal outside deserialization and the
+    /// lattice operations: every named constructor goes through here, so each
+    /// one states its consent by listing both sets. Not normalized.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        description: impl Into<String>,
+        capabilities: CapabilityLattice,
+        obligated: &[Operation],
+        autonomous: &[Operation],
+        paths: PathLattice,
+        budget: BudgetLattice,
+        commands: CommandLattice,
+        time: TimeLattice,
+    ) -> Self {
+        Self {
             id: Uuid::new_v4(),
             description: description.into(),
-            ..Default::default()
-        };
+            derived_from: None,
+            capabilities,
+            obligations: Obligations {
+                approvals: obligated.iter().copied().collect(),
+            },
+            autonomous: Obligations {
+                approvals: autonomous.iter().copied().collect(),
+            },
+            paths,
+            budget,
+            commands,
+            time,
+            uninhabitable_constraint: true,
+            minimum_isolation: None,
+            created_at: Utc::now(),
+            created_by: "system".to_string(),
+        }
+    }
 
-        lattice.normalize()
+    /// The supervised permission set: reads and searches run autonomously;
+    /// writes, edits, web access, commits and PR creation each need an
+    /// approval. Shell, push and pod management are not permitted.
+    ///
+    /// This is what `PermissionLattice::default()` was. It is no longer a
+    /// `Default` (ADR 0007 B-1): a policy is always named by whoever chose it.
+    pub fn supervised() -> Self {
+        use Operation::*;
+        Self::assemble(
+            "Supervised permission set",
+            // read, glob, grep `always`; write, edit, web, commit, PR `low_risk`;
+            // shell, push, pods, sub-agents `never`.
+            CapabilityLattice::default(),
+            &[
+                WriteFiles, EditFiles, WebSearch, WebFetch, GitCommit, CreatePr,
+            ],
+            &[ReadFiles, GlobSearch, GrepSearch],
+            PathLattice::default(),
+            BudgetLattice::default(),
+            CommandLattice::default(),
+            TimeLattice::default(),
+        )
+        .normalize()
+    }
+
+    /// Replace the human-readable description.
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = description.into();
+        self
+    }
+
+    /// The consent this policy states for `op`.
+    ///
+    /// `Autonomous` only when `op` is declared autonomous and not obligated.
+    /// An operation in neither set — possible only on a value whose declaration
+    /// was broken after construction, through the public fields — is decided
+    /// `RequiresApproval`: nothing infers autonomy from omission.
+    pub fn consent_for(&self, op: Operation) -> ConsentMode {
+        if self.autonomous.requires(op) && !self.obligations.requires(op) {
+            ConsentMode::Autonomous
+        } else {
+            ConsentMode::RequiresApproval
+        }
+    }
+
+    /// The operations declared `Autonomous`.
+    pub fn autonomous(&self) -> &Obligations {
+        &self.autonomous
+    }
+
+    /// The decided obligations: every operation above `Never` whose consent is
+    /// `RequiresApproval`. What equality, `leq` and the checksum compare — an
+    /// obligation on a forbidden operation decides nothing.
+    pub fn effective_obligations(&self) -> Obligations {
+        Obligations {
+            approvals: Operation::ALL
+                .into_iter()
+                .filter(|&op| self.requires_approval(op))
+                .collect(),
+        }
+    }
+
+    /// Declare the consent for `op`, replacing whatever it was.
+    pub fn declare(&mut self, op: Operation, consent: ConsentMode) {
+        match consent {
+            ConsentMode::Autonomous => {
+                self.obligations.remove(op);
+                self.autonomous.insert(op);
+            }
+            ConsentMode::RequiresApproval => {
+                self.autonomous.remove(op);
+                self.obligations.insert(op);
+            }
+        }
+    }
+
+    /// Keep in `autonomous` only what it can mean: a permitted operation that
+    /// is not obligated. An entry for an operation now `Never` is dropped, so
+    /// raising that operation later leaves it UNDECLARED (decided
+    /// `RequiresApproval`) rather than reviving a consent given for a level it
+    /// no longer has. Removes no obligation.
+    fn settle_autonomous(&mut self) {
+        let obligations = &self.obligations;
+        let capabilities = &self.capabilities;
+        self.autonomous.approvals.retain(|op| {
+            capabilities.level_for(*op) > CapabilityLevel::Never && !obligations.requires(*op)
+        });
+    }
+
+    /// Declare `consent` for every operation the current levels permit — what
+    /// clearing the obligations used to mean, said by name. An operation raised
+    /// from `Never` after this call is undeclared again.
+    pub fn declare_all(&mut self, consent: ConsentMode) {
+        for op in self.capabilities.permitted_operations() {
+            self.declare(op, consent);
+        }
+    }
+
+    /// Obligate every operation in `ops`, moving each from autonomous: the one
+    /// way to add obligations that leaves no operation in both sets.
+    pub fn add_obligations(&mut self, ops: &Obligations) {
+        for &op in &ops.approvals {
+            self.declare(op, ConsentMode::RequiresApproval);
+        }
+    }
+
+    /// Set `op`'s level and its consent together — the one way to raise an
+    /// operation from `Never` that leaves it declared. Not normalized: call
+    /// [`Self::normalize`] once the edits are done.
+    pub fn grant(&mut self, op: Operation, level: CapabilityLevel, consent: ConsentMode) {
+        *self.capabilities.level_mut(op) = level;
+        self.declare(op, consent);
+    }
+
+    /// Replace the capabilities, and declare `consent` for every operation the
+    /// new levels permit. The caller names the consent; nothing is inferred.
+    /// Not normalized.
+    pub fn with_capabilities(
+        mut self,
+        capabilities: CapabilityLattice,
+        consent: ConsentMode,
+    ) -> Self {
+        self.capabilities = capabilities;
+        self.settle_autonomous();
+        self.declare_all(consent);
+        self
+    }
+
+    /// Check the consent declaration: every operation above `Never` in exactly
+    /// one of `obligations` and `autonomous`, and none in both. The error names
+    /// every operation at fault.
+    pub fn check_consent(&self) -> Result<(), ConsentError> {
+        let mut err = ConsentError::default();
+        for op in Operation::ALL {
+            let obligated = self.obligations.requires(op);
+            let autonomous = self.autonomous.requires(op);
+            if obligated && autonomous {
+                err.contradictory.push(op);
+            } else if !obligated
+                && !autonomous
+                && self.capabilities.level_for(op) > CapabilityLevel::Never
+            {
+                err.undeclared.push(op);
+            }
+        }
+        if err.is_empty() {
+            Ok(())
+        } else {
+            Err(err)
+        }
+    }
+
+    /// The validated constructor: refuse an undeclared or contradictory
+    /// declaration, then normalize.
+    pub fn validated(self) -> Result<Self, ConsentError> {
+        self.check_consent()?;
+        Ok(self.normalize())
     }
 
     /// Create a permission lattice with a builder pattern.
@@ -397,12 +677,18 @@ impl PermissionLattice {
     ///
     /// If uninhabitable_state enforcement is enabled, this adds approval obligations to
     /// break any uninhabitable_state configuration.
+    ///
+    /// It only ever ADDS obligations: an operation it obligates moves from
+    /// `autonomous` to `obligations`, and one already in both is settled as
+    /// obligated. So it never makes a declared operation undeclared, and it is
+    /// idempotent.
     pub fn normalize(mut self) -> Self {
         if self.uninhabitable_constraint {
             let constraint = IncompatibilityConstraint::enforcing();
             let required = constraint.obligations_for(&self.capabilities);
             self.obligations = self.obligations.union(&required);
         }
+        self.settle_autonomous();
         self
     }
 
@@ -416,10 +702,31 @@ impl PermissionLattice {
     /// This models the guarded lattice L' = { (caps, guard(caps)) | caps ∈ L }
     /// where uninhabitable configurations are mapped to their
     /// human-gated counterparts.
+    ///
+    /// **Consent.** An operation is obligated if either side obligates it;
+    /// otherwise it is autonomous only if it is autonomous on both sides. The
+    /// raw `obligations` are the union of both sides' (as before consent was
+    /// explicit — a certificate verifier at 2.7.0 checks a child's obligations
+    /// contain its parent's), plus any operation above `Never` that is not
+    /// autonomous on both, so an undeclared input yields an obligated output and
+    /// narrowing never drops consent.
     pub fn meet(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.meet(&other.capabilities);
 
-        let base_obligations = self.obligations.union(&other.obligations);
+        let mut base_obligations = self.obligations.union(&other.obligations);
+        let mut autonomous = Obligations::default();
+        for op in Operation::ALL {
+            if base_caps.level_for(op) == CapabilityLevel::Never {
+                continue;
+            }
+            if self.consent_for(op) == ConsentMode::Autonomous
+                && other.consent_for(op) == ConsentMode::Autonomous
+            {
+                autonomous.insert(op);
+            } else {
+                base_obligations.insert(op);
+            }
+        }
 
         // Apply uninhabitable_state constraint if either input enforces it
         let enforce_uninhabitable = self.uninhabitable_constraint || other.uninhabitable_constraint;
@@ -429,6 +736,7 @@ impl PermissionLattice {
         } else {
             base_obligations
         };
+        autonomous.approvals.retain(|op| !obligations.requires(*op));
 
         // Minimum isolation: meet takes the join (stronger requirement).
         // If either policy demands stronger isolation, the combined policy demands it.
@@ -445,6 +753,7 @@ impl PermissionLattice {
             derived_from: Some(self.id),
             capabilities: base_caps,
             obligations,
+            autonomous,
             paths: self.paths.meet(&other.paths),
             budget: self.budget.meet(&other.budget),
             commands: self.commands.meet(&other.commands),
@@ -463,10 +772,44 @@ impl PermissionLattice {
     /// This ensures the safety constraint is monotonically preserved upward —
     /// an attacker cannot disable the uninhabitable check by joining with a
     /// permissive lattice that has `uninhabitable_constraint = false`.
+    ///
+    /// **Consent** comes from the side or sides where the operation is above
+    /// `Never`. If both are, it is obligated only if both obligate it. If only
+    /// one is, that side's consent carries over — a side that forbids an
+    /// operation says nothing about consenting to it, so it cannot waive the
+    /// other side's obligation.
     pub fn join(&self, other: &Self) -> Self {
         let base_caps = self.capabilities.join(&other.capabilities);
 
-        let base_obligations = self.obligations.intersection(&other.obligations);
+        // Operations neither side permits keep the old intersection; they
+        // decide nothing either way.
+        let mut base_obligations = self.obligations.intersection(&other.obligations);
+        let mut autonomous = Obligations::default();
+        for op in Operation::ALL {
+            let mine = self.capabilities.level_for(op) > CapabilityLevel::Never;
+            let theirs = other.capabilities.level_for(op) > CapabilityLevel::Never;
+            let consent = match (mine, theirs) {
+                (false, false) => continue,
+                (true, false) => self.consent_for(op),
+                (false, true) => other.consent_for(op),
+                (true, true) => {
+                    if self.consent_for(op) == ConsentMode::RequiresApproval
+                        && other.consent_for(op) == ConsentMode::RequiresApproval
+                    {
+                        ConsentMode::RequiresApproval
+                    } else {
+                        ConsentMode::Autonomous
+                    }
+                }
+            };
+            match consent {
+                ConsentMode::Autonomous => {
+                    base_obligations.remove(op);
+                    autonomous.insert(op);
+                }
+                ConsentMode::RequiresApproval => base_obligations.insert(op),
+            }
+        }
 
         // Apply uninhabitable_state constraint if EITHER input enforces it (OR-semantics).
         // This prevents an attacker from weakening the safety check via join.
@@ -477,6 +820,7 @@ impl PermissionLattice {
         } else {
             base_obligations
         };
+        autonomous.approvals.retain(|op| !obligations.requires(*op));
 
         // Minimum isolation: join takes the meet (weaker requirement).
         let minimum_isolation = match (&self.minimum_isolation, &other.minimum_isolation) {
@@ -498,6 +842,7 @@ impl PermissionLattice {
             derived_from: Some(self.id),
             capabilities: base_caps,
             obligations,
+            autonomous,
             paths: self.paths.join(&other.paths),
             budget: self.budget.join(&other.budget),
             commands: self.commands.join(&other.commands),
@@ -515,9 +860,14 @@ impl PermissionLattice {
         constraint.is_uninhabitable(&self.capabilities)
     }
 
-    /// Check if an operation requires approval.
+    /// Check if an operation requires approval: it is permitted (above
+    /// `Never`) and [`Self::consent_for`] is `RequiresApproval` — obligated, or
+    /// not declared autonomous. A forbidden operation requires no approval: no
+    /// approval would make it run. Exactly membership of
+    /// [`Self::effective_obligations`].
     pub fn requires_approval(&self, op: Operation) -> bool {
-        self.obligations.requires(op)
+        self.capabilities.level_for(op) > CapabilityLevel::Never
+            && self.consent_for(op) == ConsentMode::RequiresApproval
     }
 
     /// The operations this policy actually permits — every core [`Operation`]
@@ -536,10 +886,7 @@ impl PermissionLattice {
     /// excluded: they are string-keyed, out of the formally-verified core, and
     /// not part of the token vocabulary.
     pub fn granted_operations(&self) -> Vec<Operation> {
-        Operation::ALL
-            .into_iter()
-            .filter(|&op| self.capabilities.level_for(op) > CapabilityLevel::Never)
-            .collect()
+        self.capabilities.permitted_operations()
     }
 
     /// Delegate permissions to a subagent.
@@ -598,11 +945,27 @@ impl PermissionLattice {
 
         isolation_leq
             && self.capabilities.leq(&other.capabilities)
-            && self.obligations.leq(&other.obligations)
+            && self.consent_leq(other)
             && self.paths.leq(&other.paths)
             && self.budget.leq(&other.budget)
             && self.commands.leq(&other.commands)
             && self.time.leq(&other.time)
+    }
+
+    /// `self` asks for an approval wherever `other` does, on every operation
+    /// `self` permits. An obligation on an operation `self` forbids is no
+    /// constraint `self` has to match: it decides nothing.
+    ///
+    /// This replaced a superset test over the raw `obligations` sets, which
+    /// could not agree with the consent `join` — a side that forbids an
+    /// operation is below the side that permits it under approval, yet its raw
+    /// set lacks that obligation.
+    fn consent_leq(&self, other: &Self) -> bool {
+        Operation::ALL.into_iter().all(|op| {
+            self.capabilities.level_for(op) == CapabilityLevel::Never
+                || other.consent_for(op) == ConsentMode::Autonomous
+                || self.consent_for(op) == ConsentMode::RequiresApproval
+        })
     }
 
     /// Get the effective minimum isolation (defaults to localhost if unset).
@@ -642,22 +1005,16 @@ impl PermissionLattice {
     /// rewrites every hash — which is the defect #747 records for the receipt
     /// chain, here on the permission checksum itself. Both variants now hash the
     /// same projection, so the two builds agree on what a policy hashes to.
+    ///
+    /// Consent enters as [`Self::effective_obligations`], the projection
+    /// equality compares. For a lattice that obligates no forbidden operation
+    /// that is byte-for-byte the raw set, so such a checksum is unchanged by
+    /// explicit consent; `autonomous` is not hashed, because on every value
+    /// that passes [`Self::check_consent`] it is determined by the levels and
+    /// the obligations.
     #[must_use]
     pub fn checksum(&self) -> String {
-        let mut hasher = Sha256::new();
-        // Field-tagged and length-prefixed: without the tags, moving a byte from
-        // one field to the next would leave the digest unchanged.
-        for (tag, part) in self.digest_parts() {
-            hasher.update(tag.as_bytes());
-            hasher.update(b"\x00");
-            hasher.update((part.len() as u64).to_be_bytes());
-            hasher.update(part.as_bytes());
-        }
-        hasher
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>()
+        Self::hash_parts(self.digest_parts(&self.effective_obligations()))
     }
 
     /// The checksum of what a policy COMPUTES, with the validity window left out.
@@ -670,13 +1027,43 @@ impl PermissionLattice {
     /// cross-execution cache could never hit (measured: 7fda8773.../6f095fc2...
     /// for two identical builds; 466842e6... for both with this). Every other
     /// field still enters, so policies differing in what they permit differ.
+    ///
+    /// **A cross-version identity.** The node and the pod's guest each compute
+    /// `program_digest` over the same received lattice and the node refuses a
+    /// workload result whose digests differ (`workload_result.rs`), so this
+    /// must hash exactly what a 2.7.0 guest hashes: the RAW `obligations` and
+    /// no `autonomous`. Projecting it as [`Self::checksum`] does would change
+    /// the digest of every lattice that obligates an operation it forbids —
+    /// which `meet` produces whenever a ceiling obligates what the pod's
+    /// profile forbids (`permissive ∧ codegen` does; pinned by
+    /// `tests/consent_preserved.rs`) — and fail those workloads on a pinned
+    /// guest. The cost is conservative: two equal policies whose raw sets
+    /// differ on a forbidden operation get different program digests, a cache
+    /// miss. And no false hit: on a lattice whose declaration holds,
+    /// `autonomous` is determined by the levels and the obligations hashed here.
     #[must_use]
     pub fn program_checksum(&self) -> String {
+        let mut parts = self.digest_parts(&self.obligations);
+        parts.retain(|(tag, _)| *tag != "time");
+        Self::hash_parts(parts)
+    }
+
+    /// A digest of the value as stored: the raw `obligations` and the raw
+    /// `autonomous` set beside every other policy field. Neither coherent with
+    /// equality nor a cross-version identity — it answers only "is this the
+    /// exact value", for [`EffectivePermissions`]' seal.
+    fn raw_checksum(&self) -> String {
+        let mut parts = self.digest_parts(&self.obligations);
+        parts.push(("autonomous", Self::encode(&self.autonomous)));
+        Self::hash_parts(parts)
+    }
+
+    /// SHA-256 over tagged parts, as hex. Field-tagged and length-prefixed:
+    /// without the tags, moving a byte from one field to the next would leave
+    /// the digest unchanged. The one hashing of every lattice digest above.
+    fn hash_parts(parts: Vec<(&'static str, String)>) -> String {
         let mut hasher = Sha256::new();
-        for (tag, part) in self.digest_parts() {
-            if tag == "time" {
-                continue;
-            }
+        for (tag, part) in parts {
             hasher.update(tag.as_bytes());
             hasher.update(b"\x00");
             hasher.update((part.len() as u64).to_be_bytes());
@@ -702,10 +1089,13 @@ impl PermissionLattice {
     /// that is `cfg`-ed out changes nothing, so every mutant passed. A function
     /// no build in CI compiles is a function no test can defend, and splitting
     /// on the feature at the top of a body is how that happens.
-    fn digest_parts(&self) -> Vec<(&'static str, String)> {
+    ///
+    /// `obligations` is passed in: the decided projection for [`Self::checksum`],
+    /// the raw set for [`Self::program_checksum`] (see there for why).
+    fn digest_parts(&self, obligations: &Obligations) -> Vec<(&'static str, String)> {
         vec![
             ("capabilities", Self::encode(&self.capabilities)),
-            ("obligations", Self::encode(&self.obligations)),
+            ("obligations", Self::encode(obligations)),
             ("paths", Self::encode(&self.paths)),
             ("budget", Self::encode(&self.budget)),
             ("commands", Self::encode(&self.commands)),
@@ -734,48 +1124,60 @@ impl PermissionLattice {
     }
 
     /// Create a permissive permission set (for trusted contexts).
+    ///
+    /// Consent: every operation autonomous except the uninhabitable-state exfil
+    /// channels (`run_bash`, `git_push`, `create_pr`), which `normalize` would
+    /// obligate anyway and are declared obligated here.
     pub fn permissive() -> Self {
-        let lattice = Self {
-            description: "Permissive permissions".to_string(),
-            capabilities: CapabilityLattice::permissive(),
-            obligations: Obligations::default(),
-            budget: BudgetLattice {
+        use Operation::*;
+        Self::assemble(
+            "Permissive permissions",
+            CapabilityLattice::permissive(),
+            &[RunBash, GitPush, CreatePr],
+            &[
+                ReadFiles, WriteFiles, EditFiles, GlobSearch, GrepSearch, WebSearch, WebFetch,
+                GitCommit, ManagePods, SpawnAgent,
+            ],
+            PathLattice::default(),
+            BudgetLattice {
                 max_cost_usd: Decimal::from(10),
                 max_input_tokens: 500_000,
                 max_output_tokens: 50_000,
                 ..Default::default()
             },
-            time: TimeLattice::with_duration(Duration::hours(4)),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            CommandLattice::default(),
+            TimeLattice::with_duration(Duration::hours(4)),
+        )
+        .normalize()
     }
 
     /// Create a restrictive permission set (for untrusted contexts).
     pub fn restrictive() -> Self {
-        let lattice = Self {
-            description: "Restrictive permissions".to_string(),
-            capabilities: CapabilityLattice::restrictive(),
-            obligations: Obligations::default(),
-            budget: BudgetLattice {
+        use Operation::*;
+        Self::assemble(
+            "Restrictive permissions",
+            CapabilityLattice::restrictive(),
+            &[],
+            &[ReadFiles, GlobSearch, GrepSearch],
+            PathLattice::default(),
+            BudgetLattice {
                 max_cost_usd: Decimal::from_str_exact("0.5").unwrap_or(Decimal::ONE),
                 max_input_tokens: 10_000,
                 max_output_tokens: 1_000,
                 ..Default::default()
             },
-            time: TimeLattice::with_duration(Duration::minutes(10)),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            CommandLattice::default(),
+            TimeLattice::with_duration(Duration::minutes(10)),
+        )
+        .normalize()
     }
 
     /// Create a read-only permission set.
     pub fn read_only() -> Self {
-        let lattice = Self {
-            description: "Read-only permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Read-only permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -792,9 +1194,9 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            commands: CommandLattice::restrictive(),
-            paths: PathLattice {
+            &[],
+            &[ReadFiles, GlobSearch, GrepSearch],
+            PathLattice {
                 allowed: std::collections::HashSet::new(), // empty = all readable
                 blocked: [
                     // Defense-in-depth: block sensitive paths even though write
@@ -812,10 +1214,11 @@ impl PermissionLattice {
                 .collect(),
                 work_dir: None,
             },
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            BudgetLattice::default(),
+            CommandLattice::restrictive(),
+            TimeLattice::default(),
+        )
+        .normalize()
     }
 
     /// Create a filesystem read-only permission set with sensitive paths blocked.
@@ -828,9 +1231,10 @@ impl PermissionLattice {
 
     /// Create a network-only permission set (no filesystem or execution).
     pub fn network_only() -> Self {
-        let lattice = Self {
-            description: "Network-only permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Network-only permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Never,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -847,21 +1251,22 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            budget: BudgetLattice::with_cost_limit(1.0),
-            time: TimeLattice::minutes(30),
-            commands: CommandLattice::restrictive(),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[WebSearch, WebFetch],
+            PathLattice::default(),
+            BudgetLattice::with_cost_limit(1.0),
+            CommandLattice::restrictive(),
+            TimeLattice::minutes(30),
+        )
+        .normalize()
     }
 
     /// Create a web research permission set (read + web, no writes or exec).
     pub fn web_research() -> Self {
-        let lattice = Self {
-            description: "Web research permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Web research permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::LowRisk,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -878,23 +1283,22 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            budget: BudgetLattice::with_cost_limit(1.5),
-            time: TimeLattice::minutes(45),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[ReadFiles, GlobSearch, GrepSearch, WebSearch, WebFetch],
+            PathLattice::default(),
+            BudgetLattice::with_cost_limit(1.5),
+            CommandLattice::default(),
+            TimeLattice::minutes(45),
+        )
+        .normalize()
     }
 
     /// Create a permission set for code review tasks.
     pub fn code_review() -> Self {
-        let mut obligations = Obligations::default();
-        obligations.insert(Operation::WebSearch);
-
-        let lattice = Self {
-            description: "Code review permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Code review permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -911,20 +1315,22 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations,
-            budget: BudgetLattice::with_cost_limit(1.0),
-            time: TimeLattice::minutes(30),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[WebSearch],
+            &[ReadFiles, GlobSearch, GrepSearch],
+            PathLattice::default(),
+            BudgetLattice::with_cost_limit(1.0),
+            CommandLattice::default(),
+            TimeLattice::minutes(30),
+        )
+        .normalize()
     }
 
     /// Create an edit-only permission set (no exec, no web).
     pub fn edit_only() -> Self {
-        let lattice = Self {
-            description: "Edit-only permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Edit-only permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -941,21 +1347,22 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            paths: PathLattice::block_sensitive(),
-            budget: BudgetLattice::with_cost_limit(1.5),
-            time: TimeLattice::minutes(45),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[ReadFiles, WriteFiles, EditFiles, GlobSearch, GrepSearch],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(1.5),
+            CommandLattice::default(),
+            TimeLattice::minutes(45),
+        )
+        .normalize()
     }
 
     /// Create a local dev permission set (shell + edits, no web).
     pub fn local_dev() -> Self {
-        let lattice = Self {
-            description: "Local dev permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Local dev permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -972,29 +1379,27 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            paths: PathLattice::block_sensitive(),
-            commands: CommandLattice::permissive(),
-            budget: BudgetLattice::with_cost_limit(3.0),
-            time: TimeLattice::hours(2),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[
+                ReadFiles, WriteFiles, EditFiles, RunBash, GlobSearch, GrepSearch, GitCommit,
+            ],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(3.0),
+            CommandLattice::permissive(),
+            TimeLattice::hours(2),
+        )
+        .normalize()
     }
 
     /// Create a permission set for fix/implementation tasks.
+    ///
+    /// `run_bash` is obligated by the uninhabitable-state rule (private reads,
+    /// web content and a shell together), declared here as `normalize` would.
     pub fn fix_issue() -> Self {
-        let mut obligations = Obligations::default();
-        obligations.insert(Operation::WebSearch);
-        obligations.insert(Operation::WebFetch);
-        obligations.insert(Operation::GitCommit);
-        obligations.insert(Operation::GitPush);
-        obligations.insert(Operation::CreatePr);
-
-        let lattice = Self {
-            description: "Fix issue permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Fix issue permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -1011,14 +1416,16 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations,
-            paths: PathLattice::block_sensitive(),
-            budget: BudgetLattice::with_cost_limit(2.0),
-            time: TimeLattice::hours(1),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[RunBash, WebSearch, WebFetch, GitCommit, GitPush, CreatePr],
+            &[
+                ReadFiles, WriteFiles, EditFiles, GlobSearch, GrepSearch, SpawnAgent,
+            ],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(2.0),
+            CommandLattice::default(),
+            TimeLattice::hours(1),
+        )
+        .normalize()
     }
 
     /// Create a permission set for safe PR fixing in CI.
@@ -1032,15 +1439,16 @@ impl PermissionLattice {
     /// ** UninhabitableState Analysis**: private data (read=Always) + untrusted content
     /// (web_fetch=LowRisk) + exfiltration via `run_bash=LowRisk` (shell counts as an
     /// exfil channel; git_push=Never, create_pr=Never). All three components are
-    /// present, so `normalize()` adds an approval obligation on `RunBash` (and only
-    /// `RunBash`): shell commands need approval, writes/edits/commits do not.
+    /// present, so `run_bash` (and only `run_bash`) is obligated: shell commands
+    /// need approval; writes, edits and commits are declared autonomous.
     ///
     /// The key security invariant: the agent can fix code and commit, but
     /// only the trusted CI wrapper script can push the branch and open a PR.
     pub fn safe_pr_fixer() -> Self {
-        let lattice = Self {
-            description: "Safe PR fixer permissions (no push, no PR creation)".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Safe PR fixer permissions (no push, no PR creation)",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -1057,26 +1465,24 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            paths: PathLattice::block_sensitive(),
-            commands: CommandLattice::permissive(),
-            budget: BudgetLattice::with_cost_limit(5.0),
-            time: TimeLattice::hours(2),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[RunBash],
+            &[
+                ReadFiles, WriteFiles, EditFiles, GlobSearch, GrepSearch, WebFetch, GitCommit,
+            ],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(5.0),
+            CommandLattice::permissive(),
+            TimeLattice::hours(2),
+        )
+        .normalize()
     }
 
     /// Create a release/publish permission set (approvals on exfil).
     pub fn release() -> Self {
-        let mut obligations = Obligations::default();
-        obligations.insert(Operation::GitPush);
-        obligations.insert(Operation::CreatePr);
-
-        let lattice = Self {
-            description: "Release permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Release permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -1093,19 +1499,22 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations,
-            paths: PathLattice::block_sensitive(),
-            commands: CommandLattice::permissive(),
-            budget: BudgetLattice::with_cost_limit(5.0),
-            time: TimeLattice::hours(2),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[RunBash, GitPush, CreatePr],
+            &[
+                ReadFiles, WriteFiles, EditFiles, GlobSearch, GrepSearch, WebSearch, WebFetch,
+                GitCommit,
+            ],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(5.0),
+            CommandLattice::permissive(),
+            TimeLattice::hours(2),
+        )
+        .normalize()
     }
 
     /// Create a database client permission set (CLI access only).
     pub fn database_client() -> Self {
+        use Operation::*;
         let mut commands = CommandLattice::permissive();
         for program in ["psql", "mysql", "sqlite3", "redis-cli", "mongosh"] {
             commands.allow_rule(CommandPattern {
@@ -1114,9 +1523,9 @@ impl PermissionLattice {
             });
         }
 
-        let lattice = Self {
-            description: "Database client permissions".to_string(),
-            capabilities: CapabilityLattice {
+        Self::assemble(
+            "Database client permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Never,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -1133,14 +1542,14 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
+            &[],
+            &[RunBash],
+            PathLattice::default(),
+            BudgetLattice::with_cost_limit(2.0),
             commands,
-            budget: BudgetLattice::with_cost_limit(2.0),
-            time: TimeLattice::hours(1),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            TimeLattice::hours(1),
+        )
+        .normalize()
     }
 
     /// Create a demo-friendly permission set for tool-proxy integrations.
@@ -1148,10 +1557,7 @@ impl PermissionLattice {
     /// This is permissive enough for live demos but still enforces approvals
     /// on sensitive operations (writes, edits, and uninhabitable_state exfil paths).
     pub fn demo() -> Self {
-        let mut obligations = Obligations::default();
-        obligations.insert(Operation::WriteFiles);
-        obligations.insert(Operation::EditFiles);
-
+        use Operation::*;
         let mut commands = CommandLattice::permissive();
         for program in [
             "bash",
@@ -1172,9 +1578,9 @@ impl PermissionLattice {
             });
         }
 
-        let lattice = Self {
-            description: "Demo permissions".to_string(),
-            capabilities: CapabilityLattice {
+        Self::assemble(
+            "Demo permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -1191,15 +1597,16 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations,
+            &[WriteFiles, EditFiles, RunBash, GitPush, CreatePr],
+            &[
+                ReadFiles, GlobSearch, GrepSearch, WebSearch, WebFetch, GitCommit,
+            ],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(2.0),
             commands,
-            paths: PathLattice::block_sensitive(),
-            budget: BudgetLattice::with_cost_limit(2.0),
-            time: TimeLattice::minutes(45),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            TimeLattice::minutes(45),
+        )
+        .normalize()
     }
 
     /// Create a permission set for PR review tasks.
@@ -1215,9 +1622,10 @@ impl PermissionLattice {
     /// Note: run_bash is disabled because it's an exfiltration vector. The agent
     /// can still analyze diffs using file reads and web fetch for GitHub API.
     pub fn pr_review() -> Self {
-        let lattice = Self {
-            description: "PR review permissions".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "PR review permissions",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -1234,14 +1642,14 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            paths: PathLattice::block_sensitive(),
-            budget: BudgetLattice::with_cost_limit(1.5),
-            time: TimeLattice::minutes(30),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[ReadFiles, GlobSearch, GrepSearch, WebSearch, WebFetch],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(1.5),
+            CommandLattice::default(),
+            TimeLattice::minutes(30),
+        )
+        .normalize()
     }
 
     /// Create a permission set for code generation tasks.
@@ -1255,9 +1663,10 @@ impl PermissionLattice {
     /// ** UninhabitableState Analysis**: No untrusted content exposure (web_fetch=Never, web_search=Never),
     /// so uninhabitable_state protection is not triggered despite having write capabilities.
     pub fn codegen() -> Self {
-        let lattice = Self {
-            description: "Code generation permissions (network-isolated)".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Code generation permissions (network-isolated)",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::LowRisk,
                 edit_files: CapabilityLevel::LowRisk,
@@ -1274,15 +1683,16 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            paths: PathLattice::block_sensitive(),
-            commands: CommandLattice::permissive(),
-            budget: BudgetLattice::with_cost_limit(5.0),
-            time: TimeLattice::hours(1),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[
+                ReadFiles, WriteFiles, EditFiles, RunBash, GlobSearch, GrepSearch, GitCommit,
+            ],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(5.0),
+            CommandLattice::permissive(),
+            TimeLattice::hours(1),
+        )
+        .normalize()
     }
 
     /// Create a permission set for PR approval tasks.
@@ -1293,12 +1703,13 @@ impl PermissionLattice {
     /// - Push/merge approved PRs
     ///
     /// ** UninhabitableState Analysis**: Has all three components (read + web + git_push),
-    /// so git_push will require approval. This is intentional - approval should
+    /// so git_push (and the shell) require approval. This is intentional - approval should
     /// be gated on CI status verification.
     pub fn pr_approve() -> Self {
-        let lattice = Self {
-            description: "PR approval permissions (CI-gated)".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "PR approval permissions (CI-gated)",
+            CapabilityLattice {
                 read_files: CapabilityLevel::Always,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -1315,14 +1726,14 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            paths: PathLattice::block_sensitive(),
-            budget: BudgetLattice::with_cost_limit(1.0),
-            time: TimeLattice::minutes(15),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[RunBash, GitPush],
+            &[ReadFiles, GlobSearch, GrepSearch, WebSearch, WebFetch],
+            PathLattice::block_sensitive(),
+            BudgetLattice::with_cost_limit(1.0),
+            CommandLattice::default(),
+            TimeLattice::minutes(15),
+        )
+        .normalize()
     }
 
     /// Create a permission set for orchestrator agents (pod management only).
@@ -1334,16 +1745,17 @@ impl PermissionLattice {
     /// ** UninhabitableState Analysis**: private access (read/glob/grep) present,
     /// untrusted content absent (web_*: Never), exfiltration absent
     /// (git/bash: Never). Only 1/3 components → `StateRisk::Low`.
-    /// No approval obligations required.
+    /// No approval obligations required; every permitted op is declared autonomous.
     ///
     /// **Delegation**: The orchestrator's own permissions are narrow, but it
     /// delegates to sub-pods via a separate delegation ceiling (configured
     /// by the orchestrator's creator). Sub-pod permissions are bounded by
     /// `delegation_ceiling.delegate_to(requested)`.
     pub fn orchestrator() -> Self {
-        let lattice = Self {
-            description: "Orchestrator permissions (pod management only)".to_string(),
-            capabilities: CapabilityLattice {
+        use Operation::*;
+        Self::assemble(
+            "Orchestrator permissions (pod management only)",
+            CapabilityLattice {
                 read_files: CapabilityLevel::LowRisk,
                 write_files: CapabilityLevel::Never,
                 edit_files: CapabilityLevel::Never,
@@ -1360,14 +1772,14 @@ impl PermissionLattice {
                 #[cfg(not(kani))]
                 extensions: std::collections::BTreeMap::new(),
             },
-            obligations: Obligations::default(),
-            budget: BudgetLattice::with_cost_limit(50.0),
-            time: TimeLattice::hours(4),
-            commands: CommandLattice::restrictive(),
-            ..Default::default()
-        };
-
-        lattice.normalize()
+            &[],
+            &[ReadFiles, GlobSearch, GrepSearch, ManagePods, SpawnAgent],
+            PathLattice::default(),
+            BudgetLattice::with_cost_limit(50.0),
+            CommandLattice::restrictive(),
+            TimeLattice::hours(4),
+        )
+        .normalize()
     }
 }
 
@@ -1377,6 +1789,7 @@ pub struct PermissionLatticeBuilder {
     description: Option<String>,
     capabilities: Option<CapabilityLattice>,
     obligations: Option<Obligations>,
+    autonomous: Obligations,
     paths: Option<PathLattice>,
     budget: Option<BudgetLattice>,
     commands: Option<CommandLattice>,
@@ -1399,9 +1812,45 @@ impl PermissionLatticeBuilder {
         self
     }
 
-    /// Set approval obligations.
+    /// Set approval obligations: the operations declared `RequiresApproval`.
     pub fn obligations(mut self, obligations: Obligations) -> Self {
         self.obligations = Some(obligations);
+        self
+    }
+
+    /// Set the capabilities and declare `consent` for every operation they
+    /// permit. The caller names the consent; [`Self::obligations`] /
+    /// [`Self::autonomous`] can still refine it, and an operation then declared
+    /// both ways is refused by `build`.
+    pub fn capabilities_with(
+        mut self,
+        capabilities: CapabilityLattice,
+        consent: ConsentMode,
+    ) -> Self {
+        let permitted = capabilities.permitted_operations();
+        self.capabilities = Some(capabilities);
+        match consent {
+            ConsentMode::Autonomous => {
+                for op in permitted {
+                    self.autonomous.insert(op);
+                }
+            }
+            ConsentMode::RequiresApproval => {
+                let obligations = self.obligations.get_or_insert_with(Obligations::default);
+                for op in permitted {
+                    obligations.insert(op);
+                }
+            }
+        }
+        self
+    }
+
+    /// Declare operations `Autonomous`. Every operation above `Never` must be
+    /// declared here or in [`Self::obligations`], or `build` refuses it.
+    pub fn autonomous(mut self, ops: impl IntoIterator<Item = Operation>) -> Self {
+        for op in ops {
+            self.autonomous.insert(op);
+        }
         self
     }
 
@@ -1452,8 +1901,10 @@ impl PermissionLatticeBuilder {
         self
     }
 
-    /// Build the permission lattice.
-    pub fn build(self) -> PermissionLattice {
+    /// Build the permission lattice: refused, naming each operation, when an
+    /// operation above `Never` is declared neither autonomous nor obligated, or
+    /// both. Normalized.
+    pub fn build(self) -> Result<PermissionLattice, ConsentError> {
         let lattice = PermissionLattice {
             id: Uuid::new_v4(),
             description: self
@@ -1462,6 +1913,7 @@ impl PermissionLatticeBuilder {
             derived_from: None,
             capabilities: self.capabilities.unwrap_or_default(),
             obligations: self.obligations.unwrap_or_default(),
+            autonomous: self.autonomous,
             paths: self.paths.unwrap_or_default(),
             budget: self.budget.unwrap_or_default(),
             commands: self.commands.unwrap_or_default(),
@@ -1472,16 +1924,18 @@ impl PermissionLatticeBuilder {
             created_by: self.created_by.unwrap_or_else(|| "builder".to_string()),
         };
 
-        lattice.normalize()
+        lattice.validated()
     }
 
     /// Build without normalization — for delegation ceilings that must
     /// remain as pure top elements without obligation injection.
     ///
     /// Use `build()` for normal policies. Use this only when constructing
-    /// a ceiling lattice for Galois connection properties.
-    pub fn build_unnormalized(self) -> PermissionLattice {
-        PermissionLattice {
+    /// a ceiling lattice for Galois connection properties. The consent
+    /// declaration is checked all the same: a ceiling is met with policies, and
+    /// `meet` reads an undeclared operation as obligated.
+    pub fn build_unnormalized(self) -> Result<PermissionLattice, ConsentError> {
+        let lattice = PermissionLattice {
             id: Uuid::new_v4(),
             description: self
                 .description
@@ -1489,6 +1943,7 @@ impl PermissionLatticeBuilder {
             derived_from: None,
             capabilities: self.capabilities.unwrap_or_default(),
             obligations: self.obligations.unwrap_or_default(),
+            autonomous: self.autonomous,
             paths: self.paths.unwrap_or_default(),
             budget: self.budget.unwrap_or_default(),
             // Use empty() not default() — default has a pre-populated allowlist
@@ -1501,7 +1956,9 @@ impl PermissionLatticeBuilder {
             minimum_isolation: self.minimum_isolation,
             created_at: Utc::now(),
             created_by: self.created_by.unwrap_or_else(|| "builder".to_string()),
-        }
+        };
+        lattice.check_consent()?;
+        Ok(lattice)
     }
 }
 
@@ -1548,8 +2005,12 @@ impl EffectivePermissions {
     /// checksum incoherent with equality in the first place.
     fn seal(lattice: &PermissionLattice) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(b"portcullis-effective-permissions-seal-v1\x00");
-        hasher.update(lattice.checksum().as_bytes());
+        // v2: the seal covers the RAW consent sets, not the decided
+        // projection `checksum` compares. Removing an obligation in place
+        // leaves the operation undeclared — decided the same, fail-closed —
+        // but it is still a mutation of the sealed value, and a seal says so.
+        hasher.update(b"portcullis-effective-permissions-seal-v2\x00");
+        hasher.update(lattice.raw_checksum().as_bytes());
         hasher.update(b"\x00");
         hasher.update(lattice.id.as_bytes());
         hasher.update(b"\x00");
@@ -1590,12 +2051,6 @@ impl EffectivePermissions {
     /// Check if permissions are currently valid.
     pub fn is_valid(&self) -> bool {
         self.verify_integrity() && self.lattice.is_valid()
-    }
-}
-
-impl Default for EffectivePermissions {
-    fn default() -> Self {
-        Self::new(PermissionLattice::default())
     }
 }
 

@@ -162,9 +162,9 @@ run measured, but they are not attributable to the profile's levels, and nothing
 here establishes where they came from. Until the Tier 2 reading is re-taken on
 the current runtime, treat the C(T) column of the side-by-side table — and the
 "a quarter of the human decisions" comparison drawn from it — as unexplained,
-not as a property of `codegen`. A later release makes consent an explicit
-per-operation declaration, so a profile states "autonomous" or "requires
-approval" rather than leaving it to be inferred from the level.
+not as a property of `codegen`. Consent is now an explicit per-operation
+declaration: `codegen` lists every permitted operation under `autonomous`, so
+the profile itself says that none of them asks first.
 
 ## What this reading does not establish
 

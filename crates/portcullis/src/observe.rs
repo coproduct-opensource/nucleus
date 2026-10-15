@@ -221,11 +221,29 @@ impl ObserveSession {
                 self.operation_counts.len(),
             )),
             capabilities,
+            autonomous: self.synthesize_autonomous(&obligations),
             obligations,
             paths: Some(paths),
             budget: Some(BudgetSpec::default()),
             time: Some(time),
         }
+    }
+
+    /// Every observed operation the synthesized profile does not obligate: it
+    /// ran without an approval while observed, and the profile says so.
+    fn synthesize_autonomous(&self, obligations: &[ObligationSpec]) -> Vec<ObligationSpec> {
+        let obligated: std::collections::BTreeSet<Operation> =
+            obligations.iter().map(Operation::from).collect();
+        let mut ops: Vec<Operation> = self
+            .operation_counts
+            .keys()
+            .copied()
+            .filter(|op| !obligated.contains(op))
+            .collect();
+        ops.sort();
+        ops.into_iter()
+            .map(crate::profile::ObligationSpec::from_operation)
+            .collect()
     }
 
     /// Get a summary of the observation session.

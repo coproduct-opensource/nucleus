@@ -54,7 +54,7 @@ fn main() {
     };
     let until = Utc::now() + Duration::hours(8);
 
-    let mut root_lattice = PermissionLattice::new("platform root");
+    let mut root_lattice = PermissionLattice::supervised().with_description("platform root");
     root_lattice.capabilities = CapabilityLattice::permissive();
     root_lattice.budget.max_cost_usd = "250.00".parse().unwrap_or_default();
     let (root, holder) = LatticeCertificate::mint(
@@ -65,13 +65,16 @@ fn main() {
         &rng,
     );
 
-    let mut agent_lattice = PermissionLattice::new("pr-fixer");
+    let mut agent_lattice = PermissionLattice::supervised().with_description("pr-fixer");
     agent_lattice.capabilities = CapabilityLattice::permissive();
     agent_lattice.capabilities.git_push = CapabilityLevel::Never;
     agent_lattice.capabilities.spawn_agent = CapabilityLevel::Never;
     agent_lattice.capabilities.web_fetch = CapabilityLevel::LowRisk;
     agent_lattice.budget.max_cost_usd = "12.50".parse().unwrap_or_default();
-    agent_lattice.obligations.insert(Operation::CreatePr);
+    agent_lattice.declare(
+        Operation::CreatePr,
+        portcullis::ConsentMode::RequiresApproval,
+    );
     let Ok((leaf, _)) = root.delegate(
         &agent_lattice,
         "spiffe://example.org/agents/pr-fixer".into(),

@@ -413,7 +413,7 @@ pub mod presets {
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
             PermissionLattice::read_only(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ]
     }
 
@@ -449,6 +449,17 @@ pub mod presets {
     ) -> PermissionLattice {
         let mut result = r.clone();
         result.capabilities = constant.capabilities.implies(&r.capabilities);
+        // The adjoint is the GREATEST such element, so an operation it raises
+        // from `Never` gets the greatest consent, `Autonomous`, unless `r`
+        // already obligates it.
+        for op in crate::capability::Operation::ALL {
+            if r.capabilities.level_for(op) == crate::CapabilityLevel::Never
+                && result.capabilities.level_for(op) > crate::CapabilityLevel::Never
+                && !r.obligations.requires(op)
+            {
+                result.declare(op, crate::ConsentMode::Autonomous);
+            }
+        }
         result
     }
 
@@ -544,7 +555,7 @@ pub mod presets {
             let mut result = p.clone();
             result.capabilities = p
                 .capabilities
-                .meet(&PermissionLattice::default().capabilities);
+                .meet(&PermissionLattice::supervised().capabilities);
             result
         };
         let samples = verification_samples(&alpha);
@@ -557,11 +568,11 @@ pub mod presets {
                 let mut result = p.clone();
                 result.capabilities = p
                     .capabilities
-                    .meet(&PermissionLattice::default().capabilities);
+                    .meet(&PermissionLattice::supervised().capabilities);
                 result
             },
             // From agent: Heyting right adjoint of capability meet
-            |r: &PermissionLattice| capability_right_adjoint(&PermissionLattice::default(), r),
+            |r: &PermissionLattice| capability_right_adjoint(&PermissionLattice::supervised(), r),
             &samples,
         )
     }
@@ -776,7 +787,7 @@ mod tests {
                 |p: &PermissionLattice| p.clone(),
             );
 
-        let perms = PermissionLattice::default();
+        let perms = PermissionLattice::supervised();
 
         // α(l) should equal l
         assert_eq!(connection.abstract_to(&perms), perms);
@@ -1109,7 +1120,7 @@ mod tests {
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
             PermissionLattice::read_only(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ];
         for (i, p) in profiles.iter().enumerate() {
             let alpha_p = bridge.to_target(p);
@@ -1132,7 +1143,7 @@ mod tests {
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
             PermissionLattice::read_only(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ];
         for (i, p) in profiles.iter().enumerate() {
             let alpha_p = bridge.to_target(p);
@@ -1155,7 +1166,7 @@ mod tests {
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
             PermissionLattice::read_only(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ];
         for (i, p) in profiles.iter().enumerate() {
             let alpha_p = bridge.to_target(p);
@@ -1177,7 +1188,7 @@ mod tests {
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
             PermissionLattice::read_only(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ];
         for (i, p) in profiles.iter().enumerate() {
             let alpha_p = bridge.to_target(p);
@@ -1236,7 +1247,7 @@ mod tests {
             PermissionLattice::permissive(),
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ] {
             let expected = f.abstract_to(p);
             let actual = id_then_f.abstract_to(p);
@@ -1269,7 +1280,7 @@ mod tests {
             PermissionLattice::permissive(),
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ] {
             let expected = f.abstract_to(p);
             let actual = f_then_id.abstract_to(p);
@@ -1302,7 +1313,7 @@ mod tests {
             PermissionLattice::restrictive(),
             PermissionLattice::codegen(),
             PermissionLattice::read_only(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ] {
             let l = left.abstract_to(p);
             let r = right.abstract_to(p);

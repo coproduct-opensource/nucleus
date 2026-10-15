@@ -47,12 +47,13 @@ fn lattice(obligated: &[Operation]) -> PermissionLattice {
     commands.block("forbidden");
     let mut perms = PermissionLattice::builder()
         .description("consent-test")
-        .capabilities(all_always())
+        .capabilities_with(all_always(), portcullis::ConsentMode::Autonomous)
         .commands(commands)
-        .build();
-    perms.obligations.approvals.clear();
+        .build()
+        .expect("consent is declared");
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
     for op in obligated {
-        perms.obligations.insert(*op);
+        perms.declare(*op, portcullis::ConsentMode::RequiresApproval);
     }
     perms
 }

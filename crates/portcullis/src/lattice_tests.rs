@@ -15,7 +15,7 @@ fn law_samples() -> Vec<PermissionLattice> {
     vec![
         PermissionLattice::permissive(),
         PermissionLattice::restrictive(),
-        PermissionLattice::default(),
+        PermissionLattice::supervised(),
     ]
 }
 
@@ -86,9 +86,22 @@ fn every_policy_field_reaches_the_digest() {
     caps.capabilities = PermissionLattice::permissive().capabilities;
     assert_ne!(caps.checksum(), d, "capabilities");
 
+    // Consent on an operation `restrictive` permits. An obligation on one it
+    // forbids decides nothing and does not move `checksum` (which is coherent
+    // with equality), but it does move `program_checksum`, the cross-version
+    // identity that hashes the raw set.
     let mut obl = base.clone();
-    obl.obligations = PermissionLattice::permissive().obligations;
+    obl.declare(Operation::ReadFiles, crate::ConsentMode::RequiresApproval);
     assert_ne!(obl.checksum(), d, "obligations");
+    let mut raw = base.clone();
+    raw.obligations.insert(Operation::GitPush);
+    assert_eq!(raw, base, "an obligation on a forbidden op decides nothing");
+    assert_eq!(raw.checksum(), d, "so the checksum agrees with equality");
+    assert_ne!(
+        raw.program_checksum(),
+        base.program_checksum(),
+        "but the raw set reaches the program checksum"
+    );
 
     // A distinct value, not `permissive()`'s — the two constructors share
     // their `paths`, so borrowing one perturbs nothing and the assertion
@@ -202,8 +215,16 @@ fn absorption_fails_because_meet_applies_a_closure() {
     // This test exists so that stops being invisible. If absorption ever
     // starts holding, something changed about the constraint and this test
     // says so.
-    let a = PermissionLattice::restrictive();
+    //
+    // The witness is one where the closure lands on an operation `a`
+    // PERMITS: `codegen` runs the shell autonomously, and `a ∨ permissive` is
+    // uninhabitable, so the closure obligates `run_bash` and the meet keeps
+    // it. (The earlier witness, `restrictive`, only broke on obligations for
+    // operations it forbids; equality now compares decided consent, and an
+    // obligation on a forbidden operation decides nothing.)
+    let a = PermissionLattice::codegen();
     let b = PermissionLattice::permissive();
+    assert!(!a.requires_approval(Operation::RunBash));
     let absorbed = a.meet(&a.join(&b));
     assert_ne!(
         absorbed, a,
@@ -212,6 +233,10 @@ fn absorption_fails_because_meet_applies_a_closure() {
     assert_eq!(
         absorbed.capabilities, a.capabilities,
         "the break is in obligations, not capabilities"
+    );
+    assert!(
+        absorbed.requires_approval(Operation::RunBash),
+        "the closure's obligation is on an operation `a` permits"
     );
     assert!(
         absorbed.obligations != a.obligations,
@@ -229,7 +254,7 @@ use super::*;
 #[cfg(feature = "serde")]
 #[test]
 fn deserialize_rejects_hostile_uuid_without_panicking() {
-    let base = serde_json::to_value(PermissionLattice::default()).unwrap();
+    let base = serde_json::to_value(PermissionLattice::supervised()).unwrap();
 
     // Non-ASCII id (the crashing class): U+2028 is multi-byte.
     let mut bad = base.clone();
@@ -276,7 +301,7 @@ fn deserialize_rejects_hostile_uuid_without_panicking() {
 #[test]
 fn granted_operations_excludes_every_never_op_for_all_profiles() {
     let profiles: Vec<(&str, PermissionLattice)> = vec![
-        ("default", PermissionLattice::default()),
+        ("default", PermissionLattice::supervised()),
         ("permissive", PermissionLattice::permissive()),
         ("restrictive", PermissionLattice::restrictive()),
         ("read_only", PermissionLattice::read_only()),
@@ -393,7 +418,7 @@ fn test_meet_is_commutative() {
 
 #[test]
 fn test_meet_is_idempotent() {
-    let a = PermissionLattice::default();
+    let a = PermissionLattice::supervised();
     let aa = a.meet(&a);
 
     assert_eq!(a.capabilities, aa.capabilities);
@@ -404,7 +429,7 @@ fn test_meet_is_idempotent() {
 #[test]
 fn test_meet_is_associative() {
     let a = PermissionLattice::permissive();
-    let b = PermissionLattice::default();
+    let b = PermissionLattice::supervised();
     let c = PermissionLattice::restrictive();
 
     let ab_c = a.meet(&b).meet(&c);
@@ -417,15 +442,14 @@ fn test_meet_is_associative() {
 #[test]
 fn test_delegation_monotonicity() {
     let parent = PermissionLattice::permissive();
-    let requested = PermissionLattice {
-        capabilities: CapabilityLattice {
+    let requested = PermissionLattice::supervised().with_capabilities(
+        CapabilityLattice {
             write_files: CapabilityLevel::Always,
             git_push: CapabilityLevel::Always,
             ..Default::default()
         },
-        obligations: Obligations::default(),
-        ..Default::default()
-    };
+        crate::ConsentMode::Autonomous,
+    );
 
     let result = parent.delegate_to(&requested, "test delegation").unwrap();
 
@@ -435,28 +459,103 @@ fn test_delegation_monotonicity() {
 
 #[test]
 fn test_delegation_fails_when_parent_expired() {
-    let mut parent = PermissionLattice::default();
+    let mut parent = PermissionLattice::supervised();
     parent.time.valid_until = Utc::now() - Duration::hours(1);
 
-    let result = parent.delegate_to(&PermissionLattice::default(), "test");
+    let result = parent.delegate_to(&PermissionLattice::supervised(), "test");
     assert!(matches!(result, Err(DelegationError::ParentExpired)));
 }
 
 #[test]
 fn test_effective_permissions_integrity() {
-    let perms = EffectivePermissions::new(PermissionLattice::default());
+    let perms = EffectivePermissions::new(PermissionLattice::supervised());
     assert!(perms.verify_integrity());
+}
+
+#[test]
+fn consent_leq_compares_consent_on_every_permitted_operation() {
+    // Kills the surviving mutant `level_for(op) == Never -> != Never` in
+    // `PermissionLattice::consent_leq`. The mutant waves every PERMITTED
+    // operation through, so consent stops reaching `leq` at all; the
+    // proptest `leq_agrees_with_meet` only reaches this case when its two
+    // random capability vectors happen to be ordered, which 512 cases rarely
+    // produce. Two lattices equal in everything but the consent on one
+    // permitted operation pin it.
+    let autonomous = PermissionLattice::restrictive();
+    assert!(autonomous.capabilities.level_for(Operation::ReadFiles) > CapabilityLevel::Never);
+    assert_eq!(
+        autonomous.consent_for(Operation::ReadFiles),
+        crate::ConsentMode::Autonomous
+    );
+    let mut obligated = autonomous.clone();
+    obligated.declare(Operation::ReadFiles, crate::ConsentMode::RequiresApproval);
+    assert_eq!(autonomous.capabilities, obligated.capabilities);
+
+    assert!(
+        !autonomous.leq(&obligated),
+        "running read_files autonomously is not below obligating it"
+    );
+    assert!(
+        obligated.leq(&autonomous),
+        "obligating read_files is below running it autonomously"
+    );
+}
+
+#[test]
+fn builder_autonomous_declares_exactly_the_named_operations() {
+    // Kills the surviving mutant `PermissionLatticeBuilder::autonomous ->
+    // Default::default()`: the declaration must reach the built lattice, and
+    // the builder state set before it (capabilities, obligations) must survive.
+    let caps = CapabilityLattice::restrictive();
+    let permitted = caps.permitted_operations();
+    let (obligated, autonomous) = permitted
+        .split_first()
+        .expect("restrictive permits an operation");
+    let mut obligations = Obligations::default();
+    obligations.insert(*obligated);
+
+    let lattice = PermissionLattice::builder()
+        .capabilities(caps.clone())
+        .obligations(obligations.clone())
+        .autonomous(autonomous.iter().copied())
+        .build()
+        .expect("every permitted operation is declared exactly once");
+
+    assert_eq!(lattice.capabilities, caps);
+    assert_eq!(
+        lattice.consent_for(*obligated),
+        crate::ConsentMode::RequiresApproval
+    );
+    for op in autonomous {
+        assert!(
+            lattice.autonomous().requires(*op),
+            "{op:?} declared autonomous"
+        );
+        assert_eq!(lattice.consent_for(*op), crate::ConsentMode::Autonomous);
+    }
+
+    // Declaring the obligated operation autonomous too is refused, not merged.
+    let both = PermissionLattice::builder()
+        .capabilities(caps)
+        .obligations(obligations)
+        .autonomous(permitted.iter().copied())
+        .build();
+    assert!(both.is_err(), "an operation declared both ways is refused");
 }
 
 #[test]
 fn test_builder_pattern() {
     let lattice = PermissionLattice::builder()
         .description("Test permissions")
-        .capabilities(CapabilityLattice::restrictive())
+        .capabilities_with(
+            CapabilityLattice::restrictive(),
+            crate::ConsentMode::Autonomous,
+        )
         .budget(BudgetLattice::with_cost_limit(1.0))
         .uninhabitable_constraint(true)
         .created_by("test")
-        .build();
+        .build()
+        .expect("consent is declared");
 
     assert_eq!(lattice.description, "Test permissions");
     assert_eq!(lattice.budget.max_cost_usd, Decimal::ONE);
@@ -465,18 +564,18 @@ fn test_builder_pattern() {
 
 #[test]
 fn test_uninhabitable_is_enforced_in_meet() {
-    let dangerous = PermissionLattice {
-        capabilities: CapabilityLattice {
+    let dangerous = PermissionLattice::supervised().with_capabilities(
+        CapabilityLattice {
             read_files: CapabilityLevel::Always,
             web_fetch: CapabilityLevel::LowRisk,
             git_push: CapabilityLevel::LowRisk,
             create_pr: CapabilityLevel::LowRisk,
             ..Default::default()
         },
-        obligations: Obligations::default(),
-        uninhabitable_constraint: true,
-        ..Default::default()
-    };
+        crate::ConsentMode::Autonomous,
+    );
+    assert!(dangerous.uninhabitable_constraint);
+    assert!(!dangerous.requires_approval(Operation::GitPush));
 
     let combined = dangerous.meet(&dangerous);
 
@@ -502,18 +601,14 @@ fn test_join_preserves_uninhabitable_constraint_or_semantics() {
     // Regression: join() previously used AND for uninhabitable_constraint,
     // meaning an attacker who controlled one input could disable the safety
     // check by providing uninhabitable_constraint=false.
-    let constrained = PermissionLattice {
-        uninhabitable_constraint: true,
-        ..Default::default()
-    };
+    let constrained = PermissionLattice::supervised();
+    assert!(constrained.uninhabitable_constraint);
 
     // Simulate attacker-controlled input with constraint disabled.
     // In practice this is only reachable via programmatic construction
     // (deserialization always forces true), but join must be safe regardless.
-    let unconstrained = PermissionLattice {
-        uninhabitable_constraint: false,
-        ..Default::default()
-    };
+    let mut unconstrained = PermissionLattice::supervised();
+    unconstrained.uninhabitable_constraint = false;
 
     // join(true, false) must be true (OR-semantics)
     let result = constrained.join(&unconstrained);
@@ -560,6 +655,7 @@ fn test_uninhabitable_bypass_via_deserialization_blocked() {
             "create_pr": "low_risk"
         },
         "obligations": {"approvals": []},
+        "autonomous": ["read_files", "write_files", "edit_files", "glob_search", "grep_search", "web_search", "web_fetch", "git_commit", "create_pr"],
         "paths": {"allowed": [], "blocked": [], "work_dir": null},
         "budget": {"max_cost_usd": "5", "consumed_usd": "0", "max_input_tokens": 100000, "max_output_tokens": 10000},
         "commands": {"allowed": [], "blocked": []},
@@ -954,5 +1050,81 @@ mod program_checksum_tests {
             "every field but the window still enters: a constant return, or a \
              skip that swallowed the other fields, would collapse these"
         );
+    }
+}
+
+#[test]
+fn the_autonomous_getter_returns_the_declared_set() {
+    let l = PermissionLattice::supervised();
+    let declared: Vec<Operation> = l.autonomous().approvals.iter().copied().collect();
+    assert_eq!(
+        declared,
+        vec![
+            Operation::ReadFiles,
+            Operation::GlobSearch,
+            Operation::GrepSearch
+        ],
+        "supervised() declares exactly reads and searches autonomous"
+    );
+}
+
+#[test]
+fn add_obligations_moves_an_autonomous_op_to_obligated() {
+    let mut l = PermissionLattice::codegen();
+    assert!(l.autonomous().requires(Operation::RunBash));
+    assert!(!l.requires_approval(Operation::RunBash));
+
+    l.add_obligations(&Obligations::for_operation(Operation::RunBash));
+
+    assert!(l.requires_approval(Operation::RunBash), "now obligated");
+    assert!(
+        !l.autonomous().requires(Operation::RunBash),
+        "and no longer autonomous: moved, not duplicated"
+    );
+    assert_eq!(l.check_consent(), Ok(()), "still declared exactly once");
+}
+
+/// The join law at its boundary: a side whose level is `Never` says nothing
+/// about consent, even if it carries a (stale) autonomous entry for the op, so
+/// the permitting side's obligation carries over. Checked in both argument
+/// orders, so each side's `> Never` test is exercised.
+#[test]
+fn join_takes_consent_only_from_a_side_that_permits_the_op() {
+    let op = Operation::WebFetch;
+    // Forbids web_fetch, yet declares it autonomous: only `> Never` may decide.
+    let mut forbids = PermissionLattice::restrictive();
+    assert_eq!(forbids.capabilities.level_for(op), CapabilityLevel::Never);
+    forbids.declare(op, crate::ConsentMode::Autonomous);
+    // Permits web_fetch, under approval.
+    let mut permits = PermissionLattice::restrictive();
+    permits.grant(
+        op,
+        CapabilityLevel::LowRisk,
+        crate::ConsentMode::RequiresApproval,
+    );
+
+    for (j, order) in [
+        (forbids.join(&permits), "forbids ∨ permits"),
+        (permits.join(&forbids), "permits ∨ forbids"),
+    ] {
+        assert_eq!(j.capabilities.level_for(op), CapabilityLevel::LowRisk);
+        assert!(
+            j.requires_approval(op),
+            "{order}: consent comes from the permitting side only"
+        );
+    }
+
+    // Both permit: obligated only if both obligate, so one autonomous side wins.
+    let mut autonomous = PermissionLattice::restrictive();
+    autonomous.grant(op, CapabilityLevel::LowRisk, crate::ConsentMode::Autonomous);
+    assert!(!permits.join(&autonomous).requires_approval(op));
+    assert!(!autonomous.join(&permits).requires_approval(op));
+
+    // Neither permits: the join declares nothing for the op either way.
+    let a = PermissionLattice::restrictive();
+    let b = PermissionLattice::restrictive();
+    for j in [a.join(&b), b.join(&a)] {
+        assert!(!j.obligations.requires(op), "no obligation invented");
+        assert!(!j.autonomous().requires(op), "no autonomy invented");
     }
 }

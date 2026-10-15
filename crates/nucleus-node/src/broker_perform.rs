@@ -1088,7 +1088,10 @@ mod tests {
         use crate::host_decide::effects::Operator;
         use base64::Engine as _;
         let mut policy = PermissionLattice::permissive();
-        policy.obligations.insert(portcullis::Operation::WebFetch);
+        policy.declare(
+            portcullis::Operation::WebFetch,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         let credentials = store();
         let identity = who();
         let upstreams = [upstream()];

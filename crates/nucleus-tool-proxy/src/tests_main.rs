@@ -1564,7 +1564,10 @@ mod approval_grants_2406 {
     /// pair whose disagreement was #2406.
     fn deferring_kernel() -> Kernel {
         let mut lattice = PermissionLattice::permissive();
-        lattice.obligations.insert(Operation::WriteFiles);
+        lattice.declare(
+            Operation::WriteFiles,
+            portcullis::ConsentMode::RequiresApproval,
+        );
         Kernel::new(lattice)
     }
 
@@ -1779,7 +1782,7 @@ mod approval_naming_parity {
     /// agree with itself whatever `mediation` did (ADR 0007 G-1).
     fn kernel_key(operation: Operation, subject: &str) -> String {
         let mut lattice = portcullis::PermissionLattice::permissive();
-        lattice.obligations.insert(operation);
+        lattice.declare(operation, portcullis::ConsentMode::RequiresApproval);
         let mut kernel = portcullis::kernel::Kernel::new(lattice);
         let r = crate::mediation::decide_and_record(
             crate::mediation::MediationEnv {

@@ -64,13 +64,14 @@ portcullis = "1"
 Basic usage:
 
 ```rust
-use portcullis::{Operation, PermissionLattice, CapabilityLevel};
+use portcullis::{CapabilityLevel, ConsentMode, Operation, PermissionLattice};
 
-// Create a permission set with dangerous capabilities
-let mut perms = PermissionLattice::default();
-perms.capabilities.read_files = CapabilityLevel::Always;    // Private data
-perms.capabilities.web_fetch = CapabilityLevel::LowRisk;    // Untrusted content
-perms.capabilities.git_push = CapabilityLevel::LowRisk;     // Exfiltration
+// Create a permission set with dangerous capabilities. Raising an operation
+// declares its consent in the same step: there is no default.
+let mut perms = PermissionLattice::supervised();
+perms.grant(Operation::ReadFiles, CapabilityLevel::Always, ConsentMode::Autonomous); // Private data
+perms.grant(Operation::WebFetch, CapabilityLevel::LowRisk, ConsentMode::Autonomous); // Untrusted content
+perms.grant(Operation::GitPush, CapabilityLevel::LowRisk, ConsentMode::Autonomous);  // Exfiltration
 
 // The meet operation applies the portcullis and adds approval obligations
 let safe = perms.meet(&perms);
@@ -91,15 +92,18 @@ A level is **permission, not consent**. `Kernel::decide` reads the level only to
 tell `Never` from permitted; `LowRisk` and `Always` differ in the lattice order
 (meet, join, delegation), not in whether a person is asked.
 
-Approval requirements are modeled separately as **Obligations**: an operation in
-the obligation set is held until a matching approval exists, and an operation
-outside it runs without approval even at `LowRisk`. Normalization adds
-obligations (never removes them) for each permitted `GitPush`, `CreatePr` and
-`RunBash` when private-data access, untrusted content and an exfiltration
-channel are all present. A later release makes consent an explicit
-per-operation declaration (autonomous or requires approval); until then an
-unobligated permitted operation is autonomous by omission. The meet operation
-takes the **minimum** of two capability levels (most restrictive).
+Consent is modeled separately and declared explicitly for every permitted
+operation (`ConsentMode`): an operation in `obligations` is held until a
+matching approval exists, an operation in `autonomous` runs without one, and a
+lattice with a permitted operation in neither set or in both is refused at
+construction and by deserialization, naming the operation
+(`PermissionLattice::check_consent`). Nothing is autonomous by omission:
+`consent_for` decides an undeclared operation `RequiresApproval`.
+Normalization adds obligations (never removes them, moving an operation out of
+`autonomous`) for each permitted `GitPush`, `CreatePr` and `RunBash` when
+private-data access, untrusted content and an exfiltration channel are all
+present. The meet operation takes the **minimum** of two capability levels
+(most restrictive) and obligates an operation if either side does.
 
 ## Lattice Properties
 
@@ -223,7 +227,7 @@ Safely delegate permissions to subagents (monotonicity guaranteed):
 use portcullis::PermissionLattice;
 
 let parent = PermissionLattice::permissive();
-let requested = PermissionLattice::default();
+let requested = PermissionLattice::supervised();
 
 match parent.delegate_to(&requested, "code review task") {
     Ok(child_perms) => {
@@ -239,15 +243,18 @@ match parent.delegate_to(&requested, "code review task") {
 Use the builder for fluent construction:
 
 ```rust
-use portcullis::{PermissionLattice, CapabilityLattice, BudgetLattice};
+use portcullis::{BudgetLattice, CapabilityLattice, ConsentMode, PermissionLattice};
 
+// Every operation the capabilities permit is declared, here all autonomous;
+// `build` refuses an undeclared one, naming it.
 let perms = PermissionLattice::builder()
     .description("Code review task")
-    .capabilities(CapabilityLattice::restrictive())
+    .capabilities_with(CapabilityLattice::restrictive(), ConsentMode::Autonomous)
     .budget(BudgetLattice::with_cost_limit(1.0))
     .uninhabitable_constraint(true)
     .created_by("review-agent")
-    .build();
+    .build()
+    .expect("consent is declared");
 ```
 
 ## Preset Configurations

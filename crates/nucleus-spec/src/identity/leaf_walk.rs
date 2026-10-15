@@ -316,6 +316,57 @@ fn tweak_first_string(v: &Value) -> Value {
     out
 }
 
+/// The operations a consent refusal names after `marker`, up to the `:` or `;`
+/// that ends the list.
+fn named_ops(msg: &str, marker: &str, before: bool) -> Vec<String> {
+    let list = if before {
+        // "<a>, <b> declared both ..." — the list ends at the marker and starts
+        // after the previous clause.
+        msg.split(marker)
+            .next()
+            .and_then(|head| head.rsplit("; ").next())
+            .and_then(|head| head.rsplit("refused: ").next())
+            .unwrap_or("")
+    } else {
+        msg.split(marker)
+            .nth(1)
+            .and_then(|tail| tail.split([':', ';']).next())
+            .unwrap_or("")
+    };
+    list.split(", ")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+        .collect()
+}
+
+/// `doc` with the consent declaration completed, when `msg` is a consent
+/// refusal; `None` otherwise.
+fn consent_repair(doc: &Value, msg: &str) -> Option<Value> {
+    let undeclared = named_ops(msg, "consent is not declared for ", false);
+    let contradictory = named_ops(msg, " declared both", true);
+    if undeclared.is_empty() && contradictory.is_empty() {
+        return None;
+    }
+    let mut doc = doc.clone();
+    let lattice = doc.pointer_mut("/spec/policy/lattice")?.as_object_mut()?;
+    if let Some(aut) = lattice.get_mut("autonomous").and_then(Value::as_array_mut) {
+        aut.retain(|v| {
+            !v.as_str()
+                .is_some_and(|s| contradictory.iter().any(|c| c == s))
+        });
+    }
+    let approvals = lattice
+        .get_mut("obligations")?
+        .as_object_mut()?
+        .entry("approvals")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()?;
+    for op in undeclared {
+        approvals.push(Value::from(op));
+    }
+    Some(doc)
+}
+
 enum Outcome {
     /// Changed, and the digest moved (`true`) or did not.
     Perturbed { moved: bool },
@@ -347,7 +398,21 @@ fn try_leaf(base: &Value, base_digest: &str, leaf: &Leaf) -> Outcome {
                 map.insert(to.clone(), val);
             }
         }
-        let spec = match serde_json::from_value::<PodSpec>(doc) {
+        // A single-leaf change to an inline lattice's consent — a level raised
+        // from `never`, an `autonomous` entry changed or dropped — leaves an
+        // operation undeclared or declared both ways, which deserialization
+        // refuses by name. The smallest edit that keeps it declared is the
+        // companion: obligate what is undeclared, drop the contradiction from
+        // `autonomous`. On a valid lattice consent cannot change one leaf at a
+        // time, so the pair IS the single change.
+        let parsed =
+            serde_json::from_value::<PodSpec>(doc.clone()).or_else(|e| {
+                match consent_repair(&doc, &e.to_string()) {
+                    Some(repaired) => serde_json::from_value::<PodSpec>(repaired),
+                    None => Err(e),
+                }
+            });
+        let spec = match parsed {
             Ok(spec) => spec,
             Err(e) => {
                 let msg = e.to_string();

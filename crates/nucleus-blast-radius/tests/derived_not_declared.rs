@@ -22,7 +22,7 @@ fn root_key(rng: &SystemRandom) -> Ed25519KeyPair {
 /// two ends of the range, and individual fields are public for the cases
 /// between.
 fn lattice(caps: CapabilityLattice, usd: &str) -> PermissionLattice {
-    let mut l = PermissionLattice::new("test");
+    let mut l = PermissionLattice::supervised().with_description("test");
     l.capabilities = caps;
     l.budget.max_cost_usd = usd.parse::<Decimal>().unwrap();
     l

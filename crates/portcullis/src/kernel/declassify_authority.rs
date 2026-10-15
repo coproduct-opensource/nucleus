@@ -58,7 +58,7 @@ fn release_burn_id(signature: &[u8; 64]) -> [u8; 32] {
 ///     // Everything above this line is proven to compile by the block below.
 ///     let _ = g.apply_verified(v, 0);
 /// }
-/// # let _ = PermissionLattice::default();
+/// # let _ = PermissionLattice::supervised();
 /// ```
 ///
 /// The block below is that one character-for-character, minus the last
@@ -75,7 +75,7 @@ fn release_burn_id(signature: &[u8; 64]) -> [u8; 32] {
 ///     let Ok(v) = kernel.verify_declassification(token) else { return };
 ///     let _ = g.apply_verified(v, 0);
 /// }
-/// # let _ = PermissionLattice::default();
+/// # let _ = PermissionLattice::supervised();
 /// ```
 #[must_use = "a verified declassification does nothing until it is spent by FlowGraph::apply_verified"]
 #[derive(Debug)]

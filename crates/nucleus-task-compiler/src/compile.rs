@@ -128,16 +128,21 @@ pub fn compile(input: CompileInput<'_>) -> Result<TaskGrant, CompileError> {
         Some(h) => TimeLattice::hours(i64::from(h)),
         None => input.ceiling.time.clone(),
     };
+    // The request declares every operation it asks for autonomous; consent is
+    // the ceiling's, which `meet` below keeps (obligated if either side is).
+    let asked = lowered.capabilities.permitted_operations();
     let requested = PermissionLattice::builder()
         .description(format!("task: {}", input.goal))
         .capabilities(lowered.capabilities.clone())
+        .autonomous(asked)
         .paths(input.ceiling.paths.clone())
         .commands(input.ceiling.commands.clone())
         .budget(budget)
         .time(time)
         .uninhabitable_constraint(true)
         .created_by(COMPILER_NAME)
-        .build();
+        .build()
+        .expect("every operation the request permits is declared autonomous above");
 
     // 4. Clamp. `meet` is the whole safety argument: the result is ≤ both.
     let mut lattice = input.ceiling.meet(&requested).normalize();

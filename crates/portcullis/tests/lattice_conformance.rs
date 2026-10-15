@@ -33,9 +33,12 @@ use proptest::prelude::*;
 /// verify the uninhabitable_state model in isolation.
 #[allow(clippy::field_reassign_with_default)]
 fn perms_with_empty_obligations(caps: CapabilityLattice) -> PermissionLattice {
-    let mut perms = PermissionLattice::default();
+    let mut perms = PermissionLattice::supervised();
     perms.capabilities = caps;
-    perms.obligations = Obligations::default(); // empty
+    // Empty obligations, and every permitted op declared autonomous: what
+    // clearing the obligations meant before consent was explicit.
+    perms.obligations = portcullis::Obligations::default();
+    perms.declare_all(portcullis::ConsentMode::Autonomous);
     perms.paths = PathLattice::default();
     perms
 }
@@ -2162,7 +2165,7 @@ mod protocol_conformance {
     };
 
     fn uninhabitable_perms() -> PermissionLattice {
-        let mut perms = PermissionLattice::default();
+        let mut perms = PermissionLattice::supervised();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
         perms.capabilities.run_bash = CapabilityLevel::LowRisk;
@@ -2630,7 +2633,7 @@ mod enforcement_monotonicity {
     };
 
     fn uninhabitable_perms() -> PermissionLattice {
-        let mut perms = PermissionLattice::default();
+        let mut perms = PermissionLattice::supervised();
         perms.capabilities.read_files = CapabilityLevel::Always;
         perms.capabilities.web_fetch = CapabilityLevel::LowRisk;
         perms.capabilities.run_bash = CapabilityLevel::LowRisk;

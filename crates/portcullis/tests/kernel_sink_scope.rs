@@ -10,7 +10,7 @@ use portcullis::certificate::{
 };
 use portcullis::kernel::{DenyReason, Kernel, Verdict};
 use portcullis::{
-    BudgetLattice, CapabilityLattice, IsolationLattice, Obligations, Operation, PermissionLattice,
+    BudgetLattice, CapabilityLattice, IsolationLattice, Operation, PermissionLattice,
 };
 use ring::rand::SystemRandom;
 use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -25,7 +25,7 @@ fn permissive_no_obligations() -> PermissionLattice {
     // which is illegal even with `..base` outside the defining crate (E0451).
     let mut lattice = PermissionLattice::permissive().as_ceiling();
     lattice.capabilities = CapabilityLattice::permissive();
-    lattice.obligations = Obligations::default();
+    lattice.declare_all(portcullis::ConsentMode::Autonomous);
     lattice.budget = BudgetLattice {
         max_cost_usd: rust_decimal::Decimal::from(100),
         ..Default::default()

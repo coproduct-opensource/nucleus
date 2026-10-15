@@ -229,7 +229,7 @@ impl Nucleus<PermissionLattice> for UninhabitableQuotient {
 /// // The inner permissions are guaranteed to be uninhabitable_state-safe
 /// assert!(nucleus.is_fixed_point(safe.inner()));
 /// ```
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct SafePermissionLattice(PermissionLattice);
 
@@ -453,7 +453,7 @@ impl std::fmt::Display for NucleusLawViolation {
 /// let samples = vec![
 ///     PermissionLattice::permissive(),
 ///     PermissionLattice::restrictive(),
-///     PermissionLattice::default(),
+///     PermissionLattice::supervised(),
 /// ];
 ///
 /// let violations = verify_nucleus_laws(&nucleus, &samples);
@@ -603,7 +603,7 @@ mod tests {
         let nucleus = UninhabitableQuotient::new();
 
         // a: full capabilities, uninhabitable-complete, empty obligations (not pre-normalized)
-        let mut a = PermissionLattice::default();
+        let mut a = PermissionLattice::supervised();
         a.capabilities.read_files = CapabilityLevel::Always;
         a.capabilities.write_files = CapabilityLevel::Always;
         a.capabilities.edit_files = CapabilityLevel::Always;
@@ -616,7 +616,7 @@ mod tests {
         a.capabilities.git_push = CapabilityLevel::Always;
         a.capabilities.create_pr = CapabilityLevel::Always;
         a.capabilities.manage_pods = CapabilityLevel::Always;
-        a.obligations = crate::capability::Obligations::default(); // empty
+        a.declare_all(crate::ConsentMode::Autonomous); // empty
         a.uninhabitable_constraint = true;
 
         // b: no private-access capabilities (read/glob/grep = Never), empty obligations
@@ -624,7 +624,7 @@ mod tests {
         b.capabilities.read_files = CapabilityLevel::Never;
         b.capabilities.glob_search = CapabilityLevel::Never;
         b.capabilities.grep_search = CapabilityLevel::Never;
-        b.obligations = crate::capability::Obligations::default(); // empty
+        b.declare_all(crate::ConsentMode::Autonomous); // empty
 
         let ja = nucleus.apply(&a); // full caps + exfil-approval obligations
         let jb = nucleus.apply(&b); // no private access → not uninhabitable → same as b
@@ -681,7 +681,7 @@ mod tests {
     fn test_bounded_lattice_properties() {
         let top = PermissionLattice::top();
         let bottom = PermissionLattice::bottom();
-        let a = PermissionLattice::default();
+        let a = PermissionLattice::supervised();
 
         // a ∧ ⊤ = a (top is identity for meet)
         assert_eq!(a.meet(&top).capabilities, a.capabilities);
@@ -694,7 +694,7 @@ mod tests {
     fn test_complete_lattice_meet_all() {
         let lattices = vec![
             PermissionLattice::permissive(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
             PermissionLattice::restrictive(),
         ];
 
@@ -720,7 +720,7 @@ mod tests {
         let samples = vec![
             PermissionLattice::permissive(),
             PermissionLattice::restrictive(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
             PermissionLattice::codegen(),
         ];
 
@@ -766,7 +766,7 @@ mod tests {
         let samples = vec![
             PermissionLattice::permissive(),
             PermissionLattice::restrictive(),
-            PermissionLattice::default(),
+            PermissionLattice::supervised(),
         ];
 
         let violations = verify_nucleus_laws(&composed, &samples);

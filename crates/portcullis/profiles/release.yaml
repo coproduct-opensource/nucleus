@@ -27,9 +27,24 @@ capabilities:
   create_pr: low_risk
   manage_pods: never
 
+# Consent is explicit: every operation above `never` is
+# listed in exactly one of `obligations` (requires approval) or
+# `autonomous`; an undeclared one is refused by name.
+# `run_bash` is obligated by the uninhabitable-state rule (private reads,
+# web content and a shell together); declared here as normalize would.
 obligations:
+  - run_bash
   - git_push
   - create_pr
+autonomous:
+  - read_files
+  - write_files
+  - edit_files
+  - glob_search
+  - grep_search
+  - web_search
+  - web_fetch
+  - git_commit
 
 paths:
   blocked:
