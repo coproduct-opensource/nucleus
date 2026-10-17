@@ -183,6 +183,9 @@ pub(crate) enum ReceiptSigner<'a> {
     /// Declared insecure mode: the insecure evidence key, which the node's
     /// workloads can read, and `sandbox_tier = "insecure-shared-uid"`.
     InsecureSharedUid(&'a ed25519_dalek::SigningKey),
+    /// The separated bare tier (Program C, C2): the certificate root, which
+    /// its workloads cannot read, and `sandbox_tier = "separated-local"`.
+    SeparatedLocal(&'a crate::pod_authority::PodAuthority),
 }
 
 impl<'a> ReceiptSigner<'a> {
@@ -198,6 +201,7 @@ impl<'a> ReceiptSigner<'a> {
     ) -> Self {
         match trust_gate.tier {
             crate::insecure_mode::EvidenceTier::Separated => Self::Root(authority),
+            crate::insecure_mode::EvidenceTier::SeparatedLocal => Self::SeparatedLocal(authority),
             crate::insecure_mode::EvidenceTier::InsecureSharedUid => {
                 Self::InsecureSharedUid(&trust_gate.executor_signing_key)
             }
@@ -207,6 +211,7 @@ impl<'a> ReceiptSigner<'a> {
     fn tier(&self) -> crate::insecure_mode::EvidenceTier {
         match self {
             Self::Root(_) => crate::insecure_mode::EvidenceTier::Separated,
+            Self::SeparatedLocal(_) => crate::insecure_mode::EvidenceTier::SeparatedLocal,
             Self::InsecureSharedUid(_) => crate::insecure_mode::EvidenceTier::InsecureSharedUid,
         }
     }
@@ -217,7 +222,7 @@ impl<'a> ReceiptSigner<'a> {
             // The node signs, not the pod. See `PodAuthority::sign_pod_receipt` for why
             // this is the one place the MediationReceipt pattern is deliberately not
             // followed.
-            Self::Root(authority) => (
+            Self::Root(authority) | Self::SeparatedLocal(authority) => (
                 authority.sign_pod_receipt(preimage),
                 authority.root_pubkey_hex(),
             ),
@@ -837,6 +842,7 @@ mod tests {
                 driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
                     child: tokio::sync::Mutex::new(child),
                     signed_proxy: tokio::sync::Mutex::new(None),
+                    workload_door: std::path::PathBuf::from("/nonexistent/workload.sock"),
                 })),
                 parent_pod_id: None,
                 posture_stamp: None,

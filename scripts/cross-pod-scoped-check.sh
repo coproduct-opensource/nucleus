@@ -89,29 +89,23 @@ fi
 for b in "$NODE" "$CLI" "$TP"; do [[ -x "$b" ]] || { echo "ERROR: missing binary $b"; exit 1; }; done
 TP="$(cd "$(dirname "$TP")" && pwd)/$(basename "$TP")"
 
-# See cross-pod-lineage-check.sh's own note: mints a CLI-usable mTLS identity
-# signed by the node's own already-persisted CA, since there's no VM/Tier2Host
-# here to carry a provisioned one over SSH.
-MINT="target/debug/examples/mint_test_client_cert"
-if [[ ! -x "$MINT" ]]; then
-    echo "building nucleus-identity's mint_test_client_cert example…"
-    cargo build -p nucleus-identity --example mint_test_client_cert \
-        >/dev/null 2>&1 || { echo "ERROR: build failed"; exit 1; }
-fi
-[[ -x "$MINT" ]] || { echo "ERROR: missing binary $MINT"; exit 1; }
-
+# See cross-pod-lineage-check.sh's own note: the node mints the CLI's mTLS
+# identity into an operator-only directory (--operator-identity-dir, Program C
+# C2); this check never reads the node's CA key.
+IDENTITY_DIR="$WORK/operator"
 "$NODE" \
     --listen "127.0.0.1:$PORT" --state-dir "$WORK/state" --driver local --allow-local-driver \
     --root-minter-spiffe-id "spiffe://$TRUST_DOMAIN/ns/default/sa/test-cli" \
+    --operator-identity-dir "$IDENTITY_DIR" \
     --tool-proxy-path "$TP" >"$WORK/node.log" 2>&1 &
 NODE_PID=$!
 
 ca_ready=0
 for _ in $(seq 1 40); do
-    [[ -f "$WORK/state/ca/ca-cert.pem" && -f "$WORK/state/ca/ca-key.pem" ]] && { ca_ready=1; break; }
+    [[ -f "$IDENTITY_DIR/cert.pem" && -f "$IDENTITY_DIR/key.pem" && -f "$IDENTITY_DIR/trust-bundle.pem" ]] && { ca_ready=1; break; }
     sleep 0.25
 done
-[[ "$ca_ready" -eq 1 ]] || { echo "ERROR: node never persisted its CA under $WORK/state/ca"; tail -20 "$WORK/node.log"; exit 1; }
+[[ "$ca_ready" -eq 1 ]] || { echo "ERROR: node never wrote the operator identity under $IDENTITY_DIR"; tail -20 "$WORK/node.log"; exit 1; }
 
 # `ns/default/sa/*` — an ORCHESTRATOR prefix (AuthorizationPolicy::default);
 # `ns/system/sa/cli` (nucleus-cli's own convention) is NOT authorized for pod
@@ -119,11 +113,6 @@ done
 # The SAME identity is passed to the node as --root-minter-spiffe-id above:
 # since pod_authority, exactly one identity may create a pod from a bare
 # (certificate-less) policy, and every other caller must prove authority.
-
-IDENTITY_DIR="$WORK/cli-identity"
-"$MINT" --ca-dir "$WORK/state/ca" --trust-domain "$TRUST_DOMAIN" \
-    --namespace default --service-account test-cli --out-dir "$IDENTITY_DIR" \
-    >"$WORK/mint.log" 2>&1 || { echo "ERROR: minting the CLI's client cert failed"; cat "$WORK/mint.log"; exit 1; }
 
 N() {
     "$CLI" node --url "$URL" \

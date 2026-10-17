@@ -56,6 +56,14 @@ pub(crate) fn proxy_env(state: &NodeState) -> [(&'static str, String); 1] {
     )]
 }
 
+/// Provision `command` (a local pod's proxy) for this transport: [`proxy_env`],
+/// and no shared secret, none inherited from the node's own environment either.
+pub(crate) fn provision(command: &mut tokio::process::Command, state: &NodeState) {
+    command.env_remove("NUCLEUS_TOOL_PROXY_AUTH_SECRET");
+    command.env_remove("NUCLEUS_TOOL_PROXY_APPROVAL_SECRET");
+    command.envs(proxy_env(state));
+}
+
 /// Where the node's `SignedProxy` forwards, given what the proxy announced.
 /// The announcement is a readiness signal; the target is the socket the node
 /// provisioned, never an address parsed out of it.

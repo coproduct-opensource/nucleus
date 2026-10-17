@@ -92,6 +92,9 @@ pub(crate) fn held(args: &crate::Args, matches: &clap::ArgMatches, facts: &Facts
         announce_path,
         listen_unix,
         peer_uids,
+        // A pid and two ids: neither a secret nor a path (Program C, C2).
+        node_peer_pid: _,
+        subordinate_ids: _,
         // The workload's own door: the workload is meant to reach it.
         workload_door: _,
         vsock_cid: _,

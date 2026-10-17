@@ -1224,7 +1224,14 @@ pub(crate) mod handler_tests {
             node_capacity: crate::node_capacity::Capacity::new(65536, 128),
             driver: a.driver.clone(),
             tool_proxy_path: a.tool_proxy_path.clone(),
-            local_driver_opt_in: crate::local_driver_opt_in(&a.driver, a.allow_local_driver),
+            local_children: match crate::local_driver_opt_in(&a.driver, a.allow_local_driver) {
+                nucleus::UnsandboxedOptIn::Absent => {
+                    crate::bare_tier_separation::LocalChildren::NotOptedIn
+                }
+                nucleus::UnsandboxedOptIn::Explicit | nucleus::UnsandboxedOptIn::Subordinate(_) => {
+                    crate::bare_tier_separation::LocalChildren::SharedUid
+                }
+            },
             firecracker_path: a.firecracker_path.clone(),
             firecracker_pool: None,
             firecracker_api_boot: a.firecracker_api_boot,
@@ -1486,6 +1493,12 @@ pub(crate) mod handler_tests {
             driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
                 child: Mutex::new(child),
                 signed_proxy: Mutex::new(None),
+                // What `spawn_local_pod` passes when no workspace is granted.
+                workload_door: crate::lifecycle::local_workload_door(&crate::lifecycle::pod_dir(
+                    &st.state_dir,
+                    id,
+                ))
+                .expect("door path"),
             })),
             parent_pod_id: parent,
             posture_stamp: None,
@@ -1540,6 +1553,7 @@ pub(crate) mod handler_tests {
             driver_state: crate::DriverState::Local(Box::new(crate::LocalPod {
                 child: Mutex::new(child),
                 signed_proxy: Mutex::new(Some(proxy)),
+                workload_door: std::path::PathBuf::from("/nonexistent/workload.sock"),
             })),
             parent_pod_id: None,
             posture_stamp: None,
