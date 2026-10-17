@@ -25,7 +25,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -33,7 +33,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "cfg(kani) divergences are inventoried and ratcheted"
@@ -101,7 +101,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -109,7 +109,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "Ed25519 verify_strict gate (M-3)",
@@ -281,7 +281,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -289,7 +289,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "Mediation backstop gate (North Star)",
@@ -459,7 +459,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -467,7 +467,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "Escape canary: the pod refused what it must (network, host FS, privilege, a second SVID key)",
@@ -599,7 +599,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -607,7 +607,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "Rustfmt"
@@ -702,7 +702,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -710,16 +710,14 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [],
     "scope": [
       "**",
       "scripts/**"
     ],
-    "seeds": [
-      "main-b7bd92e99-x86_64-t@sha256:faf861de8ae9bc34425259f15d7efe6406ee4179d309a6e41d8f3a61b3f50845"
-    ],
+    "seeds": [],
     "steps": [
       {
         "args": [
@@ -886,7 +884,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -894,7 +892,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [],
     "scope": [
@@ -917,9 +915,7 @@
       "scripts/gatehouse-verifier-sdk.sh",
       "sdks/verifier-js/**"
     ],
-    "seeds": [
-      "main-b7bd92e99-x86_64-t@sha256:faf861de8ae9bc34425259f15d7efe6406ee4179d309a6e41d8f3a61b3f50845"
-    ],
+    "seeds": [],
     "steps": [
       {
         "args": [],
@@ -1163,7 +1159,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -1171,7 +1167,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "Clippy"
@@ -1199,9 +1195,7 @@
       "examples/egress-git-remote/upstreams.toml",
       "tools/test-shard/**"
     ],
-    "seeds": [
-      "main-b7bd92e99-x86_64-l@sha256:d8e5430a0c4f6c904b88bcb96f33ec5dea95963b023c8ca5a8aad3c8666a9214"
-    ],
+    "seeds": [],
     "steps": [
       {
         "args": [
@@ -1378,7 +1372,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -1386,7 +1380,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "Clippy"
@@ -1408,9 +1402,7 @@
       "sdks/verifier-js/**",
       "clippy.toml"
     ],
-    "seeds": [
-      "main-b7bd92e99-x86_64-l@sha256:d8e5430a0c4f6c904b88bcb96f33ec5dea95963b023c8ca5a8aad3c8666a9214"
-    ],
+    "seeds": [],
     "steps": [
       {
         "args": [],
@@ -1737,7 +1729,7 @@
     "name": "lean-build",
     "outputs": [],
     "pins": [],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [],
     "scope": [
@@ -1831,7 +1823,7 @@
     "outputs": [],
     "pins": [
       {
-        "image": "gatehouse/nucleus-gate-tools@sha256:83265724d7bb1af70cc1377229f6840f84029efddb66438a94c28c278450297c",
+        "image": "gatehouse/nucleus-gate-tools@sha256:7b426459fd8e584eb372143baab851b1859117806129a3d4666f056978033be4",
         "platform": "linux/arm64"
       },
       {
@@ -1839,7 +1831,7 @@
         "platform": "linux/amd64"
       }
     ],
-    "platform": "linux/amd64",
+    "platform": "linux/arm64",
     "reads": [],
     "replaces": [
       "CI configuration is sound (CI-1)",
@@ -1856,9 +1848,7 @@
       "docs/assurance/**",
       ".gatehouse/**"
     ],
-    "seeds": [
-      "main-b7bd92e99-x86_64-l@sha256:d8e5430a0c4f6c904b88bcb96f33ec5dea95963b023c8ca5a8aad3c8666a9214"
-    ],
+    "seeds": [],
     "steps": [
       {
         "args": [],
