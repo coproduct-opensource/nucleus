@@ -35,6 +35,15 @@ use nucleus_spec::tier2_artifacts::{FirstShipped, GuestCapability};
 use crate::signed_proxy::ProxyTarget;
 use crate::{ApiError, NodeState};
 
+#[derive(Debug)]
+pub(crate) struct LocalPod {
+    pub(crate) child: tokio::sync::Mutex<tokio::process::Child>,
+    pub(crate) signed_proxy: tokio::sync::Mutex<Option<crate::signed_proxy::SignedProxy>>,
+    /// The workload door this pod's proxy was given (`--workload-door`): the
+    /// one the admission record's injected environment names (#3219).
+    pub(crate) workload_door: PathBuf,
+}
+
 /// The socket's name in the pod directory. Short, because a Unix socket path
 /// is limited to ~104 bytes on macOS and the pod directory is not.
 pub(crate) const SOCKET_FILE: &str = "proxy.sock";

@@ -93,6 +93,8 @@ mod boot_trace;
 use bare_tier_opt_in::local_driver_opt_in;
 #[cfg(feature = "local-driver")]
 mod local_transport;
+#[cfg(feature = "local-driver")]
+use local_transport::LocalPod;
 // Reached only from the Firecracker launch path, which is `cfg(target_os = "linux")`.
 // On any other host every item here is genuinely dead, and CI builds release
 // binaries with `RUSTFLAGS=-D warnings`, so the warning is an error that fails the
@@ -664,16 +666,6 @@ enum DriverState {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     Firecracker(Box<FirecrackerPod>),
     Container(Box<ContainerPod>),
-}
-
-#[cfg(feature = "local-driver")]
-#[derive(Debug)]
-struct LocalPod {
-    child: Mutex<tokio::process::Child>,
-    signed_proxy: Mutex<Option<signed_proxy::SignedProxy>>,
-    /// The workload door this pod's proxy was given (`--workload-door`): the
-    /// one the admission record's injected environment names (#3219).
-    workload_door: PathBuf,
 }
 
 #[derive(Debug)]
